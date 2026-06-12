@@ -116,7 +116,7 @@ impl Workspace {
             }
             Command::CursorDown => {
                 let panel = self.active_panel();
-                let max = panel.filtered_entries().len();
+                let max = panel.filtered_count();
                 if panel.cursor < max {
                     panel.cursor += 1;
                     panel.scroll_to_cursor = true;
@@ -128,7 +128,7 @@ impl Workspace {
                     self.active_panel().go_up();
                 } else if let Some(entry) = {
                     let panel = self.active_panel_ref();
-                    panel.filtered_entries().get(panel.cursor - 1).cloned().cloned()
+                    panel.filtered_get(panel.cursor - 1).cloned()
                 } {
                     if entry.is_dir {
                         self.active_panel().navigate_to(entry.path);
@@ -144,14 +144,13 @@ impl Workspace {
                 let panel = self.active_panel();
                 if panel.cursor > 0 {
                     let path = panel
-                        .filtered_entries()
-                        .get(panel.cursor - 1)
+                        .filtered_get(panel.cursor - 1)
                         .map(|e| e.path.clone());
                     if let Some(path) = path {
                         panel.toggle_select(path);
                     }
                 }
-                let max = panel.filtered_entries().len();
+                let max = panel.filtered_count();
                 if panel.cursor < max {
                     panel.cursor += 1;
                 }
@@ -163,9 +162,8 @@ impl Workspace {
                     let preview = {
                         let panel = self.active_panel_ref();
                         panel
-                            .filtered_entries()
-                            .get(panel.cursor.saturating_sub(1))
-                            .and_then(|e| panel::make_preview(e))
+                            .filtered_get(panel.cursor.saturating_sub(1))
+                            .and_then(panel::make_preview)
                     };
                     self.inactive_panel_mut().preview = preview;
                 }
@@ -326,8 +324,7 @@ impl Workspace {
             return;
         };
 
-        let entries = source.filtered_entries();
-        let Some(entry) = entries.get(source.cursor.saturating_sub(1)) else {
+        let Some(entry) = source.filtered_get(source.cursor.saturating_sub(1)) else {
             return;
         };
 

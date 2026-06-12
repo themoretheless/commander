@@ -51,6 +51,15 @@ fn load_cache_from_disk() -> HashMap<PathBuf, (SystemTime, u64)> {
         .collect()
 }
 
+/// Drop cached sizes for every directory that contains `path`.
+/// A change at `path` (watcher event) makes all its ancestors' sizes stale,
+/// even though their mtimes don't move (mtime only reflects direct children).
+pub fn invalidate_size_cache(path: &Path) {
+    if let Ok(mut cache) = dir_size_cache().lock() {
+        cache.retain(|dir, _| !path.starts_with(dir));
+    }
+}
+
 /// Save current cache to disk (best-effort, called from background threads).
 /// Prunes entries for paths that no longer exist and writes atomically
 /// (temp file + rename) so a crash can't corrupt the cache.
@@ -245,6 +254,25 @@ pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
+/// Cached filtered view: indices into `entries` matching `query`.
+/// Valid while `generation` matches the panel's `entries_gen` and the
+/// query is unchanged; recomputed lazily otherwise.
+struct FilterCache {
+    generation: u64,
+    query: String,
+    indices: Vec<usize>,
+}
+
+impl FilterCache {
+    fn stale() -> Self {
+        FilterCache {
+            generation: u64::MAX, // sentinel: never computed
+            query: String::new(),
+            indices: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortColumn {
     Name,
@@ -279,6 +307,13 @@ pub struct PanelState {
     pub drag_entries: Vec<PathBuf>,
     pub drop_target: Option<PathBuf>,
     pub needs_refresh: Arc<std::sync::atomic::AtomicBool>,
+    /// Set by deep watcher events: directory sizes need recomputing,
+    /// but the listing itself is unchanged.
+    sizes_dirty: Arc<std::sync::atomic::AtomicBool>,
+    last_sizes_recompute: Option<std::time::Instant>,
+    /// Bumped whenever `entries` content or order changes.
+    entries_gen: u64,
+    filter_cache: std::cell::RefCell<FilterCache>,
     watcher: Option<notify::RecommendedWatcher>,
     watched_path: Option<PathBuf>,
 }
@@ -307,6 +342,10 @@ impl PanelState {
             drag_entries: Vec::new(),
             drop_target: None,
             needs_refresh: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            last_sizes_recompute: None,
+            entries_gen: 0,
+            filter_cache: std::cell::RefCell::new(FilterCache::stale()),
             watcher: None,
             watched_path: None,
         }
@@ -328,6 +367,7 @@ impl PanelState {
     pub fn refresh(&mut self) {
         self.reload_entries();
         self.compute_dir_sizes();
+        self.last_sizes_recompute = Some(std::time::Instant::now());
         self.start_watcher();
     }
 
@@ -335,9 +375,7 @@ impl PanelState {
     /// by path (entries may have been added, removed or re-sorted).
     fn reload_entries(&mut self) {
         let cursor_path = if self.cursor > 0 {
-            self.filtered_entries()
-                .get(self.cursor - 1)
-                .map(|e| e.path.clone())
+            self.filtered_get(self.cursor - 1).map(|e| e.path.clone())
         } else {
             None
         };
@@ -355,21 +393,44 @@ impl PanelState {
             .and_then(|path| self.filtered_entries().iter().position(|e| e.path == path));
         match restored {
             Some(idx) => self.cursor = idx + 1,
-            None => self.cursor = self.cursor.min(self.filtered_entries().len()),
+            None => self.cursor = self.cursor.min(self.filtered_count()),
         }
     }
 
     /// Check if fs watcher flagged a change; if so, refresh.
-    /// Returns `true` when the directory was re-read.
+    /// Returns `true` when the directory listing was re-read.
+    /// Deep events (below the watched dir) only recompute directory
+    /// sizes, debounced so event floods during transfers don't thrash.
     pub fn poll_fs_changes(&mut self) -> bool {
-        let should = self
+        const SIZES_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
+        let reload = self
             .needs_refresh
             .swap(false, std::sync::atomic::Ordering::Relaxed);
-        if should {
+        if reload {
             self.reload_entries();
             self.compute_dir_sizes();
+            self.sizes_dirty
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            self.last_sizes_recompute = Some(std::time::Instant::now());
+            return true;
         }
-        should
+
+        if self.sizes_dirty.load(std::sync::atomic::Ordering::Relaxed) {
+            let due = self
+                .last_sizes_recompute
+                .map_or(true, |t| t.elapsed() >= SIZES_DEBOUNCE);
+            if due {
+                self.sizes_dirty
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.last_sizes_recompute = Some(std::time::Instant::now());
+                self.compute_dir_sizes();
+            } else if let Some(wake) = &self.notify {
+                // Poll again on a later frame once the debounce expires.
+                wake();
+            }
+        }
+        false
     }
 
     fn start_watcher(&mut self) {
@@ -385,11 +446,26 @@ impl PanelState {
         self.watched_path = None;
 
         let flag = Arc::clone(&self.needs_refresh);
+        let sizes_flag = Arc::clone(&self.sizes_dirty);
         let wake = self.notify.clone();
+        let watched = self.current_path.clone();
 
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            if res.is_ok() {
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(event) = res {
+                // A change anywhere under a cached directory makes its
+                // size stale, even though its own mtime doesn't move.
+                let mut direct = event.paths.is_empty();
+                for p in &event.paths {
+                    invalidate_size_cache(p);
+                    if p == &watched || p.parent() == Some(watched.as_path()) {
+                        direct = true;
+                    }
+                }
+                if direct {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    sizes_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 if let Some(wake) = &wake {
                     wake();
                 }
@@ -397,7 +473,9 @@ impl PanelState {
         });
 
         if let Ok(mut w) = watcher {
-            let _ = w.watch(&self.current_path, RecursiveMode::NonRecursive);
+            // Recursive: deep events never reload the listing, but they
+            // must invalidate cached sizes (see the callback above).
+            let _ = w.watch(&self.current_path, RecursiveMode::Recursive);
             self.watched_path = Some(self.current_path.clone());
             self.watcher = Some(w);
         }
@@ -552,6 +630,8 @@ impl PanelState {
                 SortOrder::Desc => cmp.reverse(),
             }
         });
+        // Content/order changed: filtered indices must be rebuilt.
+        self.entries_gen = self.entries_gen.wrapping_add(1);
     }
 
     pub fn navigate_to(&mut self, path: PathBuf) {
@@ -598,16 +678,55 @@ impl PanelState {
         }
     }
 
-    pub fn filtered_entries(&self) -> Vec<&FileEntry> {
+    /// Rebuild the cached filtered indices if entries or query changed.
+    /// A warm cache costs two comparisons; the string matching over all
+    /// entries runs only when something actually changed.
+    fn ensure_filter_cache(&self) {
+        let mut cache = self.filter_cache.borrow_mut();
+        if cache.generation == self.entries_gen && cache.query == self.search_query {
+            return;
+        }
+        cache.generation = self.entries_gen;
+        cache.query = self.search_query.clone();
+        cache.indices.clear();
         if self.search_query.is_empty() {
-            self.entries.iter().collect()
+            cache.indices.extend(0..self.entries.len());
         } else {
             let q = self.search_query.to_lowercase();
-            self.entries
-                .iter()
-                .filter(|e| e.name_lower.contains(&q))
-                .collect()
+            cache.indices.extend(
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.name_lower.contains(&q))
+                    .map(|(i, _)| i),
+            );
         }
+    }
+
+    /// Number of entries matching the current filter (no allocation).
+    pub fn filtered_count(&self) -> usize {
+        self.ensure_filter_cache();
+        self.filter_cache.borrow().indices.len()
+    }
+
+    /// The i-th entry of the filtered view (no allocation).
+    pub fn filtered_get(&self, i: usize) -> Option<&FileEntry> {
+        self.ensure_filter_cache();
+        let idx = *self.filter_cache.borrow().indices.get(i)?;
+        self.entries.get(idx)
+    }
+
+    /// Snapshot of the filtered view as indices into `entries`.
+    /// Cheap (a `Vec<usize>` clone); used by the virtualized list renderer.
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        self.ensure_filter_cache();
+        self.filter_cache.borrow().indices.clone()
+    }
+
+    pub fn filtered_entries(&self) -> Vec<&FileEntry> {
+        self.ensure_filter_cache();
+        let cache = self.filter_cache.borrow();
+        cache.indices.iter().map(|&i| &self.entries[i]).collect()
     }
 
     pub fn toggle_select(&mut self, path: PathBuf) {
@@ -645,12 +764,9 @@ impl PanelState {
             if self.cursor == 0 {
                 return vec![];
             }
-            let file_idx = self.cursor - 1;
-            let filtered = self.filtered_entries();
-            if let Some(entry) = filtered.get(file_idx) {
-                vec![(*entry).clone()]
-            } else {
-                vec![]
+            match self.filtered_get(self.cursor - 1) {
+                Some(entry) => vec![entry.clone()],
+                None => vec![],
             }
         } else {
             self.selected_entries()
@@ -904,6 +1020,100 @@ mod tests {
         let crumbs = p.breadcrumbs();
         assert_eq!(crumbs[0].0, "/");
         assert_eq!(crumbs.last().unwrap().0, "foo");
+    }
+
+    #[test]
+    fn filter_cache_tracks_query_and_entry_changes() {
+        let mut p = panel_with(vec![
+            entry("alpha", false, 1),
+            entry("beta", false, 1),
+        ]);
+        assert_eq!(p.filtered_count(), 2);
+
+        // Query change invalidates the cache.
+        p.search_query = "al".to_string();
+        assert_eq!(p.filtered_count(), 1);
+        assert_eq!(p.filtered_get(0).unwrap().name, "alpha");
+
+        // Entry change (generation bump via sort) invalidates it too.
+        p.entries.push(entry("alps", false, 1));
+        p.sort_entries();
+        assert_eq!(p.filtered_count(), 2);
+        let names: Vec<&str> = p.filtered_entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "alps"]);
+    }
+
+    #[test]
+    fn filtered_indices_point_into_entries() {
+        let mut p = panel_with(vec![
+            entry("keep.txt", false, 1),
+            entry("skip.rs", false, 1),
+            entry("keeper.txt", false, 1),
+        ]);
+        p.search_query = "keep".to_string();
+        let idx = p.filtered_indices();
+        assert_eq!(idx.len(), 2);
+        for i in idx {
+            assert!(p.entries[i].name.contains("keep"));
+        }
+    }
+
+    #[test]
+    fn size_cache_invalidation_drops_ancestors_only() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        let other = tmp.dir("other");
+        let now = SystemTime::now();
+        {
+            let mut cache = dir_size_cache().lock().unwrap();
+            cache.insert(a.clone(), (now, 100));
+            cache.insert(other.clone(), (now, 5));
+        }
+
+        invalidate_size_cache(&a.join("b/c/file.txt"));
+
+        let cache = dir_size_cache().lock().unwrap();
+        assert!(!cache.contains_key(&a), "ancestor of the change is stale");
+        assert!(cache.contains_key(&other), "unrelated dirs keep their size");
+    }
+
+    #[test]
+    fn deep_change_recomputes_dir_size_without_reloading_listing() {
+        fn wait_for_size(p: &PanelState, dir: &Path, expected: u64) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if p.dir_sizes.lock().unwrap().get(dir) == Some(&expected) {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "size {expected} for {dir:?} not observed"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        let tmp = TempDir::new();
+        tmp.dir("sub/deep");
+        tmp.file("sub/deep/a.bin", "12345"); // 5 bytes
+        let sub = tmp.path().join("sub");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        wait_for_size(&p, &sub, 5);
+
+        // A deep change: sub's own mtime does not move, so the mtime
+        // cache alone would keep serving the stale 5 bytes.
+        let new_file = tmp.file("sub/deep/b.bin", "1234567"); // +7 bytes
+
+        // What the recursive watcher does on such an event:
+        invalidate_size_cache(&new_file);
+        p.sizes_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        p.last_sizes_recompute = None; // bypass the debounce in the test
+
+        let reloaded = p.poll_fs_changes();
+        assert!(!reloaded, "sizes-only events must not reload the listing");
+        wait_for_size(&p, &sub, 12);
     }
 
     #[test]

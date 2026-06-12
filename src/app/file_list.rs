@@ -16,7 +16,6 @@ impl App {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
-                        let entries: Vec<_> = panel.filtered_entries().into_iter().cloned().collect();
 
                         // ".." row — go up one directory (cursor == 0)
                         let can_go_up = panel.current_path.parent().is_some();
@@ -63,7 +62,13 @@ impl App {
                             }
                         }
 
-                        if entries.is_empty() {
+                        // Cached filtered view: indices into panel.entries.
+                        // No FileEntry is cloned per frame; row interactions
+                        // are recorded and applied after the loop, so the
+                        // loop body only borrows the panel immutably.
+                        let filtered = panel.filtered_indices();
+
+                        if filtered.is_empty() {
                             ui.add_space(40.0);
                             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                                 ui.label(
@@ -75,7 +80,14 @@ impl App {
                             return;
                         }
 
+                        // Deferred row interactions (applied after the loop).
+                        let mut pending_cursor: Option<usize> = None;
                         let mut navigate_to: Option<std::path::PathBuf> = None;
+                        let mut open_path: Option<std::path::PathBuf> = None;
+                        let mut drag_anchor: Option<std::path::PathBuf> = None;
+                        let mut pending_drop_target: Option<std::path::PathBuf> = None;
+                        let mut ctx_refresh = false;
+                        let mut scrolled = false;
 
                         // Lock shared data once for all rows (clone Arc to avoid borrowing panel)
                         let counts_arc = std::sync::Arc::clone(&panel.dir_counts);
@@ -83,8 +95,12 @@ impl App {
                         let dir_counts = counts_arc.lock().ok();
                         let dir_sizes = sizes_arc.lock().ok();
 
+                        let cursor = panel.cursor;
+                        let scroll_pending = panel.scroll_to_cursor;
+                        let dragging = !panel.drag_entries.is_empty();
+
                         let row_h = 29.0; // 28 + 1 spacing
-                        let total_rows = entries.len();
+                        let total_rows = filtered.len();
                         let viewport = ui.clip_rect();
                         let scroll_top = viewport.top() - ui.min_rect().top();
 
@@ -94,8 +110,8 @@ impl App {
                         last_visible = last_visible.min(total_rows);
 
                         // Ensure cursor row is in visible range when keyboard scrolling
-                        let cursor_file_idx = if panel.cursor > 0 { panel.cursor - 1 } else { 0 };
-                        if panel.scroll_to_cursor && total_rows > 0 {
+                        let cursor_file_idx = if cursor > 0 { cursor - 1 } else { 0 };
+                        if scroll_pending && total_rows > 0 {
                             if cursor_file_idx < first_visible {
                                 first_visible = cursor_file_idx;
                                 last_visible = (first_visible + ((viewport.height() / row_h).ceil() as usize) + 2).min(total_rows);
@@ -113,9 +129,9 @@ impl App {
 
                         // Render only visible rows
                         for idx in first_visible..last_visible {
-                            let entry = &entries[idx];
+                            let entry = &panel.entries[filtered[idx]];
                             let row_cursor = idx + 1;
-                            let is_cursor = row_cursor == panel.cursor;
+                            let is_cursor = row_cursor == cursor;
                             let is_selected = panel.selected.contains(&entry.path);
 
                             let zebra = if idx % 2 == 1 {
@@ -136,9 +152,9 @@ impl App {
                                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click_and_drag());
 
                             // Scroll to cursor row when navigating with keyboard
-                            if is_cursor && panel.scroll_to_cursor {
+                            if is_cursor && scroll_pending {
                                 ui.scroll_to_rect(row_rect, Some(Align::Center));
-                                panel.scroll_to_cursor = false;
+                                scrolled = true;
                             }
 
                             // Paint background
@@ -216,39 +232,31 @@ impl App {
                             });
 
                             if row_resp.secondary_clicked() {
-                                let needs_refresh = crate::native_menu::show(&entry.path);
-                                if needs_refresh {
-                                    panel.refresh();
+                                if crate::native_menu::show(&entry.path) {
+                                    ctx_refresh = true;
                                 }
                             }
 
                             if row_resp.double_clicked() {
-                                panel.cursor = row_cursor;
+                                pending_cursor = Some(row_cursor);
                                 if entry.is_dir {
                                     navigate_to = Some(entry.path.clone());
                                 } else {
-                                    opener(&entry.path);
+                                    open_path = Some(entry.path.clone());
                                 }
                             } else if row_resp.clicked() {
-                                panel.cursor = row_cursor;
+                                pending_cursor = Some(row_cursor);
                             }
 
-                            // Drag start — use selected entries or current entry
+                            // Drag start — selection resolved after the loop
                             if row_resp.drag_started() {
-                                panel.cursor = row_cursor;
-                                if panel.selected.is_empty() {
-                                    panel.drag_entries = vec![entry.path.clone()];
-                                } else {
-                                    panel.drag_entries = entries.iter()
-                                        .filter(|e| panel.selected.contains(&e.path))
-                                        .map(|e| e.path.clone())
-                                        .collect();
-                                }
+                                pending_cursor = Some(row_cursor);
+                                drag_anchor = Some(entry.path.clone());
                             }
 
                             // Drop target highlight — show when dragging over a directory
-                            if row_resp.hovered() && !panel.drag_entries.is_empty() && entry.is_dir {
-                                panel.drop_target = Some(entry.path.clone());
+                            if row_resp.hovered() && dragging && entry.is_dir {
+                                pending_drop_target = Some(entry.path.clone());
                                 ui.painter().rect_stroke(
                                     full_rect,
                                     CornerRadius::ZERO,
@@ -268,6 +276,34 @@ impl App {
                         drop(dir_counts);
                         drop(dir_sizes);
 
+                        // Apply the interactions recorded during the loop.
+                        if let Some(c) = pending_cursor {
+                            panel.cursor = c;
+                        }
+                        if scrolled {
+                            panel.scroll_to_cursor = false;
+                        }
+                        if let Some(anchor) = drag_anchor {
+                            panel.drag_entries = if panel.selected.is_empty() {
+                                vec![anchor]
+                            } else {
+                                panel
+                                    .filtered_entries()
+                                    .iter()
+                                    .filter(|e| panel.selected.contains(&e.path))
+                                    .map(|e| e.path.clone())
+                                    .collect()
+                            };
+                        }
+                        if let Some(target) = pending_drop_target {
+                            panel.drop_target = Some(target);
+                        }
+                        if ctx_refresh {
+                            panel.refresh();
+                        }
+                        if let Some(path) = open_path {
+                            opener(&path);
+                        }
                         if let Some(path) = navigate_to {
                             panel.navigate_to(path);
                         }
@@ -279,7 +315,7 @@ impl App {
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let total = panel.filtered_entries().len();
+                            let total = panel.filtered_count();
                             let sel = panel.selected.len();
                             let dir_total = panel.total_dir_size();
                             let size_str = match dir_total {
