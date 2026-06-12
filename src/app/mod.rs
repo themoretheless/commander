@@ -1,9 +1,12 @@
+//! UI layer: renders the [`Workspace`] and forwards input to it.
+//! All file-manager behaviour lives in `crate::workspace`; this module
+//! owns only presentation state (theme, zoom, image cache, tree widget).
+
 mod keys;
 mod toolbar;
 mod render;
 mod file_list;
 mod tree;
-mod file_ops;
 mod preload;
 mod update;
 mod confirm_dialog;
@@ -15,47 +18,13 @@ use egui::{
 use std::path::PathBuf;
 
 use crate::panel::{format_size, PanelState, SortColumn};
-use crate::scan::FlatList;
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
-pub(crate) use crate::transfer::{
-    CopyMethod, OverwritePolicy, TransferKind, TransferState,
-};
-pub use crate::transfer::TransferProgress;
-
-#[derive(PartialEq, Clone, Copy)]
-pub enum ActivePanel {
-    Left,
-    Right,
-}
-
-/// A copy/move awaiting user confirmation in the dialog.
-#[derive(Clone)]
-pub(crate) struct PendingTransfer {
-    pub kind: TransferKind,
-    pub entries: Vec<crate::panel::FileEntry>,
-    pub target: PathBuf,
-    pub conflicts: Vec<String>,
-    pub policy: OverwritePolicy,
-    pub method: CopyMethod,
-    pub flat: FlatList,
-}
-
-/// Pending file operation awaiting user confirmation.
-#[derive(Clone)]
-pub(crate) enum PendingOp {
-    Transfer(PendingTransfer),
-    Delete {
-        entries: Vec<crate::panel::FileEntry>,
-        flat: FlatList,
-    },
-}
+pub(crate) use crate::transfer::{CopyMethod, OverwritePolicy, TransferKind};
+pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
 pub struct App {
-    pub left: PanelState,
-    pub right: PanelState,
-    pub active: ActivePanel,
-    pub(crate) pending_op: Option<PendingOp>,
-    pub(crate) active_transfer: Option<TransferState>,
+    /// UI-independent application core (panels, ops, transfers).
+    pub ws: Workspace,
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
@@ -84,11 +53,7 @@ impl App {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
         App {
-            left: PanelState::new(home.clone()),
-            right: PanelState::new(home),
-            active: ActivePanel::Left,
-            pending_op: None,
-            active_transfer: None,
+            ws: Workspace::new(home.clone(), home),
             ui_scale: 1.0,
             theme_mode: mode,
             colors: match mode {
@@ -104,26 +69,10 @@ impl App {
         }
     }
 
-    pub(crate) fn active_panel(&mut self) -> &mut PanelState {
-        match self.active {
-            ActivePanel::Left => &mut self.left,
-            ActivePanel::Right => &mut self.right,
-        }
-    }
-
-    pub(crate) fn inactive_panel(&self) -> &PanelState {
-        match self.active {
-            ActivePanel::Left => &self.right,
-            ActivePanel::Right => &self.left,
-        }
-    }
-
-    /// The panel opposite to the active one, mutable.
-    pub(crate) fn inactive_panel_mut(&mut self) -> &mut PanelState {
-        match self.active {
-            ActivePanel::Left => &mut self.right,
-            ActivePanel::Right => &mut self.left,
-        }
+    /// Confirm the pending operation; progress wakes the UI via repaint.
+    pub(crate) fn confirm_pending_op(&mut self, ctx: &egui::Context) {
+        let ctx = ctx.clone();
+        self.ws.confirm_pending_op(move || ctx.request_repaint());
     }
 
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {
@@ -134,28 +83,6 @@ impl App {
                 Some(parent) if parent != p => p = parent.to_path_buf(),
                 _ => break,
             }
-        }
-    }
-
-    /// Create preview content for a file entry.
-    pub(crate) fn make_preview(entry: &crate::panel::FileEntry) -> Option<crate::panel::PreviewContent> {
-        use crate::panel::PreviewContent;
-        if entry.is_dir {
-            return None;
-        }
-        if entry.is_image() {
-            Some(PreviewContent::Image(entry.path.clone()))
-        } else {
-            // Try to read as text (limit to 1MB)
-            let Ok(meta) = std::fs::metadata(&entry.path) else { return None };
-            if meta.len() > 1024 * 1024 {
-                return None; // Too large
-            }
-            let Ok(content) = std::fs::read_to_string(&entry.path) else { return None };
-            Some(PreviewContent::Text {
-                path: entry.path.clone(),
-                content,
-            })
         }
     }
 }

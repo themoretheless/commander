@@ -122,3 +122,71 @@ fn flatten_entry(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panel::FileEntry;
+    use crate::testutil::TempDir;
+
+    fn entry_for(path: &std::path::Path) -> FileEntry {
+        let meta = std::fs::metadata(path).unwrap();
+        FileEntry::from_meta(path.to_path_buf(), &meta).unwrap()
+    }
+
+    #[test]
+    fn find_conflicts_reports_existing_names_only() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let a = src.file("a.txt", "x");
+        let b = src.file("b.txt", "x");
+        dst.file("a.txt", "y");
+
+        let conflicts = find_conflicts(&[entry_for(&a), entry_for(&b)], dst.path());
+        assert_eq!(conflicts, vec!["a.txt".to_string()]);
+    }
+
+    #[test]
+    fn flatten_walks_dirs_with_depth_and_sizes() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("folder");
+        tmp.file("folder/b.txt", "22");
+        tmp.file("folder/a.txt", "1");
+        tmp.dir("folder/sub");
+        tmp.file("folder/sub/c.txt", "333");
+
+        let flat = flatten_entries(&[entry_for(&dir)]);
+        let view: Vec<(String, usize, bool, u64)> = flat
+            .iter()
+            .map(|f| (f.name.clone(), f.depth, f.is_dir, f.size))
+            .collect();
+
+        assert_eq!(
+            view,
+            vec![
+                ("folder".to_string(), 0, true, 0),
+                ("a.txt".to_string(), 1, false, 1),
+                ("b.txt".to_string(), 1, false, 2),
+                ("sub".to_string(), 1, true, 0),
+                ("c.txt".to_string(), 2, false, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn spawn_scan_fills_result_in_background() {
+        let tmp = TempDir::new();
+        let f = tmp.file("a.txt", "x");
+
+        let flat = spawn_scan(vec![entry_for(&f)]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(result) = flat.lock().unwrap().as_ref() {
+                assert_eq!(result.len(), 1);
+                assert_eq!(result[0].name, "a.txt");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "scan timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}

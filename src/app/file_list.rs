@@ -7,6 +7,7 @@ impl App {
         is_active: bool,
         t: &ThemeColors,
         panel_side: &str,
+        opener: &dyn Fn(&std::path::Path),
     ) {
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
@@ -203,7 +204,7 @@ impl App {
                                         let size_text = if let Some(ref sizes) = dir_sizes {
                                             entry.size_display_with_dir_size(sizes)
                                         } else {
-                                            entry.size_display()
+                                            entry.size_display().to_string()
                                         };
                                         ui.label(
                                             egui::RichText::new(size_text)
@@ -226,7 +227,7 @@ impl App {
                                 if entry.is_dir {
                                     navigate_to = Some(entry.path.clone());
                                 } else {
-                                    let _ = open::that(&entry.path);
+                                    opener(&entry.path);
                                 }
                             } else if row_resp.clicked() {
                                 panel.cursor = row_cursor;

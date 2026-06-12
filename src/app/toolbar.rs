@@ -34,16 +34,16 @@ impl App {
                     };
 
                     if btn(ui, "\u{1f4cb}  Copy", "Copy selected to other panel") {
-                        self.request_copy();
+                        self.ws.request_copy();
                     }
                     if btn(ui, "\u{1f4e6}  Move", "Move selected to other panel") {
-                        self.request_move();
+                        self.ws.request_move();
                     }
                     if btn(ui, "\u{1f4c1}  New Dir", "Create new directory") {
-                        self.create_dir();
+                        self.ws.create_dir();
                     }
                     if btn(ui, "\u{1f5d1}  Delete", "Move to trash") {
-                        self.request_delete();
+                        self.ws.request_delete();
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -77,10 +77,7 @@ impl App {
                         }
 
                         // Hidden files toggle
-                        let active_hidden = match self.active {
-                            ActivePanel::Left => self.left.show_hidden,
-                            ActivePanel::Right => self.right.show_hidden,
-                        };
+                        let active_hidden = self.ws.active_panel_ref().show_hidden;
                         let hidden_icon = if active_hidden { "\u{1f441}" } else { "\u{1f441}\u{200d}\u{1f5e8}" };
                         let hidden_fill = if active_hidden { t.accent.linear_multiply(0.3) } else { t.bg_card };
                         if ui
@@ -94,10 +91,7 @@ impl App {
                             .on_hover_text("Toggle hidden files (\u{2318}H)")
                             .clicked()
                         {
-                            let panel = match self.active {
-                                ActivePanel::Left => &mut self.left,
-                                ActivePanel::Right => &mut self.right,
-                            };
+                            let panel = self.ws.active_panel();
                             panel.show_hidden = !panel.show_hidden;
                             panel.refresh();
                         }
@@ -113,8 +107,8 @@ impl App {
                             )
                             .clicked()
                         {
-                            self.left.refresh();
-                            self.right.refresh();
+                            self.ws.left.refresh();
+                            self.ws.right.refresh();
                         }
                     });
                 });

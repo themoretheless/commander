@@ -51,27 +51,37 @@ fn load_cache_from_disk() -> HashMap<PathBuf, (SystemTime, u64)> {
         .collect()
 }
 
-/// Save current cache to disk (best-effort, non-blocking).
+/// Save current cache to disk (best-effort, called from background threads).
+/// Prunes entries for paths that no longer exist and writes atomically
+/// (temp file + rename) so a crash can't corrupt the cache.
 pub fn flush_cache() {
-    let Ok(cache) = dir_size_cache().lock() else {
-        return;
+    let entries: HashMap<PathBuf, CacheEntry> = {
+        let Ok(mut cache) = dir_size_cache().lock() else {
+            return;
+        };
+        cache.retain(|p, _| p.exists());
+        cache
+            .iter()
+            .filter_map(|(p, (mtime, size))| {
+                let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some((
+                    p.clone(),
+                    CacheEntry {
+                        mtime_secs: dur.as_secs(),
+                        mtime_nanos: dur.subsec_nanos(),
+                        size: *size,
+                    },
+                ))
+            })
+            .collect()
+        // Lock dropped here: serialization and IO happen outside it.
     };
-    let entries: HashMap<&PathBuf, CacheEntry> = cache
-        .iter()
-        .filter_map(|(p, (mtime, size))| {
-            let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-            Some((
-                p,
-                CacheEntry {
-                    mtime_secs: dur.as_secs(),
-                    mtime_nanos: dur.subsec_nanos(),
-                    size: *size,
-                },
-            ))
-        })
-        .collect();
     if let Ok(json) = serde_json::to_string(&entries) {
-        let _ = fs::write(cache_path(), json);
+        let path = cache_path();
+        let tmp = path.with_extension("json.tmp");
+        if fs::write(&tmp, json).is_ok() {
+            let _ = fs::rename(&tmp, &path);
+        }
     }
 }
 
@@ -84,6 +94,10 @@ pub struct FileEntry {
     pub size: u64,
     pub extension: String,
     pub modified: Option<std::time::SystemTime>,
+    /// Pre-formatted date string (rendered every frame, formatted once).
+    pub modified_str: String,
+    /// Pre-formatted size string for files ("…" for dirs).
+    pub size_str: String,
 }
 
 impl FileEntry {
@@ -97,6 +111,18 @@ impl FileEntry {
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let modified = meta.modified().ok();
+        let modified_str = match modified {
+            Some(time) => {
+                let datetime: chrono::DateTime<chrono::Local> = time.into();
+                datetime.format("%d %b %y  %H:%M").to_string()
+            }
+            None => "–".to_string(),
+        };
+        let size_str = if is_dir {
+            "…".to_string()
+        } else {
+            format_size(size)
+        };
         let name_lower = name.to_lowercase();
         Some(FileEntry {
             name,
@@ -106,6 +132,8 @@ impl FileEntry {
             size,
             extension,
             modified,
+            modified_str,
+            size_str,
         })
     }
 
@@ -156,11 +184,8 @@ impl FileEntry {
         }
     }
 
-    pub fn size_display(&self) -> String {
-        if self.is_dir {
-            return "…".to_string();
-        }
-        format_size(self.size)
+    pub fn size_display(&self) -> &str {
+        &self.size_str
     }
 
     pub fn size_display_with_dir_size(&self, dir_sizes: &HashMap<PathBuf, u64>) -> String {
@@ -168,17 +193,12 @@ impl FileEntry {
             if let Some(&size) = dir_sizes.get(&self.path) {
                 return format_size(size);
             }
-            return "…".to_string();
         }
-        format_size(self.size)
+        self.size_str.clone()
     }
 
-    pub fn modified_display(&self) -> String {
-        let Some(time) = self.modified else {
-            return "—".to_string();
-        };
-        let datetime: chrono::DateTime<chrono::Local> = time.into();
-        datetime.format("%d %b %y  %H:%M").to_string()
+    pub fn modified_display(&self) -> &str {
+        &self.modified_str
     }
 }
 
@@ -199,6 +219,31 @@ pub enum PreviewContent {
     Image(PathBuf),
     Text { path: PathBuf, content: String },
 }
+
+/// Create preview content for a file entry (image marker or text body).
+pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
+    if entry.is_dir {
+        return None;
+    }
+    if entry.is_image() {
+        Some(PreviewContent::Image(entry.path.clone()))
+    } else {
+        // Try to read as text (limit to 1MB)
+        let Ok(meta) = fs::metadata(&entry.path) else { return None };
+        if meta.len() > 1024 * 1024 {
+            return None; // Too large
+        }
+        let Ok(content) = fs::read_to_string(&entry.path) else { return None };
+        Some(PreviewContent::Text {
+            path: entry.path.clone(),
+            content,
+        })
+    }
+}
+
+/// Wake-up callback into the UI (e.g. a repaint request). Panels never
+/// talk to the UI toolkit directly.
+pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortColumn {
@@ -230,7 +275,7 @@ pub struct PanelState {
     pub show_hidden: bool,
     pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
-    pub ctx: Option<egui::Context>,
+    notify: Option<Notify>,
     pub drag_entries: Vec<PathBuf>,
     pub drop_target: Option<PathBuf>,
     pub needs_refresh: Arc<std::sync::atomic::AtomicBool>,
@@ -239,8 +284,11 @@ pub struct PanelState {
 }
 
 impl PanelState {
+    /// Create a panel pointed at `path`. The directory is NOT read yet:
+    /// call [`refresh`](Self::refresh) (the UI does this when wiring the
+    /// notify callback on the first frame).
     pub fn new(path: PathBuf) -> Self {
-        let mut panel = PanelState {
+        PanelState {
             current_path: path.clone(),
             entries: Vec::new(),
             selected: std::collections::HashSet::new(),
@@ -255,19 +303,26 @@ impl PanelState {
             show_hidden: false,
             dir_sizes: Arc::new(Mutex::new(HashMap::new())),
             dir_counts: Arc::new(Mutex::new(HashMap::new())),
-            ctx: None,
+            notify: None,
             drag_entries: Vec::new(),
             drop_target: None,
             needs_refresh: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             watcher: None,
             watched_path: None,
-        };
-        panel.refresh();
-        panel
+        }
     }
 
-    pub fn set_ctx(&mut self, ctx: egui::Context) {
-        self.ctx = Some(ctx);
+    /// Wire the UI wake-up callback and restart the watcher so its
+    /// notifications reach the UI.
+    pub fn set_notify(&mut self, notify: Notify) {
+        self.notify = Some(notify);
+        self.watcher = None;
+        self.watched_path = None;
+        self.start_watcher();
+    }
+
+    pub fn has_notify(&self) -> bool {
+        self.notify.is_some()
     }
 
     pub fn refresh(&mut self) {
@@ -330,13 +385,13 @@ impl PanelState {
         self.watched_path = None;
 
         let flag = Arc::clone(&self.needs_refresh);
-        let ctx = self.ctx.clone();
+        let wake = self.notify.clone();
 
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if res.is_ok() {
                 flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(ctx) = &ctx {
-                    ctx.request_repaint();
+                if let Some(wake) = &wake {
+                    wake();
                 }
             }
         });
@@ -403,7 +458,7 @@ impl PanelState {
 
         // Subdir counts
         let counts = Arc::clone(&self.dir_counts);
-        let ctx1 = self.ctx.clone();
+        let wake1 = self.notify.clone();
         fs_pool().spawn(move || {
             use rayon::prelude::*;
             let results: Vec<_> = fs_pool().install(|| {
@@ -422,15 +477,15 @@ impl PanelState {
                     map.insert(p, c);
                 }
             }
-            if let Some(ctx) = ctx1 {
-                ctx.request_repaint();
+            if let Some(wake) = wake1 {
+                wake();
             }
         });
 
         // Dir sizes
         if !need_size.is_empty() {
             let sizes = Arc::clone(&self.dir_sizes);
-            let ctx2 = self.ctx.clone();
+            let wake2 = self.notify.clone();
             fs_pool().spawn(move || {
                 use rayon::prelude::*;
                 let results: Vec<_> = fs_pool().install(|| {
@@ -452,8 +507,8 @@ impl PanelState {
                     }
                 }
                 flush_cache();
-                if let Some(ctx) = ctx2 {
-                    ctx.request_repaint();
+                if let Some(wake) = wake2 {
+                    wake();
                 }
             });
         }
@@ -486,7 +541,8 @@ impl PanelState {
             }
 
             let cmp = match col {
-                SortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                // name_lower is precomputed at load: no per-comparison allocs.
+                SortColumn::Name => a.name_lower.cmp(&b.name_lower),
                 SortColumn::Size => a.size.cmp(&b.size),
                 SortColumn::Modified => a.modified.cmp(&b.modified),
             };
@@ -695,6 +751,176 @@ impl PanelState {
         } else {
             ""
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+
+    /// In-memory entry for pure sort/filter/selection tests.
+    fn entry(name: &str, is_dir: bool, size: u64) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            name_lower: name.to_lowercase(),
+            path: PathBuf::from(format!("/test/{name}")),
+            is_dir,
+            size,
+            extension: String::new(),
+            modified: None,
+            modified_str: "–".to_string(),
+            size_str: if is_dir { "…".to_string() } else { format_size(size) },
+        }
+    }
+
+    fn panel_with(entries: Vec<FileEntry>) -> PanelState {
+        let mut p = PanelState::new(PathBuf::from("/test"));
+        p.entries = entries;
+        p
+    }
+
+    #[test]
+    fn format_size_units() {
+        assert_eq!(format_size(500), "500 B");
+        assert_eq!(format_size(1536), "1.5 KB");
+        assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.00 GB");
+    }
+
+    #[test]
+    fn sort_puts_dirs_first_and_is_case_insensitive() {
+        let mut p = panel_with(vec![
+            entry("zeta.txt", false, 1),
+            entry("Apple", true, 0),
+            entry("beta.txt", false, 1),
+            entry("zoo", true, 0),
+        ]);
+        p.sort_entries();
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Apple", "zoo", "beta.txt", "zeta.txt"]);
+    }
+
+    #[test]
+    fn sort_desc_reverses_within_groups() {
+        let mut p = panel_with(vec![
+            entry("a.txt", false, 1),
+            entry("b.txt", false, 2),
+        ]);
+        p.set_sort(SortColumn::Size); // asc
+        p.set_sort(SortColumn::Size); // same column again -> desc
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["b.txt", "a.txt"]);
+    }
+
+    #[test]
+    fn filter_matches_case_insensitively() {
+        let mut p = panel_with(vec![
+            entry("Cargo.toml", false, 1),
+            entry("main.rs", false, 1),
+        ]);
+        p.search_query = "CARGO".to_string();
+        let names: Vec<&str> = p.filtered_entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Cargo.toml"]);
+    }
+
+    #[test]
+    fn toggle_select_adds_then_removes() {
+        let mut p = panel_with(vec![entry("a", false, 1)]);
+        let path = p.entries[0].path.clone();
+        p.toggle_select(path.clone());
+        assert!(p.selected.contains(&path));
+        p.toggle_select(path.clone());
+        assert!(!p.selected.contains(&path));
+    }
+
+    #[test]
+    fn select_all_toggles_between_all_and_none() {
+        let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
+        p.select_all();
+        assert_eq!(p.selected.len(), 2);
+        p.select_all();
+        assert!(p.selected.is_empty());
+    }
+
+    #[test]
+    fn selected_or_cursor_falls_back_to_cursor_row() {
+        let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
+        p.cursor = 0; // ".." row
+        assert!(p.selected_or_cursor().is_empty());
+        p.cursor = 2; // second file
+        let picked = p.selected_or_cursor();
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].name, "b");
+    }
+
+    #[test]
+    fn reload_preserves_cursor_by_path_and_prunes_selection() {
+        let tmp = TempDir::new();
+        tmp.file("a.txt", "1");
+        tmp.file("b.txt", "2");
+        let doomed = tmp.file("c.txt", "3");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        assert_eq!(p.entries.len(), 3);
+
+        // Cursor on "b.txt" (row 2), select "c.txt".
+        p.cursor = 2;
+        p.toggle_select(doomed.clone());
+
+        // A new file shifts sort order; a selected file disappears.
+        tmp.file("0-first.txt", "0");
+        std::fs::remove_file(&doomed).unwrap();
+        p.refresh();
+
+        let under_cursor = p.filtered_entries()[p.cursor - 1].path.clone();
+        assert!(under_cursor.ends_with("b.txt"), "cursor follows the path");
+        assert!(p.selected.is_empty(), "selection drops deleted paths");
+    }
+
+    #[test]
+    fn history_navigation_walks_back_and_forward() {
+        let tmp = TempDir::new();
+        let sub = tmp.dir("sub");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        p.navigate_to(sub.clone());
+        assert_eq!(p.current_path, sub);
+        assert!(p.can_go_back());
+
+        p.go_back();
+        assert_eq!(p.current_path, tmp.path());
+        assert!(p.can_go_forward());
+
+        p.go_forward();
+        assert_eq!(p.current_path, sub);
+    }
+
+    #[test]
+    fn breadcrumbs_start_at_root() {
+        let p = PanelState::new(PathBuf::from("/tmp/foo"));
+        let crumbs = p.breadcrumbs();
+        assert_eq!(crumbs[0].0, "/");
+        assert_eq!(crumbs.last().unwrap().0, "foo");
+    }
+
+    #[test]
+    fn make_preview_reads_text_and_skips_dirs() {
+        let tmp = TempDir::new();
+        let file = tmp.file("note.txt", "hello");
+        let meta = std::fs::metadata(&file).unwrap();
+        let fe = FileEntry::from_meta(file, &meta).unwrap();
+        match make_preview(&fe) {
+            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "hello"),
+            other => panic!("expected text preview, got {:?}", other.is_some()),
+        }
+
+        let dir = tmp.dir("d");
+        let meta = std::fs::metadata(&dir).unwrap();
+        let de = FileEntry::from_meta(dir, &meta).unwrap();
+        assert!(make_preview(&de).is_none());
     }
 }
 

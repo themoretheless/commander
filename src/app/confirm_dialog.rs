@@ -6,7 +6,7 @@ use crate::scan::FlatFileEntry;
 impl App {
     pub(crate) fn show_confirm_dialog(&mut self, ctx: &egui::Context) {
         let t = self.colors;
-        let Some(op) = &self.pending_op else { return };
+        let Some(op) = &self.ws.pending_op else { return };
 
         // Snapshot display data so `self` stays free for the button handlers.
         let (title, action_label, action_color, count, target, source_dir, conflicts, flat_arc) =
@@ -135,7 +135,7 @@ impl App {
                                 .fill(t.accent_warning)
                                 .corner_radius(CornerRadius::ZERO),
                         ).clicked() {
-                            self.set_pending_policy(OverwritePolicy::OverwriteAll);
+                            self.ws.set_pending_policy(OverwritePolicy::OverwriteAll);
                             self.confirm_pending_op(ctx);
                         }
                         ui.add_space(4.0);
@@ -144,7 +144,7 @@ impl App {
                                 .fill(t.bg_card)
                                 .corner_radius(CornerRadius::ZERO),
                         ).clicked() {
-                            self.set_pending_policy(OverwritePolicy::SkipAll);
+                            self.ws.set_pending_policy(OverwritePolicy::SkipAll);
                             self.confirm_pending_op(ctx);
                         }
                     });
@@ -182,7 +182,7 @@ impl App {
 
     /// Close the dialog and reset its per-dialog egui state.
     fn dismiss_pending_op(&mut self, ctx: &egui::Context) {
-        self.pending_op = None;
+        self.ws.pending_op = None;
         ctx.data_mut(|d| {
             d.remove::<f64>(egui::Id::new("pending_flow_start"));
         });
@@ -190,7 +190,7 @@ impl App {
 
     /// Title on the left, Native/Buffered method tabs on the right.
     fn method_tabs_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors, title: &str, count: usize) {
-        let cur_method = match &self.pending_op {
+        let cur_method = match &self.ws.pending_op {
             Some(PendingOp::Transfer(tr)) => tr.method,
             _ => CopyMethod::Native,
         };
@@ -290,7 +290,7 @@ impl App {
         }
 
         if let Some(method) = clicked_method {
-            if let Some(PendingOp::Transfer(tr)) = &mut self.pending_op {
+            if let Some(PendingOp::Transfer(tr)) = &mut self.ws.pending_op {
                 tr.method = method;
             }
         }

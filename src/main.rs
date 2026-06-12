@@ -3,12 +3,17 @@
 mod panel;
 mod theme;
 mod app;
+mod command;
 mod native_menu;
 mod native_copy;
 mod image_cache;
 mod fs_util;
 mod scan;
 mod transfer;
+mod workspace;
+
+#[cfg(test)]
+mod testutil;
 
 use eframe::NativeOptions;
 use egui::ViewportBuilder;

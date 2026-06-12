@@ -113,43 +113,14 @@ fn ensure_class() {
 
         extern "C" fn action_duplicate(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                let parent = p.parent().unwrap_or(Path::new("/"));
-                let stem = p
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let ext = p
-                    .extension()
-                    .map(|e| format!(".{}", e.to_string_lossy()))
-                    .unwrap_or_default();
-                let dest = crate::fs_util::first_available(|i| {
-                    if i == 0 {
-                        parent.join(format!("{} copy{}", stem, ext))
-                    } else {
-                        parent.join(format!("{} copy {}{}", stem, i + 1, ext))
-                    }
-                });
-                if p.is_dir() {
-                    let _ = crate::fs_util::copy_dir_all(p, &dest);
-                } else {
-                    let _ = std::fs::copy(p, &dest);
-                }
+                let _ = crate::fs_util::duplicate(p);
                 NEEDS_REFRESH.with(|r| r.set(true));
             });
         }
 
         extern "C" fn action_compress(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                let name = p.file_name().unwrap().to_string_lossy();
-                let parent = p.parent().unwrap_or(Path::new("/"));
-                let archive = parent.join(format!("{}.zip", name));
-                let _ = std::process::Command::new("ditto")
-                    .arg("-c")
-                    .arg("-k")
-                    .arg("--sequesterRsrc")
-                    .arg(p)
-                    .arg(&archive)
-                    .spawn();
+                let _ = crate::fs_util::compress_to_zip(p);
                 NEEDS_REFRESH.with(|r| r.set(true));
             });
         }

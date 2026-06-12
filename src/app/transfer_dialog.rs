@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(crate) fn show_transfer_dialog(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.active_transfer.clone() else {
+        let Some(state) = self.ws.active_transfer.clone() else {
             return;
         };
         let t = self.colors;
@@ -124,16 +124,16 @@ impl App {
                         egui::Button::new(egui::RichText::new("OK").size(13.0).color(Color32::WHITE))
                             .fill(t.accent).corner_radius(CornerRadius::ZERO),
                     ).clicked() {
-                        self.active_transfer = None;
-                        self.left.refresh();
-                        self.right.refresh();
+                        self.ws.active_transfer = None;
+                        self.ws.left.refresh();
+                        self.ws.right.refresh();
                     }
                 } else {
                     if ui.add(
                         egui::Button::new(egui::RichText::new("Cancel").size(13.0).color(Color32::WHITE))
                             .fill(t.accent_red).corner_radius(CornerRadius::ZERO),
                     ).clicked() {
-                        self.cancel_transfer();
+                        self.ws.cancel_transfer();
                     }
                 }
             });

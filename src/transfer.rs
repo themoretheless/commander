@@ -76,10 +76,15 @@ impl TransferProgress {
 
     /// Current speed in bytes/sec (averaged over last 2 seconds).
     pub fn speed_bps(&self) -> f64 {
+        self.speed_bps_at(self.started_at.elapsed().as_secs_f64())
+    }
+
+    /// Same as [`speed_bps`](Self::speed_bps) with an explicit "now"
+    /// (seconds since transfer start) so the math is testable.
+    fn speed_bps_at(&self, now: f64) -> f64 {
         if self.speed_samples.len() < 2 {
             return 0.0;
         }
-        let now = self.started_at.elapsed().as_secs_f64();
         // Find sample ~2 seconds ago
         let window = 2.0;
         let cutoff = now - window;
@@ -349,4 +354,258 @@ fn copy_dir_buffered(
         }
     }
     Ok(copied)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+
+    fn entry_for(path: &Path) -> FileEntry {
+        let meta = std::fs::metadata(path).unwrap();
+        FileEntry::from_meta(path.to_path_buf(), &meta).unwrap()
+    }
+
+    /// Run a transfer to completion and return the final progress state.
+    fn run(spec: TransferSpec) -> TransferProgress {
+        let total = total_bytes(&spec.entries);
+        let progress: TransferState =
+            Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
+        spawn_transfer(spec, progress.clone(), || {});
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            {
+                let s = progress.lock().unwrap();
+                if s.finished {
+                    return s.clone();
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "transfer timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn spec(
+        kind: TransferKind,
+        method: CopyMethod,
+        entries: Vec<FileEntry>,
+        target: &Path,
+        conflicts: Vec<String>,
+        policy: OverwritePolicy,
+    ) -> TransferSpec {
+        TransferSpec {
+            kind,
+            entries,
+            target: target.to_path_buf(),
+            conflicts,
+            policy,
+            method,
+        }
+    }
+
+    #[test]
+    fn buffered_copy_file_copies_bytes_and_reports_progress() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "hello world");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        assert_eq!(std::fs::read_to_string(dst.path().join("a.txt")).unwrap(), "hello world");
+        assert!(file.exists(), "copy keeps the source");
+        assert!(s.errors.is_empty());
+        assert_eq!(s.files_done, 1);
+        assert_eq!(s.copied_bytes, 11);
+    }
+
+    #[test]
+    fn native_copy_file_works() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "native");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Native,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        assert_eq!(std::fs::read_to_string(dst.path().join("a.txt")).unwrap(), "native");
+        assert!(s.errors.is_empty());
+    }
+
+    #[test]
+    fn buffered_copy_dir_recurses() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("folder");
+        src.file("folder/one.txt", "1");
+        src.file("folder/nested/two.txt", "22");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&dir)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        assert_eq!(std::fs::read_to_string(dst.path().join("folder/one.txt")).unwrap(), "1");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("folder/nested/two.txt")).unwrap(),
+            "22"
+        );
+        assert!(s.errors.is_empty());
+    }
+
+    #[test]
+    fn move_deletes_source_only_on_clean_copy() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "move me");
+
+        run(spec(
+            TransferKind::Move,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        assert!(dst.path().join("a.txt").exists());
+        assert!(!file.exists(), "clean move removes the source");
+    }
+
+    #[test]
+    fn move_keeps_source_when_copy_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("folder");
+        let secret = src.file("folder/secret.txt", "no read access");
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let s = run(spec(
+            TransferKind::Move,
+            CopyMethod::Buffered,
+            vec![entry_for(&dir)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        // Restore permissions so TempDir cleanup works everywhere.
+        let _ = std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644));
+
+        assert!(!s.errors.is_empty(), "the failure must be reported");
+        assert!(dir.exists(), "source must survive a failed move");
+        assert!(secret.exists());
+    }
+
+    #[test]
+    fn skip_all_leaves_existing_destination_untouched() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "new contents");
+        dst.file("a.txt", "old contents");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::SkipAll,
+        ));
+
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "old contents"
+        );
+        assert_eq!(s.files_done, 1, "skipped entries still count as processed");
+    }
+
+    #[test]
+    fn overwrite_all_replaces_existing_file() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "new contents");
+        dst.file("a.txt", "old contents");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "new contents"
+        );
+        assert!(s.errors.is_empty());
+    }
+
+    #[test]
+    fn failed_buffered_copy_removes_partial_destination() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let secret = src.file("secret.txt", "data");
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&secret)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        let _ = std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644));
+
+        assert!(!s.errors.is_empty());
+        assert!(
+            !dst.path().join("secret.txt").exists(),
+            "partial destination must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn total_bytes_sums_files_and_dirs() {
+        let tmp = TempDir::new();
+        let f = tmp.file("a.bin", "12345");
+        let d = tmp.dir("folder");
+        tmp.file("folder/b.bin", "123");
+
+        let entries = vec![entry_for(&f), entry_for(&d)];
+        assert_eq!(total_bytes(&entries), 8);
+    }
+
+    #[test]
+    fn speed_is_averaged_over_recent_samples() {
+        let mut p = TransferProgress::new(1000, 1);
+        // 100 bytes/sec: sample at t=0 (0 bytes) and t=4 (400 bytes).
+        p.speed_samples = vec![(0.0, 0.0), (4.0, 400.0)];
+        p.copied_bytes = 600;
+        // At t=6 the 2-second window looks back to the t=4 sample:
+        // (600 - 400) / (6 - 4) = 100 B/s.
+        assert!((p.speed_bps_at(6.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn speed_needs_at_least_two_samples() {
+        let p = TransferProgress::new(1000, 1);
+        assert_eq!(p.speed_bps_at(5.0), 0.0);
+    }
 }

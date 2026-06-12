@@ -1,28 +1,9 @@
-//! Keyboard handling: keys are first mapped to [`Command`]s, then each
-//! command is executed against the app state. Mapping stays pure and
-//! the dispatch logic lives in one place.
+//! Input adapter: translates egui key events into toolkit-independent
+//! [`KeyPress`]es, maps them to [`Command`]s (`crate::command`) and feeds
+//! them to the workspace. No file-manager logic lives here.
 
 use super::*;
-
-#[derive(Clone, Copy)]
-enum Command {
-    SwitchPanel,
-    CursorUp,
-    CursorDown,
-    /// Enter: open file / enter dir / go up on the ".." row.
-    Activate,
-    GoUp,
-    /// Space: toggle selection and advance cursor.
-    ToggleSelect,
-    /// F3: open/close preview in the other panel.
-    TogglePreview,
-    RequestCopy,
-    RequestMove,
-    CreateDir,
-    RequestDelete,
-    SelectAll,
-    ToggleHidden,
-}
+use crate::command::{map_keys, KeyCode, KeyPress};
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
@@ -31,143 +12,42 @@ impl App {
         if ctx.wants_keyboard_input() {
             return;
         }
-        let commands = ctx.input(Self::map_keys);
-        for cmd in commands {
-            self.execute(cmd);
+        // Dialogs own the keyboard too: they handle Enter/Esc themselves,
+        // and hotkeys must not fire underneath a modal window.
+        if self.ws.pending_op.is_some() || self.ws.active_transfer.is_some() {
+            return;
+        }
+        let presses = ctx.input(Self::collect_presses);
+        for cmd in map_keys(&presses) {
+            self.ws.execute(cmd);
         }
     }
 
-    /// Pure mapping from pressed keys to commands.
-    fn map_keys(i: &egui::InputState) -> Vec<Command> {
-        use egui::Key;
-        let mut out = Vec::new();
-        if i.key_pressed(Key::Tab) {
-            out.push(Command::SwitchPanel);
-        }
-        if i.key_pressed(Key::ArrowUp) {
-            out.push(Command::CursorUp);
-        }
-        if i.key_pressed(Key::ArrowDown) {
-            out.push(Command::CursorDown);
-        }
-        if i.key_pressed(Key::Enter) {
-            out.push(Command::Activate);
-        }
-        if i.key_pressed(Key::Backspace) {
-            out.push(Command::GoUp);
-        }
-        if i.key_pressed(Key::Space) {
-            out.push(Command::ToggleSelect);
-        }
-        if i.key_pressed(Key::F3) {
-            out.push(Command::TogglePreview);
-        }
-        if i.key_pressed(Key::F5) {
-            out.push(Command::RequestCopy);
-        }
-        if i.key_pressed(Key::F6) {
-            out.push(Command::RequestMove);
-        }
-        if i.key_pressed(Key::F7) {
-            out.push(Command::CreateDir);
-        }
-        if i.key_pressed(Key::F8) || i.key_pressed(Key::Delete) {
-            out.push(Command::RequestDelete);
-        }
-        if i.modifiers.command && i.key_pressed(Key::A) {
-            out.push(Command::SelectAll);
-        }
-        if i.modifiers.command && i.key_pressed(Key::H) {
-            out.push(Command::ToggleHidden);
-        }
-        out
-    }
-
-    fn execute(&mut self, cmd: Command) {
-        match cmd {
-            Command::SwitchPanel => {
-                self.active = match self.active {
-                    ActivePanel::Left => ActivePanel::Right,
-                    ActivePanel::Right => ActivePanel::Left,
-                };
-            }
-            Command::CursorUp => {
-                let panel = self.active_panel();
-                if panel.cursor > 0 {
-                    panel.cursor -= 1;
-                    panel.scroll_to_cursor = true;
-                }
-            }
-            Command::CursorDown => {
-                let panel = self.active_panel();
-                let max = panel.filtered_entries().len();
-                if panel.cursor < max {
-                    panel.cursor += 1;
-                    panel.scroll_to_cursor = true;
-                }
-            }
-            Command::Activate => {
-                // Cursor 0 is the ".." row, real files start at cursor 1.
-                let panel = self.active_panel();
-                if panel.cursor == 0 {
-                    panel.go_up();
-                } else if let Some(entry) =
-                    panel.filtered_entries().get(panel.cursor - 1).cloned()
-                {
-                    if entry.is_dir {
-                        let path = entry.path.clone();
-                        panel.navigate_to(path);
-                    } else {
-                        let _ = open::that(&entry.path);
-                    }
-                }
-            }
-            Command::GoUp => {
-                self.active_panel().go_up();
-            }
-            Command::ToggleSelect => {
-                let panel = self.active_panel();
-                if panel.cursor > 0 {
-                    let path = panel
-                        .filtered_entries()
-                        .get(panel.cursor - 1)
-                        .map(|e| e.path.clone());
-                    if let Some(path) = path {
-                        panel.toggle_select(path);
-                    }
-                }
-                let max = panel.filtered_entries().len();
-                if panel.cursor < max {
-                    panel.cursor += 1;
-                }
-            }
-            Command::TogglePreview => {
-                if self.inactive_panel().preview.is_some() {
-                    self.inactive_panel_mut().preview = None;
-                } else {
-                    let preview = {
-                        let panel = match self.active {
-                            ActivePanel::Left => &self.left,
-                            ActivePanel::Right => &self.right,
-                        };
-                        panel
-                            .filtered_entries()
-                            .get(panel.cursor.saturating_sub(1))
-                            .and_then(|e| Self::make_preview(e))
-                    };
-                    self.inactive_panel_mut().preview = preview;
-                }
-            }
-            Command::RequestCopy => self.request_copy(),
-            Command::RequestMove => self.request_move(),
-            Command::CreateDir => self.create_dir(),
-            Command::RequestDelete => self.request_delete(),
-            Command::SelectAll => self.active_panel().select_all(),
-            Command::ToggleHidden => {
-                let panel = self.active_panel();
-                panel.show_hidden = !panel.show_hidden;
-                panel.refresh();
-            }
-        }
+    /// Snapshot the pressed keys we care about as toolkit-independent values.
+    fn collect_presses(i: &egui::InputState) -> Vec<KeyPress> {
+        const BINDINGS: &[(egui::Key, KeyCode)] = &[
+            (egui::Key::Tab, KeyCode::Tab),
+            (egui::Key::ArrowUp, KeyCode::Up),
+            (egui::Key::ArrowDown, KeyCode::Down),
+            (egui::Key::Enter, KeyCode::Enter),
+            (egui::Key::Backspace, KeyCode::Backspace),
+            (egui::Key::Space, KeyCode::Space),
+            (egui::Key::F3, KeyCode::F3),
+            (egui::Key::F5, KeyCode::F5),
+            (egui::Key::F6, KeyCode::F6),
+            (egui::Key::F7, KeyCode::F7),
+            (egui::Key::F8, KeyCode::F8),
+            (egui::Key::Delete, KeyCode::Delete),
+            (egui::Key::A, KeyCode::A),
+            (egui::Key::H, KeyCode::H),
+        ];
+        BINDINGS
+            .iter()
+            .filter(|(key, _)| i.key_pressed(*key))
+            .map(|&(_, code)| KeyPress {
+                code,
+                command: i.modifiers.command,
+            })
+            .collect()
     }
 }

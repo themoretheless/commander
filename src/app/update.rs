@@ -16,41 +16,45 @@ impl eframe::App for App {
 }
 
 impl App {
-    /// Frame bookkeeping: repaint heuristics, context wiring, fs polling,
+    /// Frame bookkeeping: repaint heuristics, notify wiring, fs polling,
     /// input handling and background-task polling.
     fn begin_frame(&mut self, ctx: &egui::Context) {
         // Repaint only when there's activity (scroll animation, background loads)
         // egui will auto-repaint on user input (mouse, keyboard)
         let has_animation = ctx.is_using_pointer()
             || ctx.input(|i| i.smooth_scroll_delta.length() > 0.0)
-            || self.left.preview.is_some()
-            || self.right.preview.is_some();
+            || self.ws.left.preview.is_some()
+            || self.ws.right.preview.is_some();
         if has_animation {
             ctx.request_repaint();
         }
 
-        if self.left.ctx.is_none() {
-            self.left.set_ctx(ctx.clone());
-            self.left.refresh();
+        // First frame: wire the repaint callback into both panels and do
+        // the initial directory read.
+        if !self.ws.left.has_notify() {
+            let c = ctx.clone();
+            self.ws.left.set_notify(std::sync::Arc::new(move || c.request_repaint()));
+            self.ws.left.refresh();
         }
-        if self.right.ctx.is_none() {
-            self.right.set_ctx(ctx.clone());
-            self.right.refresh();
+        if !self.ws.right.has_notify() {
+            let c = ctx.clone();
+            self.ws.right.set_notify(std::sync::Arc::new(move || c.request_repaint()));
+            self.ws.right.refresh();
         }
 
-        let fs_changed = self.left.poll_fs_changes() | self.right.poll_fs_changes();
+        let fs_changed = self.ws.left.poll_fs_changes() | self.ws.right.poll_fs_changes();
         if fs_changed {
             self.tree_children_cache.clear();
         }
 
         // Drop targets are only valid for the frame that set them
         // (rows re-assert them while hovered during render).
-        self.left.drop_target = None;
-        self.right.drop_target = None;
+        self.ws.left.drop_target = None;
+        self.ws.right.drop_target = None;
 
         self.handle_keys(ctx);
         self.preload_images(ctx);
-        self.poll_transfer();
+        self.ws.poll_transfer();
     }
 
     fn show_toolbar_panel(&mut self, ctx: &egui::Context) {
@@ -154,7 +158,7 @@ impl App {
                             let tree_nav = self.render_global_tree(ui, &t);
                             if let Some(path) = tree_nav {
                                 self.tree_expand_to_path(&path);
-                                self.active_panel().navigate_to(path);
+                                self.ws.active_panel().navigate_to(path);
                             }
                         });
                 });
@@ -186,11 +190,12 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ctx, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed()) {
-                    self.active = ActivePanel::Left;
+                    self.ws.active = ActivePanel::Left;
                 }
                 tree_toggle |= Self::render_panel(
-                    &mut self.left, ui, self.active == ActivePanel::Left,
+                    &mut self.ws.left, ui, self.ws.active == ActivePanel::Left,
                     &t, &mut self.image_cache, "left", self.show_tree,
+                    self.ws.opener.as_ref(),
                 );
             });
 
@@ -221,18 +226,19 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ctx, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed()) {
-                    self.active = ActivePanel::Right;
+                    self.ws.active = ActivePanel::Right;
                 }
                 tree_toggle |= Self::render_panel(
-                    &mut self.right, ui, self.active == ActivePanel::Right,
+                    &mut self.ws.right, ui, self.ws.active == ActivePanel::Right,
                     &t, &mut self.image_cache, "right", self.show_tree,
+                    self.ws.opener.as_ref(),
                 );
             });
 
         if tree_toggle {
             self.show_tree = !self.show_tree;
             if self.show_tree {
-                let path = self.active_panel().current_path.clone();
+                let path = self.ws.active_panel().current_path.clone();
                 self.tree_expand_to_path(&path);
             }
         }
@@ -241,10 +247,10 @@ impl App {
     /// Floating label with the dragged file count next to the pointer.
     fn show_drag_overlay(&mut self, ctx: &egui::Context) {
         let t = self.colors;
-        let drag_entries = if !self.left.drag_entries.is_empty() {
-            &self.left.drag_entries
-        } else if !self.right.drag_entries.is_empty() {
-            &self.right.drag_entries
+        let drag_entries = if !self.ws.left.drag_entries.is_empty() {
+            &self.ws.left.drag_entries
+        } else if !self.ws.right.drag_entries.is_empty() {
+            &self.ws.right.drag_entries
         } else {
             return;
         };
@@ -280,28 +286,6 @@ impl App {
         if !ctx.input(|i| i.pointer.any_released()) {
             return;
         }
-        Self::drop_into(&mut self.left, &mut self.right);
-        Self::drop_into(&mut self.right, &mut self.left);
-        self.left.drop_target = None;
-        self.right.drop_target = None;
-    }
-
-    /// Drop `source`'s dragged entries. A target hovered in the source panel
-    /// itself (drag onto own subdirectory) takes priority over the other panel.
-    fn drop_into(source: &mut PanelState, other: &mut PanelState) {
-        if source.drag_entries.is_empty() {
-            return;
-        }
-        let target = source.drop_target.take()
-            .or_else(|| other.drop_target.take())
-            .unwrap_or_else(|| other.current_path.clone());
-        for src in &source.drag_entries {
-            if let Some(name) = src.file_name() {
-                let _ = std::fs::rename(src, target.join(name));
-            }
-        }
-        source.drag_entries.clear();
-        source.refresh();
-        other.refresh();
+        self.ws.drop_dragged();
     }
 }
