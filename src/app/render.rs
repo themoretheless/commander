@@ -1,6 +1,8 @@
 use super::*;
 
 impl App {
+    /// Render one file panel. Returns `true` if the tree-sidebar toggle
+    /// button was clicked (the tree itself is owned by [`App`]).
     pub(crate) fn render_panel(
         panel: &mut PanelState,
         ui: &mut egui::Ui,
@@ -8,8 +10,10 @@ impl App {
         t: &ThemeColors,
         image_cache: &mut crate::image_cache::ImageCache,
         panel_side: &str,
-    ) {
+        tree_open: bool,
+    ) -> bool {
         let panel_bg = t.bg_panel;
+        let mut tree_toggle = false;
 
         Frame::NONE
             .fill(panel_bg)
@@ -61,7 +65,7 @@ impl App {
                             }
 
                             // Tree toggle button
-                            let tree_color = if panel.show_tree { t.accent } else { t.text_muted };
+                            let tree_color = if tree_open { t.accent } else { t.text_muted };
                             let (tree_rect, tree_resp) = ui.allocate_exact_size(btn_size, Sense::click());
                             ui.painter().rect_stroke(tree_rect, CornerRadius::ZERO, Stroke::new(1.0, t.border), egui::StrokeKind::Outside);
                             // Mini folder icon
@@ -90,8 +94,7 @@ impl App {
                                 );
                             }
                             if tree_resp.clicked() {
-                                // Toggle stored in panel, synced to App in update()
-                                panel.show_tree = !panel.show_tree;
+                                tree_toggle = true;
                             }
 
                             ui.add_space(6.0);
@@ -107,10 +110,10 @@ impl App {
                                         let len = crumbs.len();
                                         for (i, (name, path)) in crumbs.iter().enumerate() {
                                             let is_last = i == len - 1;
-                                            let (bg, fg) = if is_last {
-                                                (t.accent.linear_multiply(0.25), t.text_primary)
+                                            let fg = if is_last {
+                                                t.text_primary
                                             } else {
-                                                (t.bg_card, t.text_secondary)
+                                                t.text_secondary
                                             };
 
                                             let resp = Frame::NONE
@@ -137,11 +140,6 @@ impl App {
 
                                             // Arrow separator
                                             if !is_last {
-                                                let next_bg = if i + 1 == len - 1 {
-                                                    t.accent.linear_multiply(0.25)
-                                                } else {
-                                                    t.bg_card
-                                                };
                                                 // Draw a simple chevron
                                                 Frame::NONE
                                                     .fill(Color32::TRANSPARENT)
@@ -328,466 +326,7 @@ impl App {
                 // File list
                 Self::render_file_list(ui, panel, is_active, t, panel_side);
             });
-    }
 
-    /// Draw a virtualized flat file list (only visible rows rendered).
-    pub(crate) fn render_flat_list_virtual(
-        ui: &mut egui::Ui,
-        flat: &[crate::app::file_ops::FlatFileEntry],
-        conflicts: &[String],
-        t: &ThemeColors,
-        max_height: f32,
-        id_salt: &str,
-    ) {
-        let row_h = 20.0;
-        let total_h = flat.len() as f32 * row_h;
-
-        Frame::NONE
-            .fill(t.bg_card.linear_multiply(0.3))
-            .corner_radius(CornerRadius::same(4))
-            .inner_margin(Margin::same(4))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .id_salt(id_salt)
-                    .show(ui, |ui| {
-                        // Total count label
-                        ui.label(egui::RichText::new(format!("{} items", flat.len())).size(10.0).color(t.text_muted));
-
-                        let scroll_offset = ui.clip_rect().top() - ui.min_rect().top();
-                        let viewport_h = max_height;
-                        let first = ((scroll_offset / row_h).floor() as usize).min(flat.len());
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2).min(flat.len() - first);
-
-                        // Spacer before visible rows
-                        if first > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), first as f32 * row_h));
-                        }
-
-                        // Render only visible rows
-                        for (vi, fe) in flat[first..first + visible_count].iter().enumerate() {
-                            let row_idx = first + vi;
-                            let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
-                            let p = ui.painter();
-
-                            // Zebra stripe
-                            if row_idx % 2 == 1 {
-                                p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.15));
-                            }
-
-                            let indent = fe.depth as f32 * 14.0;
-                            let icon = if fe.is_dir { "📁" } else { "📄" };
-                            let color = if is_conflict {
-                                Color32::from_rgb(230, 160, 40)
-                            } else if fe.depth > 0 {
-                                t.text_secondary
-                            } else {
-                                t.text_primary
-                            };
-
-                            // Icon
-                            p.text(
-                                egui::pos2(rect.left() + indent, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                icon,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            // Name
-                            p.text(
-                                egui::pos2(rect.left() + indent + 18.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &fe.name,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            // Size
-                            if !fe.is_dir && fe.size > 0 {
-                                p.text(
-                                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    format_size(fe.size),
-                                    egui::FontId::proportional(10.0),
-                                    t.text_muted,
-                                );
-                            }
-                        }
-
-                        // Spacer after visible rows
-                        let after = flat.len() - first - visible_count;
-                        if after > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
-                        }
-                    });
-            });
-    }
-
-    /// Like render_flat_list_virtual but highlights incoming files (files being copied).
-    pub(crate) fn render_flat_list_virtual_with_highlight(
-        ui: &mut egui::Ui,
-        flat: &[crate::app::file_ops::FlatFileEntry],
-        conflicts: &[String],
-        highlight_names: &std::collections::HashSet<String>,
-        t: &ThemeColors,
-        max_height: f32,
-        id_salt: &str,
-    ) {
-        let row_h = 20.0;
-
-        Frame::NONE
-            .fill(t.bg_card.linear_multiply(0.3))
-            .corner_radius(CornerRadius::same(4))
-            .inner_margin(Margin::same(4))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .id_salt(id_salt)
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new(format!("{} items", flat.len())).size(10.0).color(t.text_muted));
-
-                        let scroll_offset = ui.clip_rect().top() - ui.min_rect().top();
-                        let viewport_h = max_height;
-                        let first = ((scroll_offset / row_h).floor() as usize).min(flat.len());
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2).min(flat.len().saturating_sub(first));
-
-                        if first > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), first as f32 * row_h));
-                        }
-
-                        for (vi, fe) in flat[first..first + visible_count].iter().enumerate() {
-                            let row_idx = first + vi;
-                            let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
-                            let is_incoming = fe.depth == 0 && highlight_names.contains(&fe.name);
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
-                            let p = ui.painter();
-
-                            // Background: incoming files get accent tint
-                            if is_incoming {
-                                p.rect_filled(rect, CornerRadius::ZERO, t.accent.linear_multiply(0.15));
-                            } else if row_idx % 2 == 1 {
-                                p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.15));
-                            }
-
-                            let indent = fe.depth as f32 * 14.0;
-                            let icon = if fe.is_dir { "📁" } else { "📄" };
-                            let color = if is_conflict {
-                                Color32::from_rgb(230, 160, 40)
-                            } else if is_incoming {
-                                t.accent
-                            } else if fe.depth > 0 {
-                                t.text_secondary
-                            } else {
-                                t.text_primary
-                            };
-
-                            p.text(
-                                egui::pos2(rect.left() + indent, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                icon,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            p.text(
-                                egui::pos2(rect.left() + indent + 18.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &fe.name,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            if !fe.is_dir && fe.size > 0 {
-                                p.text(
-                                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    format_size(fe.size),
-                                    egui::FontId::proportional(10.0),
-                                    t.text_muted,
-                                );
-                            }
-                        }
-
-                        let after = flat.len().saturating_sub(first + visible_count);
-                        if after > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
-                        }
-                    });
-            });
-    }
-
-    /// Render file tree for copy/move dialog with flow visualization.
-    /// `is_source` = true: files shown dimmed (leaving source)
-    /// `is_source` = false: files shown highlighted (arriving at destination)
-    pub(crate) fn render_flat_list_virtual_flow(
-        ui: &mut egui::Ui,
-        flat: &[crate::app::file_ops::FlatFileEntry],
-        conflicts: &[String],
-        t: &ThemeColors,
-        max_height: f32,
-        id_salt: &str,
-        is_source: bool,
-    ) {
-        let row_h = 20.0;
-
-        Frame::NONE
-            .fill(t.bg_card.linear_multiply(0.3))
-            .corner_radius(CornerRadius::same(4))
-            .inner_margin(Margin::same(4))
-            .show(ui, |ui| {
-                // Header
-                let header = if is_source { "Source" } else { "Destination" };
-                let arrow = if is_source { "  ➜" } else { "➜  " };
-                ui.label(egui::RichText::new(format!("{} {} ({} items)", arrow, header, flat.len())).size(10.0).color(t.text_muted));
-
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .id_salt(id_salt)
-                    .show(ui, |ui| {
-                        let scroll_offset = ui.clip_rect().top() - ui.min_rect().top();
-                        let viewport_h = max_height;
-                        let first = ((scroll_offset / row_h).floor() as usize).min(flat.len());
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2).min(flat.len().saturating_sub(first));
-
-                        if first > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), first as f32 * row_h));
-                        }
-
-                        for (vi, fe) in flat[first..first + visible_count].iter().enumerate() {
-                            let row_idx = first + vi;
-                            let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
-                            let p = ui.painter();
-
-                            if is_source {
-                                // Source side: dimmed background, files are "leaving"
-                                if row_idx % 2 == 1 {
-                                    p.rect_filled(rect, CornerRadius::ZERO, t.accent_red.linear_multiply(0.05));
-                                }
-                            } else {
-                                // Destination side: highlighted, files are "arriving"
-                                p.rect_filled(rect, CornerRadius::ZERO, t.accent.linear_multiply(if row_idx % 2 == 0 { 0.08 } else { 0.12 }));
-                            }
-
-                            let indent = fe.depth as f32 * 14.0;
-                            let icon = if fe.is_dir { "📁" } else { "📄" };
-
-                            let color = if is_conflict {
-                                Color32::from_rgb(230, 160, 40)
-                            } else if is_source {
-                                t.text_muted // dimmed — leaving
-                            } else {
-                                t.accent // highlighted — arriving
-                            };
-
-                            // Icon
-                            p.text(
-                                egui::pos2(rect.left() + indent, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                icon,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            // Name
-                            p.text(
-                                egui::pos2(rect.left() + indent + 18.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &fe.name,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-
-                            // Strikethrough on source side
-                            if is_source && !is_conflict {
-                                let text_start = rect.left() + indent + 18.0;
-                                let text_end = text_start + fe.name.len() as f32 * 6.5;
-                                let cy = rect.center().y;
-                                p.line_segment(
-                                    [egui::pos2(text_start, cy), egui::pos2(text_end.min(rect.right() - 4.0), cy)],
-                                    Stroke::new(1.0, t.text_muted.linear_multiply(0.5)),
-                                );
-                            }
-
-                            // Size
-                            if !fe.is_dir && fe.size > 0 {
-                                p.text(
-                                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    format_size(fe.size),
-                                    egui::FontId::proportional(10.0),
-                                    if is_source { t.text_muted.linear_multiply(0.5) } else { t.text_muted },
-                                );
-                            }
-                        }
-
-                        let after = flat.len().saturating_sub(first + visible_count);
-                        if after > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
-                        }
-                    });
-            });
-    }
-
-    /// Animated file list for copy/move dialog.
-    /// `transferred`: how many files have "moved" so far
-    /// `is_source`: true = left side (files leaving), false = right side (files arriving)
-    pub(crate) fn render_flat_list_animated(
-        ui: &mut egui::Ui,
-        flat: &[crate::app::file_ops::FlatFileEntry],
-        conflicts: &[String],
-        t: &ThemeColors,
-        max_height: f32,
-        id_salt: &str,
-        transferred: usize,
-        is_source: bool,
-    ) {
-        let row_h = 20.0;
-
-        // On destination side, only show transferred files
-        let visible_flat: &[crate::app::file_ops::FlatFileEntry] = if is_source {
-            flat
-        } else {
-            &flat[..transferred]
-        };
-
-        Frame::NONE
-            .fill(t.bg_card.linear_multiply(0.3))
-            .corner_radius(CornerRadius::same(4))
-            .inner_margin(Margin::same(4))
-            .show(ui, |ui| {
-                let header = if is_source {
-                    format!("Source ({} items)", flat.len())
-                } else {
-                    format!("Destination ({}/{})", transferred, flat.len())
-                };
-                ui.label(egui::RichText::new(header).size(10.0).color(t.text_muted));
-
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .id_salt(id_salt)
-                    .show(ui, |ui| {
-                        let scroll_offset = ui.clip_rect().top() - ui.min_rect().top();
-                        let viewport_h = max_height;
-                        let total = visible_flat.len();
-                        let first = ((scroll_offset / row_h).floor() as usize).min(total);
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2).min(total.saturating_sub(first));
-
-                        if first > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), first as f32 * row_h));
-                        }
-
-                        for (vi, fe) in visible_flat[first..first + visible_count].iter().enumerate() {
-                            let row_idx = first + vi;
-                            let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
-                            let is_transferred = row_idx < transferred;
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
-                            let p = ui.painter();
-
-                            // Background
-                            if is_source && is_transferred {
-                                // Transferred on source side — faded red tint
-                                p.rect_filled(rect, CornerRadius::ZERO, t.accent_red.linear_multiply(0.08));
-                            } else if !is_source {
-                                // Destination side — green/accent tint
-                                let alpha = if row_idx + 1 == transferred { 0.2 } else { 0.1 };
-                                p.rect_filled(rect, CornerRadius::ZERO, t.accent.linear_multiply(alpha));
-                            } else if row_idx % 2 == 1 {
-                                p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.15));
-                            }
-
-                            let indent = fe.depth as f32 * 14.0;
-                            let icon = if fe.is_dir { "📁" } else { "📄" };
-
-                            let color = if is_conflict {
-                                Color32::from_rgb(230, 160, 40)
-                            } else if is_source && is_transferred {
-                                t.text_muted.linear_multiply(0.4) // very dim
-                            } else if !is_source {
-                                t.accent
-                            } else {
-                                t.text_primary
-                            };
-
-                            // Icon
-                            p.text(
-                                egui::pos2(rect.left() + indent, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                icon,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            // Name
-                            p.text(
-                                egui::pos2(rect.left() + indent + 18.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &fe.name,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-
-                            // Strikethrough on transferred source items
-                            if is_source && is_transferred {
-                                let text_start = rect.left() + indent + 18.0;
-                                let text_end = text_start + fe.name.len() as f32 * 6.5;
-                                p.line_segment(
-                                    [egui::pos2(text_start, rect.center().y), egui::pos2(text_end.min(rect.right() - 4.0), rect.center().y)],
-                                    Stroke::new(1.0, t.text_muted.linear_multiply(0.3)),
-                                );
-                            }
-
-                            // Size
-                            if !fe.is_dir && fe.size > 0 {
-                                let size_color = if is_source && is_transferred {
-                                    t.text_muted.linear_multiply(0.3)
-                                } else {
-                                    t.text_muted
-                                };
-                                p.text(
-                                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    format_size(fe.size),
-                                    egui::FontId::proportional(10.0),
-                                    size_color,
-                                );
-                            }
-                        }
-
-                        let after = total.saturating_sub(first + visible_count);
-                        if after > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
-                        }
-                    });
-            });
-    }
-
-    /// Draw a flat progress bar without rounding.
-    pub(crate) fn draw_progress_bar(
-        ui: &mut egui::Ui,
-        frac: f32,
-        text: &str,
-        fill_color: Color32,
-        t: &ThemeColors,
-    ) {
-        let bar_h = 18.0;
-        let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, bar_h), Sense::hover());
-        let p = ui.painter();
-
-        // Background
-        p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.5));
-
-        // Filled portion
-        let filled_w = rect.width() * frac.clamp(0.0, 1.0);
-        if filled_w > 0.0 {
-            let filled_rect = egui::Rect::from_min_size(rect.min, Vec2::new(filled_w, bar_h));
-            p.rect_filled(filled_rect, CornerRadius::ZERO, fill_color);
-        }
-
-        // Text centered
-        p.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            text,
-            egui::FontId::proportional(10.0),
-            t.text_primary,
-        );
+        tree_toggle
     }
 }

@@ -6,6 +6,8 @@ mod tree;
 mod file_ops;
 mod preload;
 mod update;
+mod confirm_dialog;
+mod transfer_dialog;
 
 use egui::{
     Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2,
@@ -13,7 +15,12 @@ use egui::{
 use std::path::PathBuf;
 
 use crate::panel::{format_size, PanelState, SortColumn};
+use crate::scan::FlatList;
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
+pub(crate) use crate::transfer::{
+    CopyMethod, OverwritePolicy, TransferKind, TransferState,
+};
+pub use crate::transfer::TransferProgress;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum ActivePanel {
@@ -21,127 +28,32 @@ pub enum ActivePanel {
     Right,
 }
 
-/// What to do when destination file already exists.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum OverwritePolicy {
-    Ask,
-    OverwriteAll,
-    SkipAll,
-}
-
-/// Copy method.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum CopyMethod {
-    /// Byte-by-byte with 1MB buffer, full progress tracking.
-    Buffered,
-    /// Native macOS copyfile() with APFS clone support, xattr/ACL preservation.
-    Native,
+/// A copy/move awaiting user confirmation in the dialog.
+#[derive(Clone)]
+pub(crate) struct PendingTransfer {
+    pub kind: TransferKind,
+    pub entries: Vec<crate::panel::FileEntry>,
+    pub target: PathBuf,
+    pub conflicts: Vec<String>,
+    pub policy: OverwritePolicy,
+    pub method: CopyMethod,
+    pub flat: FlatList,
 }
 
 /// Pending file operation awaiting user confirmation.
-pub(crate) type FlatList = std::sync::Arc<std::sync::Mutex<Option<Vec<crate::app::file_ops::FlatFileEntry>>>>;
-
 #[derive(Clone)]
 pub(crate) enum PendingOp {
-    Copy {
-        entries: Vec<crate::panel::FileEntry>,
-        target: PathBuf,
-        conflicts: Vec<String>,
-        policy: OverwritePolicy,
-        method: CopyMethod,
-        flat: FlatList,
-    },
-    Move {
-        entries: Vec<crate::panel::FileEntry>,
-        target: PathBuf,
-        conflicts: Vec<String>,
-        policy: OverwritePolicy,
-        method: CopyMethod,
-        flat: FlatList,
-    },
+    Transfer(PendingTransfer),
     Delete {
         entries: Vec<crate::panel::FileEntry>,
         flat: FlatList,
     },
 }
 
-/// Live transfer progress shared between background thread and UI.
-#[derive(Clone)]
-pub(crate) struct TransferProgress {
-    pub total_bytes: u64,
-    pub copied_bytes: u64,
-    pub current_file: String,
-    pub current_file_size: u64,
-    pub current_file_copied: u64,
-    pub files_done: usize,
-    pub files_total: usize,
-    pub speed_samples: Vec<(f64, f64)>,  // (timestamp_secs, bytes_at_that_time)
-    pub started_at: std::time::Instant,
-    pub finished: bool,
-    pub cancelled: bool,
-}
-
-impl TransferProgress {
-    pub fn new(total_bytes: u64, files_total: usize) -> Self {
-        Self {
-            total_bytes,
-            copied_bytes: 0,
-            current_file: String::new(),
-            current_file_size: 0,
-            current_file_copied: 0,
-            files_done: 0,
-            files_total,
-            speed_samples: vec![(0.0, 0.0)],
-            started_at: std::time::Instant::now(),
-            finished: false,
-            cancelled: false,
-        }
-    }
-
-    /// Current speed in bytes/sec (averaged over last 2 seconds).
-    pub fn speed_bps(&self) -> f64 {
-        if self.speed_samples.len() < 2 {
-            return 0.0;
-        }
-        let now = self.started_at.elapsed().as_secs_f64();
-        // Find sample ~2 seconds ago
-        let window = 2.0;
-        let cutoff = now - window;
-        let old = self.speed_samples.iter()
-            .rev()
-            .find(|(t, _)| *t <= cutoff)
-            .unwrap_or(&self.speed_samples[0]);
-        let dt = now - old.0;
-        if dt < 0.01 { return 0.0; }
-        (self.copied_bytes as f64 - old.1) / dt
-    }
-
-    /// Estimated time remaining in seconds.
-    pub fn eta_secs(&self) -> f64 {
-        let speed = self.speed_bps();
-        if speed < 1.0 { return 0.0; }
-        let remaining = self.total_bytes.saturating_sub(self.copied_bytes) as f64;
-        remaining / speed
-    }
-
-    /// Record a speed sample (call periodically from copy thread).
-    pub fn record_sample(&mut self) {
-        let t = self.started_at.elapsed().as_secs_f64();
-        self.speed_samples.push((t, self.copied_bytes as f64));
-        // Keep last 120 samples (~60 seconds at 2Hz)
-        if self.speed_samples.len() > 120 {
-            self.speed_samples.remove(0);
-        }
-    }
-}
-
-pub(crate) type TransferState = std::sync::Arc<std::sync::Mutex<TransferProgress>>;
-
 pub struct App {
     pub left: PanelState,
     pub right: PanelState,
     pub active: ActivePanel,
-    pub show_confirm_delete: bool,
     pub(crate) pending_op: Option<PendingOp>,
     pub(crate) active_transfer: Option<TransferState>,
     pub ui_scale: f32,
@@ -175,7 +87,6 @@ impl App {
             left: PanelState::new(home.clone()),
             right: PanelState::new(home),
             active: ActivePanel::Left,
-            show_confirm_delete: false,
             pending_op: None,
             active_transfer: None,
             ui_scale: 1.0,
@@ -207,6 +118,14 @@ impl App {
         }
     }
 
+    /// The panel opposite to the active one, mutable.
+    pub(crate) fn inactive_panel_mut(&mut self) -> &mut PanelState {
+        match self.active {
+            ActivePanel::Left => &mut self.right,
+            ActivePanel::Right => &mut self.left,
+        }
+    }
+
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {
         let mut p = path.to_path_buf();
         loop {
@@ -216,20 +135,6 @@ impl App {
                 _ => break,
             }
         }
-    }
-
-    pub(crate) fn tree_subdirs_cached(&mut self, path: &std::path::Path) -> Vec<PathBuf> {
-        if let Some(cached) = self.tree_children_cache.get(path) {
-            return cached.clone();
-        }
-        let active = self.active_panel();
-        let dirs = PanelState::subdirs(path, active.show_hidden);
-        self.tree_children_cache.insert(path.to_path_buf(), dirs.clone());
-        dirs
-    }
-
-    pub(crate) fn invalidate_tree_cache(&mut self) {
-        self.tree_children_cache.clear();
     }
 
     /// Create preview content for a file entry.

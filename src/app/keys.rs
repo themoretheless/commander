@@ -1,159 +1,173 @@
+//! Keyboard handling: keys are first mapped to [`Command`]s, then each
+//! command is executed against the app state. Mapping stays pure and
+//! the dispatch logic lives in one place.
+
 use super::*;
+
+#[derive(Clone, Copy)]
+enum Command {
+    SwitchPanel,
+    CursorUp,
+    CursorDown,
+    /// Enter: open file / enter dir / go up on the ".." row.
+    Activate,
+    GoUp,
+    /// Space: toggle selection and advance cursor.
+    ToggleSelect,
+    /// F3: open/close preview in the other panel.
+    TogglePreview,
+    RequestCopy,
+    RequestMove,
+    CreateDir,
+    RequestDelete,
+    SelectAll,
+    ToggleHidden,
+}
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
-        ctx.input(|i| {
-            // Tab — switch panel
-            if i.key_pressed(egui::Key::Tab) {
+        // A text field (e.g. the filter box) owns the keyboard:
+        // typing there must not trigger navigation/file-op hotkeys.
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+        let commands = ctx.input(Self::map_keys);
+        for cmd in commands {
+            self.execute(cmd);
+        }
+    }
+
+    /// Pure mapping from pressed keys to commands.
+    fn map_keys(i: &egui::InputState) -> Vec<Command> {
+        use egui::Key;
+        let mut out = Vec::new();
+        if i.key_pressed(Key::Tab) {
+            out.push(Command::SwitchPanel);
+        }
+        if i.key_pressed(Key::ArrowUp) {
+            out.push(Command::CursorUp);
+        }
+        if i.key_pressed(Key::ArrowDown) {
+            out.push(Command::CursorDown);
+        }
+        if i.key_pressed(Key::Enter) {
+            out.push(Command::Activate);
+        }
+        if i.key_pressed(Key::Backspace) {
+            out.push(Command::GoUp);
+        }
+        if i.key_pressed(Key::Space) {
+            out.push(Command::ToggleSelect);
+        }
+        if i.key_pressed(Key::F3) {
+            out.push(Command::TogglePreview);
+        }
+        if i.key_pressed(Key::F5) {
+            out.push(Command::RequestCopy);
+        }
+        if i.key_pressed(Key::F6) {
+            out.push(Command::RequestMove);
+        }
+        if i.key_pressed(Key::F7) {
+            out.push(Command::CreateDir);
+        }
+        if i.key_pressed(Key::F8) || i.key_pressed(Key::Delete) {
+            out.push(Command::RequestDelete);
+        }
+        if i.modifiers.command && i.key_pressed(Key::A) {
+            out.push(Command::SelectAll);
+        }
+        if i.modifiers.command && i.key_pressed(Key::H) {
+            out.push(Command::ToggleHidden);
+        }
+        out
+    }
+
+    fn execute(&mut self, cmd: Command) {
+        match cmd {
+            Command::SwitchPanel => {
                 self.active = match self.active {
                     ActivePanel::Left => ActivePanel::Right,
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
-
-            // Up / Down — move cursor (0 = ".." row, 1.. = files)
-            if i.key_pressed(egui::Key::ArrowUp) {
-                let panel = match self.active {
-                    ActivePanel::Left => &mut self.left,
-                    ActivePanel::Right => &mut self.right,
-                };
+            Command::CursorUp => {
+                let panel = self.active_panel();
                 if panel.cursor > 0 {
                     panel.cursor -= 1;
                     panel.scroll_to_cursor = true;
                 }
             }
-            if i.key_pressed(egui::Key::ArrowDown) {
-                let panel = match self.active {
-                    ActivePanel::Left => &mut self.left,
-                    ActivePanel::Right => &mut self.right,
-                };
+            Command::CursorDown => {
+                let panel = self.active_panel();
                 let max = panel.filtered_entries().len();
                 if panel.cursor < max {
                     panel.cursor += 1;
                     panel.scroll_to_cursor = true;
                 }
             }
-
-            // Update preview if open and cursor moved
-            if i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowDown) {
-                let other_has_preview = match self.active {
-                    ActivePanel::Left => self.right.preview.is_some(),
-                    ActivePanel::Right => self.left.preview.is_some(),
-                };
-                if other_has_preview {
-                    // Handled in preload_images
-                }
-            }
-
-            // Enter — ".." goes up, otherwise open dir/file
-            if i.key_pressed(egui::Key::Enter) {
-                let panel = match self.active {
-                    ActivePanel::Left => &mut self.left,
-                    ActivePanel::Right => &mut self.right,
-                };
+            Command::Activate => {
+                // Cursor 0 is the ".." row, real files start at cursor 1.
+                let panel = self.active_panel();
                 if panel.cursor == 0 {
                     panel.go_up();
-                } else {
-                    let file_idx = panel.cursor - 1;
-                    if let Some(entry) = panel.filtered_entries().get(file_idx).cloned() {
-                        if entry.is_dir {
-                            let path = entry.path.clone();
-                            panel.navigate_to(path);
-                        } else {
-                            let _ = open::that(&entry.path);
-                        }
+                } else if let Some(entry) =
+                    panel.filtered_entries().get(panel.cursor - 1).cloned()
+                {
+                    if entry.is_dir {
+                        let path = entry.path.clone();
+                        panel.navigate_to(path);
+                    } else {
+                        let _ = open::that(&entry.path);
                     }
                 }
             }
-
-            // Backspace — go up
-            if i.key_pressed(egui::Key::Backspace) {
-                match self.active {
-                    ActivePanel::Left => self.left.go_up(),
-                    ActivePanel::Right => self.right.go_up(),
-                };
+            Command::GoUp => {
+                self.active_panel().go_up();
             }
-
-            // Space — toggle select (skip ".." row)
-            if i.key_pressed(egui::Key::Space) {
-                let panel = match self.active {
-                    ActivePanel::Left => &mut self.left,
-                    ActivePanel::Right => &mut self.right,
-                };
+            Command::ToggleSelect => {
+                let panel = self.active_panel();
                 if panel.cursor > 0 {
-                    let file_idx = panel.cursor - 1;
-                    panel.toggle_select(file_idx);
+                    let path = panel
+                        .filtered_entries()
+                        .get(panel.cursor - 1)
+                        .map(|e| e.path.clone());
+                    if let Some(path) = path {
+                        panel.toggle_select(path);
+                    }
                 }
                 let max = panel.filtered_entries().len();
                 if panel.cursor < max {
                     panel.cursor += 1;
                 }
             }
-
-            // F3 — toggle preview in other panel
-            if i.key_pressed(egui::Key::F3) {
-                let other = match self.active {
-                    ActivePanel::Left => &mut self.right,
-                    ActivePanel::Right => &mut self.left,
-                };
-                if other.preview.is_some() {
-                    other.preview = None;
+            Command::TogglePreview => {
+                if self.inactive_panel().preview.is_some() {
+                    self.inactive_panel_mut().preview = None;
                 } else {
                     let preview = {
                         let panel = match self.active {
                             ActivePanel::Left => &self.left,
                             ActivePanel::Right => &self.right,
                         };
-                        panel.filtered_entries()
+                        panel
+                            .filtered_entries()
                             .get(panel.cursor.saturating_sub(1))
-                            .map(|e| Self::make_preview(e))
-                            .flatten()
+                            .and_then(|e| Self::make_preview(e))
                     };
-                    let other = match self.active {
-                        ActivePanel::Left => &mut self.right,
-                        ActivePanel::Right => &mut self.left,
-                    };
-                    other.preview = preview;
+                    self.inactive_panel_mut().preview = preview;
                 }
             }
-
-            // F5 — copy (show confirmation)
-            if i.key_pressed(egui::Key::F5) {
-                self.request_copy();
-            }
-
-            // F6 — move (show confirmation)
-            if i.key_pressed(egui::Key::F6) {
-                self.request_move();
-            }
-
-            // F7 — new dir
-            if i.key_pressed(egui::Key::F7) {
-                self.create_dir();
-            }
-
-            // F8 / Delete — delete (show confirmation)
-            if i.key_pressed(egui::Key::F8) || i.key_pressed(egui::Key::Delete) {
-                self.request_delete();
-            }
-
-            // Cmd+A — select all
-            if i.modifiers.command && i.key_pressed(egui::Key::A) {
-                match self.active {
-                    ActivePanel::Left => self.left.select_all(),
-                    ActivePanel::Right => self.right.select_all(),
-                };
-            }
-
-            // Cmd+H — toggle hidden
-            if i.modifiers.command && i.key_pressed(egui::Key::H) {
-                let panel = match self.active {
-                    ActivePanel::Left => &mut self.left,
-                    ActivePanel::Right => &mut self.right,
-                };
+            Command::RequestCopy => self.request_copy(),
+            Command::RequestMove => self.request_move(),
+            Command::CreateDir => self.create_dir(),
+            Command::RequestDelete => self.request_delete(),
+            Command::SelectAll => self.active_panel().select_all(),
+            Command::ToggleHidden => {
+                let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
                 panel.refresh();
             }
-        });
+        }
     }
 }

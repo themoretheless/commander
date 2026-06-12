@@ -122,14 +122,15 @@ fn ensure_class() {
                     .extension()
                     .map(|e| format!(".{}", e.to_string_lossy()))
                     .unwrap_or_default();
-                let mut dest = parent.join(format!("{} copy{}", stem, ext));
-                let mut i = 2;
-                while dest.exists() {
-                    dest = parent.join(format!("{} copy {}{}", stem, i, ext));
-                    i += 1;
-                }
+                let dest = crate::fs_util::first_available(|i| {
+                    if i == 0 {
+                        parent.join(format!("{} copy{}", stem, ext))
+                    } else {
+                        parent.join(format!("{} copy {}{}", stem, i + 1, ext))
+                    }
+                });
                 if p.is_dir() {
-                    let _ = copy_dir_all(p, &dest);
+                    let _ = crate::fs_util::copy_dir_all(p, &dest);
                 } else {
                     let _ = std::fs::copy(p, &dest);
                 }
@@ -280,19 +281,6 @@ fn ensure_class() {
 
         decl.register();
     });
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
-        } else {
-            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
-        }
-    }
-    Ok(())
 }
 
 /// Build "Open With" submenu by querying NSWorkspace.

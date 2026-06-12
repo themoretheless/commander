@@ -87,8 +87,8 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
-    pub fn from_path(path: &Path) -> Option<Self> {
-        let meta = fs::metadata(path).ok()?;
+    /// Build an entry from a path and its (already fetched) metadata.
+    pub fn from_meta(path: PathBuf, meta: &fs::Metadata) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().to_string();
         let is_dir = meta.is_dir();
         let size = if is_dir { 0 } else { meta.len() };
@@ -97,12 +97,11 @@ impl FileEntry {
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let modified = meta.modified().ok();
-
         let name_lower = name.to_lowercase();
         Some(FileEntry {
             name,
             name_lower,
-            path: path.to_path_buf(),
+            path,
             is_dir,
             size,
             extension,
@@ -121,18 +120,6 @@ impl FileEntry {
             | "heic" | "heif" | "tiff" | "tif"
             | "dng" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "raf" | "rw2" | "pef" | "srw"
         )
-    }
-
-    pub fn is_text(&self) -> bool {
-        matches!(
-            self.extension.as_str(),
-            "txt" | "md" | "rs" | "py" | "js" | "ts" | "jsx" | "tsx"
-            | "html" | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "xml"
-            | "sh" | "bash" | "zsh" | "fish" | "swift" | "go" | "java" | "kt"
-            | "c" | "cpp" | "h" | "hpp" | "cs" | "rb" | "php" | "sql"
-            | "log" | "csv" | "ini" | "cfg" | "conf" | "env"
-            | "lock" | "gitignore" | "dockerfile" | "makefile"
-        ) || self.name.starts_with('.')
     }
 
     pub fn is_video(&self) -> bool {
@@ -207,15 +194,6 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ContextAction {
-    Open(PathBuf),
-    RevealInFinder(PathBuf),
-    CopySelected,
-    MoveSelected,
-    DeleteSelected,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreviewContent {
     Image(PathBuf),
@@ -238,7 +216,9 @@ pub enum SortOrder {
 pub struct PanelState {
     pub current_path: PathBuf,
     pub entries: Vec<FileEntry>,
-    pub selected: std::collections::HashSet<usize>,
+    /// Selected entries, keyed by path so selection survives
+    /// filtering, sorting and directory refreshes.
+    pub selected: std::collections::HashSet<PathBuf>,
     pub cursor: usize,
     pub scroll_to_cursor: bool,
     pub preview: Option<PreviewContent>,
@@ -251,14 +231,9 @@ pub struct PanelState {
     pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
     pub ctx: Option<egui::Context>,
-    pub pending_action: Option<ContextAction>,
     pub drag_entries: Vec<PathBuf>,
     pub drop_target: Option<PathBuf>,
-    pub show_tree: bool,
-    pub tree_expanded: std::collections::HashSet<PathBuf>,
-    pub tree_width: f32,
-    pub tree_children_cache: HashMap<PathBuf, Vec<PathBuf>>,
-    pub needs_refresh: Arc<Mutex<bool>>,
+    pub needs_refresh: Arc<std::sync::atomic::AtomicBool>,
     watcher: Option<notify::RecommendedWatcher>,
     watched_path: Option<PathBuf>,
 }
@@ -281,14 +256,9 @@ impl PanelState {
             dir_sizes: Arc::new(Mutex::new(HashMap::new())),
             dir_counts: Arc::new(Mutex::new(HashMap::new())),
             ctx: None,
-            pending_action: None,
             drag_entries: Vec::new(),
             drop_target: None,
-            show_tree: false,
-            tree_expanded: std::collections::HashSet::new(),
-            tree_width: 180.0,
-            tree_children_cache: HashMap::new(),
-            needs_refresh: Arc::new(Mutex::new(false)),
+            needs_refresh: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             watcher: None,
             watched_path: None,
         };
@@ -301,36 +271,50 @@ impl PanelState {
     }
 
     pub fn refresh(&mut self) {
-        self.entries = Self::read_dir(&self.current_path, self.show_hidden);
-        self.sort_entries();
-        self.selected.clear();
-        if self.cursor >= self.entries.len() {
-            self.cursor = self.entries.len().saturating_sub(1);
-        }
-        self.invalidate_tree_cache();
+        self.reload_entries();
         self.compute_dir_sizes();
         self.start_watcher();
     }
 
-    /// Check if fs watcher flagged a change; if so, refresh.
-    pub fn poll_fs_changes(&mut self) {
-        let should = {
-            let mut flag = self.needs_refresh.lock().unwrap();
-            if *flag {
-                *flag = false;
-                true
-            } else {
-                false
-            }
+    /// Re-read the directory, preserving selection and cursor position
+    /// by path (entries may have been added, removed or re-sorted).
+    fn reload_entries(&mut self) {
+        let cursor_path = if self.cursor > 0 {
+            self.filtered_entries()
+                .get(self.cursor - 1)
+                .map(|e| e.path.clone())
+        } else {
+            None
         };
+
+        self.entries = Self::read_dir(&self.current_path, self.show_hidden);
+        self.sort_entries();
+
+        {
+            let existing: std::collections::HashSet<&PathBuf> =
+                self.entries.iter().map(|e| &e.path).collect();
+            self.selected.retain(|p| existing.contains(p));
+        }
+
+        let restored = cursor_path
+            .and_then(|path| self.filtered_entries().iter().position(|e| e.path == path));
+        match restored {
+            Some(idx) => self.cursor = idx + 1,
+            None => self.cursor = self.cursor.min(self.filtered_entries().len()),
+        }
+    }
+
+    /// Check if fs watcher flagged a change; if so, refresh.
+    /// Returns `true` when the directory was re-read.
+    pub fn poll_fs_changes(&mut self) -> bool {
+        let should = self
+            .needs_refresh
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
         if should {
-            self.entries = Self::read_dir(&self.current_path, self.show_hidden);
-            self.sort_entries();
-            if self.cursor >= self.entries.len() {
-                self.cursor = self.entries.len().saturating_sub(1);
-            }
+            self.reload_entries();
             self.compute_dir_sizes();
         }
+        should
     }
 
     fn start_watcher(&mut self) {
@@ -349,10 +333,8 @@ impl PanelState {
         let ctx = self.ctx.clone();
 
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            if let Ok(_event) = res {
-                if let Ok(mut f) = flag.lock() {
-                    *f = true;
-                }
+            if res.is_ok() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 if let Some(ctx) = &ctx {
                     ctx.request_repaint();
                 }
@@ -454,7 +436,7 @@ impl PanelState {
                 let results: Vec<_> = fs_pool().install(|| {
                     need_size
                         .par_iter()
-                        .map(|(p, mt)| (p.clone(), *mt, dir_size_recursive(p)))
+                        .map(|(p, mt)| (p.clone(), *mt, crate::fs_util::dir_size_recursive(p)))
                         .collect()
                 });
                 if let Ok(mut map) = sizes.lock() {
@@ -485,26 +467,8 @@ impl PanelState {
             .filter_map(|e| e.ok())
             .filter(|e| e.depth() == 1) // skip the root dir itself
             .filter_map(|e| {
-                let path = e.path();
                 let meta = e.metadata().ok()?;
-                let name = path.file_name()?.to_string_lossy().to_string();
-                let is_dir = meta.is_dir();
-                let size = if is_dir { 0 } else { meta.len() };
-                let extension = path
-                    .extension()
-                    .map(|ext| ext.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                let modified = meta.modified().ok();
-                let name_lower = name.to_lowercase();
-                Some(FileEntry {
-                    name,
-                    name_lower,
-                    path: path.to_path_buf(),
-                    is_dir,
-                    size,
-                    extension,
-                    modified,
-                })
+                FileEntry::from_meta(e.path(), &meta)
             })
             .collect()
     }
@@ -578,16 +542,6 @@ impl PanelState {
         }
     }
 
-    pub fn enter_selected(&mut self) {
-        if let Some(entry) = self.filtered_entries().get(self.cursor).cloned() {
-            if entry.is_dir {
-                self.navigate_to(entry.path.clone());
-            } else {
-                let _ = open::that(&entry.path);
-            }
-        }
-    }
-
     pub fn filtered_entries(&self) -> Vec<&FileEntry> {
         if self.search_query.is_empty() {
             self.entries.iter().collect()
@@ -600,28 +554,32 @@ impl PanelState {
         }
     }
 
-    pub fn toggle_select(&mut self, idx: usize) {
-        if self.selected.contains(&idx) {
-            self.selected.remove(&idx);
-        } else {
-            self.selected.insert(idx);
+    pub fn toggle_select(&mut self, path: PathBuf) {
+        if !self.selected.remove(&path) {
+            self.selected.insert(path);
         }
     }
 
     pub fn select_all(&mut self) {
-        let count = self.filtered_entries().len();
-        if self.selected.len() == count {
+        let all: Vec<PathBuf> = self
+            .filtered_entries()
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        let all_selected =
+            self.selected.len() == all.len() && all.iter().all(|p| self.selected.contains(p));
+        if all_selected {
             self.selected.clear();
         } else {
-            self.selected = (0..count).collect();
+            self.selected = all.into_iter().collect();
         }
     }
 
     pub fn selected_entries(&self) -> Vec<FileEntry> {
-        let filtered = self.filtered_entries();
-        self.selected
-            .iter()
-            .filter_map(|&i| filtered.get(i).cloned().cloned())
+        self.filtered_entries()
+            .into_iter()
+            .filter(|e| self.selected.contains(&e.path))
+            .cloned()
             .collect()
     }
 
@@ -728,33 +686,6 @@ impl PanelState {
         dirs
     }
 
-    /// Get cached subdirs for a path. Loads from disk on first access.
-    pub fn tree_subdirs_cached(&mut self, path: &Path) -> Vec<PathBuf> {
-        if let Some(cached) = self.tree_children_cache.get(path) {
-            return cached.clone();
-        }
-        let dirs = Self::subdirs(path, self.show_hidden);
-        self.tree_children_cache.insert(path.to_path_buf(), dirs.clone());
-        dirs
-    }
-
-    /// Clear tree cache (on refresh / fs change).
-    pub fn invalidate_tree_cache(&mut self) {
-        self.tree_children_cache.clear();
-    }
-
-    /// Auto-expand tree nodes along the path to current_path.
-    pub fn tree_expand_to_current(&mut self) {
-        let mut p = self.current_path.clone();
-        loop {
-            self.tree_expanded.insert(p.clone());
-            match p.parent() {
-                Some(parent) if parent != p => p = parent.to_path_buf(),
-                _ => break,
-            }
-        }
-    }
-
     pub fn sort_indicator(&self, col: SortColumn) -> &str {
         if self.sort_col == col {
             match self.sort_order {
@@ -767,13 +698,3 @@ impl PanelState {
     }
 }
 
-fn dir_size_recursive(path: &Path) -> u64 {
-    jwalk::WalkDir::new(path)
-        .skip_hidden(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.metadata().ok())
-        .filter(|m| !m.is_dir())
-        .map(|m| m.len())
-        .sum()
-}

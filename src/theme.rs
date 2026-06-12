@@ -25,6 +25,8 @@ pub struct ThemeColors {
     pub accent_orange: Color32,
     pub accent_red: Color32,
     pub accent_purple: Color32,
+    /// Conflicts, pending moves and other "attention" highlights.
+    pub accent_warning: Color32,
 
     pub border: Color32,
     pub divider: Color32,
@@ -50,6 +52,7 @@ impl ThemeColors {
             accent_orange: Color32::from_rgb(235, 145, 10),
             accent_red: Color32::from_rgb(235, 60, 50),
             accent_purple: Color32::from_rgb(160, 70, 210),
+            accent_warning: Color32::from_rgb(230, 160, 40),
 
             border: Color32::from_rgb(210, 210, 218),
             divider: Color32::from_rgb(220, 220, 228),
@@ -75,6 +78,7 @@ impl ThemeColors {
             accent_orange: Color32::from_rgb(255, 159, 10),
             accent_red: Color32::from_rgb(255, 69, 58),
             accent_purple: Color32::from_rgb(175, 82, 222),
+            accent_warning: Color32::from_rgb(230, 160, 40),
 
             border: Color32::from_rgb(50, 50, 60),
             divider: Color32::from_rgb(40, 40, 50),

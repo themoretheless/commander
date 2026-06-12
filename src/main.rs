@@ -6,6 +6,9 @@ mod app;
 mod native_menu;
 mod native_copy;
 mod image_cache;
+mod fs_util;
+mod scan;
+mod transfer;
 
 use eframe::NativeOptions;
 use egui::ViewportBuilder;

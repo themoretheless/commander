@@ -8,21 +8,24 @@ use std::os::raw::{c_char, c_int, c_uint};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crate::app::TransferProgress;
+use crate::transfer::TransferProgress;
 
 // copyfile flags
 const COPYFILE_ALL: u32 = 0x000F; // DATA + STAT + ACL + XATTR
 const COPYFILE_RECURSIVE: u32 = 0x8000;
 const COPYFILE_CLONE: u32 = 1 << 24; // try clone first
-const COPYFILE_DATA: u32 = 0x0001;
 
-// Status callback constants
-const COPYFILE_COPY: c_int = 3;
+// Status callback "what" values (copyfile.h)
+const COPYFILE_RECURSE_ERROR: c_int = 0;
 const COPYFILE_RECURSE_FILE: c_int = 1;
 const COPYFILE_RECURSE_DIR: c_int = 2;
-const COPYFILE_RECURSE_DIR_CLEANUP: c_int = 4;
-const COPYFILE_RECURSE_ERROR: c_int = 3;
-const COPYFILE_PROGRESS: c_int = 7;
+const COPYFILE_COPY_DATA: c_int = 4;
+
+// Status callback "stage" values (copyfile.h)
+const COPYFILE_START: c_int = 1;
+const COPYFILE_FINISH: c_int = 2;
+const COPYFILE_ERR: c_int = 3;
+const COPYFILE_PROGRESS: c_int = 4;
 
 const COPYFILE_CONTINUE: c_int = 0;
 const COPYFILE_QUIT: c_int = 2;
@@ -31,7 +34,6 @@ const COPYFILE_QUIT: c_int = 2;
 const COPYFILE_STATE_STATUS_CB: u32 = 6;
 const COPYFILE_STATE_STATUS_CTX: u32 = 7;
 const COPYFILE_STATE_COPIED: u32 = 8; // bytes copied so far
-const COPYFILE_STATE_SRC_FILENAME: u32 = 10;
 
 #[allow(non_camel_case_types)]
 type copyfile_state_t = *mut std::ffi::c_void;
@@ -67,59 +69,65 @@ unsafe extern "C" {
 
 struct CallbackCtx {
     state: Arc<Mutex<TransferProgress>>,
-    file_base_bytes: u64, // bytes copied before current file
+    /// Bytes copied before this copyfile() call started.
+    base_bytes: u64,
+    /// Bytes of files fully completed within this call (recursive copies).
+    done_in_call: u64,
+}
+
+fn cstr_to_string(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().to_string())
 }
 
 extern "C" fn progress_callback(
     what: c_int,
     stage: c_int,
     cstate: copyfile_state_t,
-    _src: *const c_char,
+    src: *const c_char,
     _dst: *const c_char,
     ctx: *mut std::ffi::c_void,
 ) -> c_int {
     let ctx = unsafe { &mut *(ctx as *mut CallbackCtx) };
 
-    match what {
-        COPYFILE_RECURSE_FILE => {
-            // New file started — update current filename
-            unsafe {
-                let mut name_ptr: *const c_char = std::ptr::null();
-                copyfile_state_get(
-                    cstate,
-                    COPYFILE_STATE_SRC_FILENAME,
-                    &mut name_ptr as *mut _ as *mut std::ffi::c_void,
-                );
-                if !name_ptr.is_null() {
-                    let name = std::ffi::CStr::from_ptr(name_ptr)
-                        .to_string_lossy()
-                        .to_string();
-                    let short = Path::new(&name)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or(name);
-                    let mut s = ctx.state.lock().unwrap();
-                    s.current_file = short;
-                    s.current_file_copied = 0;
-                    // Try to get file size
-                    if let Ok(meta) = std::fs::metadata(
-                        std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().as_ref(),
-                    ) {
-                        s.current_file_size = meta.len();
-                    }
-                }
+    match (what, stage) {
+        (COPYFILE_RECURSE_FILE, COPYFILE_START) => {
+            let mut s = ctx.state.lock().unwrap();
+            if s.cancelled {
+                return COPYFILE_QUIT;
+            }
+            if let Some(path) = cstr_to_string(src) {
+                s.current_file = Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.clone());
+                s.current_file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                s.current_file_copied = 0;
             }
             COPYFILE_CONTINUE
         }
-        COPYFILE_RECURSE_DIR => COPYFILE_CONTINUE,
-        COPYFILE_RECURSE_DIR_CLEANUP => {
+        (COPYFILE_RECURSE_FILE, COPYFILE_FINISH) => {
             let mut s = ctx.state.lock().unwrap();
-            s.files_done += 1;
+            // Count the whole file as done: cloned files produce no DATA callbacks.
+            ctx.done_in_call += s.current_file_size;
+            s.current_file_copied = s.current_file_size;
+            s.copied_bytes = ctx.base_bytes + ctx.done_in_call;
+            s.maybe_sample();
             COPYFILE_CONTINUE
         }
-        COPYFILE_RECURSE_ERROR => COPYFILE_CONTINUE, // skip errors
-        COPYFILE_COPY | COPYFILE_PROGRESS => {
-            // Progress update — get bytes copied
+        (COPYFILE_RECURSE_FILE, COPYFILE_ERR)
+        | (COPYFILE_RECURSE_DIR, COPYFILE_ERR)
+        | (COPYFILE_RECURSE_ERROR, _) => {
+            // Record the failure and keep copying the rest; the caller
+            // checks the error list before treating the op as successful.
+            let mut s = ctx.state.lock().unwrap();
+            let name = cstr_to_string(src).unwrap_or_else(|| s.current_file.clone());
+            s.errors.push(format!("Failed to copy: {}", name));
+            COPYFILE_CONTINUE
+        }
+        (COPYFILE_COPY_DATA, COPYFILE_PROGRESS) => {
             unsafe {
                 let mut bytes_copied: i64 = 0;
                 copyfile_state_get(
@@ -135,11 +143,8 @@ extern "C" fn progress_callback(
 
                 let current_copied = bytes_copied.max(0) as u64;
                 s.current_file_copied = current_copied;
-                s.copied_bytes = ctx.file_base_bytes + current_copied;
-
-                if s.started_at.elapsed().as_millis() % 500 < 50 {
-                    s.record_sample();
-                }
+                s.copied_bytes = ctx.base_bytes + ctx.done_in_call + current_copied;
+                s.maybe_sample();
             }
             COPYFILE_CONTINUE
         }
@@ -178,7 +183,8 @@ pub fn copy_file_native(
 
         let mut ctx = CallbackCtx {
             state: state.clone(),
-            file_base_bytes: base_bytes,
+            base_bytes,
+            done_in_call: 0,
         };
 
         let cb: copyfile_callback_t = progress_callback;
@@ -211,6 +217,13 @@ pub fn copy_file_native(
         }
     }
 
+    // Finalize progress: a cloned file emits no DATA callbacks at all.
+    {
+        let mut s = state.lock().unwrap();
+        s.current_file_copied = file_size;
+        s.copied_bytes = base_bytes + file_size;
+    }
+
     Ok(file_size)
 }
 
@@ -241,7 +254,8 @@ pub fn copy_dir_native(
 
         let mut ctx = CallbackCtx {
             state: state.clone(),
-            file_base_bytes: base_bytes,
+            base_bytes,
+            done_in_call: 0,
         };
 
         let cb: copyfile_callback_t = progress_callback;
@@ -268,9 +282,10 @@ pub fn copy_dir_native(
             }
             return Err(std::io::Error::last_os_error());
         }
-    }
 
-    // Return approximate bytes
-    let s = state.lock().unwrap();
-    Ok(s.copied_bytes - base_bytes)
+        let copied = ctx.done_in_call;
+        let mut s = state.lock().unwrap();
+        s.copied_bytes = base_bytes + copied;
+        Ok(copied)
+    }
 }

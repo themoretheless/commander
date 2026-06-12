@@ -84,7 +84,6 @@ impl App {
 
                         let row_h = 29.0; // 28 + 1 spacing
                         let total_rows = entries.len();
-                        let total_height = total_rows as f32 * row_h;
                         let viewport = ui.clip_rect();
                         let scroll_top = viewport.top() - ui.min_rect().top();
 
@@ -116,7 +115,7 @@ impl App {
                             let entry = &entries[idx];
                             let row_cursor = idx + 1;
                             let is_cursor = row_cursor == panel.cursor;
-                            let is_selected = panel.selected.contains(&idx);
+                            let is_selected = panel.selected.contains(&entry.path);
 
                             let zebra = if idx % 2 == 1 {
                                 t.bg_card.linear_multiply(0.3)
@@ -239,8 +238,9 @@ impl App {
                                 if panel.selected.is_empty() {
                                     panel.drag_entries = vec![entry.path.clone()];
                                 } else {
-                                    panel.drag_entries = panel.selected.iter()
-                                        .filter_map(|&i| entries.get(i).map(|e| e.path.clone()))
+                                    panel.drag_entries = entries.iter()
+                                        .filter(|e| panel.selected.contains(&e.path))
+                                        .map(|e| e.path.clone())
                                         .collect();
                                 }
                             }
