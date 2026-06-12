@@ -259,7 +259,7 @@ impl App {
                         ui.painter().rect_stroke(
                             full_rect,
                             CornerRadius::ZERO,
-                            Stroke::new(2.0, t.accent),
+                            Stroke::new(2.0_f32, t.accent),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -359,7 +359,7 @@ impl App {
         let h = size.y;
 
         let color = Color32::from_rgb(200, 175, 100);
-        let s = Stroke::new(1.2, color);
+        let s = Stroke::new(1.2_f32, color);
 
         let tab_w = w * 0.35;
         let tab_h = 3.5;

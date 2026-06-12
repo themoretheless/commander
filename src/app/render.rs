@@ -50,7 +50,7 @@ impl App {
                             ui.painter().rect_stroke(
                                 back_rect,
                                 CornerRadius::ZERO,
-                                Stroke::new(1.0, t.border),
+                                Stroke::new(1.0_f32, t.border),
                                 egui::StrokeKind::Outside,
                             );
                             ui.painter().text(
@@ -76,7 +76,7 @@ impl App {
                             ui.painter().rect_stroke(
                                 fwd_rect,
                                 CornerRadius::ZERO,
-                                Stroke::new(1.0, t.border),
+                                Stroke::new(1.0_f32, t.border),
                                 egui::StrokeKind::Outside,
                             );
                             ui.painter().text(
@@ -97,7 +97,7 @@ impl App {
                             ui.painter().rect_stroke(
                                 tree_rect,
                                 CornerRadius::ZERO,
-                                Stroke::new(1.0, t.border),
+                                Stroke::new(1.0_f32, t.border),
                                 egui::StrokeKind::Outside,
                             );
                             // Mini folder icon
@@ -165,7 +165,7 @@ impl App {
                                             let resp = Frame::NONE
                                                 .fill(Color32::TRANSPARENT)
                                                 .corner_radius(CornerRadius::ZERO)
-                                                .stroke(Stroke::new(1.0, t.border))
+                                                .stroke(Stroke::new(1.0_f32, t.border))
                                                 .inner_margin(Margin::symmetric(8, 3))
                                                 .show(ui, |ui| {
                                                     ui.label(
@@ -192,7 +192,7 @@ impl App {
                                                 Frame::NONE
                                                     .fill(Color32::TRANSPARENT)
                                                     .corner_radius(CornerRadius::ZERO)
-                                                    .stroke(Stroke::new(1.0, t.border))
+                                                    .stroke(Stroke::new(1.0_f32, t.border))
                                                     .inner_margin(Margin::symmetric(0, 3))
                                                     .show(ui, |ui| {
                                                         ui.label(

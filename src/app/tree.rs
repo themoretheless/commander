@@ -75,7 +75,7 @@ impl App {
         // Tree guide lines
         if depth > 0 {
             let line_color = t.text_muted.linear_multiply(0.25);
-            let line_w = 1.0;
+            let line_w = 1.0_f32;
             let p = ui.painter();
 
             for d in 1..depth {
@@ -111,7 +111,7 @@ impl App {
             } else {
                 Color32::from_rgb(170, 150, 90)
             };
-            let s = Stroke::new(1.0, color);
+            let s = Stroke::new(1.0_f32, color);
             let ix = text_left;
             let iy = row_rect.center().y - 7.0;
             let iw = 16.0;

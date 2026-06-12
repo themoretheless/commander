@@ -218,7 +218,7 @@ impl App {
                 .collect();
 
             for w in points.windows(2) {
-                p.line_segment([w[0], w[1]], Stroke::new(1.5, t.accent));
+                p.line_segment([w[0], w[1]], Stroke::new(1.5_f32, t.accent));
             }
         }
 

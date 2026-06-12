@@ -286,7 +286,7 @@ fn load_image_from_disk(path: &Path) -> Result<(ColorImage, usize), String> {
 /// Supports: DNG, CR2, NEF, ARW, ORF, RAF, RW2, HEIC, TIFF, and all standard formats.
 #[cfg(target_os = "macos")]
 fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
-    use objc::runtime::{Class, Object};
+    use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 
@@ -429,15 +429,16 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
     }
 }
 
-/// Extract first frame from video via AVFoundation's AVAssetImageGenerator.
+// Link AVFoundation/CoreMedia for video thumbnail extraction.
 #[cfg(target_os = "macos")]
 #[link(name = "AVFoundation", kind = "framework")]
 #[link(name = "CoreMedia", kind = "framework")]
 unsafe extern "C" {}
 
+/// Extract first frame from video via AVFoundation's AVAssetImageGenerator.
 #[cfg(target_os = "macos")]
 fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
-    use objc::runtime::{Class, Object};
+    use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 

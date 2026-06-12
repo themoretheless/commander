@@ -30,8 +30,8 @@ fn with_path<F: FnOnce(&Path)>(f: F) {
 
 unsafe fn add_item(menu: *mut Object, title: &str, target: *mut Object, action: Sel) {
     let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-    let title_ns = nsstring(title);
-    let key_ns = nsstring("");
+    let title_ns = unsafe { nsstring(title) };
+    let key_ns = unsafe { nsstring("") };
     let item: *mut Object =
         msg_send![item, initWithTitle: title_ns action: action keyEquivalent: key_ns];
     let _: () = msg_send![item, setTarget: target];
@@ -263,7 +263,7 @@ unsafe fn build_open_with_submenu(handler: *mut Object, path: &Path) -> *mut Obj
     }
 
     let path_str = path.display().to_string();
-    let file_str = nsstring(&path_str);
+    let file_str = unsafe { nsstring(&path_str) };
     let file_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: file_str];
     if file_url.is_null() {
         return std::ptr::null_mut();
@@ -304,7 +304,7 @@ unsafe fn build_open_with_submenu(handler: *mut Object, path: &Path) -> *mut Obj
             continue;
         }
 
-        let key_ns = nsstring("");
+        let key_ns = unsafe { nsstring("") };
         let sub_item: *mut Object = msg_send![class!(NSMenuItem), alloc];
         let sub_item: *mut Object = msg_send![sub_item,
             initWithTitle: app_name
@@ -340,15 +340,16 @@ unsafe fn build_tags_submenu(handler: *mut Object, path: &Path) -> *mut Object {
     unsafe extern "C" {
         static NSURLTagNamesKey: *mut Object;
     }
-    let path_ns = nsstring(&path.display().to_string());
+    let path_ns = unsafe { nsstring(&path.display().to_string()) };
     let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
 
     let mut current_tags: *mut Object = std::ptr::null_mut();
     let tags_ptr: *mut *mut Object = &mut current_tags;
     let nil_err: *mut Object = std::ptr::null_mut();
+    let tag_names_key: *mut Object = unsafe { NSURLTagNamesKey };
     let _: bool = msg_send![url,
         getResourceValue: tags_ptr
-        forKey: NSURLTagNamesKey
+        forKey: tag_names_key
         error: nil_err
     ];
 
@@ -364,9 +365,9 @@ unsafe fn build_tags_submenu(handler: *mut Object, path: &Path) -> *mut Object {
 
     for &(name, dot) in tags {
         let title = format!("{}  {}", dot, name);
-        let title_ns = nsstring(&title);
-        let key_ns = nsstring("");
-        let tag_ns = nsstring(name);
+        let title_ns = unsafe { nsstring(&title) };
+        let key_ns = unsafe { nsstring("") };
+        let tag_ns = unsafe { nsstring(name) };
 
         let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
         let item: *mut Object = msg_send![item,
@@ -393,7 +394,7 @@ unsafe fn build_tags_submenu(handler: *mut Object, path: &Path) -> *mut Object {
 
 /// Build a "Share" submenu via NSSharingService.
 unsafe fn build_share_submenu(handler: *mut Object, path: &Path) -> *mut Object {
-    let path_ns = nsstring(&path.display().to_string());
+    let path_ns = unsafe { nsstring(&path.display().to_string()) };
     let file_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
     if file_url.is_null() {
         return std::ptr::null_mut();
@@ -423,7 +424,7 @@ unsafe fn build_share_submenu(handler: *mut Object, path: &Path) -> *mut Object 
             continue;
         }
 
-        let key_ns = nsstring("");
+        let key_ns = unsafe { nsstring("") };
         let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
         let item: *mut Object = msg_send![item,
             initWithTitle: title

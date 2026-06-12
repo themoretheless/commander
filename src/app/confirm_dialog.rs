@@ -70,7 +70,7 @@ impl App {
                 Frame::NONE
                     .fill(t.bg_panel)
                     .inner_margin(Margin::same(6))
-                    .stroke(Stroke::new(1.0, t.border)),
+                    .stroke(Stroke::new(1.0_f32, t.border)),
             )
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
@@ -295,7 +295,7 @@ impl App {
                 egui::pos2(row_rect.left(), row_rect.bottom()),
                 egui::pos2(row_rect.right(), row_rect.bottom()),
             ],
-            Stroke::new(1.0, t.border),
+            Stroke::new(1.0_f32, t.border),
         );
 
         // Title on the left
@@ -333,7 +333,7 @@ impl App {
                         egui::pos2(tab_rect.left(), tab_rect.bottom()),
                         egui::pos2(tab_rect.left(), tab_rect.top()),
                     ],
-                    Stroke::new(1.0, t.border),
+                    Stroke::new(1.0_f32, t.border),
                 );
                 // Top border
                 p.line_segment(
@@ -341,7 +341,7 @@ impl App {
                         egui::pos2(tab_rect.left(), tab_rect.top()),
                         egui::pos2(tab_rect.right(), tab_rect.top()),
                     ],
-                    Stroke::new(1.0, t.border),
+                    Stroke::new(1.0_f32, t.border),
                 );
                 // Right border
                 p.line_segment(
@@ -349,7 +349,7 @@ impl App {
                         egui::pos2(tab_rect.right(), tab_rect.top()),
                         egui::pos2(tab_rect.right(), tab_rect.bottom()),
                     ],
-                    Stroke::new(1.0, t.border),
+                    Stroke::new(1.0_f32, t.border),
                 );
                 // Cover bottom line
                 p.line_segment(
@@ -357,7 +357,7 @@ impl App {
                         egui::pos2(tab_rect.left() + 1.0, tab_rect.bottom()),
                         egui::pos2(tab_rect.right() - 1.0, tab_rect.bottom()),
                     ],
-                    Stroke::new(2.0, t.bg_panel),
+                    Stroke::new(2.0_f32, t.bg_panel),
                 );
             }
 
@@ -633,7 +633,7 @@ impl App {
                                             rect.center().y,
                                         ),
                                     ],
-                                    Stroke::new(1.0, t.text_muted.linear_multiply(0.3)),
+                                    Stroke::new(1.0_f32, t.text_muted.linear_multiply(0.3)),
                                 );
                             }
 

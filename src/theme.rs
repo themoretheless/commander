@@ -14,22 +14,18 @@ pub struct ThemeColors {
     pub bg_hover: Color32,
     pub bg_selected: Color32,
     pub bg_toolbar: Color32,
-    pub bg_active_panel: Color32,
 
     pub text_primary: Color32,
     pub text_secondary: Color32,
     pub text_muted: Color32,
 
     pub accent: Color32,
-    pub accent_green: Color32,
-    pub accent_orange: Color32,
     pub accent_red: Color32,
     pub accent_purple: Color32,
     /// Conflicts, pending moves and other "attention" highlights.
     pub accent_warning: Color32,
 
     pub border: Color32,
-    pub divider: Color32,
 }
 
 impl ThemeColors {
@@ -41,21 +37,17 @@ impl ThemeColors {
             bg_hover: Color32::from_rgb(225, 225, 232),
             bg_selected: Color32::from_rgb(0, 100, 220),
             bg_toolbar: Color32::from_rgb(240, 240, 244),
-            bg_active_panel: Color32::from_rgb(250, 250, 253),
 
             text_primary: Color32::from_rgb(30, 30, 35),
             text_secondary: Color32::from_rgb(90, 90, 105),
             text_muted: Color32::from_rgb(150, 150, 165),
 
             accent: Color32::from_rgb(0, 122, 255),
-            accent_green: Color32::from_rgb(40, 185, 60),
-            accent_orange: Color32::from_rgb(235, 145, 10),
             accent_red: Color32::from_rgb(235, 60, 50),
             accent_purple: Color32::from_rgb(160, 70, 210),
             accent_warning: Color32::from_rgb(230, 160, 40),
 
             border: Color32::from_rgb(210, 210, 218),
-            divider: Color32::from_rgb(220, 220, 228),
         }
     }
 
@@ -67,21 +59,17 @@ impl ThemeColors {
             bg_hover: Color32::from_rgb(44, 44, 54),
             bg_selected: Color32::from_rgb(0, 100, 220),
             bg_toolbar: Color32::from_rgb(20, 20, 26),
-            bg_active_panel: Color32::from_rgb(28, 28, 36),
 
             text_primary: Color32::from_rgb(230, 230, 240),
             text_secondary: Color32::from_rgb(150, 150, 170),
             text_muted: Color32::from_rgb(85, 85, 105),
 
             accent: Color32::from_rgb(0, 122, 255),
-            accent_green: Color32::from_rgb(50, 215, 75),
-            accent_orange: Color32::from_rgb(255, 159, 10),
             accent_red: Color32::from_rgb(255, 69, 58),
             accent_purple: Color32::from_rgb(175, 82, 222),
             accent_warning: Color32::from_rgb(230, 160, 40),
 
             border: Color32::from_rgb(50, 50, 60),
-            divider: Color32::from_rgb(40, 40, 50),
         }
     }
 }

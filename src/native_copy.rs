@@ -37,6 +37,7 @@ const COPYFILE_STATE_COPIED: u32 = 8; // bytes copied so far
 
 #[allow(non_camel_case_types)]
 type copyfile_state_t = *mut std::ffi::c_void;
+#[allow(non_camel_case_types)]
 type copyfile_callback_t = extern "C" fn(
     what: c_int,
     stage: c_int,

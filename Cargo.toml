@@ -2,6 +2,16 @@
 name = "commander"
 version = "0.1.0"
 edition = "2024"
+description = "Dual-pane file manager for macOS built with egui"
+repository = "https://github.com/themoretheless/commander"
+publish = false
+
+[lints.rust]
+# The objc crate's macros probe `feature = "cargo-clippy"`; register the
+# value so the expansion doesn't trip unexpected_cfgs in our crate.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("cargo-clippy"))',
+] }
 
 [dependencies]
 eframe = "0.31"
