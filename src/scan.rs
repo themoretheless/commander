@@ -109,7 +109,15 @@ fn flatten_entry(
                 } else {
                     cp.metadata().map(|m| m.len()).unwrap_or(0)
                 };
-                flatten_entry(&cp, &cn, child_is_dir, child_size, depth + 1, result, truncated);
+                flatten_entry(
+                    &cp,
+                    &cn,
+                    child_is_dir,
+                    child_size,
+                    depth + 1,
+                    result,
+                    truncated,
+                );
             }
         }
     } else if is_dir && depth >= MAX_FLAT_DEPTH {

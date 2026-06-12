@@ -28,16 +28,31 @@ impl App {
                 // Path bar: back/forward + breadcrumb arrows
                 Frame::NONE
                     .fill(Color32::TRANSPARENT)
-                    .inner_margin(Margin { left: 6, right: 6, top: 6, bottom: 0 })
+                    .inner_margin(Margin {
+                        left: 6,
+                        right: 6,
+                        top: 6,
+                        bottom: 0,
+                    })
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
                             // Back button
                             let btn_size = Vec2::new(28.0, 28.0);
                             let can_back = panel.can_go_back();
-                            let (back_rect, back_resp) = ui.allocate_exact_size(btn_size, Sense::click());
-                            let back_color = if can_back { t.text_primary } else { t.text_muted };
-                            ui.painter().rect_stroke(back_rect, CornerRadius::ZERO, Stroke::new(1.0, t.border), egui::StrokeKind::Outside);
+                            let (back_rect, back_resp) =
+                                ui.allocate_exact_size(btn_size, Sense::click());
+                            let back_color = if can_back {
+                                t.text_primary
+                            } else {
+                                t.text_muted
+                            };
+                            ui.painter().rect_stroke(
+                                back_rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, t.border),
+                                egui::StrokeKind::Outside,
+                            );
                             ui.painter().text(
                                 back_rect.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -51,9 +66,19 @@ impl App {
 
                             // Forward button
                             let can_fwd = panel.can_go_forward();
-                            let (fwd_rect, fwd_resp) = ui.allocate_exact_size(btn_size, Sense::click());
-                            let fwd_color = if can_fwd { t.text_primary } else { t.text_muted };
-                            ui.painter().rect_stroke(fwd_rect, CornerRadius::ZERO, Stroke::new(1.0, t.border), egui::StrokeKind::Outside);
+                            let (fwd_rect, fwd_resp) =
+                                ui.allocate_exact_size(btn_size, Sense::click());
+                            let fwd_color = if can_fwd {
+                                t.text_primary
+                            } else {
+                                t.text_muted
+                            };
+                            ui.painter().rect_stroke(
+                                fwd_rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, t.border),
+                                egui::StrokeKind::Outside,
+                            );
                             ui.painter().text(
                                 fwd_rect.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -67,8 +92,14 @@ impl App {
 
                             // Tree toggle button
                             let tree_color = if tree_open { t.accent } else { t.text_muted };
-                            let (tree_rect, tree_resp) = ui.allocate_exact_size(btn_size, Sense::click());
-                            ui.painter().rect_stroke(tree_rect, CornerRadius::ZERO, Stroke::new(1.0, t.border), egui::StrokeKind::Outside);
+                            let (tree_rect, tree_resp) =
+                                ui.allocate_exact_size(btn_size, Sense::click());
+                            ui.painter().rect_stroke(
+                                tree_rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, t.border),
+                                egui::StrokeKind::Outside,
+                            );
                             // Mini folder icon
                             {
                                 let p = ui.painter();
@@ -77,19 +108,33 @@ impl App {
                                 let c = tree_color;
                                 // Back
                                 p.rect_filled(
-                                    egui::Rect::from_center_size(egui::pos2(cx, cy + 1.0), egui::vec2(14.0, 10.0)),
+                                    egui::Rect::from_center_size(
+                                        egui::pos2(cx, cy + 1.0),
+                                        egui::vec2(14.0, 10.0),
+                                    ),
                                     CornerRadius::same(2),
                                     c.linear_multiply(0.5),
                                 );
                                 // Tab
                                 p.rect_filled(
-                                    egui::Rect::from_min_size(egui::pos2(cx - 7.0, cy - 5.5), egui::vec2(6.0, 3.0)),
-                                    CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 },
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(cx - 7.0, cy - 5.5),
+                                        egui::vec2(6.0, 3.0),
+                                    ),
+                                    CornerRadius {
+                                        nw: 2,
+                                        ne: 2,
+                                        sw: 0,
+                                        se: 0,
+                                    },
                                     c.linear_multiply(0.7),
                                 );
                                 // Front
                                 p.rect_filled(
-                                    egui::Rect::from_center_size(egui::pos2(cx, cy + 2.0), egui::vec2(14.0, 8.0)),
+                                    egui::Rect::from_center_size(
+                                        egui::pos2(cx, cy + 2.0),
+                                        egui::vec2(14.0, 8.0),
+                                    ),
                                     CornerRadius::same(1),
                                     c,
                                 );
@@ -136,7 +181,9 @@ impl App {
                                                 nav_to_crumb = Some(path.clone());
                                             }
                                             if resp.hovered() && !is_last {
-                                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                                ui.ctx().set_cursor_icon(
+                                                    egui::CursorIcon::PointingHand,
+                                                );
                                             }
 
                                             // Arrow separator
@@ -197,7 +244,8 @@ impl App {
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let name_label = format!("Name{}", panel.sort_indicator(SortColumn::Name));
+                            let name_label =
+                                format!("Name{}", panel.sort_indicator(SortColumn::Name));
                             if ui
                                 .label(
                                     egui::RichText::new(name_label)
@@ -214,8 +262,10 @@ impl App {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(8.0);
 
-                                let mod_label =
-                                    format!("Modified{}", panel.sort_indicator(SortColumn::Modified));
+                                let mod_label = format!(
+                                    "Modified{}",
+                                    panel.sort_indicator(SortColumn::Modified)
+                                );
                                 if ui
                                     .label(
                                         egui::RichText::new(mod_label)
@@ -261,12 +311,16 @@ impl App {
                                 let tex_size = texture.size_vec2();
                                 ui.centered_and_justified(|ui| {
                                     let avail = ui.available_size();
-                                    let scale = (avail.x / tex_size.x).min(avail.y / tex_size.y).min(1.0);
-                                    let display_size = egui::vec2(tex_size.x * scale, tex_size.y * scale);
-                                    let resp = ui.add(
-                                        egui::Image::from_texture(egui::load::SizedTexture::new(texture.id(), display_size))
-                                    );
-                                    if resp.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    let scale =
+                                        (avail.x / tex_size.x).min(avail.y / tex_size.y).min(1.0);
+                                    let display_size =
+                                        egui::vec2(tex_size.x * scale, tex_size.y * scale);
+                                    let resp = ui.add(egui::Image::from_texture(
+                                        egui::load::SizedTexture::new(texture.id(), display_size),
+                                    ));
+                                    if resp.clicked()
+                                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                                    {
                                         panel.preview = None;
                                     }
                                 });
@@ -287,19 +341,23 @@ impl App {
                                             egui::RichText::new(
                                                 path.file_name()
                                                     .map(|n| n.to_string_lossy().to_string())
-                                                    .unwrap_or_default()
+                                                    .unwrap_or_default(),
                                             )
                                             .size(12.0)
                                             .strong()
                                             .color(t.text_primary),
                                         );
-                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            if ui.small_button("✕").clicked()
-                                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                                            {
-                                                panel.preview = None;
-                                            }
-                                        });
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                if ui.small_button("✕").clicked()
+                                                    || ui
+                                                        .input(|i| i.key_pressed(egui::Key::Escape))
+                                                {
+                                                    panel.preview = None;
+                                                }
+                                            },
+                                        );
                                     });
                                     ui.add(egui::Separator::default().spacing(4.0));
 

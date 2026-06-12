@@ -1,11 +1,11 @@
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use serde::{Serialize, Deserialize};
 
 /// On-disk entry: mtime as seconds+nanos since UNIX epoch, and size.
 #[derive(Serialize, Deserialize)]
@@ -44,8 +44,8 @@ fn load_cache_from_disk() -> HashMap<PathBuf, (SystemTime, u64)> {
     entries
         .into_iter()
         .map(|(p, e)| {
-            let mtime = std::time::UNIX_EPOCH
-                + std::time::Duration::new(e.mtime_secs, e.mtime_nanos);
+            let mtime =
+                std::time::UNIX_EPOCH + std::time::Duration::new(e.mtime_secs, e.mtime_nanos);
             (p, (mtime, e.size))
         })
         .collect()
@@ -181,9 +181,28 @@ impl FileEntry {
     pub fn is_static_image(&self) -> bool {
         matches!(
             self.extension.as_str(),
-            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico"
-            | "heic" | "heif" | "tiff" | "tif"
-            | "dng" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "raf" | "rw2" | "pef" | "srw"
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "bmp"
+                | "webp"
+                | "svg"
+                | "ico"
+                | "heic"
+                | "heif"
+                | "tiff"
+                | "tif"
+                | "dng"
+                | "cr2"
+                | "cr3"
+                | "nef"
+                | "arw"
+                | "orf"
+                | "raf"
+                | "rw2"
+                | "pef"
+                | "srw"
         )
     }
 
@@ -266,11 +285,15 @@ pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
         Some(PreviewContent::Image(entry.path.clone()))
     } else {
         // Try to read as text (limit to 1MB)
-        let Ok(meta) = fs::metadata(&entry.path) else { return None };
+        let Ok(meta) = fs::metadata(&entry.path) else {
+            return None;
+        };
         if meta.len() > 1024 * 1024 {
             return None; // Too large
         }
-        let Ok(content) = fs::read_to_string(&entry.path) else { return None };
+        let Ok(content) = fs::read_to_string(&entry.path) else {
+            return None;
+        };
         Some(PreviewContent::Text {
             path: entry.path.clone(),
             content,
@@ -467,7 +490,7 @@ impl PanelState {
     }
 
     fn start_watcher(&mut self) {
-        use notify::{Watcher, RecursiveMode, Event};
+        use notify::{Event, RecursiveMode, Watcher};
 
         // Skip if already watching this path
         if self.watched_path.as_ref() == Some(&self.current_path) {
@@ -540,9 +563,7 @@ impl PanelState {
 
             need_count.push(entry.path.clone());
 
-            let dir_mtime = fs::metadata(&entry.path)
-                .and_then(|m| m.modified())
-                .ok();
+            let dir_mtime = fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
 
             // Check global cache: if mtime matches, reuse cached size
             if let Some(mtime) = dir_mtime {
@@ -645,7 +666,10 @@ impl PanelState {
                             let started = std::time::Instant::now();
                             let size = crate::fs_util::dir_size_recursive(p);
                             if let Ok(mut log) = walk_log().lock() {
-                                log.insert(p.clone(), (std::time::Instant::now(), started.elapsed()));
+                                log.insert(
+                                    p.clone(),
+                                    (std::time::Instant::now(), started.elapsed()),
+                                );
                             }
                             (p.clone(), *mt, size)
                         })
@@ -892,12 +916,27 @@ impl PanelState {
     pub fn total_dir_size(&self) -> Option<u64> {
         let sizes = self.dir_sizes.lock().ok()?;
         let dir_count = self.entries.iter().filter(|e| e.is_dir).count();
-        let computed = self.entries.iter().filter(|e| e.is_dir).filter_map(|e| sizes.get(&e.path)).count();
+        let computed = self
+            .entries
+            .iter()
+            .filter(|e| e.is_dir)
+            .filter_map(|e| sizes.get(&e.path))
+            .count();
         if computed == 0 && dir_count > 0 {
             return None;
         }
-        let file_total: u64 = self.entries.iter().filter(|e| !e.is_dir).map(|e| e.size).sum();
-        let dir_total: u64 = self.entries.iter().filter(|e| e.is_dir).filter_map(|e| sizes.get(&e.path).copied()).sum();
+        let file_total: u64 = self
+            .entries
+            .iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| e.size)
+            .sum();
+        let dir_total: u64 = self
+            .entries
+            .iter()
+            .filter(|e| e.is_dir)
+            .filter_map(|e| sizes.get(&e.path).copied())
+            .sum();
         Some(file_total + dir_total)
     }
 
@@ -967,7 +1006,11 @@ mod tests {
             extension: String::new(),
             modified: None,
             modified_str: "–".to_string(),
-            size_str: if is_dir { "…".to_string() } else { format_size(size) },
+            size_str: if is_dir {
+                "…".to_string()
+            } else {
+                format_size(size)
+            },
         }
     }
 
@@ -1000,10 +1043,7 @@ mod tests {
 
     #[test]
     fn sort_desc_reverses_within_groups() {
-        let mut p = panel_with(vec![
-            entry("a.txt", false, 1),
-            entry("b.txt", false, 2),
-        ]);
+        let mut p = panel_with(vec![entry("a.txt", false, 1), entry("b.txt", false, 2)]);
         p.set_sort(SortColumn::Size); // asc
         p.set_sort(SortColumn::Size); // same column again -> desc
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
@@ -1017,7 +1057,11 @@ mod tests {
             entry("main.rs", false, 1),
         ]);
         p.search_query = "CARGO".to_string();
-        let names: Vec<&str> = p.filtered_entries().iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p
+            .filtered_entries()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         assert_eq!(names, vec!["Cargo.toml"]);
     }
 
@@ -1105,10 +1149,7 @@ mod tests {
 
     #[test]
     fn filter_cache_tracks_query_and_entry_changes() {
-        let mut p = panel_with(vec![
-            entry("alpha", false, 1),
-            entry("beta", false, 1),
-        ]);
+        let mut p = panel_with(vec![entry("alpha", false, 1), entry("beta", false, 1)]);
         assert_eq!(p.filtered_count(), 2);
 
         // Query change invalidates the cache.
@@ -1120,7 +1161,11 @@ mod tests {
         p.entries.push(entry("alps", false, 1));
         p.sort_entries();
         assert_eq!(p.filtered_count(), 2);
-        let names: Vec<&str> = p.filtered_entries().iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p
+            .filtered_entries()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         assert_eq!(names, vec!["alpha", "alps"]);
     }
 
@@ -1191,7 +1236,8 @@ mod tests {
 
         // What the recursive watcher does on such an event:
         invalidate_size_cache(&new_file);
-        p.sizes_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        p.sizes_dirty
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         p.last_sizes_recompute = None; // bypass the debounce in the test
         reset_walk_log(); // bypass the walk cooldown in the test
 
@@ -1208,8 +1254,7 @@ mod tests {
     #[test]
     #[ignore = "profiling harness, run manually"]
     fn watcher_profile_harness() {
-        let root = std::env::var("COMMANDER_PROFILE_ROOT")
-            .expect("set COMMANDER_PROFILE_ROOT");
+        let root = std::env::var("COMMANDER_PROFILE_ROOT").expect("set COMMANDER_PROFILE_ROOT");
         let secs: u64 = std::env::var("COMMANDER_PROFILE_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -1246,4 +1291,3 @@ mod tests {
         assert!(make_preview(&de).is_none());
     }
 }
-

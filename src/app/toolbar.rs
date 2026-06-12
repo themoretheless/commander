@@ -56,11 +56,9 @@ impl App {
                         };
                         if ui
                             .add(
-                                egui::Button::new(
-                                    egui::RichText::new(theme_icon).size(14.0),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(crate::theme::ROUNDING_SM),
+                                egui::Button::new(egui::RichText::new(theme_icon).size(14.0))
+                                    .fill(t.bg_card)
+                                    .corner_radius(crate::theme::ROUNDING_SM),
                             )
                             .on_hover_text("Switch theme")
                             .clicked()
@@ -78,15 +76,21 @@ impl App {
 
                         // Hidden files toggle
                         let active_hidden = self.ws.active_panel_ref().show_hidden;
-                        let hidden_icon = if active_hidden { "\u{1f441}" } else { "\u{1f441}\u{200d}\u{1f5e8}" };
-                        let hidden_fill = if active_hidden { t.accent.linear_multiply(0.3) } else { t.bg_card };
+                        let hidden_icon = if active_hidden {
+                            "\u{1f441}"
+                        } else {
+                            "\u{1f441}\u{200d}\u{1f5e8}"
+                        };
+                        let hidden_fill = if active_hidden {
+                            t.accent.linear_multiply(0.3)
+                        } else {
+                            t.bg_card
+                        };
                         if ui
                             .add(
-                                egui::Button::new(
-                                    egui::RichText::new(hidden_icon).size(14.0),
-                                )
-                                .fill(hidden_fill)
-                                .corner_radius(crate::theme::ROUNDING_SM),
+                                egui::Button::new(egui::RichText::new(hidden_icon).size(14.0))
+                                    .fill(hidden_fill)
+                                    .corner_radius(crate::theme::ROUNDING_SM),
                             )
                             .on_hover_text("Toggle hidden files (\u{2318}H)")
                             .clicked()
@@ -100,7 +104,9 @@ impl App {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new("\u{27f3}").size(14.0).color(t.text_primary),
+                                    egui::RichText::new("\u{27f3}")
+                                        .size(14.0)
+                                        .color(t.text_primary),
                                 )
                                 .fill(t.bg_card)
                                 .corner_radius(crate::theme::ROUNDING_SM),

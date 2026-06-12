@@ -54,8 +54,7 @@ impl App {
         let indent = depth as f32 * 16.0;
         let row_h = 22.0;
         let full_w = ui.available_width();
-        let (row_rect, row_resp) =
-            ui.allocate_exact_size(Vec2::new(full_w, row_h), Sense::click());
+        let (row_rect, row_resp) = ui.allocate_exact_size(Vec2::new(full_w, row_h), Sense::click());
 
         // Highlight current directory
         if is_current {
@@ -82,7 +81,10 @@ impl App {
             for d in 1..depth {
                 let lx = row_rect.left() + (d as f32 - 1.0) * 16.0 + 4.0 + 5.0;
                 p.line_segment(
-                    [egui::pos2(lx, row_rect.top()), egui::pos2(lx, row_rect.bottom())],
+                    [
+                        egui::pos2(lx, row_rect.top()),
+                        egui::pos2(lx, row_rect.bottom()),
+                    ],
                     Stroke::new(line_w, line_color),
                 );
             }
@@ -146,7 +148,11 @@ impl App {
         }
 
         let name_left = text_left + 19.0;
-        let name_color = if is_current { t.accent } else { t.text_secondary };
+        let name_color = if is_current {
+            t.accent
+        } else {
+            t.text_secondary
+        };
         ui.painter().text(
             egui::pos2(name_left, row_rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -171,7 +177,14 @@ impl App {
         if is_expanded {
             for child in &subdirs {
                 if let Some(child_nav) = Self::render_tree_node_recursive(
-                    ui, child, depth + 1, t, active_path, show_hidden, expanded, cache,
+                    ui,
+                    child,
+                    depth + 1,
+                    t,
+                    active_path,
+                    show_hidden,
+                    expanded,
+                    cache,
                 ) {
                     nav = Some(child_nav);
                 }

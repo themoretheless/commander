@@ -1,14 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod panel;
-mod theme;
 mod app;
 mod command;
-mod native_menu;
-mod native_copy;
-mod image_cache;
 mod fs_util;
+mod image_cache;
+mod native_copy;
+mod native_menu;
+mod panel;
 mod scan;
+mod theme;
 mod transfer;
 mod workspace;
 

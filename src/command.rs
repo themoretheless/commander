@@ -77,11 +77,17 @@ mod tests {
     use super::*;
 
     fn press(code: KeyCode) -> KeyPress {
-        KeyPress { code, command: false }
+        KeyPress {
+            code,
+            command: false,
+        }
     }
 
     fn cmd_press(code: KeyCode) -> KeyPress {
-        KeyPress { code, command: true }
+        KeyPress {
+            code,
+            command: true,
+        }
     }
 
     #[test]
@@ -90,7 +96,10 @@ mod tests {
         assert_eq!(map_key(press(KeyCode::F6)), Some(Command::RequestMove));
         assert_eq!(map_key(press(KeyCode::F7)), Some(Command::CreateDir));
         assert_eq!(map_key(press(KeyCode::F8)), Some(Command::RequestDelete));
-        assert_eq!(map_key(press(KeyCode::Delete)), Some(Command::RequestDelete));
+        assert_eq!(
+            map_key(press(KeyCode::Delete)),
+            Some(Command::RequestDelete)
+        );
     }
 
     #[test]

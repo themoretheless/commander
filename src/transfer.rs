@@ -114,7 +114,11 @@ impl TransferProgress {
     /// Record a sample if at least 500ms passed since the last one.
     pub fn maybe_sample(&mut self) {
         let now = self.started_at.elapsed().as_secs_f64();
-        if self.speed_samples.last().map_or(true, |&(t, _)| now - t >= 0.5) {
+        if self
+            .speed_samples
+            .last()
+            .map_or(true, |&(t, _)| now - t >= 0.5)
+        {
             self.record_sample();
         }
     }
@@ -267,11 +271,7 @@ pub fn spawn_transfer(
 /// Copy a single file with progress reporting (buffered strategy).
 /// Removes the partial destination file on any failure.
 /// Returns the file size on success.
-fn copy_file_buffered(
-    src: &Path,
-    dst: &Path,
-    state: &TransferState,
-) -> std::io::Result<u64> {
+fn copy_file_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
     let result = copy_file_buffered_inner(src, dst, state);
     if result.is_err() {
         let _ = std::fs::remove_file(dst);
@@ -279,11 +279,7 @@ fn copy_file_buffered(
     result
 }
 
-fn copy_file_buffered_inner(
-    src: &Path,
-    dst: &Path,
-    state: &TransferState,
-) -> std::io::Result<u64> {
+fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
 
     // Init per-file progress
@@ -336,11 +332,7 @@ fn copy_file_buffered_inner(
 
 /// Recursively copy a directory with progress (buffered strategy).
 /// Returns total bytes copied.
-fn copy_dir_buffered(
-    src: &Path,
-    dst: &Path,
-    state: &TransferState,
-) -> std::io::Result<u64> {
+fn copy_dir_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
     std::fs::create_dir_all(dst)?;
     let mut copied = 0u64;
     for entry in std::fs::read_dir(src)? {
@@ -418,7 +410,10 @@ mod tests {
             OverwritePolicy::Ask,
         ));
 
-        assert_eq!(std::fs::read_to_string(dst.path().join("a.txt")).unwrap(), "hello world");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "hello world"
+        );
         assert!(file.exists(), "copy keeps the source");
         assert!(s.errors.is_empty());
         assert_eq!(s.files_done, 1);
@@ -439,7 +434,10 @@ mod tests {
             OverwritePolicy::Ask,
         ));
 
-        assert_eq!(std::fs::read_to_string(dst.path().join("a.txt")).unwrap(), "native");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "native"
+        );
         assert!(s.errors.is_empty());
     }
 
@@ -459,7 +457,10 @@ mod tests {
             OverwritePolicy::Ask,
         ));
 
-        assert_eq!(std::fs::read_to_string(dst.path().join("folder/one.txt")).unwrap(), "1");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("folder/one.txt")).unwrap(),
+            "1"
+        );
         assert_eq!(
             std::fs::read_to_string(dst.path().join("folder/nested/two.txt")).unwrap(),
             "22"

@@ -35,7 +35,11 @@ impl App {
         drop(s);
 
         let title = if finished {
-            if errors.is_empty() { "Transfer Complete" } else { "Completed with Errors" }
+            if errors.is_empty() {
+                "Transfer Complete"
+            } else {
+                "Completed with Errors"
+            }
         } else {
             "Transferring..."
         };
@@ -48,51 +52,67 @@ impl App {
                 // Current file name
                 ui.label(
                     egui::RichText::new(format!("File: {}", current_file))
-                        .size(12.0).color(t.text_primary),
+                        .size(12.0)
+                        .color(t.text_primary),
                 );
 
                 // Current file progress bar (no rounding)
                 ui.add_space(4.0);
-                Self::draw_progress_bar(ui, file_frac, &format!(
-                    "{} / {}",
-                    format_size(current_file_copied),
-                    format_size(current_file_size),
-                ), t.accent, &t);
+                Self::draw_progress_bar(
+                    ui,
+                    file_frac,
+                    &format!(
+                        "{} / {}",
+                        format_size(current_file_copied),
+                        format_size(current_file_size),
+                    ),
+                    t.accent,
+                    &t,
+                );
 
                 // Total progress bar (no rounding)
                 ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new("Total:")
-                        .size(11.0).color(t.text_muted),
-                );
+                ui.label(egui::RichText::new("Total:").size(11.0).color(t.text_muted));
                 ui.add_space(2.0);
-                Self::draw_progress_bar(ui, progress_frac, &format!(
-                    "{} / {} ({:.0}%)",
-                    format_size(copied),
-                    format_size(total),
-                    progress_frac * 100.0,
-                ), t.accent.linear_multiply(0.7), &t);
+                Self::draw_progress_bar(
+                    ui,
+                    progress_frac,
+                    &format!(
+                        "{} / {} ({:.0}%)",
+                        format_size(copied),
+                        format_size(total),
+                        progress_frac * 100.0,
+                    ),
+                    t.accent.linear_multiply(0.7),
+                    &t,
+                );
 
                 // Speed + ETA + files
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!(
-                        "{}/s", format_size(speed as u64)
-                    )).size(11.0).color(t.text_muted));
+                    ui.label(
+                        egui::RichText::new(format!("{}/s", format_size(speed as u64)))
+                            .size(11.0)
+                            .color(t.text_muted),
+                    );
 
                     ui.add_space(16.0);
                     if eta > 0.0 && !finished {
                         let mins = (eta / 60.0) as u64;
                         let secs = (eta % 60.0) as u64;
-                        ui.label(egui::RichText::new(format!(
-                            "ETA: {}:{:02}", mins, secs
-                        )).size(11.0).color(t.text_muted));
+                        ui.label(
+                            egui::RichText::new(format!("ETA: {}:{:02}", mins, secs))
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(egui::RichText::new(format!(
-                            "{}/{} files", files_done, files_total
-                        )).size(11.0).color(t.text_muted));
+                        ui.label(
+                            egui::RichText::new(format!("{}/{} files", files_done, files_total))
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
                     });
                 });
 
@@ -103,36 +123,49 @@ impl App {
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(format!("{} error(s):", errors.len()))
-                            .size(12.0).strong().color(t.accent_red),
+                            .size(12.0)
+                            .strong()
+                            .color(t.accent_red),
                     );
                     egui::ScrollArea::vertical()
                         .id_salt("transfer_errors")
                         .max_height(120.0)
                         .show(ui, |ui| {
                             for err in &errors {
-                                ui.label(
-                                    egui::RichText::new(err)
-                                        .size(11.0).color(t.accent_red),
-                                );
+                                ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
                             }
                         });
                 }
 
                 ui.add_space(8.0);
                 if finished {
-                    if ui.add(
-                        egui::Button::new(egui::RichText::new("OK").size(13.0).color(Color32::WHITE))
-                            .fill(t.accent).corner_radius(CornerRadius::ZERO),
-                    ).clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("OK").size(13.0).color(Color32::WHITE),
+                            )
+                            .fill(t.accent)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
                         self.ws.active_transfer = None;
                         self.ws.left.refresh();
                         self.ws.right.refresh();
                     }
                 } else {
-                    if ui.add(
-                        egui::Button::new(egui::RichText::new("Cancel").size(13.0).color(Color32::WHITE))
-                            .fill(t.accent_red).corner_radius(CornerRadius::ZERO),
-                    ).clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Cancel")
+                                    .size(13.0)
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(t.accent_red)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
                         self.ws.cancel_transfer();
                     }
                 }
@@ -150,10 +183,8 @@ impl App {
         }
         ui.add_space(8.0);
         let graph_h = 60.0;
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), graph_h),
-            Sense::hover(),
-        );
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), graph_h), Sense::hover());
 
         // Compute per-sample speed
         let mut speeds: Vec<f64> = Vec::new();
@@ -176,11 +207,15 @@ impl App {
         // Draw speed line
         if speeds.len() >= 2 {
             let n = speeds.len();
-            let points: Vec<egui::Pos2> = speeds.iter().enumerate().map(|(i, &s)| {
-                let x = rect.left() + (i as f32 / (n - 1) as f32) * rect.width();
-                let y = rect.bottom() - (s as f32 / max_speed as f32) * rect.height() * 0.9;
-                egui::pos2(x, y)
-            }).collect();
+            let points: Vec<egui::Pos2> = speeds
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| {
+                    let x = rect.left() + (i as f32 / (n - 1) as f32) * rect.width();
+                    let y = rect.bottom() - (s as f32 / max_speed as f32) * rect.height() * 0.9;
+                    egui::pos2(x, y)
+                })
+                .collect();
 
             for w in points.windows(2) {
                 p.line_segment([w[0], w[1]], Stroke::new(1.5, t.accent));

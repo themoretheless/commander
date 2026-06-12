@@ -2,22 +2,20 @@
 //! All file-manager behaviour lives in `crate::workspace`; this module
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
-mod keys;
-mod toolbar;
-mod render;
-mod file_list;
-mod tree;
-mod preload;
-mod update;
 mod confirm_dialog;
+mod file_list;
+mod keys;
+mod preload;
+mod render;
+mod toolbar;
 mod transfer_dialog;
+mod tree;
+mod update;
 
-use egui::{
-    Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2,
-};
+use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
 use std::path::PathBuf;
 
-use crate::panel::{format_size, PanelState, SortColumn};
+use crate::panel::{PanelState, SortColumn, format_size};
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
 pub(crate) use crate::transfer::{CopyMethod, OverwritePolicy, TransferKind};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
@@ -47,7 +45,11 @@ impl App {
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).contains("Dark"))
                 .unwrap_or(false);
-            if is_dark { ThemeMode::Dark } else { ThemeMode::Light }
+            if is_dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            }
         };
         apply_theme(&cc.egui_ctx, mode);
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));

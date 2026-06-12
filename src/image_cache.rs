@@ -45,7 +45,11 @@ impl ImageCache {
 
     /// Get texture, loading synchronously if not cached. For the active preview image.
     pub fn get_or_load_sync(&mut self, ctx: &Context, path: &Path) -> Option<&TextureHandle> {
-        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let fname = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
         let is_new = self.last_displayed.as_ref() != Some(&path.to_path_buf());
 
@@ -74,13 +78,17 @@ impl ImageCache {
         if let Some((img, byte_size)) = loaded {
             let texture = ctx.load_texture(&fname, img, TextureOptions::LINEAR);
             self.total_bytes += byte_size;
-            self.entries.insert(path.to_path_buf(), CacheEntry {
-                texture,
-                byte_size,
-                last_used: self.frame,
-            });
+            self.entries.insert(
+                path.to_path_buf(),
+                CacheEntry {
+                    texture,
+                    byte_size,
+                    last_used: self.frame,
+                },
+            );
             let remaining_mb = (MAX_CACHE_BYTES.saturating_sub(self.total_bytes)) / 1024 / 1024;
-            eprintln!("[preview] cached: {} (used: {} MB / {} MB, remaining: {} MB, entries: {})",
+            eprintln!(
+                "[preview] cached: {} (used: {} MB / {} MB, remaining: {} MB, entries: {})",
                 fname,
                 self.total_bytes / 1024 / 1024,
                 MAX_CACHE_BYTES / 1024 / 1024,
@@ -138,7 +146,10 @@ impl ImageCache {
                         p.insert(path_clone.clone(), Some((img, byte_size)));
                     }
                     ctx_clone.request_repaint();
-                    eprintln!("[cache] loaded: {}", path_clone.file_name().unwrap_or_default().to_string_lossy());
+                    eprintln!(
+                        "[cache] loaded: {}",
+                        path_clone.file_name().unwrap_or_default().to_string_lossy()
+                    );
                 } else {
                     // Remove from pending on error
                     if let Ok(mut p) = pending_clone.lock() {
@@ -159,20 +170,25 @@ impl ImageCache {
 
             for path in completed {
                 if let Some(Some((img, byte_size))) = p.remove(&path) {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    let texture = ctx.load_texture(
-                        &name,
-                        img,
-                        TextureOptions::LINEAR,
-                    );
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let texture = ctx.load_texture(&name, img, TextureOptions::LINEAR);
                     self.total_bytes += byte_size;
-                    self.entries.insert(path, CacheEntry {
-                        texture,
-                        byte_size,
-                        last_used: self.frame,
-                    });
-                    let remaining_mb = (MAX_CACHE_BYTES.saturating_sub(self.total_bytes)) / 1024 / 1024;
-                    eprintln!("[cache] +{} (used: {} MB / {} MB, remaining: {} MB, entries: {})",
+                    self.entries.insert(
+                        path,
+                        CacheEntry {
+                            texture,
+                            byte_size,
+                            last_used: self.frame,
+                        },
+                    );
+                    let remaining_mb =
+                        (MAX_CACHE_BYTES.saturating_sub(self.total_bytes)) / 1024 / 1024;
+                    eprintln!(
+                        "[cache] +{} (used: {} MB / {} MB, remaining: {} MB, entries: {})",
                         name,
                         self.total_bytes / 1024 / 1024,
                         MAX_CACHE_BYTES / 1024 / 1024,
@@ -194,7 +210,8 @@ impl ImageCache {
         }
 
         // Over budget — first remove entries from other directories (not in keep set)
-        let to_remove: Vec<PathBuf> = self.entries
+        let to_remove: Vec<PathBuf> = self
+            .entries
             .keys()
             .filter(|k| !keep.contains(k))
             .cloned()
@@ -214,7 +231,8 @@ impl ImageCache {
 
         // Still over budget — evict oldest from current set
         while self.total_bytes > MAX_CACHE_BYTES && !self.entries.is_empty() {
-            let oldest = self.entries
+            let oldest = self
+                .entries
                 .iter()
                 .min_by_key(|(_, e)| e.last_used)
                 .map(|(k, _)| k.clone());
@@ -278,7 +296,8 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         // Create CFURL from path
         let path_str = path.to_str().ok_or("invalid path")?;
         let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
-        let cf_str: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
+        let cf_str: *mut Object =
+            msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
         if cf_str.is_null() {
             let _: () = msg_send![pool, drain];
             return Err("failed to create NSString".into());
@@ -292,15 +311,26 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         // CGImageSourceCreateWithURL
         type CGImageSourceRef = *mut Object;
         unsafe extern "C" {
-            fn CGImageSourceCreateWithURL(url: *mut Object, options: *mut Object) -> CGImageSourceRef;
-            fn CGImageSourceCreateImageAtIndex(source: CGImageSourceRef, index: usize, options: *mut Object) -> *mut Object;
+            fn CGImageSourceCreateWithURL(
+                url: *mut Object,
+                options: *mut Object,
+            ) -> CGImageSourceRef;
+            fn CGImageSourceCreateImageAtIndex(
+                source: CGImageSourceRef,
+                index: usize,
+                options: *mut Object,
+            ) -> *mut Object;
             fn CGImageGetWidth(image: *mut Object) -> usize;
             fn CGImageGetHeight(image: *mut Object) -> usize;
             fn CGColorSpaceCreateDeviceRGB() -> *mut Object;
             fn CGBitmapContextCreate(
-                data: *mut u8, width: usize, height: usize,
-                bits_per_component: usize, bytes_per_row: usize,
-                space: *mut Object, bitmap_info: u32,
+                data: *mut u8,
+                width: usize,
+                height: usize,
+                bits_per_component: usize,
+                bytes_per_row: usize,
+                space: *mut Object,
+                bitmap_info: u32,
             ) -> *mut Object;
             fn CGContextDrawImage(ctx: *mut Object, rect: CGRect, image: *mut Object);
             fn CGContextRelease(ctx: *mut Object);
@@ -310,7 +340,12 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         }
 
         #[repr(C)]
-        struct CGRect { x: f64, y: f64, w: f64, h: f64 }
+        struct CGRect {
+            x: f64,
+            y: f64,
+            w: f64,
+            h: f64,
+        }
 
         let source = CGImageSourceCreateWithURL(url, std::ptr::null_mut());
         if source.is_null() {
@@ -341,7 +376,13 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         // kCGImageAlphaPremultipliedLast = 1
         let bitmap_info: u32 = 1;
         let cg_ctx = CGBitmapContextCreate(
-            pixels.as_mut_ptr(), w, h, 8, bytes_per_row, color_space, bitmap_info,
+            pixels.as_mut_ptr(),
+            w,
+            h,
+            8,
+            bytes_per_row,
+            color_space,
+            bitmap_info,
         );
 
         if cg_ctx.is_null() {
@@ -352,7 +393,12 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
             return Err("CGBitmapContextCreate failed".into());
         }
 
-        let rect = CGRect { x: 0.0, y: 0.0, w: w as f64, h: h as f64 };
+        let rect = CGRect {
+            x: 0.0,
+            y: 0.0,
+            w: w as f64,
+            h: h as f64,
+        };
         CGContextDrawImage(cg_ctx, rect, cg_image);
 
         // Unpremultiply alpha (premultiplied → straight)
@@ -373,7 +419,12 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
 
         let gpu_size = w * h * 4;
         let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
-        eprintln!("[imageio] decoded: {}x{} {}", w, h, path.file_name().unwrap_or_default().to_string_lossy());
+        eprintln!(
+            "[imageio] decoded: {}x{} {}",
+            w,
+            h,
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
         Ok((color_image, gpu_size))
     }
 }
@@ -396,7 +447,8 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
         // NSURL
         let path_str = path.to_str().ok_or("invalid path")?;
         let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
-        let ns_str: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
+        let ns_str: *mut Object =
+            msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
         let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_str];
         if url.is_null() {
             let _: () = msg_send![pool, drain];
@@ -431,10 +483,20 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
             flags: u32,
             epoch: i64,
         }
-        let time = CMTime { value: 1, timescale: 1, flags: 1, epoch: 0 };
+        let time = CMTime {
+            value: 1,
+            timescale: 1,
+            flags: 1,
+            epoch: 0,
+        };
 
         // copyCGImageAtTime:actualTime:error:
-        let mut actual_time = CMTime { value: 0, timescale: 0, flags: 0, epoch: 0 };
+        let mut actual_time = CMTime {
+            value: 0,
+            timescale: 0,
+            flags: 0,
+            epoch: 0,
+        };
         let mut error: *mut Object = std::ptr::null_mut();
         let cg_image: *mut Object = msg_send![generator,
             copyCGImageAtTime: time
@@ -455,9 +517,13 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
             fn CGImageGetHeight(image: *mut Object) -> usize;
             fn CGColorSpaceCreateDeviceRGB() -> *mut Object;
             fn CGBitmapContextCreate(
-                data: *mut u8, width: usize, height: usize,
-                bits_per_component: usize, bytes_per_row: usize,
-                space: *mut Object, bitmap_info: u32,
+                data: *mut u8,
+                width: usize,
+                height: usize,
+                bits_per_component: usize,
+                bytes_per_row: usize,
+                space: *mut Object,
+                bitmap_info: u32,
             ) -> *mut Object;
             fn CGContextDrawImage(ctx: *mut Object, rect: CGRect, image: *mut Object);
             fn CGContextRelease(ctx: *mut Object);
@@ -466,7 +532,12 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
         }
 
         #[repr(C)]
-        struct CGRect { x: f64, y: f64, w: f64, h: f64 }
+        struct CGRect {
+            x: f64,
+            y: f64,
+            w: f64,
+            h: f64,
+        }
 
         let w = CGImageGetWidth(cg_image);
         let h = CGImageGetHeight(cg_image);
@@ -481,7 +552,13 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
         let color_space = CGColorSpaceCreateDeviceRGB();
         let bitmap_info: u32 = 1; // kCGImageAlphaPremultipliedLast
         let cg_ctx = CGBitmapContextCreate(
-            pixels.as_mut_ptr(), w, h, 8, bytes_per_row, color_space, bitmap_info,
+            pixels.as_mut_ptr(),
+            w,
+            h,
+            8,
+            bytes_per_row,
+            color_space,
+            bitmap_info,
         );
 
         if cg_ctx.is_null() {
@@ -491,7 +568,12 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
             return Err("CGBitmapContextCreate failed for video".into());
         }
 
-        let rect = CGRect { x: 0.0, y: 0.0, w: w as f64, h: h as f64 };
+        let rect = CGRect {
+            x: 0.0,
+            y: 0.0,
+            w: w as f64,
+            h: h as f64,
+        };
         CGContextDrawImage(cg_ctx, rect, cg_image);
 
         // Unpremultiply
@@ -511,7 +593,12 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
 
         let gpu_size = w * h * 4;
         let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
-        eprintln!("[video] thumbnail: {}x{} {}", w, h, path.file_name().unwrap_or_default().to_string_lossy());
+        eprintln!(
+            "[video] thumbnail: {}x{} {}",
+            w,
+            h,
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
         Ok((color_image, gpu_size))
     }
 }

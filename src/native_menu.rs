@@ -1,5 +1,5 @@
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, NO};
+use objc::runtime::{Class, NO, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 use std::cell::Cell;
 use std::ffi::CString;
@@ -353,13 +353,13 @@ unsafe fn build_tags_submenu(handler: *mut Object, path: &Path) -> *mut Object {
     ];
 
     let tags: &[(&str, &str)] = &[
-        ("Red",    "🔴"),
+        ("Red", "🔴"),
         ("Orange", "🟠"),
         ("Yellow", "🟡"),
-        ("Green",  "🟢"),
-        ("Blue",   "🔵"),
+        ("Green", "🟢"),
+        ("Blue", "🔵"),
         ("Purple", "🟣"),
-        ("Gray",   "⚪"),
+        ("Gray", "⚪"),
     ];
 
     for &(name, dot) in tags {
@@ -400,8 +400,7 @@ unsafe fn build_share_submenu(handler: *mut Object, path: &Path) -> *mut Object 
     }
 
     let items: *mut Object = msg_send![class!(NSArray), arrayWithObject: file_url];
-    let services: *mut Object =
-        msg_send![class!(NSSharingService), sharingServicesForItems: items];
+    let services: *mut Object = msg_send![class!(NSSharingService), sharingServicesForItems: items];
     if services.is_null() {
         return std::ptr::null_mut();
     }

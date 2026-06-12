@@ -10,11 +10,8 @@ impl TempDir {
     pub fn new() -> Self {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "commander-test-{}-{}",
-            std::process::id(),
-            n
-        ));
+        let path =
+            std::env::temp_dir().join(format!("commander-test-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&path).unwrap();
         TempDir(path)
     }

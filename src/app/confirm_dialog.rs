@@ -6,7 +6,9 @@ use crate::scan::FlatFileEntry;
 impl App {
     pub(crate) fn show_confirm_dialog(&mut self, ctx: &egui::Context) {
         let t = self.colors;
-        let Some(op) = &self.ws.pending_op else { return };
+        let Some(op) = &self.ws.pending_op else {
+            return;
+        };
 
         // Snapshot display data so `self` stays free for the button handlers.
         let (title, action_label, action_color, count, target, source_dir, conflicts, flat_arc) =
@@ -16,19 +18,32 @@ impl App {
                         TransferKind::Copy => ("Copy", t.accent),
                         TransferKind::Move => ("Move", t.accent_warning),
                     };
-                    let source_dir = tr.entries.first()
+                    let source_dir = tr
+                        .entries
+                        .first()
                         .and_then(|e| e.path.parent())
                         .map(|p| p.display().to_string())
                         .unwrap_or_default();
                     (
-                        title, title, color, tr.entries.len(),
-                        Some(tr.target.clone()), source_dir,
-                        tr.conflicts.clone(), tr.flat.clone(),
+                        title,
+                        title,
+                        color,
+                        tr.entries.len(),
+                        Some(tr.target.clone()),
+                        source_dir,
+                        tr.conflicts.clone(),
+                        tr.flat.clone(),
                     )
                 }
                 PendingOp::Delete { entries, flat } => (
-                    "Delete", "Move to Trash", t.accent_red, entries.len(),
-                    None, String::new(), vec![], flat.clone(),
+                    "Delete",
+                    "Move to Trash",
+                    t.accent_red,
+                    entries.len(),
+                    None,
+                    String::new(),
+                    vec![],
+                    flat.clone(),
                 ),
             };
 
@@ -51,16 +66,22 @@ impl App {
             .resizable(false)
             .fixed_size(Vec2::new(win_w, win_h))
             .title_bar(false)
-            .frame(Frame::NONE
-                .fill(t.bg_panel)
-                .inner_margin(Margin::same(6))
-                .stroke(Stroke::new(1.0, t.border))
+            .frame(
+                Frame::NONE
+                    .fill(t.bg_panel)
+                    .inner_margin(Margin::same(6))
+                    .stroke(Stroke::new(1.0, t.border)),
             )
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 // Title + tabs on one line
                 if is_delete {
-                    ui.label(egui::RichText::new(format!("Delete — {} item(s)", count)).size(14.0).strong().color(t.text_primary));
+                    ui.label(
+                        egui::RichText::new(format!("Delete — {} item(s)", count))
+                            .size(14.0)
+                            .strong()
+                            .color(t.text_primary),
+                    );
                     ui.add_space(6.0);
                 } else {
                     self.method_tabs_row(ui, &t, title, count);
@@ -70,7 +91,11 @@ impl App {
                 if !flat_ready {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(egui::RichText::new("Scanning files...").size(12.0).color(t.text_muted));
+                        ui.label(
+                            egui::RichText::new("Scanning files...")
+                                .size(12.0)
+                                .color(t.text_muted),
+                        );
                     });
                     ctx.request_repaint();
                 } else if is_delete {
@@ -83,8 +108,16 @@ impl App {
 
                     // Headers
                     ui.columns(2, |cols| {
-                        cols[0].label(egui::RichText::new(format!("Source: {}", source_dir)).size(11.0).color(t.text_muted));
-                        cols[1].label(egui::RichText::new(format!("Destination: {}", target_path.display())).size(11.0).color(t.text_muted));
+                        cols[0].label(
+                            egui::RichText::new(format!("Source: {}", source_dir))
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                        cols[1].label(
+                            egui::RichText::new(format!("Destination: {}", target_path.display()))
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
                     });
                     ui.add_space(4.0);
 
@@ -106,11 +139,29 @@ impl App {
                         let list_h = (cols[0].available_height() - 80.0).max(60.0);
 
                         // Left: source tree — transferred files dimmed+strikethrough, rest normal
-                        Self::render_flat_list_animated(&mut cols[0], &flat, &conflicts, &t, list_h, "pending_src", transferred, true);
+                        Self::render_flat_list_animated(
+                            &mut cols[0],
+                            &flat,
+                            &conflicts,
+                            &t,
+                            list_h,
+                            "pending_src",
+                            transferred,
+                            true,
+                        );
 
                         // Right: only transferred files shown, highlighted
                         let list_h = (cols[1].available_height() - 80.0).max(60.0);
-                        Self::render_flat_list_animated(&mut cols[1], &flat, &conflicts, &t, list_h, "pending_dst", transferred, false);
+                        Self::render_flat_list_animated(
+                            &mut cols[1],
+                            &flat,
+                            &conflicts,
+                            &t,
+                            list_h,
+                            "pending_dst",
+                            transferred,
+                            false,
+                        );
                     });
                 }
 
@@ -118,32 +169,54 @@ impl App {
                 let total: u64 = flat.iter().filter(|f| !f.is_dir).map(|f| f.size).sum();
                 if total > 0 {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(format!("Total: {}", format_size(total))).size(11.0).color(t.text_muted));
+                    ui.label(
+                        egui::RichText::new(format!("Total: {}", format_size(total)))
+                            .size(11.0)
+                            .color(t.text_muted),
+                    );
                 }
 
                 // Conflict warning + overwrite policy buttons
                 if has_conflicts {
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new(format!("  {} file(s) already exist at destination", conflicts.len()))
-                            .size(12.0).color(t.accent_warning),
+                        egui::RichText::new(format!(
+                            "  {} file(s) already exist at destination",
+                            conflicts.len()
+                        ))
+                        .size(12.0)
+                        .color(t.accent_warning),
                     );
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if ui.add(
-                            egui::Button::new(egui::RichText::new("Overwrite All").size(12.0).color(Color32::WHITE))
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Overwrite All")
+                                        .size(12.0)
+                                        .color(Color32::WHITE),
+                                )
                                 .fill(t.accent_warning)
                                 .corner_radius(CornerRadius::ZERO),
-                        ).clicked() {
+                            )
+                            .clicked()
+                        {
                             self.ws.set_pending_policy(OverwritePolicy::OverwriteAll);
                             self.confirm_pending_op(ctx);
                         }
                         ui.add_space(4.0);
-                        if ui.add(
-                            egui::Button::new(egui::RichText::new("Skip Existing").size(12.0).color(t.text_primary))
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Skip Existing")
+                                        .size(12.0)
+                                        .color(t.text_primary),
+                                )
                                 .fill(t.bg_card)
                                 .corner_radius(CornerRadius::ZERO),
-                        ).clicked() {
+                            )
+                            .clicked()
+                        {
                             self.ws.set_pending_policy(OverwritePolicy::SkipAll);
                             self.confirm_pending_op(ctx);
                         }
@@ -154,18 +227,34 @@ impl App {
 
                 // Action buttons
                 ui.horizontal(|ui| {
-                    if ui.add(
-                        egui::Button::new(egui::RichText::new("Cancel").size(13.0).color(t.text_primary))
-                            .fill(t.bg_card).corner_radius(CornerRadius::ZERO),
-                    ).clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Cancel")
+                                    .size(13.0)
+                                    .color(t.text_primary),
+                            )
+                            .fill(t.bg_card)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
                         self.dismiss_pending_op(ctx);
                     }
                     if !has_conflicts {
                         ui.add_space(8.0);
-                        if ui.add(
-                            egui::Button::new(egui::RichText::new(action_label).size(13.0).color(Color32::WHITE))
-                                .fill(action_color).corner_radius(CornerRadius::ZERO),
-                        ).clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(action_label)
+                                        .size(13.0)
+                                        .color(Color32::WHITE),
+                                )
+                                .fill(action_color)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
                             self.confirm_pending_op(ctx);
                         }
                     }
@@ -202,8 +291,10 @@ impl App {
 
         // Bottom line across full width
         p.line_segment(
-            [egui::pos2(row_rect.left(), row_rect.bottom()),
-             egui::pos2(row_rect.right(), row_rect.bottom())],
+            [
+                egui::pos2(row_rect.left(), row_rect.bottom()),
+                egui::pos2(row_rect.right(), row_rect.bottom()),
+            ],
             Stroke::new(1.0, t.border),
         );
 
@@ -235,33 +326,37 @@ impl App {
             );
 
             if active {
-                p.rect_filled(
-                    tab_rect,
-                    CornerRadius::ZERO,
-                    t.bg_panel,
-                );
+                p.rect_filled(tab_rect, CornerRadius::ZERO, t.bg_panel);
                 // Left border
                 p.line_segment(
-                    [egui::pos2(tab_rect.left(), tab_rect.bottom()),
-                     egui::pos2(tab_rect.left(), tab_rect.top())],
+                    [
+                        egui::pos2(tab_rect.left(), tab_rect.bottom()),
+                        egui::pos2(tab_rect.left(), tab_rect.top()),
+                    ],
                     Stroke::new(1.0, t.border),
                 );
                 // Top border
                 p.line_segment(
-                    [egui::pos2(tab_rect.left(), tab_rect.top()),
-                     egui::pos2(tab_rect.right(), tab_rect.top())],
+                    [
+                        egui::pos2(tab_rect.left(), tab_rect.top()),
+                        egui::pos2(tab_rect.right(), tab_rect.top()),
+                    ],
                     Stroke::new(1.0, t.border),
                 );
                 // Right border
                 p.line_segment(
-                    [egui::pos2(tab_rect.right(), tab_rect.top()),
-                     egui::pos2(tab_rect.right(), tab_rect.bottom())],
+                    [
+                        egui::pos2(tab_rect.right(), tab_rect.top()),
+                        egui::pos2(tab_rect.right(), tab_rect.bottom()),
+                    ],
                     Stroke::new(1.0, t.border),
                 );
                 // Cover bottom line
                 p.line_segment(
-                    [egui::pos2(tab_rect.left() + 1.0, tab_rect.bottom()),
-                     egui::pos2(tab_rect.right() - 1.0, tab_rect.bottom())],
+                    [
+                        egui::pos2(tab_rect.left() + 1.0, tab_rect.bottom()),
+                        egui::pos2(tab_rect.right() - 1.0, tab_rect.bottom()),
+                    ],
                     Stroke::new(2.0, t.bg_panel),
                 );
             }
@@ -276,7 +371,8 @@ impl App {
             );
 
             // Click detection
-            let tab_resp = ui.interact(tab_rect, ui.id().with(format!("tab_{}", i)), Sense::click());
+            let tab_resp =
+                ui.interact(tab_rect, ui.id().with(format!("tab_{}", i)), Sense::click());
             if tab_resp.clicked() {
                 clicked_method = Some(method);
             }
@@ -317,28 +413,43 @@ impl App {
                     .id_salt(id_salt)
                     .show(ui, |ui| {
                         // Total count label
-                        ui.label(egui::RichText::new(format!("{} items", flat.len())).size(10.0).color(t.text_muted));
+                        ui.label(
+                            egui::RichText::new(format!("{} items", flat.len()))
+                                .size(10.0)
+                                .color(t.text_muted),
+                        );
 
                         let scroll_offset = ui.clip_rect().top() - ui.min_rect().top();
                         let viewport_h = max_height;
                         let first = ((scroll_offset / row_h).floor() as usize).min(flat.len());
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2).min(flat.len().saturating_sub(first));
+                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2)
+                            .min(flat.len().saturating_sub(first));
 
                         // Spacer before visible rows
                         if first > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), first as f32 * row_h));
+                            ui.allocate_space(Vec2::new(
+                                ui.available_width(),
+                                first as f32 * row_h,
+                            ));
                         }
 
                         // Render only visible rows
                         for (vi, fe) in flat[first..first + visible_count].iter().enumerate() {
                             let row_idx = first + vi;
                             let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
+                            let (rect, _) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), row_h),
+                                Sense::hover(),
+                            );
                             let p = ui.painter();
 
                             // Zebra stripe
                             if row_idx % 2 == 1 {
-                                p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.15));
+                                p.rect_filled(
+                                    rect,
+                                    CornerRadius::ZERO,
+                                    t.bg_card.linear_multiply(0.15),
+                                );
                             }
 
                             let indent = fe.depth as f32 * 14.0;
@@ -382,7 +493,10 @@ impl App {
                         // Spacer after visible rows
                         let after = flat.len().saturating_sub(first + visible_count);
                         if after > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
+                            ui.allocate_space(Vec2::new(
+                                ui.available_width(),
+                                after as f32 * row_h,
+                            ));
                         }
                     });
             });
@@ -430,29 +544,51 @@ impl App {
                         let viewport_h = max_height;
                         let total = visible_flat.len();
                         let first = ((scroll_offset / row_h).floor() as usize).min(total);
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2).min(total.saturating_sub(first));
+                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2)
+                            .min(total.saturating_sub(first));
 
                         if first > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), first as f32 * row_h));
+                            ui.allocate_space(Vec2::new(
+                                ui.available_width(),
+                                first as f32 * row_h,
+                            ));
                         }
 
-                        for (vi, fe) in visible_flat[first..first + visible_count].iter().enumerate() {
+                        for (vi, fe) in visible_flat[first..first + visible_count]
+                            .iter()
+                            .enumerate()
+                        {
                             let row_idx = first + vi;
                             let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
                             let is_transferred = row_idx < transferred;
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
+                            let (rect, _) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), row_h),
+                                Sense::hover(),
+                            );
                             let p = ui.painter();
 
                             // Background
                             if is_source && is_transferred {
                                 // Transferred on source side — faded red tint
-                                p.rect_filled(rect, CornerRadius::ZERO, t.accent_red.linear_multiply(0.08));
+                                p.rect_filled(
+                                    rect,
+                                    CornerRadius::ZERO,
+                                    t.accent_red.linear_multiply(0.08),
+                                );
                             } else if !is_source {
                                 // Destination side — green/accent tint
                                 let alpha = if row_idx + 1 == transferred { 0.2 } else { 0.1 };
-                                p.rect_filled(rect, CornerRadius::ZERO, t.accent.linear_multiply(alpha));
+                                p.rect_filled(
+                                    rect,
+                                    CornerRadius::ZERO,
+                                    t.accent.linear_multiply(alpha),
+                                );
                             } else if row_idx % 2 == 1 {
-                                p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.15));
+                                p.rect_filled(
+                                    rect,
+                                    CornerRadius::ZERO,
+                                    t.bg_card.linear_multiply(0.15),
+                                );
                             }
 
                             let indent = fe.depth as f32 * 14.0;
@@ -490,7 +626,13 @@ impl App {
                                 let text_start = rect.left() + indent + 18.0;
                                 let text_end = text_start + fe.name.len() as f32 * 6.5;
                                 p.line_segment(
-                                    [egui::pos2(text_start, rect.center().y), egui::pos2(text_end.min(rect.right() - 4.0), rect.center().y)],
+                                    [
+                                        egui::pos2(text_start, rect.center().y),
+                                        egui::pos2(
+                                            text_end.min(rect.right() - 4.0),
+                                            rect.center().y,
+                                        ),
+                                    ],
                                     Stroke::new(1.0, t.text_muted.linear_multiply(0.3)),
                                 );
                             }
@@ -514,7 +656,10 @@ impl App {
 
                         let after = total.saturating_sub(first + visible_count);
                         if after > 0 {
-                            ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
+                            ui.allocate_space(Vec2::new(
+                                ui.available_width(),
+                                after as f32 * row_h,
+                            ));
                         }
                     });
             });

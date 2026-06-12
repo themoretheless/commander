@@ -33,12 +33,16 @@ impl App {
         // the initial directory read.
         if !self.ws.left.has_notify() {
             let c = ctx.clone();
-            self.ws.left.set_notify(std::sync::Arc::new(move || c.request_repaint()));
+            self.ws
+                .left
+                .set_notify(std::sync::Arc::new(move || c.request_repaint()));
             self.ws.left.refresh();
         }
         if !self.ws.right.has_notify() {
             let c = ctx.clone();
-            self.ws.right.set_notify(std::sync::Arc::new(move || c.request_repaint()));
+            self.ws
+                .right
+                .set_notify(std::sync::Arc::new(move || c.request_repaint()));
             self.ws.right.refresh();
         }
 
@@ -87,15 +91,10 @@ impl App {
                             ];
                             for (key, action) in keys {
                                 ui.label(
-                                    egui::RichText::new(key)
-                                        .size(11.0)
-                                        .strong()
-                                        .color(t.accent),
+                                    egui::RichText::new(key).size(11.0).strong().color(t.accent),
                                 );
                                 ui.label(
-                                    egui::RichText::new(action)
-                                        .size(11.0)
-                                        .color(t.text_muted),
+                                    egui::RichText::new(action).size(11.0).color(t.text_muted),
                                 );
                                 ui.add_space(8.0);
                             }
@@ -104,9 +103,12 @@ impl App {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(12.0);
                                 ui.label(
-                                    egui::RichText::new(format!("{}%", (self.ui_scale * 100.0) as u32))
-                                        .size(11.0)
-                                        .color(t.text_muted),
+                                    egui::RichText::new(format!(
+                                        "{}%",
+                                        (self.ui_scale * 100.0) as u32
+                                    ))
+                                    .size(11.0)
+                                    .color(t.text_muted),
                                 );
                                 let mut preview = self.ui_scale;
                                 let slider = egui::Slider::new(&mut preview, 0.8..=1.2)
@@ -170,8 +172,12 @@ impl App {
         let half = remaining / 2.0;
         // Reset panel width when window resizes or tree toggled
         {
-            let prev_half: f32 = ctx.data_mut(|d| d.get_temp(egui::Id::new("prev_half")).unwrap_or(0.0));
-            if self.prev_window_width > 0.0 && ((window_width - self.prev_window_width).abs() > 1.0 || (half - prev_half).abs() > 1.0) {
+            let prev_half: f32 =
+                ctx.data_mut(|d| d.get_temp(egui::Id::new("prev_half")).unwrap_or(0.0));
+            if self.prev_window_width > 0.0
+                && ((window_width - self.prev_window_width).abs() > 1.0
+                    || (half - prev_half).abs() > 1.0)
+            {
                 ctx.data_mut(|d| {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
                 });
@@ -189,12 +195,18 @@ impl App {
             .min_width(300.0)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ctx, |ui| {
-                if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed()) {
+                if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
+                {
                     self.ws.active = ActivePanel::Left;
                 }
                 tree_toggle |= Self::render_panel(
-                    &mut self.ws.left, ui, self.ws.active == ActivePanel::Left,
-                    &t, &mut self.image_cache, "left", self.show_tree,
+                    &mut self.ws.left,
+                    ui,
+                    self.ws.active == ActivePanel::Left,
+                    &t,
+                    &mut self.image_cache,
+                    "left",
+                    self.show_tree,
                     self.ws.opener.as_ref(),
                 );
             });
@@ -209,7 +221,8 @@ impl App {
             let double_clicked = ctx.input(|i| {
                 if let Some(pos) = i.pointer.latest_pos() {
                     divider_rect.contains(pos)
-                        && i.pointer.button_double_clicked(egui::PointerButton::Primary)
+                        && i.pointer
+                            .button_double_clicked(egui::PointerButton::Primary)
                 } else {
                     false
                 }
@@ -225,12 +238,18 @@ impl App {
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ctx, |ui| {
-                if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed()) {
+                if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
+                {
                     self.ws.active = ActivePanel::Right;
                 }
                 tree_toggle |= Self::render_panel(
-                    &mut self.ws.right, ui, self.ws.active == ActivePanel::Right,
-                    &t, &mut self.image_cache, "right", self.show_tree,
+                    &mut self.ws.right,
+                    ui,
+                    self.ws.active == ActivePanel::Right,
+                    &t,
+                    &mut self.image_cache,
+                    "right",
+                    self.show_tree,
                     self.ws.opener.as_ref(),
                 );
             });
@@ -257,7 +276,8 @@ impl App {
         let count = drag_entries.len();
         if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
             let label = if count == 1 {
-                drag_entries[0].file_name()
+                drag_entries[0]
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "1 item".into())
             } else {
@@ -270,11 +290,7 @@ impl App {
                     egui::Frame::popup(ui.style())
                         .inner_margin(Margin::symmetric(8, 4))
                         .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(label)
-                                    .size(12.0)
-                                    .color(t.text_primary),
-                            );
+                            ui.label(egui::RichText::new(label).size(12.0).color(t.text_primary));
                         });
                 });
         }

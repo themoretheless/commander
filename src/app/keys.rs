@@ -3,7 +3,7 @@
 //! them to the workspace. No file-manager logic lives here.
 
 use super::*;
-use crate::command::{map_keys, KeyCode, KeyPress};
+use crate::command::{KeyCode, KeyPress, map_keys};
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {

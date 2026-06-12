@@ -10,8 +10,7 @@ use crate::command::Command;
 use crate::panel::{self, FileEntry, PanelState, PreviewContent};
 use crate::scan::{self, FlatList};
 use crate::transfer::{
-    self, CopyMethod, OverwritePolicy, TransferKind, TransferProgress, TransferSpec,
-    TransferState,
+    self, CopyMethod, OverwritePolicy, TransferKind, TransferProgress, TransferSpec, TransferState,
 };
 
 #[derive(PartialEq, Clone, Copy)]
@@ -53,9 +52,13 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
-        Self::with_opener(left, right, Box::new(|p| {
-            let _ = open::that(p);
-        }))
+        Self::with_opener(
+            left,
+            right,
+            Box::new(|p| {
+                let _ = open::that(p);
+            }),
+        )
     }
 
     pub fn with_opener(left: PathBuf, right: PathBuf, opener: Box<dyn Fn(&Path)>) -> Self {
@@ -143,9 +146,7 @@ impl Workspace {
             Command::ToggleSelect => {
                 let panel = self.active_panel();
                 if panel.cursor > 0 {
-                    let path = panel
-                        .filtered_get(panel.cursor - 1)
-                        .map(|e| e.path.clone());
+                    let path = panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
                     if let Some(path) = path {
                         panel.toggle_select(path);
                     }
@@ -389,7 +390,10 @@ mod tests {
     }
 
     fn wait_transfer(ws: &mut Workspace) {
-        let state = ws.active_transfer.clone().expect("transfer should be running");
+        let state = ws
+            .active_transfer
+            .clone()
+            .expect("transfer should be running");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !state.lock().unwrap().finished {
             assert!(std::time::Instant::now() < deadline, "transfer timed out");
@@ -489,7 +493,10 @@ mod tests {
         wait_transfer(&mut ws);
 
         assert!(r.path().join("a.txt").exists());
-        assert!(!l.path().join("a.txt").exists(), "move must delete the source");
+        assert!(
+            !l.path().join("a.txt").exists(),
+            "move must delete the source"
+        );
     }
 
     #[test]
@@ -533,7 +540,10 @@ mod tests {
         ws.left.drop_target = Some(sub.clone());
         ws.drop_dragged();
 
-        assert!(sub.join("a.txt").exists(), "file lands in the hovered subdir");
+        assert!(
+            sub.join("a.txt").exists(),
+            "file lands in the hovered subdir"
+        );
         assert!(!r.path().join("a.txt").exists());
         assert!(ws.left.drag_entries.is_empty());
     }

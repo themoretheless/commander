@@ -49,16 +49,8 @@ type copyfile_callback_t = extern "C" fn(
 unsafe extern "C" {
     fn copyfile_state_alloc() -> copyfile_state_t;
     fn copyfile_state_free(s: copyfile_state_t) -> c_int;
-    fn copyfile_state_set(
-        s: copyfile_state_t,
-        flag: u32,
-        value: *const std::ffi::c_void,
-    ) -> c_int;
-    fn copyfile_state_get(
-        s: copyfile_state_t,
-        flag: u32,
-        value: *mut std::ffi::c_void,
-    ) -> c_int;
+    fn copyfile_state_set(s: copyfile_state_t, flag: u32, value: *const std::ffi::c_void) -> c_int;
+    fn copyfile_state_get(s: copyfile_state_t, flag: u32, value: *mut std::ffi::c_void) -> c_int;
     fn copyfile(
         from: *const c_char,
         to: *const c_char,
@@ -79,7 +71,11 @@ fn cstr_to_string(ptr: *const c_char) -> Option<String> {
     if ptr.is_null() {
         return None;
     }
-    Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().to_string())
+    Some(
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .to_string(),
+    )
 }
 
 extern "C" fn progress_callback(
@@ -168,7 +164,8 @@ pub fn copy_file_native(
 
     {
         let mut s = state.lock().unwrap();
-        s.current_file = src.file_name()
+        s.current_file = src
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         s.current_file_size = file_size;
@@ -211,7 +208,10 @@ pub fn copy_file_native(
             if s.cancelled {
                 // Clean up partial file
                 let _ = std::fs::remove_file(dst);
-                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "cancelled",
+                ));
             }
             return Err(err);
         }
@@ -241,7 +241,8 @@ pub fn copy_dir_native(
 
     {
         let mut s = state.lock().unwrap();
-        s.current_file = src.file_name()
+        s.current_file = src
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
     }
@@ -278,7 +279,10 @@ pub fn copy_dir_native(
         if result != 0 {
             let s = state.lock().unwrap();
             if s.cancelled {
-                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "cancelled",
+                ));
             }
             return Err(std::io::Error::last_os_error());
         }
