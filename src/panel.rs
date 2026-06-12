@@ -51,12 +51,40 @@ fn load_cache_from_disk() -> HashMap<PathBuf, (SystemTime, u64)> {
         .collect()
 }
 
-/// Drop cached sizes for every directory that contains `path`.
+/// When each directory was last size-walked and how long the walk took.
+/// Shared across panels. Guards against the watcher-noise feedback loop:
+/// system writes deep in huge dirs (e.g. ~/Library) keep invalidating
+/// their cached size, and re-walking them on every event burns CPU/disk
+/// forever. Recently-walked dirs wait out a cooldown; dirs whose walk is
+/// expensive are only re-walked on an explicit refresh.
+fn walk_log() -> &'static Mutex<HashMap<PathBuf, (std::time::Instant, std::time::Duration)>> {
+    static LOG: OnceLock<Mutex<HashMap<PathBuf, (std::time::Instant, std::time::Duration)>>> =
+        OnceLock::new();
+    LOG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const WALK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+const WALK_EXPENSIVE: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(test)]
+pub(crate) fn reset_walk_log() {
+    if let Ok(mut log) = walk_log().lock() {
+        log.clear();
+    }
+}
+
+/// Mark cached sizes stale for every directory that contains `path`.
 /// A change at `path` (watcher event) makes all its ancestors' sizes stale,
 /// even though their mtimes don't move (mtime only reflects direct children).
+/// The size value is kept (still useful for display); the stored mtime is
+/// reset to the epoch so the next mtime comparison can never match.
 pub fn invalidate_size_cache(path: &Path) {
     if let Ok(mut cache) = dir_size_cache().lock() {
-        cache.retain(|dir, _| !path.starts_with(dir));
+        for (dir, entry) in cache.iter_mut() {
+            if path.starts_with(dir) {
+                entry.0 = std::time::UNIX_EPOCH;
+            }
+        }
     }
 }
 
@@ -366,7 +394,10 @@ impl PanelState {
 
     pub fn refresh(&mut self) {
         self.reload_entries();
-        self.compute_dir_sizes();
+        if self.compute_dir_sizes(true) {
+            self.sizes_dirty
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.last_sizes_recompute = Some(std::time::Instant::now());
         self.start_watcher();
     }
@@ -409,9 +440,9 @@ impl PanelState {
             .swap(false, std::sync::atomic::Ordering::Relaxed);
         if reload {
             self.reload_entries();
-            self.compute_dir_sizes();
+            let retry = self.compute_dir_sizes(true);
             self.sizes_dirty
-                .store(false, std::sync::atomic::Ordering::Relaxed);
+                .store(retry, std::sync::atomic::Ordering::Relaxed);
             self.last_sizes_recompute = Some(std::time::Instant::now());
             return true;
         }
@@ -421,10 +452,12 @@ impl PanelState {
                 .last_sizes_recompute
                 .map_or(true, |t| t.elapsed() >= SIZES_DEBOUNCE);
             if due {
-                self.sizes_dirty
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 self.last_sizes_recompute = Some(std::time::Instant::now());
-                self.compute_dir_sizes();
+                // Keep the dirty flag when some dir is still in its walk
+                // cooldown: a later poll picks it up.
+                let retry = self.compute_dir_sizes(false);
+                self.sizes_dirty
+                    .store(retry, std::sync::atomic::Ordering::Relaxed);
             } else if let Some(wake) = &self.notify {
                 // Poll again on a later frame once the debounce expires.
                 wake();
@@ -481,7 +514,12 @@ impl PanelState {
         }
     }
 
-    fn compute_dir_sizes(&self) {
+    /// Schedule background recomputation of subdirectory sizes and counts.
+    /// `forced` marks user-driven refreshes: they may re-walk expensive
+    /// dirs, background (watcher-noise) recomputes may not.
+    /// Returns `true` when some dir was skipped because of the walk
+    /// cooldown and the caller should retry later.
+    fn compute_dir_sizes(&self, forced: bool) -> bool {
         // Clear panel-local sizes and counts for current directory listing
         if let Ok(mut sizes) = self.dir_sizes.lock() {
             sizes.clear();
@@ -493,6 +531,7 @@ impl PanelState {
         // Collect dirs that need background work
         let mut need_count: Vec<PathBuf> = Vec::new();
         let mut need_size: Vec<(PathBuf, Option<SystemTime>)> = Vec::new();
+        let mut retry = false;
 
         for entry in &self.entries {
             if !entry.is_dir {
@@ -517,6 +556,39 @@ impl PanelState {
                         }
                     }
                 }
+            }
+
+            // Walk-log guards (see walk_log docs).
+            // In test builds the guards can be switched off via env to
+            // benchmark the unguarded behaviour (profiling harness).
+            #[cfg(test)]
+            let guards_enabled = std::env::var("COMMANDER_DISABLE_WALK_GUARDS").is_err();
+            #[cfg(not(test))]
+            let guards_enabled = true;
+
+            let mut skip = false;
+            if guards_enabled {
+                if let Ok(log) = walk_log().lock() {
+                    if let Some(&(when, cost)) = log.get(&entry.path) {
+                        if when.elapsed() < WALK_COOLDOWN {
+                            skip = true;
+                            retry = true;
+                        } else if !forced && cost > WALK_EXPENSIVE {
+                            skip = true;
+                        }
+                    }
+                }
+            }
+            if skip {
+                // Keep showing the last known size instead of "…".
+                if let Ok(cache) = dir_size_cache().lock() {
+                    if let Some(&(_, cached_size)) = cache.get(&entry.path) {
+                        if let Ok(mut sizes) = self.dir_sizes.lock() {
+                            sizes.insert(entry.path.clone(), cached_size);
+                        }
+                    }
+                }
+                continue;
             }
 
             need_size.push((entry.path.clone(), dir_mtime));
@@ -569,7 +641,14 @@ impl PanelState {
                 let results: Vec<_> = fs_pool().install(|| {
                     need_size
                         .par_iter()
-                        .map(|(p, mt)| (p.clone(), *mt, crate::fs_util::dir_size_recursive(p)))
+                        .map(|(p, mt)| {
+                            let started = std::time::Instant::now();
+                            let size = crate::fs_util::dir_size_recursive(p);
+                            if let Ok(mut log) = walk_log().lock() {
+                                log.insert(p.clone(), (std::time::Instant::now(), started.elapsed()));
+                            }
+                            (p.clone(), *mt, size)
+                        })
                         .collect()
                 });
                 if let Ok(mut map) = sizes.lock() {
@@ -590,6 +669,8 @@ impl PanelState {
                 }
             });
         }
+
+        retry
     }
 
     fn read_dir(path: &Path, show_hidden: bool) -> Vec<FileEntry> {
@@ -1059,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn size_cache_invalidation_drops_ancestors_only() {
+    fn size_cache_invalidation_marks_ancestors_only() {
         let tmp = TempDir::new();
         let a = tmp.dir("a");
         let other = tmp.dir("other");
@@ -1073,8 +1154,10 @@ mod tests {
         invalidate_size_cache(&a.join("b/c/file.txt"));
 
         let cache = dir_size_cache().lock().unwrap();
-        assert!(!cache.contains_key(&a), "ancestor of the change is stale");
-        assert!(cache.contains_key(&other), "unrelated dirs keep their size");
+        let (a_mtime, a_size) = cache[&a];
+        assert_eq!(a_mtime, std::time::UNIX_EPOCH, "ancestor mtime is reset");
+        assert_eq!(a_size, 100, "stale size is kept for display");
+        assert_eq!(cache[&other].0, now, "unrelated dirs stay valid");
     }
 
     #[test]
@@ -1110,10 +1193,40 @@ mod tests {
         invalidate_size_cache(&new_file);
         p.sizes_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         p.last_sizes_recompute = None; // bypass the debounce in the test
+        reset_walk_log(); // bypass the walk cooldown in the test
 
         let reloaded = p.poll_fs_changes();
         assert!(!reloaded, "sizes-only events must not reload the listing");
         wait_for_size(&p, &sub, 12);
+    }
+
+    /// Profiling harness, not a test: drives a real watcher + poll loop
+    /// at ~60 "fps" against COMMANDER_PROFILE_ROOT for
+    /// COMMANDER_PROFILE_SECS seconds while an external driver generates
+    /// fs activity and samples this process's CPU.
+    /// Run: cargo test --release watcher_profile_harness -- --ignored --nocapture
+    #[test]
+    #[ignore = "profiling harness, run manually"]
+    fn watcher_profile_harness() {
+        let root = std::env::var("COMMANDER_PROFILE_ROOT")
+            .expect("set COMMANDER_PROFILE_ROOT");
+        let secs: u64 = std::env::var("COMMANDER_PROFILE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
+
+        let mut p = PanelState::new(PathBuf::from(root));
+        p.refresh();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        let mut reloads = 0u32;
+        while std::time::Instant::now() < deadline {
+            if p.poll_fs_changes() {
+                reloads += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        println!("harness done: {} listing reloads", reloads);
     }
 
     #[test]
