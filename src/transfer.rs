@@ -117,7 +117,7 @@ impl TransferProgress {
         if self
             .speed_samples
             .last()
-            .map_or(true, |&(t, _)| now - t >= 0.5)
+            .is_none_or(|&(t, _)| now - t >= 0.5)
         {
             self.record_sample();
         }

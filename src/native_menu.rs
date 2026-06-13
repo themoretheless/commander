@@ -15,8 +15,8 @@ struct NSPoint {
 }
 
 thread_local! {
-    static MENU_PATH: std::cell::RefCell<PathBuf> = std::cell::RefCell::new(PathBuf::new());
-    static NEEDS_REFRESH: Cell<bool> = Cell::new(false);
+    static MENU_PATH: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+    static NEEDS_REFRESH: Cell<bool> = const { Cell::new(false) };
 }
 
 unsafe fn nsstring(s: &str) -> *mut Object {

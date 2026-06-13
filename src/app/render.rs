@@ -3,6 +3,10 @@ use super::*;
 impl App {
     /// Render one file panel. Returns `true` if the tree-sidebar toggle
     /// button was clicked (the tree itself is owned by [`App`]).
+    // The arguments are mutable borrows of disjoint `self` fields (panel,
+    // image_cache) plus the shared theme/opener; a bundling struct can't
+    // hold them together without fighting the borrow checker.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_panel(
         panel: &mut PanelState,
         ui: &mut egui::Ui,

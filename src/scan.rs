@@ -96,7 +96,7 @@ fn flatten_entry(
     if is_dir && depth < MAX_FLAT_DEPTH {
         if let Ok(rd) = std::fs::read_dir(path) {
             let mut children: Vec<_> = rd.filter_map(|e| e.ok()).collect();
-            children.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+            children.sort_by_key(|a| a.file_name());
             for child in children {
                 if *truncated {
                     return;

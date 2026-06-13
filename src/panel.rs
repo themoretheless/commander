@@ -245,10 +245,10 @@ impl FileEntry {
     }
 
     pub fn size_display_with_dir_size(&self, dir_sizes: &HashMap<PathBuf, u64>) -> String {
-        if self.is_dir {
-            if let Some(&size) = dir_sizes.get(&self.path) {
-                return format_size(size);
-            }
+        if self.is_dir
+            && let Some(&size) = dir_sizes.get(&self.path)
+        {
+            return format_size(size);
         }
         self.size_str.clone()
     }
@@ -473,7 +473,7 @@ impl PanelState {
         if self.sizes_dirty.load(std::sync::atomic::Ordering::Relaxed) {
             let due = self
                 .last_sizes_recompute
-                .map_or(true, |t| t.elapsed() >= SIZES_DEBOUNCE);
+                .is_none_or(|t| t.elapsed() >= SIZES_DEBOUNCE);
             if due {
                 self.last_sizes_recompute = Some(std::time::Instant::now());
                 // Keep the dirty flag when some dir is still in its walk
@@ -566,17 +566,15 @@ impl PanelState {
             let dir_mtime = fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
 
             // Check global cache: if mtime matches, reuse cached size
-            if let Some(mtime) = dir_mtime {
-                if let Ok(cache) = dir_size_cache().lock() {
-                    if let Some(&(cached_mtime, cached_size)) = cache.get(&entry.path) {
-                        if cached_mtime == mtime {
-                            if let Ok(mut sizes) = self.dir_sizes.lock() {
-                                sizes.insert(entry.path.clone(), cached_size);
-                            }
-                            continue;
-                        }
-                    }
+            if let Some(mtime) = dir_mtime
+                && let Ok(cache) = dir_size_cache().lock()
+                && let Some(&(cached_mtime, cached_size)) = cache.get(&entry.path)
+                && cached_mtime == mtime
+            {
+                if let Ok(mut sizes) = self.dir_sizes.lock() {
+                    sizes.insert(entry.path.clone(), cached_size);
                 }
+                continue;
             }
 
             // Walk-log guards (see walk_log docs).
@@ -588,26 +586,24 @@ impl PanelState {
             let guards_enabled = true;
 
             let mut skip = false;
-            if guards_enabled {
-                if let Ok(log) = walk_log().lock() {
-                    if let Some(&(when, cost)) = log.get(&entry.path) {
-                        if when.elapsed() < WALK_COOLDOWN {
-                            skip = true;
-                            retry = true;
-                        } else if !forced && cost > WALK_EXPENSIVE {
-                            skip = true;
-                        }
-                    }
+            if guards_enabled
+                && let Ok(log) = walk_log().lock()
+                && let Some(&(when, cost)) = log.get(&entry.path)
+            {
+                if when.elapsed() < WALK_COOLDOWN {
+                    skip = true;
+                    retry = true;
+                } else if !forced && cost > WALK_EXPENSIVE {
+                    skip = true;
                 }
             }
             if skip {
                 // Keep showing the last known size instead of "…".
-                if let Ok(cache) = dir_size_cache().lock() {
-                    if let Some(&(_, cached_size)) = cache.get(&entry.path) {
-                        if let Ok(mut sizes) = self.dir_sizes.lock() {
-                            sizes.insert(entry.path.clone(), cached_size);
-                        }
-                    }
+                if let Ok(cache) = dir_size_cache().lock()
+                    && let Some(&(_, cached_size)) = cache.get(&entry.path)
+                    && let Ok(mut sizes) = self.dir_sizes.lock()
+                {
+                    sizes.insert(entry.path.clone(), cached_size);
                 }
                 continue;
             }

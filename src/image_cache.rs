@@ -11,12 +11,17 @@ struct CacheEntry {
     last_used: u64, // frame counter
 }
 
+/// A decoded image plus its GPU byte size, or `None` while still loading.
+type PendingLoad = Option<(ColorImage, usize)>;
+/// Background-load slots shared with the worker threads, keyed by path.
+type PendingMap = Arc<Mutex<HashMap<PathBuf, PendingLoad>>>;
+
 pub struct ImageCache {
     entries: HashMap<PathBuf, CacheEntry>,
     total_bytes: usize,
     frame: u64,
     /// Images currently being loaded in background
-    pending: Arc<Mutex<HashMap<PathBuf, Option<(ColorImage, usize)>>>>,
+    pending: PendingMap,
     last_displayed: Option<PathBuf>,
     current_dir: Option<PathBuf>,
 }
@@ -236,10 +241,10 @@ impl ImageCache {
                 .iter()
                 .min_by_key(|(_, e)| e.last_used)
                 .map(|(k, _)| k.clone());
-            if let Some(path) = oldest {
-                if let Some(entry) = self.entries.remove(&path) {
-                    self.total_bytes -= entry.byte_size;
-                }
+            if let Some(path) = oldest
+                && let Some(entry) = self.entries.remove(&path)
+            {
+                self.total_bytes -= entry.byte_size;
             }
         }
     }
@@ -432,6 +437,9 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
 // Link AVFoundation/CoreMedia for video thumbnail extraction.
 #[cfg(target_os = "macos")]
 #[link(name = "AVFoundation", kind = "framework")]
+unsafe extern "C" {}
+
+#[cfg(target_os = "macos")]
 #[link(name = "CoreMedia", kind = "framework")]
 unsafe extern "C" {}
 

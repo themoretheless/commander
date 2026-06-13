@@ -132,8 +132,10 @@ impl App {
                 }
 
                 // Render only visible rows
-                for idx in first_visible..last_visible {
-                    let entry = &panel.entries[filtered[idx]];
+                for (offset, &entry_idx) in filtered[first_visible..last_visible].iter().enumerate()
+                {
+                    let idx = first_visible + offset;
+                    let entry = &panel.entries[entry_idx];
                     let row_cursor = idx + 1;
                     let is_cursor = row_cursor == cursor;
                     let is_selected = panel.selected.contains(&entry.path);
@@ -230,10 +232,8 @@ impl App {
                         });
                     });
 
-                    if row_resp.secondary_clicked() {
-                        if crate::native_menu::show(&entry.path) {
-                            ctx_refresh = true;
-                        }
+                    if row_resp.secondary_clicked() && crate::native_menu::show(&entry.path) {
+                        ctx_refresh = true;
                     }
 
                     if row_resp.double_clicked() {
@@ -366,7 +366,7 @@ impl App {
         let body_top = tab_h;
 
         // Tab (outline only)
-        let tab = vec![
+        let tab = [
             egui::pos2(x + 0.5, y + body_top),
             egui::pos2(x + 0.5, y + 0.5),
             egui::pos2(x + tab_w, y + 0.5),

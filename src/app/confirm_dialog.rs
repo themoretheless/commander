@@ -385,10 +385,10 @@ impl App {
             }
         }
 
-        if let Some(method) = clicked_method {
-            if let Some(PendingOp::Transfer(tr)) = &mut self.ws.pending_op {
-                tr.method = method;
-            }
+        if let Some(method) = clicked_method
+            && let Some(PendingOp::Transfer(tr)) = &mut self.ws.pending_op
+        {
+            tr.method = method;
         }
     }
 
@@ -505,6 +505,9 @@ impl App {
     /// Animated file list for copy/move dialog.
     /// `transferred`: how many files have "moved" so far
     /// `is_source`: true = left side (files leaving), false = right side (files arriving)
+    // Pure drawing helper: every argument is an independent rendering
+    // input, so a parameter struct would only add a layer of indirection.
+    #[allow(clippy::too_many_arguments)]
     fn render_flat_list_animated(
         ui: &mut egui::Ui,
         flat: &[FlatFileEntry],

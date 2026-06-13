@@ -22,6 +22,9 @@ impl App {
         )
     }
 
+    // Recursive walk threading mutable `expanded`/`cache` borrows through
+    // each level; bundling the args would force those out of `App`.
+    #[allow(clippy::too_many_arguments)]
     fn render_tree_node_recursive(
         ui: &mut egui::Ui,
         path: &std::path::Path,
@@ -119,7 +122,7 @@ impl App {
             let tw = iw * 0.35;
             let th = 3.0;
 
-            let tab = vec![
+            let tab = [
                 egui::pos2(ix + 0.5, iy + th),
                 egui::pos2(ix + 0.5, iy + 0.5),
                 egui::pos2(ix + tw, iy + 0.5),
