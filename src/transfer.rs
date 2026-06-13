@@ -165,27 +165,30 @@ impl CopyMethod {
 }
 
 /// A copy/move request, fully described and detached from any UI state.
+///
+/// Note there is no conflict list here: the engine checks the destination
+/// live at copy time (the confirmation dialog may sit open while the
+/// filesystem changes), driven only by [`OverwritePolicy`].
 pub struct TransferSpec {
     pub kind: TransferKind,
     pub entries: Vec<FileEntry>,
     pub target: PathBuf,
-    pub conflicts: Vec<String>,
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
 }
 
+/// Size of one entry: its byte length, or the recursive size of a directory.
+fn entry_size(entry: &FileEntry) -> u64 {
+    if entry.is_dir {
+        fs_util::dir_size_recursive(&entry.path)
+    } else {
+        entry.size
+    }
+}
+
 /// Total bytes for all entries (recursively for dirs).
 pub fn total_bytes(entries: &[FileEntry]) -> u64 {
-    entries
-        .iter()
-        .map(|e| {
-            if e.is_dir {
-                fs_util::dir_size_recursive(&e.path)
-            } else {
-                e.size
-            }
-        })
-        .sum()
+    entries.iter().map(entry_size).sum()
 }
 
 /// Run the transfer on a background thread.
@@ -203,13 +206,6 @@ pub fn spawn_transfer(
 
         for (i, entry) in spec.entries.iter().enumerate() {
             let dest = spec.target.join(&entry.name);
-            let exists = spec.conflicts.contains(&entry.name);
-
-            if exists && spec.policy == OverwritePolicy::SkipAll {
-                let mut s = progress.lock().unwrap();
-                s.files_done = i + 1;
-                continue;
-            }
 
             {
                 let mut s = progress.lock().unwrap();
@@ -219,36 +215,118 @@ pub fn spawn_transfer(
                 }
             }
 
-            if exists && dest.is_dir() {
-                let _ = std::fs::remove_dir_all(&dest);
+            // Advance the progress bar past an entry we are about to skip
+            // (self-reference, skip-on-conflict, refused overwrite) and record
+            // it as processed. `err` is an optional message to surface.
+            let skip_entry = |progress: &TransferState, base: &mut u64, err: Option<String>| {
+                *base += entry_size(entry);
+                let mut s = progress.lock().unwrap();
+                s.copied_bytes = *base;
+                if let Some(msg) = err {
+                    s.errors.push(format!("{}: {}", entry.name, msg));
+                }
+                s.files_done = i + 1;
+                drop(s);
+                notify();
+            };
+
+            // Reject destructive self-referential transfers (a directory into
+            // itself or its own subtree, a file onto itself) before touching
+            // anything, so neither source nor destination is harmed.
+            if fs_util::is_within_or_equal(&dest, &entry.path) {
+                skip_entry(
+                    &progress,
+                    &mut base_bytes,
+                    Some("cannot copy a path into itself".to_string()),
+                );
+                continue;
+            }
+
+            // Check the destination LIVE, not the scan-time conflict list: the
+            // confirmation dialog can sit open while the filesystem changes.
+            let dest_present = dest.exists();
+            if dest_present {
+                match spec.policy {
+                    OverwritePolicy::SkipAll => {
+                        skip_entry(&progress, &mut base_bytes, None);
+                        continue;
+                    }
+                    OverwritePolicy::Ask => {
+                        // No overwrite was confirmed (no conflict was shown, or
+                        // the destination appeared after the scan): refuse
+                        // rather than silently clobber it.
+                        skip_entry(
+                            &progress,
+                            &mut base_bytes,
+                            Some("destination already exists".to_string()),
+                        );
+                        continue;
+                    }
+                    OverwritePolicy::OverwriteAll => {} // fall through to stage + swap
+                }
             }
 
             let errors_before = progress.lock().unwrap().errors.len();
 
-            let result = spec
-                .method
-                .copy_entry(&entry.path, entry.is_dir, &dest, &progress, base_bytes)
-                .map(|b| base_bytes += b);
+            // When overwriting, copy into a fresh staging path and swap it
+            // into place only after a clean copy, so the existing destination
+            // is never destroyed before the copy is known good (and native
+            // copyfile's CLONE|EXCL never collides with it).
+            let copy_target = if dest_present {
+                staging_path(&dest)
+            } else {
+                dest.clone()
+            };
 
-            if let Err(ref e) = result {
-                let mut s = progress.lock().unwrap();
-                if s.cancelled {
-                    return;
+            let result = spec.method.copy_entry(
+                &entry.path,
+                entry.is_dir,
+                &copy_target,
+                &progress,
+                base_bytes,
+            );
+
+            match &result {
+                Ok(b) => base_bytes += b,
+                Err(e) => {
+                    let mut s = progress.lock().unwrap();
+                    if s.cancelled {
+                        drop(s);
+                        let _ = cleanup_path(&copy_target);
+                        return;
+                    }
+                    s.errors.push(format!("{}: {}", entry.name, e));
                 }
-                s.errors.push(format!("{}: {}", entry.name, e));
             }
 
-            // Delete source only when the copy fully succeeded:
-            // the native callback skips per-file errors and reports
-            // them via the error list instead of the result.
-            let copy_clean =
-                result.is_ok() && progress.lock().unwrap().errors.len() == errors_before;
-            if is_move && copy_clean {
-                if entry.is_dir {
-                    let _ = std::fs::remove_dir_all(&entry.path);
-                } else {
-                    let _ = std::fs::remove_file(&entry.path);
+            // "Clean" = Ok return AND no per-file errors recorded by the
+            // native callback during this entry.
+            let clean = result.is_ok() && progress.lock().unwrap().errors.len() == errors_before;
+
+            let placed = if !clean {
+                // Remove only what we produced; a pre-existing dest is untouched.
+                let _ = cleanup_path(&copy_target);
+                false
+            } else if dest_present {
+                match swap_into_place(&copy_target, &dest) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        let _ = cleanup_path(&copy_target);
+                        progress
+                            .lock()
+                            .unwrap()
+                            .errors
+                            .push(format!("{}: {}", entry.name, e));
+                        false
+                    }
                 }
+            } else {
+                true
+            };
+
+            // Delete the source only once the destination is fully in place.
+            if is_move && placed {
+                let _ = cleanup_path(&entry.path);
             }
 
             {
@@ -268,13 +346,71 @@ pub fn spawn_transfer(
     });
 }
 
+/// A hidden sibling of `dest` that does not exist yet, used to stage an
+/// overwrite copy before swapping it into place (same directory = same
+/// volume, so the final rename is atomic and clone-friendly).
+fn staging_path(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "item".to_string());
+    let parent = dest.parent().unwrap_or(Path::new("."));
+    fs_util::first_available(|i| parent.join(format!(".{}.cmdr-tmp.{}", name, i)))
+}
+
+/// Remove a file or directory tree, treating "not found" as success.
+fn cleanup_path(path: &Path) -> std::io::Result<()> {
+    let result = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// Replace `dest` with the freshly-staged `staged`: move the existing `dest`
+/// to a backup, rename `staged` into place, then drop the backup. Restores
+/// the original on failure, so an interrupted overwrite never loses data.
+fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<()> {
+    if !dest.exists() {
+        return std::fs::rename(staged, dest);
+    }
+    let backup = staging_path(dest);
+    std::fs::rename(dest, &backup)?;
+    match std::fs::rename(staged, dest) {
+        Ok(()) => {
+            let _ = cleanup_path(&backup);
+            Ok(())
+        }
+        Err(e) => {
+            // Put the original back. If even that fails, the original now
+            // lives only at the hidden backup path; name it in the error so
+            // it can be recovered rather than vanishing silently.
+            if std::fs::rename(&backup, dest).is_err() {
+                return Err(std::io::Error::other(format!(
+                    "{e}; original preserved at {}",
+                    backup.display()
+                )));
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Copy a single file with progress reporting (buffered strategy).
 /// Removes the partial destination file on any failure.
 /// Returns the file size on success.
 fn copy_file_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
     let result = copy_file_buffered_inner(src, dst, state);
-    if result.is_err() {
-        let _ = std::fs::remove_file(dst);
+    if let Err(ref e) = result {
+        // Clean up our own partial write, but never delete a destination that
+        // was already there (AlreadyExists means create_new refused to clobber).
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(dst);
+        }
     }
     result
 }
@@ -294,7 +430,13 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
     }
 
     let mut reader = std::io::BufReader::with_capacity(COPY_BUF_SIZE, std::fs::File::open(src)?);
-    let mut writer = std::io::BufWriter::with_capacity(COPY_BUF_SIZE, std::fs::File::create(dst)?);
+    // create_new (O_EXCL): the caller always targets a path that should not
+    // exist yet, so refuse to truncate a file that races into being.
+    let dst_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
+    let mut writer = std::io::BufWriter::with_capacity(COPY_BUF_SIZE, dst_file);
 
     if let Ok(meta) = src.metadata() {
         let _ = std::fs::set_permissions(dst, meta.permissions());
@@ -331,7 +473,9 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
 }
 
 /// Recursively copy a directory with progress (buffered strategy).
-/// Returns total bytes copied.
+/// Returns total bytes copied. Symlinks are recreated as links rather than
+/// followed, so a link pointing back into the tree cannot cause infinite
+/// recursion.
 fn copy_dir_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
     std::fs::create_dir_all(dst)?;
     let mut copied = 0u64;
@@ -339,13 +483,30 @@ fn copy_dir_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
+        // file_type() does NOT follow symlinks (unlike Path::is_dir).
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            copy_symlink(&src_path, &dst_path)?;
+        } else if ft.is_dir() {
             copied += copy_dir_buffered(&src_path, &dst_path, state)?;
         } else {
             copied += copy_file_buffered(&src_path, &dst_path, state)?;
         }
     }
     Ok(copied)
+}
+
+/// Recreate a symlink at `dst` pointing at the same target as `src`.
+#[cfg(unix)]
+fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    let _ = std::fs::remove_file(dst);
+    std::os::unix::fs::symlink(target, dst)
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -378,19 +539,21 @@ mod tests {
         }
     }
 
+    // The engine no longer consults a conflict list (it checks the
+    // destination live), but the tests keep passing one to document intent;
+    // it is ignored here.
     fn spec(
         kind: TransferKind,
         method: CopyMethod,
         entries: Vec<FileEntry>,
         target: &Path,
-        conflicts: Vec<String>,
+        _conflicts: Vec<String>,
         policy: OverwritePolicy,
     ) -> TransferSpec {
         TransferSpec {
             kind,
             entries,
             target: target.to_path_buf(),
-            conflicts,
             policy,
             method,
         }
@@ -608,5 +771,286 @@ mod tests {
     fn speed_needs_at_least_two_samples() {
         let p = TransferProgress::new(1000, 1);
         assert_eq!(p.speed_bps_at(5.0), 0.0);
+    }
+
+    // ── Data-loss regressions (from the safety audit) ──────────────────
+
+    #[test]
+    fn moving_dir_into_its_own_parent_is_rejected() {
+        // Both panels on the same dir: target == source's parent, so
+        // dest == source. The source must survive untouched.
+        let work = TempDir::new();
+        let data = work.dir("data");
+        work.file("data/important.txt", "keep me");
+
+        let s = run(spec(
+            TransferKind::Move,
+            CopyMethod::Native,
+            vec![entry_for(&data)],
+            work.path(),
+            vec!["data".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert!(!s.errors.is_empty(), "self-referential move must error");
+        assert!(data.exists(), "source directory must survive");
+        assert_eq!(
+            std::fs::read_to_string(data.join("important.txt")).unwrap(),
+            "keep me"
+        );
+    }
+
+    #[test]
+    fn moving_file_onto_itself_keeps_it_buffered() {
+        // The buffered path used to truncate-on-create then delete the source.
+        let work = TempDir::new();
+        let f = work.file("a.txt", "content");
+
+        let s = run(spec(
+            TransferKind::Move,
+            CopyMethod::Buffered,
+            vec![entry_for(&f)],
+            work.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert!(f.exists(), "file must not be deleted");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "content");
+        assert!(!s.errors.is_empty());
+    }
+
+    #[test]
+    fn failed_overwrite_preserves_existing_destination() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("box");
+        src.file("box/ok.txt", "new");
+        let secret = src.file("box/secret.txt", "x");
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        dst.dir("box");
+        dst.file("box/existing.txt", "OLD");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&dir)],
+            dst.path(),
+            vec!["box".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        let _ = std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644));
+
+        assert!(!s.errors.is_empty());
+        // The pre-existing destination must NOT have been destroyed before
+        // the (failing) copy.
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("box/existing.txt")).unwrap(),
+            "OLD"
+        );
+    }
+
+    #[test]
+    fn successful_overwrite_replaces_directory() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("box");
+        src.file("box/new.txt", "NEW");
+        dst.dir("box");
+        dst.file("box/old.txt", "OLD");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&dir)],
+            dst.path(),
+            vec!["box".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert!(s.errors.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("box/new.txt")).unwrap(),
+            "NEW"
+        );
+        assert!(
+            !dst.path().join("box/old.txt").exists(),
+            "overwrite replaces the directory"
+        );
+    }
+
+    #[test]
+    fn native_overwrite_replaces_existing_file() {
+        // Native copyfile uses CLONE|EXCL and used to silently fail on an
+        // existing destination; staging + swap fixes that.
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "NEW");
+        dst.file("a.txt", "OLD");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Native,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert!(s.errors.is_empty(), "native overwrite must not error");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "NEW"
+        );
+    }
+
+    #[test]
+    fn copying_dir_into_its_own_subdir_is_rejected() {
+        // dest = a/sub/a lives inside the source a: must be rejected and
+        // must not recurse forever.
+        let work = TempDir::new();
+        let a = work.dir("a");
+        let sub = work.dir("a/sub");
+        work.file("a/f.txt", "x");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&a)],
+            &sub,
+            vec![],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert!(!s.errors.is_empty(), "copy into own subtree must error");
+    }
+
+    #[test]
+    fn buffered_copy_recreates_symlink_without_following() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let tree = src.dir("tree");
+        src.file("tree/real.txt", "hi");
+        // A link pointing back to its own ancestor: following it would loop.
+        std::os::unix::fs::symlink(&tree, tree.join("loop")).unwrap();
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&tree)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        assert!(s.errors.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("tree/real.txt")).unwrap(),
+            "hi"
+        );
+        let link_meta = std::fs::symlink_metadata(dst.path().join("tree/loop")).unwrap();
+        assert!(
+            link_meta.file_type().is_symlink(),
+            "the link must be recreated, not followed"
+        );
+    }
+
+    #[test]
+    fn skip_all_progress_reaches_total() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let a = src.file("a.txt", "12345"); // 5 bytes, will be skipped
+        let b = src.file("b.txt", "123"); // 3 bytes, will be copied
+        dst.file("a.txt", "old");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&a), entry_for(&b)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::SkipAll,
+        ));
+
+        assert_eq!(s.total_bytes, 8);
+        assert_eq!(
+            s.copied_bytes, s.total_bytes,
+            "skipped bytes must still advance the bar to 100%"
+        );
+    }
+
+    #[test]
+    fn ask_policy_refuses_surprise_existing_destination() {
+        // A destination that appeared after the scan (so it is NOT in the
+        // conflict list and the user never confirmed an overwrite) must not be
+        // clobbered, and a Move must keep its source.
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "NEW");
+        dst.file("a.txt", "OLD-IMPORTANT");
+
+        let s = run(spec(
+            TransferKind::Move,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec![], // empty: the engine must rely on a live check, not this
+            OverwritePolicy::Ask,
+        ));
+
+        assert!(!s.errors.is_empty(), "a surprise existing dest must error");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "OLD-IMPORTANT",
+            "destination must not be clobbered"
+        );
+        assert!(file.exists(), "move must keep the source when refused");
+    }
+
+    #[test]
+    fn self_referential_entry_still_advances_progress() {
+        let work = TempDir::new();
+        let data = work.dir("data");
+        work.file("data/x.txt", "12345"); // 5 bytes
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&data)],
+            work.path(),
+            vec!["data".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert!(!s.errors.is_empty());
+        assert_eq!(
+            s.copied_bytes, s.total_bytes,
+            "a rejected entry must still advance the bar to 100%"
+        );
+    }
+
+    #[test]
+    fn failed_new_dir_copy_cleans_partial_destination() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("box");
+        let secret = src.file("box/secret.txt", "x");
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&dir)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        let _ = std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644));
+
+        assert!(!s.errors.is_empty());
+        assert!(
+            !dst.path().join("box").exists(),
+            "partial directory must be cleaned up"
+        );
     }
 }

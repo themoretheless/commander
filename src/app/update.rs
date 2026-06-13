@@ -302,6 +302,7 @@ impl App {
         if !ctx.input(|i| i.pointer.any_released()) {
             return;
         }
-        self.ws.drop_dragged();
+        let ctx2 = ctx.clone();
+        self.ws.drop_dragged(move || ctx2.request_repaint());
     }
 }

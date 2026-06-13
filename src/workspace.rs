@@ -223,6 +223,11 @@ impl Workspace {
     /// `notify` is invoked when visible progress changes (UI passes a
     /// repaint request).
     pub fn start_transfer(&mut self, notify: impl Fn() + Send + 'static) {
+        // Only one transfer at a time: never replace a live transfer's handle
+        // (that would orphan the running thread and its progress window).
+        if self.active_transfer.is_some() {
+            return;
+        }
         let Some(PendingOp::Transfer(t)) = self.pending_op.take() else {
             return;
         };
@@ -235,7 +240,6 @@ impl Workspace {
             kind: t.kind,
             entries: t.entries,
             target: t.target,
-            conflicts: t.conflicts,
             policy: t.policy,
             method: t.method,
         };
@@ -342,33 +346,73 @@ impl Workspace {
 
     // ── Drag and drop ───────────────────────────────────────────────────
 
-    /// Move dragged entries into the hovered directory (mouse released).
-    pub fn drop_dragged(&mut self) {
-        Self::drop_into(&mut self.left, &mut self.right);
-        Self::drop_into(&mut self.right, &mut self.left);
-        self.left.drop_target = None;
-        self.right.drop_target = None;
-    }
-
-    /// Drop `source`'s dragged entries. A target hovered in the source panel
-    /// itself (drag onto own subdirectory) takes priority over the other panel.
-    fn drop_into(source: &mut PanelState, other: &mut PanelState) {
-        if source.drag_entries.is_empty() {
+    /// Handle a completed drag (mouse released). The dragged entries are
+    /// routed through the same Move engine as F6 instead of a raw rename, so
+    /// conflicts are confirmed, cross-volume moves work, self/descendant drops
+    /// are rejected and errors surface. A clean, conflict-free drop runs
+    /// immediately; a conflicting one opens the confirmation dialog.
+    pub fn drop_dragged(&mut self, notify: impl Fn() + Send + 'static) {
+        // Ignore drops while a transfer or another dialog is in flight, so we
+        // never stack a second operation over the first.
+        if self.active_transfer.is_some() || self.pending_op.is_some() {
             return;
         }
+        let Some((paths, target)) = self.take_drop_plan() else {
+            return;
+        };
+        let entries: Vec<FileEntry> = paths
+            .iter()
+            .filter_map(|p| {
+                let meta = std::fs::metadata(p).ok()?;
+                FileEntry::from_meta(p.clone(), &meta)
+            })
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        let conflicts = scan::find_conflicts(&entries, &target);
+        let flat = scan::spawn_scan(entries.clone());
+        let has_conflicts = !conflicts.is_empty();
+        self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
+            kind: TransferKind::Move,
+            entries,
+            target,
+            conflicts,
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            flat,
+        }));
+        // No conflicts: run the move straight away. Conflicts: leave the
+        // pending op for the confirmation dialog to resolve.
+        if !has_conflicts {
+            self.start_transfer(notify);
+        }
+    }
+
+    /// Resolve which panel is the drag source and where the drop lands,
+    /// consuming the drag/drop state. A target hovered in the source panel
+    /// itself (drag onto its own subdirectory) takes priority over the other
+    /// panel; otherwise the other panel's current directory is the target.
+    fn take_drop_plan(&mut self) -> Option<(Vec<PathBuf>, PathBuf)> {
+        let (source, other) = if !self.left.drag_entries.is_empty() {
+            (&mut self.left, &mut self.right)
+        } else if !self.right.drag_entries.is_empty() {
+            (&mut self.right, &mut self.left)
+        } else {
+            return None;
+        };
         let target = source
             .drop_target
             .take()
             .or_else(|| other.drop_target.take())
             .unwrap_or_else(|| other.current_path.clone());
-        for src in &source.drag_entries {
-            if let Some(name) = src.file_name() {
-                let _ = std::fs::rename(src, target.join(name));
-            }
+        let paths = std::mem::take(&mut source.drag_entries);
+        source.drop_target = None;
+        other.drop_target = None;
+        if paths.is_empty() {
+            return None;
         }
-        source.drag_entries.clear();
-        source.refresh();
-        other.refresh();
+        Some((paths, target))
     }
 }
 
@@ -538,7 +582,8 @@ mod tests {
         // the right panel must not steal the drop.
         ws.left.drag_entries = vec![file.clone()];
         ws.left.drop_target = Some(sub.clone());
-        ws.drop_dragged();
+        ws.drop_dragged(|| {});
+        wait_transfer(&mut ws);
 
         assert!(
             sub.join("a.txt").exists(),
@@ -588,8 +633,31 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         ws.left.drag_entries = vec![file];
-        ws.drop_dragged();
+        ws.drop_dragged(|| {});
+        wait_transfer(&mut ws);
 
         assert!(r.path().join("a.txt").exists());
+        assert!(!l.path().join("a.txt").exists(), "drop is a move");
+    }
+
+    #[test]
+    fn drop_with_conflict_opens_dialog_instead_of_moving() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let file = l.file("a.txt", "new");
+        r.file("a.txt", "old");
+        let mut ws = workspace(&l, &r);
+
+        ws.left.drag_entries = vec![file];
+        ws.drop_dragged(|| {});
+
+        // A conflicting drop must NOT move immediately; it stages a
+        // confirmation instead, leaving both sides intact.
+        assert!(ws.active_transfer.is_none());
+        assert!(matches!(ws.pending_op, Some(PendingOp::Transfer(_))));
+        assert!(l.path().join("a.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(r.path().join("a.txt")).unwrap(),
+            "old"
+        );
     }
 }

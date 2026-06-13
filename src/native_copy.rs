@@ -12,6 +12,7 @@ use crate::transfer::TransferProgress;
 
 // copyfile flags
 const COPYFILE_ALL: u32 = 0x000F; // DATA + STAT + ACL + XATTR
+const COPYFILE_EXCL: u32 = 1 << 17; // fail if the destination already exists
 const COPYFILE_RECURSIVE: u32 = 0x8000;
 const COPYFILE_CLONE: u32 = 1 << 24; // try clone first
 
@@ -197,7 +198,10 @@ pub fn copy_file_native(
             &mut ctx as *mut CallbackCtx as *const std::ffi::c_void,
         );
 
-        let flags = COPYFILE_ALL | COPYFILE_CLONE;
+        // EXCL: the caller always hands us a destination that should not yet
+        // exist (a fresh staging path, or a dest believed absent), so refuse
+        // to clobber rather than overwrite if one races into being.
+        let flags = COPYFILE_ALL | COPYFILE_CLONE | COPYFILE_EXCL;
         let result = copyfile(src_c.as_ptr(), dst_c.as_ptr(), cstate, flags);
 
         copyfile_state_free(cstate);
@@ -272,7 +276,7 @@ pub fn copy_dir_native(
             &mut ctx as *mut CallbackCtx as *const std::ffi::c_void,
         );
 
-        let flags = COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE;
+        let flags = COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE | COPYFILE_EXCL;
         let result = copyfile(src_c.as_ptr(), dst_c.as_ptr(), cstate, flags);
 
         copyfile_state_free(cstate);

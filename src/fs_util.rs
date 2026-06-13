@@ -28,6 +28,32 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// True when `dest` is the same path as `src` or lives inside `src`'s subtree.
+///
+/// Used to reject destructive transfers: copying or moving a directory into
+/// itself or its own subtree, or a file onto itself. Resolves symlinks and
+/// `.`/`..` via `canonicalize` where possible (canonicalizing `dest`'s
+/// existing parent, since `dest` itself may not exist yet), and falls back to
+/// a lexical, component-wise prefix check when canonicalization fails.
+pub fn is_within_or_equal(dest: &Path, src: &Path) -> bool {
+    let src_c = src.canonicalize();
+    // Prefer canonicalizing the full destination (resolves a symlink in its
+    // final component and any `.`/`..`); if it doesn't exist yet, canonicalize
+    // its parent and re-attach the file name.
+    let dest_c = dest.canonicalize().or_else(|_| match dest.parent() {
+        Some(parent) => parent.canonicalize().map(|p| match dest.file_name() {
+            Some(name) => p.join(name),
+            None => p,
+        }),
+        None => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+    });
+    match (src_c, dest_c) {
+        (Ok(s), Ok(d)) => d.starts_with(&s),
+        // Canonicalization failed; fall back to a lexical check.
+        _ => dest.starts_with(src),
+    }
+}
+
 /// First path produced by `candidate` that doesn't exist yet.
 /// `candidate(0)` is the preferred name, `candidate(n)` the n-th fallback.
 pub fn first_available(mut candidate: impl FnMut(usize) -> PathBuf) -> PathBuf {
@@ -161,5 +187,30 @@ mod tests {
             std::fs::read_to_string(copy.join("inner.txt")).unwrap(),
             "x"
         );
+    }
+
+    #[test]
+    fn is_within_or_equal_detects_self_and_subtree() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        tmp.dir("a/sub");
+        let b = tmp.dir("b");
+
+        // Same path, and a path inside the subtree.
+        assert!(is_within_or_equal(&a, &a));
+        assert!(is_within_or_equal(&a.join("sub").join("a"), &a));
+        // A sibling is not inside.
+        assert!(!is_within_or_equal(&b, &a));
+        // A name that is a string prefix but not a path prefix.
+        assert!(!is_within_or_equal(&tmp.path().join("ab"), &a));
+    }
+
+    #[test]
+    fn is_within_or_equal_handles_nonexistent_dest() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        // dest does not exist yet but its parent (a/sub) does.
+        tmp.dir("a/sub");
+        assert!(is_within_or_equal(&a.join("sub").join("new"), &a));
     }
 }
