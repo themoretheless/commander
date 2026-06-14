@@ -10,6 +10,7 @@ mod panel;
 mod rename;
 mod scan;
 mod session;
+mod sync;
 mod theme;
 mod transfer;
 mod workspace;

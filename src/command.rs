@@ -33,6 +33,8 @@ pub enum Command {
     BeginRename,
     /// Cmd+Shift+R: open the batch-rename studio for the selection.
     BeginBatchRename,
+    /// Cmd+Shift+S: open the directory-synchronisation sheet.
+    BeginSync,
     /// Cmd+E: point the inactive panel at the active panel's directory.
     EqualizePanels,
     /// Cmd+U: swap the left and right panels.
@@ -66,6 +68,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Delete (to Trash)", "F8", Command::RequestDelete),
         ("Rename", "F2", Command::BeginRename),
         ("Batch rename", "Cmd+Shift+R", Command::BeginBatchRename),
+        ("Synchronize panels", "Cmd+Shift+S", Command::BeginSync),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
         ("Go to path", "Cmd+L", Command::BeginGoToPath),
         ("Recent folders", "Cmd+P", Command::BeginRecent),
@@ -123,6 +126,7 @@ pub enum KeyCode {
     L,
     P,
     R,
+    S,
     U,
     Z,
 }
@@ -155,6 +159,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         F2 => Some(Command::BeginRename),
         R if press.command && press.shift => Some(Command::BeginBatchRename),
         R if press.command => Some(Command::BeginRename),
+        S if press.command && press.shift => Some(Command::BeginSync),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
@@ -305,6 +310,19 @@ mod tests {
         assert_eq!(map_key(cmd_shift_r), Some(Command::BeginBatchRename));
         // Cmd+R without shift stays single rename.
         assert_eq!(map_key(cmd_press(KeyCode::R)), Some(Command::BeginRename));
+    }
+
+    #[test]
+    fn cmd_shift_s_is_synchronize() {
+        let cmd_shift_s = KeyPress {
+            code: KeyCode::S,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_s), Some(Command::BeginSync));
+        // Plain S and Cmd+S type / are free; they must not sync.
+        assert_eq!(map_key(press(KeyCode::S)), None);
+        assert_eq!(map_key(cmd_press(KeyCode::S)), None);
     }
 
     #[test]

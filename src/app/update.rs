@@ -9,6 +9,7 @@ impl eframe::App for App {
         self.show_confirm_dialog(ctx);
         self.show_rename_dialog(ctx);
         self.show_batch_rename_dialog(ctx);
+        self.show_sync_dialog(ctx);
         self.show_mask_dialog(ctx);
         self.show_path_dialog(ctx);
         self.show_recent_dialog(ctx);
@@ -75,6 +76,12 @@ impl App {
         if self.ws.poll_transfer() {
             // A clean move just finished: raise the undo toast for ~6s.
             self.undo_toast_until = Some(ctx.input(|i| i.time) + 6.0);
+        }
+        // A two-way sync runs in two passes; start the queued second one once
+        // the first finishes.
+        if self.ws.has_sync_followup() {
+            let c = ctx.clone();
+            self.ws.start_sync_followup(move || c.request_repaint());
         }
         // Run a requested undo with a repaint callback.
         if std::mem::take(&mut self.ws.undo_request) {

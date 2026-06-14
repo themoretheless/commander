@@ -78,6 +78,11 @@ pub struct Workspace {
     /// Set by [`Command::BeginBatchRename`]; the UI opens the batch-rename
     /// studio for the active panel's selection.
     pub batch_rename_request: bool,
+    /// Set by [`Command::BeginSync`]; the UI opens the synchronise sheet.
+    pub sync_request: bool,
+    /// Queued second copy pass (entries, target) for a two-way sync, started
+    /// once the first pass finishes. Keeps the engine single-transfer.
+    sync_followup: Option<(Vec<FileEntry>, PathBuf)>,
     /// (dest, source) pairs of the in-flight Move, promoted to `last_undo`
     /// when it finishes cleanly.
     pending_move_undo: Option<Vec<(PathBuf, PathBuf)>>,
@@ -266,6 +271,8 @@ impl Workspace {
             undo_request: false,
             palette_request: false,
             batch_rename_request: false,
+            sync_request: false,
+            sync_followup: None,
             pending_move_undo: None,
             last_undo: None,
             opener,
@@ -451,6 +458,7 @@ impl Workspace {
                 };
             }
             Command::BeginBatchRename => self.batch_rename_request = true,
+            Command::BeginSync => self.sync_request = true,
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
@@ -771,6 +779,103 @@ impl Workspace {
         self.active_panel().selected.clear();
         self.active_panel().refresh();
         Ok(done)
+    }
+
+    // ── Directory sync ──────────────────────────────────────────────────
+
+    /// Compute the synchronisation plan between the two panels for `policy`.
+    pub fn build_sync_actions(
+        &self,
+        policy: crate::sync::SyncPolicy,
+    ) -> Vec<crate::sync::SyncAction> {
+        crate::sync::sync_diff(&self.left.entries, &self.right.entries, policy)
+    }
+
+    /// Resolve and start a synchronisation plan: copy each `ToRight` row's left
+    /// file into the right directory and each `ToLeft` row's right file into the
+    /// left directory. The right-bound pass runs first; a left-bound pass is
+    /// queued and started when it finishes (see [`Self::start_sync_followup`]),
+    /// keeping the engine single-transfer.
+    pub fn apply_sync(
+        &mut self,
+        actions: &[crate::sync::SyncAction],
+        notify: impl Fn() + Send + 'static,
+    ) {
+        use crate::sync::SyncDirection;
+        let lookup = |entries: &[FileEntry], name_lower: &str| {
+            entries.iter().find(|e| e.name_lower == name_lower).cloned()
+        };
+        let mut to_right = Vec::new();
+        let mut to_left = Vec::new();
+        for a in actions {
+            let nl = a.name.to_lowercase();
+            match a.direction {
+                SyncDirection::ToRight => {
+                    if let Some(e) = lookup(&self.left.entries, &nl) {
+                        to_right.push(e);
+                    }
+                }
+                SyncDirection::ToLeft => {
+                    if let Some(e) = lookup(&self.right.entries, &nl) {
+                        to_left.push(e);
+                    }
+                }
+                SyncDirection::Skip => {}
+            }
+        }
+        let right_dir = self.right.current_path.clone();
+        let left_dir = self.left.current_path.clone();
+
+        if !to_right.is_empty() {
+            if !to_left.is_empty() {
+                self.sync_followup = Some((to_left, left_dir));
+            }
+            self.start_copy(to_right, right_dir, notify);
+        } else if !to_left.is_empty() {
+            self.start_copy(to_left, left_dir, notify);
+        }
+    }
+
+    /// Whether a queued second sync pass is ready to run (no transfer active).
+    pub fn has_sync_followup(&self) -> bool {
+        self.sync_followup.is_some() && self.active_transfer.is_none()
+    }
+
+    /// Start the queued second sync pass, if any and nothing is running.
+    pub fn start_sync_followup(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.active_transfer.is_some() {
+            return;
+        }
+        if let Some((entries, target)) = self.sync_followup.take() {
+            self.start_copy(entries, target, notify);
+        }
+    }
+
+    /// Directly start a background Copy of `entries` into `target`, overwriting
+    /// on conflict. Bypasses the confirmation dialog: the sync sheet already
+    /// served as the review step.
+    fn start_copy(
+        &mut self,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        if entries.is_empty() || self.active_transfer.is_some() {
+            return;
+        }
+        self.last_undo = None;
+        self.pending_move_undo = None;
+        let total = transfer::total_bytes(&entries);
+        let progress = Arc::new(Mutex::new(TransferProgress::new(total, entries.len())));
+        self.active_transfer = Some(progress.clone());
+        let spec = TransferSpec {
+            kind: TransferKind::Copy,
+            entries,
+            target,
+            policy: OverwritePolicy::OverwriteAll,
+            method: CopyMethod::Native,
+        };
+        transfer::spawn_transfer(spec, progress, notify);
     }
 
     // ── Preview ─────────────────────────────────────────────────────────
@@ -1296,6 +1401,44 @@ mod tests {
         // Both files are left untouched on refusal.
         assert!(l.path().join("report_v1.txt").is_file());
         assert!(l.path().join("report_v2.txt").is_file());
+    }
+
+    #[test]
+    fn apply_sync_mirror_copies_left_only_file_right() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("new.txt", "hello");
+        let mut ws = workspace(&l, &r);
+        let actions = ws.build_sync_actions(crate::sync::SyncPolicy::MirrorLeftToRight);
+        ws.apply_sync(&actions, || {});
+        wait_transfer(&mut ws);
+        assert!(r.path().join("new.txt").is_file(), "left -> right copied");
+    }
+
+    #[test]
+    fn two_way_sync_runs_both_passes() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("left.txt", "L");
+        r.file("right.txt", "R");
+        let mut ws = workspace(&l, &r);
+        let actions = ws.build_sync_actions(crate::sync::SyncPolicy::TwoWay);
+        ws.apply_sync(&actions, || {});
+
+        // First pass: left-only file goes right.
+        wait_transfer(&mut ws);
+        assert!(
+            r.path().join("left.txt").is_file(),
+            "first pass: left -> right"
+        );
+
+        // The second pass is queued; drive it as the UI's begin_frame would.
+        assert!(ws.has_sync_followup(), "second pass queued");
+        ws.start_sync_followup(|| {});
+        wait_transfer(&mut ws);
+        assert!(
+            l.path().join("right.txt").is_file(),
+            "second pass: right -> left"
+        );
+        assert!(!ws.has_sync_followup(), "queue drained");
     }
 
     #[test]

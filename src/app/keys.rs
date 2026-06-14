@@ -22,6 +22,7 @@ impl App {
             || self.recent_input.is_some()
             || self.palette_input.is_some()
             || self.batch_rename.is_some()
+            || self.sync.is_some()
         {
             self.type_ahead = None;
             return;
@@ -102,6 +103,7 @@ impl App {
             (egui::Key::L, KeyCode::L),
             (egui::Key::P, KeyCode::P),
             (egui::Key::R, KeyCode::R),
+            (egui::Key::S, KeyCode::S),
             (egui::Key::U, KeyCode::U),
             (egui::Key::Z, KeyCode::Z),
         ];

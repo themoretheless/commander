@@ -13,6 +13,7 @@ mod preload;
 mod recent_dialog;
 mod rename_dialog;
 mod render;
+mod sync_dialog;
 mod toolbar;
 mod transfer_dialog;
 mod tree;
@@ -59,6 +60,15 @@ pub struct App {
     pub(crate) palette_input: Option<String>,
     /// Active batch-rename studio state.
     pub(crate) batch_rename: Option<BatchRenameState>,
+    /// Active synchronise-sheet state.
+    pub(crate) sync: Option<SyncState>,
+}
+
+/// UI state for the directory-synchronise sheet. The diff lives in
+/// `crate::sync`; this holds the chosen policy and the editable action rows.
+pub(crate) struct SyncState {
+    pub policy: crate::sync::SyncPolicy,
+    pub actions: Vec<crate::sync::SyncAction>,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in
@@ -177,6 +187,7 @@ impl App {
             undo_toast_until: None,
             palette_input: None,
             batch_rename: None,
+            sync: None,
         }
     }
 
