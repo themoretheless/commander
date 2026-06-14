@@ -822,6 +822,30 @@ impl PanelState {
         }
     }
 
+    /// Move the cursor to the first filtered entry whose name matches `buffer`
+    /// (prefix first, then substring), both lowercased. Returns whether a
+    /// match was found. Drives type-to-jump navigation.
+    pub fn type_ahead(&mut self, buffer: &str) -> bool {
+        if buffer.is_empty() {
+            return false;
+        }
+        let q = buffer.to_lowercase();
+        let pos = {
+            let entries = self.filtered_entries();
+            entries
+                .iter()
+                .position(|e| e.name_lower.starts_with(&q))
+                .or_else(|| entries.iter().position(|e| e.name_lower.contains(&q)))
+        };
+        if let Some(idx) = pos {
+            self.cursor = idx + 1;
+            self.scroll_to_cursor = true;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Add the file under the cursor to the selection (range-select step).
     pub fn select_cursor(&mut self) {
         if self.cursor == 0 {
@@ -1251,6 +1275,28 @@ mod tests {
         p.sort_entries();
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
+    }
+
+    #[test]
+    fn type_ahead_jumps_by_prefix_then_substring() {
+        let mut p = panel_with(vec![
+            entry("apple.txt", false, 1),
+            entry("banana.txt", false, 1),
+            entry("cherry-banana.txt", false, 1),
+        ]);
+        p.sort_entries();
+
+        assert!(p.type_ahead("ban"));
+        assert_eq!(p.filtered_get(p.cursor - 1).unwrap().name, "banana.txt");
+
+        // No prefix hit -> substring fallback finds "cherry-banana".
+        assert!(p.type_ahead("cherry"));
+        assert_eq!(
+            p.filtered_get(p.cursor - 1).unwrap().name,
+            "cherry-banana.txt"
+        );
+
+        assert!(!p.type_ahead("zzz"));
     }
 
     #[test]

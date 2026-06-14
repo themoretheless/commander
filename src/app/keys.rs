@@ -18,12 +18,54 @@ impl App {
             || self.ws.active_transfer.is_some()
             || self.renaming.is_some()
         {
+            self.type_ahead = None;
             return;
         }
         let presses = ctx.input(Self::collect_presses);
         for cmd in map_keys(&presses) {
             self.ws.execute(cmd);
         }
+        self.handle_type_ahead(ctx);
+    }
+
+    /// Type-to-jump: printable characters build a short-lived buffer that
+    /// moves the cursor to the first matching name. Expires after ~1.5s idle.
+    /// Command-modified keys and the mapped hotkeys never reach here as text.
+    fn handle_type_ahead(&mut self, ctx: &egui::Context) {
+        const IDLE: f64 = 1.5;
+        let (typed, now) = ctx.input(|i| {
+            let typed: String = i
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            (typed, i.time)
+        });
+
+        // Expire a stale buffer.
+        if let Some((_, last)) = &self.type_ahead
+            && now - last > IDLE
+        {
+            self.type_ahead = None;
+        }
+        if typed.is_empty() {
+            return;
+        }
+        let buffer = match &mut self.type_ahead {
+            Some((b, t)) => {
+                b.push_str(&typed);
+                *t = now;
+                b.clone()
+            }
+            None => {
+                self.type_ahead = Some((typed.clone(), now));
+                typed
+            }
+        };
+        self.ws.active_panel().type_ahead(&buffer);
     }
 
     /// Snapshot the pressed keys we care about as toolkit-independent values.

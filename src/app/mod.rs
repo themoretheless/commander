@@ -35,6 +35,9 @@ pub struct App {
     pub(crate) tree_width: f32,
     /// Active inline rename: the entry being renamed and the edit buffer.
     pub(crate) renaming: Option<RenameState>,
+    /// Type-ahead buffer and the input time of its last keystroke (seconds,
+    /// from egui). Expires after a short idle.
+    pub(crate) type_ahead: Option<(String, f64)>,
 }
 
 /// UI state for the rename editor.
@@ -81,6 +84,7 @@ impl App {
             tree_children_cache: std::collections::HashMap::new(),
             tree_width: 200.0,
             renaming: None,
+            type_ahead: None,
         }
     }
 

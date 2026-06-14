@@ -12,6 +12,7 @@ impl eframe::App for App {
         self.show_shortcut_bar(ctx);
         self.show_main_area(ctx);
         self.show_drag_overlay(ctx);
+        self.show_type_ahead_overlay(ctx);
         self.handle_drop(ctx);
     }
 }
@@ -296,6 +297,39 @@ impl App {
                 });
         }
         ctx.request_repaint();
+    }
+
+    /// Floating capsule showing the current type-ahead buffer.
+    fn show_type_ahead_overlay(&mut self, ctx: &egui::Context) {
+        let Some((buffer, last)) = &self.type_ahead else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        if now - last > 1.5 {
+            self.type_ahead = None;
+            return;
+        }
+        let t = self.colors;
+        let label = format!("\u{2192} {buffer}");
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("type_ahead_overlay"))
+            .fixed_pos(egui::pos2(screen.center().x - 60.0, screen.bottom() - 80.0))
+            .order(egui::Order::Tooltip)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(t.bg_card)
+                    .inner_margin(Margin::symmetric(12, 6))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .size(13.0)
+                                .strong()
+                                .color(t.accent),
+                        );
+                    });
+            });
+        // Keep repainting so the capsule fades out on idle.
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 
     /// On mouse release, move dragged files into the hovered directory.
