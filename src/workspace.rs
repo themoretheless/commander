@@ -80,25 +80,29 @@ pub struct Workspace {
     pub batch_rename_request: bool,
     /// Set by [`Command::BeginSync`]; the UI opens the synchronise sheet.
     pub sync_request: bool,
+    /// Set by [`Command::Redo`]; the UI replays the next redoable action.
+    pub redo_request: bool,
     /// Queued second copy pass (entries, target) for a two-way sync, started
     /// once the first pass finishes. Keeps the engine single-transfer.
     sync_followup: Option<(Vec<FileEntry>, PathBuf)>,
-    /// (dest, source) pairs of the in-flight Move, promoted to `last_undo`
-    /// when it finishes cleanly.
-    pending_move_undo: Option<Vec<(PathBuf, PathBuf)>>,
-    /// (dest, source) pairs of the last clean Move, reversible via Cmd+Z.
-    pub last_undo: Option<Vec<(PathBuf, PathBuf)>>,
+    /// Undo/redo history of reversible operations (moves, batch renames).
+    pub stack: crate::undo::UndoStack,
+    /// The action the in-flight transfer will record on a clean finish (a user
+    /// Move). `None` for copies and for undo/redo-driven transfers, which must
+    /// not record fresh history.
+    pending_undo_action: Option<crate::undo::Action>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
 }
 
-/// (dest, source) pairs for undoing a Move: each entry went from its original
-/// path to `target/name`, so undo moves `target/name` back. Pure/testable.
-pub fn move_undo_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf)> {
+/// `(from, to)` pairs for a Move: each entry goes from its current path to
+/// `target/name`. Recorded as an [`undo::Action::Move`] so the move is
+/// reversible. Pure/testable.
+pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf)> {
     entries
         .iter()
-        .map(|e| (target.join(&e.name), e.path.clone()))
+        .map(|e| (e.path.clone(), target.join(&e.name)))
         .collect()
 }
 
@@ -272,9 +276,10 @@ impl Workspace {
             palette_request: false,
             batch_rename_request: false,
             sync_request: false,
+            redo_request: false,
             sync_followup: None,
-            pending_move_undo: None,
-            last_undo: None,
+            stack: crate::undo::UndoStack::default(),
+            pending_undo_action: None,
             opener,
         }
     }
@@ -464,8 +469,13 @@ impl Workspace {
             Command::BeginRecent => self.recent_request = true,
             Command::BeginPalette => self.palette_request = true,
             Command::Undo => {
-                if self.last_undo.is_some() {
+                if self.stack.can_undo() {
                     self.undo_request = true;
+                }
+            }
+            Command::Redo => {
+                if self.stack.can_redo() {
+                    self.redo_request = true;
                 }
             }
             Command::ToggleInfo => self.toggle_info(),
@@ -534,11 +544,12 @@ impl Workspace {
             return;
         };
 
-        // A fresh op supersedes any previous undo; capture this op's undo
-        // pairs if it is a Move (promoted to last_undo when it finishes clean).
-        self.last_undo = None;
-        self.pending_move_undo = if t.kind == TransferKind::Move {
-            Some(move_undo_pairs(&t.entries, &t.target))
+        // Record this op for undo only if it is a Move; promoted onto the
+        // history stack when it finishes cleanly (see `poll_transfer`).
+        self.pending_undo_action = if t.kind == TransferKind::Move {
+            Some(crate::undo::Action::Move {
+                pairs: move_pairs(&t.entries, &t.target),
+            })
         } else {
             None
         };
@@ -586,56 +597,115 @@ impl Workspace {
         self.active_transfer = None;
         self.left.refresh();
         self.right.refresh();
-        // Promote the captured Move pairs to an undoable record on a clean run.
+        // Record the move on the history stack on a clean run.
         if clean {
-            if let Some(pairs) = self.pending_move_undo.take() {
-                self.last_undo = Some(pairs);
+            if let Some(action) = self.pending_undo_action.take() {
+                self.stack.push(action);
                 return true;
             }
         } else {
-            self.pending_move_undo = None;
+            self.pending_undo_action = None;
         }
         false
     }
 
-    /// Reverse the last clean Move by moving each destination back to its
-    /// original location through the transfer engine.
-    pub fn undo_last_move(&mut self, notify: impl Fn() + Send + 'static) {
-        let Some(pairs) = self.last_undo.take() else {
+    /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
+    /// move it onto the redo stack.
+    pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) {
+        if let Some(inverse) = self.stack.undo() {
+            self.execute_action(inverse, notify);
+        }
+    }
+
+    /// Redo the most recently undone action (Cmd+Shift+Z): re-apply it and move
+    /// it back onto the undo stack.
+    pub fn perform_redo(&mut self, notify: impl Fn() + Send + 'static) {
+        if let Some(action) = self.stack.redo() {
+            self.execute_action(action, notify);
+        }
+    }
+
+    /// Execute `action` forward against the filesystem. Used by undo (with an
+    /// inverted action) and redo (with the original). It records no new history
+    /// of its own: the stack was already shuffled by `undo`/`redo`.
+    fn execute_action(&mut self, action: crate::undo::Action, notify: impl Fn() + Send + 'static) {
+        match action {
+            crate::undo::Action::Move { pairs } => {
+                // Each pair is (from, to): move the file at `from` into dir(to).
+                let Some(dest_dir) = pairs
+                    .first()
+                    .and_then(|(_, to)| to.parent())
+                    .map(Path::to_path_buf)
+                else {
+                    return;
+                };
+                let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
+                self.start_move_silent(sources, dest_dir, notify);
+            }
+            crate::undo::Action::BatchRename { dir, pairs } => {
+                let _ = Self::rename_pairs_staged(&dir, &pairs);
+                self.left.refresh();
+                self.right.refresh();
+            }
+        }
+    }
+
+    /// Move the files at `sources` into `dest_dir` without recording undo
+    /// history (the caller already updated the stack). One source dir, one
+    /// dest dir, matching how user moves are shaped.
+    fn start_move_silent(
+        &mut self,
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        if self.active_transfer.is_some() {
             return;
-        };
-        let Some(source_dir) = pairs
-            .first()
-            .and_then(|(_, src)| src.parent())
-            .map(Path::to_path_buf)
-        else {
-            return;
-        };
-        let entries: Vec<FileEntry> = pairs
+        }
+        let entries: Vec<FileEntry> = sources
             .iter()
-            .filter_map(|(dest, _)| {
-                let meta = std::fs::metadata(dest).ok()?;
-                FileEntry::from_meta(dest.clone(), &meta)
+            .filter_map(|p| {
+                let meta = std::fs::metadata(p).ok()?;
+                FileEntry::from_meta(p.clone(), &meta)
             })
             .collect();
         if entries.is_empty() {
             return;
         }
-        let (need_bytes, free_bytes, same_volume) =
-            fit_stats(&entries, &source_dir, TransferKind::Move);
-        self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
+        self.pending_undo_action = None;
+        let total = transfer::total_bytes(&entries);
+        let progress = Arc::new(Mutex::new(TransferProgress::new(total, entries.len())));
+        self.active_transfer = Some(progress.clone());
+        let spec = TransferSpec {
             kind: TransferKind::Move,
             entries,
-            target: source_dir,
-            conflicts: vec![],
+            target: dest_dir,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
-            flat: scan::spawn_scan(vec![]),
-            need_bytes,
-            free_bytes,
-            same_volume,
-        }));
-        self.start_transfer(notify);
+        };
+        transfer::spawn_transfer(spec, progress, notify);
+    }
+
+    /// Rename each `(from, to)` name in `dir`, staging through unique temp names
+    /// so reorderings cannot clobber. Rolls back staged temps on a phase-1
+    /// failure. Returns how many renames landed, or the OS error.
+    fn rename_pairs_staged(dir: &Path, pairs: &[(String, String)]) -> Result<usize, String> {
+        let temp_name = |i: usize| format!(".cmdr-rename-{i}.tmp");
+        for (i, (from, _)) in pairs.iter().enumerate() {
+            if let Err(e) = std::fs::rename(dir.join(from), dir.join(temp_name(i))) {
+                for (j, (orig, _)) in pairs.iter().enumerate().take(i) {
+                    let _ = std::fs::rename(dir.join(temp_name(j)), dir.join(orig));
+                }
+                return Err(e.to_string());
+            }
+        }
+        let mut done = 0;
+        for (i, (_, to)) in pairs.iter().enumerate() {
+            if std::fs::rename(dir.join(temp_name(i)), dir.join(to)).is_ok() {
+                done += 1;
+            }
+        }
+        Ok(done)
     }
 
     pub fn exec_delete(entries: &[FileEntry]) {
@@ -756,25 +826,19 @@ impl Workspace {
             .map(|p| (p.from.clone(), p.to.clone()))
             .collect();
 
-        // Phase 1: source -> unique temp (rolled back on failure). At index `i`
-        // exactly the first `i` entries have been staged, so roll back those.
-        let temp_name = |i: usize| format!(".cmdr-rename-{i}.tmp");
-        for (i, (from, _)) in changes.iter().enumerate() {
-            if let Err(e) = std::fs::rename(dir.join(from), dir.join(temp_name(i))) {
-                for (j, (orig, _)) in changes.iter().enumerate().take(i) {
-                    let _ = std::fs::rename(dir.join(temp_name(j)), dir.join(orig));
-                }
+        let done = match Self::rename_pairs_staged(&dir, &changes) {
+            Ok(done) => done,
+            Err(e) => {
                 self.active_panel().refresh();
-                return Err(e.to_string());
+                return Err(e);
             }
-        }
-
-        // Phase 2: temp -> final target.
-        let mut done = 0usize;
-        for (i, (_, to)) in changes.iter().enumerate() {
-            if std::fs::rename(dir.join(temp_name(i)), dir.join(to)).is_ok() {
-                done += 1;
-            }
+        };
+        // Record the batch as one undoable unit (Cmd+Z reverts the whole run).
+        if done > 0 {
+            self.stack.push(crate::undo::Action::BatchRename {
+                dir,
+                pairs: changes,
+            });
         }
         self.active_panel().selected.clear();
         self.active_panel().refresh();
@@ -863,8 +927,8 @@ impl Workspace {
         if entries.is_empty() || self.active_transfer.is_some() {
             return;
         }
-        self.last_undo = None;
-        self.pending_move_undo = None;
+        // A copy is not undoable, but it must not erase the move/rename history.
+        self.pending_undo_action = None;
         let total = transfer::total_bytes(&entries);
         let progress = Arc::new(Mutex::new(TransferProgress::new(total, entries.len())));
         self.active_transfer = Some(progress.clone());
@@ -1453,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn move_undo_pairs_maps_dest_back_to_source() {
+    fn move_pairs_maps_source_to_dest() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let a = l.file("a.txt", "x");
         let b = l.file("b.txt", "y");
@@ -1463,9 +1527,10 @@ mod tests {
             FileEntry::from_meta(a.clone(), &meta_a).unwrap(),
             FileEntry::from_meta(b.clone(), &meta_b).unwrap(),
         ];
-        let pairs = move_undo_pairs(&entries, r.path());
-        assert_eq!(pairs[0], (r.path().join("a.txt"), a));
-        assert_eq!(pairs[1], (r.path().join("b.txt"), b));
+        let pairs = move_pairs(&entries, r.path());
+        // (from, to): from the entry's current path to target/name.
+        assert_eq!(pairs[0], (a, r.path().join("a.txt")));
+        assert_eq!(pairs[1], (b, r.path().join("b.txt")));
     }
 
     #[test]
@@ -1480,9 +1545,9 @@ mod tests {
         wait_transfer(&mut ws);
         assert!(!f.exists(), "move removed the source");
         assert!(r.path().join("doc.txt").exists());
-        assert!(ws.last_undo.is_some(), "a clean move is undoable");
+        assert!(ws.stack.can_undo(), "a clean move is undoable");
 
-        ws.undo_last_move(|| {});
+        ws.perform_undo(|| {});
         wait_transfer(&mut ws);
         assert!(f.exists(), "undo restored the source");
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "data");
@@ -1490,6 +1555,42 @@ mod tests {
             !r.path().join("doc.txt").exists(),
             "undo emptied the target"
         );
+
+        // Redo re-applies the move.
+        assert!(ws.stack.can_redo(), "the undone move is redoable");
+        ws.perform_redo(|| {});
+        wait_transfer(&mut ws);
+        assert!(!f.exists(), "redo re-moved the source away");
+        assert!(
+            r.path().join("doc.txt").exists(),
+            "redo restored the target"
+        );
+    }
+
+    #[test]
+    fn batch_rename_is_undoable_and_redoable() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("a.txt", "1");
+        l.file("b.txt", "2");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(l.path().join("a.txt"));
+        ws.left.selected.insert(l.path().join("b.txt"));
+
+        let rule = crate::rename::RenameRule {
+            prefix: "x_".into(),
+            ..Default::default()
+        };
+        assert_eq!(ws.apply_batch_rename(&rule).unwrap(), 2);
+        assert!(l.path().join("x_a.txt").is_file());
+        assert!(ws.stack.can_undo());
+
+        ws.perform_undo(|| {});
+        assert!(l.path().join("a.txt").is_file(), "undo restored names");
+        assert!(!l.path().join("x_a.txt").exists());
+
+        ws.perform_redo(|| {});
+        assert!(l.path().join("x_a.txt").is_file(), "redo re-applied names");
+        assert!(!l.path().join("a.txt").exists());
     }
 
     #[test]

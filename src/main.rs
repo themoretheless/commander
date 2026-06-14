@@ -14,6 +14,7 @@ mod session;
 mod sync;
 mod theme;
 mod transfer;
+mod undo;
 mod workspace;
 
 #[cfg(test)]

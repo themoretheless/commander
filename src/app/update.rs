@@ -83,11 +83,15 @@ impl App {
             let c = ctx.clone();
             self.ws.start_sync_followup(move || c.request_repaint());
         }
-        // Run a requested undo with a repaint callback.
+        // Run a requested undo / redo with a repaint callback.
         if std::mem::take(&mut self.ws.undo_request) {
             let c = ctx.clone();
-            self.ws.undo_last_move(move || c.request_repaint());
+            self.ws.perform_undo(move || c.request_repaint());
             self.undo_toast_until = None;
+        }
+        if std::mem::take(&mut self.ws.redo_request) {
+            let c = ctx.clone();
+            self.ws.perform_redo(move || c.request_repaint());
         }
     }
 
@@ -381,12 +385,16 @@ impl App {
             return;
         };
         let now = ctx.input(|i| i.time);
-        if now > until || self.ws.last_undo.is_none() {
+        if now > until || !self.ws.stack.can_undo() {
             self.undo_toast_until = None;
             return;
         }
         let t = self.colors;
-        let count = self.ws.last_undo.as_ref().map_or(0, Vec::len);
+        let (verb, count) = self
+            .ws
+            .stack
+            .peek_undo()
+            .map_or(("Done", 0), |a| (a.verb(), a.item_count()));
         let screen = ctx.screen_rect();
         let mut undo = false;
         egui::Area::new(egui::Id::new("undo_toast"))
@@ -402,7 +410,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(format!("Moved {count} item(s)"))
+                                egui::RichText::new(format!("{verb} {count} item(s)"))
                                     .size(12.0)
                                     .color(t.text_primary),
                             );

@@ -47,8 +47,10 @@ pub enum Command {
     BeginGoToPath,
     /// Cmd+P: open the recent-directories quick switcher.
     BeginRecent,
-    /// Cmd+Z: undo the last clean move.
+    /// Cmd+Z: undo the last reversible operation.
     Undo,
+    /// Cmd+Shift+Z: redo the last undone operation.
+    Redo,
     /// Cmd+K: open the command palette.
     BeginPalette,
     SelectAll,
@@ -84,7 +86,8 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Toggle preview", "F3", Command::TogglePreview),
         ("Equalize panels", "Cmd+E", Command::EqualizePanels),
         ("Swap panels", "Cmd+U", Command::SwapPanels),
-        ("Undo last move", "Cmd+Z", Command::Undo),
+        ("Undo", "Cmd+Z", Command::Undo),
+        ("Redo", "Cmd+Shift+Z", Command::Redo),
     ]
 }
 
@@ -172,6 +175,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         I if press.command => Some(Command::ToggleInfo),
         L if press.command => Some(Command::BeginGoToPath),
         P if press.command => Some(Command::BeginRecent),
+        Z if press.command && press.shift => Some(Command::Redo),
         Z if press.command => Some(Command::Undo),
         K if press.command => Some(Command::BeginPalette),
         H if press.command => Some(Command::ToggleHidden),
@@ -270,8 +274,14 @@ mod tests {
     }
 
     #[test]
-    fn undo_binds_to_cmd_z() {
+    fn undo_binds_to_cmd_z_and_redo_to_cmd_shift_z() {
         assert_eq!(map_key(cmd_press(KeyCode::Z)), Some(Command::Undo));
+        let cmd_shift_z = KeyPress {
+            code: KeyCode::Z,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_z), Some(Command::Redo));
         assert_eq!(map_key(press(KeyCode::Z)), None);
     }
 
