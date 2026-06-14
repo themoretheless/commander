@@ -22,6 +22,31 @@ fn is_separator(c: char) -> bool {
     matches!(c, '/' | '\\' | '_' | '-' | ' ' | '.')
 }
 
+/// Whether `query` is a case-insensitive subsequence of `candidate`. Allocates
+/// nothing and computes no score, for the filter hot path that runs over every
+/// entry. An empty (or whitespace-only) query matches everything.
+pub fn is_match(query: &str, candidate: &str) -> bool {
+    let mut q = query
+        .trim()
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .peekable();
+    if q.peek().is_none() {
+        return true;
+    }
+    for c in candidate.chars() {
+        match q.peek() {
+            Some(&qc) => {
+                if c.to_ascii_lowercase() == qc {
+                    q.next();
+                }
+            }
+            None => return true,
+        }
+    }
+    q.peek().is_none()
+}
+
 /// Score `candidate` against `query` with a case-insensitive subsequence match.
 /// Returns `None` when `query` is not a subsequence of `candidate`. An empty
 /// query matches everything with score 0 (so ranking keeps the input order).
@@ -133,6 +158,27 @@ mod tests {
     #[test]
     fn fb_ranks_foo_bar_above_fabricate() {
         assert!(sc("fb", "foo/bar") > sc("fb", "fabricate"));
+    }
+
+    #[test]
+    fn is_match_agrees_with_score_existence() {
+        for (q, c) in [
+            ("scn", "scanner.rs"),
+            ("fb", "foo/bar"),
+            ("", "anything"),
+            ("  ", "x"),
+            ("xyz", "abc"),
+            ("Cargo", "cargo.toml"),
+            ("zzz", "zz"),
+        ] {
+            assert_eq!(
+                is_match(q, c),
+                score(q, c).is_some(),
+                "is_match disagreed with score for ({q:?}, {c:?})"
+            );
+        }
+        assert!(is_match("scn", "scanner.rs"));
+        assert!(!is_match("xyz", "abc"));
     }
 
     #[test]

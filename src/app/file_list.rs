@@ -72,6 +72,9 @@ impl App {
                 // are recorded and applied after the loop, so the
                 // loop body only borrows the panel immutably.
                 let filtered = panel.filtered_indices();
+                // Active filter query, for highlighting matched characters in
+                // each visible row (cloned once, owned by this frame).
+                let query = panel.search_query.clone();
 
                 if filtered.is_empty() {
                     use crate::panel::DirStatus;
@@ -308,11 +311,21 @@ impl App {
                         } else {
                             t.text_secondary
                         };
-                        ui.label(
-                            egui::RichText::new(&entry.name)
-                                .size(13.0)
-                                .color(name_color),
-                        );
+                        if query.is_empty() {
+                            ui.label(
+                                egui::RichText::new(&entry.name)
+                                    .size(13.0)
+                                    .color(name_color),
+                            );
+                        } else {
+                            ui.label(highlight_name_job(
+                                &entry.name,
+                                &query,
+                                name_color,
+                                t.accent,
+                                13.0,
+                            ));
+                        }
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(4.0);
@@ -533,4 +546,37 @@ impl App {
             }
         }
     }
+}
+
+/// Build a file name as a [`LayoutJob`], tinting the characters the fuzzy
+/// filter matched in `accent` so the user sees why the row survived the filter.
+/// Falls back to a flat `base`-coloured name when nothing matches.
+fn highlight_name_job(
+    name: &str,
+    query: &str,
+    base: Color32,
+    accent: Color32,
+    size: f32,
+) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    let ranges = crate::fuzzy::score(query, name)
+        .map(|m| m.matched_ranges)
+        .unwrap_or_default();
+    let font = egui::FontId::proportional(size);
+    let mut job = LayoutJob::default();
+    let mut buf = [0u8; 4];
+    for (idx, ch) in name.chars().enumerate() {
+        let hit = ranges.iter().any(|&(s, e)| idx >= s && idx < e);
+        let color = if hit { accent } else { base };
+        job.append(
+            ch.encode_utf8(&mut buf),
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color,
+                ..Default::default()
+            },
+        );
+    }
+    job
 }

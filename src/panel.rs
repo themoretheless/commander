@@ -1245,7 +1245,10 @@ impl PanelState {
         cache.facets = self.facets;
         cache.indices.clear();
 
-        let q = self.search_query.to_lowercase();
+        // Fuzzy subsequence match (shared with the command palette), so "scn"
+        // narrows to "scanner.rs". This is more permissive than a substring
+        // filter; the sort order is left untouched (we narrow, never reorder).
+        let query = self.search_query.as_str();
         let facets = self.facets;
         let no_facets = facets.is_empty();
         let now = SystemTime::now();
@@ -1253,7 +1256,7 @@ impl PanelState {
             self.entries
                 .iter()
                 .enumerate()
-                .filter(|(_, e)| q.is_empty() || e.name_lower.contains(&q))
+                .filter(|(_, e)| crate::fuzzy::is_match(query, &e.name))
                 .filter(|(_, e)| no_facets || facet_matches(e, &facets, now))
                 .map(|(i, _)| i),
         );
@@ -1519,6 +1522,31 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(names, vec!["Cargo.toml"]);
+    }
+
+    #[test]
+    fn filter_is_a_fuzzy_subsequence() {
+        let mut p = panel_with(vec![
+            entry("scanner.rs", false, 1),
+            entry("main.rs", false, 1),
+            entry("notes.txt", false, 1),
+        ]);
+        // "scn" is a subsequence of scanner.rs only (substring would miss it).
+        p.search_query = "scn".to_string();
+        let names: Vec<&str> = p
+            .filtered_entries()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["scanner.rs"]);
+
+        // Empty query shows everything.
+        p.search_query.clear();
+        assert_eq!(p.filtered_count(), 3);
+
+        // A non-subsequence excludes every row.
+        p.search_query = "zzz".to_string();
+        assert_eq!(p.filtered_count(), 0);
     }
 
     #[test]
