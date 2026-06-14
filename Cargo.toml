@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Dual-pane file manager for macOS built with egui"
 repository = "https://github.com/themoretheless/commander"
+license = "MIT"
 publish = false
 
 [lints.rust]
