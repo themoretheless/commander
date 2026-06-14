@@ -1306,6 +1306,29 @@ impl PanelState {
         }
     }
 
+    /// Flip selection membership across the filtered view: selected entries
+    /// become unselected and vice versa. Entries hidden by the current filter
+    /// keep their state, so an invert respects what the user can actually see.
+    pub fn invert_selection(&mut self) {
+        let paths: Vec<PathBuf> = self
+            .filtered_entries()
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        for p in paths {
+            if !self.selected.remove(&p) {
+                self.selected.insert(p);
+            }
+        }
+    }
+
+    /// Add `paths` to the current selection, keeping any existing picks.
+    /// Used by relationship-based selectors (e.g. "select files also in the
+    /// other panel") so selections compose instead of replacing each other.
+    pub fn extend_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.selected.extend(paths);
+    }
+
     pub fn selected_entries(&self) -> Vec<FileEntry> {
         self.filtered_entries()
             .into_iter()
@@ -1533,6 +1556,33 @@ mod tests {
         assert_eq!(p.selected.len(), 2);
         p.select_all();
         assert!(p.selected.is_empty());
+    }
+
+    #[test]
+    fn invert_selection_flips_only_filtered_rows() {
+        let mut p = panel_with(vec![
+            entry("alpha", false, 1),
+            entry("album", false, 1),
+            entry("zebra", false, 1),
+        ]);
+        let alpha = p.entries[0].path.clone();
+        let album = p.entries[1].path.clone();
+        let zebra = p.entries[2].path.clone();
+        // Pre-select one visible (alpha) and one that the filter will hide (zebra).
+        p.selected.insert(alpha.clone());
+        p.selected.insert(zebra.clone());
+        // Filter to the "al" rows; zebra is now hidden from the view.
+        p.search_query = "al".to_string();
+        p.invert_selection();
+        assert!(!p.selected.contains(&alpha), "visible+selected -> cleared");
+        assert!(
+            p.selected.contains(&album),
+            "visible+unselected -> selected"
+        );
+        assert!(
+            p.selected.contains(&zebra),
+            "filtered-out row keeps its state"
+        );
     }
 
     #[test]

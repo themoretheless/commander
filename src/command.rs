@@ -48,6 +48,10 @@ pub enum Command {
     /// Cmd+K: open the command palette.
     BeginPalette,
     SelectAll,
+    /// Flip the selection across the visible rows of the active panel.
+    InvertSelection,
+    /// Select active-panel entries whose name also exists in the other panel.
+    SelectSameNamed,
     ToggleHidden,
 }
 
@@ -63,6 +67,12 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Go to path", "Cmd+L", Command::BeginGoToPath),
         ("Recent folders", "Cmd+P", Command::BeginRecent),
         ("Select all", "Cmd+A", Command::SelectAll),
+        ("Invert selection", "", Command::InvertSelection),
+        (
+            "Select files also in other panel",
+            "",
+            Command::SelectSameNamed,
+        ),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
         ("Toggle preview", "F3", Command::TogglePreview),

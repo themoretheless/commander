@@ -151,6 +151,20 @@ pub fn select_by_compare<'a>(
         .collect()
 }
 
+/// Paths among `entries` whose lowercased name appears in `names`.
+/// Pure set logic so "select files also present in the other panel" can be
+/// unit-tested without a panel or filesystem. The complement of the
+/// [`CompareCriterion::Unique`] set: name-matched regardless of size/mtime.
+pub fn matching_name_paths<'a>(
+    entries: impl Iterator<Item = &'a FileEntry>,
+    names: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<PathBuf> {
+    entries
+        .filter(|e| names.contains(&e.name_lower))
+        .map(|e| e.path.clone())
+        .collect()
+}
+
 /// Classify `entry` against the other panel's [`CompareMap`].
 pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
     match other.get(&entry.name_lower) {
@@ -280,6 +294,23 @@ impl Workspace {
             ActivePanel::Left => &mut self.right,
             ActivePanel::Right => &mut self.left,
         }
+    }
+
+    /// Add to the active panel's selection every visible entry whose name also
+    /// exists in the inactive panel (by lowercased name). Builds on top of any
+    /// existing selection so it composes with mask/manual picks.
+    pub fn select_same_named(&mut self) {
+        let names: std::collections::HashSet<String> = self
+            .inactive_panel()
+            .filtered_entries()
+            .iter()
+            .map(|e| e.name_lower.clone())
+            .collect();
+        let picks = {
+            let active = self.active_panel_ref();
+            matching_name_paths(active.filtered_entries().into_iter(), &names)
+        };
+        self.active_panel().extend_selection(picks);
     }
 
     // ── Command dispatch ────────────────────────────────────────────────
@@ -426,6 +457,8 @@ impl Workspace {
             }
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
+            Command::InvertSelection => self.active_panel().invert_selection(),
+            Command::SelectSameNamed => self.select_same_named(),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
@@ -1098,6 +1131,43 @@ mod tests {
 
         let uniq_sel = select_by_compare(entries.iter(), &other, CompareCriterion::Unique);
         assert!(uniq_sel.contains(&c.path) && uniq_sel.len() == 1);
+    }
+
+    #[test]
+    fn matching_name_paths_picks_name_matches_only() {
+        let tmp = TempDir::new();
+        let mk = |name: &str| {
+            let p = tmp.file(name, "");
+            let meta = std::fs::metadata(&p).unwrap();
+            FileEntry::from_meta(p, &meta).unwrap()
+        };
+        let shared = mk("Shared.txt");
+        let local = mk("local.txt");
+        let entries = [shared.clone(), local.clone()];
+        // Name set is lowercased, mirroring build_compare_map's key space.
+        let names: std::collections::HashSet<String> =
+            ["shared.txt".to_string()].into_iter().collect();
+        let picks = matching_name_paths(entries.iter(), &names);
+        assert!(picks.contains(&shared.path), "name match selected");
+        assert!(!picks.contains(&local.path), "unmatched name skipped");
+        assert_eq!(picks.len(), 1);
+    }
+
+    #[test]
+    fn select_same_named_adds_common_names_keeping_prior_picks() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let shared = l.file("report.txt", "x");
+        let only_here = l.file("draft.txt", "y");
+        r.file("Report.TXT", "z"); // same name, different case -> still a match
+        let mut ws = workspace(&l, &r);
+
+        // A pre-existing manual pick must survive the union.
+        ws.left.selected.insert(only_here.clone());
+        ws.select_same_named();
+
+        assert!(ws.left.selected.contains(&shared), "common name selected");
+        assert!(ws.left.selected.contains(&only_here), "prior pick kept");
+        assert_eq!(ws.left.selected.len(), 2, "no spurious selections");
     }
 
     #[test]
