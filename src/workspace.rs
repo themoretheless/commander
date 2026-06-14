@@ -73,6 +73,8 @@ pub struct Workspace {
     pub recent_request: bool,
     /// Set by [`Command::Undo`]; the UI runs the undo with a notify callback.
     pub undo_request: bool,
+    /// Set by [`Command::BeginPalette`]; the UI opens the command palette.
+    pub palette_request: bool,
     /// (dest, source) pairs of the in-flight Move, promoted to `last_undo`
     /// when it finishes cleanly.
     pending_move_undo: Option<Vec<(PathBuf, PathBuf)>>,
@@ -245,6 +247,7 @@ impl Workspace {
             path_request: false,
             recent_request: false,
             undo_request: false,
+            palette_request: false,
             pending_move_undo: None,
             last_undo: None,
             opener,
@@ -415,6 +418,7 @@ impl Workspace {
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
+            Command::BeginPalette => self.palette_request = true,
             Command::Undo => {
                 if self.last_undo.is_some() {
                     self.undo_request = true;

@@ -20,6 +20,7 @@ impl App {
             || self.mask_input.is_some()
             || self.path_input.is_some()
             || self.recent_input.is_some()
+            || self.palette_input.is_some()
         {
             self.type_ahead = None;
             return;
@@ -96,6 +97,7 @@ impl App {
             (egui::Key::G, KeyCode::G),
             (egui::Key::H, KeyCode::H),
             (egui::Key::I, KeyCode::I),
+            (egui::Key::K, KeyCode::K),
             (egui::Key::L, KeyCode::L),
             (egui::Key::P, KeyCode::P),
             (egui::Key::R, KeyCode::R),

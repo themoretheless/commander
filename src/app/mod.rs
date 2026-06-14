@@ -6,6 +6,7 @@ mod confirm_dialog;
 mod file_list;
 mod keys;
 mod mask_dialog;
+mod palette_dialog;
 mod path_dialog;
 mod preload;
 mod recent_dialog;
@@ -53,6 +54,8 @@ pub struct App {
     pub(crate) recent_input: Option<String>,
     /// egui time until which the undo toast stays visible.
     pub(crate) undo_toast_until: Option<f64>,
+    /// Active command-palette filter buffer.
+    pub(crate) palette_input: Option<String>,
 }
 
 /// UI state for the rename editor.
@@ -106,6 +109,7 @@ impl App {
             path_input: None,
             recent_input: None,
             undo_toast_until: None,
+            palette_input: None,
         }
     }
 

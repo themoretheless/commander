@@ -11,6 +11,7 @@ impl eframe::App for App {
         self.show_mask_dialog(ctx);
         self.show_path_dialog(ctx);
         self.show_recent_dialog(ctx);
+        self.show_palette_dialog(ctx);
         self.show_toolbar_panel(ctx);
         self.show_shortcut_bar(ctx);
         self.show_main_area(ctx);

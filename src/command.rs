@@ -45,8 +45,40 @@ pub enum Command {
     BeginRecent,
     /// Cmd+Z: undo the last clean move.
     Undo,
+    /// Cmd+K: open the command palette.
+    BeginPalette,
     SelectAll,
     ToggleHidden,
+}
+
+/// User-facing commands for the Cmd+K palette: (label, shortcut, command).
+pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
+    vec![
+        ("Copy to other panel", "F5", Command::RequestCopy),
+        ("Move to other panel", "F6", Command::RequestMove),
+        ("New folder", "F7", Command::CreateDir),
+        ("Delete (to Trash)", "F8", Command::RequestDelete),
+        ("Rename", "F2", Command::BeginRename),
+        ("Get Info", "Cmd+I", Command::ToggleInfo),
+        ("Go to path", "Cmd+L", Command::BeginGoToPath),
+        ("Recent folders", "Cmd+P", Command::BeginRecent),
+        ("Select all", "Cmd+A", Command::SelectAll),
+        ("Select by mask", "Cmd+G", Command::BeginSelectMask),
+        ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
+        ("Toggle preview", "F3", Command::TogglePreview),
+        ("Equalize panels", "Cmd+E", Command::EqualizePanels),
+        ("Swap panels", "Cmd+U", Command::SwapPanels),
+        ("Undo last move", "Cmd+Z", Command::Undo),
+    ]
+}
+
+/// Filter the command catalog by a case-insensitive substring over the label.
+pub fn filter_commands(query: &str) -> Vec<(&'static str, &'static str, Command)> {
+    let q = query.trim().to_lowercase();
+    command_catalog()
+        .into_iter()
+        .filter(|(label, _, _)| q.is_empty() || label.to_lowercase().contains(&q))
+        .collect()
 }
 
 /// The keys the file manager reacts to (UI-toolkit independent).
@@ -74,6 +106,7 @@ pub enum KeyCode {
     G,
     H,
     I,
+    K,
     L,
     P,
     R,
@@ -121,6 +154,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         L if press.command => Some(Command::BeginGoToPath),
         P if press.command => Some(Command::BeginRecent),
         Z if press.command => Some(Command::Undo),
+        K if press.command => Some(Command::BeginPalette),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }
@@ -220,6 +254,23 @@ mod tests {
     fn undo_binds_to_cmd_z() {
         assert_eq!(map_key(cmd_press(KeyCode::Z)), Some(Command::Undo));
         assert_eq!(map_key(press(KeyCode::Z)), None);
+    }
+
+    #[test]
+    fn palette_binds_to_cmd_k() {
+        assert_eq!(map_key(cmd_press(KeyCode::K)), Some(Command::BeginPalette));
+        assert_eq!(map_key(press(KeyCode::K)), None);
+    }
+
+    #[test]
+    fn filter_commands_matches_label_substring() {
+        assert_eq!(filter_commands("").len(), command_catalog().len());
+        let mv = filter_commands("move");
+        assert!(mv.iter().any(|(_, _, c)| *c == Command::RequestMove));
+        let swap = filter_commands("SWAP");
+        assert_eq!(swap.len(), 1);
+        assert_eq!(swap[0].2, Command::SwapPanels);
+        assert!(filter_commands("zzzzz").is_empty());
     }
 
     #[test]
