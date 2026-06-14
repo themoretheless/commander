@@ -1,6 +1,91 @@
 use super::*;
+use crate::panel::{FacetSet, KindFacet};
 
 impl App {
+    /// A row of toggleable quick-filter chips under the filter box.
+    fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) {
+        Frame::NONE
+            .fill(Color32::TRANSPARENT)
+            .inner_margin(Margin {
+                left: 10,
+                right: 10,
+                top: 0,
+                bottom: 2,
+            })
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+
+                    let chip = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
+                        let fill = if active {
+                            t.accent.linear_multiply(0.3)
+                        } else {
+                            t.bg_card
+                        };
+                        ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(label).size(10.0).color(t.text_primary),
+                            )
+                            .fill(fill)
+                            .corner_radius(CornerRadius::same(2)),
+                        )
+                        .clicked()
+                    };
+
+                    let f = &mut panel.facets;
+                    // Kind chips (mutually exclusive: clicking the active one clears it).
+                    for (label, kind) in [
+                        ("Folders", KindFacet::Folders),
+                        ("Images", KindFacet::Images),
+                        ("Docs", KindFacet::Docs),
+                        ("Archives", KindFacet::Archives),
+                        ("Code", KindFacet::Code),
+                    ] {
+                        if chip(ui, label, f.kind == Some(kind)) {
+                            f.kind = if f.kind == Some(kind) {
+                                None
+                            } else {
+                                Some(kind)
+                            };
+                        }
+                    }
+                    ui.add_space(6.0);
+                    if chip(ui, ">1MB", f.min_size == Some(1 << 20)) {
+                        f.min_size = if f.min_size == Some(1 << 20) {
+                            None
+                        } else {
+                            Some(1 << 20)
+                        };
+                    }
+                    if chip(ui, ">100MB", f.min_size == Some(100 << 20)) {
+                        f.min_size = if f.min_size == Some(100 << 20) {
+                            None
+                        } else {
+                            Some(100 << 20)
+                        };
+                    }
+                    ui.add_space(6.0);
+                    if chip(ui, "Today", f.max_age_days == Some(1)) {
+                        f.max_age_days = if f.max_age_days == Some(1) {
+                            None
+                        } else {
+                            Some(1)
+                        };
+                    }
+                    if chip(ui, "Week", f.max_age_days == Some(7)) {
+                        f.max_age_days = if f.max_age_days == Some(7) {
+                            None
+                        } else {
+                            Some(7)
+                        };
+                    }
+                    if !f.is_empty() && chip(ui, "\u{2715} Clear", false) {
+                        *f = FacetSet::default();
+                    }
+                });
+            });
+    }
+
     /// Render one file panel. Returns `true` if the tree-sidebar toggle
     /// button was clicked (the tree itself is owned by [`App`]).
     // The arguments are mutable borrows of disjoint `self` fields (panel,
@@ -229,6 +314,9 @@ impl App {
                                 .margin(egui::vec2(8.0, 4.0)),
                         );
                     });
+
+                // Quick-filter facet chips.
+                Self::facet_chips(ui, panel, t);
 
                 // Column headers
                 let header_bg = if is_active {

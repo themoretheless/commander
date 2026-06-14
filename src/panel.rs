@@ -554,12 +554,102 @@ fn strip_leading_zeros(s: &[char]) -> &[char] {
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
-/// Cached filtered view: indices into `entries` matching `query`.
-/// Valid while `generation` matches the panel's `entries_gen` and the
-/// query is unchanged; recomputed lazily otherwise.
+/// A category facet for the quick-filter chips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KindFacet {
+    Folders,
+    Images,
+    Docs,
+    Archives,
+    Code,
+}
+
+/// Active quick-filter facets, ANDed with the substring filter. Default is
+/// "no facets" (everything passes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FacetSet {
+    pub kind: Option<KindFacet>,
+    /// Minimum file size in bytes (folders are not filtered by size).
+    pub min_size: Option<u64>,
+    /// Maximum age in days by mtime (entries with unknown mtime fail this).
+    pub max_age_days: Option<u64>,
+}
+
+impl FacetSet {
+    pub fn is_empty(&self) -> bool {
+        self.kind.is_none() && self.min_size.is_none() && self.max_age_days.is_none()
+    }
+}
+
+/// Whether `entry` passes all active facets, relative to `now`. Pure.
+pub fn facet_matches(entry: &FileEntry, facets: &FacetSet, now: SystemTime) -> bool {
+    if let Some(kind) = facets.kind {
+        let ok = match kind {
+            KindFacet::Folders => entry.is_dir,
+            KindFacet::Images => entry.is_image(),
+            KindFacet::Docs => matches!(
+                entry.extension.as_str(),
+                "pdf" | "txt" | "md" | "rtf" | "doc" | "docx" | "pages" | "odt" | "tex"
+            ),
+            KindFacet::Archives => matches!(
+                entry.extension.as_str(),
+                "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "xz" | "zst"
+            ),
+            KindFacet::Code => matches!(
+                entry.extension.as_str(),
+                "rs" | "py"
+                    | "js"
+                    | "ts"
+                    | "jsx"
+                    | "tsx"
+                    | "c"
+                    | "cpp"
+                    | "h"
+                    | "hpp"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "swift"
+                    | "rb"
+                    | "php"
+                    | "sh"
+                    | "toml"
+                    | "json"
+                    | "yaml"
+                    | "yml"
+            ),
+        };
+        if !ok {
+            return false;
+        }
+    }
+    if let Some(min) = facets.min_size {
+        // Folders are not filtered by size (their byte size is 0 here).
+        if !entry.is_dir && entry.size < min {
+            return false;
+        }
+    }
+    if let Some(days) = facets.max_age_days {
+        let Some(modified) = entry.modified else {
+            return false;
+        };
+        let cutoff = std::time::Duration::from_secs(days * 24 * 60 * 60);
+        match now.duration_since(modified) {
+            Ok(age) if age <= cutoff => {}
+            Ok(_) => return false,
+            // modified in the future: treat as fresh (passes).
+            Err(_) => {}
+        }
+    }
+    true
+}
+
+/// Cached filtered view: indices into `entries` matching `query` and facets.
+/// Valid while `generation`, `query` and `facets` are unchanged.
 struct FilterCache {
     generation: u64,
     query: String,
+    facets: FacetSet,
     indices: Vec<usize>,
 }
 
@@ -568,6 +658,7 @@ impl FilterCache {
         FilterCache {
             generation: u64::MAX, // sentinel: never computed
             query: String::new(),
+            facets: FacetSet::default(),
             indices: Vec::new(),
         }
     }
@@ -603,6 +694,8 @@ pub struct PanelState {
     pub history: Vec<PathBuf>,
     pub history_pos: usize,
     pub search_query: String,
+    /// Active quick-filter facets, ANDed with the substring filter.
+    pub facets: FacetSet,
     pub sort_col: SortColumn,
     pub sort_order: SortOrder,
     pub show_hidden: bool,
@@ -640,6 +733,7 @@ impl PanelState {
             history: vec![path],
             history_pos: 0,
             search_query: String::new(),
+            facets: FacetSet::default(),
             sort_col: SortColumn::Name,
             sort_order: SortOrder::Asc,
             show_hidden: false,
@@ -1140,24 +1234,29 @@ impl PanelState {
     /// entries runs only when something actually changed.
     fn ensure_filter_cache(&self) {
         let mut cache = self.filter_cache.borrow_mut();
-        if cache.generation == self.entries_gen && cache.query == self.search_query {
+        if cache.generation == self.entries_gen
+            && cache.query == self.search_query
+            && cache.facets == self.facets
+        {
             return;
         }
         cache.generation = self.entries_gen;
         cache.query = self.search_query.clone();
+        cache.facets = self.facets;
         cache.indices.clear();
-        if self.search_query.is_empty() {
-            cache.indices.extend(0..self.entries.len());
-        } else {
-            let q = self.search_query.to_lowercase();
-            cache.indices.extend(
-                self.entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.name_lower.contains(&q))
-                    .map(|(i, _)| i),
-            );
-        }
+
+        let q = self.search_query.to_lowercase();
+        let facets = self.facets;
+        let no_facets = facets.is_empty();
+        let now = SystemTime::now();
+        cache.indices.extend(
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| q.is_empty() || e.name_lower.contains(&q))
+                .filter(|(_, e)| no_facets || facet_matches(e, &facets, now))
+                .map(|(i, _)| i),
+        );
     }
 
     /// Number of entries matching the current filter (no allocation).
@@ -1615,6 +1714,73 @@ mod tests {
         assert_eq!(card.kind, "Folder");
         assert_eq!(card.size, "4.0 KB");
         assert_eq!(card.children, Some(3));
+    }
+
+    #[test]
+    fn facet_matches_kind_size_age() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let now = UNIX_EPOCH + Duration::from_secs(100 * 24 * 60 * 60); // day 100
+        let mut img = entry("photo.jpg", false, 5_000_000);
+        img.extension = "jpg".into();
+        img.modified = Some(UNIX_EPOCH + Duration::from_secs(99 * 24 * 60 * 60)); // 1 day old
+        let mut code = entry("main.rs", false, 100);
+        code.extension = "rs".into();
+        code.modified = Some(UNIX_EPOCH + Duration::from_secs(50 * 24 * 60 * 60)); // 50 days old
+        let dir = entry("box", true, 0);
+
+        let images = FacetSet {
+            kind: Some(KindFacet::Images),
+            ..Default::default()
+        };
+        assert!(facet_matches(&img, &images, now));
+        assert!(!facet_matches(&code, &images, now));
+
+        let folders = FacetSet {
+            kind: Some(KindFacet::Folders),
+            ..Default::default()
+        };
+        assert!(facet_matches(&dir, &folders, now));
+        assert!(!facet_matches(&img, &folders, now));
+
+        let big = FacetSet {
+            min_size: Some(1_000_000),
+            ..Default::default()
+        };
+        assert!(facet_matches(&img, &big, now)); // 5MB
+        assert!(!facet_matches(&code, &big, now)); // 100B
+        assert!(facet_matches(&dir, &big, now)); // folders ignore size
+
+        let recent = FacetSet {
+            max_age_days: Some(7),
+            ..Default::default()
+        };
+        assert!(facet_matches(&img, &recent, now)); // 1 day
+        assert!(!facet_matches(&code, &recent, now)); // 50 days
+
+        // Empty facets pass everything.
+        assert!(facet_matches(&code, &FacetSet::default(), now));
+    }
+
+    #[test]
+    fn facets_filter_the_listing() {
+        let mut p = panel_with(vec![
+            entry("a.jpg", false, 1),
+            entry("b.rs", false, 1),
+            entry("c.jpg", false, 1),
+        ]);
+        for e in &mut p.entries {
+            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+        }
+        p.facets = FacetSet {
+            kind: Some(KindFacet::Images),
+            ..Default::default()
+        };
+        let names: Vec<&str> = p
+            .filtered_entries()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a.jpg", "c.jpg"]);
     }
 
     #[test]
