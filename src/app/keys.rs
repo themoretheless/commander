@@ -29,6 +29,10 @@ impl App {
             (egui::Key::Tab, KeyCode::Tab),
             (egui::Key::ArrowUp, KeyCode::Up),
             (egui::Key::ArrowDown, KeyCode::Down),
+            (egui::Key::Home, KeyCode::Home),
+            (egui::Key::End, KeyCode::End),
+            (egui::Key::PageUp, KeyCode::PageUp),
+            (egui::Key::PageDown, KeyCode::PageDown),
             (egui::Key::Enter, KeyCode::Enter),
             (egui::Key::Backspace, KeyCode::Backspace),
             (egui::Key::Space, KeyCode::Space),
@@ -47,6 +51,7 @@ impl App {
             .map(|&(_, code)| KeyPress {
                 code,
                 command: i.modifiers.command,
+                shift: i.modifiers.shift,
             })
             .collect()
     }

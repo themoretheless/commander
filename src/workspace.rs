@@ -125,6 +125,48 @@ impl Workspace {
                     panel.scroll_to_cursor = true;
                 }
             }
+            Command::CursorHome => {
+                let panel = self.active_panel();
+                panel.cursor = 0;
+                panel.scroll_to_cursor = true;
+            }
+            Command::CursorEnd => {
+                let panel = self.active_panel();
+                panel.cursor = panel.filtered_count();
+                panel.scroll_to_cursor = true;
+            }
+            Command::CursorPageUp => {
+                let panel = self.active_panel();
+                let page = panel.page_rows.max(1);
+                panel.cursor = panel.cursor.saturating_sub(page);
+                panel.scroll_to_cursor = true;
+            }
+            Command::CursorPageDown => {
+                let panel = self.active_panel();
+                let page = panel.page_rows.max(1);
+                let max = panel.filtered_count();
+                panel.cursor = (panel.cursor + page).min(max);
+                panel.scroll_to_cursor = true;
+            }
+            Command::ExtendSelectDown => {
+                let panel = self.active_panel();
+                panel.select_cursor();
+                let max = panel.filtered_count();
+                if panel.cursor < max {
+                    panel.cursor += 1;
+                }
+                panel.select_cursor();
+                panel.scroll_to_cursor = true;
+            }
+            Command::ExtendSelectUp => {
+                let panel = self.active_panel();
+                panel.select_cursor();
+                if panel.cursor > 1 {
+                    panel.cursor -= 1;
+                }
+                panel.select_cursor();
+                panel.scroll_to_cursor = true;
+            }
             Command::Activate => {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
                 if self.active_panel_ref().cursor == 0 {
@@ -471,6 +513,44 @@ mod tests {
             ws.execute(Command::CursorDown);
         }
         assert_eq!(ws.left.cursor, 2, "cursor must stop at the last entry");
+    }
+
+    #[test]
+    fn home_end_and_page_navigation() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        for n in 0..20 {
+            l.file(&format!("f{n:02}.txt"), "x");
+        }
+        let mut ws = workspace(&l, &r);
+        ws.left.page_rows = 5;
+
+        ws.execute(Command::CursorEnd);
+        assert_eq!(ws.left.cursor, 20, "End jumps to the last row");
+
+        ws.execute(Command::CursorHome);
+        assert_eq!(ws.left.cursor, 0, "Home jumps to the top");
+
+        ws.execute(Command::CursorPageDown);
+        assert_eq!(ws.left.cursor, 5, "PageDown moves by one page");
+
+        ws.execute(Command::CursorPageUp);
+        assert_eq!(ws.left.cursor, 0, "PageUp moves back, clamped at 0");
+    }
+
+    #[test]
+    fn shift_arrows_build_a_contiguous_selection() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("a.txt", "x");
+        l.file("b.txt", "x");
+        l.file("c.txt", "x");
+        let mut ws = workspace(&l, &r);
+
+        ws.left.cursor = 1; // a.txt
+        ws.execute(Command::ExtendSelectDown); // select a, move to b, select b
+        ws.execute(Command::ExtendSelectDown); // select b, move to c, select c
+
+        assert_eq!(ws.left.cursor, 3);
+        assert_eq!(ws.left.selected.len(), 3, "a, b and c are selected");
     }
 
     #[test]

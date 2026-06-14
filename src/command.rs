@@ -6,6 +6,18 @@ pub enum Command {
     SwitchPanel,
     CursorUp,
     CursorDown,
+    /// Jump to the first row.
+    CursorHome,
+    /// Jump to the last row.
+    CursorEnd,
+    /// Move up by one visible page.
+    CursorPageUp,
+    /// Move down by one visible page.
+    CursorPageDown,
+    /// Shift+Up: select the current row and move up (range selection).
+    ExtendSelectUp,
+    /// Shift+Down: select the current row and move down (range selection).
+    ExtendSelectDown,
     /// Enter: open file / enter dir / go up on the ".." row.
     Activate,
     GoUp,
@@ -27,6 +39,10 @@ pub enum KeyCode {
     Tab,
     Up,
     Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
     Enter,
     Backspace,
     Space,
@@ -40,30 +56,38 @@ pub enum KeyCode {
     H,
 }
 
-/// A single key press with the Cmd-modifier state.
+/// A single key press with modifier state.
 #[derive(Clone, Copy, Debug)]
 pub struct KeyPress {
     pub code: KeyCode,
     /// Cmd (macOS command key) held.
     pub command: bool,
+    /// Shift held.
+    pub shift: bool,
 }
 
 pub fn map_key(press: KeyPress) -> Option<Command> {
     use KeyCode::*;
-    match (press.code, press.command) {
-        (Tab, _) => Some(Command::SwitchPanel),
-        (Up, _) => Some(Command::CursorUp),
-        (Down, _) => Some(Command::CursorDown),
-        (Enter, _) => Some(Command::Activate),
-        (Backspace, _) => Some(Command::GoUp),
-        (Space, _) => Some(Command::ToggleSelect),
-        (F3, _) => Some(Command::TogglePreview),
-        (F5, _) => Some(Command::RequestCopy),
-        (F6, _) => Some(Command::RequestMove),
-        (F7, _) => Some(Command::CreateDir),
-        (F8, _) | (Delete, _) => Some(Command::RequestDelete),
-        (A, true) => Some(Command::SelectAll),
-        (H, true) => Some(Command::ToggleHidden),
+    match press.code {
+        Tab => Some(Command::SwitchPanel),
+        Up if press.shift => Some(Command::ExtendSelectUp),
+        Down if press.shift => Some(Command::ExtendSelectDown),
+        Up => Some(Command::CursorUp),
+        Down => Some(Command::CursorDown),
+        Home => Some(Command::CursorHome),
+        End => Some(Command::CursorEnd),
+        PageUp => Some(Command::CursorPageUp),
+        PageDown => Some(Command::CursorPageDown),
+        Enter => Some(Command::Activate),
+        Backspace => Some(Command::GoUp),
+        Space => Some(Command::ToggleSelect),
+        F3 => Some(Command::TogglePreview),
+        F5 => Some(Command::RequestCopy),
+        F6 => Some(Command::RequestMove),
+        F7 => Some(Command::CreateDir),
+        F8 | Delete => Some(Command::RequestDelete),
+        A if press.command => Some(Command::SelectAll),
+        H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }
 }
@@ -80,6 +104,7 @@ mod tests {
         KeyPress {
             code,
             command: false,
+            shift: false,
         }
     }
 
@@ -87,6 +112,15 @@ mod tests {
         KeyPress {
             code,
             command: true,
+            shift: false,
+        }
+    }
+
+    fn shift_press(code: KeyCode) -> KeyPress {
+        KeyPress {
+            code,
+            command: false,
+            shift: true,
         }
     }
 
@@ -118,5 +152,29 @@ mod tests {
             press(KeyCode::Down),
         ]);
         assert_eq!(cmds, vec![Command::SwitchPanel, Command::CursorDown]);
+    }
+
+    #[test]
+    fn navigation_keys_map() {
+        assert_eq!(map_key(press(KeyCode::Home)), Some(Command::CursorHome));
+        assert_eq!(map_key(press(KeyCode::End)), Some(Command::CursorEnd));
+        assert_eq!(map_key(press(KeyCode::PageUp)), Some(Command::CursorPageUp));
+        assert_eq!(
+            map_key(press(KeyCode::PageDown)),
+            Some(Command::CursorPageDown)
+        );
+    }
+
+    #[test]
+    fn shift_arrows_extend_selection() {
+        assert_eq!(map_key(press(KeyCode::Up)), Some(Command::CursorUp));
+        assert_eq!(
+            map_key(shift_press(KeyCode::Up)),
+            Some(Command::ExtendSelectUp)
+        );
+        assert_eq!(
+            map_key(shift_press(KeyCode::Down)),
+            Some(Command::ExtendSelectDown)
+        );
     }
 }

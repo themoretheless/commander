@@ -102,6 +102,9 @@ impl App {
                 let viewport = ui.clip_rect();
                 let scroll_top = viewport.top() - ui.min_rect().top();
 
+                // Feed the visible-row count back to the core for PageUp/Down.
+                panel.page_rows = ((viewport.height() / row_h).floor() as usize).max(1);
+
                 // Which rows are visible
                 let mut first_visible = ((scroll_top / row_h).floor() as usize).min(total_rows);
                 let mut last_visible =

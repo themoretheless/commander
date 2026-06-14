@@ -301,6 +301,58 @@ pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
     }
 }
 
+/// Natural ("human") ordering: runs of digits compare by numeric value, so
+/// "file2" sorts before "file10". Non-digit runs compare by char. Inputs are
+/// expected pre-lowercased (we sort on `name_lower`).
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        let (ca, cb) = (a[i], b[j]);
+        if ca.is_ascii_digit() && cb.is_ascii_digit() {
+            let si = i;
+            while i < a.len() && a[i].is_ascii_digit() {
+                i += 1;
+            }
+            let sj = j;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            // Compare by numeric value: drop leading zeros, then longer run
+            // wins, then lexically; finally fewer leading zeros sorts first.
+            let va = strip_leading_zeros(&a[si..i]);
+            let vb = strip_leading_zeros(&b[sj..j]);
+            let ord = va
+                .len()
+                .cmp(&vb.len())
+                .then_with(|| va.iter().cmp(vb.iter()))
+                .then_with(|| (i - si).cmp(&(j - sj)));
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        } else {
+            match ca.cmp(&cb) {
+                Ordering::Equal => {
+                    i += 1;
+                    j += 1;
+                }
+                ord => return ord,
+            }
+        }
+    }
+    // One ran out: the shorter string sorts first.
+    (a.len() - i).cmp(&(b.len() - j))
+}
+
+fn strip_leading_zeros(s: &[char]) -> &[char] {
+    let mut k = 0;
+    while k + 1 < s.len() && s[k] == '0' {
+        k += 1;
+    }
+    &s[k..]
+}
+
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -345,6 +397,9 @@ pub struct PanelState {
     pub selected: std::collections::HashSet<PathBuf>,
     pub cursor: usize,
     pub scroll_to_cursor: bool,
+    /// Visible rows in the list viewport, set by the renderer each frame and
+    /// read by PageUp/PageDown. Zero until the panel has been drawn once.
+    pub page_rows: usize,
     pub preview: Option<PreviewContent>,
     pub history: Vec<PathBuf>,
     pub history_pos: usize,
@@ -380,6 +435,7 @@ impl PanelState {
             selected: std::collections::HashSet::new(),
             cursor: 0,
             scroll_to_cursor: false,
+            page_rows: 0,
             preview: None,
             history: vec![path],
             history_pos: 0,
@@ -720,8 +776,9 @@ impl PanelState {
             }
 
             let cmp = match col {
-                // name_lower is precomputed at load: no per-comparison allocs.
-                SortColumn::Name => a.name_lower.cmp(&b.name_lower),
+                // Natural order over the precomputed lowercase name, so
+                // "file2" sorts before "file10".
+                SortColumn::Name => natural_cmp(&a.name_lower, &b.name_lower),
                 SortColumn::Size => a.size.cmp(&b.size),
                 SortColumn::Modified => a.modified.cmp(&b.modified),
             };
@@ -748,8 +805,30 @@ impl PanelState {
     }
 
     pub fn go_up(&mut self) {
+        // Remember the directory we are leaving so the cursor can land on it
+        // in the parent (classic dual-pane behaviour).
+        let child = self
+            .current_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string());
         if let Some(parent) = self.current_path.parent().map(|p| p.to_path_buf()) {
             self.navigate_to(parent);
+            if let Some(name) = child
+                && let Some(idx) = self.filtered_entries().iter().position(|e| e.name == name)
+            {
+                self.cursor = idx + 1;
+                self.scroll_to_cursor = true;
+            }
+        }
+    }
+
+    /// Add the file under the cursor to the selection (range-select step).
+    pub fn select_cursor(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        if let Some(path) = self.filtered_get(self.cursor - 1).map(|e| e.path.clone()) {
+            self.selected.insert(path);
         }
     }
 
@@ -1133,6 +1212,54 @@ mod tests {
 
         p.go_forward();
         assert_eq!(p.current_path, sub);
+    }
+
+    #[test]
+    fn go_up_lands_cursor_on_the_left_directory() {
+        let tmp = TempDir::new();
+        tmp.dir("aaa");
+        let mid = tmp.dir("mmm");
+        tmp.dir("zzz");
+
+        let mut p = PanelState::new(mid.clone());
+        p.refresh();
+        p.go_up();
+
+        assert_eq!(p.current_path, tmp.path());
+        // Cursor should sit on "mmm" (the dir we came from), not row 0.
+        let under = p.filtered_get(p.cursor - 1).unwrap();
+        assert_eq!(under.name, "mmm");
+    }
+
+    #[test]
+    fn natural_cmp_orders_numbers_by_value() {
+        assert_eq!(natural_cmp("file2", "file10"), Ordering::Less);
+        assert_eq!(natural_cmp("file10", "file2"), Ordering::Greater);
+        assert_eq!(natural_cmp("a", "a"), Ordering::Equal);
+        // Equal numeric value: the shorter run (fewer leading zeros) sorts first.
+        assert_eq!(natural_cmp("img9", "img09"), Ordering::Less);
+        assert_eq!(natural_cmp("v1.2", "v1.10"), Ordering::Less);
+    }
+
+    #[test]
+    fn natural_sort_applies_to_listing() {
+        let mut p = panel_with(vec![
+            entry("file10.txt", false, 1),
+            entry("file2.txt", false, 1),
+            entry("file1.txt", false, 1),
+        ]);
+        p.sort_entries();
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
+    }
+
+    #[test]
+    fn select_cursor_adds_current_row() {
+        let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
+        p.cursor = 2; // second file
+        p.select_cursor();
+        assert!(p.selected.contains(&p.entries[1].path));
+        assert_eq!(p.selected.len(), 1);
     }
 
     #[test]
