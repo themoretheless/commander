@@ -28,6 +28,23 @@ pub struct PendingTransfer {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub flat: FlatList,
+    /// Bytes the operation needs (recursive total of the entries).
+    pub need_bytes: u64,
+    /// Free bytes on the target volume (None if it could not be read).
+    pub free_bytes: Option<u64>,
+    /// Source and target are on the same volume (a move is then instant).
+    pub same_volume: bool,
+}
+
+impl PendingTransfer {
+    /// True when the operation cannot fit on the target volume (a same-volume
+    /// move needs no extra space, so it never overflows).
+    pub fn overflows(&self) -> bool {
+        if self.kind == TransferKind::Move && self.same_volume {
+            return false;
+        }
+        self.free_bytes.is_some_and(|free| self.need_bytes > free)
+    }
 }
 
 /// Pending file operation awaiting user confirmation.
@@ -128,6 +145,22 @@ pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
             }
         }
     }
+}
+
+/// Compute (need bytes, free bytes on target, same-volume) for a transfer,
+/// used to drive the will-it-fit guard in the confirmation dialog.
+fn fit_stats(
+    entries: &[FileEntry],
+    target: &Path,
+    _kind: TransferKind,
+) -> (u64, Option<u64>, bool) {
+    let need = transfer::total_bytes(entries);
+    let free = crate::fs_util::free_space(target);
+    let same = entries
+        .first()
+        .and_then(|e| e.path.parent())
+        .is_some_and(|src| crate::fs_util::same_volume(src, target));
+    (need, free, same)
 }
 
 /// Resolve a typed path for go-to-path (Cmd+L): trim, expand a leading `~`
@@ -391,6 +424,7 @@ impl Workspace {
         }
         let flat = scan::spawn_scan(entries.clone());
         let conflicts = scan::find_conflicts(&entries, &target);
+        let (need_bytes, free_bytes, same_volume) = fit_stats(&entries, &target, kind);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
@@ -399,6 +433,9 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             flat,
+            need_bytes,
+            free_bytes,
+            same_volume,
         }));
     }
 
@@ -423,7 +460,7 @@ impl Workspace {
             return;
         };
 
-        let total = transfer::total_bytes(&t.entries);
+        let total = t.need_bytes;
         let progress = Arc::new(Mutex::new(TransferProgress::new(total, t.entries.len())));
         self.active_transfer = Some(progress.clone());
 
@@ -632,6 +669,8 @@ impl Workspace {
         let conflicts = scan::find_conflicts(&entries, &target);
         let flat = scan::spawn_scan(entries.clone());
         let has_conflicts = !conflicts.is_empty();
+        let (need_bytes, free_bytes, same_volume) =
+            fit_stats(&entries, &target, TransferKind::Move);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind: TransferKind::Move,
             entries,
@@ -640,6 +679,9 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             flat,
+            need_bytes,
+            free_bytes,
+            same_volume,
         }));
         // No conflicts: run the move straight away. Conflicts: leave the
         // pending op for the confirmation dialog to resolve.
@@ -976,6 +1018,32 @@ mod tests {
         let map = build_compare_map(std::slice::from_ref(&e));
         assert!(map.contains_key("photo.jpg"));
         assert_eq!(map["photo.jpg"].0, 2);
+    }
+
+    #[test]
+    fn pending_transfer_overflow_logic() {
+        let mk = |kind, need, free, same| PendingTransfer {
+            kind,
+            entries: vec![],
+            target: PathBuf::from("/t"),
+            conflicts: vec![],
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            flat: scan::spawn_scan(vec![]),
+            need_bytes: need,
+            free_bytes: free,
+            same_volume: same,
+        };
+        // Copy needing more than free overflows.
+        assert!(mk(TransferKind::Copy, 100, Some(50), false).overflows());
+        // Copy that fits does not.
+        assert!(!mk(TransferKind::Copy, 40, Some(50), false).overflows());
+        // Same-volume move never overflows (instant rename).
+        assert!(!mk(TransferKind::Move, 100, Some(50), true).overflows());
+        // Cross-volume move behaves like copy.
+        assert!(mk(TransferKind::Move, 100, Some(50), false).overflows());
+        // Unknown free space: don't block.
+        assert!(!mk(TransferKind::Copy, 100, None, false).overflows());
     }
 
     #[test]

@@ -47,6 +47,18 @@ impl App {
                 ),
             };
 
+        // Will-it-fit snapshot (None for delete): (overflow, need, free, instant_move).
+        let fit: Option<(bool, u64, Option<u64>, bool)> = match &self.ws.pending_op {
+            Some(PendingOp::Transfer(tr)) => Some((
+                tr.overflows(),
+                tr.need_bytes,
+                tr.free_bytes,
+                tr.kind == TransferKind::Move && tr.same_volume,
+            )),
+            _ => None,
+        };
+        let overflow = fit.map(|f| f.0).unwrap_or(false);
+
         let flat_opt = flat_arc.lock().unwrap().clone();
         let flat_ready = flat_opt.is_some();
         let flat = flat_opt.unwrap_or_default();
@@ -176,6 +188,39 @@ impl App {
                     );
                 }
 
+                // Will-it-fit guard.
+                if let Some((over, need, free, instant)) = fit {
+                    ui.add_space(2.0);
+                    let (msg, color) = if instant {
+                        ("Instant move (same volume)".to_string(), t.accent)
+                    } else if let Some(free) = free {
+                        if over {
+                            (
+                                format!(
+                                    "Not enough space: needs {} more than {} free",
+                                    format_size(need.saturating_sub(free)),
+                                    format_size(free)
+                                ),
+                                t.accent_red,
+                            )
+                        } else {
+                            (
+                                format!(
+                                    "Fits: {} into {} free",
+                                    format_size(need),
+                                    format_size(free)
+                                ),
+                                t.accent,
+                            )
+                        }
+                    } else {
+                        (String::new(), t.text_muted)
+                    };
+                    if !msg.is_empty() {
+                        ui.label(egui::RichText::new(msg).size(11.0).color(color));
+                    }
+                }
+
                 // Conflict warning + overwrite policy buttons
                 if has_conflicts {
                     ui.add_space(8.0);
@@ -190,7 +235,8 @@ impl App {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .add(
+                            .add_enabled(
+                                !overflow,
                                 egui::Button::new(
                                     egui::RichText::new("Overwrite All")
                                         .size(12.0)
@@ -208,7 +254,8 @@ impl App {
                         // Keep Both: safe default — writes the incoming items
                         // under a fresh "copy" name, nothing is overwritten.
                         if ui
-                            .add(
+                            .add_enabled(
+                                !overflow,
                                 egui::Button::new(
                                     egui::RichText::new("Keep Both")
                                         .size(12.0)
@@ -224,7 +271,8 @@ impl App {
                         }
                         ui.add_space(4.0);
                         if ui
-                            .add(
+                            .add_enabled(
+                                !overflow,
                                 egui::Button::new(
                                     egui::RichText::new("Skip Existing")
                                         .size(12.0)
@@ -262,7 +310,8 @@ impl App {
                     if !has_conflicts {
                         ui.add_space(8.0);
                         if ui
-                            .add(
+                            .add_enabled(
+                                !overflow,
                                 egui::Button::new(
                                     egui::RichText::new(action_label)
                                         .size(13.0)
@@ -281,7 +330,7 @@ impl App {
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.dismiss_pending_op(ctx);
                 }
-                if !has_conflicts && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if !has_conflicts && !overflow && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     self.confirm_pending_op(ctx);
                 }
             });

@@ -100,6 +100,41 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
     Ok(dest)
 }
 
+/// Parse the available bytes from `df -k` output (the Available column,
+/// index 3, is in 1024-byte blocks). Pure, so it is unit-testable.
+pub fn parse_df_avail_bytes(out: &str) -> Option<u64> {
+    let line = out.lines().nth(1)?;
+    let cols: Vec<&str> = line.split_whitespace().collect();
+    let avail_kib: u64 = cols.get(3)?.parse().ok()?;
+    Some(avail_kib * 1024)
+}
+
+/// Free space in bytes on the volume containing `path`, via `df -k`.
+pub fn free_space(path: &Path) -> Option<u64> {
+    let out = std::process::Command::new("df")
+        .arg("-k")
+        .arg(path)
+        .output()
+        .ok()?;
+    parse_df_avail_bytes(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Whether two paths live on the same filesystem (so a move is an instant
+/// rename needing no extra space).
+#[cfg(unix)]
+pub fn same_volume(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+pub fn same_volume(_a: &Path, _b: &Path) -> bool {
+    false
+}
+
 /// Compress a file or directory into "<name>.zip" next to it.
 /// Runs `ditto` in the background; returns once the process is spawned.
 pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
@@ -193,6 +228,24 @@ mod tests {
             std::fs::read_to_string(copy.join("inner.txt")).unwrap(),
             "x"
         );
+    }
+
+    #[test]
+    fn parse_df_avail_reads_available_column() {
+        let out = "Filesystem 1024-blocks      Used Available Capacity  Mounted on\n\
+                   /dev/disk3s1 971350180 100000000 800000000      12%  /\n";
+        assert_eq!(parse_df_avail_bytes(out), Some(800_000_000 * 1024));
+        assert_eq!(parse_df_avail_bytes("only a header line\n"), None);
+        assert_eq!(parse_df_avail_bytes(""), None);
+    }
+
+    #[test]
+    fn same_volume_true_within_one_filesystem() {
+        let tmp = TempDir::new();
+        let a = tmp.file("a.txt", "x");
+        let b = tmp.dir("sub");
+        // Both live under the same temp dir, hence the same device.
+        assert!(same_volume(&a, &b));
     }
 
     #[test]
