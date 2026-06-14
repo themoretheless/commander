@@ -1352,24 +1352,6 @@ impl PanelState {
         }
     }
 
-    pub fn breadcrumbs(&self) -> Vec<(String, PathBuf)> {
-        let mut segments = Vec::new();
-        let mut current = self.current_path.clone();
-        loop {
-            let name = current
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "/".to_string());
-            segments.push((name, current.clone()));
-            match current.parent() {
-                Some(parent) if parent != current => current = parent.to_path_buf(),
-                _ => break,
-            }
-        }
-        segments.reverse();
-        segments
-    }
-
     pub fn total_size_selected(&self) -> u64 {
         let sizes = self.dir_sizes.lock().ok();
         self.selected_entries()
@@ -1943,14 +1925,6 @@ mod tests {
         p.select_cursor();
         assert!(p.selected.contains(&p.entries[1].path));
         assert_eq!(p.selected.len(), 1);
-    }
-
-    #[test]
-    fn breadcrumbs_start_at_root() {
-        let p = PanelState::new(PathBuf::from("/tmp/foo"));
-        let crumbs = p.breadcrumbs();
-        assert_eq!(crumbs[0].0, "/");
-        assert_eq!(crumbs.last().unwrap().0, "foo");
     }
 
     #[test]

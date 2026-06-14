@@ -2,6 +2,7 @@
 
 mod app;
 mod command;
+mod crumbs;
 mod fs_util;
 mod image_cache;
 mod native_copy;

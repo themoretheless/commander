@@ -236,66 +236,95 @@ impl App {
 
                             ui.add_space(6.0);
 
-                            // Breadcrumbs as connected arrow-shaped buttons
+                            // Breadcrumbs: elide deep paths behind a "..." menu
+                            // so the root and the current folder stay visible.
                             let mut nav_to_crumb: Option<std::path::PathBuf> = None;
-                            egui::ScrollArea::horizontal()
-                                .max_width(ui.available_width())
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 0.0;
-                                        let crumbs = panel.breadcrumbs();
-                                        let len = crumbs.len();
-                                        for (i, (name, path)) in crumbs.iter().enumerate() {
-                                            let is_last = i == len - 1;
-                                            let fg = if is_last {
-                                                t.text_primary
-                                            } else {
-                                                t.text_secondary
-                                            };
+                            let all = crate::crumbs::crumbs(&panel.current_path);
+                            // Roughly one chip per ~130px; always keep two.
+                            let max_visible = ((ui.available_width() / 130.0) as usize).max(2);
+                            let layout = crate::crumbs::elide_crumbs(&all, max_visible);
 
-                                            let resp = Frame::NONE
-                                                .fill(Color32::TRANSPARENT)
-                                                .corner_radius(CornerRadius::ZERO)
-                                                .stroke(Stroke::new(1.0_f32, t.border))
-                                                .inner_margin(Margin::symmetric(8, 3))
-                                                .show(ui, |ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(name)
-                                                            .size(12.0)
-                                                            .color(fg),
-                                                    );
-                                                })
-                                                .response
-                                                .interact(Sense::click());
+                            // Draw one clickable crumb chip; returns its response.
+                            let chip = |ui: &mut egui::Ui, label: &str, fg: Color32| {
+                                Frame::NONE
+                                    .fill(Color32::TRANSPARENT)
+                                    .corner_radius(CornerRadius::ZERO)
+                                    .stroke(Stroke::new(1.0_f32, t.border))
+                                    .inner_margin(Margin::symmetric(8, 3))
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new(label).size(12.0).color(fg));
+                                    })
+                                    .response
+                                    .interact(Sense::click())
+                            };
+                            let sep = |ui: &mut egui::Ui| {
+                                Frame::NONE
+                                    .inner_margin(Margin::symmetric(3, 3))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("\u{276f}")
+                                                .size(11.0)
+                                                .color(t.text_muted),
+                                        );
+                                    });
+                            };
 
-                                            if resp.clicked() && !is_last {
-                                                nav_to_crumb = Some(path.clone());
-                                            }
-                                            if resp.hovered() && !is_last {
-                                                ui.ctx().set_cursor_icon(
-                                                    egui::CursorIcon::PointingHand,
-                                                );
-                                            }
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
 
-                                            // Arrow separator
-                                            if !is_last {
-                                                // Draw a simple chevron
-                                                Frame::NONE
-                                                    .fill(Color32::TRANSPARENT)
-                                                    .corner_radius(CornerRadius::ZERO)
-                                                    .stroke(Stroke::new(1.0_f32, t.border))
-                                                    .inner_margin(Margin::symmetric(0, 3))
-                                                    .show(ui, |ui| {
-                                                        ui.label(
-                                                            egui::RichText::new("\u{276f}")
-                                                                .size(11.0)
-                                                                .color(t.text_muted),
-                                                        );
-                                                    });
+                                // Head (root). It is itself the current dir only
+                                // when the path has a single segment.
+                                let head_is_current = layout.tail.is_empty();
+                                let fg = if head_is_current {
+                                    t.text_primary
+                                } else {
+                                    t.text_secondary
+                                };
+                                let resp = chip(ui, &layout.head.label, fg);
+                                if resp.clicked() && !head_is_current {
+                                    nav_to_crumb = Some(layout.head.full_path.clone());
+                                }
+                                if resp.hovered() && !head_is_current {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                if !head_is_current {
+                                    sep(ui);
+                                }
+
+                                // Collapsed ancestors behind a "..." menu.
+                                if layout.is_elided() {
+                                    ui.menu_button("\u{2026}", |ui| {
+                                        for c in &layout.collapsed {
+                                            if ui.button(&c.label).clicked() {
+                                                nav_to_crumb = Some(c.full_path.clone());
+                                                ui.close_menu();
                                             }
                                         }
                                     });
-                                });
+                                    sep(ui);
+                                }
+
+                                // Tail, ending at the current directory.
+                                let tlen = layout.tail.len();
+                                for (i, c) in layout.tail.iter().enumerate() {
+                                    let is_last = i == tlen - 1;
+                                    let fg = if is_last {
+                                        t.text_primary
+                                    } else {
+                                        t.text_secondary
+                                    };
+                                    let resp = chip(ui, &c.label, fg);
+                                    if resp.clicked() && !is_last {
+                                        nav_to_crumb = Some(c.full_path.clone());
+                                    }
+                                    if resp.hovered() && !is_last {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    if !is_last {
+                                        sep(ui);
+                                    }
+                                }
+                            });
                             if let Some(path) = nav_to_crumb {
                                 panel.navigate_to(path);
                             }
