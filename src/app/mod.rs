@@ -4,6 +4,7 @@
 
 mod batch_rename_dialog;
 mod confirm_dialog;
+mod duplicates_dialog;
 mod file_list;
 mod keys;
 mod mask_dialog;
@@ -62,6 +63,17 @@ pub struct App {
     pub(crate) batch_rename: Option<BatchRenameState>,
     /// Active synchronise-sheet state.
     pub(crate) sync: Option<SyncState>,
+    /// Active duplicate-finder sheet state.
+    pub(crate) duplicates: Option<DupState>,
+}
+
+/// UI state for the duplicate-finder sheet. Grouping lives in `crate::dedup`;
+/// this holds the groups, the per-group keep choice, and the policy.
+pub(crate) struct DupState {
+    pub groups: Vec<crate::dedup::DupGroup>,
+    /// Index (into each group's `files`) of the file to keep.
+    pub keep: Vec<usize>,
+    pub policy: crate::dedup::KeepPolicy,
 }
 
 /// UI state for the directory-synchronise sheet. The diff lives in
@@ -188,6 +200,7 @@ impl App {
             palette_input: None,
             batch_rename: None,
             sync: None,
+            duplicates: None,
         }
     }
 

@@ -3,6 +3,7 @@
 mod app;
 mod command;
 mod crumbs;
+mod dedup;
 mod fs_util;
 mod fuzzy;
 mod image_cache;

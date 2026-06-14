@@ -80,6 +80,8 @@ pub struct Workspace {
     pub batch_rename_request: bool,
     /// Set by [`Command::BeginSync`]; the UI opens the synchronise sheet.
     pub sync_request: bool,
+    /// Set by [`Command::FindDuplicates`]; the UI opens the duplicates sheet.
+    pub duplicates_request: bool,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
     pub redo_request: bool,
     /// Queued second copy pass (entries, target) for a two-way sync, started
@@ -276,6 +278,7 @@ impl Workspace {
             palette_request: false,
             batch_rename_request: false,
             sync_request: false,
+            duplicates_request: false,
             redo_request: false,
             sync_followup: None,
             stack: crate::undo::UndoStack::default(),
@@ -464,6 +467,7 @@ impl Workspace {
             }
             Command::BeginBatchRename => self.batch_rename_request = true,
             Command::BeginSync => self.sync_request = true,
+            Command::FindDuplicates => self.duplicates_request = true,
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
@@ -843,6 +847,54 @@ impl Workspace {
         self.active_panel().selected.clear();
         self.active_panel().refresh();
         Ok(done)
+    }
+
+    // ── Duplicates ──────────────────────────────────────────────────────
+
+    /// Find duplicate files in the active panel's directory (files only,
+    /// non-recursive for now). Size-prefilters so only files whose size
+    /// collides are content-hashed, then groups the byte-identical ones.
+    pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
+        use std::collections::HashMap;
+        let files: Vec<&FileEntry> = self
+            .active_panel_ref()
+            .entries
+            .iter()
+            .filter(|e| !e.is_dir)
+            .collect();
+        let mut size_counts: HashMap<u64, usize> = HashMap::new();
+        for f in &files {
+            *size_counts.entry(f.size).or_insert(0) += 1;
+        }
+        let mut keys: Vec<crate::dedup::FileKey> = Vec::new();
+        for f in &files {
+            if size_counts.get(&f.size).copied().unwrap_or(0) < 2 {
+                continue; // a unique size cannot have a duplicate
+            }
+            if let Some(hash) = crate::fs_util::content_hash(&f.path) {
+                keys.push(crate::dedup::FileKey {
+                    path: f.path.clone(),
+                    size: f.size,
+                    hash,
+                    modified: f.modified,
+                });
+            }
+        }
+        crate::dedup::group_duplicates(&keys)
+    }
+
+    /// Move `paths` to the Trash and refresh both panels. Not yet undoable
+    /// here (recoverable from the Trash). Returns how many were trashed.
+    pub fn trash_paths(&mut self, paths: &[PathBuf]) -> usize {
+        let mut n = 0;
+        for p in paths {
+            if trash::delete(p).is_ok() {
+                n += 1;
+            }
+        }
+        self.left.refresh();
+        self.right.refresh();
+        n
     }
 
     // ── Directory sync ──────────────────────────────────────────────────
@@ -1503,6 +1555,27 @@ mod tests {
             "second pass: right -> left"
         );
         assert!(!ws.has_sync_followup(), "queue drained");
+    }
+
+    #[test]
+    fn find_duplicates_groups_identical_files_in_active_dir() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("a.txt", "same content");
+        l.file("b.txt", "same content"); // byte-identical dup of a
+        l.file("c.txt", "unique bytes"); // same length, different bytes
+        l.file("d.txt", "x"); // unique size
+        let ws = workspace(&l, &r);
+
+        let groups = ws.find_duplicates();
+        assert_eq!(groups.len(), 1, "only a.txt/b.txt are byte-identical");
+        assert_eq!(groups[0].files.len(), 2);
+        let names: Vec<String> = groups[0]
+            .files
+            .iter()
+            .filter_map(|f| f.path.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert!(names.contains(&"a.txt".to_string()));
+        assert!(names.contains(&"b.txt".to_string()));
     }
 
     #[test]

@@ -54,6 +54,8 @@ pub enum Command {
     /// Cmd+K: open the command palette.
     BeginPalette,
     SelectAll,
+    /// Open the duplicate finder for the active panel's folder.
+    FindDuplicates,
     /// Flip the selection across the visible rows of the active panel.
     InvertSelection,
     /// Select active-panel entries whose name also exists in the other panel.
@@ -71,6 +73,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Rename", "F2", Command::BeginRename),
         ("Batch rename", "Cmd+Shift+R", Command::BeginBatchRename),
         ("Synchronize panels", "Cmd+Shift+S", Command::BeginSync),
+        ("Find duplicates", "", Command::FindDuplicates),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
         ("Go to path", "Cmd+L", Command::BeginGoToPath),
         ("Recent folders", "Cmd+P", Command::BeginRecent),

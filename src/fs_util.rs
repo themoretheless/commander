@@ -156,6 +156,25 @@ pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// Content hash of a file, streamed in chunks so large files are not loaded
+/// whole. Returns `None` if the file cannot be read. Non-cryptographic (good
+/// enough to confirm byte-identity for duplicate detection after a size match).
+pub fn content_hash(path: &Path) -> Option<u64> {
+    use std::hash::Hasher;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.write(&buf[..n]);
+    }
+    Some(hasher.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +186,17 @@ mod tests {
         tmp.file("a.bin", "12345");
         tmp.file("sub/b.bin", "123");
         assert_eq!(dir_size_recursive(tmp.path()), 8);
+    }
+
+    #[test]
+    fn content_hash_matches_for_identical_bytes() {
+        let tmp = TempDir::new();
+        let a = tmp.file("a.bin", "hello world");
+        let b = tmp.file("b.bin", "hello world");
+        let c = tmp.file("c.bin", "hello WORLD");
+        assert_eq!(content_hash(&a), content_hash(&b), "identical -> same hash");
+        assert_ne!(content_hash(&a), content_hash(&c), "different -> differ");
+        assert!(content_hash(Path::new("/no/such/file")).is_none());
     }
 
     #[test]
