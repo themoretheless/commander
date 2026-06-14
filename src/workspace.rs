@@ -50,6 +50,8 @@ pub struct Workspace {
     pub rename_target: Option<PathBuf>,
     /// Set by [`Command::BeginSelectMask`]; the UI opens the mask input.
     pub mask_request: bool,
+    /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
+    pub path_request: bool,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
@@ -126,6 +128,29 @@ pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
     }
 }
 
+/// Resolve a typed path for go-to-path (Cmd+L): trim, expand a leading `~`
+/// to `home`, and require the result to be an existing directory.
+pub fn resolve_dir_input(input: &str, home: &Path) -> Result<PathBuf, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Path is empty".into());
+    }
+    let expanded: PathBuf = if trimmed == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if !expanded.exists() {
+        return Err("Path does not exist".into());
+    }
+    if !expanded.is_dir() {
+        return Err("Not a folder".into());
+    }
+    Ok(expanded)
+}
+
 /// Validate a proposed file name against its siblings (UI-independent so it
 /// can drive live feedback while typing). `siblings` must exclude the entry
 /// being renamed.
@@ -166,6 +191,7 @@ impl Workspace {
             active_transfer: None,
             rename_target: None,
             mask_request: false,
+            path_request: false,
             opener,
         }
     }
@@ -332,6 +358,7 @@ impl Workspace {
                 };
             }
             Command::BeginSelectMask => self.mask_request = true,
+            Command::BeginGoToPath => self.path_request = true,
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
             Command::ToggleHidden => {
@@ -945,6 +972,28 @@ mod tests {
         let map = build_compare_map(std::slice::from_ref(&e));
         assert!(map.contains_key("photo.jpg"));
         assert_eq!(map["photo.jpg"].0, 2);
+    }
+
+    #[test]
+    fn resolve_dir_input_expands_tilde_and_validates() {
+        let home = TempDir::new();
+        home.dir("Documents");
+        let file = home.file("note.txt", "x");
+
+        assert_eq!(resolve_dir_input("~", home.path()).unwrap(), home.path());
+        assert_eq!(
+            resolve_dir_input("~/Documents", home.path()).unwrap(),
+            home.path().join("Documents")
+        );
+        let abs = home.path().join("Documents");
+        assert_eq!(
+            resolve_dir_input(abs.to_str().unwrap(), home.path()).unwrap(),
+            abs
+        );
+        assert!(resolve_dir_input("   ", home.path()).is_err());
+        assert!(resolve_dir_input("/no/such/dir/xyz", home.path()).is_err());
+        // A file is not a directory.
+        assert!(resolve_dir_input(file.to_str().unwrap(), home.path()).is_err());
     }
 
     #[test]

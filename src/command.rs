@@ -39,6 +39,8 @@ pub enum Command {
     BeginSelectMask,
     /// Cmd+I: toggle the Get-Info inspector for the cursor entry.
     ToggleInfo,
+    /// Cmd+L: open the go-to-path input.
+    BeginGoToPath,
     SelectAll,
     ToggleHidden,
 }
@@ -68,6 +70,7 @@ pub enum KeyCode {
     G,
     H,
     I,
+    L,
     R,
     U,
 }
@@ -109,6 +112,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         U if press.command => Some(Command::SwapPanels),
         G if press.command => Some(Command::BeginSelectMask),
         I if press.command => Some(Command::ToggleInfo),
+        L if press.command => Some(Command::BeginGoToPath),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }

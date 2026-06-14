@@ -18,6 +18,7 @@ impl App {
             || self.ws.active_transfer.is_some()
             || self.renaming.is_some()
             || self.mask_input.is_some()
+            || self.path_input.is_some()
         {
             self.type_ahead = None;
             return;
@@ -94,6 +95,7 @@ impl App {
             (egui::Key::G, KeyCode::G),
             (egui::Key::H, KeyCode::H),
             (egui::Key::I, KeyCode::I),
+            (egui::Key::L, KeyCode::L),
             (egui::Key::R, KeyCode::R),
             (egui::Key::U, KeyCode::U),
         ];

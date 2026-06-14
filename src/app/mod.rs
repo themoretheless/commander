@@ -6,6 +6,7 @@ mod confirm_dialog;
 mod file_list;
 mod keys;
 mod mask_dialog;
+mod path_dialog;
 mod preload;
 mod rename_dialog;
 mod render;
@@ -45,6 +46,8 @@ pub struct App {
     pub(crate) show_compare: bool,
     /// Active select-by-mask input buffer.
     pub(crate) mask_input: Option<String>,
+    /// Active go-to-path input buffer.
+    pub(crate) path_input: Option<String>,
 }
 
 /// UI state for the rename editor.
@@ -95,6 +98,7 @@ impl App {
             show_size_bars: false,
             show_compare: false,
             mask_input: None,
+            path_input: None,
         }
     }
 
