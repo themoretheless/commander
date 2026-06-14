@@ -93,6 +93,7 @@ impl App {
             (egui::Key::E, KeyCode::E),
             (egui::Key::G, KeyCode::G),
             (egui::Key::H, KeyCode::H),
+            (egui::Key::I, KeyCode::I),
             (egui::Key::R, KeyCode::R),
             (egui::Key::U, KeyCode::U),
         ];

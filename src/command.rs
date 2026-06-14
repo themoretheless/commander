@@ -37,6 +37,8 @@ pub enum Command {
     SwapPanels,
     /// Cmd+G: open the select-by-mask input.
     BeginSelectMask,
+    /// Cmd+I: toggle the Get-Info inspector for the cursor entry.
+    ToggleInfo,
     SelectAll,
     ToggleHidden,
 }
@@ -65,6 +67,7 @@ pub enum KeyCode {
     E,
     G,
     H,
+    I,
     R,
     U,
 }
@@ -105,6 +108,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         E if press.command => Some(Command::EqualizePanels),
         U if press.command => Some(Command::SwapPanels),
         G if press.command => Some(Command::BeginSelectMask),
+        I if press.command => Some(Command::ToggleInfo),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }

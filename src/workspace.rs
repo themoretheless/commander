@@ -332,6 +332,7 @@ impl Workspace {
                 };
             }
             Command::BeginSelectMask => self.mask_request = true,
+            Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
@@ -525,12 +526,50 @@ impl Workspace {
         let shown = match &target.preview {
             Some(PreviewContent::Image(p)) => Some(p.as_path()),
             Some(PreviewContent::Text { path, .. }) => Some(path.as_path()),
+            // The Get-Info card is a deliberate snapshot; don't auto-follow it.
+            Some(PreviewContent::Info(_)) => return,
             None => None,
         };
         if shown == Some(entry.path.as_path()) {
             return;
         }
         target.preview = panel::make_preview(entry);
+    }
+
+    /// Toggle the Get-Info inspector for the cursor entry, shown in the
+    /// opposite panel (like preview).
+    pub fn toggle_info(&mut self) {
+        if matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))) {
+            self.inactive_panel_mut().preview = None;
+            return;
+        }
+        let panel = self.active_panel_ref();
+        if panel.cursor == 0 {
+            return;
+        }
+        let Some(entry) = panel.filtered_get(panel.cursor - 1).cloned() else {
+            return;
+        };
+        let dir_size = if entry.is_dir {
+            panel
+                .dir_sizes
+                .lock()
+                .ok()
+                .and_then(|m| m.get(&entry.path).copied())
+        } else {
+            Some(entry.size)
+        };
+        let children = if entry.is_dir {
+            panel
+                .dir_counts
+                .lock()
+                .ok()
+                .and_then(|m| m.get(&entry.path).copied())
+        } else {
+            None
+        };
+        let card = panel::make_info(&entry, dir_size, children);
+        self.inactive_panel_mut().preview = Some(PreviewContent::Info(card));
     }
 
     // ── Drag and drop ───────────────────────────────────────────────────

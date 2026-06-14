@@ -384,6 +384,68 @@ impl App {
                                         });
                                 });
                         }
+                        PreviewContent::Info(card) => {
+                            Frame::NONE
+                                .fill(t.bg_panel)
+                                .inner_margin(Margin::same(14))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Get Info")
+                                                .size(13.0)
+                                                .strong()
+                                                .color(t.text_primary),
+                                        );
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                if ui.small_button("✕").clicked()
+                                                    || ui
+                                                        .input(|i| i.key_pressed(egui::Key::Escape))
+                                                {
+                                                    panel.preview = None;
+                                                }
+                                            },
+                                        );
+                                    });
+                                    ui.add(egui::Separator::default().spacing(8.0));
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(&card.name)
+                                            .size(15.0)
+                                            .strong()
+                                            .color(t.text_primary),
+                                    );
+                                    ui.add_space(8.0);
+                                    let mut row = |k: &str, v: &str| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(k)
+                                                    .size(11.0)
+                                                    .color(t.text_muted),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(v)
+                                                    .size(11.0)
+                                                    .color(t.text_secondary),
+                                            );
+                                        });
+                                    };
+                                    row("Kind", &card.kind);
+                                    row("Size", &card.size);
+                                    if let Some(n) = card.children {
+                                        row("Items", &n.to_string());
+                                    }
+                                    row("Modified", &card.modified);
+                                    row("Permissions", &card.permissions);
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        egui::RichText::new(&card.path)
+                                            .size(10.0)
+                                            .color(t.text_muted),
+                                    );
+                                });
+                        }
                     }
                     return;
                 }
