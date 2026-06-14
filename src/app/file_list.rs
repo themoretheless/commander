@@ -403,6 +403,38 @@ impl App {
                             .color(t.accent_purple),
                         );
                     }
+
+                    // Compare mode: chips to turn the diff into a selection.
+                    if let Some(map) = compare {
+                        use crate::workspace::CompareCriterion;
+                        ui.label(
+                            egui::RichText::new("  |  Select:")
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                        for (label, crit) in [
+                            ("Newer", CompareCriterion::Newer),
+                            ("Differing", CompareCriterion::Differing),
+                            ("Unique", CompareCriterion::Unique),
+                        ] {
+                            let clicked = ui
+                                .add(
+                                    egui::Label::new(
+                                        egui::RichText::new(label).size(11.0).color(t.accent),
+                                    )
+                                    .sense(Sense::click()),
+                                )
+                                .clicked();
+                            if clicked {
+                                panel.selected = crate::workspace::select_by_compare(
+                                    panel.filtered_entries().into_iter(),
+                                    map,
+                                    crit,
+                                );
+                            }
+                        }
+                    }
+
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let hidden_label = if panel.show_hidden {
                             "Hidden: ON"

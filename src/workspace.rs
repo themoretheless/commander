@@ -76,6 +76,40 @@ pub fn build_compare_map(entries: &[FileEntry]) -> CompareMap {
         .collect()
 }
 
+/// Which entries to select when turning a folder comparison into a selection.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CompareCriterion {
+    /// Present in the other panel but newer here (by mtime).
+    Newer,
+    /// Present in the other panel but differing in size or mtime.
+    Differing,
+    /// Absent from the other panel.
+    Unique,
+}
+
+/// Collect the paths of `entries` matching `criterion` against the other
+/// panel's [`CompareMap`]. Pure, so it can feed the selection set directly.
+pub fn select_by_compare<'a>(
+    entries: impl Iterator<Item = &'a FileEntry>,
+    other: &CompareMap,
+    criterion: CompareCriterion,
+) -> std::collections::HashSet<PathBuf> {
+    entries
+        .filter(|e| match other.get(&e.name_lower) {
+            None => criterion == CompareCriterion::Unique,
+            Some(&(size, mtime)) => match criterion {
+                CompareCriterion::Unique => false,
+                CompareCriterion::Differing => size != e.size || mtime != e.modified,
+                CompareCriterion::Newer => match (e.modified, mtime) {
+                    (Some(a), Some(b)) => a > b,
+                    _ => false,
+                },
+            },
+        })
+        .map(|e| e.path.clone())
+        .collect()
+}
+
 /// Classify `entry` against the other panel's [`CompareMap`].
 pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
     match other.get(&entry.name_lower) {
@@ -784,6 +818,40 @@ mod tests {
             classify_entry(&mk(&only, t0), &other),
             CompareStatus::Unique
         );
+    }
+
+    #[test]
+    fn select_by_compare_picks_newer_differing_unique() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let older = UNIX_EPOCH + Duration::from_secs(1000);
+        let newer = UNIX_EPOCH + Duration::from_secs(2000);
+
+        let tmp = TempDir::new();
+        let mk = |name: &str, size: u64, time| {
+            let p = tmp.file(name, "");
+            let meta = std::fs::metadata(&p).unwrap();
+            let mut e = FileEntry::from_meta(p, &meta).unwrap();
+            e.size = size;
+            e.modified = Some(time);
+            e
+        };
+        let a = mk("a.txt", 10, newer); // exists in other, newer here
+        let b = mk("b.txt", 99, older); // exists in other, differs (size)
+        let c = mk("c.txt", 10, older); // unique here
+        let entries = [a.clone(), b.clone(), c.clone()];
+
+        let mut other = CompareMap::new();
+        other.insert("a.txt".to_string(), (10, Some(older)));
+        other.insert("b.txt".to_string(), (10, Some(older)));
+
+        let newer_sel = select_by_compare(entries.iter(), &other, CompareCriterion::Newer);
+        assert!(newer_sel.contains(&a.path) && newer_sel.len() == 1);
+
+        let diff_sel = select_by_compare(entries.iter(), &other, CompareCriterion::Differing);
+        assert!(diff_sel.contains(&b.path) && diff_sel.contains(&a.path) && diff_sel.len() == 2);
+
+        let uniq_sel = select_by_compare(entries.iter(), &other, CompareCriterion::Unique);
+        assert!(uniq_sel.contains(&c.path) && uniq_sel.len() == 1);
     }
 
     #[test]
