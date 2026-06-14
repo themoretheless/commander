@@ -69,27 +69,55 @@ pub(crate) struct RenameState {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mode = if cc.egui_ctx.style().visuals.dark_mode {
-            ThemeMode::Dark
-        } else {
-            // Detect system dark mode via macOS defaults
-            let is_dark = std::process::Command::new("defaults")
-                .args(["read", "-g", "AppleInterfaceStyle"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains("Dark"))
-                .unwrap_or(false);
-            if is_dark {
-                ThemeMode::Dark
-            } else {
-                ThemeMode::Light
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let session = crate::session::load();
+
+        // Theme: a saved session wins, otherwise follow the system appearance.
+        let mode = match &session {
+            Some(s) if s.theme_dark => ThemeMode::Dark,
+            Some(_) => ThemeMode::Light,
+            None if cc.egui_ctx.style().visuals.dark_mode => ThemeMode::Dark,
+            None => {
+                let is_dark = std::process::Command::new("defaults")
+                    .args(["read", "-g", "AppleInterfaceStyle"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).contains("Dark"))
+                    .unwrap_or(false);
+                if is_dark {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                }
             }
         };
         apply_theme(&cc.egui_ctx, mode);
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+
+        let (left, right) = session
+            .as_ref()
+            .map(|s| s.sanitized_paths(&home))
+            .unwrap_or_else(|| (home.clone(), home.clone()));
+        let mut ws = Workspace::new(left, right);
+
+        let ui_scale = session.as_ref().map_or(1.0, |s| s.ui_scale);
+        cc.egui_ctx.set_zoom_factor(ui_scale);
+
+        if let Some(s) = &session {
+            ws.active = if s.active_left {
+                ActivePanel::Left
+            } else {
+                ActivePanel::Right
+            };
+            ws.left.sort_col = s.left_sort_col;
+            ws.left.sort_order = s.left_sort_order;
+            ws.left.show_hidden = s.left_hidden;
+            ws.right.sort_col = s.right_sort_col;
+            ws.right.sort_order = s.right_sort_order;
+            ws.right.show_hidden = s.right_hidden;
+        }
 
         App {
-            ws: Workspace::new(home.clone(), home),
-            ui_scale: 1.0,
+            ws,
+            ui_scale,
             theme_mode: mode,
             colors: match mode {
                 ThemeMode::Light => ThemeColors::light(),
@@ -97,19 +125,40 @@ impl App {
             },
             prev_window_width: 0.0,
             image_cache: crate::image_cache::ImageCache::new(),
-            show_tree: false,
+            show_tree: session.as_ref().is_some_and(|s| s.show_tree),
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
-            tree_width: 200.0,
+            tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             renaming: None,
             type_ahead: None,
-            show_size_bars: false,
-            show_compare: false,
+            show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
+            show_compare: session.as_ref().is_some_and(|s| s.show_compare),
             mask_input: None,
             path_input: None,
             recent_input: None,
             undo_toast_until: None,
             palette_input: None,
+        }
+    }
+
+    /// Snapshot the current state into a persistable [`Session`].
+    fn to_session(&self) -> crate::session::Session {
+        crate::session::Session {
+            left_path: self.ws.left.current_path.clone(),
+            right_path: self.ws.right.current_path.clone(),
+            active_left: self.ws.active == ActivePanel::Left,
+            theme_dark: self.theme_mode == ThemeMode::Dark,
+            ui_scale: self.ui_scale,
+            show_tree: self.show_tree,
+            tree_width: self.tree_width,
+            show_size_bars: self.show_size_bars,
+            show_compare: self.show_compare,
+            left_sort_col: self.ws.left.sort_col,
+            left_sort_order: self.ws.left.sort_order,
+            left_hidden: self.ws.left.show_hidden,
+            right_sort_col: self.ws.right.sort_col,
+            right_sort_order: self.ws.right.sort_order,
+            right_hidden: self.ws.right.show_hidden,
         }
     }
 

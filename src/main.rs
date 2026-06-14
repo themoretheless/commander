@@ -8,6 +8,7 @@ mod native_copy;
 mod native_menu;
 mod panel;
 mod scan;
+mod session;
 mod theme;
 mod transfer;
 mod workspace;

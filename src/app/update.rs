@@ -20,6 +20,12 @@ impl eframe::App for App {
         self.show_undo_toast(ctx);
         self.handle_drop(ctx);
     }
+
+    /// eframe calls this on exit and on its auto-save interval; persist our
+    /// own session snapshot (panel paths, layout, view toggles).
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        crate::session::save(&self.to_session());
+    }
 }
 
 impl App {
