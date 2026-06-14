@@ -8,6 +8,7 @@ mod keys;
 mod mask_dialog;
 mod path_dialog;
 mod preload;
+mod recent_dialog;
 mod rename_dialog;
 mod render;
 mod toolbar;
@@ -48,6 +49,8 @@ pub struct App {
     pub(crate) mask_input: Option<String>,
     /// Active go-to-path input buffer.
     pub(crate) path_input: Option<String>,
+    /// Active recent-directories quick-switcher filter buffer.
+    pub(crate) recent_input: Option<String>,
 }
 
 /// UI state for the rename editor.
@@ -99,6 +102,7 @@ impl App {
             show_compare: false,
             mask_input: None,
             path_input: None,
+            recent_input: None,
         }
     }
 

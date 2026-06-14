@@ -52,6 +52,8 @@ pub struct Workspace {
     pub mask_request: bool,
     /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
     pub path_request: bool,
+    /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
+    pub recent_request: bool,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
@@ -192,6 +194,7 @@ impl Workspace {
             rename_target: None,
             mask_request: false,
             path_request: false,
+            recent_request: false,
             opener,
         }
     }
@@ -359,6 +362,7 @@ impl Workspace {
             }
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginGoToPath => self.path_request = true,
+            Command::BeginRecent => self.recent_request = true,
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
             Command::ToggleHidden => {

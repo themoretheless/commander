@@ -73,6 +73,48 @@ pub(crate) fn reset_walk_log() {
     }
 }
 
+/// Session-wide most-recent-first list of visited directories (for the
+/// Cmd+P quick switcher), distinct from each panel's linear history.
+fn visited_log() -> &'static Mutex<Vec<PathBuf>> {
+    static V: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+    V.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+const VISITED_CAP: usize = 50;
+
+/// Push `path` to the front of `list`, de-duplicating and capping. Pure, so
+/// the ordering logic is unit-testable without the global.
+pub fn push_visit(list: &mut Vec<PathBuf>, path: &Path, cap: usize) {
+    list.retain(|p| p != path);
+    list.insert(0, path.to_path_buf());
+    list.truncate(cap);
+}
+
+/// Record a visit to `path` in the global recent list.
+pub fn record_visit(path: &Path) {
+    if let Ok(mut v) = visited_log().lock() {
+        push_visit(&mut v, path, VISITED_CAP);
+    }
+}
+
+/// Snapshot of recently visited directories, most recent first.
+pub fn visited_paths() -> Vec<PathBuf> {
+    visited_log().lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// Filter visited paths by a case-insensitive substring over the full path.
+pub fn filter_visited(paths: &[PathBuf], query: &str) -> Vec<PathBuf> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return paths.to_vec();
+    }
+    paths
+        .iter()
+        .filter(|p| p.to_string_lossy().to_lowercase().contains(&q))
+        .cloned()
+        .collect()
+}
+
 /// Mark cached sizes stale for every directory that contains `path`.
 /// A change at `path` (watcher event) makes all its ancestors' sizes stale,
 /// even though their mtimes don't move (mtime only reflects direct children).
@@ -958,6 +1000,7 @@ impl PanelState {
         }
         self.history.push(path.clone());
         self.history_pos = self.history.len() - 1;
+        record_visit(&path);
         self.current_path = path;
         self.search_query.clear();
         self.refresh();
@@ -1509,6 +1552,39 @@ mod tests {
         let status = classify_dir(&denied, true);
         let _ = std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755));
         assert_eq!(status, DirStatus::Denied);
+    }
+
+    #[test]
+    fn push_visit_dedupes_caps_and_orders_recent_first() {
+        let mut v: Vec<PathBuf> = Vec::new();
+        push_visit(&mut v, Path::new("/a"), 3);
+        push_visit(&mut v, Path::new("/b"), 3);
+        push_visit(&mut v, Path::new("/a"), 3); // revisit /a -> front, no dup
+        assert_eq!(v, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+
+        push_visit(&mut v, Path::new("/c"), 3);
+        push_visit(&mut v, Path::new("/d"), 3); // cap 3 drops oldest
+        assert_eq!(
+            v,
+            vec![
+                PathBuf::from("/d"),
+                PathBuf::from("/c"),
+                PathBuf::from("/a"),
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_visited_substring_case_insensitive() {
+        let paths = vec![
+            PathBuf::from("/Users/me/Documents"),
+            PathBuf::from("/Users/me/Downloads"),
+            PathBuf::from("/tmp/work"),
+        ];
+        assert_eq!(filter_visited(&paths, "").len(), 3);
+        let dn = filter_visited(&paths, "down");
+        assert_eq!(dn, vec![PathBuf::from("/Users/me/Downloads")]);
+        assert_eq!(filter_visited(&paths, "USERS").len(), 2);
     }
 
     #[test]

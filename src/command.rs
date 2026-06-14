@@ -41,6 +41,8 @@ pub enum Command {
     ToggleInfo,
     /// Cmd+L: open the go-to-path input.
     BeginGoToPath,
+    /// Cmd+P: open the recent-directories quick switcher.
+    BeginRecent,
     SelectAll,
     ToggleHidden,
 }
@@ -71,6 +73,7 @@ pub enum KeyCode {
     H,
     I,
     L,
+    P,
     R,
     U,
 }
@@ -113,6 +116,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         G if press.command => Some(Command::BeginSelectMask),
         I if press.command => Some(Command::ToggleInfo),
         L if press.command => Some(Command::BeginGoToPath),
+        P if press.command => Some(Command::BeginRecent),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }

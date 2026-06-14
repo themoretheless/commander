@@ -19,6 +19,7 @@ impl App {
             || self.renaming.is_some()
             || self.mask_input.is_some()
             || self.path_input.is_some()
+            || self.recent_input.is_some()
         {
             self.type_ahead = None;
             return;
@@ -96,6 +97,7 @@ impl App {
             (egui::Key::H, KeyCode::H),
             (egui::Key::I, KeyCode::I),
             (egui::Key::L, KeyCode::L),
+            (egui::Key::P, KeyCode::P),
             (egui::Key::R, KeyCode::R),
             (egui::Key::U, KeyCode::U),
         ];
