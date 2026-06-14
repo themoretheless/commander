@@ -43,6 +43,8 @@ pub enum Command {
     BeginGoToPath,
     /// Cmd+P: open the recent-directories quick switcher.
     BeginRecent,
+    /// Cmd+Z: undo the last clean move.
+    Undo,
     SelectAll,
     ToggleHidden,
 }
@@ -76,6 +78,7 @@ pub enum KeyCode {
     P,
     R,
     U,
+    Z,
 }
 
 /// A single key press with modifier state.
@@ -117,6 +120,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         I if press.command => Some(Command::ToggleInfo),
         L if press.command => Some(Command::BeginGoToPath),
         P if press.command => Some(Command::BeginRecent),
+        Z if press.command => Some(Command::Undo),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }
@@ -210,6 +214,12 @@ mod tests {
         assert_eq!(map_key(press(KeyCode::E)), None);
         assert_eq!(map_key(press(KeyCode::U)), None);
         assert_eq!(map_key(press(KeyCode::G)), None);
+    }
+
+    #[test]
+    fn undo_binds_to_cmd_z() {
+        assert_eq!(map_key(cmd_press(KeyCode::Z)), Some(Command::Undo));
+        assert_eq!(map_key(press(KeyCode::Z)), None);
     }
 
     #[test]

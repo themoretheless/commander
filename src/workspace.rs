@@ -71,9 +71,25 @@ pub struct Workspace {
     pub path_request: bool,
     /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
     pub recent_request: bool,
+    /// Set by [`Command::Undo`]; the UI runs the undo with a notify callback.
+    pub undo_request: bool,
+    /// (dest, source) pairs of the in-flight Move, promoted to `last_undo`
+    /// when it finishes cleanly.
+    pending_move_undo: Option<Vec<(PathBuf, PathBuf)>>,
+    /// (dest, source) pairs of the last clean Move, reversible via Cmd+Z.
+    pub last_undo: Option<Vec<(PathBuf, PathBuf)>>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
+}
+
+/// (dest, source) pairs for undoing a Move: each entry went from its original
+/// path to `target/name`, so undo moves `target/name` back. Pure/testable.
+pub fn move_undo_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf)> {
+    entries
+        .iter()
+        .map(|e| (target.join(&e.name), e.path.clone()))
+        .collect()
 }
 
 /// How an entry relates to the same-named entry in the other panel.
@@ -228,6 +244,9 @@ impl Workspace {
             mask_request: false,
             path_request: false,
             recent_request: false,
+            undo_request: false,
+            pending_move_undo: None,
+            last_undo: None,
             opener,
         }
     }
@@ -396,6 +415,11 @@ impl Workspace {
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
+            Command::Undo => {
+                if self.last_undo.is_some() {
+                    self.undo_request = true;
+                }
+            }
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
             Command::ToggleHidden => {
@@ -460,6 +484,15 @@ impl Workspace {
             return;
         };
 
+        // A fresh op supersedes any previous undo; capture this op's undo
+        // pairs if it is a Move (promoted to last_undo when it finishes clean).
+        self.last_undo = None;
+        self.pending_move_undo = if t.kind == TransferKind::Move {
+            Some(move_undo_pairs(&t.entries, &t.target))
+        } else {
+            None
+        };
+
         let total = t.need_bytes;
         let progress = Arc::new(Mutex::new(TransferProgress::new(total, t.entries.len())));
         self.active_transfer = Some(progress.clone());
@@ -484,21 +517,75 @@ impl Workspace {
 
     /// Auto-close finished transfers. A transfer that finished with errors
     /// stays open so the user can read the error list (dismissed via OK).
-    pub fn poll_transfer(&mut self) {
-        let close = self
+    /// Returns `true` when a clean Move just finished, so the UI can raise the
+    /// undo toast.
+    pub fn poll_transfer(&mut self) -> bool {
+        let (close, clean) = self
             .active_transfer
             .as_ref()
             .map(|s| {
                 let s = s.lock().unwrap();
-                s.cancelled || (s.finished && s.errors.is_empty())
+                let clean = s.finished && s.errors.is_empty() && !s.cancelled;
+                (s.cancelled || (s.finished && s.errors.is_empty()), clean)
             })
-            .unwrap_or(false);
+            .unwrap_or((false, false));
 
-        if close {
-            self.active_transfer = None;
-            self.left.refresh();
-            self.right.refresh();
+        if !close {
+            return false;
         }
+        self.active_transfer = None;
+        self.left.refresh();
+        self.right.refresh();
+        // Promote the captured Move pairs to an undoable record on a clean run.
+        if clean {
+            if let Some(pairs) = self.pending_move_undo.take() {
+                self.last_undo = Some(pairs);
+                return true;
+            }
+        } else {
+            self.pending_move_undo = None;
+        }
+        false
+    }
+
+    /// Reverse the last clean Move by moving each destination back to its
+    /// original location through the transfer engine.
+    pub fn undo_last_move(&mut self, notify: impl Fn() + Send + 'static) {
+        let Some(pairs) = self.last_undo.take() else {
+            return;
+        };
+        let Some(source_dir) = pairs
+            .first()
+            .and_then(|(_, src)| src.parent())
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let entries: Vec<FileEntry> = pairs
+            .iter()
+            .filter_map(|(dest, _)| {
+                let meta = std::fs::metadata(dest).ok()?;
+                FileEntry::from_meta(dest.clone(), &meta)
+            })
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        let (need_bytes, free_bytes, same_volume) =
+            fit_stats(&entries, &source_dir, TransferKind::Move);
+        self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
+            kind: TransferKind::Move,
+            entries,
+            target: source_dir,
+            conflicts: vec![],
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            flat: scan::spawn_scan(vec![]),
+            need_bytes,
+            free_bytes,
+            same_volume,
+        }));
+        self.start_transfer(notify);
     }
 
     pub fn exec_delete(entries: &[FileEntry]) {
@@ -1018,6 +1105,46 @@ mod tests {
         let map = build_compare_map(std::slice::from_ref(&e));
         assert!(map.contains_key("photo.jpg"));
         assert_eq!(map["photo.jpg"].0, 2);
+    }
+
+    #[test]
+    fn move_undo_pairs_maps_dest_back_to_source() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "x");
+        let b = l.file("b.txt", "y");
+        let meta_a = std::fs::metadata(&a).unwrap();
+        let meta_b = std::fs::metadata(&b).unwrap();
+        let entries = vec![
+            FileEntry::from_meta(a.clone(), &meta_a).unwrap(),
+            FileEntry::from_meta(b.clone(), &meta_b).unwrap(),
+        ];
+        let pairs = move_undo_pairs(&entries, r.path());
+        assert_eq!(pairs[0], (r.path().join("a.txt"), a));
+        assert_eq!(pairs[1], (r.path().join("b.txt"), b));
+    }
+
+    #[test]
+    fn move_then_undo_restores_the_source() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let f = l.file("doc.txt", "data");
+        let mut ws = workspace(&l, &r);
+        ws.left.cursor = 1;
+
+        ws.execute(Command::RequestMove);
+        ws.confirm_pending_op(|| {});
+        wait_transfer(&mut ws);
+        assert!(!f.exists(), "move removed the source");
+        assert!(r.path().join("doc.txt").exists());
+        assert!(ws.last_undo.is_some(), "a clean move is undoable");
+
+        ws.undo_last_move(|| {});
+        wait_transfer(&mut ws);
+        assert!(f.exists(), "undo restored the source");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "data");
+        assert!(
+            !r.path().join("doc.txt").exists(),
+            "undo emptied the target"
+        );
     }
 
     #[test]

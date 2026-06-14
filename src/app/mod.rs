@@ -51,6 +51,8 @@ pub struct App {
     pub(crate) path_input: Option<String>,
     /// Active recent-directories quick-switcher filter buffer.
     pub(crate) recent_input: Option<String>,
+    /// egui time until which the undo toast stays visible.
+    pub(crate) undo_toast_until: Option<f64>,
 }
 
 /// UI state for the rename editor.
@@ -103,6 +105,7 @@ impl App {
             mask_input: None,
             path_input: None,
             recent_input: None,
+            undo_toast_until: None,
         }
     }
 

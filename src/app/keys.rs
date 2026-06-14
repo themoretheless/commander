@@ -100,6 +100,7 @@ impl App {
             (egui::Key::P, KeyCode::P),
             (egui::Key::R, KeyCode::R),
             (egui::Key::U, KeyCode::U),
+            (egui::Key::Z, KeyCode::Z),
         ];
         BINDINGS
             .iter()

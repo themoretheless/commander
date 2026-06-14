@@ -16,6 +16,7 @@ impl eframe::App for App {
         self.show_main_area(ctx);
         self.show_drag_overlay(ctx);
         self.show_type_ahead_overlay(ctx);
+        self.show_undo_toast(ctx);
         self.handle_drop(ctx);
     }
 }
@@ -63,7 +64,16 @@ impl App {
 
         self.handle_keys(ctx);
         self.preload_images(ctx);
-        self.ws.poll_transfer();
+        if self.ws.poll_transfer() {
+            // A clean move just finished: raise the undo toast for ~6s.
+            self.undo_toast_until = Some(ctx.input(|i| i.time) + 6.0);
+        }
+        // Run a requested undo with a repaint callback.
+        if std::mem::take(&mut self.ws.undo_request) {
+            let c = ctx.clone();
+            self.ws.undo_last_move(move || c.request_repaint());
+            self.undo_toast_until = None;
+        }
     }
 
     fn show_toolbar_panel(&mut self, ctx: &egui::Context) {
@@ -347,6 +357,61 @@ impl App {
                     });
             });
         // Keep repainting so the capsule fades out on idle.
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
+
+    /// Bottom-center toast offering to undo the last move (Cmd+Z).
+    fn show_undo_toast(&mut self, ctx: &egui::Context) {
+        let Some(until) = self.undo_toast_until else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        if now > until || self.ws.last_undo.is_none() {
+            self.undo_toast_until = None;
+            return;
+        }
+        let t = self.colors;
+        let count = self.ws.last_undo.as_ref().map_or(0, Vec::len);
+        let screen = ctx.screen_rect();
+        let mut undo = false;
+        egui::Area::new(egui::Id::new("undo_toast"))
+            .fixed_pos(egui::pos2(
+                screen.center().x - 110.0,
+                screen.bottom() - 90.0,
+            ))
+            .order(egui::Order::Tooltip)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(t.bg_card)
+                    .inner_margin(Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("Moved {count} item(s)"))
+                                    .size(12.0)
+                                    .color(t.text_primary),
+                            );
+                            ui.add_space(10.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Undo  \u{2318}Z")
+                                            .size(12.0)
+                                            .color(Color32::WHITE),
+                                    )
+                                    .fill(t.accent)
+                                    .corner_radius(CornerRadius::ZERO),
+                                )
+                                .clicked()
+                            {
+                                undo = true;
+                            }
+                        });
+                    });
+            });
+        if undo {
+            self.ws.undo_request = true;
+        }
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 
