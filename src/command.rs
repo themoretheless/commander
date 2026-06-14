@@ -35,6 +35,8 @@ pub enum Command {
     EqualizePanels,
     /// Cmd+U: swap the left and right panels.
     SwapPanels,
+    /// Cmd+G: open the select-by-mask input.
+    BeginSelectMask,
     SelectAll,
     ToggleHidden,
 }
@@ -61,6 +63,7 @@ pub enum KeyCode {
     Delete,
     A,
     E,
+    G,
     H,
     R,
     U,
@@ -101,6 +104,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         A if press.command => Some(Command::SelectAll),
         E if press.command => Some(Command::EqualizePanels),
         U if press.command => Some(Command::SwapPanels),
+        G if press.command => Some(Command::BeginSelectMask),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }
@@ -186,9 +190,14 @@ mod tests {
             Some(Command::EqualizePanels)
         );
         assert_eq!(map_key(cmd_press(KeyCode::U)), Some(Command::SwapPanels));
-        // Plain E/U type text (type-ahead), not panel commands.
+        assert_eq!(
+            map_key(cmd_press(KeyCode::G)),
+            Some(Command::BeginSelectMask)
+        );
+        // Plain E/U/G type text (type-ahead), not panel commands.
         assert_eq!(map_key(press(KeyCode::E)), None);
         assert_eq!(map_key(press(KeyCode::U)), None);
+        assert_eq!(map_key(press(KeyCode::G)), None);
     }
 
     #[test]

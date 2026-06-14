@@ -17,6 +17,7 @@ impl App {
         if self.ws.pending_op.is_some()
             || self.ws.active_transfer.is_some()
             || self.renaming.is_some()
+            || self.mask_input.is_some()
         {
             self.type_ahead = None;
             return;
@@ -90,6 +91,7 @@ impl App {
             (egui::Key::Delete, KeyCode::Delete),
             (egui::Key::A, KeyCode::A),
             (egui::Key::E, KeyCode::E),
+            (egui::Key::G, KeyCode::G),
             (egui::Key::H, KeyCode::H),
             (egui::Key::R, KeyCode::R),
             (egui::Key::U, KeyCode::U),

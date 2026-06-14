@@ -8,6 +8,7 @@ impl eframe::App for App {
         self.show_transfer_dialog(ctx);
         self.show_confirm_dialog(ctx);
         self.show_rename_dialog(ctx);
+        self.show_mask_dialog(ctx);
         self.show_toolbar_panel(ctx);
         self.show_shortcut_bar(ctx);
         self.show_main_area(ctx);

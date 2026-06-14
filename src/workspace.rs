@@ -48,6 +48,8 @@ pub struct Workspace {
     /// Set by [`Command::BeginRename`]; the UI picks this up to open the
     /// inline rename editor seeded with this path, then clears it.
     pub rename_target: Option<PathBuf>,
+    /// Set by [`Command::BeginSelectMask`]; the UI opens the mask input.
+    pub mask_request: bool,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
@@ -163,6 +165,7 @@ impl Workspace {
             pending_op: None,
             active_transfer: None,
             rename_target: None,
+            mask_request: false,
             opener,
         }
     }
@@ -328,6 +331,7 @@ impl Workspace {
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
+            Command::BeginSelectMask => self.mask_request = true,
             Command::SelectAll => self.active_panel().select_all(),
             Command::ToggleHidden => {
                 let panel = self.active_panel();

@@ -5,6 +5,7 @@
 mod confirm_dialog;
 mod file_list;
 mod keys;
+mod mask_dialog;
 mod preload;
 mod rename_dialog;
 mod render;
@@ -42,6 +43,8 @@ pub struct App {
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
     pub(crate) show_compare: bool,
+    /// Active select-by-mask input buffer.
+    pub(crate) mask_input: Option<String>,
 }
 
 /// UI state for the rename editor.
@@ -91,6 +94,7 @@ impl App {
             type_ahead: None,
             show_size_bars: false,
             show_compare: false,
+            mask_input: None,
         }
     }
 

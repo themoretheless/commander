@@ -301,6 +301,62 @@ pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
     }
 }
 
+/// Glob match supporting `*` (any run) and `?` (one char). Inputs are
+/// expected lowercased; matching is greedy with backtracking.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let (mut star, mut mark) = (None, 0usize);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Parse a select-by-mask line into `(term, is_subtract)` pairs. Terms are
+/// comma-separated; a leading `!` or `-` marks subtraction. Terms are
+/// lowercased for case-insensitive matching.
+pub fn parse_mask(mask: &str) -> Vec<(String, bool)> {
+    mask.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(
+            |t| match t.strip_prefix('!').or_else(|| t.strip_prefix('-')) {
+                Some(rest) => (rest.trim().to_lowercase(), true),
+                None => (t.to_lowercase(), false),
+            },
+        )
+        .collect()
+}
+
+/// Whether a single lowercased `term` matches an entry. A term with no
+/// wildcard and no `.` matches by extension ("jpg" selects all *.jpg);
+/// otherwise it is globbed against the full name.
+fn term_matches(term: &str, name_lower: &str, ext: &str) -> bool {
+    let wild = term.contains('*') || term.contains('?');
+    if !wild && !term.contains('.') {
+        return ext == term;
+    }
+    glob_match(term, name_lower)
+}
+
 /// Size used for the occupancy bar: a file's own size, or a directory's
 /// resolved recursive size (0 while it is still being measured).
 pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) -> u64 {
@@ -856,6 +912,57 @@ impl PanelState {
         }
     }
 
+    /// Apply a select-by-mask line to the selection over the filtered view:
+    /// add terms select matching entries, `!`/`-` terms deselect them
+    /// (subtraction wins per entry). Returns how many entries were added.
+    pub fn select_by_mask(&mut self, mask: &str) -> usize {
+        let terms = parse_mask(mask);
+        if terms.is_empty() {
+            return 0;
+        }
+        let mut decisions: Vec<(PathBuf, bool)> = Vec::new();
+        for e in self.filtered_entries() {
+            let add = terms
+                .iter()
+                .any(|(t, sub)| !sub && term_matches(t, &e.name_lower, &e.extension));
+            let rem = terms
+                .iter()
+                .any(|(t, sub)| *sub && term_matches(t, &e.name_lower, &e.extension));
+            if rem {
+                decisions.push((e.path.clone(), false));
+            } else if add {
+                decisions.push((e.path.clone(), true));
+            }
+        }
+        let mut added = 0;
+        for (path, is_add) in decisions {
+            if is_add {
+                self.selected.insert(path);
+                added += 1;
+            } else {
+                self.selected.remove(&path);
+            }
+        }
+        added
+    }
+
+    /// How many filtered entries any term of `mask` matches (live preview,
+    /// no mutation).
+    pub fn mask_match_count(&self, mask: &str) -> usize {
+        let terms = parse_mask(mask);
+        if terms.is_empty() {
+            return 0;
+        }
+        self.filtered_entries()
+            .iter()
+            .filter(|e| {
+                terms
+                    .iter()
+                    .any(|(t, _)| term_matches(t, &e.name_lower, &e.extension))
+            })
+            .count()
+    }
+
     /// Add the file under the cursor to the selection (range-select step).
     pub fn select_cursor(&mut self) {
         if self.cursor == 0 {
@@ -1285,6 +1392,73 @@ mod tests {
         p.sort_entries();
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
+    }
+
+    #[test]
+    fn glob_match_handles_star_and_question() {
+        assert!(glob_match("*.rs", "main.rs"));
+        assert!(glob_match("img_*.jpg", "img_2024.jpg"));
+        assert!(glob_match("a?c", "abc"));
+        assert!(!glob_match("a?c", "ac"));
+        assert!(!glob_match("*.rs", "main.txt"));
+        assert!(glob_match("*", "anything"));
+    }
+
+    #[test]
+    fn parse_mask_splits_and_marks_subtraction() {
+        let terms = parse_mask("*.JPG, !*raw*, -tmp");
+        assert_eq!(
+            terms,
+            vec![
+                ("*.jpg".to_string(), false),
+                ("*raw*".to_string(), true),
+                ("tmp".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_by_mask_adds_then_subtracts() {
+        let mut p = panel_with(vec![
+            entry("a.jpg", false, 1),
+            entry("b.jpg", false, 1),
+            entry("c.png", false, 1),
+            entry("raw.jpg", false, 1),
+        ]);
+        // bare ext for files needs the extension field populated:
+        for e in &mut p.entries {
+            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+        }
+        p.sort_entries();
+
+        // Add all jpgs, then subtract anything containing "raw".
+        // raw.jpg matches the add but the subtract wins, so it is not added.
+        let added = p.select_by_mask("*.jpg, !*raw*");
+        assert_eq!(added, 2);
+        let names: Vec<String> = p
+            .selected
+            .iter()
+            .filter_map(|pth| pth.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert!(names.contains(&"a.jpg".to_string()));
+        assert!(names.contains(&"b.jpg".to_string()));
+        assert!(!names.contains(&"raw.jpg".to_string()));
+        assert!(!names.contains(&"c.png".to_string()));
+        assert_eq!(p.selected.len(), 2);
+    }
+
+    #[test]
+    fn bare_extension_term_matches_by_extension() {
+        let mut p = panel_with(vec![
+            entry("doc.pdf", false, 1),
+            entry("note.txt", false, 1),
+        ]);
+        for e in &mut p.entries {
+            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+        }
+        assert_eq!(p.mask_match_count("pdf"), 1);
+        p.select_by_mask("pdf");
+        assert_eq!(p.selected.len(), 1);
     }
 
     #[test]
