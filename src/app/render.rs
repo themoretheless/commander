@@ -15,6 +15,7 @@ impl App {
         image_cache: &mut crate::image_cache::ImageCache,
         panel_side: &str,
         tree_open: bool,
+        size_bars: bool,
         opener: &dyn Fn(&std::path::Path),
     ) -> bool {
         let panel_bg = t.bg_panel;
@@ -387,7 +388,7 @@ impl App {
                 }
 
                 // File list
-                Self::render_file_list(ui, panel, is_active, t, panel_side, opener);
+                Self::render_file_list(ui, panel, is_active, t, panel_side, size_bars, opener);
             });
 
         tree_toggle

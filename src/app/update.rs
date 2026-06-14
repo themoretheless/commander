@@ -209,6 +209,7 @@ impl App {
                     &mut self.image_cache,
                     "left",
                     self.show_tree,
+                    self.show_size_bars,
                     self.ws.opener.as_ref(),
                 );
             });
@@ -252,6 +253,7 @@ impl App {
                     &mut self.image_cache,
                     "right",
                     self.show_tree,
+                    self.show_size_bars,
                     self.ws.opener.as_ref(),
                 );
             });

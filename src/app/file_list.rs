@@ -1,12 +1,14 @@
 use super::*;
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_file_list(
         ui: &mut egui::Ui,
         panel: &mut PanelState,
         is_active: bool,
         t: &ThemeColors,
         panel_side: &str,
+        size_bars: bool,
         opener: &dyn Fn(&std::path::Path),
     ) {
         egui::ScrollArea::vertical()
@@ -105,6 +107,25 @@ impl App {
                 // Feed the visible-row count back to the core for PageUp/Down.
                 panel.page_rows = ((viewport.height() / row_h).floor() as usize).max(1);
 
+                // Largest entry size in the listing, used to scale occupancy
+                // bars. Computed once with the size map already locked above.
+                let size_max: u64 = if size_bars {
+                    dir_sizes
+                        .as_ref()
+                        .map(|sizes| {
+                            filtered
+                                .iter()
+                                .map(|&i| {
+                                    crate::panel::entry_display_size(&panel.entries[i], sizes)
+                                })
+                                .max()
+                                .unwrap_or(0)
+                        })
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
                 // Which rows are visible
                 let mut first_visible = ((scroll_top / row_h).floor() as usize).min(total_rows);
                 let mut last_visible =
@@ -180,6 +201,33 @@ impl App {
                             CornerRadius::ZERO,
                             t.bg_hover.linear_multiply(0.3),
                         );
+                    }
+
+                    // Occupancy bar: width proportional to this entry's share
+                    // of the largest entry, ramping to a warning tint when it
+                    // dominates the directory.
+                    if size_max > 0 {
+                        let size = dir_sizes
+                            .as_ref()
+                            .map(|s| crate::panel::entry_display_size(entry, s))
+                            .unwrap_or(0);
+                        if size > 0 {
+                            let frac = (size as f32 / size_max as f32).clamp(0.0, 1.0);
+                            let bar = egui::Rect::from_min_size(
+                                full_rect.min,
+                                Vec2::new(full_rect.width() * frac, full_rect.height()),
+                            );
+                            let tint = if frac > 0.66 {
+                                t.accent_warning
+                            } else {
+                                t.accent
+                            };
+                            ui.painter().rect_filled(
+                                bar,
+                                CornerRadius::ZERO,
+                                tint.linear_multiply(0.12),
+                            );
+                        }
                     }
 
                     // Content

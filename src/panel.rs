@@ -301,6 +301,16 @@ pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
     }
 }
 
+/// Size used for the occupancy bar: a file's own size, or a directory's
+/// resolved recursive size (0 while it is still being measured).
+pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) -> u64 {
+    if entry.is_dir {
+        dir_sizes.get(&entry.path).copied().unwrap_or(0)
+    } else {
+        entry.size
+    }
+}
+
 /// Natural ("human") ordering: runs of digits compare by numeric value, so
 /// "file2" sorts before "file10". Non-digit runs compare by char. Inputs are
 /// expected pre-lowercased (we sort on `name_lower`).
@@ -1275,6 +1285,20 @@ mod tests {
         p.sort_entries();
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
+    }
+
+    #[test]
+    fn entry_display_size_uses_dir_sizes_for_folders() {
+        let file = entry("a.txt", false, 42);
+        let dir = entry("sub", true, 0);
+        let mut sizes = HashMap::new();
+        sizes.insert(dir.path.clone(), 9000u64);
+
+        assert_eq!(entry_display_size(&file, &sizes), 42);
+        assert_eq!(entry_display_size(&dir, &sizes), 9000);
+        // Unmeasured dir reads as 0 (draws no bar).
+        let other = entry("pending", true, 0);
+        assert_eq!(entry_display_size(&other, &sizes), 0);
     }
 
     #[test]

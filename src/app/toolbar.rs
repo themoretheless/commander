@@ -100,6 +100,24 @@ impl App {
                             panel.refresh();
                         }
 
+                        // Size-bars toggle
+                        let bars_fill = if self.show_size_bars {
+                            t.accent.linear_multiply(0.3)
+                        } else {
+                            t.bg_card
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new("\u{1f4ca}").size(14.0))
+                                    .fill(bars_fill)
+                                    .corner_radius(crate::theme::ROUNDING_SM),
+                            )
+                            .on_hover_text("Toggle size bars")
+                            .clicked()
+                        {
+                            self.show_size_bars = !self.show_size_bars;
+                        }
+
                         // Refresh button
                         if ui
                             .add(

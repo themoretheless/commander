@@ -38,6 +38,8 @@ pub struct App {
     /// Type-ahead buffer and the input time of its last keystroke (seconds,
     /// from egui). Expires after a short idle.
     pub(crate) type_ahead: Option<(String, f64)>,
+    /// Paint relative size occupancy bars behind file rows.
+    pub(crate) show_size_bars: bool,
 }
 
 /// UI state for the rename editor.
@@ -85,6 +87,7 @@ impl App {
             tree_width: 200.0,
             renaming: None,
             type_ahead: None,
+            show_size_bars: false,
         }
     }
 
