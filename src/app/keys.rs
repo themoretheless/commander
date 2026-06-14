@@ -21,6 +21,7 @@ impl App {
             || self.path_input.is_some()
             || self.recent_input.is_some()
             || self.palette_input.is_some()
+            || self.batch_rename.is_some()
         {
             self.type_ahead = None;
             return;

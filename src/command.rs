@@ -31,6 +31,8 @@ pub enum Command {
     RequestDelete,
     /// F2 / Cmd+R: rename the entry under the cursor.
     BeginRename,
+    /// Cmd+Shift+R: open the batch-rename studio for the selection.
+    BeginBatchRename,
     /// Cmd+E: point the inactive panel at the active panel's directory.
     EqualizePanels,
     /// Cmd+U: swap the left and right panels.
@@ -63,6 +65,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("New folder", "F7", Command::CreateDir),
         ("Delete (to Trash)", "F8", Command::RequestDelete),
         ("Rename", "F2", Command::BeginRename),
+        ("Batch rename", "Cmd+Shift+R", Command::BeginBatchRename),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
         ("Go to path", "Cmd+L", Command::BeginGoToPath),
         ("Recent folders", "Cmd+P", Command::BeginRecent),
@@ -150,6 +153,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         Backspace => Some(Command::GoUp),
         Space => Some(Command::ToggleSelect),
         F2 => Some(Command::BeginRename),
+        R if press.command && press.shift => Some(Command::BeginBatchRename),
         R if press.command => Some(Command::BeginRename),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
@@ -289,6 +293,18 @@ mod tests {
         assert_eq!(map_key(cmd_press(KeyCode::R)), Some(Command::BeginRename));
         // Plain R types text; it must not trigger rename.
         assert_eq!(map_key(press(KeyCode::R)), None);
+    }
+
+    #[test]
+    fn cmd_shift_r_is_batch_rename_distinct_from_cmd_r() {
+        let cmd_shift_r = KeyPress {
+            code: KeyCode::R,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_r), Some(Command::BeginBatchRename));
+        // Cmd+R without shift stays single rename.
+        assert_eq!(map_key(cmd_press(KeyCode::R)), Some(Command::BeginRename));
     }
 
     #[test]

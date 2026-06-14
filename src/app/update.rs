@@ -8,6 +8,7 @@ impl eframe::App for App {
         self.show_transfer_dialog(ctx);
         self.show_confirm_dialog(ctx);
         self.show_rename_dialog(ctx);
+        self.show_batch_rename_dialog(ctx);
         self.show_mask_dialog(ctx);
         self.show_path_dialog(ctx);
         self.show_recent_dialog(ctx);

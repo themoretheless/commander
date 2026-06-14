@@ -2,6 +2,7 @@
 //! All file-manager behaviour lives in `crate::workspace`; this module
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
+mod batch_rename_dialog;
 mod confirm_dialog;
 mod file_list;
 mod keys;
@@ -56,6 +57,43 @@ pub struct App {
     pub(crate) undo_toast_until: Option<f64>,
     /// Active command-palette filter buffer.
     pub(crate) palette_input: Option<String>,
+    /// Active batch-rename studio state.
+    pub(crate) batch_rename: Option<BatchRenameState>,
+}
+
+/// UI state for the batch-rename studio. The transform itself lives in
+/// `crate::rename`; this only holds the editable rule fields.
+pub(crate) struct BatchRenameState {
+    pub find: String,
+    pub replace: String,
+    pub prefix: String,
+    pub suffix: String,
+    pub case: crate::rename::CaseMode,
+    pub numbering_on: bool,
+    pub num_start: u32,
+    pub num_step: u32,
+    pub num_pad: u32,
+    /// Set once so the first text field grabs focus on the opening frame.
+    pub focused: bool,
+    pub error: Option<String>,
+}
+
+impl BatchRenameState {
+    /// Build the pure rename rule from the current field values.
+    pub(crate) fn rule(&self) -> crate::rename::RenameRule {
+        crate::rename::RenameRule {
+            find: self.find.clone(),
+            replace: self.replace.clone(),
+            prefix: self.prefix.clone(),
+            suffix: self.suffix.clone(),
+            case: self.case,
+            numbering: self.numbering_on.then_some(crate::rename::Numbering {
+                start: self.num_start,
+                step: self.num_step.max(1),
+                pad: self.num_pad as usize,
+            }),
+        }
+    }
 }
 
 /// UI state for the rename editor.
@@ -138,6 +176,7 @@ impl App {
             recent_input: None,
             undo_toast_until: None,
             palette_input: None,
+            batch_rename: None,
         }
     }
 

@@ -75,6 +75,9 @@ pub struct Workspace {
     pub undo_request: bool,
     /// Set by [`Command::BeginPalette`]; the UI opens the command palette.
     pub palette_request: bool,
+    /// Set by [`Command::BeginBatchRename`]; the UI opens the batch-rename
+    /// studio for the active panel's selection.
+    pub batch_rename_request: bool,
     /// (dest, source) pairs of the in-flight Move, promoted to `last_undo`
     /// when it finishes cleanly.
     pending_move_undo: Option<Vec<(PathBuf, PathBuf)>>,
@@ -262,6 +265,7 @@ impl Workspace {
             recent_request: false,
             undo_request: false,
             palette_request: false,
+            batch_rename_request: false,
             pending_move_undo: None,
             last_undo: None,
             opener,
@@ -446,6 +450,7 @@ impl Workspace {
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
+            Command::BeginBatchRename => self.batch_rename_request = true,
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
@@ -695,6 +700,77 @@ impl Workspace {
         std::fs::rename(old, &dest).map_err(|e| e.to_string())?;
         self.active_panel().refresh();
         Ok(())
+    }
+
+    // ── Batch rename ────────────────────────────────────────────────────
+
+    /// Names the batch-rename studio operates on: the active panel's selection,
+    /// falling back to the entry under the cursor. Order drives the counter.
+    pub fn batch_rename_targets(&self) -> Vec<String> {
+        self.active_panel_ref()
+            .selected_or_cursor()
+            .into_iter()
+            .map(|e| e.name)
+            .collect()
+    }
+
+    /// Every name currently in the active directory, so the planner can catch
+    /// collisions with siblings that are not part of the rename.
+    pub fn active_dir_names(&self) -> std::collections::HashSet<String> {
+        self.active_panel_ref()
+            .entries
+            .iter()
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
+    /// Apply a validated batch rename to the active panel. Renames stage through
+    /// unique temporary names first so swaps and rotations cannot clobber each
+    /// other; on any failure the staged files are rolled back. Returns the
+    /// number of entries renamed, or a user-facing error.
+    pub fn apply_batch_rename(
+        &mut self,
+        rule: &crate::rename::RenameRule,
+    ) -> Result<usize, String> {
+        let names = self.batch_rename_targets();
+        if names.is_empty() {
+            return Err("Nothing selected to rename".into());
+        }
+        let existing = self.active_dir_names();
+        let plans = crate::rename::plan_batch_rename(&names, &existing, rule);
+        if !crate::rename::plan_is_applicable(&plans) {
+            return Err("Resolve collisions or invalid names first".into());
+        }
+        let dir = self.active_panel_ref().current_path.clone();
+        let changes: Vec<(String, String)> = plans
+            .iter()
+            .filter(|p| p.status == crate::rename::PlanStatus::Ok)
+            .map(|p| (p.from.clone(), p.to.clone()))
+            .collect();
+
+        // Phase 1: source -> unique temp (rolled back on failure). At index `i`
+        // exactly the first `i` entries have been staged, so roll back those.
+        let temp_name = |i: usize| format!(".cmdr-rename-{i}.tmp");
+        for (i, (from, _)) in changes.iter().enumerate() {
+            if let Err(e) = std::fs::rename(dir.join(from), dir.join(temp_name(i))) {
+                for (j, (orig, _)) in changes.iter().enumerate().take(i) {
+                    let _ = std::fs::rename(dir.join(temp_name(j)), dir.join(orig));
+                }
+                self.active_panel().refresh();
+                return Err(e.to_string());
+            }
+        }
+
+        // Phase 2: temp -> final target.
+        let mut done = 0usize;
+        for (i, (_, to)) in changes.iter().enumerate() {
+            if std::fs::rename(dir.join(temp_name(i)), dir.join(to)).is_ok() {
+                done += 1;
+            }
+        }
+        self.active_panel().selected.clear();
+        self.active_panel().refresh();
+        Ok(done)
     }
 
     // ── Preview ─────────────────────────────────────────────────────────
@@ -1168,6 +1244,58 @@ mod tests {
         assert!(ws.left.selected.contains(&shared), "common name selected");
         assert!(ws.left.selected.contains(&only_here), "prior pick kept");
         assert_eq!(ws.left.selected.len(), 2, "no spurious selections");
+    }
+
+    #[test]
+    fn apply_batch_rename_renames_only_the_selection() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("a.txt", "1");
+        l.file("b.txt", "2");
+        l.file("keep.log", "3"); // not selected
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(l.path().join("a.txt"));
+        ws.left.selected.insert(l.path().join("b.txt"));
+
+        let rule = crate::rename::RenameRule {
+            prefix: "x_".into(),
+            ..Default::default()
+        };
+        let n = ws.apply_batch_rename(&rule).unwrap();
+        assert_eq!(n, 2);
+        assert!(l.path().join("x_a.txt").is_file());
+        assert!(l.path().join("x_b.txt").is_file());
+        assert!(!l.path().join("a.txt").exists());
+        assert!(
+            l.path().join("keep.log").is_file(),
+            "non-selected untouched"
+        );
+        assert!(
+            ws.left.selected.is_empty(),
+            "selection cleared after rename"
+        );
+    }
+
+    #[test]
+    fn apply_batch_rename_refuses_a_colliding_plan() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("report_v1.txt", "a");
+        l.file("report_v2.txt", "b");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(l.path().join("report_v1.txt"));
+        ws.left.selected.insert(l.path().join("report_v2.txt"));
+
+        // "v1" -> "v2" maps report_v1 onto report_v2's name while report_v2
+        // stays put: a duplicate/sibling collision, so the plan is rejected.
+        let dup = crate::rename::RenameRule {
+            find: "v1".into(),
+            replace: "v2".into(),
+            ..Default::default()
+        };
+        let err = ws.apply_batch_rename(&dup);
+        assert!(err.is_err(), "colliding plan rejected: {err:?}");
+        // Both files are left untouched on refusal.
+        assert!(l.path().join("report_v1.txt").is_file());
+        assert!(l.path().join("report_v2.txt").is_file());
     }
 
     #[test]

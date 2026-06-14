@@ -7,6 +7,7 @@ mod image_cache;
 mod native_copy;
 mod native_menu;
 mod panel;
+mod rename;
 mod scan;
 mod session;
 mod theme;
