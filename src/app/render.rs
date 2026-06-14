@@ -16,6 +16,7 @@ impl App {
         panel_side: &str,
         tree_open: bool,
         size_bars: bool,
+        compare: Option<&crate::workspace::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
     ) -> bool {
         let panel_bg = t.bg_panel;
@@ -388,7 +389,9 @@ impl App {
                 }
 
                 // File list
-                Self::render_file_list(ui, panel, is_active, t, panel_side, size_bars, opener);
+                Self::render_file_list(
+                    ui, panel, is_active, t, panel_side, size_bars, compare, opener,
+                );
             });
 
         tree_toggle

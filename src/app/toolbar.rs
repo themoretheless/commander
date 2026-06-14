@@ -118,6 +118,24 @@ impl App {
                             self.show_size_bars = !self.show_size_bars;
                         }
 
+                        // Folder-compare toggle
+                        let cmp_fill = if self.show_compare {
+                            t.accent.linear_multiply(0.3)
+                        } else {
+                            t.bg_card
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new("\u{21c4}").size(14.0))
+                                    .fill(cmp_fill)
+                                    .corner_radius(crate::theme::ROUNDING_SM),
+                            )
+                            .on_hover_text("Compare panels (highlight differences)")
+                            .clicked()
+                        {
+                            self.show_compare = !self.show_compare;
+                        }
+
                         // Refresh button
                         if ui
                             .add(

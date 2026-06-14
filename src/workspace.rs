@@ -53,6 +53,43 @@ pub struct Workspace {
     pub opener: Box<dyn Fn(&Path)>,
 }
 
+/// How an entry relates to the same-named entry in the other panel.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CompareStatus {
+    /// Same name, size and mtime as the other panel's entry.
+    Identical,
+    /// Same name but a different size or mtime.
+    Differs,
+    /// No entry of this name in the other panel.
+    Unique,
+}
+
+/// Other-panel entries indexed by lowercase name → (size, mtime), for folder
+/// comparison. Built once per frame from a panel's loaded entries.
+pub type CompareMap = std::collections::HashMap<String, (u64, Option<std::time::SystemTime>)>;
+
+/// Index a panel's entries for comparison against the other panel.
+pub fn build_compare_map(entries: &[FileEntry]) -> CompareMap {
+    entries
+        .iter()
+        .map(|e| (e.name_lower.clone(), (e.size, e.modified)))
+        .collect()
+}
+
+/// Classify `entry` against the other panel's [`CompareMap`].
+pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
+    match other.get(&entry.name_lower) {
+        None => CompareStatus::Unique,
+        Some(&(size, mtime)) => {
+            if size == entry.size && mtime == entry.modified {
+                CompareStatus::Identical
+            } else {
+                CompareStatus::Differs
+            }
+        }
+    }
+}
+
 /// Validate a proposed file name against its siblings (UI-independent so it
 /// can drive live feedback while typing). `siblings` must exclude the entry
 /// being renamed.
@@ -710,6 +747,54 @@ mod tests {
         assert!(l.path().join("New Folder").is_dir());
         ws.create_dir();
         assert!(l.path().join("New Folder 1").is_dir());
+    }
+
+    #[test]
+    fn classify_entry_against_other_panel() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let t0 = UNIX_EPOCH + Duration::from_secs(1000);
+        let t1 = UNIX_EPOCH + Duration::from_secs(2000);
+
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let same = l.file("same.txt", "abc");
+        let diff = l.file("diff.txt", "abc");
+        let only = l.file("only.txt", "abc");
+        let mk = |p: &std::path::Path, time| {
+            let meta = std::fs::metadata(p).unwrap();
+            let mut e = FileEntry::from_meta(p.to_path_buf(), &meta).unwrap();
+            e.modified = Some(time);
+            e
+        };
+        let _ = &r;
+
+        // Other panel has "same" (identical) and "diff" (different size/mtime).
+        let mut other = CompareMap::new();
+        other.insert("same.txt".to_string(), (3, Some(t0)));
+        other.insert("diff.txt".to_string(), (999, Some(t1)));
+
+        assert_eq!(
+            classify_entry(&mk(&same, t0), &other),
+            CompareStatus::Identical
+        );
+        assert_eq!(
+            classify_entry(&mk(&diff, t0), &other),
+            CompareStatus::Differs
+        );
+        assert_eq!(
+            classify_entry(&mk(&only, t0), &other),
+            CompareStatus::Unique
+        );
+    }
+
+    #[test]
+    fn build_compare_map_indexes_by_lowercase_name() {
+        let tmp = TempDir::new();
+        let f = tmp.file("Photo.JPG", "xy");
+        let meta = std::fs::metadata(&f).unwrap();
+        let e = FileEntry::from_meta(f, &meta).unwrap();
+        let map = build_compare_map(std::slice::from_ref(&e));
+        assert!(map.contains_key("photo.jpg"));
+        assert_eq!(map["photo.jpg"].0, 2);
     }
 
     #[test]

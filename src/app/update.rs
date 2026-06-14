@@ -143,6 +143,17 @@ impl App {
         let window_width = ctx.screen_rect().width();
         let panel_id = egui::Id::new("left_panel");
 
+        // Build cross-panel comparison maps before borrowing panels mutably:
+        // each panel is tinted against the OTHER panel's entries.
+        let (left_compare, right_compare) = if self.show_compare {
+            (
+                Some(crate::workspace::build_compare_map(&self.ws.right.entries)),
+                Some(crate::workspace::build_compare_map(&self.ws.left.entries)),
+            )
+        } else {
+            (None, None)
+        };
+
         // Global tree sidebar
         let mut tree_actual_width: f32 = 0.0;
         if self.show_tree {
@@ -210,6 +221,7 @@ impl App {
                     "left",
                     self.show_tree,
                     self.show_size_bars,
+                    left_compare.as_ref(),
                     self.ws.opener.as_ref(),
                 );
             });
@@ -254,6 +266,7 @@ impl App {
                     "right",
                     self.show_tree,
                     self.show_size_bars,
+                    right_compare.as_ref(),
                     self.ws.opener.as_ref(),
                 );
             });

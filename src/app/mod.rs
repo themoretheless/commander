@@ -40,6 +40,8 @@ pub struct App {
     pub(crate) type_ahead: Option<(String, f64)>,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
+    /// Compare mode: tint each row by how it differs from the other panel.
+    pub(crate) show_compare: bool,
 }
 
 /// UI state for the rename editor.
@@ -88,6 +90,7 @@ impl App {
             renaming: None,
             type_ahead: None,
             show_size_bars: false,
+            show_compare: false,
         }
     }
 

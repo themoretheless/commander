@@ -9,6 +9,7 @@ impl App {
         t: &ThemeColors,
         panel_side: &str,
         size_bars: bool,
+        compare: Option<&crate::workspace::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
     ) {
         egui::ScrollArea::vertical()
@@ -227,6 +228,24 @@ impl App {
                                 CornerRadius::ZERO,
                                 tint.linear_multiply(0.12),
                             );
+                        }
+                    }
+
+                    // Compare mode: a left-edge stripe showing how this entry
+                    // relates to the other panel.
+                    if let Some(map) = compare {
+                        use crate::workspace::CompareStatus;
+                        let stripe = match crate::workspace::classify_entry(entry, map) {
+                            CompareStatus::Unique => Some(t.accent),
+                            CompareStatus::Differs => Some(t.accent_warning),
+                            CompareStatus::Identical => None,
+                        };
+                        if let Some(color) = stripe {
+                            let edge = egui::Rect::from_min_size(
+                                full_rect.min,
+                                Vec2::new(3.0, full_rect.height()),
+                            );
+                            ui.painter().rect_filled(edge, CornerRadius::ZERO, color);
                         }
                     }
 
