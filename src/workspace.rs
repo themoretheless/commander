@@ -317,6 +317,17 @@ impl Workspace {
                         panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
                 }
             }
+            Command::EqualizePanels => {
+                let target = self.active_panel_ref().current_path.clone();
+                self.inactive_panel_mut().navigate_to(target);
+            }
+            Command::SwapPanels => {
+                std::mem::swap(&mut self.left, &mut self.right);
+                self.active = match self.active {
+                    ActivePanel::Left => ActivePanel::Right,
+                    ActivePanel::Right => ActivePanel::Left,
+                };
+            }
             Command::SelectAll => self.active_panel().select_all(),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
@@ -629,6 +640,34 @@ mod tests {
         assert!(ws.active == ActivePanel::Right);
         ws.execute(Command::SwitchPanel);
         assert!(ws.active == ActivePanel::Left);
+    }
+
+    #[test]
+    fn equalize_points_inactive_panel_at_active_dir() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        assert_ne!(ws.left.current_path, ws.right.current_path);
+
+        // Active is Left; equalize sends Right to Left's directory.
+        ws.execute(Command::EqualizePanels);
+        assert_eq!(ws.right.current_path, l.path());
+        assert_eq!(ws.left.current_path, l.path());
+    }
+
+    #[test]
+    fn swap_exchanges_panels_and_keeps_focus_on_content() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("a.txt", "x");
+        let mut ws = workspace(&l, &r);
+        ws.left.cursor = 1;
+
+        ws.execute(Command::SwapPanels);
+
+        // Left's content (and cursor) is now on the right, and focus follows.
+        assert_eq!(ws.right.current_path, l.path());
+        assert_eq!(ws.left.current_path, r.path());
+        assert_eq!(ws.right.cursor, 1);
+        assert!(ws.active == ActivePanel::Right);
     }
 
     #[test]

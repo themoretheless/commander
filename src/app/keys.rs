@@ -89,8 +89,10 @@ impl App {
             (egui::Key::F8, KeyCode::F8),
             (egui::Key::Delete, KeyCode::Delete),
             (egui::Key::A, KeyCode::A),
+            (egui::Key::E, KeyCode::E),
             (egui::Key::H, KeyCode::H),
             (egui::Key::R, KeyCode::R),
+            (egui::Key::U, KeyCode::U),
         ];
         BINDINGS
             .iter()

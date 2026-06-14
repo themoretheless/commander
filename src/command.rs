@@ -31,6 +31,10 @@ pub enum Command {
     RequestDelete,
     /// F2 / Cmd+R: rename the entry under the cursor.
     BeginRename,
+    /// Cmd+E: point the inactive panel at the active panel's directory.
+    EqualizePanels,
+    /// Cmd+U: swap the left and right panels.
+    SwapPanels,
     SelectAll,
     ToggleHidden,
 }
@@ -56,8 +60,10 @@ pub enum KeyCode {
     F8,
     Delete,
     A,
+    E,
     H,
     R,
+    U,
 }
 
 /// A single key press with modifier state.
@@ -93,6 +99,8 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         F7 => Some(Command::CreateDir),
         F8 | Delete => Some(Command::RequestDelete),
         A if press.command => Some(Command::SelectAll),
+        E if press.command => Some(Command::EqualizePanels),
+        U if press.command => Some(Command::SwapPanels),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }
@@ -169,6 +177,18 @@ mod tests {
             map_key(press(KeyCode::PageDown)),
             Some(Command::CursorPageDown)
         );
+    }
+
+    #[test]
+    fn panel_sync_binds_to_cmd_e_and_cmd_u() {
+        assert_eq!(
+            map_key(cmd_press(KeyCode::E)),
+            Some(Command::EqualizePanels)
+        );
+        assert_eq!(map_key(cmd_press(KeyCode::U)), Some(Command::SwapPanels));
+        // Plain E/U type text (type-ahead), not panel commands.
+        assert_eq!(map_key(press(KeyCode::E)), None);
+        assert_eq!(map_key(press(KeyCode::U)), None);
     }
 
     #[test]
