@@ -54,29 +54,23 @@ impl App {
                     egui::ScrollArea::vertical()
                         .max_height(320.0)
                         .show(ui, |ui| {
-                            for (i, (label, shortcut, cmd)) in matches.iter().enumerate() {
+                            for (i, m) in matches.iter().enumerate() {
                                 let lead = if i == 0 { "\u{25b8} " } else { "   " };
+                                let job = Self::palette_row_job(lead, m, t);
                                 let resp = ui
-                                    .add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!("{lead}{label}"))
-                                                .size(12.0)
-                                                .color(t.text_primary),
-                                        )
-                                        .sense(Sense::click()),
-                                    )
-                                    .on_hover_text(*shortcut);
+                                    .add(egui::Label::new(job).sense(Sense::click()))
+                                    .on_hover_text(m.shortcut);
                                 if resp.clicked() {
-                                    run = Some(*cmd);
+                                    run = Some(m.command);
                                 }
                             }
                         });
                 }
 
                 if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && let Some((_, _, cmd)) = matches.first()
+                    && let Some(m) = matches.first()
                 {
-                    run = Some(*cmd);
+                    run = Some(m.command);
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     cancel = true;
@@ -92,5 +86,30 @@ impl App {
             self.palette_input = None;
             self.ws.execute(cmd);
         }
+    }
+
+    /// Build a palette row as a [`LayoutJob`], tinting fuzzy-matched characters
+    /// in the accent colour so the user sees why the row matched.
+    fn palette_row_job(
+        lead: &str,
+        m: &crate::command::CommandMatch,
+        t: ThemeColors,
+    ) -> egui::text::LayoutJob {
+        use egui::text::{LayoutJob, TextFormat};
+        let font = egui::FontId::proportional(12.0);
+        let mut job = LayoutJob::default();
+        let fmt = |color| TextFormat {
+            font_id: font.clone(),
+            color,
+            ..Default::default()
+        };
+        job.append(lead, 0.0, fmt(t.text_muted));
+        let mut buf = [0u8; 4];
+        for (idx, ch) in m.label.chars().enumerate() {
+            let hit = m.matched.iter().any(|&(s, e)| idx >= s && idx < e);
+            let color = if hit { t.accent } else { t.text_primary };
+            job.append(ch.encode_utf8(&mut buf), 0.0, fmt(color));
+        }
+        job
     }
 }

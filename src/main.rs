@@ -4,6 +4,7 @@ mod app;
 mod command;
 mod crumbs;
 mod fs_util;
+mod fuzzy;
 mod image_cache;
 mod native_copy;
 mod native_menu;

@@ -91,12 +91,29 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
     ]
 }
 
-/// Filter the command catalog by a case-insensitive substring over the label.
-pub fn filter_commands(query: &str) -> Vec<(&'static str, &'static str, Command)> {
-    let q = query.trim().to_lowercase();
-    command_catalog()
+/// A command-palette row: the catalog entry plus the matched character ranges
+/// over its label (half-open char indices), so the UI can highlight them.
+pub struct CommandMatch {
+    pub label: &'static str,
+    pub shortcut: &'static str,
+    pub command: Command,
+    pub matched: Vec<(usize, usize)>,
+}
+
+/// Rank the command catalog against `query` with the shared fuzzy matcher.
+/// An empty query returns the whole catalog in its declared order.
+pub fn filter_commands(query: &str) -> Vec<CommandMatch> {
+    crate::fuzzy::rank(query, command_catalog(), |(label, _, _)| *label)
         .into_iter()
-        .filter(|(label, _, _)| q.is_empty() || label.to_lowercase().contains(&q))
+        .map(|r| {
+            let (label, shortcut, command) = r.item;
+            CommandMatch {
+                label,
+                shortcut,
+                command,
+                matched: r.matched_ranges,
+            }
+        })
         .collect()
 }
 
@@ -292,13 +309,17 @@ mod tests {
     }
 
     #[test]
-    fn filter_commands_matches_label_substring() {
-        assert_eq!(filter_commands("").len(), command_catalog().len());
-        let mv = filter_commands("move");
-        assert!(mv.iter().any(|(_, _, c)| *c == Command::RequestMove));
-        let swap = filter_commands("SWAP");
-        assert_eq!(swap.len(), 1);
-        assert_eq!(swap[0].2, Command::SwapPanels);
+    fn filter_commands_ranks_by_fuzzy_relevance() {
+        // Empty query returns the whole catalog in declared order.
+        let all = filter_commands("");
+        assert_eq!(all.len(), command_catalog().len());
+        assert_eq!(all[0].command, Command::RequestCopy);
+
+        // The best fuzzy match leads the list.
+        assert_eq!(filter_commands("move")[0].command, Command::RequestMove);
+        assert_eq!(filter_commands("SWAP")[0].command, Command::SwapPanels);
+
+        // A non-subsequence query matches nothing.
         assert!(filter_commands("zzzzz").is_empty());
     }
 
