@@ -122,6 +122,38 @@ pub fn flush_cache() {
     }
 }
 
+/// Why a directory listing is the way it is, so an empty list can be told
+/// apart from an unreadable or vanished directory.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DirStatus {
+    /// Read succeeded and there are entries.
+    Listed,
+    /// Read succeeded but the directory is empty.
+    Empty,
+    /// Permission denied.
+    Denied,
+    /// The directory no longer exists.
+    Gone,
+}
+
+/// Classify a directory read for UI messaging. `is_empty` is whether the
+/// listing came back with zero entries.
+pub fn classify_dir(path: &Path, is_empty: bool) -> DirStatus {
+    match fs::read_dir(path) {
+        Ok(_) => {
+            if is_empty {
+                DirStatus::Empty
+            } else {
+                DirStatus::Listed
+            }
+        }
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => DirStatus::Gone,
+            _ => DirStatus::Denied,
+        },
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FileEntry {
     pub name: String,
@@ -463,6 +495,8 @@ pub struct PanelState {
     pub selected: std::collections::HashSet<PathBuf>,
     pub cursor: usize,
     pub scroll_to_cursor: bool,
+    /// Why the current listing is empty/non-empty (for the empty-state UI).
+    pub dir_status: DirStatus,
     /// Visible rows in the list viewport, set by the renderer each frame and
     /// read by PageUp/PageDown. Zero until the panel has been drawn once.
     pub page_rows: usize,
@@ -501,6 +535,7 @@ impl PanelState {
             selected: std::collections::HashSet::new(),
             cursor: 0,
             scroll_to_cursor: false,
+            dir_status: DirStatus::Empty,
             page_rows: 0,
             preview: None,
             history: vec![path],
@@ -557,6 +592,7 @@ impl PanelState {
         };
 
         self.entries = Self::read_dir(&self.current_path, self.show_hidden);
+        self.dir_status = classify_dir(&self.current_path, self.entries.is_empty());
         self.sort_entries();
 
         {
@@ -1392,6 +1428,30 @@ mod tests {
         p.sort_entries();
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
+    }
+
+    #[test]
+    fn classify_dir_distinguishes_empty_denied_gone() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new();
+
+        let empty = tmp.dir("empty");
+        assert_eq!(classify_dir(&empty, true), DirStatus::Empty);
+
+        let full = tmp.dir("full");
+        tmp.file("full/x.txt", "x");
+        assert_eq!(classify_dir(&full, false), DirStatus::Listed);
+
+        assert_eq!(
+            classify_dir(&tmp.path().join("nope"), true),
+            DirStatus::Gone
+        );
+
+        let denied = tmp.dir("denied");
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let status = classify_dir(&denied, true);
+        let _ = std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755));
+        assert_eq!(status, DirStatus::Denied);
     }
 
     #[test]

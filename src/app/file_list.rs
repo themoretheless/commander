@@ -74,9 +74,42 @@ impl App {
                 let filtered = panel.filtered_indices();
 
                 if filtered.is_empty() {
+                    use crate::panel::DirStatus;
+                    // Distinguish a filtered-to-nothing list, a truly empty
+                    // folder, and an unreadable/vanished one.
+                    let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
+                        if !panel.search_query.is_empty() {
+                            ("\u{1f50d}", "No matches", None)
+                        } else {
+                            match panel.dir_status {
+                                DirStatus::Denied => (
+                                    "\u{1f512}",
+                                    "No permission to read this folder",
+                                    Some(("Open in Finder", "finder")),
+                                ),
+                                DirStatus::Gone => (
+                                    "\u{26a0}\u{fe0f}",
+                                    "This folder no longer exists",
+                                    Some(("Go up", "up")),
+                                ),
+                                _ => ("\u{1f4c2}", "Empty", None),
+                            }
+                        };
                     ui.add_space(40.0);
                     ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Empty").size(14.0).color(t.text_muted));
+                        ui.label(egui::RichText::new(glyph).size(28.0));
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(message).size(13.0).color(t.text_muted));
+                        if let Some((label, kind)) = action {
+                            ui.add_space(8.0);
+                            if ui.button(label).clicked() {
+                                match kind {
+                                    "finder" => opener(&panel.current_path),
+                                    "up" => panel.go_up(),
+                                    _ => {}
+                                }
+                            }
+                        }
                     });
                     return;
                 }
