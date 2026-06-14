@@ -205,6 +205,24 @@ impl App {
                             self.confirm_pending_op(ctx);
                         }
                         ui.add_space(4.0);
+                        // Keep Both: safe default — writes the incoming items
+                        // under a fresh "copy" name, nothing is overwritten.
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Keep Both")
+                                        .size(12.0)
+                                        .color(Color32::WHITE),
+                                )
+                                .fill(t.accent)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
+                            self.ws.set_pending_policy(OverwritePolicy::KeepBoth);
+                            self.confirm_pending_op(ctx);
+                        }
+                        ui.add_space(4.0);
                         if ui
                             .add(
                                 egui::Button::new(

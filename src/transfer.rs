@@ -19,6 +19,9 @@ pub enum OverwritePolicy {
     Ask,
     OverwriteAll,
     SkipAll,
+    /// Write the incoming entry under a fresh "name copy" name, keeping the
+    /// existing destination intact (Finder's "Keep Both").
+    KeepBoth,
 }
 
 /// Copy strategy.
@@ -262,20 +265,27 @@ pub fn spawn_transfer(
                         );
                         continue;
                     }
-                    OverwritePolicy::OverwriteAll => {} // fall through to stage + swap
+                    // Fall through; KeepBoth/OverwriteAll handled below.
+                    OverwritePolicy::OverwriteAll | OverwritePolicy::KeepBoth => {}
                 }
             }
 
             let errors_before = progress.lock().unwrap().errors.len();
 
-            // When overwriting, copy into a fresh staging path and swap it
-            // into place only after a clean copy, so the existing destination
-            // is never destroyed before the copy is known good (and native
-            // copyfile's CLONE|EXCL never collides with it).
-            let copy_target = if dest_present {
+            // Pick the copy target and whether a swap is needed:
+            // - new destination: copy straight to `dest`.
+            // - OverwriteAll: copy to a staging sibling, then swap into place,
+            //   so the existing destination is never destroyed before the copy
+            //   is known good (and native CLONE|EXCL never collides with it).
+            // - KeepBoth: copy to a fresh "name copy" sibling, no swap, and the
+            //   existing destination is left intact.
+            let overwrite = dest_present && spec.policy == OverwritePolicy::OverwriteAll;
+            let copy_target = if !dest_present {
+                dest.clone()
+            } else if overwrite {
                 staging_path(&dest)
             } else {
-                dest.clone()
+                fs_util::available_copy_name(&dest)
             };
 
             let result = spec.method.copy_entry(
@@ -307,7 +317,7 @@ pub fn spawn_transfer(
                 // Remove only what we produced; a pre-existing dest is untouched.
                 let _ = cleanup_path(&copy_target);
                 false
-            } else if dest_present {
+            } else if overwrite {
                 match swap_into_place(&copy_target, &dest) {
                     Ok(()) => true,
                     Err(e) => {
@@ -321,6 +331,8 @@ pub fn spawn_transfer(
                     }
                 }
             } else {
+                // New destination or KeepBoth: the copy already landed at its
+                // final path, nothing to swap.
                 true
             };
 
@@ -879,6 +891,59 @@ mod tests {
             !dst.path().join("box/old.txt").exists(),
             "overwrite replaces the directory"
         );
+    }
+
+    #[test]
+    fn keep_both_writes_a_copy_and_preserves_the_original() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "NEW");
+        dst.file("a.txt", "OLD");
+
+        let s = run(spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::KeepBoth,
+        ));
+
+        assert!(s.errors.is_empty());
+        // Original untouched, incoming written under a fresh "copy" name.
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "OLD"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a copy.txt")).unwrap(),
+            "NEW"
+        );
+    }
+
+    #[test]
+    fn keep_both_move_keeps_original_and_removes_source() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "NEW");
+        dst.file("a.txt", "OLD");
+
+        run(spec(
+            TransferKind::Move,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::KeepBoth,
+        ));
+
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "OLD"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a copy.txt")).unwrap(),
+            "NEW"
+        );
+        assert!(!file.exists(), "move removes the source after keep-both");
     }
 
     #[test]

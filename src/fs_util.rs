@@ -67,9 +67,9 @@ pub fn first_available(mut candidate: impl FnMut(usize) -> PathBuf) -> PathBuf {
     }
 }
 
-/// Duplicate a file or directory next to itself, Finder-style:
-/// "name copy.ext", then "name copy 2.ext", ... Returns the new path.
-pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
+/// The first free Finder-style "copy" name next to `path`:
+/// "name copy.ext", then "name copy 2.ext", ...
+pub fn available_copy_name(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or(Path::new("/"));
     let stem = path
         .file_stem()
@@ -79,13 +79,19 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
-    let dest = first_available(|i| {
+    first_available(|i| {
         if i == 0 {
-            parent.join(format!("{} copy{}", stem, ext))
+            parent.join(format!("{stem} copy{ext}"))
         } else {
-            parent.join(format!("{} copy {}{}", stem, i + 1, ext))
+            parent.join(format!("{stem} copy {}{ext}", i + 1))
         }
-    });
+    })
+}
+
+/// Duplicate a file or directory next to itself, Finder-style. Returns the
+/// new path.
+pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
+    let dest = available_copy_name(path);
     if path.is_dir() {
         copy_dir_all(path, &dest)?;
     } else {
