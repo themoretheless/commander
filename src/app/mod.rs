@@ -6,6 +6,7 @@ mod confirm_dialog;
 mod file_list;
 mod keys;
 mod preload;
+mod rename_dialog;
 mod render;
 mod toolbar;
 mod transfer_dialog;
@@ -32,6 +33,17 @@ pub struct App {
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: std::collections::HashMap<PathBuf, Vec<PathBuf>>,
     pub(crate) tree_width: f32,
+    /// Active inline rename: the entry being renamed and the edit buffer.
+    pub(crate) renaming: Option<RenameState>,
+}
+
+/// UI state for the rename editor.
+pub(crate) struct RenameState {
+    pub path: PathBuf,
+    pub buffer: String,
+    pub error: Option<String>,
+    /// Set once so the text field grabs focus on the first frame.
+    pub focused: bool,
 }
 
 impl App {
@@ -68,6 +80,7 @@ impl App {
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
             tree_width: 200.0,
+            renaming: None,
         }
     }
 

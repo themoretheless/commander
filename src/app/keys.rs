@@ -14,7 +14,10 @@ impl App {
         }
         // Dialogs own the keyboard too: they handle Enter/Esc themselves,
         // and hotkeys must not fire underneath a modal window.
-        if self.ws.pending_op.is_some() || self.ws.active_transfer.is_some() {
+        if self.ws.pending_op.is_some()
+            || self.ws.active_transfer.is_some()
+            || self.renaming.is_some()
+        {
             return;
         }
         let presses = ctx.input(Self::collect_presses);
@@ -36,6 +39,7 @@ impl App {
             (egui::Key::Enter, KeyCode::Enter),
             (egui::Key::Backspace, KeyCode::Backspace),
             (egui::Key::Space, KeyCode::Space),
+            (egui::Key::F2, KeyCode::F2),
             (egui::Key::F3, KeyCode::F3),
             (egui::Key::F5, KeyCode::F5),
             (egui::Key::F6, KeyCode::F6),
@@ -44,6 +48,7 @@ impl App {
             (egui::Key::Delete, KeyCode::Delete),
             (egui::Key::A, KeyCode::A),
             (egui::Key::H, KeyCode::H),
+            (egui::Key::R, KeyCode::R),
         ];
         BINDINGS
             .iter()

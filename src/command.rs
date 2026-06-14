@@ -29,6 +29,8 @@ pub enum Command {
     RequestMove,
     CreateDir,
     RequestDelete,
+    /// F2 / Cmd+R: rename the entry under the cursor.
+    BeginRename,
     SelectAll,
     ToggleHidden,
 }
@@ -46,6 +48,7 @@ pub enum KeyCode {
     Enter,
     Backspace,
     Space,
+    F2,
     F3,
     F5,
     F6,
@@ -54,6 +57,7 @@ pub enum KeyCode {
     Delete,
     A,
     H,
+    R,
 }
 
 /// A single key press with modifier state.
@@ -81,6 +85,8 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         Enter => Some(Command::Activate),
         Backspace => Some(Command::GoUp),
         Space => Some(Command::ToggleSelect),
+        F2 => Some(Command::BeginRename),
+        R if press.command => Some(Command::BeginRename),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
@@ -163,6 +169,14 @@ mod tests {
             map_key(press(KeyCode::PageDown)),
             Some(Command::CursorPageDown)
         );
+    }
+
+    #[test]
+    fn rename_binds_to_f2_and_cmd_r() {
+        assert_eq!(map_key(press(KeyCode::F2)), Some(Command::BeginRename));
+        assert_eq!(map_key(cmd_press(KeyCode::R)), Some(Command::BeginRename));
+        // Plain R types text; it must not trigger rename.
+        assert_eq!(map_key(press(KeyCode::R)), None);
     }
 
     #[test]

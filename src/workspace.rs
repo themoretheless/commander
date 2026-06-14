@@ -45,9 +45,32 @@ pub struct Workspace {
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
     pub active_transfer: Option<TransferState>,
+    /// Set by [`Command::BeginRename`]; the UI picks this up to open the
+    /// inline rename editor seeded with this path, then clears it.
+    pub rename_target: Option<PathBuf>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
+}
+
+/// Validate a proposed file name against its siblings (UI-independent so it
+/// can drive live feedback while typing). `siblings` must exclude the entry
+/// being renamed.
+pub fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("Name cannot be empty".into());
+    }
+    if n.contains('/') {
+        return Err("Name cannot contain '/'".into());
+    }
+    if n == "." || n == ".." {
+        return Err("Invalid name".into());
+    }
+    if siblings.iter().any(|s| s == n) {
+        return Err("Name already in use".into());
+    }
+    Ok(())
 }
 
 impl Workspace {
@@ -68,6 +91,7 @@ impl Workspace {
             active: ActivePanel::Left,
             pending_op: None,
             active_transfer: None,
+            rename_target: None,
             opener,
         }
     }
@@ -215,6 +239,13 @@ impl Workspace {
             Command::RequestMove => self.request_move(),
             Command::CreateDir => self.create_dir(),
             Command::RequestDelete => self.request_delete(),
+            Command::BeginRename => {
+                let panel = self.active_panel_ref();
+                if panel.cursor > 0 {
+                    self.rename_target =
+                        panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
+                }
+            }
             Command::SelectAll => self.active_panel().select_all(),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
@@ -355,6 +386,36 @@ impl Workspace {
         let _ = std::fs::create_dir(&path);
         self.left.refresh();
         self.right.refresh();
+    }
+
+    /// Rename `old` to `new_name` in the same directory. Validates against the
+    /// active panel's siblings; a no-op (unchanged name) succeeds silently.
+    /// On success the panel is refreshed and the cursor follows the file by
+    /// path. Returns a user-facing message on failure.
+    pub fn commit_rename(&mut self, old: &Path, new_name: &str) -> Result<(), String> {
+        let new_name = new_name.trim();
+        let old_name = old
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if new_name == old_name {
+            return Ok(()); // nothing to do
+        }
+        let siblings: Vec<String> = self
+            .active_panel_ref()
+            .entries
+            .iter()
+            .map(|e| e.name.clone())
+            .filter(|n| n != &old_name)
+            .collect();
+        validate_new_name(new_name, &siblings)?;
+        let dest = old
+            .parent()
+            .map(|p| p.join(new_name))
+            .ok_or("Path has no parent")?;
+        std::fs::rename(old, &dest).map_err(|e| e.to_string())?;
+        self.active_panel().refresh();
+        Ok(())
     }
 
     // ── Preview ─────────────────────────────────────────────────────────
@@ -649,6 +710,71 @@ mod tests {
         assert!(l.path().join("New Folder").is_dir());
         ws.create_dir();
         assert!(l.path().join("New Folder 1").is_dir());
+    }
+
+    #[test]
+    fn validate_new_name_rules() {
+        let siblings = vec!["taken.txt".to_string()];
+        assert!(validate_new_name("fresh.txt", &siblings).is_ok());
+        assert!(validate_new_name("  ", &siblings).is_err());
+        assert!(validate_new_name("a/b", &siblings).is_err());
+        assert!(validate_new_name("..", &siblings).is_err());
+        assert!(validate_new_name("taken.txt", &siblings).is_err());
+    }
+
+    #[test]
+    fn begin_rename_targets_the_cursor_entry() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let f = l.file("a.txt", "x");
+        let mut ws = workspace(&l, &r);
+        ws.left.cursor = 1;
+
+        ws.execute(Command::BeginRename);
+        assert_eq!(ws.rename_target.as_deref(), Some(f.as_path()));
+    }
+
+    #[test]
+    fn commit_rename_moves_the_file_and_follows_cursor() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let f = l.file("old.txt", "data");
+        let mut ws = workspace(&l, &r);
+        ws.left.cursor = 1;
+
+        ws.commit_rename(&f, "new.txt").unwrap();
+
+        assert!(!f.exists());
+        let renamed = l.path().join("new.txt");
+        assert_eq!(std::fs::read_to_string(&renamed).unwrap(), "data");
+        // Cursor follows the renamed file by path.
+        assert_eq!(
+            ws.left.filtered_get(ws.left.cursor - 1).unwrap().name,
+            "new.txt"
+        );
+    }
+
+    #[test]
+    fn commit_rename_rejects_a_collision_without_touching_disk() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let f = l.file("a.txt", "A");
+        l.file("b.txt", "B");
+        let mut ws = workspace(&l, &r);
+
+        let err = ws.commit_rename(&f, "b.txt");
+        assert!(err.is_err());
+        assert!(f.exists(), "source untouched on collision");
+        assert_eq!(
+            std::fs::read_to_string(l.path().join("b.txt")).unwrap(),
+            "B"
+        );
+    }
+
+    #[test]
+    fn commit_rename_noop_on_unchanged_name() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let f = l.file("a.txt", "A");
+        let mut ws = workspace(&l, &r);
+        assert!(ws.commit_rename(&f, "a.txt").is_ok());
+        assert!(f.exists());
     }
 
     #[test]
