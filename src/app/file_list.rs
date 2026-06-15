@@ -313,7 +313,7 @@ impl App {
                                 sw: 0,
                                 se: 1,
                             },
-                            Color32::from_rgb(r, g, b).linear_multiply(0.9),
+                            Color32::from_rgb(r, g, b),
                         );
                     }
 
