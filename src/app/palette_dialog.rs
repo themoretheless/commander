@@ -1,21 +1,25 @@
-//! Command palette (Cmd+K): fuzzy-filter every user-facing command and run
-//! it. The catalog and filter live in `crate::command`.
+//! Command palette (Cmd+K): fuzzy-filter every user-facing command, ranked by
+//! recency/frequency, and run it. The catalog and ranking live in
+//! `crate::command`.
 
 use super::*;
-use crate::command::filter_commands;
 
 impl App {
     pub(crate) fn show_palette_dialog(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.ws.palette_request) {
             self.palette_input = Some(String::new());
         }
-        let Some(buffer) = &mut self.palette_input else {
+        if self.palette_input.is_none() {
             return;
-        };
+        }
         let t = self.colors;
 
-        let matches = filter_commands(buffer);
-        let mut run: Option<crate::command::Command> = None;
+        // Rank from the query at frame start (owned, so editing the buffer
+        // below does not conflict with reading the usage history).
+        let query = self.palette_input.clone().unwrap();
+        let matches = crate::command::rank(&query, &self.palette_usage, self.palette_tick);
+        let buffer = self.palette_input.as_mut().unwrap();
+        let mut run: Option<(&'static str, crate::command::Command)> = None;
         let mut cancel = false;
         let mut first = false;
 
@@ -61,7 +65,7 @@ impl App {
                                     .add(egui::Label::new(job).sense(Sense::click()))
                                     .on_hover_text(m.shortcut);
                                 if resp.clicked() {
-                                    run = Some(m.command);
+                                    run = Some((m.label, m.command));
                                 }
                             }
                         });
@@ -70,7 +74,7 @@ impl App {
                 if ui.input(|i| i.key_pressed(egui::Key::Enter))
                     && let Some(m) = matches.first()
                 {
-                    run = Some(m.command);
+                    run = Some((m.label, m.command));
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     cancel = true;
@@ -81,9 +85,12 @@ impl App {
             self.palette_input = None;
             return;
         }
-        if let Some(cmd) = run {
+        if let Some((label, cmd)) = run {
             // Close the palette first; the command may open another dialog.
             self.palette_input = None;
+            // Record the run so it ranks higher next time.
+            self.palette_tick += 1;
+            self.palette_usage.record(label, self.palette_tick);
             self.ws.execute(cmd);
         }
     }

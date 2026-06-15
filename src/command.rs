@@ -1,6 +1,9 @@
 //! Keyboard commands: a pure mapping from key presses to [`Command`]s.
 //! No egui types here; the UI layer translates raw input into [`KeyPress`].
 
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Command {
     SwitchPanel,
@@ -146,21 +149,93 @@ pub struct CommandMatch {
     pub matched: Vec<(usize, usize)>,
 }
 
-/// Rank the command catalog against `query` with the shared fuzzy matcher.
-/// An empty query returns the whole catalog in its declared order.
+/// How often and how recently a palette command has been run, keyed by label.
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Usage {
+    pub count: u32,
+    /// Monotonic tick of the most recent use (higher == more recent).
+    pub last: u64,
+}
+
+/// Per-command usage history, persisted so the palette can rank by recency and
+/// frequency on top of the fuzzy match.
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+pub struct UsageStats {
+    pub uses: HashMap<String, Usage>,
+}
+
+impl UsageStats {
+    /// Record a run of `label` at monotonic time `now`.
+    pub fn record(&mut self, label: &str, now: u64) {
+        let u = self.uses.entry(label.to_string()).or_default();
+        u.count += 1;
+        u.last = now;
+    }
+}
+
+/// A modest usage bonus added to the fuzzy score: frequency (up to +12) plus
+/// recency (up to +12, decaying over the last ~12 runs). Kept small so a
+/// clearly-better fuzzy match still wins, but ties go to the habitual command.
+pub fn combined_score(fuzzy: i32, usage: Option<&Usage>, now: u64) -> i32 {
+    let Some(u) = usage else {
+        return fuzzy;
+    };
+    let freq = u.count.min(12) as i32;
+    let recency = if u.last == 0 {
+        0
+    } else {
+        let age = now.saturating_sub(u.last).min(12) as i32;
+        12 - age
+    };
+    fuzzy + freq + recency
+}
+
+/// Rank the command catalog against `query`, blending the fuzzy score with
+/// usage. An empty query lists the catalog most-recently-used first (then by
+/// count, then declared order). Non-empty keeps fuzzy matches, ordered by the
+/// combined score (stable on ties via declared order).
+pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
+    let catalog = command_catalog();
+    let to_match =
+        |(label, shortcut, command): (&'static str, &'static str, Command), matched| CommandMatch {
+            label,
+            shortcut,
+            command,
+            matched,
+        };
+
+    if query.trim().is_empty() {
+        let mut indexed: Vec<(usize, (&'static str, &'static str, Command))> =
+            catalog.into_iter().enumerate().collect();
+        indexed.sort_by(|(ia, a), (ib, b)| {
+            let ua = usage.uses.get(a.0);
+            let ub = usage.uses.get(b.0);
+            let (la, ca) = ua.map_or((0, 0), |u| (u.last, u.count));
+            let (lb, cb) = ub.map_or((0, 0), |u| (u.last, u.count));
+            lb.cmp(&la).then(cb.cmp(&ca)).then(ia.cmp(ib))
+        });
+        return indexed
+            .into_iter()
+            .map(|(_, item)| to_match(item, Vec::new()))
+            .collect();
+    }
+
+    let mut scored: Vec<(i32, usize, CommandMatch)> = Vec::new();
+    for (i, item) in catalog.into_iter().enumerate() {
+        if let Some(ms) = crate::fuzzy::score(query, item.0) {
+            let total = combined_score(ms.score, usage.uses.get(item.0), now);
+            scored.push((total, i, to_match(item, ms.matched_ranges)));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, _, m)| m).collect()
+}
+
+/// Rank without usage (pure fuzzy order); the empty-history baseline used in
+/// tests.
+#[cfg(test)]
 pub fn filter_commands(query: &str) -> Vec<CommandMatch> {
-    crate::fuzzy::rank(query, command_catalog(), |(label, _, _)| *label)
-        .into_iter()
-        .map(|r| {
-            let (label, shortcut, command) = r.item;
-            CommandMatch {
-                label,
-                shortcut,
-                command,
-                matched: r.matched_ranges,
-            }
-        })
-        .collect()
+    rank(query, &UsageStats::default(), 0)
 }
 
 /// The keys the file manager reacts to (UI-toolkit independent).
@@ -368,7 +443,7 @@ mod tests {
 
     #[test]
     fn filter_commands_ranks_by_fuzzy_relevance() {
-        // Empty query returns the whole catalog in declared order.
+        // Empty query (no usage) returns the whole catalog in declared order.
         let all = filter_commands("");
         assert_eq!(all.len(), command_catalog().len());
         assert_eq!(all[0].command, Command::RequestCopy);
@@ -379,6 +454,46 @@ mod tests {
 
         // A non-subsequence query matches nothing.
         assert!(filter_commands("zzzzz").is_empty());
+    }
+
+    #[test]
+    fn combined_score_lets_habit_break_close_ties_not_clear_wins() {
+        let frequent_recent = Usage {
+            count: 5,
+            last: 100,
+        };
+        let now = 100;
+        // A habitual command with a weaker fuzzy score beats an unused one that
+        // is only slightly better (gap within the usage bonus).
+        assert!(combined_score(8, Some(&frequent_recent), now) > combined_score(18, None, now));
+        // But a clearly-better fuzzy match still wins.
+        assert!(combined_score(8, Some(&frequent_recent), now) < combined_score(40, None, now));
+        // No usage -> the fuzzy score is unchanged.
+        assert_eq!(combined_score(25, None, now), 25);
+    }
+
+    #[test]
+    fn empty_query_lists_most_recently_used_first() {
+        let mut usage = UsageStats::default();
+        usage.record("Swap panels", 1);
+        usage.record("Find files", 2); // more recent
+        let ranked = rank("", &usage, 2);
+        // The two used commands lead, most-recent first.
+        assert_eq!(ranked[0].label, "Find files");
+        assert_eq!(ranked[1].label, "Swap panels");
+        // Determinism.
+        let again = rank("", &usage, 2);
+        let a: Vec<&str> = ranked.iter().map(|m| m.label).collect();
+        let b: Vec<&str> = again.iter().map(|m| m.label).collect();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn unused_commands_fall_back_to_fuzzy_order() {
+        let usage = UsageStats::default();
+        let with_rank: Vec<Command> = rank("move", &usage, 0).iter().map(|m| m.command).collect();
+        let with_fuzzy: Vec<Command> = filter_commands("move").iter().map(|m| m.command).collect();
+        assert_eq!(with_rank, with_fuzzy);
     }
 
     #[test]

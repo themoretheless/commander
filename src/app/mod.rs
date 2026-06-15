@@ -65,6 +65,10 @@ pub struct App {
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Active command-palette filter buffer.
     pub(crate) palette_input: Option<String>,
+    /// Command-palette usage history (recency/frequency ranking).
+    pub(crate) palette_usage: crate::command::UsageStats,
+    /// Monotonic counter stamped onto each palette command run.
+    pub(crate) palette_tick: u64,
     /// Active batch-rename studio state.
     pub(crate) batch_rename: Option<BatchRenameState>,
     /// Active synchronise-sheet state.
@@ -284,6 +288,11 @@ impl App {
             recent_input: None,
             toasts: crate::toasts::ToastQueue::default(),
             palette_input: None,
+            palette_usage: session
+                .as_ref()
+                .map(|s| s.palette_usage.clone())
+                .unwrap_or_default(),
+            palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
             batch_rename: None,
             sync: None,
             duplicates: None,
@@ -320,6 +329,8 @@ impl App {
             right_sort_order: self.ws.right.sort_order,
             right_hidden: self.ws.right.show_hidden,
             density: self.density,
+            palette_usage: self.palette_usage.clone(),
+            palette_tick: self.palette_tick,
         }
     }
 

@@ -120,33 +120,6 @@ pub fn score(query: &str, candidate: &str) -> Option<MatchScore> {
     })
 }
 
-/// An item that matched a query, carrying its score and highlight ranges.
-pub struct Ranked<T> {
-    pub item: T,
-    pub score: i32,
-    pub matched_ranges: Vec<(usize, usize)>,
-}
-
-/// Keep only the items whose `key` matches `query`, sorted by score descending.
-/// The sort is stable, so equal scores (and an empty query) preserve the input
-/// order.
-pub fn rank<T>(query: &str, items: Vec<T>, key: impl Fn(&T) -> &str) -> Vec<Ranked<T>> {
-    let mut scored: Vec<Ranked<T>> = items
-        .into_iter()
-        .filter_map(|item| {
-            let ms = score(query, key(&item))?;
-            Some(Ranked {
-                score: ms.score,
-                matched_ranges: ms.matched_ranges,
-                item,
-            })
-        })
-        .collect();
-    // Stable sort by score descending; ties keep their input order.
-    scored.sort_by_key(|r| std::cmp::Reverse(r.score));
-    scored
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,21 +197,5 @@ mod tests {
         let m = score("sb", "SwapBack").unwrap();
         assert_eq!(m.matched_ranges, vec![(0, 1), (4, 5)]);
         assert!(m.score > 0);
-    }
-
-    #[test]
-    fn rank_keeps_input_order_for_empty_query() {
-        let items = vec!["beta", "alpha", "gamma"];
-        let ranked = rank("", items.clone(), |s| s);
-        let order: Vec<&str> = ranked.iter().map(|r| r.item).collect();
-        assert_eq!(order, items);
-    }
-
-    #[test]
-    fn rank_filters_and_orders_by_relevance() {
-        let items = vec!["fabricate", "foo/bar", "nope"];
-        let ranked = rank("fb", items, |s| s);
-        let order: Vec<&str> = ranked.iter().map(|r| r.item).collect();
-        assert_eq!(order, vec!["foo/bar", "fabricate"]); // "nope" filtered out
     }
 }

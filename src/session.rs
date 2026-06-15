@@ -25,6 +25,12 @@ pub struct Session {
     /// List density. Defaulted for sessions written before density existed.
     #[serde(default)]
     pub density: crate::density::Density,
+    /// Command-palette usage history, for recency/frequency ranking.
+    #[serde(default)]
+    pub palette_usage: crate::command::UsageStats,
+    /// Monotonic counter stamped onto each palette command run.
+    #[serde(default)]
+    pub palette_tick: u64,
 }
 
 impl Session {
@@ -91,6 +97,8 @@ mod tests {
             right_sort_order: SortOrder::Asc,
             right_hidden: false,
             density: crate::density::Density::Compact,
+            palette_usage: crate::command::UsageStats::default(),
+            palette_tick: 7,
         }
     }
 
