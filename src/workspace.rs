@@ -88,6 +88,8 @@ pub struct Workspace {
     pub treemap_request: bool,
     /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
     pub find_request: bool,
+    /// Set by the Copy* commands; the UI formats the selection and copies it.
+    pub clipboard_request: Option<crate::clipboard::PathStyle>,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
     pub redo_request: bool,
     /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
@@ -294,6 +296,7 @@ impl Workspace {
             diff_request: false,
             treemap_request: false,
             find_request: false,
+            clipboard_request: None,
             redo_request: false,
             drain_request: false,
             cycle_density_request: false,
@@ -489,6 +492,24 @@ impl Workspace {
             Command::DiffFiles => self.diff_request = true,
             Command::DiskTreemap => self.treemap_request = true,
             Command::BeginFind => self.find_request = true,
+            Command::CopyPath => {
+                self.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
+            }
+            Command::CopyName => {
+                self.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly)
+            }
+            Command::CopyParentPath => {
+                self.clipboard_request = Some(crate::clipboard::PathStyle::ParentPath)
+            }
+            Command::CopyFileUrl => {
+                self.clipboard_request = Some(crate::clipboard::PathStyle::FileUrl)
+            }
+            Command::CopyShellPath => {
+                self.clipboard_request = Some(crate::clipboard::PathStyle::ShellEscaped)
+            }
+            Command::CopyRelativePath => {
+                self.clipboard_request = Some(crate::clipboard::PathStyle::RelativeToOther)
+            }
             Command::CycleDensity => self.cycle_density_request = true,
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self

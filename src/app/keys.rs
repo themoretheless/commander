@@ -99,6 +99,7 @@ impl App {
             (egui::Key::F8, KeyCode::F8),
             (egui::Key::Delete, KeyCode::Delete),
             (egui::Key::A, KeyCode::A),
+            (egui::Key::C, KeyCode::C),
             (egui::Key::D, KeyCode::D),
             (egui::Key::E, KeyCode::E),
             (egui::Key::F, KeyCode::F),

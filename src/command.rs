@@ -64,6 +64,18 @@ pub enum Command {
     DiskTreemap,
     /// Cmd+F: open the recursive find sheet.
     BeginFind,
+    /// Cmd+Shift+C: copy the selection's full path(s) to the clipboard.
+    CopyPath,
+    /// Copy the selection's file name(s).
+    CopyName,
+    /// Copy the selection's parent directory path(s).
+    CopyParentPath,
+    /// Copy the selection as `file://` URL(s).
+    CopyFileUrl,
+    /// Copy the selection's path(s), shell-escaped.
+    CopyShellPath,
+    /// Copy the selection's path(s) relative to the other pane.
+    CopyRelativePath,
     /// Cmd+Shift+A: add the active selection to the shelf (drop stack).
     ShelfAdd,
     /// Cmd+Shift+V: copy the whole shelf into the active panel's folder.
@@ -89,6 +101,16 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Diff files", "Cmd+D", Command::DiffFiles),
         ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
         ("Find files", "Cmd+F", Command::BeginFind),
+        ("Copy path", "Cmd+Shift+C", Command::CopyPath),
+        ("Copy name", "", Command::CopyName),
+        ("Copy parent path", "", Command::CopyParentPath),
+        ("Copy as file URL", "", Command::CopyFileUrl),
+        ("Copy shell-escaped path", "", Command::CopyShellPath),
+        (
+            "Copy path relative to other pane",
+            "",
+            Command::CopyRelativePath,
+        ),
         ("Add to shelf", "Cmd+Shift+A", Command::ShelfAdd),
         ("Drain shelf here", "Cmd+Shift+V", Command::ShelfDrain),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
@@ -159,6 +181,7 @@ pub enum KeyCode {
     F8,
     Delete,
     A,
+    C,
     E,
     G,
     H,
@@ -209,6 +232,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         D if press.command => Some(Command::DiffFiles),
         M if press.command && press.shift => Some(Command::DiskTreemap),
         F if press.command => Some(Command::BeginFind),
+        C if press.command && press.shift => Some(Command::CopyPath),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
@@ -386,6 +410,17 @@ mod tests {
         // Cmd+A without shift stays Select all; plain V types text.
         assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
         assert_eq!(map_key(press(KeyCode::V)), None);
+    }
+
+    #[test]
+    fn cmd_shift_c_copies_path() {
+        let cmd_shift_c = KeyPress {
+            code: KeyCode::C,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_c), Some(Command::CopyPath));
+        assert_eq!(map_key(press(KeyCode::C)), None);
     }
 
     #[test]

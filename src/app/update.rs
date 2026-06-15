@@ -118,6 +118,32 @@ impl App {
         if std::mem::take(&mut self.ws.cycle_density_request) {
             self.density = crate::density::cycle(self.density, 1);
         }
+        // Copy the selection's path(s) to the clipboard in the requested style.
+        if let Some(style) = self.ws.clipboard_request.take() {
+            let paths: Vec<std::path::PathBuf> = self
+                .ws
+                .active_panel_ref()
+                .selected_or_cursor()
+                .into_iter()
+                .map(|e| e.path)
+                .collect();
+            if !paths.is_empty() {
+                let other_root = self.ws.inactive_panel().current_path.clone();
+                let text = crate::clipboard::format(&paths, style, Some(&other_root));
+                ctx.copy_text(text);
+                let now = ctx.input(|i| i.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!(
+                        "Copied {} ({})",
+                        crate::clipboard::style_label(style),
+                        paths.len()
+                    ),
+                    crate::toasts::ToastKind::Success,
+                    false,
+                    now,
+                ));
+            }
+        }
     }
 
     fn show_toolbar_panel(&mut self, ctx: &egui::Context) {
