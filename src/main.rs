@@ -13,6 +13,7 @@ mod native_menu;
 mod panel;
 mod rename;
 mod scan;
+mod selection_summary;
 mod session;
 mod shelf;
 mod sync;

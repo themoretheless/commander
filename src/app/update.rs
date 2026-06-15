@@ -18,6 +18,7 @@ impl eframe::App for App {
         self.show_toolbar_panel(ctx);
         self.show_shortcut_bar(ctx);
         self.show_shelf_tray(ctx);
+        self.show_selection_hud(ctx);
         self.show_main_area(ctx);
         self.show_drag_overlay(ctx);
         self.show_type_ahead_overlay(ctx);
@@ -281,6 +282,73 @@ impl App {
         if drain {
             self.ws.drain_request = true;
         }
+    }
+
+    /// A quiet pill near the bottom of the central area summarizing the active
+    /// panel's selection (count, folders, size, kind breakdown). Shown only
+    /// when something is selected; complements the per-panel status bar.
+    fn show_selection_hud(&mut self, ctx: &egui::Context) {
+        let selected = self.ws.active_panel_ref().selected_entries();
+        if selected.is_empty() {
+            return;
+        }
+        let s = crate::selection_summary::summarize(&selected);
+        let t = self.colors;
+
+        let mut head = format!("{} item(s)", s.count);
+        if s.dir_count > 0 {
+            head.push_str(&format!(" \u{00b7} {} folder(s)", s.dir_count));
+        }
+        if s.total_bytes > 0 {
+            head.push_str(&format!(
+                " \u{00b7} {}",
+                crate::panel::format_size(s.total_bytes)
+            ));
+        }
+        let breakdown: String = s
+            .kinds
+            .iter()
+            .take(4)
+            .map(|(k, n)| format!("{n} {}", k.label()))
+            .collect::<Vec<_>>()
+            .join("  \u{00b7}  ");
+
+        let area = ctx.available_rect();
+        egui::Area::new(egui::Id::new("selection_hud"))
+            .anchor(
+                egui::Align2::CENTER_BOTTOM,
+                [
+                    area.center().x - ctx.screen_rect().center().x,
+                    -(ctx.screen_rect().bottom() - area.bottom()) - 14.0,
+                ],
+            )
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(t.bg_card)
+                    .stroke(Stroke::new(1.0_f32, t.border))
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(Margin::symmetric(12, 7))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(head)
+                                    .size(11.0)
+                                    .strong()
+                                    .color(t.accent),
+                            );
+                            if !breakdown.is_empty() {
+                                ui.add_space(10.0);
+                                ui.label(
+                                    egui::RichText::new(breakdown)
+                                        .size(11.0)
+                                        .color(t.text_muted),
+                                );
+                            }
+                        });
+                    });
+            });
     }
 
     /// Tree sidebar plus the two file panels with the resizable divider.
