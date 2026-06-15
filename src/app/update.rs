@@ -100,6 +100,10 @@ impl App {
             let c = ctx.clone();
             self.ws.drain_shelf(move || c.request_repaint());
         }
+        // Cycle the list density (toward Spacious; wraps).
+        if std::mem::take(&mut self.ws.cycle_density_request) {
+            self.density = crate::density::cycle(self.density, 1);
+        }
     }
 
     fn show_toolbar_panel(&mut self, ctx: &egui::Context) {
@@ -282,6 +286,7 @@ impl App {
     /// Tree sidebar plus the two file panels with the resizable divider.
     fn show_main_area(&mut self, ctx: &egui::Context) {
         let t = self.colors;
+        let metrics = crate::density::metrics(self.density);
         let window_width = ctx.screen_rect().width();
         let panel_id = egui::Id::new("left_panel");
 
@@ -365,6 +370,7 @@ impl App {
                     self.show_size_bars,
                     left_compare.as_ref(),
                     self.ws.opener.as_ref(),
+                    metrics,
                 );
             });
 
@@ -410,6 +416,7 @@ impl App {
                     self.show_size_bars,
                     right_compare.as_ref(),
                     self.ws.opener.as_ref(),
+                    metrics,
                 );
             });
 

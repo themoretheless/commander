@@ -22,6 +22,9 @@ pub struct Session {
     pub right_sort_col: SortColumn,
     pub right_sort_order: SortOrder,
     pub right_hidden: bool,
+    /// List density. Defaulted for sessions written before density existed.
+    #[serde(default)]
+    pub density: crate::density::Density,
 }
 
 impl Session {
@@ -87,7 +90,18 @@ mod tests {
             right_sort_col: SortColumn::Name,
             right_sort_order: SortOrder::Asc,
             right_hidden: false,
+            density: crate::density::Density::Compact,
         }
+    }
+
+    #[test]
+    fn density_defaults_when_absent_from_json() {
+        // A session written before density existed has no `density` key.
+        let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut val = serde_json::to_value(&s).unwrap();
+        val.as_object_mut().unwrap().remove("density");
+        let back: Session = serde_json::from_value(val).unwrap();
+        assert_eq!(back.density, crate::density::Density::Comfortable);
     }
 
     #[test]

@@ -86,6 +86,8 @@ pub struct Workspace {
     pub redo_request: bool,
     /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
     pub drain_request: bool,
+    /// Set by [`Command::CycleDensity`]; the UI cycles its list density.
+    pub cycle_density_request: bool,
     /// The drop stack: paths gathered across folders to copy in one go.
     pub shelf: crate::shelf::Shelf,
     /// Queued second copy pass (entries, target) for a two-way sync, started
@@ -285,6 +287,7 @@ impl Workspace {
             duplicates_request: false,
             redo_request: false,
             drain_request: false,
+            cycle_density_request: false,
             shelf: crate::shelf::Shelf::default(),
             sync_followup: None,
             stack: crate::undo::UndoStack::default(),
@@ -474,6 +477,7 @@ impl Workspace {
             Command::BeginBatchRename => self.batch_rename_request = true,
             Command::BeginSync => self.sync_request = true,
             Command::FindDuplicates => self.duplicates_request = true,
+            Command::CycleDensity => self.cycle_density_request = true,
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
                     .active_panel_ref()

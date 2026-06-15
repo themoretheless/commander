@@ -54,6 +54,8 @@ pub enum Command {
     /// Cmd+K: open the command palette.
     BeginPalette,
     SelectAll,
+    /// Cmd+Shift+D: cycle the list density (Compact / Comfortable / Spacious).
+    CycleDensity,
     /// Open the duplicate finder for the active panel's folder.
     FindDuplicates,
     /// Cmd+Shift+A: add the active selection to the shelf (drop stack).
@@ -92,6 +94,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
+        ("Cycle density", "Cmd+Shift+D", Command::CycleDensity),
         ("Toggle preview", "F3", Command::TogglePreview),
         ("Equalize panels", "Cmd+E", Command::EqualizePanels),
         ("Swap panels", "Cmd+U", Command::SwapPanels),
@@ -154,6 +157,7 @@ pub enum KeyCode {
     K,
     L,
     P,
+    D,
     R,
     S,
     U,
@@ -190,6 +194,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         R if press.command && press.shift => Some(Command::BeginBatchRename),
         R if press.command => Some(Command::BeginRename),
         S if press.command && press.shift => Some(Command::BeginSync),
+        D if press.command && press.shift => Some(Command::CycleDensity),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
@@ -367,6 +372,17 @@ mod tests {
         // Cmd+A without shift stays Select all; plain V types text.
         assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
         assert_eq!(map_key(press(KeyCode::V)), None);
+    }
+
+    #[test]
+    fn cmd_shift_d_cycles_density() {
+        let cmd_shift_d = KeyPress {
+            code: KeyCode::D,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_d), Some(Command::CycleDensity));
+        assert_eq!(map_key(press(KeyCode::D)), None);
     }
 
     #[test]

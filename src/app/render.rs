@@ -103,6 +103,7 @@ impl App {
         size_bars: bool,
         compare: Option<&crate::workspace::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
+        metrics: crate::density::DensityMetrics,
     ) -> bool {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
@@ -569,7 +570,7 @@ impl App {
 
                 // File list
                 Self::render_file_list(
-                    ui, panel, is_active, t, panel_side, size_bars, compare, opener,
+                    ui, panel, is_active, t, panel_side, size_bars, compare, opener, metrics,
                 );
             });
 

@@ -32,6 +32,8 @@ pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
     pub ui_scale: f32,
+    /// List density tier (row sizes), restored from and saved to the session.
+    pub(crate) density: crate::density::Density,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
     pub(crate) prev_window_width: f32,
@@ -178,6 +180,7 @@ impl App {
         App {
             ws,
             ui_scale,
+            density: session.as_ref().map(|s| s.density).unwrap_or_default(),
             theme_mode: mode,
             colors: match mode {
                 ThemeMode::Light => ThemeColors::light(),
@@ -222,6 +225,7 @@ impl App {
             right_sort_col: self.ws.right.sort_col,
             right_sort_order: self.ws.right.sort_order,
             right_hidden: self.ws.right.show_hidden,
+            density: self.density,
         }
     }
 

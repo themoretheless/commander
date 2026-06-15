@@ -11,6 +11,7 @@ impl App {
         size_bars: bool,
         compare: Option<&crate::workspace::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
+        metrics: crate::density::DensityMetrics,
     ) {
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
@@ -136,7 +137,12 @@ impl App {
                 let scroll_pending = panel.scroll_to_cursor;
                 let dragging = !panel.drag_entries.is_empty();
 
-                let row_h = 29.0; // 28 + 1 spacing
+                // Row sizing follows the density tier. `row_content` is the
+                // allocated row height; `row_h` adds the 1px item spacing so the
+                // virtualization stride matches (Comfortable == 28 + 1 == 29,
+                // the pre-density default).
+                let row_content = metrics.name_pt + metrics.row_pad_y * 2.0 + 7.0;
+                let row_h = row_content + 1.0;
                 let total_rows = filtered.len();
                 let viewport = ui.clip_rect();
                 let scroll_top = viewport.top() - ui.min_rect().top();
@@ -216,7 +222,7 @@ impl App {
                     };
 
                     let (row_rect, row_resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), 28.0),
+                        Vec2::new(ui.available_width(), row_content),
                         Sense::click_and_drag(),
                     );
 
@@ -300,7 +306,7 @@ impl App {
                             Self::paint_folder_icon(ui, count);
                         } else {
                             ui.add_space(3.0);
-                            ui.label(egui::RichText::new(entry.icon()).size(14.0));
+                            ui.label(egui::RichText::new(entry.icon()).size(metrics.icon_pt));
                         }
                         ui.add_space(3.0);
 
@@ -314,7 +320,7 @@ impl App {
                         if query.is_empty() {
                             ui.label(
                                 egui::RichText::new(&entry.name)
-                                    .size(13.0)
+                                    .size(metrics.name_pt)
                                     .color(name_color),
                             );
                         } else {
@@ -323,7 +329,7 @@ impl App {
                                 &query,
                                 name_color,
                                 t.accent,
-                                13.0,
+                                metrics.name_pt,
                             ));
                         }
 
@@ -331,7 +337,7 @@ impl App {
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new(entry.modified_display())
-                                    .size(11.0)
+                                    .size(metrics.meta_pt)
                                     .color(t.text_muted),
                             );
                             ui.add_space(16.0);
@@ -342,7 +348,7 @@ impl App {
                             };
                             ui.label(
                                 egui::RichText::new(size_text)
-                                    .size(11.0)
+                                    .size(metrics.meta_pt)
                                     .color(t.text_muted),
                             );
                         });
