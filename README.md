@@ -25,6 +25,21 @@ integration (Quick Look, Finder tags, share sheet, APFS clone copies).
   Compress, Copy Path, Reveal in Finder, Tags, Share, Move to Trash.
 - **Light / dark theme** following the system appearance.
 
+## Design backlog
+
+Top ideas borrowed from polished editors and file tools:
+
+1. **Pinned places**: favorites and project roots above the folder tree.
+2. **Saved searches**: reusable filters like "Large media this week".
+3. **Selection sets**: name and recall a temporary selection.
+4. **Diff drawer**: a dedicated compare summary before copy/move.
+5. **Operation queue**: stacked transfers with pause, resume, and reorder.
+6. **Inspector tabs**: Info, Preview, Versions, and Permissions in one panel.
+7. **Shortcut editor**: searchable keybinding map with conflict warnings.
+8. **Command aliases**: user-defined palette aliases for repeat workflows.
+9. **Workspace profiles**: saved two-panel layouts per project/task.
+10. **Inline action rail**: row-level quick actions on hover for common tasks.
+
 ## Keyboard shortcuts
 
 | Key | Action |

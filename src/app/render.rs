@@ -79,6 +79,15 @@ impl App {
                             Some(7)
                         };
                     }
+                    let active_count = f.active_count();
+                    if active_count > 0 {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(format!("{active_count} active"))
+                                .size(10.0)
+                                .color(t.text_muted),
+                        );
+                    }
                     if !f.is_empty() && chip(ui, "\u{2715} Clear", false) {
                         *f = FacetSet::default();
                     }
@@ -337,12 +346,39 @@ impl App {
                     .fill(panel_bg)
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut panel.search_query)
-                                .hint_text("\u{1f50d} Filter\u{2026}")
-                                .desired_width(ui.available_width())
-                                .margin(egui::vec2(8.0, 4.0)),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let clear_width = if panel.search_query.is_empty() {
+                                0.0
+                            } else {
+                                30.0
+                            };
+                            let input_width = (ui.available_width() - clear_width).max(80.0);
+                            ui.add_sized(
+                                Vec2::new(input_width, 26.0),
+                                egui::TextEdit::singleline(&mut panel.search_query)
+                                    .hint_text("\u{1f50d} Filter\u{2026}")
+                                    .desired_width(f32::INFINITY)
+                                    .margin(egui::vec2(8.0, 4.0)),
+                            );
+                            if !panel.search_query.is_empty()
+                                && ui
+                                    .add_sized(
+                                        Vec2::new(26.0, 24.0),
+                                        egui::Button::new(
+                                            egui::RichText::new("\u{00d7}")
+                                                .size(12.0)
+                                                .color(t.text_secondary),
+                                        )
+                                        .fill(t.bg_card)
+                                        .corner_radius(crate::theme::ROUNDING_SM),
+                                    )
+                                    .on_hover_text("Clear filter")
+                                    .clicked()
+                            {
+                                panel.search_query.clear();
+                            }
+                        });
                     });
 
                 // Quick-filter facet chips.

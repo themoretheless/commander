@@ -579,6 +579,12 @@ impl FacetSet {
     pub fn is_empty(&self) -> bool {
         self.kind.is_none() && self.min_size.is_none() && self.max_age_days.is_none()
     }
+
+    pub fn active_count(&self) -> usize {
+        usize::from(self.kind.is_some())
+            + usize::from(self.min_size.is_some())
+            + usize::from(self.max_age_days.is_some())
+    }
 }
 
 /// Whether `entry` passes all active facets, relative to `now`. Pure.

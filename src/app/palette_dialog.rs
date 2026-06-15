@@ -35,11 +35,27 @@ impl App {
                     .stroke(Stroke::new(1.0_f32, t.border)),
             )
             .show(ctx, |ui| {
-                ui.set_width(460.0);
+                ui.set_width(520.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Command Palette")
+                            .size(13.0)
+                            .strong()
+                            .color(t.text_primary),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new("\u{2318}K")
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                    });
+                });
+                ui.add_space(8.0);
                 let resp = ui.add(
                     egui::TextEdit::singleline(buffer)
                         .desired_width(f32::INFINITY)
-                        .hint_text("Type a command\u{2026}")
+                        .hint_text("Search commands, shortcuts, views\u{2026}")
                         .margin(egui::vec2(8.0, 6.0)),
                 );
                 if !first {
@@ -50,19 +66,65 @@ impl App {
 
                 if matches.is_empty() {
                     ui.label(
-                        egui::RichText::new("No matching command")
-                            .size(11.0)
-                            .color(t.text_muted),
+                        egui::RichText::new(
+                            "No matching command. Try file, view, select, or cmd h.",
+                        )
+                        .size(11.0)
+                        .color(t.text_muted),
                     );
                 } else {
                     egui::ScrollArea::vertical()
                         .max_height(320.0)
                         .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
                             for (i, m) in matches.iter().enumerate() {
-                                let lead = if i == 0 { "\u{25b8} " } else { "   " };
+                                let fill = if i == 0 {
+                                    t.accent.linear_multiply(0.12)
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                let lead = if i == 0 { "\u{25b8} " } else { "  " };
                                 let job = Self::palette_row_job(lead, m, t);
-                                let resp = ui
-                                    .add(egui::Label::new(job).sense(Sense::click()))
+                                let resp = Frame::NONE
+                                    .fill(fill)
+                                    .corner_radius(crate::theme::ROUNDING_SM)
+                                    .inner_margin(Margin::symmetric(8, 6))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.add(egui::Label::new(job));
+                                                ui.label(
+                                                    egui::RichText::new(Self::palette_category(
+                                                        m.command,
+                                                    ))
+                                                    .size(10.0)
+                                                    .color(t.text_muted),
+                                                );
+                                            });
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if !m.shortcut.is_empty() {
+                                                        Frame::NONE
+                                                            .fill(t.bg_card)
+                                                            .corner_radius(
+                                                                crate::theme::ROUNDING_SM,
+                                                            )
+                                                            .inner_margin(Margin::symmetric(7, 2))
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new(m.shortcut)
+                                                                        .size(10.0)
+                                                                        .color(t.text_secondary),
+                                                                );
+                                                            });
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    })
+                                    .response
+                                    .interact(Sense::click())
                                     .on_hover_text(m.shortcut);
                                 if resp.clicked() {
                                     run = Some((m.label, m.command));
@@ -92,6 +154,42 @@ impl App {
             self.palette_tick += 1;
             self.palette_usage.record(label, self.palette_tick);
             self.ws.execute(cmd);
+        }
+    }
+
+    fn palette_category(command: crate::command::Command) -> &'static str {
+        use crate::command::Command;
+        match command {
+            Command::RequestCopy
+            | Command::RequestMove
+            | Command::CreateDir
+            | Command::RequestDelete
+            | Command::BeginRename
+            | Command::BeginBatchRename
+            | Command::FindDuplicates
+            | Command::BeginFind
+            | Command::OpenSavedSearch => "File",
+            Command::BeginGoToPath | Command::BeginRecent => "Navigation",
+            Command::BeginSync | Command::EqualizePanels | Command::SwapPanels => "Panels",
+            Command::SelectAll
+            | Command::InvertSelection
+            | Command::SelectSameNamed
+            | Command::BeginSelectMask => "Selection",
+            Command::ToggleHidden
+            | Command::TogglePreview
+            | Command::CycleDensity
+            | Command::DiskTreemap
+            | Command::DiffFiles
+            | Command::ToggleInfo => "View",
+            Command::CopyPath
+            | Command::CopyName
+            | Command::CopyParentPath
+            | Command::CopyFileUrl
+            | Command::CopyShellPath
+            | Command::CopyRelativePath => "Clipboard",
+            Command::ShelfAdd | Command::ShelfDrain => "Shelf",
+            Command::Undo | Command::Redo => "History",
+            _ => "Command",
         }
     }
 

@@ -82,8 +82,12 @@ impl App {
                     // Distinguish a filtered-to-nothing list, a truly empty
                     // folder, and an unreadable/vanished one.
                     let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
-                        if !panel.search_query.is_empty() {
-                            ("\u{1f50d}", "No matches", None)
+                        if !panel.search_query.is_empty() || !panel.facets.is_empty() {
+                            (
+                                "\u{1f50d}",
+                                "No matches",
+                                Some(("Clear filters", "clear_filters")),
+                            )
                         } else {
                             match panel.dir_status {
                                 DirStatus::Denied => (
@@ -110,6 +114,10 @@ impl App {
                                 match kind {
                                     "finder" => opener(&panel.current_path),
                                     "up" => panel.go_up(),
+                                    "clear_filters" => {
+                                        panel.search_query.clear();
+                                        panel.facets = crate::panel::FacetSet::default();
+                                    }
                                     _ => {}
                                 }
                             }

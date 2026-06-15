@@ -1,8 +1,31 @@
 use super::*;
 
+fn compact_path(path: &std::path::Path, max_chars: usize) -> String {
+    let full = path.display().to_string();
+    if full.chars().count() <= max_chars {
+        return full;
+    }
+    let keep = max_chars.saturating_sub(3);
+    let tail: String = full
+        .chars()
+        .rev()
+        .take(keep)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("...{tail}")
+}
+
 impl App {
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = self.colors;
+        let active_side = match self.ws.active {
+            ActivePanel::Left => "LEFT",
+            ActivePanel::Right => "RIGHT",
+        };
+        let active_path = compact_path(&self.ws.active_panel_ref().current_path, 54);
+
         Frame::NONE
             .fill(t.bg_toolbar)
             .inner_margin(Margin::symmetric(12, 4))
@@ -18,7 +41,26 @@ impl App {
                             .color(t.text_primary),
                     );
 
-                    ui.add_space(20.0);
+                    ui.add_space(14.0);
+                    Frame::NONE
+                        .fill(t.accent.linear_multiply(0.14))
+                        .corner_radius(crate::theme::ROUNDING_SM)
+                        .inner_margin(Margin::symmetric(7, 2))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(active_side)
+                                    .size(10.0)
+                                    .strong()
+                                    .color(t.accent),
+                            );
+                        });
+                    ui.label(
+                        egui::RichText::new(active_path)
+                            .size(11.0)
+                            .color(t.text_muted),
+                    );
+
+                    ui.add_space(14.0);
 
                     // Action buttons
                     let btn = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
@@ -33,17 +75,20 @@ impl App {
                         .clicked()
                     };
 
-                    if btn(ui, "\u{1f4cb}  Copy", "Copy selected to other panel") {
+                    if btn(ui, "Copy", "F5  Copy selected to other panel") {
                         self.ws.request_copy();
                     }
-                    if btn(ui, "\u{1f4e6}  Move", "Move selected to other panel") {
+                    if btn(ui, "Move", "F6  Move selected to other panel") {
                         self.ws.request_move();
                     }
-                    if btn(ui, "\u{1f4c1}  New Dir", "Create new directory") {
+                    if btn(ui, "New Folder", "F7  Create new directory") {
                         self.ws.create_dir();
                     }
-                    if btn(ui, "\u{1f5d1}  Delete", "Move to trash") {
+                    if btn(ui, "Delete", "F8  Move to Trash") {
                         self.ws.request_delete();
+                    }
+                    if btn(ui, "\u{2318}K", "Open command palette") {
+                        self.ws.palette_request = true;
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -147,6 +192,7 @@ impl App {
                                 .fill(t.bg_card)
                                 .corner_radius(crate::theme::ROUNDING_SM),
                             )
+                            .on_hover_text("Refresh both panels")
                             .clicked()
                         {
                             self.ws.left.refresh();
