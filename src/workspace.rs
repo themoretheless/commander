@@ -84,6 +84,10 @@ pub struct Workspace {
     pub duplicates_request: bool,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
     pub redo_request: bool,
+    /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
+    pub drain_request: bool,
+    /// The drop stack: paths gathered across folders to copy in one go.
+    pub shelf: crate::shelf::Shelf,
     /// Queued second copy pass (entries, target) for a two-way sync, started
     /// once the first pass finishes. Keeps the engine single-transfer.
     sync_followup: Option<(Vec<FileEntry>, PathBuf)>,
@@ -280,6 +284,8 @@ impl Workspace {
             sync_request: false,
             duplicates_request: false,
             redo_request: false,
+            drain_request: false,
+            shelf: crate::shelf::Shelf::default(),
             sync_followup: None,
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
@@ -468,6 +474,20 @@ impl Workspace {
             Command::BeginBatchRename => self.batch_rename_request = true,
             Command::BeginSync => self.sync_request = true,
             Command::FindDuplicates => self.duplicates_request = true,
+            Command::ShelfAdd => {
+                let paths: Vec<PathBuf> = self
+                    .active_panel_ref()
+                    .selected_or_cursor()
+                    .into_iter()
+                    .map(|e| e.path)
+                    .collect();
+                self.shelf.add_all(paths);
+            }
+            Command::ShelfDrain => {
+                if !self.shelf.is_empty() {
+                    self.drain_request = true;
+                }
+            }
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
@@ -897,6 +917,40 @@ impl Workspace {
         n
     }
 
+    // ── Shelf (drop stack) ──────────────────────────────────────────────
+
+    /// Copy every shelved item into the active panel's directory in one pass,
+    /// dropping self-copies and keeping both on name collisions, then clear the
+    /// shelf. Routes through the transfer engine.
+    pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.shelf.is_empty() || self.active_transfer.is_some() {
+            return;
+        }
+        let dest = self.active_panel_ref().current_path.clone();
+        let existing: std::collections::HashSet<String> = self
+            .active_panel_ref()
+            .entries
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        let plan = crate::shelf::drain_plan(self.shelf.items(), &dest, &existing);
+        // Build FileEntry sources for the planned (non-self) copies.
+        let entries: Vec<FileEntry> = plan
+            .iter()
+            .filter_map(|(src, _)| {
+                let meta = std::fs::metadata(src).ok()?;
+                FileEntry::from_meta(src.clone(), &meta)
+            })
+            .collect();
+        if entries.is_empty() {
+            self.shelf.clear();
+            return;
+        }
+        // KeepBoth so a drained file never clobbers an existing one.
+        self.start_copy(entries, dest, OverwritePolicy::KeepBoth, notify);
+        self.shelf.clear();
+    }
+
     // ── Directory sync ──────────────────────────────────────────────────
 
     /// Compute the synchronisation plan between the two panels for `policy`.
@@ -946,9 +1000,9 @@ impl Workspace {
             if !to_left.is_empty() {
                 self.sync_followup = Some((to_left, left_dir));
             }
-            self.start_copy(to_right, right_dir, notify);
+            self.start_copy(to_right, right_dir, OverwritePolicy::OverwriteAll, notify);
         } else if !to_left.is_empty() {
-            self.start_copy(to_left, left_dir, notify);
+            self.start_copy(to_left, left_dir, OverwritePolicy::OverwriteAll, notify);
         }
     }
 
@@ -963,17 +1017,18 @@ impl Workspace {
             return;
         }
         if let Some((entries, target)) = self.sync_followup.take() {
-            self.start_copy(entries, target, notify);
+            self.start_copy(entries, target, OverwritePolicy::OverwriteAll, notify);
         }
     }
 
-    /// Directly start a background Copy of `entries` into `target`, overwriting
-    /// on conflict. Bypasses the confirmation dialog: the sync sheet already
-    /// served as the review step.
+    /// Directly start a background Copy of `entries` into `target` under
+    /// `policy`. Bypasses the confirmation dialog: the caller (sync sheet,
+    /// shelf drain) already served as the review step.
     fn start_copy(
         &mut self,
         entries: Vec<FileEntry>,
         target: PathBuf,
+        policy: OverwritePolicy,
         notify: impl Fn() + Send + 'static,
     ) {
         if entries.is_empty() || self.active_transfer.is_some() {
@@ -988,7 +1043,7 @@ impl Workspace {
             kind: TransferKind::Copy,
             entries,
             target,
-            policy: OverwritePolicy::OverwriteAll,
+            policy,
             method: CopyMethod::Native,
         };
         transfer::spawn_transfer(spec, progress, notify);
@@ -1576,6 +1631,24 @@ mod tests {
             .collect();
         assert!(names.contains(&"a.txt".to_string()));
         assert!(names.contains(&"b.txt".to_string()));
+    }
+
+    #[test]
+    fn drain_shelf_copies_staged_files_into_active_dir() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let src = r.file("gathered.txt", "data"); // lives in the right folder
+        let mut ws = workspace(&l, &r); // active panel is the left
+
+        ws.shelf.add(src);
+        assert_eq!(ws.shelf.len(), 1);
+        ws.drain_shelf(|| {});
+        wait_transfer(&mut ws);
+
+        assert!(
+            l.path().join("gathered.txt").is_file(),
+            "drained into the active (left) folder"
+        );
+        assert!(ws.shelf.is_empty(), "shelf cleared after drain");
     }
 
     #[test]

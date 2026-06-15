@@ -13,6 +13,7 @@ mod panel;
 mod rename;
 mod scan;
 mod session;
+mod shelf;
 mod sync;
 mod theme;
 mod transfer;

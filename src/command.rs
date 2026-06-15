@@ -56,6 +56,10 @@ pub enum Command {
     SelectAll,
     /// Open the duplicate finder for the active panel's folder.
     FindDuplicates,
+    /// Cmd+Shift+A: add the active selection to the shelf (drop stack).
+    ShelfAdd,
+    /// Cmd+Shift+V: copy the whole shelf into the active panel's folder.
+    ShelfDrain,
     /// Flip the selection across the visible rows of the active panel.
     InvertSelection,
     /// Select active-panel entries whose name also exists in the other panel.
@@ -74,6 +78,8 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Batch rename", "Cmd+Shift+R", Command::BeginBatchRename),
         ("Synchronize panels", "Cmd+Shift+S", Command::BeginSync),
         ("Find duplicates", "", Command::FindDuplicates),
+        ("Add to shelf", "Cmd+Shift+A", Command::ShelfAdd),
+        ("Drain shelf here", "Cmd+Shift+V", Command::ShelfDrain),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
         ("Go to path", "Cmd+L", Command::BeginGoToPath),
         ("Recent folders", "Cmd+P", Command::BeginRecent),
@@ -151,6 +157,7 @@ pub enum KeyCode {
     R,
     S,
     U,
+    V,
     Z,
 }
 
@@ -188,7 +195,9 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         F6 => Some(Command::RequestMove),
         F7 => Some(Command::CreateDir),
         F8 | Delete => Some(Command::RequestDelete),
+        A if press.command && press.shift => Some(Command::ShelfAdd),
         A if press.command => Some(Command::SelectAll),
+        V if press.command && press.shift => Some(Command::ShelfDrain),
         E if press.command => Some(Command::EqualizePanels),
         U if press.command => Some(Command::SwapPanels),
         G if press.command => Some(Command::BeginSelectMask),
@@ -344,6 +353,20 @@ mod tests {
         assert_eq!(map_key(cmd_shift_r), Some(Command::BeginBatchRename));
         // Cmd+R without shift stays single rename.
         assert_eq!(map_key(cmd_press(KeyCode::R)), Some(Command::BeginRename));
+    }
+
+    #[test]
+    fn shelf_binds_to_cmd_shift_a_and_cmd_shift_v() {
+        let cmd_shift = |code| KeyPress {
+            code,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift(KeyCode::A)), Some(Command::ShelfAdd));
+        assert_eq!(map_key(cmd_shift(KeyCode::V)), Some(Command::ShelfDrain));
+        // Cmd+A without shift stays Select all; plain V types text.
+        assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
+        assert_eq!(map_key(press(KeyCode::V)), None);
     }
 
     #[test]

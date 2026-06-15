@@ -106,6 +106,7 @@ impl App {
             (egui::Key::R, KeyCode::R),
             (egui::Key::S, KeyCode::S),
             (egui::Key::U, KeyCode::U),
+            (egui::Key::V, KeyCode::V),
             (egui::Key::Z, KeyCode::Z),
         ];
         BINDINGS

@@ -17,6 +17,7 @@ impl eframe::App for App {
         self.show_palette_dialog(ctx);
         self.show_toolbar_panel(ctx);
         self.show_shortcut_bar(ctx);
+        self.show_shelf_tray(ctx);
         self.show_main_area(ctx);
         self.show_drag_overlay(ctx);
         self.show_type_ahead_overlay(ctx);
@@ -94,6 +95,11 @@ impl App {
             let c = ctx.clone();
             self.ws.perform_redo(move || c.request_repaint());
         }
+        // Drain the shelf (copy staged items into the active pane).
+        if std::mem::take(&mut self.ws.drain_request) {
+            let c = ctx.clone();
+            self.ws.drain_shelf(move || c.request_repaint());
+        }
     }
 
     fn show_toolbar_panel(&mut self, ctx: &egui::Context) {
@@ -168,6 +174,109 @@ impl App {
                         });
                     });
             });
+    }
+
+    /// Bottom shelf (drop stack) tray, shown only when something is staged:
+    /// count + total size, removable chips, Drain-here and Clear.
+    fn show_shelf_tray(&mut self, ctx: &egui::Context) {
+        if self.ws.shelf.is_empty() {
+            return;
+        }
+        let t = self.colors;
+        let count = self.ws.shelf.len();
+        let total = self
+            .ws
+            .shelf
+            .total_size(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+        let items: Vec<std::path::PathBuf> = self.ws.shelf.items().to_vec();
+
+        let mut remove: Option<std::path::PathBuf> = None;
+        let mut clear = false;
+        let mut drain = false;
+
+        egui::TopBottomPanel::bottom("shelf_tray")
+            .frame(Frame::NONE.fill(t.bg_card))
+            .show(ctx, |ui| {
+                Frame::NONE
+                    .inner_margin(Margin::symmetric(12, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "\u{1f4cb} Shelf {count} \u{00b7} {}",
+                                    crate::panel::format_size(total)
+                                ))
+                                .size(11.0)
+                                .strong()
+                                .color(t.accent),
+                            );
+                            ui.add_space(8.0);
+                            for p in &items {
+                                let name = p
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                let chip = Frame::NONE
+                                    .fill(t.bg_panel)
+                                    .stroke(Stroke::new(1.0_f32, t.border))
+                                    .inner_margin(Margin::symmetric(6, 2))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{name}  \u{00d7}"))
+                                                .size(11.0)
+                                                .color(t.text_secondary),
+                                        );
+                                    })
+                                    .response
+                                    .interact(Sense::click());
+                                if chip.clicked() {
+                                    remove = Some(p.clone());
+                                }
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Clear")
+                                                .size(11.0)
+                                                .color(t.text_primary),
+                                        )
+                                        .fill(t.bg_panel)
+                                        .corner_radius(CornerRadius::ZERO),
+                                    )
+                                    .clicked()
+                                {
+                                    clear = true;
+                                }
+                                ui.add_space(6.0);
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Drain here \u{2318}\u{21e7}V")
+                                                .size(11.0)
+                                                .color(Color32::WHITE),
+                                        )
+                                        .fill(t.accent)
+                                        .corner_radius(CornerRadius::ZERO),
+                                    )
+                                    .clicked()
+                                {
+                                    drain = true;
+                                }
+                            });
+                        });
+                    });
+            });
+
+        if let Some(p) = remove {
+            self.ws.shelf.remove(&p);
+        }
+        if clear {
+            self.ws.shelf.clear();
+        }
+        if drain {
+            self.ws.drain_request = true;
+        }
     }
 
     /// Tree sidebar plus the two file panels with the resizable divider.
