@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::panel::format_size;
-use crate::query::{Predicate, Query};
 use crate::selection_summary::Kind;
 
 const FIND_CAP: usize = 1000;
@@ -23,6 +22,7 @@ impl App {
 
         let mut run = false;
         let mut cancel = false;
+        let mut save = false;
         let mut reveal: Option<std::path::PathBuf> = None;
 
         {
@@ -151,6 +151,34 @@ impl App {
                         }
                     });
 
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("save as")
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.save_name)
+                                .desired_width(160.0)
+                                .hint_text("smart folder name")
+                                .margin(egui::vec2(6.0, 4.0)),
+                        );
+                        if ui
+                            .add_enabled(
+                                !state.save_name.trim().is_empty(),
+                                egui::Button::new(
+                                    egui::RichText::new("Save").size(12.0).color(t.text_primary),
+                                )
+                                .fill(t.bg_card)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
+                            save = true;
+                        }
+                    });
+
                     if state.ran && !state.results.is_empty() {
                         ui.add_space(8.0);
                         ui.separator();
@@ -211,27 +239,30 @@ impl App {
             self.find = None;
             return;
         }
+        if save {
+            let def = {
+                let s = self.find.as_ref().unwrap();
+                crate::smart_folder::Definition {
+                    name: s.save_name.trim().to_string(),
+                    root: s.root.clone(),
+                    query: s.build_query(),
+                }
+            };
+            let name = def.name.clone();
+            self.smart_folders_mut().add(def);
+            crate::smart_folder::save(self.smart_folders_mut());
+            let now = ctx.input(|i| i.time);
+            self.toasts.push(crate::toasts::Toast::new(
+                format!("Saved smart folder \u{201c}{name}\u{201d}"),
+                crate::toasts::ToastKind::Success,
+                false,
+                now,
+            ));
+        }
         if run {
             let (query, root) = {
                 let s = self.find.as_ref().unwrap();
-                let mut preds = Vec::new();
-                if !s.name.trim().is_empty() {
-                    preds.push(Predicate::NameContains(s.name.trim().to_string()));
-                }
-                if let Some(k) = s.kind {
-                    preds.push(Predicate::Kind(k));
-                }
-                if let Ok(mb) = s.min_mb.trim().parse::<u64>()
-                    && mb > 0
-                {
-                    preds.push(Predicate::MinSize(mb * 1024 * 1024));
-                }
-                if let Ok(d) = s.max_age_days.trim().parse::<u64>()
-                    && d > 0
-                {
-                    preds.push(Predicate::MaxAgeDays(d));
-                }
-                (Query { predicates: preds }, s.root.clone())
+                (s.build_query(), s.root.clone())
             };
             let results = self.ws.run_find(&query, &root, FIND_CAP);
             if let Some(s) = self.find.as_mut() {

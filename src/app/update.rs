@@ -14,6 +14,7 @@ impl eframe::App for App {
         self.show_diff_dialog(ctx);
         self.show_treemap_dialog(ctx);
         self.show_find_dialog(ctx);
+        self.show_saved_search_dialog(ctx);
         self.show_mask_dialog(ctx);
         self.show_path_dialog(ctx);
         self.show_recent_dialog(ctx);

@@ -16,6 +16,7 @@ mod preload;
 mod recent_dialog;
 mod rename_dialog;
 mod render;
+mod saved_search_dialog;
 mod sync_dialog;
 mod toolbar;
 mod transfer_dialog;
@@ -76,6 +77,10 @@ pub struct App {
     pub(crate) treemap: Option<Vec<(crate::panel::FileEntry, u64)>>,
     /// Active recursive-find sheet state.
     pub(crate) find: Option<FindState>,
+    /// Saved searches, loaded lazily on first use.
+    pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
+    /// Whether the saved-search picker is open.
+    pub(crate) saved_search_open: bool,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -90,6 +95,51 @@ pub(crate) struct FindState {
     pub results: Vec<crate::panel::FileEntry>,
     pub ran: bool,
     pub focused: bool,
+    /// Name to save this query under (smart folder).
+    pub save_name: String,
+}
+
+impl FindState {
+    /// Build the query the current fields describe.
+    pub(crate) fn build_query(&self) -> crate::query::Query {
+        use crate::query::Predicate;
+        let mut preds = Vec::new();
+        if !self.name.trim().is_empty() {
+            preds.push(Predicate::NameContains(self.name.trim().to_string()));
+        }
+        if let Some(k) = self.kind {
+            preds.push(Predicate::Kind(k));
+        }
+        if let Ok(mb) = self.min_mb.trim().parse::<u64>()
+            && mb > 0
+        {
+            preds.push(Predicate::MinSize(mb * 1024 * 1024));
+        }
+        if let Ok(d) = self.max_age_days.trim().parse::<u64>()
+            && d > 0
+        {
+            preds.push(Predicate::MaxAgeDays(d));
+        }
+        crate::query::Query { predicates: preds }
+    }
+
+    /// Reconstruct the editable fields from a saved smart-folder definition.
+    pub(crate) fn from_definition(def: &crate::smart_folder::Definition) -> Self {
+        use crate::query::Predicate;
+        let mut s = FindState {
+            root: def.root.clone(),
+            ..Default::default()
+        };
+        for p in &def.query.predicates {
+            match p {
+                Predicate::NameContains(n) => s.name = n.clone(),
+                Predicate::Kind(k) => s.kind = Some(*k),
+                Predicate::MinSize(b) => s.min_mb = (b / (1024 * 1024)).to_string(),
+                Predicate::MaxAgeDays(d) => s.max_age_days = d.to_string(),
+            }
+        }
+        s
+    }
 }
 
 /// UI state for the read-only diff sheet. The diff itself lives in
@@ -240,7 +290,15 @@ impl App {
             diff: None,
             treemap: None,
             find: None,
+            smart_folders: None,
+            saved_search_open: false,
         }
+    }
+
+    /// The saved-search store, loaded from disk on first access.
+    pub(crate) fn smart_folders_mut(&mut self) -> &mut crate::smart_folder::SmartFolders {
+        self.smart_folders
+            .get_or_insert_with(crate::smart_folder::load)
     }
 
     /// Snapshot the current state into a persistable [`Session`].

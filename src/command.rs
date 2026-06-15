@@ -64,6 +64,8 @@ pub enum Command {
     DiskTreemap,
     /// Cmd+F: open the recursive find sheet.
     BeginFind,
+    /// Open the saved-search (smart folder) picker.
+    OpenSavedSearch,
     /// Cmd+Shift+C: copy the selection's full path(s) to the clipboard.
     CopyPath,
     /// Copy the selection's file name(s).
@@ -101,6 +103,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Diff files", "Cmd+D", Command::DiffFiles),
         ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
         ("Find files", "Cmd+F", Command::BeginFind),
+        ("Open saved search", "", Command::OpenSavedSearch),
         ("Copy path", "Cmd+Shift+C", Command::CopyPath),
         ("Copy name", "", Command::CopyName),
         ("Copy parent path", "", Command::CopyParentPath),

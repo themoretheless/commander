@@ -19,6 +19,7 @@ mod scan;
 mod selection_summary;
 mod session;
 mod shelf;
+mod smart_folder;
 mod sync;
 mod textdiff;
 mod theme;

@@ -3,9 +3,10 @@
 //! image/video predicates on [`FileEntry`] and extension idioms.
 
 use crate::panel::FileEntry;
+use serde::{Deserialize, Serialize};
 
 /// Coarse kind of an entry, for the selection breakdown.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Kind {
     Folder,
     Image,

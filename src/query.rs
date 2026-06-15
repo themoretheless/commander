@@ -4,12 +4,13 @@
 
 use crate::panel::FileEntry;
 use crate::selection_summary::{Kind, kind_of};
+use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
 const SECONDS_PER_DAY: u64 = 86_400;
 
 /// One condition a found entry must satisfy.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Predicate {
     /// Name contains this substring (case-insensitive).
     NameContains(String),
@@ -39,7 +40,7 @@ impl Predicate {
 }
 
 /// A conjunction (AND) of predicates. An empty query matches everything.
-#[derive(Clone, Default, PartialEq, Debug)]
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Query {
     pub predicates: Vec<Predicate>,
 }

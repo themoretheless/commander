@@ -27,6 +27,7 @@ impl App {
             || self.diff.is_some()
             || self.treemap.is_some()
             || self.find.is_some()
+            || self.saved_search_open
         {
             self.type_ahead = None;
             return;

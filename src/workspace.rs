@@ -88,6 +88,8 @@ pub struct Workspace {
     pub treemap_request: bool,
     /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
     pub find_request: bool,
+    /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
+    pub saved_search_request: bool,
     /// Set by the Copy* commands; the UI formats the selection and copies it.
     pub clipboard_request: Option<crate::clipboard::PathStyle>,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
@@ -296,6 +298,7 @@ impl Workspace {
             diff_request: false,
             treemap_request: false,
             find_request: false,
+            saved_search_request: false,
             clipboard_request: None,
             redo_request: false,
             drain_request: false,
@@ -492,6 +495,7 @@ impl Workspace {
             Command::DiffFiles => self.diff_request = true,
             Command::DiskTreemap => self.treemap_request = true,
             Command::BeginFind => self.find_request = true,
+            Command::OpenSavedSearch => self.saved_search_request = true,
             Command::CopyPath => {
                 self.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
             }
