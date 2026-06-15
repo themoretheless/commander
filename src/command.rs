@@ -62,6 +62,8 @@ pub enum Command {
     DiffFiles,
     /// Cmd+Shift+M: open the disk-usage treemap for the active folder.
     DiskTreemap,
+    /// Cmd+F: open the recursive find sheet.
+    BeginFind,
     /// Cmd+Shift+A: add the active selection to the shelf (drop stack).
     ShelfAdd,
     /// Cmd+Shift+V: copy the whole shelf into the active panel's folder.
@@ -86,6 +88,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Find duplicates", "", Command::FindDuplicates),
         ("Diff files", "Cmd+D", Command::DiffFiles),
         ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
+        ("Find files", "Cmd+F", Command::BeginFind),
         ("Add to shelf", "Cmd+Shift+A", Command::ShelfAdd),
         ("Drain shelf here", "Cmd+Shift+V", Command::ShelfDrain),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
@@ -165,6 +168,7 @@ pub enum KeyCode {
     M,
     P,
     D,
+    F,
     R,
     S,
     U,
@@ -204,6 +208,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         D if press.command && press.shift => Some(Command::CycleDensity),
         D if press.command => Some(Command::DiffFiles),
         M if press.command && press.shift => Some(Command::DiskTreemap),
+        F if press.command => Some(Command::BeginFind),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
@@ -381,6 +386,12 @@ mod tests {
         // Cmd+A without shift stays Select all; plain V types text.
         assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
         assert_eq!(map_key(press(KeyCode::V)), None);
+    }
+
+    #[test]
+    fn cmd_f_opens_find() {
+        assert_eq!(map_key(cmd_press(KeyCode::F)), Some(Command::BeginFind));
+        assert_eq!(map_key(press(KeyCode::F)), None);
     }
 
     #[test]

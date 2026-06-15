@@ -26,6 +26,7 @@ impl App {
             || self.duplicates.is_some()
             || self.diff.is_some()
             || self.treemap.is_some()
+            || self.find.is_some()
         {
             self.type_ahead = None;
             return;
@@ -100,6 +101,7 @@ impl App {
             (egui::Key::A, KeyCode::A),
             (egui::Key::D, KeyCode::D),
             (egui::Key::E, KeyCode::E),
+            (egui::Key::F, KeyCode::F),
             (egui::Key::G, KeyCode::G),
             (egui::Key::H, KeyCode::H),
             (egui::Key::I, KeyCode::I),

@@ -86,6 +86,8 @@ pub struct Workspace {
     pub diff_request: bool,
     /// Set by [`Command::DiskTreemap`]; the UI opens the treemap sheet.
     pub treemap_request: bool,
+    /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
+    pub find_request: bool,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
     pub redo_request: bool,
     /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
@@ -291,6 +293,7 @@ impl Workspace {
             duplicates_request: false,
             diff_request: false,
             treemap_request: false,
+            find_request: false,
             redo_request: false,
             drain_request: false,
             cycle_density_request: false,
@@ -485,6 +488,7 @@ impl Workspace {
             Command::FindDuplicates => self.duplicates_request = true,
             Command::DiffFiles => self.diff_request = true,
             Command::DiskTreemap => self.treemap_request = true,
+            Command::BeginFind => self.find_request = true,
             Command::CycleDensity => self.cycle_density_request = true,
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
@@ -954,6 +958,55 @@ impl Workspace {
             .collect();
         items.sort_by_key(|i| std::cmp::Reverse(i.1));
         items
+    }
+
+    // ── Find ────────────────────────────────────────────────────────────
+
+    /// Recursively walk `root` and collect entries matching `query`, capped at
+    /// `cap`. Synchronous for now (a deep tree may pause briefly); walk errors
+    /// and unreadable entries are skipped.
+    pub fn run_find(&self, query: &crate::query::Query, root: &Path, cap: usize) -> Vec<FileEntry> {
+        let now = std::time::SystemTime::now();
+        let mut out = Vec::new();
+        for entry in jwalk::WalkDir::new(root)
+            .skip_hidden(false)
+            .into_iter()
+            .flatten()
+        {
+            if out.len() >= cap {
+                break;
+            }
+            let path = entry.path();
+            if path == root {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if let Some(fe) = FileEntry::from_meta(path, &meta)
+                && query.matches(&fe, now)
+            {
+                out.push(fe);
+            }
+        }
+        out
+    }
+
+    /// Reveal `path` in the active panel: navigate to its parent folder and put
+    /// the cursor on it (used by find results).
+    pub fn reveal(&mut self, path: &Path) {
+        let Some(parent) = path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string());
+        let panel = self.active_panel();
+        panel.navigate_to(parent);
+        if let Some(name) = name
+            && let Some(idx) = panel.filtered_entries().iter().position(|e| e.name == name)
+        {
+            panel.cursor = idx + 1;
+            panel.scroll_to_cursor = true;
+        }
     }
 
     // ── Diff ────────────────────────────────────────────────────────────
@@ -1750,6 +1803,27 @@ mod tests {
         let (x, y) = ws.diff_targets().unwrap();
         assert_eq!(y, a, "active file is the second target");
         assert_eq!(x, r.path().join("a.txt"), "other-panel same name is first");
+    }
+
+    #[test]
+    fn run_find_walks_recursively_and_filters() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("top.log", "x");
+        l.file("sub/deep.log", "yy");
+        l.file("sub/note.txt", "z");
+        let ws = workspace(&l, &r);
+
+        let query = crate::query::Query {
+            predicates: vec![crate::query::Predicate::NameContains(".log".into())],
+        };
+        let found = ws.run_find(&query, l.path(), 100);
+        let names: Vec<String> = found.iter().map(|e| e.name.clone()).collect();
+        assert!(names.contains(&"top.log".to_string()), "top-level match");
+        assert!(names.contains(&"deep.log".to_string()), "nested match");
+        assert!(
+            !names.contains(&"note.txt".to_string()),
+            "non-match excluded"
+        );
     }
 
     #[test]

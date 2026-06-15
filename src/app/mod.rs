@@ -7,6 +7,7 @@ mod confirm_dialog;
 mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
+mod find_dialog;
 mod keys;
 mod mask_dialog;
 mod palette_dialog;
@@ -73,6 +74,22 @@ pub struct App {
     pub(crate) diff: Option<DiffState>,
     /// Active disk-usage treemap state (entries with their bytes, sorted).
     pub(crate) treemap: Option<Vec<(crate::panel::FileEntry, u64)>>,
+    /// Active recursive-find sheet state.
+    pub(crate) find: Option<FindState>,
+}
+
+/// UI state for the recursive-find sheet. The matching lives in `crate::query`;
+/// this holds the editable fields, the search root, and the results.
+#[derive(Default)]
+pub(crate) struct FindState {
+    pub name: String,
+    pub min_mb: String,
+    pub max_age_days: String,
+    pub kind: Option<crate::selection_summary::Kind>,
+    pub root: PathBuf,
+    pub results: Vec<crate::panel::FileEntry>,
+    pub ran: bool,
+    pub focused: bool,
 }
 
 /// UI state for the read-only diff sheet. The diff itself lives in
@@ -222,6 +239,7 @@ impl App {
             duplicates: None,
             diff: None,
             treemap: None,
+            find: None,
         }
     }
 

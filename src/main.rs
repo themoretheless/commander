@@ -12,6 +12,7 @@ mod image_cache;
 mod native_copy;
 mod native_menu;
 mod panel;
+mod query;
 mod rename;
 mod scan;
 mod selection_summary;
