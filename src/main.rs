@@ -3,6 +3,7 @@
 mod app;
 mod clipboard;
 mod command;
+mod conflict;
 mod crumbs;
 mod dedup;
 mod density;

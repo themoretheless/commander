@@ -63,6 +63,9 @@ impl App {
         let flat_ready = flat_opt.is_some();
         let flat = flat_opt.unwrap_or_default();
 
+        // Rich per-conflict detail (size/mtime each side) for the resolver.
+        let rich_conflicts = self.ws.pending_conflicts();
+
         let has_conflicts = !conflicts.is_empty();
         let is_delete = target.is_none();
         let win_title = format!("{} — {} item(s)", title, count);
@@ -221,7 +224,7 @@ impl App {
                     }
                 }
 
-                // Conflict warning + overwrite policy buttons
+                // Conflict resolution: per-collision detail + relation policies.
                 if has_conflicts {
                     ui.add_space(8.0);
                     ui.label(
@@ -233,60 +236,96 @@ impl App {
                         .color(t.accent_warning),
                     );
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                !overflow,
-                                egui::Button::new(
-                                    egui::RichText::new("Overwrite All")
-                                        .size(12.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(t.accent_warning)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
-                            .clicked()
-                        {
-                            self.ws.set_pending_policy(OverwritePolicy::OverwriteAll);
-                            self.confirm_pending_op(ctx);
-                        }
+
+                    if !rich_conflicts.is_empty() {
+                        egui::ScrollArea::vertical()
+                            .max_height(120.0)
+                            .id_salt("conflict_detail")
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                for c in &rich_conflicts {
+                                    let src = if c.src_newer { "src newer" } else { "" };
+                                    let dst = if c.dst_newer { "dst newer" } else { "" };
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{}    src {} {}    \u{2192} dst {} {}",
+                                            c.name,
+                                            format_size(c.src_size),
+                                            src,
+                                            format_size(c.dst_size),
+                                            dst,
+                                        ))
+                                        .size(11.0)
+                                        .color(t.text_secondary),
+                                    );
+                                }
+                            });
                         ui.add_space(4.0);
-                        // Keep Both: safe default — writes the incoming items
-                        // under a fresh "copy" name, nothing is overwritten.
-                        if ui
-                            .add_enabled(
-                                !overflow,
-                                egui::Button::new(
-                                    egui::RichText::new("Keep Both")
-                                        .size(12.0)
-                                        .color(Color32::WHITE),
+                    }
+
+                    use crate::conflict::RelationPolicy;
+                    let mut chosen: Option<RelationPolicy> = None;
+                    ui.horizontal_wrapped(|ui| {
+                        let mut btn = |ui: &mut egui::Ui, label: &str, fill, fg, policy| {
+                            if ui
+                                .add_enabled(
+                                    !overflow,
+                                    egui::Button::new(
+                                        egui::RichText::new(label).size(12.0).color(fg),
+                                    )
+                                    .fill(fill)
+                                    .corner_radius(CornerRadius::ZERO),
                                 )
-                                .fill(t.accent)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
-                            .clicked()
-                        {
-                            self.ws.set_pending_policy(OverwritePolicy::KeepBoth);
-                            self.confirm_pending_op(ctx);
-                        }
-                        ui.add_space(4.0);
-                        if ui
-                            .add_enabled(
-                                !overflow,
-                                egui::Button::new(
-                                    egui::RichText::new("Skip Existing")
-                                        .size(12.0)
-                                        .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
-                            .clicked()
-                        {
-                            self.ws.set_pending_policy(OverwritePolicy::SkipAll);
-                            self.confirm_pending_op(ctx);
-                        }
+                                .clicked()
+                            {
+                                chosen = Some(policy);
+                            }
+                            ui.add_space(4.0);
+                        };
+                        btn(
+                            ui,
+                            "Keep Both",
+                            t.accent,
+                            Color32::WHITE,
+                            RelationPolicy::KeepBoth,
+                        );
+                        btn(
+                            ui,
+                            "Keep Newer",
+                            t.bg_card,
+                            t.text_primary,
+                            RelationPolicy::KeepNewer,
+                        );
+                        btn(
+                            ui,
+                            "Keep Larger",
+                            t.bg_card,
+                            t.text_primary,
+                            RelationPolicy::KeepLarger,
+                        );
+                        btn(
+                            ui,
+                            "Skip Existing",
+                            t.bg_card,
+                            t.text_primary,
+                            RelationPolicy::SkipAll,
+                        );
+                        btn(
+                            ui,
+                            "Overwrite All",
+                            t.accent_warning,
+                            Color32::WHITE,
+                            RelationPolicy::ReplaceAll,
+                        );
                     });
+                    if let Some(policy) = chosen {
+                        if self.ws.resolve_pending_conflicts(policy) {
+                            self.confirm_pending_op(ctx);
+                        } else {
+                            // Nothing left to transfer (everything skipped).
+                            self.dismiss_pending_op(ctx);
+                        }
+                    }
                 }
 
                 ui.add_space(12.0);

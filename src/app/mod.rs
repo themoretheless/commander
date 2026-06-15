@@ -29,7 +29,7 @@ use std::path::PathBuf;
 
 use crate::panel::{PanelState, SortColumn, format_size};
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
-pub(crate) use crate::transfer::{CopyMethod, OverwritePolicy, TransferKind};
+pub(crate) use crate::transfer::{CopyMethod, TransferKind};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
 pub struct App {

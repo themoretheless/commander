@@ -588,6 +588,42 @@ impl Workspace {
         }));
     }
 
+    /// Rich conflict list for the pending Copy/Move: source entries whose name
+    /// already exists in the destination folder, with both sides' size/mtime.
+    pub fn pending_conflicts(&self) -> Vec<crate::conflict::Conflict> {
+        let Some(PendingOp::Transfer(tr)) = &self.pending_op else {
+            return Vec::new();
+        };
+        // The destination listing is whichever loaded panel shows the target.
+        let dest: &[FileEntry] = if self.left.current_path == tr.target {
+            &self.left.entries
+        } else if self.right.current_path == tr.target {
+            &self.right.entries
+        } else {
+            &[]
+        };
+        crate::conflict::detect(&tr.entries, dest)
+    }
+
+    /// Apply a relation policy to the pending Copy: filter its entries to the
+    /// resolution's keep-set and set the matching overwrite policy. Returns
+    /// `true` if anything remains to transfer.
+    pub fn resolve_pending_conflicts(&mut self, policy: crate::conflict::RelationPolicy) -> bool {
+        let conflicts = self.pending_conflicts();
+        let Some(PendingOp::Transfer(tr)) = &mut self.pending_op else {
+            return false;
+        };
+        let res = crate::conflict::resolve(&tr.entries, &conflicts, policy);
+        let keep: std::collections::HashSet<PathBuf> = res.keep.into_iter().collect();
+        tr.entries.retain(|e| keep.contains(&e.path));
+        tr.policy = match res.decision {
+            crate::conflict::Decision::Overwrite => OverwritePolicy::OverwriteAll,
+            crate::conflict::Decision::KeepBoth => OverwritePolicy::KeepBoth,
+            crate::conflict::Decision::Skip => OverwritePolicy::SkipAll,
+        };
+        !tr.entries.is_empty()
+    }
+
     pub fn request_delete(&mut self) {
         let entries = self.active_panel_ref().selected_or_cursor();
         if !entries.is_empty() {
@@ -792,12 +828,6 @@ impl Workspace {
                 self.start_transfer(notify);
             }
             None => {}
-        }
-    }
-
-    pub fn set_pending_policy(&mut self, new_policy: OverwritePolicy) {
-        if let Some(PendingOp::Transfer(t)) = &mut self.pending_op {
-            t.policy = new_policy;
         }
     }
 
