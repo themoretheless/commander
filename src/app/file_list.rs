@@ -143,6 +143,10 @@ impl App {
                 // the pre-density default).
                 let row_content = metrics.name_pt + metrics.row_pad_y * 2.0 + 7.0;
                 let row_h = row_content + 1.0;
+                // Dark theme? Derived from the panel background luminance, so the
+                // semantic kind stub can pick the right toned palette.
+                let dark =
+                    (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
                 let total_rows = filtered.len();
                 let viewport = ui.clip_rect();
                 let scroll_top = viewport.top() - ui.min_rect().top();
@@ -289,6 +293,28 @@ impl App {
                             );
                             ui.painter().rect_filled(edge, CornerRadius::ZERO, color);
                         }
+                    } else {
+                        // Semantic kind stub at the leading edge: a glanceable
+                        // 3px accent by file kind (only when not comparing, so
+                        // it never overlaps the compare stripe).
+                        let (r, g, b) = crate::file_color::kind_color(
+                            crate::selection_summary::kind_of(entry),
+                            dark,
+                        );
+                        let stub = egui::Rect::from_min_size(
+                            full_rect.min,
+                            Vec2::new(3.0, full_rect.height()),
+                        );
+                        ui.painter().rect_filled(
+                            stub,
+                            CornerRadius {
+                                nw: 0,
+                                ne: 1,
+                                sw: 0,
+                                se: 1,
+                            },
+                            Color32::from_rgb(r, g, b).linear_multiply(0.9),
+                        );
                     }
 
                     // Content

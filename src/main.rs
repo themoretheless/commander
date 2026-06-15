@@ -5,6 +5,7 @@ mod command;
 mod crumbs;
 mod dedup;
 mod density;
+mod file_color;
 mod fs_util;
 mod fuzzy;
 mod image_cache;
