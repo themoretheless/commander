@@ -82,6 +82,8 @@ pub struct Workspace {
     pub sync_request: bool,
     /// Set by [`Command::FindDuplicates`]; the UI opens the duplicates sheet.
     pub duplicates_request: bool,
+    /// Set by [`Command::DiffFiles`]; the UI opens the diff sheet.
+    pub diff_request: bool,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
     pub redo_request: bool,
     /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
@@ -285,6 +287,7 @@ impl Workspace {
             batch_rename_request: false,
             sync_request: false,
             duplicates_request: false,
+            diff_request: false,
             redo_request: false,
             drain_request: false,
             cycle_density_request: false,
@@ -477,6 +480,7 @@ impl Workspace {
             Command::BeginBatchRename => self.batch_rename_request = true,
             Command::BeginSync => self.sync_request = true,
             Command::FindDuplicates => self.duplicates_request = true,
+            Command::DiffFiles => self.diff_request = true,
             Command::CycleDensity => self.cycle_density_request = true,
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
@@ -919,6 +923,42 @@ impl Workspace {
         self.left.refresh();
         self.right.refresh();
         n
+    }
+
+    // ── Diff ────────────────────────────────────────────────────────────
+
+    /// Pick the file pair to diff: two selected files in the active panel (in
+    /// the panel's order), or one active file paired with a same-named file in
+    /// the other panel. Returns `None` when no sensible pair exists.
+    pub fn diff_targets(&self) -> Option<(PathBuf, PathBuf)> {
+        let active = self.active_panel_ref();
+        let files: Vec<PathBuf> = active
+            .selected_entries()
+            .into_iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| e.path)
+            .collect();
+        if files.len() == 2 {
+            return Some((files[0].clone(), files[1].clone()));
+        }
+        // One file (selected, else under the cursor) vs the same name opposite.
+        let one = if files.len() == 1 {
+            files.into_iter().next()
+        } else if active.cursor > 0 {
+            active
+                .filtered_get(active.cursor - 1)
+                .filter(|e| !e.is_dir)
+                .map(|e| e.path.clone())
+        } else {
+            None
+        }?;
+        let name = one.file_name()?.to_string_lossy().to_lowercase();
+        let other = self
+            .inactive_panel()
+            .entries
+            .iter()
+            .find(|e| !e.is_dir && e.name_lower == name)?;
+        Some((other.path.clone(), one))
     }
 
     // ── Shelf (drop stack) ──────────────────────────────────────────────
@@ -1653,6 +1693,32 @@ mod tests {
             "drained into the active (left) folder"
         );
         assert!(ws.shelf.is_empty(), "shelf cleared after drain");
+    }
+
+    #[test]
+    fn diff_targets_picks_two_selected_or_same_named() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "1");
+        let b = l.file("b.txt", "2");
+        r.file("a.txt", "9"); // same name on the other side
+        let mut ws = workspace(&l, &r);
+
+        // Two selected in the active panel -> that pair.
+        ws.left.selected.insert(a.clone());
+        ws.left.selected.insert(b.clone());
+        let (x, y) = ws.diff_targets().unwrap();
+        let names: Vec<String> = [&x, &y]
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert!(names.contains(&"a.txt".to_string()) && names.contains(&"b.txt".to_string()));
+
+        // One selected -> pair with the same-named file in the other panel.
+        ws.left.selected.clear();
+        ws.left.selected.insert(a.clone());
+        let (x, y) = ws.diff_targets().unwrap();
+        assert_eq!(y, a, "active file is the second target");
+        assert_eq!(x, r.path().join("a.txt"), "other-panel same name is first");
     }
 
     #[test]

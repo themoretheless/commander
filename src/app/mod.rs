@@ -4,6 +4,7 @@
 
 mod batch_rename_dialog;
 mod confirm_dialog;
+mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
 mod keys;
@@ -67,6 +68,18 @@ pub struct App {
     pub(crate) sync: Option<SyncState>,
     /// Active duplicate-finder sheet state.
     pub(crate) duplicates: Option<DupState>,
+    /// Active read-only diff sheet state.
+    pub(crate) diff: Option<DiffState>,
+}
+
+/// UI state for the read-only diff sheet. The diff itself lives in
+/// `crate::textdiff`; this holds the two names and the computed lines (or a
+/// message when the pair cannot be diffed as text).
+pub(crate) struct DiffState {
+    pub name_a: String,
+    pub name_b: String,
+    pub lines: Vec<crate::textdiff::DiffLine>,
+    pub message: Option<String>,
 }
 
 /// UI state for the duplicate-finder sheet. Grouping lives in `crate::dedup`;
@@ -204,6 +217,7 @@ impl App {
             batch_rename: None,
             sync: None,
             duplicates: None,
+            diff: None,
         }
     }
 

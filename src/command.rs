@@ -58,6 +58,8 @@ pub enum Command {
     CycleDensity,
     /// Open the duplicate finder for the active panel's folder.
     FindDuplicates,
+    /// Cmd+D: diff the selected file pair (read-only unified view).
+    DiffFiles,
     /// Cmd+Shift+A: add the active selection to the shelf (drop stack).
     ShelfAdd,
     /// Cmd+Shift+V: copy the whole shelf into the active panel's folder.
@@ -80,6 +82,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Batch rename", "Cmd+Shift+R", Command::BeginBatchRename),
         ("Synchronize panels", "Cmd+Shift+S", Command::BeginSync),
         ("Find duplicates", "", Command::FindDuplicates),
+        ("Diff files", "Cmd+D", Command::DiffFiles),
         ("Add to shelf", "Cmd+Shift+A", Command::ShelfAdd),
         ("Drain shelf here", "Cmd+Shift+V", Command::ShelfDrain),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
@@ -195,6 +198,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         R if press.command => Some(Command::BeginRename),
         S if press.command && press.shift => Some(Command::BeginSync),
         D if press.command && press.shift => Some(Command::CycleDensity),
+        D if press.command => Some(Command::DiffFiles),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
@@ -375,13 +379,15 @@ mod tests {
     }
 
     #[test]
-    fn cmd_shift_d_cycles_density() {
+    fn cmd_d_diffs_and_cmd_shift_d_cycles_density() {
         let cmd_shift_d = KeyPress {
             code: KeyCode::D,
             command: true,
             shift: true,
         };
         assert_eq!(map_key(cmd_shift_d), Some(Command::CycleDensity));
+        // Cmd+D (no shift) is the diff; plain D types text.
+        assert_eq!(map_key(cmd_press(KeyCode::D)), Some(Command::DiffFiles));
         assert_eq!(map_key(press(KeyCode::D)), None);
     }
 

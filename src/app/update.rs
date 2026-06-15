@@ -11,6 +11,7 @@ impl eframe::App for App {
         self.show_batch_rename_dialog(ctx);
         self.show_sync_dialog(ctx);
         self.show_duplicates_dialog(ctx);
+        self.show_diff_dialog(ctx);
         self.show_mask_dialog(ctx);
         self.show_path_dialog(ctx);
         self.show_recent_dialog(ctx);

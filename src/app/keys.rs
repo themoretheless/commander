@@ -24,6 +24,7 @@ impl App {
             || self.batch_rename.is_some()
             || self.sync.is_some()
             || self.duplicates.is_some()
+            || self.diff.is_some()
         {
             self.type_ahead = None;
             return;

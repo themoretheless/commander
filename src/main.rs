@@ -18,6 +18,7 @@ mod selection_summary;
 mod session;
 mod shelf;
 mod sync;
+mod textdiff;
 mod theme;
 mod toasts;
 mod transfer;
