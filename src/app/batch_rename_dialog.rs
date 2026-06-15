@@ -218,8 +218,27 @@ impl App {
         if commit {
             let rule = self.batch_rename.as_ref().unwrap().rule();
             match self.ws.apply_batch_rename(&rule) {
-                Ok(_) => self.batch_rename = None,
+                Ok(n) => {
+                    self.batch_rename = None;
+                    if n > 0 {
+                        let now = ctx.input(|i| i.time);
+                        self.toasts.push(crate::toasts::Toast::new(
+                            format!("Renamed {n} item(s)"),
+                            crate::toasts::ToastKind::Success,
+                            true,
+                            now,
+                        ));
+                    }
+                }
                 Err(msg) => {
+                    // Surface the failure both inline and as an error toast.
+                    let now = ctx.input(|i| i.time);
+                    self.toasts.push(crate::toasts::Toast::new(
+                        format!("Rename failed: {msg}"),
+                        crate::toasts::ToastKind::Error,
+                        false,
+                        now,
+                    ));
                     if let Some(s) = &mut self.batch_rename {
                         s.error = Some(msg);
                     }

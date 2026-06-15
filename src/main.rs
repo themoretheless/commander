@@ -19,6 +19,7 @@ mod session;
 mod shelf;
 mod sync;
 mod theme;
+mod toasts;
 mod transfer;
 mod undo;
 mod workspace;

@@ -57,8 +57,8 @@ pub struct App {
     pub(crate) path_input: Option<String>,
     /// Active recent-directories quick-switcher filter buffer.
     pub(crate) recent_input: Option<String>,
-    /// egui time until which the undo toast stays visible.
-    pub(crate) undo_toast_until: Option<f64>,
+    /// Transient operation toasts (move / rename confirmations with Undo).
+    pub(crate) toasts: crate::toasts::ToastQueue,
     /// Active command-palette filter buffer.
     pub(crate) palette_input: Option<String>,
     /// Active batch-rename studio state.
@@ -199,7 +199,7 @@ impl App {
             mask_input: None,
             path_input: None,
             recent_input: None,
-            undo_toast_until: None,
+            toasts: crate::toasts::ToastQueue::default(),
             palette_input: None,
             batch_rename: None,
             sync: None,

@@ -22,7 +22,7 @@ impl eframe::App for App {
         self.show_main_area(ctx);
         self.show_drag_overlay(ctx);
         self.show_type_ahead_overlay(ctx);
-        self.show_undo_toast(ctx);
+        self.show_toasts(ctx);
         self.handle_drop(ctx);
     }
 
@@ -77,9 +77,18 @@ impl App {
         self.handle_keys(ctx);
         self.preload_images(ctx);
         if self.ws.poll_transfer() {
-            // A clean move just finished: raise the undo toast for ~6s.
-            self.undo_toast_until = Some(ctx.input(|i| i.time) + 6.0);
+            // A clean move just finished: raise an undoable toast.
+            let now = ctx.input(|i| i.time);
+            if let Some(a) = self.ws.stack.peek_undo() {
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!("{} {} item(s)", a.verb(), a.item_count()),
+                    crate::toasts::ToastKind::Success,
+                    true,
+                    now,
+                ));
+            }
         }
+        self.toasts.prune(ctx.input(|i| i.time));
         // A two-way sync runs in two passes; start the queued second one once
         // the first finishes.
         if self.ws.has_sync_followup() {
@@ -90,7 +99,8 @@ impl App {
         if std::mem::take(&mut self.ws.undo_request) {
             let c = ctx.clone();
             self.ws.perform_undo(move || c.request_repaint());
-            self.undo_toast_until = None;
+            // The offered Undo is spent; drop the undoable toast(s).
+            self.toasts.dismiss_undoable();
         }
         if std::mem::take(&mut self.ws.redo_request) {
             let c = ctx.clone();
@@ -564,63 +574,81 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 
-    /// Bottom-center toast offering to undo the last move (Cmd+Z).
-    fn show_undo_toast(&mut self, ctx: &egui::Context) {
-        let Some(until) = self.undo_toast_until else {
-            return;
-        };
-        let now = ctx.input(|i| i.time);
-        if now > until || !self.ws.stack.can_undo() {
-            self.undo_toast_until = None;
+    /// Bottom-right stack of operation toasts, each with a hairline countdown
+    /// and an inline Undo on undoable ops.
+    fn show_toasts(&mut self, ctx: &egui::Context) {
+        if self.toasts.is_empty() {
             return;
         }
         let t = self.colors;
-        let (verb, count) = self
-            .ws
-            .stack
-            .peek_undo()
-            .map_or(("Done", 0), |a| (a.verb(), a.item_count()));
+        let now = ctx.input(|i| i.time);
         let screen = ctx.screen_rect();
         let mut undo = false;
-        egui::Area::new(egui::Id::new("undo_toast"))
-            .fixed_pos(egui::pos2(
-                screen.center().x - 110.0,
-                screen.bottom() - 90.0,
-            ))
-            .order(egui::Order::Tooltip)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style())
-                    .fill(t.bg_card)
-                    .inner_margin(Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{verb} {count} item(s)"))
-                                    .size(12.0)
-                                    .color(t.text_primary),
+
+        // Newest on top: stack upward from the bottom-right corner.
+        for (i, toast) in self.toasts.active().iter().enumerate().rev() {
+            let y = screen.bottom() - 70.0 - (i as f32) * 44.0;
+            let accent = match toast.kind {
+                crate::toasts::ToastKind::Success => t.accent,
+                crate::toasts::ToastKind::Error => t.accent_red,
+            };
+            let frac = crate::toasts::remaining_fraction(toast, now);
+            egui::Area::new(egui::Id::new(("toast", i)))
+                .fixed_pos(egui::pos2(screen.right() - 280.0, y))
+                .order(egui::Order::Tooltip)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(t.bg_card)
+                        .stroke(Stroke::new(1.0_f32, t.border))
+                        .inner_margin(Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(236.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&toast.message)
+                                        .size(12.0)
+                                        .color(t.text_primary),
+                                );
+                                if toast.undoable {
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("Undo \u{2318}Z")
+                                                        .size(11.0)
+                                                        .color(Color32::WHITE),
+                                                )
+                                                .fill(accent)
+                                                .corner_radius(CornerRadius::ZERO),
+                                            )
+                                            .clicked()
+                                        {
+                                            undo = true;
+                                        }
+                                    });
+                                }
+                            });
+                            // Hairline countdown.
+                            let (rect, _) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), 2.0),
+                                Sense::hover(),
                             );
-                            ui.add_space(10.0);
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Undo  \u{2318}Z")
-                                            .size(12.0)
-                                            .color(Color32::WHITE),
-                                    )
-                                    .fill(t.accent)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
-                                .clicked()
-                            {
-                                undo = true;
-                            }
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    rect.min,
+                                    Vec2::new(rect.width() * frac, 2.0),
+                                ),
+                                CornerRadius::ZERO,
+                                accent,
+                            );
                         });
-                    });
-            });
+                });
+        }
         if undo {
             self.ws.undo_request = true;
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        // Keep animating the countdown.
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     /// On mouse release, move dragged files into the hovered directory.
