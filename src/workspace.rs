@@ -84,6 +84,8 @@ pub struct Workspace {
     pub duplicates_request: bool,
     /// Set by [`Command::DiffFiles`]; the UI opens the diff sheet.
     pub diff_request: bool,
+    /// Set by [`Command::DiskTreemap`]; the UI opens the treemap sheet.
+    pub treemap_request: bool,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
     pub redo_request: bool,
     /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
@@ -288,6 +290,7 @@ impl Workspace {
             sync_request: false,
             duplicates_request: false,
             diff_request: false,
+            treemap_request: false,
             redo_request: false,
             drain_request: false,
             cycle_density_request: false,
@@ -481,6 +484,7 @@ impl Workspace {
             Command::BeginSync => self.sync_request = true,
             Command::FindDuplicates => self.duplicates_request = true,
             Command::DiffFiles => self.diff_request = true,
+            Command::DiskTreemap => self.treemap_request = true,
             Command::CycleDensity => self.cycle_density_request = true,
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
@@ -923,6 +927,33 @@ impl Workspace {
         self.left.refresh();
         self.right.refresh();
         n
+    }
+
+    // ── Disk usage treemap ──────────────────────────────────────────────
+
+    /// The active folder's direct children as (entry, bytes), sized by file
+    /// length or the cached recursive directory size (0 if not computed yet),
+    /// sorted largest first. Reads the existing dir-size cache; never walks.
+    pub fn treemap_items(&self) -> Vec<(FileEntry, u64)> {
+        let active = self.active_panel_ref();
+        let sizes = active.dir_sizes.lock().ok();
+        let mut items: Vec<(FileEntry, u64)> = active
+            .entries
+            .iter()
+            .map(|e| {
+                let bytes = if e.is_dir {
+                    sizes
+                        .as_ref()
+                        .and_then(|s| s.get(&e.path).copied())
+                        .unwrap_or(0)
+                } else {
+                    e.size
+                };
+                (e.clone(), bytes)
+            })
+            .collect();
+        items.sort_by_key(|i| std::cmp::Reverse(i.1));
+        items
     }
 
     // ── Diff ────────────────────────────────────────────────────────────

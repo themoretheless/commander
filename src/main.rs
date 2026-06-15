@@ -22,6 +22,7 @@ mod textdiff;
 mod theme;
 mod toasts;
 mod transfer;
+mod treemap;
 mod undo;
 mod workspace;
 

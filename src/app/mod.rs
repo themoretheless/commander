@@ -19,6 +19,7 @@ mod sync_dialog;
 mod toolbar;
 mod transfer_dialog;
 mod tree;
+mod treemap_dialog;
 mod update;
 
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
@@ -70,6 +71,8 @@ pub struct App {
     pub(crate) duplicates: Option<DupState>,
     /// Active read-only diff sheet state.
     pub(crate) diff: Option<DiffState>,
+    /// Active disk-usage treemap state (entries with their bytes, sorted).
+    pub(crate) treemap: Option<Vec<(crate::panel::FileEntry, u64)>>,
 }
 
 /// UI state for the read-only diff sheet. The diff itself lives in
@@ -218,6 +221,7 @@ impl App {
             sync: None,
             duplicates: None,
             diff: None,
+            treemap: None,
         }
     }
 

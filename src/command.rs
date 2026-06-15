@@ -60,6 +60,8 @@ pub enum Command {
     FindDuplicates,
     /// Cmd+D: diff the selected file pair (read-only unified view).
     DiffFiles,
+    /// Cmd+Shift+M: open the disk-usage treemap for the active folder.
+    DiskTreemap,
     /// Cmd+Shift+A: add the active selection to the shelf (drop stack).
     ShelfAdd,
     /// Cmd+Shift+V: copy the whole shelf into the active panel's folder.
@@ -83,6 +85,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Synchronize panels", "Cmd+Shift+S", Command::BeginSync),
         ("Find duplicates", "", Command::FindDuplicates),
         ("Diff files", "Cmd+D", Command::DiffFiles),
+        ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
         ("Add to shelf", "Cmd+Shift+A", Command::ShelfAdd),
         ("Drain shelf here", "Cmd+Shift+V", Command::ShelfDrain),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
@@ -159,6 +162,7 @@ pub enum KeyCode {
     I,
     K,
     L,
+    M,
     P,
     D,
     R,
@@ -199,6 +203,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         S if press.command && press.shift => Some(Command::BeginSync),
         D if press.command && press.shift => Some(Command::CycleDensity),
         D if press.command => Some(Command::DiffFiles),
+        M if press.command && press.shift => Some(Command::DiskTreemap),
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
@@ -376,6 +381,17 @@ mod tests {
         // Cmd+A without shift stays Select all; plain V types text.
         assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
         assert_eq!(map_key(press(KeyCode::V)), None);
+    }
+
+    #[test]
+    fn cmd_shift_m_opens_treemap() {
+        let cmd_shift_m = KeyPress {
+            code: KeyCode::M,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_m), Some(Command::DiskTreemap));
+        assert_eq!(map_key(press(KeyCode::M)), None);
     }
 
     #[test]
