@@ -158,6 +158,13 @@ impl App {
 
     fn show_shortcut_bar(&mut self, ctx: &egui::Context) {
         let t = self.colors;
+        let quick_actions = crate::quick_actions::actions(self.quick_action_context());
+        let max_quick_actions = if ctx.available_rect().width() < 1120.0 {
+            2
+        } else {
+            4
+        };
+        let mut quick_action: Option<crate::quick_actions::QuickAction> = None;
         egui::TopBottomPanel::bottom("shortcuts")
             .frame(Frame::NONE.fill(t.bg_toolbar))
             .show(ctx, |ui| {
@@ -248,10 +255,78 @@ impl App {
                                 if !self.ws.shelf.is_empty() {
                                     chip(ui, format!("Shelf {}", self.ws.shelf.len()), true);
                                 }
+                                if !quick_actions.is_empty() {
+                                    ui.add_space(8.0);
+                                    for spec in quick_actions.iter().take(max_quick_actions).rev() {
+                                        let fill = match spec.action {
+                                            crate::quick_actions::QuickAction::DrainShelf
+                                            | crate::quick_actions::QuickAction::AddToShelf => {
+                                                t.accent.linear_multiply(0.22)
+                                            }
+                                            crate::quick_actions::QuickAction::ClearFilters
+                                            | crate::quick_actions::QuickAction::ClearSelection => {
+                                                t.accent_red.linear_multiply(0.12)
+                                            }
+                                            _ => t.bg_card,
+                                        };
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(&spec.label)
+                                                        .size(11.0)
+                                                        .color(t.text_primary),
+                                                )
+                                                .fill(fill)
+                                                .corner_radius(crate::theme::ROUNDING_SM),
+                                            )
+                                            .on_hover_text(spec.hint)
+                                            .clicked()
+                                        {
+                                            quick_action = Some(spec.action);
+                                        }
+                                    }
+                                }
                             });
                         });
                     });
             });
+        if let Some(action) = quick_action {
+            self.run_quick_action(action);
+        }
+    }
+
+    fn quick_action_context(&self) -> crate::quick_actions::QuickActionContext {
+        let active = self.ws.active_panel_ref();
+        crate::quick_actions::QuickActionContext {
+            selected_count: active.selected.len(),
+            shelf_count: self.ws.shelf.len(),
+            has_filters: !active.search_query.is_empty() || !active.facets.is_empty(),
+        }
+    }
+
+    fn run_quick_action(&mut self, action: crate::quick_actions::QuickAction) {
+        use crate::quick_actions::QuickAction;
+        match action {
+            QuickAction::AddToShelf => self.ws.execute(crate::command::Command::ShelfAdd),
+            QuickAction::DrainShelf => self.ws.execute(crate::command::Command::ShelfDrain),
+            QuickAction::CopyNames => {
+                self.ws.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly);
+            }
+            QuickAction::BatchRename => {
+                self.ws.execute(crate::command::Command::BeginBatchRename);
+            }
+            QuickAction::ClearSelection => {
+                self.ws.active_panel().selected.clear();
+            }
+            QuickAction::ClearFilters => {
+                let panel = self.ws.active_panel();
+                panel.search_query.clear();
+                panel.facets = crate::panel::FacetSet::default();
+            }
+            QuickAction::OpenPalette => self.ws.palette_request = true,
+            QuickAction::FindFiles => self.ws.execute(crate::command::Command::BeginFind),
+            QuickAction::RecentFolders => self.ws.execute(crate::command::Command::BeginRecent),
+        }
     }
 
     /// Bottom shelf (drop stack) tray, shown only when something is staged:

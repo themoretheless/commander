@@ -66,6 +66,19 @@ More editor-grade ideas:
 9. **Reviewable undo stack**: browse reversible actions before choosing Undo/Redo.
 10. **Pane roles**: label panels as Source, Target, Archive, Review, or Scratch.
 
+Fresh 10 product-design ideas:
+
+1. **Scope action rail**: bottom-bar actions adapt to selection, filters, and shelf.
+2. **Project lanes**: split the shelf into named buckets like Review, Ship, Archive.
+3. **Conflict rehearsal**: run a simulated copy/move and pin the proposed decisions.
+4. **Finder tag lens**: filter, group, and batch-edit macOS tags from the panel header.
+5. **Breadcrumb command zones**: each crumb exposes copy path, open sibling, and pin.
+6. **Search handoff**: turn any active filter into a saved smart folder in one click.
+7. **Transfer receipts**: every operation leaves a compact, searchable receipt.
+8. **Peek compare**: hold a modifier to preview why a compared row is tinted.
+9. **Selection recipes**: save mask/facet/compare combinations as reusable selectors.
+10. **Keyboard command tray**: show the next likely command from recent local context.
+
 ## Keyboard shortcuts
 
 | Key | Action |
