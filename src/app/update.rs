@@ -188,6 +188,23 @@ impl App {
                             // Scale slider on the right
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(12.0);
+                                let chip = |ui: &mut egui::Ui, label: String, active: bool| {
+                                    let fill = if active {
+                                        t.accent.linear_multiply(0.14)
+                                    } else {
+                                        t.bg_card
+                                    };
+                                    let color = if active { t.accent } else { t.text_muted };
+                                    Frame::NONE
+                                        .fill(fill)
+                                        .corner_radius(crate::theme::ROUNDING_SM)
+                                        .inner_margin(Margin::symmetric(7, 2))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(label).size(10.0).color(color),
+                                            );
+                                        });
+                                };
                                 ui.label(
                                     egui::RichText::new(format!(
                                         "{}%",
@@ -215,6 +232,22 @@ impl App {
                                         .size(12.0)
                                         .color(t.text_muted),
                                 );
+                                ui.add_space(10.0);
+                                chip(
+                                    ui,
+                                    format!("Rows {}", crate::density::short_label(self.density)),
+                                    true,
+                                );
+                                chip(ui, "Tree".to_string(), self.show_tree);
+                                chip(ui, "Compare".to_string(), self.show_compare);
+                                chip(
+                                    ui,
+                                    "Hidden".to_string(),
+                                    self.ws.active_panel_ref().show_hidden,
+                                );
+                                if !self.ws.shelf.is_empty() {
+                                    chip(ui, format!("Shelf {}", self.ws.shelf.len()), true);
+                                }
                             });
                         });
                     });
@@ -547,6 +580,11 @@ impl App {
         } else {
             return;
         };
+        let (source, other) = if !self.ws.left.drag_entries.is_empty() {
+            (&self.ws.left, &self.ws.right)
+        } else {
+            (&self.ws.right, &self.ws.left)
+        };
         let count = drag_entries.len();
         if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
             let label = if count == 1 {
@@ -557,14 +595,35 @@ impl App {
             } else {
                 format!("{} items", count)
             };
+            let explicit_target = source.drop_target.as_ref().or(other.drop_target.as_ref());
+            let target = explicit_target.unwrap_or(&other.current_path);
+            let target_name = target
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| target.display().to_string());
+            let target_label = if explicit_target.is_some() {
+                format!("Drop into {target_name}")
+            } else {
+                format!("Drop to other panel: {target_name}")
+            };
             egui::Area::new(egui::Id::new("drag_overlay"))
                 .fixed_pos(pos + egui::vec2(12.0, 12.0))
                 .order(egui::Order::Tooltip)
                 .show(ctx, |ui| {
                     egui::Frame::popup(ui.style())
-                        .inner_margin(Margin::symmetric(8, 4))
+                        .inner_margin(Margin::symmetric(9, 6))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(label).size(12.0).color(t.text_primary));
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .size(12.0)
+                                    .strong()
+                                    .color(t.text_primary),
+                            );
+                            ui.label(
+                                egui::RichText::new(target_label)
+                                    .size(10.0)
+                                    .color(t.text_muted),
+                            );
                         });
                 });
         }

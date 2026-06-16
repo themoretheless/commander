@@ -51,6 +51,22 @@ pub fn metrics(density: Density) -> DensityMetrics {
     }
 }
 
+pub fn label(density: Density) -> &'static str {
+    match density {
+        Density::Compact => "Compact",
+        Density::Comfortable => "Comfortable",
+        Density::Spacious => "Spacious",
+    }
+}
+
+pub fn short_label(density: Density) -> &'static str {
+    match density {
+        Density::Compact => "C",
+        Density::Comfortable => "M",
+        Density::Spacious => "S",
+    }
+}
+
 /// Densest-to-roomiest order, for cycling.
 const ORDER: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
 
@@ -82,6 +98,13 @@ mod tests {
     #[test]
     fn comfortable_is_the_default() {
         assert_eq!(Density::default(), Density::Comfortable);
+    }
+
+    #[test]
+    fn labels_are_stable_for_toolbar_copy() {
+        assert_eq!(label(Density::Compact), "Compact");
+        assert_eq!(short_label(Density::Comfortable), "M");
+        assert_eq!(label(Density::Spacious), "Spacious");
     }
 
     #[test]

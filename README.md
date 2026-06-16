@@ -40,6 +40,32 @@ Top ideas borrowed from polished editors and file tools:
 9. **Workspace profiles**: saved two-panel layouts per project/task.
 10. **Inline action rail**: row-level quick actions on hover for common tasks.
 
+Next 10 design ideas:
+
+1. **Keyboard Steer mode**: accessible pick-up, arrow-key move target, drop/cancel.
+2. **Command previews**: palette rows show the affected panel, count, or target.
+3. **Per-folder view memory**: remember density, sort, and filters per location.
+4. **Action review drawer**: one compact place to inspect pending copy/move/delete.
+5. **Compare summary badges**: newer, different, and unique counts before selecting.
+6. **Inline conflict suggestions**: rename/keep-both names previewed before transfer.
+7. **Workspace switcher**: named two-pane setups with shelf and smart-folder context.
+8. **Activity timeline**: searchable operation history with jump-back affordances.
+9. **Quick scopes**: restrict commands and filters to panel, selection, or shelf.
+10. **Inspector lenses**: swap the preview pane between Info, Diff, Media, and Usage.
+
+More editor-grade ideas:
+
+1. **Palette macros**: record a short chain of commands and rerun it by name.
+2. **Transfer dry run**: preview resulting names, conflicts, bytes, and skips.
+3. **Split preview**: pin preview left/right/top/bottom instead of only opposite pane.
+4. **Local command history**: show the last few commands for the current folder.
+5. **Contextual empty states**: folder-specific suggestions for denied, empty, or filtered views.
+6. **Selection algebra**: union, subtract, intersect with mask, compare, and shelf.
+7. **Per-kind columns**: image dimensions, media duration, archive contents, text line count.
+8. **Focus mode**: temporarily hide toolbars/status UI for dense keyboard work.
+9. **Reviewable undo stack**: browse reversible actions before choosing Undo/Redo.
+10. **Pane roles**: label panels as Source, Target, Archive, Review, or Scratch.
+
 ## Keyboard shortcuts
 
 | Key | Action |

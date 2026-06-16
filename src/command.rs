@@ -222,13 +222,98 @@ pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
 
     let mut scored: Vec<(i32, usize, CommandMatch)> = Vec::new();
     for (i, item) in catalog.into_iter().enumerate() {
+        let mut best: Option<(i32, Vec<(usize, usize)>)> = None;
         if let Some(ms) = crate::fuzzy::score(query, item.0) {
-            let total = combined_score(ms.score, usage.uses.get(item.0), now);
-            scored.push((total, i, to_match(item, ms.matched_ranges)));
+            best = Some((ms.score, ms.matched_ranges));
+        }
+        if let Some(score) = metadata_score(query, item.1, item.2)
+            && best.as_ref().is_none_or(|(current, _)| score > *current)
+        {
+            best = Some((score, Vec::new()));
+        }
+        if let Some((score, matched)) = best {
+            let total = combined_score(score, usage.uses.get(item.0), now);
+            scored.push((total, i, to_match(item, matched)));
         }
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, _, m)| m).collect()
+}
+
+fn metadata_score(query: &str, shortcut: &str, command: Command) -> Option<i32> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+
+    let compact_q = shortcut_search_text(&q);
+    if !shortcut.is_empty() && !compact_q.is_empty() {
+        let compact_shortcut = shortcut_search_text(shortcut);
+        if compact_shortcut == compact_q {
+            return Some(90);
+        }
+        if compact_shortcut.contains(&compact_q) {
+            return Some(65);
+        }
+    }
+
+    let aliases = command_aliases(command);
+    let tokens: Vec<&str> = q.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    let all_tokens_match = tokens
+        .iter()
+        .all(|token| aliases.iter().any(|alias| alias.contains(token)));
+    all_tokens_match.then_some(42 + tokens.len() as i32)
+}
+
+fn shortcut_search_text(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn command_aliases(command: Command) -> &'static [&'static str] {
+    match command {
+        Command::RequestCopy => &["file copy duplicate transfer send"],
+        Command::RequestMove => &["file move transfer relocate send"],
+        Command::CreateDir => &["file new folder directory mkdir create"],
+        Command::RequestDelete => &["file delete remove trash"],
+        Command::BeginRename => &["file rename edit name"],
+        Command::BeginBatchRename => &["file batch rename bulk multi rename studio"],
+        Command::BeginSync => &["panels sync synchronize mirror compare"],
+        Command::FindDuplicates => &["file duplicate duplicates dedupe identical"],
+        Command::DiffFiles => &["view diff compare text"],
+        Command::DiskTreemap => &["view disk usage map treemap size"],
+        Command::BeginFind => &["file find recursive search"],
+        Command::OpenSavedSearch => &["file saved search smart folder"],
+        Command::CopyPath => &["clipboard copy path"],
+        Command::CopyName => &["clipboard copy name filename"],
+        Command::CopyParentPath => &["clipboard copy parent folder path"],
+        Command::CopyFileUrl => &["clipboard copy url file url"],
+        Command::CopyShellPath => &["clipboard copy shell escaped path"],
+        Command::CopyRelativePath => &["clipboard copy relative path other pane"],
+        Command::ShelfAdd => &["shelf stack add stage collect"],
+        Command::ShelfDrain => &["shelf stack drain paste copy here"],
+        Command::ToggleInfo => &["view info get info properties metadata"],
+        Command::BeginGoToPath => &["navigation go path location jump"],
+        Command::BeginRecent => &["navigation recent folders history projects"],
+        Command::SelectAll => &["selection select all mark all"],
+        Command::InvertSelection => &["selection invert reverse flip"],
+        Command::SelectSameNamed => &["selection same name matching files compare"],
+        Command::BeginSelectMask => &["selection mask glob pattern wildcard"],
+        Command::ToggleHidden => &["view hidden show hidden dotfiles invisible"],
+        Command::CycleDensity => &["view density rows compact comfortable spacious"],
+        Command::TogglePreview => &["view preview quick look viewer inspect"],
+        Command::EqualizePanels => &["panels equalize same folder mirror"],
+        Command::SwapPanels => &["panels swap exchange switch sides"],
+        Command::Undo => &["history undo revert rollback"],
+        Command::Redo => &["history redo repeat"],
+        _ => &["command"],
+    }
 }
 
 /// Rank without usage (pure fuzzy order); the empty-history baseline used in
@@ -454,6 +539,20 @@ mod tests {
 
         // A non-subsequence query matches nothing.
         assert!(filter_commands("zzzzz").is_empty());
+    }
+
+    #[test]
+    fn filter_commands_matches_shortcuts_and_aliases() {
+        assert_eq!(filter_commands("cmd h")[0].command, Command::ToggleHidden);
+        assert_eq!(filter_commands("mkdir")[0].command, Command::CreateDir);
+        assert_eq!(
+            filter_commands("view hidden")[0].command,
+            Command::ToggleHidden
+        );
+        assert_eq!(
+            filter_commands("cmd shift d")[0].command,
+            Command::CycleDensity
+        );
     }
 
     #[test]

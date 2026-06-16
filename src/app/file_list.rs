@@ -470,14 +470,31 @@ impl App {
             .inner_margin(Margin::symmetric(10, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let total = panel.filtered_count();
+                    let shown = panel.filtered_count();
+                    let total = panel.entries.len();
                     let sel = panel.selected.len();
                     let dir_total = panel.total_dir_size();
+                    let filters_active =
+                        !panel.search_query.trim().is_empty() || !panel.facets.is_empty();
+                    let count_prefix = if filters_active {
+                        format!("{shown} of {total} items")
+                    } else {
+                        format!("{shown} items")
+                    };
                     let size_str = match dir_total {
-                        Some(s) => format!("{} items ({})", total, format_size(s)),
-                        None => format!("{} items (\u{2026})", total),
+                        Some(s) => format!("{count_prefix} ({})", format_size(s)),
+                        None => format!("{count_prefix} (\u{2026})"),
                     };
                     ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
+                    if filters_active {
+                        let active_count = panel.facets.active_count();
+                        let filter_label = if active_count > 0 {
+                            format!("  |  Filters {active_count}")
+                        } else {
+                            "  |  Filter text".to_string()
+                        };
+                        ui.label(egui::RichText::new(filter_label).size(11.0).color(t.accent));
+                    }
                     if sel > 0 {
                         ui.label(
                             egui::RichText::new(format!(

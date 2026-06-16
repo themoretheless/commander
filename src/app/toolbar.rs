@@ -145,6 +145,27 @@ impl App {
                             panel.refresh();
                         }
 
+                        // Density cycle
+                        let density_label = crate::density::short_label(self.density);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(format!("Rows {density_label}"))
+                                        .size(12.0)
+                                        .color(t.text_primary),
+                                )
+                                .fill(t.bg_card)
+                                .corner_radius(crate::theme::ROUNDING_SM),
+                            )
+                            .on_hover_text(format!(
+                                "List density: {} (\u{2318}\u{21e7}D)",
+                                crate::density::label(self.density)
+                            ))
+                            .clicked()
+                        {
+                            self.density = crate::density::cycle(self.density, 1);
+                        }
+
                         // Size-bars toggle
                         let bars_fill = if self.show_size_bars {
                             t.accent.linear_multiply(0.3)

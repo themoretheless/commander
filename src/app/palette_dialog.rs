@@ -18,6 +18,10 @@ impl App {
         // below does not conflict with reading the usage history).
         let query = self.palette_input.clone().unwrap();
         let matches = crate::command::rank(&query, &self.palette_usage, self.palette_tick);
+        let previews: Vec<String> = matches
+            .iter()
+            .map(|m| self.palette_command_preview(m.command))
+            .collect();
         let buffer = self.palette_input.as_mut().unwrap();
         let mut run: Option<(&'static str, crate::command::Command)> = None;
         let mut cancel = false;
@@ -93,12 +97,21 @@ impl App {
                                         ui.horizontal(|ui| {
                                             ui.vertical(|ui| {
                                                 ui.add(egui::Label::new(job));
+                                                let preview =
+                                                    previews.get(i).map_or("", String::as_str);
+                                                let detail = if preview.is_empty() {
+                                                    Self::palette_category(m.command).to_string()
+                                                } else {
+                                                    format!(
+                                                        "{} \u{00b7} {}",
+                                                        Self::palette_category(m.command),
+                                                        preview
+                                                    )
+                                                };
                                                 ui.label(
-                                                    egui::RichText::new(Self::palette_category(
-                                                        m.command,
-                                                    ))
-                                                    .size(10.0)
-                                                    .color(t.text_muted),
+                                                    egui::RichText::new(detail)
+                                                        .size(10.0)
+                                                        .color(t.text_muted),
                                                 );
                                             });
                                             ui.with_layout(
@@ -155,6 +168,69 @@ impl App {
             self.palette_usage.record(label, self.palette_tick);
             self.ws.execute(cmd);
         }
+    }
+
+    fn palette_command_preview(&self, command: crate::command::Command) -> String {
+        use crate::command::Command;
+        let active = self.ws.active_panel_ref();
+        let inactive = self.ws.inactive_panel();
+        let picked = active.selected_or_cursor().len();
+        let active_path = Self::palette_path_label(&active.current_path);
+        let inactive_path = Self::palette_path_label(&inactive.current_path);
+        match command {
+            Command::RequestCopy => format!("{picked} item(s) -> {inactive_path}"),
+            Command::RequestMove => format!("{picked} item(s) -> {inactive_path}"),
+            Command::RequestDelete => format!("{picked} item(s) to Trash"),
+            Command::CreateDir => format!("in {active_path}"),
+            Command::BeginRename => active
+                .filtered_get(active.cursor.saturating_sub(1))
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "cursor item".to_string()),
+            Command::BeginBatchRename => format!("{picked} item(s)"),
+            Command::BeginSync => format!("{active_path} <-> {inactive_path}"),
+            Command::FindDuplicates | Command::DiskTreemap | Command::BeginFind => active_path,
+            Command::OpenSavedSearch => "saved smart folders".to_string(),
+            Command::CopyPath
+            | Command::CopyName
+            | Command::CopyParentPath
+            | Command::CopyFileUrl
+            | Command::CopyShellPath
+            | Command::CopyRelativePath => format!("{picked} item(s)"),
+            Command::ShelfAdd => format!("{picked} item(s)"),
+            Command::ShelfDrain => format!("{} staged -> {active_path}", self.ws.shelf.len()),
+            Command::ToggleInfo => "opposite panel inspector".to_string(),
+            Command::BeginGoToPath => "jump to folder".to_string(),
+            Command::BeginRecent => "recent folders".to_string(),
+            Command::SelectAll | Command::InvertSelection => {
+                format!("{} visible item(s)", active.filtered_count())
+            }
+            Command::SelectSameNamed => format!("against {inactive_path}"),
+            Command::BeginSelectMask => "glob selection".to_string(),
+            Command::ToggleHidden => {
+                if active.show_hidden {
+                    "currently on".to_string()
+                } else {
+                    "currently off".to_string()
+                }
+            }
+            Command::CycleDensity => {
+                let next = crate::density::cycle(self.density, 1);
+                format!("next: {}", crate::density::label(next))
+            }
+            Command::TogglePreview => "opposite panel preview".to_string(),
+            Command::EqualizePanels => format!("{inactive_path} -> {active_path}"),
+            Command::SwapPanels => "exchange left and right".to_string(),
+            Command::Undo => "last reversible operation".to_string(),
+            Command::Redo => "last undone operation".to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn palette_path_label(path: &std::path::Path) -> String {
+        path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| path.display().to_string())
     }
 
     fn palette_category(command: crate::command::Command) -> &'static str {
