@@ -2,6 +2,16 @@
 
 use super::*;
 
+fn clipped_label(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    let mut out: String = text.chars().take(keep).collect();
+    out.push_str("...");
+    out
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.begin_frame(ctx);
@@ -291,7 +301,7 @@ impl App {
                     });
             });
         if let Some(action) = quick_action {
-            self.run_quick_action(action);
+            self.run_quick_action(action, ctx);
         }
     }
 
@@ -304,7 +314,7 @@ impl App {
         }
     }
 
-    fn run_quick_action(&mut self, action: crate::quick_actions::QuickAction) {
+    fn run_quick_action(&mut self, action: crate::quick_actions::QuickAction, ctx: &egui::Context) {
         use crate::quick_actions::QuickAction;
         match action {
             QuickAction::AddToShelf => self.ws.execute(crate::command::Command::ShelfAdd),
@@ -323,10 +333,55 @@ impl App {
                 panel.search_query.clear();
                 panel.facets = crate::panel::FacetSet::default();
             }
+            QuickAction::SaveFilter => self.save_active_filter_as_smart_folder(ctx),
             QuickAction::OpenPalette => self.ws.palette_request = true,
             QuickAction::FindFiles => self.ws.execute(crate::command::Command::BeginFind),
             QuickAction::RecentFolders => self.ws.execute(crate::command::Command::BeginRecent),
         }
+    }
+
+    fn save_active_filter_as_smart_folder(&mut self, ctx: &egui::Context) {
+        let (name, root, query) = {
+            let active = self.ws.active_panel_ref();
+            let query = crate::query::from_panel_filter(&active.search_query, &active.facets);
+            if query.predicates.is_empty() {
+                return;
+            }
+            let folder = active
+                .current_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| active.current_path.display().to_string());
+            let descriptor = if active.search_query.trim().is_empty() {
+                format!("{} facet(s)", active.facets.active_count())
+            } else {
+                active.search_query.trim().to_string()
+            };
+            (
+                format!(
+                    "Filter: {} - {}",
+                    clipped_label(&folder, 24),
+                    clipped_label(&descriptor, 32)
+                ),
+                active.current_path.clone(),
+                query,
+            )
+        };
+        self.smart_folders_mut()
+            .add(crate::smart_folder::Definition {
+                name: name.clone(),
+                root,
+                query,
+            });
+        crate::smart_folder::save(self.smart_folders_mut());
+        let now = ctx.input(|i| i.time);
+        self.toasts.push(crate::toasts::Toast::new(
+            format!("Saved smart folder \"{name}\""),
+            crate::toasts::ToastKind::Success,
+            false,
+            now,
+        ));
     }
 
     /// Bottom shelf (drop stack) tray, shown only when something is staged:

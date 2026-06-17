@@ -79,6 +79,19 @@ Fresh 10 product-design ideas:
 9. **Selection recipes**: save mask/facet/compare combinations as reusable selectors.
 10. **Keyboard command tray**: show the next likely command from recent local context.
 
+Next implementation ideas:
+
+1. **Filter handoff**: promote the current panel filter into a saved smart folder.
+2. **Compare tint explanations**: row hover tells why an item is unique or different.
+3. **Shelf lanes lite**: tag staged files as Copy, Review, Archive, or Later.
+4. **Pinned filter presets**: put saved searches beside the facet chips.
+5. **Receipts drawer**: list the last copy/move/delete outcomes with undo state.
+6. **Conflict rehearsal row**: preview keep-both names before opening the transfer dialog.
+7. **Sibling crumb menu**: jump to neighboring folders from each breadcrumb segment.
+8. **One-shot focus mode**: hide chrome until the next pointer movement.
+9. **Compare quick select**: chips for Unique, Different, and Newer in compare mode.
+10. **Command next-best hint**: status bar suggests one likely follow-up action.
+
 ## Keyboard shortcuts
 
 | Key | Action |

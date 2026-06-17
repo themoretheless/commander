@@ -10,6 +10,7 @@ pub enum QuickAction {
     BatchRename,
     ClearSelection,
     ClearFilters,
+    SaveFilter,
     OpenPalette,
     FindFiles,
     RecentFolders,
@@ -40,6 +41,11 @@ pub fn actions(ctx: QuickActionContext) -> Vec<QuickActionSpec> {
         ));
     }
     if ctx.has_filters {
+        specs.push(spec(
+            QuickAction::SaveFilter,
+            "Save filter",
+            "Save the active panel filter as a smart folder",
+        ));
         specs.push(spec(
             QuickAction::ClearFilters,
             "Clear filters",
@@ -148,9 +154,9 @@ mod tests {
             kinds(&specs),
             vec![
                 QuickAction::DrainShelf,
+                QuickAction::SaveFilter,
                 QuickAction::ClearFilters,
-                QuickAction::OpenPalette,
-                QuickAction::FindFiles
+                QuickAction::OpenPalette
             ]
         );
     }

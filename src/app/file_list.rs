@@ -237,6 +237,15 @@ impl App {
                         Vec2::new(ui.available_width(), row_content),
                         Sense::click_and_drag(),
                     );
+                    let row_resp = if let Some(map) = compare {
+                        if let Some(hint) = crate::workspace::compare_hint(entry, map) {
+                            row_resp.on_hover_text(hint)
+                        } else {
+                            row_resp
+                        }
+                    } else {
+                        row_resp
+                    };
 
                     // Scroll to cursor row when navigating with keyboard
                     if is_cursor && scroll_pending {

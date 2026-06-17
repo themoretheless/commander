@@ -51,6 +51,36 @@ impl Query {
     }
 }
 
+/// Convert the active panel's lightweight filter controls into a reusable
+/// smart-folder query.
+pub fn from_panel_filter(search: &str, facets: &crate::panel::FacetSet) -> Query {
+    let mut predicates = Vec::new();
+    let trimmed = search.trim();
+    if !trimmed.is_empty() {
+        predicates.push(Predicate::NameContains(trimmed.to_string()));
+    }
+    if let Some(facet) = facets.kind {
+        predicates.push(Predicate::Kind(kind_from_facet(facet)));
+    }
+    if let Some(min) = facets.min_size {
+        predicates.push(Predicate::MinSize(min));
+    }
+    if let Some(days) = facets.max_age_days {
+        predicates.push(Predicate::MaxAgeDays(days));
+    }
+    Query { predicates }
+}
+
+fn kind_from_facet(facet: crate::panel::KindFacet) -> Kind {
+    match facet {
+        crate::panel::KindFacet::Folders => Kind::Folder,
+        crate::panel::KindFacet::Images => Kind::Image,
+        crate::panel::KindFacet::Docs => Kind::Document,
+        crate::panel::KindFacet::Archives => Kind::Archive,
+        crate::panel::KindFacet::Code => Kind::Code,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +163,24 @@ mod tests {
         assert!(p.matches(&entry("server.log", false, 800, None), now));
         assert!(!p.matches(&entry("server.log", false, 100, None), now)); // too small
         assert!(!p.matches(&entry("readme.md", false, 800, None), now)); // wrong name
+    }
+
+    #[test]
+    fn panel_filter_converts_to_smart_folder_query() {
+        let facets = crate::panel::FacetSet {
+            kind: Some(crate::panel::KindFacet::Images),
+            min_size: Some(1 << 20),
+            max_age_days: Some(7),
+        };
+        let query = from_panel_filter(" raw ", &facets);
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate::NameContains("raw".into()),
+                Predicate::Kind(Kind::Image),
+                Predicate::MinSize(1 << 20),
+                Predicate::MaxAgeDays(7),
+            ]
+        );
     }
 }

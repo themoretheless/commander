@@ -209,6 +209,24 @@ pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
     }
 }
 
+/// Human explanation for compare-mode row tinting. Identical rows intentionally
+/// return `None` so quiet rows stay quiet.
+pub fn compare_hint(entry: &FileEntry, other: &CompareMap) -> Option<String> {
+    match other.get(&entry.name_lower) {
+        None => Some("Only in this panel".to_string()),
+        Some(&(size, mtime)) => {
+            let size_differs = size != entry.size;
+            let time_differs = mtime != entry.modified;
+            match (size_differs, time_differs) {
+                (false, false) => None,
+                (true, true) => Some("Same name, different size and modified time".to_string()),
+                (true, false) => Some("Same name, different size".to_string()),
+                (false, true) => Some("Same name, different modified time".to_string()),
+            }
+        }
+    }
+}
+
 /// Compute (need bytes, free bytes on target, same-volume) for a transfer,
 /// used to drive the will-it-fit guard in the confirmation dialog.
 fn fit_stats(
@@ -1631,6 +1649,19 @@ mod tests {
         assert_eq!(
             classify_entry(&mk(&only, t0), &other),
             CompareStatus::Unique
+        );
+        assert_eq!(
+            compare_hint(&mk(&same, t0), &other),
+            None,
+            "identical rows should stay visually quiet"
+        );
+        assert_eq!(
+            compare_hint(&mk(&diff, t0), &other).as_deref(),
+            Some("Same name, different size and modified time")
+        );
+        assert_eq!(
+            compare_hint(&mk(&only, t0), &other).as_deref(),
+            Some("Only in this panel")
         );
     }
 
