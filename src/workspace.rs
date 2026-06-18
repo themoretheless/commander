@@ -140,6 +140,8 @@ impl TabSide {
             self.active = i;
         }
     }
+    pub fn len(&self) -> usize { self.tabs.len() }
+    pub fn active_index(&self) -> usize { self.active }
     pub fn close_tab(&mut self, i: usize) {
         if self.tabs.len() > 1 && i < self.tabs.len() {
             self.tabs.remove(i);

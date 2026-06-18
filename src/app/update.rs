@@ -875,9 +875,9 @@ impl App {
     /// Full drag reorder with live visual insert marker (idea from cycle: drag tabs complete).
     fn render_tab_bar(&mut self, ui: &mut egui::Ui, is_left: bool, t: &ThemeColors, ctx: &egui::Context, _metrics: crate::density::DensityMetrics) {
         let (len, side_active) = if is_left {
-            (self.ws.left.tabs.len(), ActivePanel::Left)
+            (self.ws.left.len(), ActivePanel::Left)
         } else {
-            (self.ws.right.tabs.len(), ActivePanel::Right)
+            (self.ws.right.len(), ActivePanel::Right)
         };
         let mut tab_rects: Vec<(usize, egui::Rect)> = Vec::new();
         ui.horizontal(|ui| {
@@ -886,7 +886,7 @@ impl App {
             for i in 0..len {
                 let tab = if is_left { &self.ws.left.tabs[i] } else { &self.ws.right.tabs[i] };
                 let title = Self::tab_title(tab);
-                let active = if is_left { self.ws.left.active } else { self.ws.right.active };
+                let active = if is_left { self.ws.left.active_index() } else { self.ws.right.active_index() };
                 let is_active = i == active;
                 let btn = if is_active {
                     egui::Button::new(egui::RichText::new(title).strong().size(11.0))

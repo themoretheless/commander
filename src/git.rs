@@ -79,7 +79,7 @@ pub fn refresh_git_status(
     // Do sync for immediate display (small cost for most repos)
     let map = compute_git_status(path);
     git_status.clear();
-    git_status.extend(&map);
+    git_status.extend(map.clone());
     *last_git_refresh = Some(Instant::now());
 
     // Also push via channel (for consistency + multi-tab wiring). Avoid double shell by sending what we have.
