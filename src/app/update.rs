@@ -109,16 +109,8 @@ impl App {
             }
         }
 
-        // Receive git updates via channel (replacing shared Arc<Mutex> updates for ownership+channels).
-        if let Some(rx) = &self.git_rx {
-            while let Ok((path, map)) = rx.try_recv() {
-                if self.ws.left_active_tab().state.current_path() == &path {
-                    self.ws.left_active_tab_mut().state.set_git_status(map.clone());
-                } else if self.ws.right_active_tab().state.current_path() == &path {
-                    self.ws.right_active_tab_mut().state.set_git_status(map);
-                }
-            }
-        }
+        // Delegate git message apply to ws (thin App wiring only).
+        self.ws.poll_git();
 
         self.handle_keys(ctx);
 
@@ -147,10 +139,10 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::T)) && !self.macro_recording {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
-                if self.user_tags.contains_key(&p) {
-                    self.user_tags.remove(&p);
+                if self.ws.user_tags.contains_key(&p) {
+                    self.ws.user_tags.remove(&p);
                 } else {
-                    self.user_tags.insert(p, "★".to_string());
+                    self.ws.user_tags.insert(p, "★".to_string());
                 }
             }
         }
@@ -159,16 +151,16 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::N)) && !self.macro_recording {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
-                if self.file_notes.contains_key(&p) {
-                    self.file_notes.remove(&p);
+                if self.ws.file_notes.contains_key(&p) {
+                    self.ws.file_notes.remove(&p);
                 } else {
-                    self.file_notes.insert(p, "note".to_string());
+                    self.ws.file_notes.insert(p, "note".to_string());
                 }
             }
         }
 
         // Linked scroll sync (idea #13): when on, keep cursors in sync for "master" feel (scroll/cursor moves affect other).
-        if self.linked_scroll {
+        if self.ws.linked_scroll {
             self.sync_linked_scroll();
         }
 
@@ -205,7 +197,7 @@ impl App {
         }
 
         if std::mem::take(&mut self.ws.requests.toggle_show_git_request) {
-            self.show_git_status = !self.show_git_status;
+            self.ws.show_git_status = !self.ws.show_git_status;
         }
 
         self.preload_images(ctx);
@@ -613,12 +605,12 @@ impl App {
                     left_compare.as_ref(),
                     left_opener,
                     metrics,
-                    self.show_git_status,
+                    self.ws.show_git_status,
                     &mut self.config.column_config,
                     self.renaming.as_mut(),
                     self.grid_view,
-                    &self.user_tags,
-                    &self.file_notes
+                    &self.ws.user_tags,
+                    &self.ws.file_notes
                 );
             });
 
@@ -651,12 +643,12 @@ impl App {
                     right_compare.as_ref(),
                     right_opener,
                     metrics,
-                    self.show_git_status,
+                    self.ws.show_git_status,
                     &mut self.config.column_config,
                     self.renaming.as_mut(),
                     self.grid_view,
-                    &self.user_tags,
-                    &self.file_notes
+                    &self.ws.user_tags,
+                    &self.ws.file_notes
                 );
             });
 
@@ -1012,8 +1004,8 @@ impl App {
                 self.column_config_open = true;
             }
             // Linked scroll toggle (idea #13)
-            if crate::app::ui_common::small_toggle(ui, "L", self.linked_scroll, "Toggle linked scroll") {
-                self.linked_scroll = !self.linked_scroll;
+            if crate::app::ui_common::small_toggle(ui, "L", self.ws.linked_scroll, "Toggle linked scroll") {
+                self.ws.linked_scroll = !self.ws.linked_scroll;
             }
             // Mini terminal toggle (idea #11)
             if crate::app::ui_common::small_toggle(ui, "T", self.terminal_open, "Toggle terminal pane") {
@@ -1088,7 +1080,7 @@ impl App {
                 // Git toggle + width
                 ui.horizontal(|ui| {
                     if ui.checkbox(&mut self.config.column_config.show_git, "Git").changed() {
-                        self.show_git_status = self.config.column_config.show_git;
+                        self.ws.show_git_status = self.config.column_config.show_git;
                     }
                     if self.config.column_config.show_git {
                         ui.add(egui::Slider::new(&mut self.config.column_config.git_width, 20.0..=80.0).text("w"));
@@ -1100,7 +1092,7 @@ impl App {
                 ui.horizontal(|ui| {
                     if ui.button("Reset defaults").clicked() {
                         self.config.column_config = crate::panel::ColumnConfig::default();
-                        self.show_git_status = true;
+                        self.ws.show_git_status = true;
                     }
                     if ui.button("Close").clicked() {
                         close = true;
@@ -1130,23 +1122,23 @@ impl App {
                 if let Some(e) = self.ws.active_panel_ref().filtered_get(cur.saturating_sub(1)) {
                     let p = e.path.clone();
                     ui.label(format!("Current: {}", e.name));
-                    if self.user_tags.contains_key(&p) {
+                    if self.ws.user_tags.contains_key(&p) {
                         if ui.button("Remove tag").clicked() {
-                            self.user_tags.remove(&p);
+                            self.ws.user_tags.remove(&p);
                         }
                     } else if ui.button("Assign ★ tag").clicked() {
-                        self.user_tags.insert(p.clone(), "★".into());
+                        self.ws.user_tags.insert(p.clone(), "★".into());
                     }
                 }
-                ui.label(format!("Tagged items: {}", self.user_tags.len()));
-                if !self.user_tags.is_empty() {
-                    for (pth, tag) in self.user_tags.iter().take(5) {
+                ui.label(format!("Tagged items: {}", self.ws.user_tags.len()));
+                if !self.ws.user_tags.is_empty() {
+                    for (pth, tag) in self.ws.user_tags.iter().take(5) {
                         ui.label(format!("{}  {}", tag, pth.display()));
                     }
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Close").clicked() { close = true; }
-                    if ui.button("Clear all").clicked() { self.user_tags.clear(); }
+                    if ui.button("Clear all").clicked() { self.ws.user_tags.clear(); }
                 });
             });
         if close {
@@ -1235,17 +1227,17 @@ impl App {
                 let panel = self.ws.active_panel_ref();
                 if let Some(e) = panel.filtered_get(panel.cursor.saturating_sub(1)) {
                     let p = e.path.clone();
-                    let mut note = self.file_notes.get(&p).cloned().unwrap_or_default();
+                    let mut note = self.ws.file_notes.get(&p).cloned().unwrap_or_default();
                     ui.label(format!("Note for {}", e.name));
                     if ui.add(egui::TextEdit::singleline(&mut note).desired_width(200.0)).changed() {
                         if note.trim().is_empty() {
-                            self.file_notes.remove(&p);
+                            self.ws.file_notes.remove(&p);
                         } else {
-                            self.file_notes.insert(p.clone(), note);
+                            self.ws.file_notes.insert(p.clone(), note);
                         }
                     }
                 }
-                ui.label(format!("Notes: {}", self.file_notes.len()));
+                ui.label(format!("Notes: {}", self.ws.file_notes.len()));
                 if ui.button("Close").clicked() { close = true; }
             });
         if close {

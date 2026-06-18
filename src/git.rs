@@ -1,7 +1,6 @@
 //! Git status extracted for SRP (separate concern from panel listing).
-//! Small piece. Sync + debounce for immediate glyphs (blocks reload slightly for shell git).
-//! Full off-main + result apply noted for perf follow-up. Errors reported via crate::error.
-//! Can become plugin column.
+//! Always background: schedule via thread, apply only via channel message.
+//! No sync shell on UI thread. Debounce on last refresh. Matches desired tokio+channels direction (using std thread + mpsc for compatibility with egui loop).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,9 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::CommanderError;
-use crate::panel::fs_pool;
 
-/// Pure compute: run git porcelain, return map. Used both sync (immediate on reload) and bg.
+/// Pure compute (blocking, run only in bg).
 pub fn compute_git_status(dir: &Path) -> HashMap<PathBuf, char> {
     let mut out_map = HashMap::new();
     let git_marker = dir.join(".git");
@@ -46,7 +44,6 @@ pub fn compute_git_status(dir: &Path) -> HashMap<PathBuf, char> {
             }
         }
         Ok(out) => {
-            // non-success: report
             let msg = format!("git status failed: {}", String::from_utf8_lossy(&out.stderr));
             crate::error::report_error(CommanderError::Git(msg));
         }
@@ -57,9 +54,11 @@ pub fn compute_git_status(dir: &Path) -> HashMap<PathBuf, char> {
     out_map
 }
 
+/// Schedule git status computation in background. Never blocks UI.
+/// Result delivered via git_tx (apply in main loop by message).
+/// last_git_refresh used only for debounce of scheduling.
 pub fn refresh_git_status(
     path: &Path,
-    git_status: &mut HashMap<PathBuf, char>,
     last_git_refresh: &mut Option<Instant>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
     git_tx: Option<Sender<(PathBuf, HashMap<PathBuf, char>)>>,
@@ -73,20 +72,28 @@ pub fn refresh_git_status(
     let git_marker = path.join(".git");
     if !git_marker.exists() {
         *last_git_refresh = Some(Instant::now());
-        git_status.clear();
+        // Send empty to clear on receiver side if needed
+        if let Some(tx) = git_tx {
+            let _ = tx.send((path.to_path_buf(), HashMap::new()));
+        }
+        if let Some(n) = notify.clone() {
+            n();
+        }
         return;
     }
-    // Do sync for immediate display (small cost for most repos)
-    let map = compute_git_status(path);
-    git_status.clear();
-    git_status.extend(map.clone());
     *last_git_refresh = Some(Instant::now());
 
-    // Also push via channel (for consistency + multi-tab wiring). Avoid double shell by sending what we have.
-    if let Some(tx) = git_tx {
-        let _ = tx.send((path.to_path_buf(), map.clone()));
-    }
-    if let Some(n) = notify {
-        n();
-    }
+    let path2 = path.to_path_buf();
+    let tx2 = git_tx.clone();
+    let notify2 = notify.clone();
+    // Background thread (towards full tokio spawn_blocking later)
+    std::thread::spawn(move || {
+        let map = compute_git_status(&path2);
+        if let Some(tx) = tx2 {
+            let _ = tx.send((path2.clone(), map));
+        }
+        if let Some(n) = notify2 {
+            n();
+        }
+    });
 }

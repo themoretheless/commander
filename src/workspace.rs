@@ -192,6 +192,16 @@ pub struct Workspace {
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: std::sync::Arc<dyn Fn(&Path) + Send + Sync>,
+
+    // Presentation / tag data moved here for thinner App (logic + data in ws).
+    pub show_git_status: bool,
+    pub linked_scroll: bool,
+    pub user_tags: std::collections::HashMap<PathBuf, String>,
+    pub file_notes: std::collections::HashMap<PathBuf, String>,
+
+    // Git bg channel owned here (thin App: ws handles receive + apply).
+    pub git_tx: Option<std::sync::mpsc::Sender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
+    pub git_rx: Option<std::sync::mpsc::Receiver<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -292,6 +302,12 @@ impl Workspace {
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
             opener,
+            show_git_status: true,
+            linked_scroll: false,
+            user_tags: std::collections::HashMap::new(),
+            file_notes: std::collections::HashMap::new(),
+            git_tx: None,
+            git_rx: None,
         }
     }
 
@@ -354,6 +370,24 @@ impl Workspace {
     pub fn right_active_tab(&self) -> &PanelTab { self.right.active_tab() }
     pub fn left_active_tab_mut(&mut self) -> &mut PanelTab { self.left.active_tab_mut() }
     pub fn right_active_tab_mut(&mut self) -> &mut PanelTab { self.right.active_tab_mut() }
+
+    /// Poll pending git status messages and apply to matching tab (pure apply by message).
+    /// Called from UI layer each frame.
+    pub fn poll_git(&mut self) {
+        if let Some(rx) = &self.git_rx {
+            let mut updates = Vec::new();
+            while let Ok(v) = rx.try_recv() {
+                updates.push(v);
+            }
+            for (path, map) in updates {
+                if self.left.active_tab().state.current_path() == &path {
+                    self.left.active_tab_mut().state.set_git_status(map.clone());
+                } else if self.right.active_tab().state.current_path() == &path {
+                    self.right.active_tab_mut().state.set_git_status(map);
+                }
+            }
+        }
+    }
 
     /// Add to the active panel's selection every visible entry whose name also
     /// exists in the inactive panel (by lowercased name). Builds on top of any

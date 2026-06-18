@@ -96,26 +96,18 @@ pub struct App {
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
     /// Whether the saved-search picker is open.
     pub(crate) saved_search_open: bool,
-    /// Toggle for git status column/glyph (column customization from top 50).
-    pub(crate) show_git_status: bool,
     /// For starting drag reorder on tabs (left or right).
     pub(crate) dragged_tab: Option<(bool, usize)>, // (is_left, index)
     /// Bookmarks dialog open + filter buffer (full UI from stub).
     pub(crate) bookmarks_open: Option<String>,
     /// Column config dialog open (for widths, toggles like TC).
     pub(crate) column_config_open: bool,
-    /// Linked scrolling between left/right panels (master/slave when on; idea #13).
-    pub(crate) linked_scroll: bool,
     /// Mini terminal bottom pane open (idea #11).
     pub(crate) terminal_open: bool,
     pub(crate) terminal_history: Vec<String>,
     /// Macro recorder active (idea #37/46).
     pub(crate) macro_recording: bool,
     pub(crate) macro_steps: Vec<String>,
-    /// User tags for color labels (idea #64).
-    pub(crate) user_tags: std::collections::HashMap<std::path::PathBuf, String>,
-    /// File notes/comments attached to paths (idea #92).
-    pub(crate) file_notes: std::collections::HashMap<std::path::PathBuf, String>,
     /// Grid view toggle (idea #65/72).
     pub(crate) grid_view: bool,
     /// Saved named macros (idea #82). key=name, value=steps.
@@ -128,9 +120,6 @@ pub struct App {
     pub(crate) archive_open: bool,
     /// Notes editor open (idea #92).
     pub(crate) notes_open: bool,
-    /// Channel for git status updates from bg (ownership + channels instead of Arc<Mutex> on git_status).
-    pub(crate) git_tx: Option<std::sync::mpsc::Sender<(std::path::PathBuf, std::collections::HashMap<std::path::PathBuf, char>)>>,
-    pub(crate) git_rx: Option<std::sync::mpsc::Receiver<(std::path::PathBuf, std::collections::HashMap<std::path::PathBuf, char>)>>,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -341,12 +330,24 @@ impl App {
         }
 
         let config = crate::config::AppConfig::default();
-        let show_git_status = config.show_git_status;
+        ws.show_git_status = session.as_ref().map_or(config.show_git_status, |s| s.show_git_status);
+        ws.linked_scroll = session.as_ref().map_or(false, |s| s.linked_scroll);
+
         let show_tree_default = config.show_tree;
         let density_default = config.density;
 
-        // Channel for git updates from bg threads (ownership + channels, replacing Arc<Mutex> for git_status).
+        // Channel owned by ws (thin App). Create here, wire to tabs, store on ws.
         let (git_tx, git_rx) = std::sync::mpsc::channel();
+        ws.git_tx = Some(git_tx.clone());
+        ws.git_rx = Some(git_rx);
+
+        // Wire to all current tabs (multi-tab support).
+        for tab in &mut ws.left.tabs {
+            tab.state.git_tx = Some(git_tx.clone());
+        }
+        for tab in &mut ws.right.tabs {
+            tab.state.git_tx = Some(git_tx.clone());
+        }
 
         let mut app = App {
             ws,
@@ -386,14 +387,10 @@ impl App {
             find: None,
             smart_folders: None,
             saved_search_open: false,
-            show_git_status: session.as_ref().map_or(show_git_status, |s| s.show_git_status),
-            linked_scroll: session.as_ref().map_or(false, |s| s.linked_scroll),
             terminal_open: false,
             terminal_history: vec![],
             macro_recording: false,
             macro_steps: vec![],
-            user_tags: std::collections::HashMap::new(),
-            file_notes: std::collections::HashMap::new(),
             grid_view: false,
             dragged_tab: None,
             saved_macros: std::collections::HashMap::new(),
@@ -403,20 +400,7 @@ impl App {
             notes_open: false,
             bookmarks_open: None,
             column_config_open: false,
-            git_tx: Some(git_tx),
-            git_rx: Some(git_rx),
         };
-
-        // Wire cloned senders to panels' states for bg to send updates (channel instead of Arc<Mutex>).
-        if let Some(tx) = &app.git_tx {
-            let tx = tx.clone();
-            for tab in &mut app.ws.left.tabs {
-                tab.state.git_tx = Some(tx.clone());
-            }
-            for tab in &mut app.ws.right.tabs {
-                tab.state.git_tx = Some(tx.clone());
-            }
-        }
         app
     }
 
@@ -465,8 +449,8 @@ impl App {
             left_active: self.ws.left.active,
             right_active: self.ws.right.active,
             bookmarks: self.ws.bookmarks.clone(),
-            show_git_status: self.show_git_status,
-            linked_scroll: self.linked_scroll,
+            show_git_status: self.ws.show_git_status,
+            linked_scroll: self.ws.linked_scroll,
         }
     }
 

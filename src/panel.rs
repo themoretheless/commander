@@ -54,14 +54,14 @@ pub(crate) use watcher::start_watcher;
 // Reexports keep everything working.
 
 // === TOP 100 IDEAS, SUGGESTIONS AND PROBLEM SOLUTIONS ===
-// High priority remaining (from analysis):
-// PERF: sync git, clones/locks in render, incomplete virtual.
-// UIUX: cluttered tab bar with many buttons, painter badges.
-// ARCH: extracted Requests from Workspace (reduced struct size); update.rs still large but orchestrated.
-// SEP: UI deep into model (direct .state, raw idx), no events.
-// DESIGN: flags pattern.
-// Recent vley: ws tab helpers + Requests extraction, accessor migrations, git_status owned HashMap + mpsc channel from App for bg updates (ownership + channels replacing Arc<Mutex>).
-// From scratch: private state+events, full async (no sync git), TabManager, thin App, effects bus, no raw idx, components not painters.
+// Analysis of current (post splits):
+// PERF: sync shell git (debounced, now no double compute), dir_sizes Arc<Mutex> locks on render paths (sizes async via rayon pool), filtered views rebuild, full virtual list not used in main render (still ScrollArea+rows), ctx clones and per-frame polls.
+// UIUX: tab bar text toggles (L C G etc) + * active marker hacky, many show_* dialogs every frame, grip affordance good (dots) but drag feedback thin, preview dismiss limited, column headers partial, no strong empty states or loading for sizes/git.
+// ARCH: Workspace still god-like (pub left/right/requests/shelf/undo + direct tabs access); update.rs orchestrates 20+ dialogs; PanelState mixed (state + caches + notify + atomics); render takes many args.
+// SEP/COUPLING: even with accessors, some direct pub(crate) field use remains (esp in handlers, nav, render_tab_bar, workspace logic); raw indexing in TabSide + duplicate close logic; no events/effects, imperative mutation from everywhere; App knows deep ws details.
+// DESIGN: flags for show_*, mixed ownership (Arc<Mutex> lingering for sizes/transfer/progress, mpsc only for git).
+// Recent fixes (this влей): pub fields -> pub(crate), cursor/path/git/preview accessors+setters migrated in nav/handlers/file_list/update/workspace/preview, TabSide helpers (set/close/duplicate/len) to cut indexing, removed double git work + simple channel send, preview no cross borrow.
+// If from scratch: private fields only + query/mut fns, event bus or mpsc effects for all side (git/sizes/toast/refresh), TabManager struct (no left/right dupe+raw idx), thin App (pure wiring + egui), pure components not giant update painters, full async runtime (tokio) not rayon+shell, channels everywhere over shared mut, dedicated layout state separate from domain.
 
 pub use crate::preview::{InfoCard, PreviewContent, make_info, make_preview};
 
@@ -143,14 +143,13 @@ impl PanelState {
             None => self.set_cursor(self.cursor().min(self.filtered_count())),
         }
 
-        // Populate git status for glyphs / "G" suffix (debounced inside; called on every reload so column shows after cd/refresh).
-        // Still sync shell but protected; full off-main spawn via fs_pool is noted in git.rs for follow-up.
+        // Schedule git status in background only. Apply happens via channel message in App.
         self.refresh_git_status();
     }
 
     fn refresh_git_status(&mut self) {
-        // Delegated to small git module (SRP/DRY).
-        crate::git::refresh_git_status(&self.current_path, &mut self.git_status, &mut self.last_git_refresh, self.notify.clone(), self.git_tx.clone());
+        // Always bg now. No direct mutation here.
+        crate::git::refresh_git_status(&self.current_path, &mut self.last_git_refresh, self.notify.clone(), self.git_tx.clone());
     }
 
     /// Check if fs watcher flagged a change; if so, refresh.
