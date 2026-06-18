@@ -55,6 +55,9 @@ pub struct App {
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
     pub(crate) show_compare: bool,
+    /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
+    pub(crate) focus_mode: bool,
+    pub(crate) focus_started_at: f64,
     /// Active select-by-mask input buffer.
     pub(crate) mask_input: Option<String>,
     /// Active go-to-path input buffer.
@@ -283,6 +286,8 @@ impl App {
             type_ahead: None,
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
+            focus_mode: false,
+            focus_started_at: 0.0,
             mask_input: None,
             path_input: None,
             recent_input: None,

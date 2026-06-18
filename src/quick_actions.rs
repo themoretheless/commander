@@ -14,6 +14,7 @@ pub enum QuickAction {
     OpenPalette,
     FindFiles,
     RecentFolders,
+    FocusMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,10 +90,29 @@ pub fn actions(ctx: QuickActionContext) -> Vec<QuickActionSpec> {
             "Recent",
             "Jump to a recent folder",
         ));
+        specs.push(spec(
+            QuickAction::FocusMode,
+            "Focus",
+            "Hide chrome until pointer movement or Escape",
+        ));
     }
 
     specs.truncate(4);
     specs
+}
+
+pub fn next_hint(ctx: QuickActionContext) -> &'static str {
+    if ctx.has_filters {
+        "save or clear the active filter"
+    } else if ctx.selected_count > 1 {
+        "batch rename or shelf this selection"
+    } else if ctx.selected_count == 1 {
+        "copy name, rename, or shelf the item"
+    } else if ctx.shelf_count > 0 {
+        "drain the shelf into this folder"
+    } else {
+        "open actions or focus the panels"
+    }
 }
 
 fn spec(action: QuickAction, label: impl Into<String>, hint: &'static str) -> QuickActionSpec {
@@ -119,7 +139,8 @@ mod tests {
             vec![
                 QuickAction::OpenPalette,
                 QuickAction::FindFiles,
-                QuickAction::RecentFolders
+                QuickAction::RecentFolders,
+                QuickAction::FocusMode
             ]
         );
     }
@@ -158,6 +179,34 @@ mod tests {
                 QuickAction::ClearFilters,
                 QuickAction::OpenPalette
             ]
+        );
+    }
+
+    #[test]
+    fn next_hint_tracks_the_current_scope() {
+        assert_eq!(
+            next_hint(QuickActionContext {
+                selected_count: 2,
+                shelf_count: 0,
+                has_filters: false,
+            }),
+            "batch rename or shelf this selection"
+        );
+        assert_eq!(
+            next_hint(QuickActionContext {
+                selected_count: 0,
+                shelf_count: 4,
+                has_filters: false,
+            }),
+            "drain the shelf into this folder"
+        );
+        assert_eq!(
+            next_hint(QuickActionContext {
+                selected_count: 0,
+                shelf_count: 0,
+                has_filters: true,
+            }),
+            "save or clear the active filter"
         );
     }
 }

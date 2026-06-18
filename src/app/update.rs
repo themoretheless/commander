@@ -29,10 +29,12 @@ impl eframe::App for App {
         self.show_path_dialog(ctx);
         self.show_recent_dialog(ctx);
         self.show_palette_dialog(ctx);
-        self.show_toolbar_panel(ctx);
-        self.show_shortcut_bar(ctx);
-        self.show_shelf_tray(ctx);
-        self.show_selection_hud(ctx);
+        if !self.focus_mode {
+            self.show_toolbar_panel(ctx);
+            self.show_shortcut_bar(ctx);
+            self.show_shelf_tray(ctx);
+            self.show_selection_hud(ctx);
+        }
         self.show_main_area(ctx);
         self.show_drag_overlay(ctx);
         self.show_type_ahead_overlay(ctx);
@@ -59,6 +61,20 @@ impl App {
             || self.ws.right.preview.is_some();
         if has_animation {
             ctx.request_repaint();
+        }
+
+        if self.focus_mode {
+            let exit_focus = ctx.input(|i| {
+                crate::focus_mode::should_exit(
+                    self.focus_started_at,
+                    i.time,
+                    i.pointer.delta().length_sq(),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if exit_focus {
+                self.focus_mode = false;
+            }
         }
 
         // First frame: wire the repaint callback into both panels and do
@@ -168,7 +184,9 @@ impl App {
 
     fn show_shortcut_bar(&mut self, ctx: &egui::Context) {
         let t = self.colors;
-        let quick_actions = crate::quick_actions::actions(self.quick_action_context());
+        let quick_context = self.quick_action_context();
+        let quick_actions = crate::quick_actions::actions(quick_context);
+        let next_hint = crate::quick_actions::next_hint(quick_context);
         let max_quick_actions = if ctx.available_rect().width() < 1120.0 {
             2
         } else {
@@ -277,6 +295,9 @@ impl App {
                                             | crate::quick_actions::QuickAction::ClearSelection => {
                                                 t.accent_red.linear_multiply(0.12)
                                             }
+                                            crate::quick_actions::QuickAction::FocusMode => {
+                                                t.accent_purple.linear_multiply(0.14)
+                                            }
                                             _ => t.bg_card,
                                         };
                                         if ui
@@ -295,6 +316,14 @@ impl App {
                                             quick_action = Some(spec.action);
                                         }
                                     }
+                                }
+                                if ctx.available_rect().width() >= 1280.0 {
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        egui::RichText::new(format!("Next: {next_hint}"))
+                                            .size(11.0)
+                                            .color(t.text_muted),
+                                    );
                                 }
                             });
                         });
@@ -337,6 +366,10 @@ impl App {
             QuickAction::OpenPalette => self.ws.palette_request = true,
             QuickAction::FindFiles => self.ws.execute(crate::command::Command::BeginFind),
             QuickAction::RecentFolders => self.ws.execute(crate::command::Command::BeginRecent),
+            QuickAction::FocusMode => {
+                self.focus_mode = true;
+                self.focus_started_at = ctx.input(|i| i.time);
+            }
         }
     }
 

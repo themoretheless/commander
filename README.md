@@ -92,6 +92,19 @@ Next implementation ideas:
 9. **Compare quick select**: chips for Unique, Different, and Newer in compare mode.
 10. **Command next-best hint**: status bar suggests one likely follow-up action.
 
+Next 10 interaction ideas:
+
+1. **Saved-search chips**: surface the top smart folders next to filter facets.
+2. **Shelf lane labels**: mark staged items as Copy, Review, Archive, or Later.
+3. **Receipt center**: browse recent operation outcomes and jump to affected paths.
+4. **Undo timeline**: inspect reversible moves/renames before applying undo.
+5. **Crumb sibling menu**: open neighboring folders from a breadcrumb segment.
+6. **Conflict dry run**: preview collision decisions before starting a transfer.
+7. **Panel role badges**: label panes as Source, Target, Review, or Scratch.
+8. **Command follow-up ranking**: bias palette results toward the current context.
+9. **Selection recipe pins**: save and rerun compare/mask/facet selections.
+10. **Hover inspector lens**: show compact metadata beside the cursor row.
+
 ## Keyboard shortcuts
 
 | Key | Action |
