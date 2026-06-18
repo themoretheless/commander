@@ -5,7 +5,7 @@ use super::*;
 
 impl App {
     pub(crate) fn show_path_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.path_request) {
+        if std::mem::take(&mut self.ws.requests.path_request) {
             let current = self
                 .ws
                 .active_panel_ref()

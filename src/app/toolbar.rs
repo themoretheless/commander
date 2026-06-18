@@ -3,12 +3,12 @@ use super::*;
 impl App {
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = self.colors;
-        Frame::NONE
+        crate::app::ui_common::section_frame(&t)
             .fill(t.bg_toolbar)
             .inner_margin(Margin::symmetric(12, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // Traffic light space
+                    // Traffic light space (macOS native)
                     ui.add_space(68.0);
 
                     ui.label(
@@ -149,8 +149,9 @@ impl App {
                             )
                             .clicked()
                         {
-                            self.ws.left.refresh();
-                            self.ws.right.refresh();
+                            // PR1 tabs: refresh the (current single) active tab per side
+                            self.ws.left.tabs[self.ws.left.active].state.refresh();
+                            self.ws.right.tabs[self.ws.right.active].state.refresh();
                         }
                     });
                 });

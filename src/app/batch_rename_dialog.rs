@@ -7,7 +7,7 @@ use crate::rename::{PlanStatus, changed_count, plan_batch_rename, plan_is_applic
 
 impl App {
     pub(crate) fn show_batch_rename_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.batch_rename_request) {
+        if std::mem::take(&mut self.ws.requests.batch_rename_request) {
             // Only open when there is something to rename.
             if self.ws.batch_rename_targets().is_empty() {
                 return;

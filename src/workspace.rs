@@ -7,11 +7,24 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::command::Command;
-use crate::panel::{self, FileEntry, PanelState, PreviewContent};
+use crate::panel::{self, FileEntry, PanelState, PreviewContent, Pane};
 use crate::scan::{self, FlatList};
 use crate::transfer::{
     self, CopyMethod, OverwritePolicy, TransferKind, TransferProgress, TransferSpec, TransferState,
 };
+
+mod compare;
+pub use compare::{
+    build_compare_map, classify_entry, matching_name_paths, select_by_compare, CompareCriterion,
+    CompareMap, CompareStatus,
+};
+
+mod tab_sets;
+pub use tab_sets::{save_tab_set, restore_tab_set, TabSet};
+
+mod command_handlers;
+
+mod file_ops;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum ActivePanel {
@@ -56,12 +69,10 @@ pub enum PendingOp {
     },
 }
 
-pub struct Workspace {
-    pub left: PanelState,
-    pub right: PanelState,
-    pub active: ActivePanel,
-    pub pending_op: Option<PendingOp>,
-    pub active_transfer: Option<TransferState>,
+/// Group of fields used for UI <-> core coordination (requests, toasts, etc).
+/// Extracted to shrink the main Workspace struct (addresses large file issue).
+#[derive(Default)]
+pub(crate) struct Requests {
     /// Set by [`Command::BeginRename`]; the UI picks this up to open the
     /// inline rename editor seeded with this path, then clears it.
     pub rename_target: Option<PathBuf>,
@@ -90,6 +101,14 @@ pub struct Workspace {
     pub find_request: bool,
     /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
     pub saved_search_request: bool,
+    /// Set by [`Command::BeginBookmarks`]; the UI will open bookmarks hotlist (designer iter 2).
+    pub bookmarks_request: bool,
+    /// Set by [`Command::AssignCurrentToBookmark`]; triggers assign current path (designer iter 2).
+    pub assign_bookmark_request: bool,
+    /// For git actions to trigger toast in App (with refresh).
+    pub git_toast: Option<String>,
+    /// Request to toggle git column from command.
+    pub toggle_show_git_request: bool,
     /// Set by the Copy* commands; the UI formats the selection and copies it.
     pub clipboard_request: Option<crate::clipboard::PathStyle>,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
@@ -98,6 +117,65 @@ pub struct Workspace {
     pub drain_request: bool,
     /// Set by [`Command::CycleDensity`]; the UI cycles its list density.
     pub cycle_density_request: bool,
+}
+
+pub use crate::tabs::Tab as PanelTab;
+
+/// Helper to manage tabs on one side (left or right).
+/// Extracted to reduce duplication of indexing logic and make Workspace cleaner.
+pub struct TabSide {
+    pub tabs: Vec<PanelTab>,
+    pub active: usize,
+}
+
+impl TabSide {
+    pub fn active_tab(&self) -> &PanelTab {
+        &self.tabs[self.active]
+    }
+    pub fn active_tab_mut(&mut self) -> &mut PanelTab {
+        &mut self.tabs[self.active]
+    }
+    pub fn set_active(&mut self, i: usize) {
+        if i < self.tabs.len() {
+            self.active = i;
+        }
+    }
+    pub fn close_tab(&mut self, i: usize) {
+        if self.tabs.len() > 1 && i < self.tabs.len() {
+            self.tabs.remove(i);
+            if self.active >= self.tabs.len() {
+                self.active = self.tabs.len() - 1;
+            }
+        }
+    }
+    pub fn duplicate_active(&mut self) {
+        if let Some(curr) = self.tabs.get(self.active) {
+            let path = curr.state.current_path().clone();
+            let mut new_state = crate::panel::PanelState::new(path);
+            new_state.set_sort_col(curr.state.sort_col());
+            new_state.set_sort_order(curr.state.sort_order());
+            new_state.set_show_hidden(curr.state.show_hidden());
+            let ins = self.active + 1;
+            self.tabs.insert(ins, crate::tabs::Tab { state: new_state });
+            self.active = ins;
+        }
+    }
+}
+
+pub struct Workspace {
+    /// Left side's open tabs. Always non-empty (never zero tabs rule).
+    pub left: TabSide,
+    /// Right side's open tabs. Always non-empty.
+    pub right: TabSide,
+    pub active: ActivePanel,
+    pub pending_op: Option<PendingOp>,
+    pub active_transfer: Option<TransferState>,
+    /// UI coordination (requests, toasts, etc). Extracted to shrink Workspace struct.
+    pub requests: Requests,
+    /// Bookmarks / favorites (full per top 50: name + path, UI, hotkeys, persist).
+    pub bookmarks: Vec<crate::session::Bookmark>,
+    /// Saved tab sets (basic stub for top 50: save current tabs paths).
+    pub saved_tab_sets: Vec<(String, Vec<PathBuf>, Vec<PathBuf>)>, // name, left, right for named workspaces
     /// The drop stack: paths gathered across folders to copy in one go.
     pub shelf: crate::shelf::Shelf,
     /// Queued second copy pass (entries, target) for a two-way sync, started
@@ -111,7 +189,7 @@ pub struct Workspace {
     pending_undo_action: Option<crate::undo::Action>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
-    pub opener: Box<dyn Fn(&Path)>,
+    pub opener: std::sync::Arc<dyn Fn(&Path) + Send + Sync>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -124,90 +202,8 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
         .collect()
 }
 
-/// How an entry relates to the same-named entry in the other panel.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum CompareStatus {
-    /// Same name, size and mtime as the other panel's entry.
-    Identical,
-    /// Same name but a different size or mtime.
-    Differs,
-    /// No entry of this name in the other panel.
-    Unique,
-}
-
-/// Other-panel entries indexed by lowercase name → (size, mtime), for folder
-/// comparison. Built once per frame from a panel's loaded entries.
-pub type CompareMap = std::collections::HashMap<String, (u64, Option<std::time::SystemTime>)>;
-
-/// Index a panel's entries for comparison against the other panel.
-pub fn build_compare_map(entries: &[FileEntry]) -> CompareMap {
-    entries
-        .iter()
-        .map(|e| (e.name_lower.clone(), (e.size, e.modified)))
-        .collect()
-}
-
-/// Which entries to select when turning a folder comparison into a selection.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum CompareCriterion {
-    /// Present in the other panel but newer here (by mtime).
-    Newer,
-    /// Present in the other panel but differing in size or mtime.
-    Differing,
-    /// Absent from the other panel.
-    Unique,
-}
-
-/// Collect the paths of `entries` matching `criterion` against the other
-/// panel's [`CompareMap`]. Pure, so it can feed the selection set directly.
-pub fn select_by_compare<'a>(
-    entries: impl Iterator<Item = &'a FileEntry>,
-    other: &CompareMap,
-    criterion: CompareCriterion,
-) -> std::collections::HashSet<PathBuf> {
-    entries
-        .filter(|e| match other.get(&e.name_lower) {
-            None => criterion == CompareCriterion::Unique,
-            Some(&(size, mtime)) => match criterion {
-                CompareCriterion::Unique => false,
-                CompareCriterion::Differing => size != e.size || mtime != e.modified,
-                CompareCriterion::Newer => match (e.modified, mtime) {
-                    (Some(a), Some(b)) => a > b,
-                    _ => false,
-                },
-            },
-        })
-        .map(|e| e.path.clone())
-        .collect()
-}
-
-/// Paths among `entries` whose lowercased name appears in `names`.
-/// Pure set logic so "select files also present in the other panel" can be
-/// unit-tested without a panel or filesystem. The complement of the
-/// [`CompareCriterion::Unique`] set: name-matched regardless of size/mtime.
-pub fn matching_name_paths<'a>(
-    entries: impl Iterator<Item = &'a FileEntry>,
-    names: &std::collections::HashSet<String>,
-) -> std::collections::HashSet<PathBuf> {
-    entries
-        .filter(|e| names.contains(&e.name_lower))
-        .map(|e| e.path.clone())
-        .collect()
-}
-
-/// Classify `entry` against the other panel's [`CompareMap`].
-pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
-    match other.get(&entry.name_lower) {
-        None => CompareStatus::Unique,
-        Some(&(size, mtime)) => {
-            if size == entry.size && mtime == entry.modified {
-                CompareStatus::Identical
-            } else {
-                CompareStatus::Differs
-            }
-        }
-    }
-}
+// Compare* types and pure fns moved to src/workspace/compare.rs (SRP).
+// Reexported at top so show_main_area, select_same_named etc keep working unchanged.
 
 /// Compute (need bytes, free bytes on target, same-volume) for a transfer,
 /// used to drive the will-it-fit guard in the confirmation dialog.
@@ -273,36 +269,22 @@ impl Workspace {
         Self::with_opener(
             left,
             right,
-            Box::new(|p| {
+            std::sync::Arc::new(|p| {
                 let _ = open::that(p);
             }),
         )
     }
 
-    pub fn with_opener(left: PathBuf, right: PathBuf, opener: Box<dyn Fn(&Path)>) -> Self {
+    pub fn with_opener(left: PathBuf, right: PathBuf, opener: std::sync::Arc<dyn Fn(&Path) + Send + Sync>) -> Self {
         Workspace {
-            left: PanelState::new(left),
-            right: PanelState::new(right),
+            left: TabSide { tabs: vec![PanelTab { state: PanelState::new(left) }], active: 0 },
+            right: TabSide { tabs: vec![PanelTab { state: PanelState::new(right) }], active: 0 },
             active: ActivePanel::Left,
             pending_op: None,
             active_transfer: None,
-            rename_target: None,
-            mask_request: false,
-            path_request: false,
-            recent_request: false,
-            undo_request: false,
-            palette_request: false,
-            batch_rename_request: false,
-            sync_request: false,
-            duplicates_request: false,
-            diff_request: false,
-            treemap_request: false,
-            find_request: false,
-            saved_search_request: false,
-            clipboard_request: None,
-            redo_request: false,
-            drain_request: false,
-            cycle_density_request: false,
+            requests: Requests::default(),
+            bookmarks: vec![],
+            saved_tab_sets: vec![],
             shelf: crate::shelf::Shelf::default(),
             sync_followup: None,
             stack: crate::undo::UndoStack::default(),
@@ -313,31 +295,63 @@ impl Workspace {
 
     pub fn active_panel(&mut self) -> &mut PanelState {
         match self.active {
-            ActivePanel::Left => &mut self.left,
-            ActivePanel::Right => &mut self.right,
+            ActivePanel::Left => &mut self.left.tabs[self.left.active].state,
+            ActivePanel::Right => &mut self.right.tabs[self.right.active].state,
         }
+    }
+
+    // Using Pane trait for abstraction (reduces dupe, future for plugins).
+    pub fn active_pane(&mut self) -> &mut dyn crate::panel::Pane {
+        self.active_panel()
     }
 
     pub fn active_panel_ref(&self) -> &PanelState {
         match self.active {
-            ActivePanel::Left => &self.left,
-            ActivePanel::Right => &self.right,
+            ActivePanel::Left => &self.left.tabs[self.left.active].state,
+            ActivePanel::Right => &self.right.tabs[self.right.active].state,
         }
     }
 
     pub fn inactive_panel(&self) -> &PanelState {
         match self.active {
-            ActivePanel::Left => &self.right,
-            ActivePanel::Right => &self.left,
+            ActivePanel::Left => &self.right.tabs[self.right.active].state,
+            ActivePanel::Right => &self.left.tabs[self.left.active].state,
         }
     }
 
     pub fn inactive_panel_mut(&mut self) -> &mut PanelState {
         match self.active {
-            ActivePanel::Left => &mut self.right,
-            ActivePanel::Right => &mut self.left,
+            ActivePanel::Left => &mut self.right.tabs[self.right.active].state,
+            ActivePanel::Right => &mut self.left.tabs[self.left.active].state,
         }
     }
+
+    // Helpers to reduce raw tab indexing and coupling (arch/separation fix).
+    pub fn active_tab(&self) -> &PanelTab {
+        match self.active {
+            ActivePanel::Left => self.left.active_tab(),
+            ActivePanel::Right => self.right.active_tab(),
+        }
+    }
+
+    pub fn active_tab_mut(&mut self) -> &mut PanelTab {
+        match self.active {
+            ActivePanel::Left => self.left.active_tab_mut(),
+            ActivePanel::Right => self.right.active_tab_mut(),
+        }
+    }
+
+    pub fn inactive_tab(&self) -> &PanelTab {
+        match self.active {
+            ActivePanel::Left => self.right.active_tab(),
+            ActivePanel::Right => self.left.active_tab(),
+        }
+    }
+
+    pub fn left_active_tab(&self) -> &PanelTab { self.left.active_tab() }
+    pub fn right_active_tab(&self) -> &PanelTab { self.right.active_tab() }
+    pub fn left_active_tab_mut(&mut self) -> &mut PanelTab { self.left.active_tab_mut() }
+    pub fn right_active_tab_mut(&mut self) -> &mut PanelTab { self.right.active_tab_mut() }
 
     /// Add to the active panel's selection every visible entry whose name also
     /// exists in the inactive panel (by lowercased name). Builds on top of any
@@ -356,80 +370,65 @@ impl Workspace {
         self.active_panel().extend_selection(picks);
     }
 
+    /// Duplicate the active tab on the current side (for the + button in the tab bar).
+    /// Copies essential view settings (path, sort, hidden) and immediately refreshes
+    /// the new tab so it has content. Per Iteration 1 tabs design + current "делай".
+    pub fn duplicate_active_tab(&mut self) {
+        let side = match self.active {
+            ActivePanel::Left => &mut self.left,
+            ActivePanel::Right => &mut self.right,
+        };
+        if let Some(curr) = side.tabs.get(side.active) {
+            let path = curr.state.current_path().clone();
+            let mut new_state = PanelState::new(path);
+            new_state.set_sort_col(curr.state.sort_col());
+            new_state.set_sort_order(curr.state.sort_order());
+            new_state.set_show_hidden(curr.state.show_hidden());
+            side.tabs.push(PanelTab { state: new_state });
+            let new_idx = side.tabs.len() - 1;
+            side.active = new_idx;
+            // Load content immediately for the new tab.
+            side.tabs[new_idx].state.refresh();
+        }
+    }
+
+    // handle_tab_and_git removed: logic fully vley'd into command_handlers (SRP, no dup).
+    // Old body deleted after dispatch update; keeps code lean.
+
     // ── Command dispatch ────────────────────────────────────────────────
 
     pub fn execute(&mut self, cmd: Command) {
         match cmd {
+            // Grouped for SRP: tab/git commands handled in extracted command_handlers (full).
+            Command::NewTab | Command::CloseTab | Command::NextTab | Command::PrevTab
+            | Command::SaveTabSet | Command::RestoreTabSet | Command::ToggleShowGit
+            | Command::OpenTerminal | Command::GitDiff | Command::GitStage | Command::GitDiscard
+            | Command::ShowPermissions | Command::BrowseArchive => {
+                let _ = crate::workspace::command_handlers::handle_tab_commands(self, cmd);
+            }
             Command::SwitchPanel => {
                 self.active = match self.active {
                     ActivePanel::Left => ActivePanel::Right,
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
-            Command::CursorUp => {
-                let panel = self.active_panel();
-                if panel.cursor > 0 {
-                    panel.cursor -= 1;
-                    panel.scroll_to_cursor = true;
+            Command::CursorUp | Command::CursorDown | Command::CursorHome | Command::CursorEnd | Command::CursorPageUp | Command::CursorPageDown => {
+                if !crate::workspace::command_handlers::handle_nav_commands(self, cmd) {
+                    // fallback if needed
                 }
             }
-            Command::CursorDown => {
-                let panel = self.active_panel();
-                let max = panel.filtered_count();
-                if panel.cursor < max {
-                    panel.cursor += 1;
-                    panel.scroll_to_cursor = true;
+            Command::ExtendSelectDown | Command::ExtendSelectUp => {
+                if !crate::workspace::command_handlers::handle_selection_commands(self, cmd) {
+                    // fallback
                 }
-            }
-            Command::CursorHome => {
-                let panel = self.active_panel();
-                panel.cursor = 0;
-                panel.scroll_to_cursor = true;
-            }
-            Command::CursorEnd => {
-                let panel = self.active_panel();
-                panel.cursor = panel.filtered_count();
-                panel.scroll_to_cursor = true;
-            }
-            Command::CursorPageUp => {
-                let panel = self.active_panel();
-                let page = panel.page_rows.max(1);
-                panel.cursor = panel.cursor.saturating_sub(page);
-                panel.scroll_to_cursor = true;
-            }
-            Command::CursorPageDown => {
-                let panel = self.active_panel();
-                let page = panel.page_rows.max(1);
-                let max = panel.filtered_count();
-                panel.cursor = (panel.cursor + page).min(max);
-                panel.scroll_to_cursor = true;
-            }
-            Command::ExtendSelectDown => {
-                let panel = self.active_panel();
-                panel.select_cursor();
-                let max = panel.filtered_count();
-                if panel.cursor < max {
-                    panel.cursor += 1;
-                }
-                panel.select_cursor();
-                panel.scroll_to_cursor = true;
-            }
-            Command::ExtendSelectUp => {
-                let panel = self.active_panel();
-                panel.select_cursor();
-                if panel.cursor > 1 {
-                    panel.cursor -= 1;
-                }
-                panel.select_cursor();
-                panel.scroll_to_cursor = true;
             }
             Command::Activate => {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
-                if self.active_panel_ref().cursor == 0 {
+                if self.active_panel_ref().cursor() == 0 {
                     self.active_panel().go_up();
                 } else if let Some(entry) = {
                     let panel = self.active_panel_ref();
-                    panel.filtered_get(panel.cursor - 1).cloned()
+                    panel.filtered_get(panel.cursor() - 1).cloned()
                 } {
                     if entry.is_dir {
                         self.active_panel().navigate_to(entry.path);
@@ -443,14 +442,14 @@ impl Workspace {
             }
             Command::ToggleSelect => {
                 let panel = self.active_panel();
-                if panel.cursor > 0 {
-                    let path = panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
+                if panel.cursor() > 0 {
+                    let path = panel.filtered_get(panel.cursor() - 1).map(|e| e.path.clone());
                     if let Some(path) = path {
                         panel.toggle_select(path);
                     }
                 }
                 let max = panel.filtered_count();
-                if panel.cursor < max {
+                if panel.cursor() < max {
                     panel.cursor += 1;
                 }
             }
@@ -465,16 +464,19 @@ impl Workspace {
                             .and_then(panel::make_preview)
                     };
                     self.inactive_panel_mut().preview = preview;
+                    if self.inactive_panel_mut().preview.is_some() {
+                        self.inactive_panel_mut().preview_height = Some(180.0);
+                    }
                 }
             }
-            Command::RequestCopy => self.request_copy(),
-            Command::RequestMove => self.request_move(),
+            Command::RequestCopy | Command::RequestMove | Command::RequestDelete => {
+                let _ = crate::workspace::file_ops::handle_file_ops(self, cmd);
+            }
             Command::CreateDir => self.create_dir(),
-            Command::RequestDelete => self.request_delete(),
             Command::BeginRename => {
                 let panel = self.active_panel_ref();
-                if panel.cursor > 0 {
-                    self.rename_target =
+                if panel.cursor() > 0 {
+                    self.requests.rename_target =
                         panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
                 }
             }
@@ -483,38 +485,57 @@ impl Workspace {
                 self.inactive_panel_mut().navigate_to(target);
             }
             Command::SwapPanels => {
-                std::mem::swap(&mut self.left, &mut self.right);
+                // PR1 tabs: swap whole tab sets (including their actives); then flip which side is active
+                std::mem::swap(&mut self.left.tabs, &mut self.right.tabs);
+                std::mem::swap(&mut self.left.active, &mut self.right.active);
                 self.active = match self.active {
                     ActivePanel::Left => ActivePanel::Right,
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
-            Command::BeginBatchRename => self.batch_rename_request = true,
-            Command::BeginSync => self.sync_request = true,
-            Command::FindDuplicates => self.duplicates_request = true,
-            Command::DiffFiles => self.diff_request = true,
-            Command::DiskTreemap => self.treemap_request = true,
-            Command::BeginFind => self.find_request = true,
-            Command::OpenSavedSearch => self.saved_search_request = true,
+            Command::BeginBatchRename => self.requests.batch_rename_request = true,
+            Command::BeginSync => self.requests.sync_request = true,
+            Command::FindDuplicates => self.requests.duplicates_request = true,
+            Command::DiffFiles => self.requests.diff_request = true,
+            Command::DiskTreemap => self.requests.treemap_request = true,
+            Command::BeginFind => self.requests.find_request = true,
+            Command::OpenSavedSearch => self.requests.saved_search_request = true,
+            Command::BeginBookmarks => {
+                self.requests.bookmarks_request = true;
+                // Basic functional: jump to last (full picker/hotkeys/persist per top 50).
+                if let Some(p) = self.bookmarks.last().map(|b| b.path.clone()) {
+                    self.active_panel().navigate_to(p);
+                }
+            }
+            Command::AssignCurrentToBookmark => {
+                self.requests.assign_bookmark_request = true;
+                let p = self.active_panel_ref().current_path.clone();
+                if !self.bookmarks.iter().any(|b| b.path == p) {
+                    let name = p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| p.to_string_lossy().into_owned());
+                    self.bookmarks.push(crate::session::Bookmark { name, path: p });
+                }
+            }
             Command::CopyPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
+                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
             }
             Command::CopyName => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly)
+                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly)
             }
             Command::CopyParentPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::ParentPath)
+                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::ParentPath)
             }
             Command::CopyFileUrl => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::FileUrl)
+                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::FileUrl)
             }
             Command::CopyShellPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::ShellEscaped)
+                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::ShellEscaped)
             }
             Command::CopyRelativePath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::RelativeToOther)
+                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::RelativeToOther)
             }
-            Command::CycleDensity => self.cycle_density_request = true,
+            Command::CycleDensity => self.requests.cycle_density_request = true,
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
                     .active_panel_ref()
@@ -526,21 +547,21 @@ impl Workspace {
             }
             Command::ShelfDrain => {
                 if !self.shelf.is_empty() {
-                    self.drain_request = true;
+                    self.requests.drain_request = true;
                 }
             }
-            Command::BeginSelectMask => self.mask_request = true,
-            Command::BeginGoToPath => self.path_request = true,
-            Command::BeginRecent => self.recent_request = true,
-            Command::BeginPalette => self.palette_request = true,
+            Command::BeginSelectMask => self.requests.mask_request = true,
+            Command::BeginGoToPath => self.requests.path_request = true,
+            Command::BeginRecent => self.requests.recent_request = true,
+            Command::BeginPalette => self.requests.palette_request = true,
             Command::Undo => {
                 if self.stack.can_undo() {
-                    self.undo_request = true;
+                    self.requests.undo_request = true;
                 }
             }
             Command::Redo => {
                 if self.stack.can_redo() {
-                    self.redo_request = true;
+                    self.requests.redo_request = true;
                 }
             }
             Command::ToggleInfo => self.toggle_info(),
@@ -549,7 +570,7 @@ impl Workspace {
             Command::SelectSameNamed => self.select_same_named(),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
-                panel.show_hidden = !panel.show_hidden;
+                panel.set_show_hidden(!panel.show_hidden());
                 panel.refresh();
             }
         }
@@ -594,11 +615,13 @@ impl Workspace {
         let Some(PendingOp::Transfer(tr)) = &self.pending_op else {
             return Vec::new();
         };
-        // The destination listing is whichever loaded panel shows the target.
-        let dest: &[FileEntry] = if self.left.current_path == tr.target {
-            &self.left.entries
-        } else if self.right.current_path == tr.target {
-            &self.right.entries
+        // PR1 tabs: destination is the active tab on the side whose current path matches target (or empty).
+        let left = &self.left;
+        let right = &self.right;
+        let dest: &[FileEntry] = if left.tabs[left.active].state.current_path() == &tr.target {
+            left.tabs[left.active].state.entries()
+        } else if right.tabs[right.active].state.current_path() == &tr.target {
+            right.tabs[right.active].state.entries()
         } else {
             &[]
         };
@@ -696,8 +719,9 @@ impl Workspace {
             return false;
         }
         self.active_transfer = None;
-        self.left.refresh();
-        self.right.refresh();
+        // PR1: refresh active tab per side (post-op)
+        self.left.tabs[self.left.active].state.refresh();
+        self.right.tabs[self.right.active].state.refresh();
         // Record the move on the history stack on a clean run.
         if clean {
             if let Some(action) = self.pending_undo_action.take() {
@@ -745,8 +769,9 @@ impl Workspace {
             }
             crate::undo::Action::BatchRename { dir, pairs } => {
                 let _ = Self::rename_pairs_staged(&dir, &pairs);
-                self.left.refresh();
-                self.right.refresh();
+                // PR1 tabs
+                self.left.tabs[self.left.active].state.refresh();
+                self.right.tabs[self.right.active].state.refresh();
             }
         }
     }
@@ -820,8 +845,9 @@ impl Workspace {
             Some(PendingOp::Delete { .. }) => {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
                     Self::exec_delete(&entries);
-                    self.left.refresh();
-                    self.right.refresh();
+                    // PR1 tabs
+                    self.left.tabs[self.left.active].state.refresh();
+                    self.right.tabs[self.right.active].state.refresh();
                 }
             }
             Some(PendingOp::Transfer(_)) => {
@@ -841,8 +867,9 @@ impl Workspace {
             }
         });
         let _ = std::fs::create_dir(&path);
-        self.left.refresh();
-        self.right.refresh();
+        // PR1: refresh active tab per side (post-op)
+        self.left.tabs[self.left.active].state.refresh();
+        self.right.tabs[self.right.active].state.refresh();
     }
 
     /// Rename `old` to `new_name` in the same directory. Validates against the
@@ -983,8 +1010,9 @@ impl Workspace {
                 n += 1;
             }
         }
-        self.left.refresh();
-        self.right.refresh();
+        // PR1: refresh active tab per side (post-op)
+        self.left.tabs[self.left.active].state.refresh();
+        self.right.tabs[self.right.active].state.refresh();
         n
     }
 
@@ -1059,8 +1087,7 @@ impl Workspace {
         if let Some(name) = name
             && let Some(idx) = panel.filtered_entries().iter().position(|e| e.name == name)
         {
-            panel.cursor = idx + 1;
-            panel.scroll_to_cursor = true;
+            panel.set_cursor_and_scroll(idx + 1);
         }
     }
 
@@ -1141,7 +1168,7 @@ impl Workspace {
         &self,
         policy: crate::sync::SyncPolicy,
     ) -> Vec<crate::sync::SyncAction> {
-        crate::sync::sync_diff(&self.left.entries, &self.right.entries, policy)
+        crate::sync::sync_diff(&self.left.tabs[self.left.active].state.entries, &self.right.tabs[self.right.active].state.entries, policy)
     }
 
     /// Resolve and start a synchronisation plan: copy each `ToRight` row's left
@@ -1164,20 +1191,20 @@ impl Workspace {
             let nl = a.name.to_lowercase();
             match a.direction {
                 SyncDirection::ToRight => {
-                    if let Some(e) = lookup(&self.left.entries, &nl) {
+                    if let Some(e) = lookup(&self.left.tabs[self.left.active].state.entries, &nl) {
                         to_right.push(e);
                     }
                 }
                 SyncDirection::ToLeft => {
-                    if let Some(e) = lookup(&self.right.entries, &nl) {
+                    if let Some(e) = lookup(&self.right.tabs[self.right.active].state.entries, &nl) {
                         to_left.push(e);
                     }
                 }
                 SyncDirection::Skip => {}
             }
         }
-        let right_dir = self.right.current_path.clone();
-        let left_dir = self.left.current_path.clone();
+        let right_dir = self.right.tabs[self.right.active].state.current_path.clone();
+        let left_dir = self.left.tabs[self.left.active].state.current_path.clone();
 
         if !to_right.is_empty() {
             if !to_left.is_empty() {
@@ -1238,10 +1265,11 @@ impl Workspace {
     /// cursor. The preview is cached by path: while the cursor stays on
     /// the same file nothing touches the filesystem.
     pub fn sync_preview(&mut self) {
-        let (source, target) = if self.right.preview.is_some() {
-            (&self.left, &mut self.right)
-        } else if self.left.preview.is_some() {
-            (&self.right, &mut self.left)
+        // PR1 tabs (per design review subsection): only active tab per side can drive visible preview.
+        let (source, target) = if self.right.tabs[self.right.active].state.preview.is_some() {
+            (&self.left.tabs[self.left.active].state, &mut self.right.tabs[self.right.active].state)
+        } else if self.left.tabs[self.left.active].state.preview.is_some() {
+            (&self.right.tabs[self.right.active].state, &mut self.left.tabs[self.left.active].state)
         } else {
             return;
         };
@@ -1271,10 +1299,10 @@ impl Workspace {
             return;
         }
         let panel = self.active_panel_ref();
-        if panel.cursor == 0 {
+        if panel.cursor() == 0 {
             return;
         }
-        let Some(entry) = panel.filtered_get(panel.cursor - 1).cloned() else {
+        let Some(entry) = panel.filtered_get(panel.cursor() - 1).cloned() else {
             return;
         };
         let dir_size = if entry.is_dir {
@@ -1296,7 +1324,7 @@ impl Workspace {
             None
         };
         let card = panel::make_info(&entry, dir_size, children);
-        self.inactive_panel_mut().preview = Some(PreviewContent::Info(card));
+        self.inactive_panel_mut().set_preview_content(Some(PreviewContent::Info(card)), Some(180.0));
     }
 
     // ── Drag and drop ───────────────────────────────────────────────────
@@ -1354,10 +1382,11 @@ impl Workspace {
     /// itself (drag onto its own subdirectory) takes priority over the other
     /// panel; otherwise the other panel's current directory is the target.
     fn take_drop_plan(&mut self) -> Option<(Vec<PathBuf>, PathBuf)> {
-        let (source, other) = if !self.left.drag_entries.is_empty() {
-            (&mut self.left, &mut self.right)
-        } else if !self.right.drag_entries.is_empty() {
-            (&mut self.right, &mut self.left)
+        // PR1: drag from the active tab of the side that has drag_entries
+        let (source, other) = if !self.left.tabs[self.left.active].state.drag_entries.is_empty() {
+            (&mut self.left.tabs[self.left.active].state, &mut self.right.tabs[self.right.active].state)
+        } else if !self.right.tabs[self.right.active].state.drag_entries.is_empty() {
+            (&mut self.right.tabs[self.right.active].state, &mut self.left.tabs[self.left.active].state)
         } else {
             return None;
         };
@@ -1386,10 +1415,11 @@ mod tests {
         let mut ws = Workspace::with_opener(
             left.path().to_path_buf(),
             right.path().to_path_buf(),
-            Box::new(|_| {}),
+            std::sync::Arc::new(|_| {}),
         );
-        ws.left.refresh();
-        ws.right.refresh();
+        // PR1 tabs model: refresh the initial (only) tab per side
+        ws.left.tabs[0].state.refresh();
+        ws.right.tabs[0].state.refresh();
         ws
     }
 
@@ -1421,12 +1451,12 @@ mod tests {
     fn equalize_points_inactive_panel_at_active_dir() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let mut ws = workspace(&l, &r);
-        assert_ne!(ws.left.current_path, ws.right.current_path);
+        assert_ne!(ws.left.tabs[0].state.current_path, ws.right.tabs[0].state.current_path);
 
         // Active is Left; equalize sends Right to Left's directory.
         ws.execute(Command::EqualizePanels);
-        assert_eq!(ws.right.current_path, l.path());
-        assert_eq!(ws.left.current_path, l.path());
+        assert_eq!(ws.right.tabs[0].state.current_path, l.path());
+        assert_eq!(ws.left.tabs[0].state.current_path, l.path());
     }
 
     #[test]
@@ -1434,14 +1464,14 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
 
         ws.execute(Command::SwapPanels);
 
         // Left's content (and cursor) is now on the right, and focus follows.
-        assert_eq!(ws.right.current_path, l.path());
-        assert_eq!(ws.left.current_path, r.path());
-        assert_eq!(ws.right.cursor, 1);
+        assert_eq!(ws.right.tabs[0].state.current_path, l.path());
+        assert_eq!(ws.left.tabs[0].state.current_path, r.path());
+        assert_eq!(ws.right.tabs[0].state.cursor, 1);
         assert!(ws.active == ActivePanel::Right);
     }
 
@@ -1453,12 +1483,12 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         ws.execute(Command::CursorUp);
-        assert_eq!(ws.left.cursor, 0, "cursor must not go below 0");
+        assert_eq!(ws.left.tabs[0].state.cursor, 0, "cursor must not go below 0");
 
         for _ in 0..10 {
             ws.execute(Command::CursorDown);
         }
-        assert_eq!(ws.left.cursor, 2, "cursor must stop at the last entry");
+        assert_eq!(ws.left.tabs[0].state.cursor, 2, "cursor must stop at the last entry");
     }
 
     #[test]
@@ -1468,19 +1498,19 @@ mod tests {
             l.file(&format!("f{n:02}.txt"), "x");
         }
         let mut ws = workspace(&l, &r);
-        ws.left.page_rows = 5;
+        ws.left.tabs[0].state.page_rows = 5;
 
         ws.execute(Command::CursorEnd);
-        assert_eq!(ws.left.cursor, 20, "End jumps to the last row");
+        assert_eq!(ws.left.tabs[0].state.cursor, 20, "End jumps to the last row");
 
         ws.execute(Command::CursorHome);
-        assert_eq!(ws.left.cursor, 0, "Home jumps to the top");
+        assert_eq!(ws.left.tabs[0].state.cursor, 0, "Home jumps to the top");
 
         ws.execute(Command::CursorPageDown);
-        assert_eq!(ws.left.cursor, 5, "PageDown moves by one page");
+        assert_eq!(ws.left.tabs[0].state.cursor, 5, "PageDown moves by one page");
 
         ws.execute(Command::CursorPageUp);
-        assert_eq!(ws.left.cursor, 0, "PageUp moves back, clamped at 0");
+        assert_eq!(ws.left.tabs[0].state.cursor, 0, "PageUp moves back, clamped at 0");
     }
 
     #[test]
@@ -1491,12 +1521,12 @@ mod tests {
         l.file("c.txt", "x");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1; // a.txt
+        ws.left.tabs[0].state.cursor = 1; // a.txt
         ws.execute(Command::ExtendSelectDown); // select a, move to b, select b
         ws.execute(Command::ExtendSelectDown); // select b, move to c, select c
 
-        assert_eq!(ws.left.cursor, 3);
-        assert_eq!(ws.left.selected.len(), 3, "a, b and c are selected");
+        assert_eq!(ws.left.tabs[0].state.cursor, 3);
+        assert_eq!(ws.left.tabs[0].state.selected.len(), 3, "a, b and c are selected");
     }
 
     #[test]
@@ -1506,10 +1536,10 @@ mod tests {
         l.file("sub/inner.txt", "x");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1; // dirs sort first, so "sub" is the first row
+        ws.left.tabs[0].state.cursor = 1; // dirs sort first, so "sub" is the first row
         ws.execute(Command::Activate);
-        assert_eq!(ws.left.current_path, sub);
-        assert_eq!(ws.left.entries.len(), 1);
+        assert_eq!(ws.left.tabs[0].state.current_path, sub);
+        assert_eq!(ws.left.tabs[0].state.entries.len(), 1);
     }
 
     #[test]
@@ -1521,13 +1551,13 @@ mod tests {
         let mut ws = Workspace::with_opener(
             l.path().to_path_buf(),
             r.path().to_path_buf(),
-            Box::new(move |_| {
+            std::sync::Arc::new(move |_| {
                 opened2.fetch_add(1, Ordering::Relaxed);
             }),
         );
-        ws.left.refresh();
+        ws.left.tabs[0].state.refresh();
 
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
         ws.execute(Command::Activate);
         assert_eq!(opened.load(Ordering::Relaxed), 1);
     }
@@ -1538,7 +1568,7 @@ mod tests {
         l.file("a.txt", "hello");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
         ws.execute(Command::RequestCopy);
         assert!(matches!(ws.pending_op, Some(PendingOp::Transfer(_))));
 
@@ -1557,7 +1587,7 @@ mod tests {
         l.file("a.txt", "hello");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
         ws.execute(Command::RequestMove);
         ws.confirm_pending_op(|| {});
         wait_transfer(&mut ws);
@@ -1575,7 +1605,7 @@ mod tests {
         l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
         ws.execute(Command::RequestDelete);
         match &ws.pending_op {
             Some(PendingOp::Delete { entries, .. }) => {
@@ -1697,12 +1727,12 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         // A pre-existing manual pick must survive the union.
-        ws.left.selected.insert(only_here.clone());
+        ws.left.tabs[0].state.selected.insert(only_here.clone());
         ws.select_same_named();
 
-        assert!(ws.left.selected.contains(&shared), "common name selected");
-        assert!(ws.left.selected.contains(&only_here), "prior pick kept");
-        assert_eq!(ws.left.selected.len(), 2, "no spurious selections");
+        assert!(ws.left.tabs[0].state.selected.contains(&shared), "common name selected");
+        assert!(ws.left.tabs[0].state.selected.contains(&only_here), "prior pick kept");
+        assert_eq!(ws.left.tabs[0].state.selected.len(), 2, "no spurious selections");
     }
 
     #[test]
@@ -1712,8 +1742,8 @@ mod tests {
         l.file("b.txt", "2");
         l.file("keep.log", "3"); // not selected
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("a.txt"));
-        ws.left.selected.insert(l.path().join("b.txt"));
+        ws.left.tabs[0].state.selected.insert(l.path().join("a.txt"));
+        ws.left.tabs[0].state.selected.insert(l.path().join("b.txt"));
 
         let rule = crate::rename::RenameRule {
             prefix: "x_".into(),
@@ -1729,7 +1759,7 @@ mod tests {
             "non-selected untouched"
         );
         assert!(
-            ws.left.selected.is_empty(),
+            ws.left.tabs[0].state.selected.is_empty(),
             "selection cleared after rename"
         );
     }
@@ -1740,8 +1770,8 @@ mod tests {
         l.file("report_v1.txt", "a");
         l.file("report_v2.txt", "b");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("report_v1.txt"));
-        ws.left.selected.insert(l.path().join("report_v2.txt"));
+        ws.left.tabs[0].state.selected.insert(l.path().join("report_v1.txt"));
+        ws.left.tabs[0].state.selected.insert(l.path().join("report_v2.txt"));
 
         // "v1" -> "v2" maps report_v1 onto report_v2's name while report_v2
         // stays put: a duplicate/sibling collision, so the plan is rejected.
@@ -1843,8 +1873,8 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         // Two selected in the active panel -> that pair.
-        ws.left.selected.insert(a.clone());
-        ws.left.selected.insert(b.clone());
+        ws.left.tabs[0].state.selected.insert(a.clone());
+        ws.left.tabs[0].state.selected.insert(b.clone());
         let (x, y) = ws.diff_targets().unwrap();
         let names: Vec<String> = [&x, &y]
             .iter()
@@ -1853,8 +1883,8 @@ mod tests {
         assert!(names.contains(&"a.txt".to_string()) && names.contains(&"b.txt".to_string()));
 
         // One selected -> pair with the same-named file in the other panel.
-        ws.left.selected.clear();
-        ws.left.selected.insert(a.clone());
+        ws.left.tabs[0].state.selected.clear();
+        ws.left.tabs[0].state.selected.insert(a.clone());
         let (x, y) = ws.diff_targets().unwrap();
         assert_eq!(y, a, "active file is the second target");
         assert_eq!(x, r.path().join("a.txt"), "other-panel same name is first");
@@ -1914,7 +1944,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let f = l.file("doc.txt", "data");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
 
         ws.execute(Command::RequestMove);
         ws.confirm_pending_op(|| {});
@@ -1949,8 +1979,8 @@ mod tests {
         l.file("a.txt", "1");
         l.file("b.txt", "2");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("a.txt"));
-        ws.left.selected.insert(l.path().join("b.txt"));
+        ws.left.tabs[0].state.selected.insert(l.path().join("a.txt"));
+        ws.left.tabs[0].state.selected.insert(l.path().join("b.txt"));
 
         let rule = crate::rename::RenameRule {
             prefix: "x_".into(),
@@ -2032,10 +2062,10 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let f = l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
 
         ws.execute(Command::BeginRename);
-        assert_eq!(ws.rename_target.as_deref(), Some(f.as_path()));
+        assert_eq!(ws.requests.rename_target.as_deref(), Some(f.as_path()));
     }
 
     #[test]
@@ -2043,7 +2073,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let f = l.file("old.txt", "data");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.tabs[0].state.cursor = 1;
 
         ws.commit_rename(&f, "new.txt").unwrap();
 
@@ -2052,7 +2082,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&renamed).unwrap(), "data");
         // Cursor follows the renamed file by path.
         assert_eq!(
-            ws.left.filtered_get(ws.left.cursor - 1).unwrap().name,
+            ws.left.tabs[0].state.filtered_get(ws.left.tabs[0].state.cursor - 1).unwrap().name,
             "new.txt"
         );
     }
@@ -2091,8 +2121,8 @@ mod tests {
 
         // Dragging within the left panel onto its own subdirectory:
         // the right panel must not steal the drop.
-        ws.left.drag_entries = vec![file.clone()];
-        ws.left.drop_target = Some(sub.clone());
+        ws.left.tabs[0].state.drag_entries = vec![file.clone()];
+        ws.left.tabs[0].state.drop_target = Some(sub.clone());
         ws.drop_dragged(|| {});
         wait_transfer(&mut ws);
 
@@ -2101,7 +2131,7 @@ mod tests {
             "file lands in the hovered subdir"
         );
         assert!(!r.path().join("a.txt").exists());
-        assert!(ws.left.drag_entries.is_empty());
+        assert!(ws.left.tabs[0].state.drag_entries.is_empty());
     }
 
     #[test]
@@ -2111,17 +2141,17 @@ mod tests {
         l.file("b.txt", "beta");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1; // a.txt
+        ws.left.tabs[0].state.cursor = 1; // a.txt
         ws.execute(Command::TogglePreview);
-        match &ws.right.preview {
+        match &ws.right.tabs[0].state.preview {
             Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "alpha"),
             _ => panic!("expected text preview for a.txt"),
         }
 
         // Preview follows the cursor.
-        ws.left.cursor = 2; // b.txt
+        ws.left.tabs[0].state.cursor = 2; // b.txt
         ws.sync_preview();
-        match &ws.right.preview {
+        match &ws.right.tabs[0].state.preview {
             Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "beta"),
             _ => panic!("expected text preview for b.txt"),
         }
@@ -2131,7 +2161,7 @@ mod tests {
         // the preview).
         std::fs::remove_file(l.path().join("b.txt")).unwrap();
         ws.sync_preview();
-        match &ws.right.preview {
+        match &ws.right.tabs[0].state.preview {
             Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "beta"),
             _ => panic!("preview must survive while the cursor is unchanged"),
         }
@@ -2143,7 +2173,7 @@ mod tests {
         let file = l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
 
-        ws.left.drag_entries = vec![file];
+        ws.left.tabs[0].state.drag_entries = vec![file];
         ws.drop_dragged(|| {});
         wait_transfer(&mut ws);
 
@@ -2158,7 +2188,7 @@ mod tests {
         r.file("a.txt", "old");
         let mut ws = workspace(&l, &r);
 
-        ws.left.drag_entries = vec![file];
+        ws.left.tabs[0].state.drag_entries = vec![file];
         ws.drop_dragged(|| {});
 
         // A conflicting drop must NOT move immediately; it stages a

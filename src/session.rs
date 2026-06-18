@@ -6,7 +6,18 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct TabSnapshot {
+    pub path: PathBuf,
+    pub sort_col: SortColumn,
+    pub sort_order: SortOrder,
+    pub hidden: bool,
+}
+
+pub use crate::bookmarks::Bookmark;
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Session {
+    // Legacy single-path for sessions before tabs (PR2). Kept for compat; new saves populate both.
     pub left_path: PathBuf,
     pub right_path: PathBuf,
     pub active_left: bool,
@@ -31,10 +42,29 @@ pub struct Session {
     /// Monotonic counter stamped onto each palette command run.
     #[serde(default)]
     pub palette_tick: u64,
+    // Tabs (per side) - PR2 from iter1 design. Legacy sessions synthesize 1-tab vecs.
+    #[serde(default)]
+    pub left_tabs: Vec<TabSnapshot>,
+    #[serde(default)]
+    pub right_tabs: Vec<TabSnapshot>,
+    #[serde(default)]
+    pub left_active: usize,
+    #[serde(default)]
+    pub right_active: usize,
+    /// Bookmarks / favorites (full UI/hotkeys in progress; basic functional + persist per top needed).
+    #[serde(default)]
+    pub bookmarks: Vec<Bookmark>,
+    /// Git column on/off persisted (column custom from ideas).
+    #[serde(default)]
+    pub show_git_status: bool,
+    /// Linked scroll (idea).
+    #[serde(default)]
+    pub linked_scroll: bool,
 }
 
 impl Session {
     /// Panel paths that still exist as directories, falling back to `home`.
+    /// PR2 tabs: if tabs vecs present use the active one's path (or first); else legacy.
     pub fn sanitized_paths(&self, home: &Path) -> (PathBuf, PathBuf) {
         let pick = |p: &Path| {
             if p.is_dir() {
@@ -43,7 +73,19 @@ impl Session {
                 home.to_path_buf()
             }
         };
-        (pick(&self.left_path), pick(&self.right_path))
+        let left = if !self.left_tabs.is_empty() {
+            let idx = if self.left_active < self.left_tabs.len() { self.left_active } else { 0 };
+            &self.left_tabs[idx].path
+        } else {
+            &self.left_path
+        };
+        let right = if !self.right_tabs.is_empty() {
+            let idx = if self.right_active < self.right_tabs.len() { self.right_active } else { 0 };
+            &self.right_tabs[idx].path
+        } else {
+            &self.right_path
+        };
+        (pick(left), pick(right))
     }
 }
 
@@ -99,6 +141,13 @@ mod tests {
             density: crate::density::Density::Compact,
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 7,
+            left_tabs: vec![],
+            right_tabs: vec![],
+            left_active: 0,
+            right_active: 0,
+            bookmarks: vec![],
+            show_git_status: true,
+            linked_scroll: false,
         }
     }
 

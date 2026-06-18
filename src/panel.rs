@@ -1,756 +1,97 @@
-use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
-/// On-disk entry: mtime as seconds+nanos since UNIX epoch, and size.
-#[derive(Serialize, Deserialize)]
-struct CacheEntry {
-    mtime_secs: u64,
-    mtime_nanos: u32,
-    size: u64,
-}
+mod entry;
+mod filter;
+mod sizes;
+mod nav;
+mod fs;
+mod watcher;
+mod columns;
+mod sort;
+mod recent;
+mod selection;
+mod pane;
+mod state;
 
-fn cache_path() -> PathBuf {
-    let dir = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("commander");
-    let _ = fs::create_dir_all(&dir);
-    dir.join("dir_sizes.json")
-}
+pub use entry::{FileEntry, format_size};
+pub use filter::{glob_match, parse_mask, KindFacet, FacetSet, facet_matches};
+pub use sizes::entry_display_size;
+pub use nav::{go_back, go_forward, go_up, navigate_to, type_ahead};
+pub use fs::{classify_dir, DirStatus};
+pub use columns::{active_columns, column_width, ColumnConfig, FileColumn, GitColumn, NameColumn};
+pub use sort::{set_sort, sort_entries, sort_indicator, SortColumn, SortOrder};
+pub use recent::{filter_visited, push_visit, record_visit, visited_paths};
+pub use selection::{select_all, select_by_mask, selected_entries, selected_or_cursor, toggle_select, total_size_selected};
+pub use pane::Pane;
+pub(crate) use filter::FilterCache;
+pub(crate) use filter::term_matches;
+pub(crate) use fs::read_dir;
+pub(crate) use sizes::{dir_size_cache, walk_log, WALK_COOLDOWN, WALK_EXPENSIVE, fs_pool, invalidate_size_cache, flush_cache};
+pub use watcher::poll_fs_changes;
+pub(crate) use watcher::start_watcher;
 
-/// Global cache: path → (mtime, size).
-/// Loaded from disk on first access, saved on every update.
-fn dir_size_cache() -> &'static Mutex<HashMap<PathBuf, (SystemTime, u64)>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, u64)>>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        let map = load_cache_from_disk();
-        Mutex::new(map)
-    })
-}
+// Recent/visited logic moved to src/panel/recent.rs (SRP for Cmd+P history, separate from panel nav).
 
-fn load_cache_from_disk() -> HashMap<PathBuf, (SystemTime, u64)> {
-    let path = cache_path();
-    let Ok(data) = fs::read_to_string(&path) else {
-        return HashMap::new();
-    };
-    let Ok(entries): Result<HashMap<PathBuf, CacheEntry>, _> = serde_json::from_str(&data) else {
-        return HashMap::new();
-    };
-    entries
-        .into_iter()
-        .map(|(p, e)| {
-            let mtime =
-                std::time::UNIX_EPOCH + std::time::Duration::new(e.mtime_secs, e.mtime_nanos);
-            (p, (mtime, e.size))
-        })
-        .collect()
-}
+// DirStatus, classify_dir now come from pub use fs::... (extracted to panel/fs.rs for SRP)
 
-/// When each directory was last size-walked and how long the walk took.
-/// Shared across panels. Guards against the watcher-noise feedback loop:
-/// system writes deep in huge dirs (e.g. ~/Library) keep invalidating
-/// their cached size, and re-walking them on every event burns CPU/disk
-/// forever. Recently-walked dirs wait out a cooldown; dirs whose walk is
-/// expensive are only re-walked on an explicit refresh.
-fn walk_log() -> &'static Mutex<HashMap<PathBuf, (std::time::Instant, std::time::Duration)>> {
-    static LOG: OnceLock<Mutex<HashMap<PathBuf, (std::time::Instant, std::time::Duration)>>> =
-        OnceLock::new();
-    LOG.get_or_init(|| Mutex::new(HashMap::new()))
-}
+// Structure note (SOLID/DRY split for understandability in small pieces):
+// panel/ now has focused modules:
+// - entry.rs (row model + icons/sizes)
+// - filter.rs (facets, glob, mask matching, cache)
+// - sizes.rs (dir size caches, walk guards, fs_pool, flush/invalidate)
+// - nav.rs (history, navigate, go up/back/forward, type-ahead)
+// - fs.rs (read_dir, classify, subdirs)
+// - watcher.rs (notify watcher + poll for reload/sizes)
+// - columns.rs (FileColumn trait + Git/Name impls for future customization)
+// - sort.rs
+// - recent.rs
+// - selection.rs
+// Main panel.rs is thinner coordinator + PanelState.
+// Compare to other editors: this mirrors how mc/FAR/TC split their "panel model" concerns.
+// Reexports keep everything working.
 
-const WALK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
-const WALK_EXPENSIVE: std::time::Duration = std::time::Duration::from_secs(2);
+// === TOP 100 IDEAS, SUGGESTIONS AND PROBLEM SOLUTIONS ===
+// High priority remaining (from analysis):
+// PERF: sync git, clones/locks in render, incomplete virtual.
+// UIUX: cluttered tab bar with many buttons, painter badges.
+// ARCH: extracted Requests from Workspace (reduced struct size); update.rs still large but orchestrated.
+// SEP: UI deep into model (direct .state, raw idx), no events.
+// DESIGN: flags pattern.
+// Recent vley: ws tab helpers + Requests extraction, accessor migrations, git_status owned HashMap + mpsc channel from App for bg updates (ownership + channels replacing Arc<Mutex>).
+// From scratch: private state+events, full async (no sync git), TabManager, thin App, effects bus, no raw idx, components not painters.
 
-#[cfg(test)]
-pub(crate) fn reset_walk_log() {
-    if let Ok(mut log) = walk_log().lock() {
-        log.clear();
-    }
-}
+pub use crate::preview::{InfoCard, PreviewContent, make_info, make_preview};
 
-/// Session-wide most-recent-first list of visited directories (for the
-/// Cmd+P quick switcher), distinct from each panel's linear history.
-fn visited_log() -> &'static Mutex<Vec<PathBuf>> {
-    static V: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
-    V.get_or_init(|| Mutex::new(Vec::new()))
-}
+// glob_match moved to src/panel/filter.rs (see reexport at top of this file)
 
-const VISITED_CAP: usize = 50;
+// parse_mask moved to src/panel/filter.rs (reexported at top)
 
-/// Push `path` to the front of `list`, de-duplicating and capping. Pure, so
-/// the ordering logic is unit-testable without the global.
-pub fn push_visit(list: &mut Vec<PathBuf>, path: &Path, cap: usize) {
-    list.retain(|p| p != path);
-    list.insert(0, path.to_path_buf());
-    list.truncate(cap);
-}
+// term_matches moved to src/panel/filter.rs (internal to filter, called via reexported logic)
 
-/// Record a visit to `path` in the global recent list.
-pub fn record_visit(path: &Path) {
-    if let Ok(mut v) = visited_log().lock() {
-        push_visit(&mut v, path, VISITED_CAP);
-    }
-}
+// entry_display_size moved to sizes.rs (public reexport at top of panel)
 
-/// Snapshot of recently visited directories, most recent first.
-pub fn visited_paths() -> Vec<PathBuf> {
-    visited_log().lock().map(|v| v.clone()).unwrap_or_default()
-}
-
-/// Filter visited paths by a case-insensitive substring over the full path.
-pub fn filter_visited(paths: &[PathBuf], query: &str) -> Vec<PathBuf> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
-        return paths.to_vec();
-    }
-    paths
-        .iter()
-        .filter(|p| p.to_string_lossy().to_lowercase().contains(&q))
-        .cloned()
-        .collect()
-}
-
-/// Mark cached sizes stale for every directory that contains `path`.
-/// A change at `path` (watcher event) makes all its ancestors' sizes stale,
-/// even though their mtimes don't move (mtime only reflects direct children).
-/// The size value is kept (still useful for display); the stored mtime is
-/// reset to the epoch so the next mtime comparison can never match.
-pub fn invalidate_size_cache(path: &Path) {
-    if let Ok(mut cache) = dir_size_cache().lock() {
-        for (dir, entry) in cache.iter_mut() {
-            if path.starts_with(dir) {
-                entry.0 = std::time::UNIX_EPOCH;
-            }
-        }
-    }
-}
-
-/// Save current cache to disk (best-effort, called from background threads).
-/// Prunes entries for paths that no longer exist and writes atomically
-/// (temp file + rename) so a crash can't corrupt the cache.
-pub fn flush_cache() {
-    let entries: HashMap<PathBuf, CacheEntry> = {
-        let Ok(mut cache) = dir_size_cache().lock() else {
-            return;
-        };
-        cache.retain(|p, _| p.exists());
-        cache
-            .iter()
-            .filter_map(|(p, (mtime, size))| {
-                let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-                Some((
-                    p.clone(),
-                    CacheEntry {
-                        mtime_secs: dur.as_secs(),
-                        mtime_nanos: dur.subsec_nanos(),
-                        size: *size,
-                    },
-                ))
-            })
-            .collect()
-        // Lock dropped here: serialization and IO happen outside it.
-    };
-    if let Ok(json) = serde_json::to_string(&entries) {
-        let path = cache_path();
-        let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, json).is_ok() {
-            let _ = fs::rename(&tmp, &path);
-        }
-    }
-}
-
-/// Why a directory listing is the way it is, so an empty list can be told
-/// apart from an unreadable or vanished directory.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DirStatus {
-    /// Read succeeded and there are entries.
-    Listed,
-    /// Read succeeded but the directory is empty.
-    Empty,
-    /// Permission denied.
-    Denied,
-    /// The directory no longer exists.
-    Gone,
-}
-
-/// Classify a directory read for UI messaging. `is_empty` is whether the
-/// listing came back with zero entries.
-pub fn classify_dir(path: &Path, is_empty: bool) -> DirStatus {
-    match fs::read_dir(path) {
-        Ok(_) => {
-            if is_empty {
-                DirStatus::Empty
-            } else {
-                DirStatus::Listed
-            }
-        }
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => DirStatus::Gone,
-            _ => DirStatus::Denied,
-        },
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FileEntry {
-    pub name: String,
-    pub name_lower: String,
-    pub path: PathBuf,
-    pub is_dir: bool,
-    pub size: u64,
-    pub extension: String,
-    pub modified: Option<std::time::SystemTime>,
-    /// Pre-formatted date string (rendered every frame, formatted once).
-    pub modified_str: String,
-    /// Pre-formatted size string for files ("…" for dirs).
-    pub size_str: String,
-}
-
-impl FileEntry {
-    /// Build an entry from a path and its (already fetched) metadata.
-    pub fn from_meta(path: PathBuf, meta: &fs::Metadata) -> Option<Self> {
-        let name = path.file_name()?.to_string_lossy().to_string();
-        let is_dir = meta.is_dir();
-        let size = if is_dir { 0 } else { meta.len() };
-        let extension = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        let modified = meta.modified().ok();
-        let modified_str = match modified {
-            Some(time) => {
-                let datetime: chrono::DateTime<chrono::Local> = time.into();
-                datetime.format("%d %b %y  %H:%M").to_string()
-            }
-            None => "–".to_string(),
-        };
-        let size_str = if is_dir {
-            "…".to_string()
-        } else {
-            format_size(size)
-        };
-        let name_lower = name.to_lowercase();
-        Some(FileEntry {
-            name,
-            name_lower,
-            path,
-            is_dir,
-            size,
-            extension,
-            modified,
-            modified_str,
-            size_str,
-        })
-    }
-
-    pub fn is_image(&self) -> bool {
-        self.is_static_image() || self.is_video()
-    }
-
-    pub fn is_static_image(&self) -> bool {
-        matches!(
-            self.extension.as_str(),
-            "png"
-                | "jpg"
-                | "jpeg"
-                | "gif"
-                | "bmp"
-                | "webp"
-                | "svg"
-                | "ico"
-                | "heic"
-                | "heif"
-                | "tiff"
-                | "tif"
-                | "dng"
-                | "cr2"
-                | "cr3"
-                | "nef"
-                | "arw"
-                | "orf"
-                | "raf"
-                | "rw2"
-                | "pef"
-                | "srw"
-        )
-    }
-
-    pub fn is_video(&self) -> bool {
-        matches!(
-            self.extension.as_str(),
-            "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "wmv" | "flv"
-        )
-    }
-
-    pub fn icon(&self) -> &str {
-        if self.is_dir {
-            return "📁";
-        }
-        match self.extension.as_str() {
-            "rs" => "🦀",
-            "py" => "🐍",
-            "js" | "ts" | "jsx" | "tsx" => "🟨",
-            "html" | "css" | "scss" => "🌐",
-            "json" | "toml" | "yaml" | "yml" | "xml" => "⚙️",
-            "md" | "txt" | "rtf" | "doc" | "docx" => "📄",
-            "pdf" => "📕",
-            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" => "🖼️",
-            "mp4" | "mov" | "avi" | "mkv" | "webm" => "🎬",
-            "mp3" | "wav" | "flac" | "aac" | "ogg" => "🎵",
-            "zip" | "tar" | "gz" | "7z" | "rar" | "bz2" | "xz" => "📦",
-            "sh" | "bash" | "zsh" | "fish" => "💻",
-            "exe" | "dmg" | "app" | "msi" => "⚡",
-            "swift" => "🐦",
-            "go" => "🐹",
-            "java" | "kt" => "☕",
-            "c" | "cpp" | "h" | "hpp" => "🔧",
-            "lock" => "🔒",
-            _ => "📄",
-        }
-    }
-
-    pub fn size_display(&self) -> &str {
-        &self.size_str
-    }
-
-    pub fn size_display_with_dir_size(&self, dir_sizes: &HashMap<PathBuf, u64>) -> String {
-        if self.is_dir
-            && let Some(&size) = dir_sizes.get(&self.path)
-        {
-            return format_size(size);
-        }
-        self.size_str.clone()
-    }
-
-    pub fn modified_display(&self) -> &str {
-        &self.modified_str
-    }
-}
-
-pub fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PreviewContent {
-    Image(PathBuf),
-    Text { path: PathBuf, content: String },
-    Info(InfoCard),
-}
-
-/// Precomputed metadata card for the Get-Info inspector (display-only).
-#[derive(Debug, Clone, PartialEq)]
-pub struct InfoCard {
-    pub name: String,
-    pub path: String,
-    pub kind: String,
-    pub size: String,
-    pub children: Option<usize>,
-    pub modified: String,
-    pub permissions: String,
-}
-
-/// Format the low 9 bits of a unix mode as "rwxr-xr-x".
-pub fn format_mode(mode: u32) -> String {
-    let mut s = String::with_capacity(9);
-    for shift in [6, 3, 0] {
-        let triplet = (mode >> shift) & 0o7;
-        s.push(if triplet & 0o4 != 0 { 'r' } else { '-' });
-        s.push(if triplet & 0o2 != 0 { 'w' } else { '-' });
-        s.push(if triplet & 0o1 != 0 { 'x' } else { '-' });
-    }
-    s
-}
-
-/// Build a Get-Info card for `entry`. `dir_size`/`children` come from the
-/// panel's already-computed maps (None while still measuring).
-pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usize>) -> InfoCard {
-    let kind = if entry.is_dir {
-        "Folder".to_string()
-    } else if entry.extension.is_empty() {
-        "Document".to_string()
-    } else {
-        format!("{} file", entry.extension.to_uppercase())
-    };
-    let size = if entry.is_dir {
-        dir_size.map_or_else(|| "\u{2026}".to_string(), format_size)
-    } else {
-        format_size(entry.size)
-    };
-    let permissions = {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(&entry.path)
-            .map(|m| format_mode(m.permissions().mode()))
-            .unwrap_or_else(|_| "---------".to_string())
-    };
-    InfoCard {
-        name: entry.name.clone(),
-        path: entry.path.display().to_string(),
-        kind,
-        size,
-        children: if entry.is_dir { children } else { None },
-        modified: entry.modified_str.clone(),
-        permissions,
-    }
-}
-
-/// Create preview content for a file entry (image marker or text body).
-pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
-    if entry.is_dir {
-        return None;
-    }
-    if entry.is_image() {
-        Some(PreviewContent::Image(entry.path.clone()))
-    } else {
-        // Try to read as text (limit to 1MB)
-        let Ok(meta) = fs::metadata(&entry.path) else {
-            return None;
-        };
-        if meta.len() > 1024 * 1024 {
-            return None; // Too large
-        }
-        let Ok(content) = fs::read_to_string(&entry.path) else {
-            return None;
-        };
-        Some(PreviewContent::Text {
-            path: entry.path.clone(),
-            content,
-        })
-    }
-}
-
-/// Glob match supporting `*` (any run) and `?` (one char). Inputs are
-/// expected lowercased; matching is greedy with backtracking.
-pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let (mut star, mut mark) = (None, 0usize);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
-}
-
-/// Parse a select-by-mask line into `(term, is_subtract)` pairs. Terms are
-/// comma-separated; a leading `!` or `-` marks subtraction. Terms are
-/// lowercased for case-insensitive matching.
-pub fn parse_mask(mask: &str) -> Vec<(String, bool)> {
-    mask.split(',')
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(
-            |t| match t.strip_prefix('!').or_else(|| t.strip_prefix('-')) {
-                Some(rest) => (rest.trim().to_lowercase(), true),
-                None => (t.to_lowercase(), false),
-            },
-        )
-        .collect()
-}
-
-/// Whether a single lowercased `term` matches an entry. A term with no
-/// wildcard and no `.` matches by extension ("jpg" selects all *.jpg);
-/// otherwise it is globbed against the full name.
-fn term_matches(term: &str, name_lower: &str, ext: &str) -> bool {
-    let wild = term.contains('*') || term.contains('?');
-    if !wild && !term.contains('.') {
-        return ext == term;
-    }
-    glob_match(term, name_lower)
-}
-
-/// Size used for the occupancy bar: a file's own size, or a directory's
-/// resolved recursive size (0 while it is still being measured).
-pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) -> u64 {
-    if entry.is_dir {
-        dir_sizes.get(&entry.path).copied().unwrap_or(0)
-    } else {
-        entry.size
-    }
-}
-
-/// Natural ("human") ordering: runs of digits compare by numeric value, so
-/// "file2" sorts before "file10". Non-digit runs compare by char. Inputs are
-/// expected pre-lowercased (we sort on `name_lower`).
-pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < a.len() && j < b.len() {
-        let (ca, cb) = (a[i], b[j]);
-        if ca.is_ascii_digit() && cb.is_ascii_digit() {
-            let si = i;
-            while i < a.len() && a[i].is_ascii_digit() {
-                i += 1;
-            }
-            let sj = j;
-            while j < b.len() && b[j].is_ascii_digit() {
-                j += 1;
-            }
-            // Compare by numeric value: drop leading zeros, then longer run
-            // wins, then lexically; finally fewer leading zeros sorts first.
-            let va = strip_leading_zeros(&a[si..i]);
-            let vb = strip_leading_zeros(&b[sj..j]);
-            let ord = va
-                .len()
-                .cmp(&vb.len())
-                .then_with(|| va.iter().cmp(vb.iter()))
-                .then_with(|| (i - si).cmp(&(j - sj)));
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        } else {
-            match ca.cmp(&cb) {
-                Ordering::Equal => {
-                    i += 1;
-                    j += 1;
-                }
-                ord => return ord,
-            }
-        }
-    }
-    // One ran out: the shorter string sorts first.
-    (a.len() - i).cmp(&(b.len() - j))
-}
-
-fn strip_leading_zeros(s: &[char]) -> &[char] {
-    let mut k = 0;
-    while k + 1 < s.len() && s[k] == '0' {
-        k += 1;
-    }
-    &s[k..]
-}
+// natural_cmp, strip_leading_zeros, Sort* moved to src/panel/sort.rs (reexported)
 
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
-/// A category facet for the quick-filter chips.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KindFacet {
-    Folders,
-    Images,
-    Docs,
-    Archives,
-    Code,
-}
+// KindFacet, FacetSet, facet_matches moved to src/panel/filter.rs (reexported).
+// The filter chips in render and mask/select logic continue to work via the reexports.
 
-/// Active quick-filter facets, ANDed with the substring filter. Default is
-/// "no facets" (everything passes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FacetSet {
-    pub kind: Option<KindFacet>,
-    /// Minimum file size in bytes (folders are not filtered by size).
-    pub min_size: Option<u64>,
-    /// Maximum age in days by mtime (entries with unknown mtime fail this).
-    pub max_age_days: Option<u64>,
-}
+// FilterCache definition moved to src/panel/filter.rs (pub(crate) reexport at top keeps the field type and stale() call working in PanelState).
 
-impl FacetSet {
-    pub fn is_empty(&self) -> bool {
-        self.kind.is_none() && self.min_size.is_none() && self.max_age_days.is_none()
-    }
-}
+// SortColumn, SortOrder reexported from sort.rs
 
-/// Whether `entry` passes all active facets, relative to `now`. Pure.
-pub fn facet_matches(entry: &FileEntry, facets: &FacetSet, now: SystemTime) -> bool {
-    if let Some(kind) = facets.kind {
-        let ok = match kind {
-            KindFacet::Folders => entry.is_dir,
-            KindFacet::Images => entry.is_image(),
-            KindFacet::Docs => matches!(
-                entry.extension.as_str(),
-                "pdf" | "txt" | "md" | "rtf" | "doc" | "docx" | "pages" | "odt" | "tex"
-            ),
-            KindFacet::Archives => matches!(
-                entry.extension.as_str(),
-                "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "xz" | "zst"
-            ),
-            KindFacet::Code => matches!(
-                entry.extension.as_str(),
-                "rs" | "py"
-                    | "js"
-                    | "ts"
-                    | "jsx"
-                    | "tsx"
-                    | "c"
-                    | "cpp"
-                    | "h"
-                    | "hpp"
-                    | "go"
-                    | "java"
-                    | "kt"
-                    | "swift"
-                    | "rb"
-                    | "php"
-                    | "sh"
-                    | "toml"
-                    | "json"
-                    | "yaml"
-                    | "yml"
-            ),
-        };
-        if !ok {
-            return false;
-        }
-    }
-    if let Some(min) = facets.min_size {
-        // Folders are not filtered by size (their byte size is 0 here).
-        if !entry.is_dir && entry.size < min {
-            return false;
-        }
-    }
-    if let Some(days) = facets.max_age_days {
-        let Some(modified) = entry.modified else {
-            return false;
-        };
-        let cutoff = std::time::Duration::from_secs(days * 24 * 60 * 60);
-        match now.duration_since(modified) {
-            Ok(age) if age <= cutoff => {}
-            Ok(_) => return false,
-            // modified in the future: treat as fresh (passes).
-            Err(_) => {}
-        }
-    }
-    true
-}
-
-/// Cached filtered view: indices into `entries` matching `query` and facets.
-/// Valid while `generation`, `query` and `facets` are unchanged.
-struct FilterCache {
-    generation: u64,
-    query: String,
-    facets: FacetSet,
-    indices: Vec<usize>,
-}
-
-impl FilterCache {
-    fn stale() -> Self {
-        FilterCache {
-            generation: u64::MAX, // sentinel: never computed
-            query: String::new(),
-            facets: FacetSet::default(),
-            indices: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum SortColumn {
-    Name,
-    Size,
-    Modified,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum SortOrder {
-    Asc,
-    Desc,
-}
-
-pub struct PanelState {
-    pub current_path: PathBuf,
-    pub entries: Vec<FileEntry>,
-    /// Selected entries, keyed by path so selection survives
-    /// filtering, sorting and directory refreshes.
-    pub selected: std::collections::HashSet<PathBuf>,
-    pub cursor: usize,
-    pub scroll_to_cursor: bool,
-    /// Why the current listing is empty/non-empty (for the empty-state UI).
-    pub dir_status: DirStatus,
-    /// Visible rows in the list viewport, set by the renderer each frame and
-    /// read by PageUp/PageDown. Zero until the panel has been drawn once.
-    pub page_rows: usize,
-    pub preview: Option<PreviewContent>,
-    pub history: Vec<PathBuf>,
-    pub history_pos: usize,
-    pub search_query: String,
-    /// Active quick-filter facets, ANDed with the substring filter.
-    pub facets: FacetSet,
-    pub sort_col: SortColumn,
-    pub sort_order: SortOrder,
-    pub show_hidden: bool,
-    pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
-    pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
-    notify: Option<Notify>,
-    pub drag_entries: Vec<PathBuf>,
-    pub drop_target: Option<PathBuf>,
-    pub needs_refresh: Arc<std::sync::atomic::AtomicBool>,
-    /// Set by deep watcher events: directory sizes need recomputing,
-    /// but the listing itself is unchanged.
-    sizes_dirty: Arc<std::sync::atomic::AtomicBool>,
-    last_sizes_recompute: Option<std::time::Instant>,
-    /// Bumped whenever `entries` content or order changes.
-    entries_gen: u64,
-    filter_cache: std::cell::RefCell<FilterCache>,
-    watcher: Option<notify::RecommendedWatcher>,
-    watched_path: Option<PathBuf>,
-}
+// PanelState extracted to state.rs for SRP (data model in small piece).
+pub use state::PanelState;
 
 impl PanelState {
-    /// Create a panel pointed at `path`. The directory is NOT read yet:
-    /// call [`refresh`](Self::refresh) (the UI does this when wiring the
-    /// notify callback on the first frame).
-    pub fn new(path: PathBuf) -> Self {
-        PanelState {
-            current_path: path.clone(),
-            entries: Vec::new(),
-            selected: std::collections::HashSet::new(),
-            cursor: 0,
-            scroll_to_cursor: false,
-            dir_status: DirStatus::Empty,
-            page_rows: 0,
-            preview: None,
-            history: vec![path],
-            history_pos: 0,
-            search_query: String::new(),
-            facets: FacetSet::default(),
-            sort_col: SortColumn::Name,
-            sort_order: SortOrder::Asc,
-            show_hidden: false,
-            dir_sizes: Arc::new(Mutex::new(HashMap::new())),
-            dir_counts: Arc::new(Mutex::new(HashMap::new())),
-            notify: None,
-            drag_entries: Vec::new(),
-            drop_target: None,
-            needs_refresh: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            last_sizes_recompute: None,
-            entries_gen: 0,
-            filter_cache: std::cell::RefCell::new(FilterCache::stale()),
-            watcher: None,
-            watched_path: None,
-        }
-    }
+
+
 
     /// Wire the UI wake-up callback and restart the watcher so its
     /// notifications reach the UI.
@@ -784,8 +125,9 @@ impl PanelState {
             None
         };
 
-        self.entries = Self::read_dir(&self.current_path, self.show_hidden);
-        self.dir_status = classify_dir(&self.current_path, self.entries.is_empty());
+        let ents = Self::read_dir(&self.current_path, self.show_hidden);
+        self.set_entries(ents);
+        self.set_dir_status(classify_dir(&self.current_path(), self.entries().is_empty()));
         self.sort_entries();
 
         {
@@ -797,9 +139,18 @@ impl PanelState {
         let restored = cursor_path
             .and_then(|path| self.filtered_entries().iter().position(|e| e.path == path));
         match restored {
-            Some(idx) => self.cursor = idx + 1,
-            None => self.cursor = self.cursor.min(self.filtered_count()),
+            Some(idx) => self.set_cursor_and_scroll(idx + 1),
+            None => self.set_cursor(self.cursor().min(self.filtered_count())),
         }
+
+        // Populate git status for glyphs / "G" suffix (debounced inside; called on every reload so column shows after cd/refresh).
+        // Still sync shell but protected; full off-main spawn via fs_pool is noted in git.rs for follow-up.
+        self.refresh_git_status();
+    }
+
+    fn refresh_git_status(&mut self) {
+        // Delegated to small git module (SRP/DRY).
+        crate::git::refresh_git_status(&self.current_path, &mut self.git_status, &mut self.last_git_refresh, self.notify.clone(), self.git_tx.clone());
     }
 
     /// Check if fs watcher flagged a change; if so, refresh.
@@ -807,85 +158,11 @@ impl PanelState {
     /// Deep events (below the watched dir) only recompute directory
     /// sizes, debounced so event floods during transfers don't thrash.
     pub fn poll_fs_changes(&mut self) -> bool {
-        const SIZES_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
-
-        let reload = self
-            .needs_refresh
-            .swap(false, std::sync::atomic::Ordering::Relaxed);
-        if reload {
-            self.reload_entries();
-            let retry = self.compute_dir_sizes(true);
-            self.sizes_dirty
-                .store(retry, std::sync::atomic::Ordering::Relaxed);
-            self.last_sizes_recompute = Some(std::time::Instant::now());
-            return true;
-        }
-
-        if self.sizes_dirty.load(std::sync::atomic::Ordering::Relaxed) {
-            let due = self
-                .last_sizes_recompute
-                .is_none_or(|t| t.elapsed() >= SIZES_DEBOUNCE);
-            if due {
-                self.last_sizes_recompute = Some(std::time::Instant::now());
-                // Keep the dirty flag when some dir is still in its walk
-                // cooldown: a later poll picks it up.
-                let retry = self.compute_dir_sizes(false);
-                self.sizes_dirty
-                    .store(retry, std::sync::atomic::Ordering::Relaxed);
-            } else if let Some(wake) = &self.notify {
-                // Poll again on a later frame once the debounce expires.
-                wake();
-            }
-        }
-        false
+        watcher::poll_fs_changes(self)
     }
 
     fn start_watcher(&mut self) {
-        use notify::{Event, RecursiveMode, Watcher};
-
-        // Skip if already watching this path
-        if self.watched_path.as_ref() == Some(&self.current_path) {
-            return;
-        }
-
-        // Drop old watcher
-        self.watcher = None;
-        self.watched_path = None;
-
-        let flag = Arc::clone(&self.needs_refresh);
-        let sizes_flag = Arc::clone(&self.sizes_dirty);
-        let wake = self.notify.clone();
-        let watched = self.current_path.clone();
-
-        let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                // A change anywhere under a cached directory makes its
-                // size stale, even though its own mtime doesn't move.
-                let mut direct = event.paths.is_empty();
-                for p in &event.paths {
-                    invalidate_size_cache(p);
-                    if p == &watched || p.parent() == Some(watched.as_path()) {
-                        direct = true;
-                    }
-                }
-                if direct {
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                } else {
-                    sizes_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                if let Some(wake) = &wake {
-                    wake();
-                }
-            }
-        });
-
-        if let Ok(mut w) = watcher {
-            // Recursive: deep events never reload the listing, but they
-            // must invalidate cached sizes (see the callback above).
-            let _ = w.watch(&self.current_path, RecursiveMode::Recursive);
-            self.watched_path = Some(self.current_path.clone());
-            self.watcher = Some(w);
-        }
+        watcher::start_watcher(self);
     }
 
     /// Schedule background recomputation of subdirectory sizes and counts.
@@ -894,372 +171,65 @@ impl PanelState {
     /// Returns `true` when some dir was skipped because of the walk
     /// cooldown and the caller should retry later.
     fn compute_dir_sizes(&self, forced: bool) -> bool {
-        // Clear panel-local sizes and counts for current directory listing
-        if let Ok(mut sizes) = self.dir_sizes.lock() {
-            sizes.clear();
-        }
-        if let Ok(mut counts) = self.dir_counts.lock() {
-            counts.clear();
-        }
-
-        // Collect dirs that need background work
-        let mut need_count: Vec<PathBuf> = Vec::new();
-        let mut need_size: Vec<(PathBuf, Option<SystemTime>)> = Vec::new();
-        let mut retry = false;
-
-        for entry in &self.entries {
-            if !entry.is_dir {
-                continue;
-            }
-
-            need_count.push(entry.path.clone());
-
-            let dir_mtime = fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
-
-            // Check global cache: if mtime matches, reuse cached size
-            if let Some(mtime) = dir_mtime
-                && let Ok(cache) = dir_size_cache().lock()
-                && let Some(&(cached_mtime, cached_size)) = cache.get(&entry.path)
-                && cached_mtime == mtime
-            {
-                if let Ok(mut sizes) = self.dir_sizes.lock() {
-                    sizes.insert(entry.path.clone(), cached_size);
-                }
-                continue;
-            }
-
-            // Walk-log guards (see walk_log docs).
-            // In test builds the guards can be switched off via env to
-            // benchmark the unguarded behaviour (profiling harness).
-            #[cfg(test)]
-            let guards_enabled = std::env::var("COMMANDER_DISABLE_WALK_GUARDS").is_err();
-            #[cfg(not(test))]
-            let guards_enabled = true;
-
-            let mut skip = false;
-            if guards_enabled
-                && let Ok(log) = walk_log().lock()
-                && let Some(&(when, cost)) = log.get(&entry.path)
-            {
-                if when.elapsed() < WALK_COOLDOWN {
-                    skip = true;
-                    retry = true;
-                } else if !forced && cost > WALK_EXPENSIVE {
-                    skip = true;
-                }
-            }
-            if skip {
-                // Keep showing the last known size instead of "…".
-                if let Ok(cache) = dir_size_cache().lock()
-                    && let Some(&(_, cached_size)) = cache.get(&entry.path)
-                    && let Ok(mut sizes) = self.dir_sizes.lock()
-                {
-                    sizes.insert(entry.path.clone(), cached_size);
-                }
-                continue;
-            }
-
-            need_size.push((entry.path.clone(), dir_mtime));
-        }
-
-        // Dedicated thread pool (max 10 threads) for filesystem work
-        fn fs_pool() -> &'static rayon::ThreadPool {
-            static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-            POOL.get_or_init(|| {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(10)
-                    .thread_name(|i| format!("fs-worker-{}", i))
-                    .build()
-                    .unwrap()
-            })
-        }
-
-        // Subdir counts
-        let counts = Arc::clone(&self.dir_counts);
-        let wake1 = self.notify.clone();
-        fs_pool().spawn(move || {
-            use rayon::prelude::*;
-            let results: Vec<_> = fs_pool().install(|| {
-                need_count
-                    .par_iter()
-                    .map(|p| {
-                        let count = fs::read_dir(p)
-                            .map(|rd| rd.filter_map(|e| e.ok()).count())
-                            .unwrap_or(0);
-                        (p.clone(), count)
-                    })
-                    .collect()
-            });
-            if let Ok(mut map) = counts.lock() {
-                for (p, c) in results {
-                    map.insert(p, c);
-                }
-            }
-            if let Some(wake) = wake1 {
-                wake();
-            }
-        });
-
-        // Dir sizes
-        if !need_size.is_empty() {
-            let sizes = Arc::clone(&self.dir_sizes);
-            let wake2 = self.notify.clone();
-            fs_pool().spawn(move || {
-                use rayon::prelude::*;
-                let results: Vec<_> = fs_pool().install(|| {
-                    need_size
-                        .par_iter()
-                        .map(|(p, mt)| {
-                            let started = std::time::Instant::now();
-                            let size = crate::fs_util::dir_size_recursive(p);
-                            if let Ok(mut log) = walk_log().lock() {
-                                log.insert(
-                                    p.clone(),
-                                    (std::time::Instant::now(), started.elapsed()),
-                                );
-                            }
-                            (p.clone(), *mt, size)
-                        })
-                        .collect()
-                });
-                if let Ok(mut map) = sizes.lock() {
-                    for (p, _, size) in &results {
-                        map.insert(p.clone(), *size);
-                    }
-                }
-                if let Ok(mut cache) = dir_size_cache().lock() {
-                    for (p, mt, size) in &results {
-                        if let Some(mt) = mt {
-                            cache.insert(p.clone(), (*mt, *size));
-                        }
-                    }
-                }
-                flush_cache();
-                if let Some(wake) = wake2 {
-                    wake();
-                }
-            });
-        }
-
-        retry
+        sizes::compute_dir_sizes(self, forced)
     }
 
     fn read_dir(path: &Path, show_hidden: bool) -> Vec<FileEntry> {
-        jwalk::WalkDir::new(path)
-            .max_depth(1)
-            .skip_hidden(!show_hidden)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.depth() == 1) // skip the root dir itself
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                FileEntry::from_meta(e.path(), &meta)
-            })
-            .collect()
+        fs::read_dir(path, show_hidden)
     }
 
     pub fn sort_entries(&mut self) {
-        let col = self.sort_col;
-        let order = self.sort_order;
-
-        self.entries.sort_by(|a, b| {
-            // Dirs always first
-            match (a.is_dir, b.is_dir) {
-                (true, false) => return Ordering::Less,
-                (false, true) => return Ordering::Greater,
-                _ => {}
-            }
-
-            let cmp = match col {
-                // Natural order over the precomputed lowercase name, so
-                // "file2" sorts before "file10".
-                SortColumn::Name => natural_cmp(&a.name_lower, &b.name_lower),
-                SortColumn::Size => a.size.cmp(&b.size),
-                SortColumn::Modified => a.modified.cmp(&b.modified),
-            };
-
-            match order {
-                SortOrder::Asc => cmp,
-                SortOrder::Desc => cmp.reverse(),
-            }
-        });
-        // Content/order changed: filtered indices must be rebuilt.
-        self.entries_gen = self.entries_gen.wrapping_add(1);
+        sort::sort_entries(self);
     }
 
     pub fn navigate_to(&mut self, path: PathBuf) {
-        // Trim forward history when navigating to a new path
-        if self.history_pos + 1 < self.history.len() {
-            self.history.truncate(self.history_pos + 1);
-        }
-        self.history.push(path.clone());
-        self.history_pos = self.history.len() - 1;
-        record_visit(&path);
-        self.current_path = path;
-        self.search_query.clear();
-        self.refresh();
+        nav::navigate_to(self, path);
     }
 
     pub fn go_up(&mut self) {
-        // Remember the directory we are leaving so the cursor can land on it
-        // in the parent (classic dual-pane behaviour).
-        let child = self
-            .current_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string());
-        if let Some(parent) = self.current_path.parent().map(|p| p.to_path_buf()) {
-            self.navigate_to(parent);
-            if let Some(name) = child
-                && let Some(idx) = self.filtered_entries().iter().position(|e| e.name == name)
-            {
-                self.cursor = idx + 1;
-                self.scroll_to_cursor = true;
-            }
-        }
+        nav::go_up(self);
     }
 
-    /// Move the cursor to the first filtered entry whose name matches `buffer`
-    /// (prefix first, then substring), both lowercased. Returns whether a
-    /// match was found. Drives type-to-jump navigation.
     pub fn type_ahead(&mut self, buffer: &str) -> bool {
-        if buffer.is_empty() {
-            return false;
-        }
-        let q = buffer.to_lowercase();
-        let pos = {
-            let entries = self.filtered_entries();
-            entries
-                .iter()
-                .position(|e| e.name_lower.starts_with(&q))
-                .or_else(|| entries.iter().position(|e| e.name_lower.contains(&q)))
-        };
-        if let Some(idx) = pos {
-            self.cursor = idx + 1;
-            self.scroll_to_cursor = true;
-            true
-        } else {
-            false
-        }
+        nav::type_ahead(self, buffer)
     }
 
     /// Apply a select-by-mask line to the selection over the filtered view:
     /// add terms select matching entries, `!`/`-` terms deselect them
     /// (subtraction wins per entry). Returns how many entries were added.
     pub fn select_by_mask(&mut self, mask: &str) -> usize {
-        let terms = parse_mask(mask);
-        if terms.is_empty() {
-            return 0;
-        }
-        let mut decisions: Vec<(PathBuf, bool)> = Vec::new();
-        for e in self.filtered_entries() {
-            let add = terms
-                .iter()
-                .any(|(t, sub)| !sub && term_matches(t, &e.name_lower, &e.extension));
-            let rem = terms
-                .iter()
-                .any(|(t, sub)| *sub && term_matches(t, &e.name_lower, &e.extension));
-            if rem {
-                decisions.push((e.path.clone(), false));
-            } else if add {
-                decisions.push((e.path.clone(), true));
-            }
-        }
-        let mut added = 0;
-        for (path, is_add) in decisions {
-            if is_add {
-                self.selected.insert(path);
-                added += 1;
-            } else {
-                self.selected.remove(&path);
-            }
-        }
-        added
+        selection::select_by_mask(self, mask)
     }
 
     /// How many filtered entries any term of `mask` matches (live preview,
     /// no mutation).
     pub fn mask_match_count(&self, mask: &str) -> usize {
-        let terms = parse_mask(mask);
-        if terms.is_empty() {
-            return 0;
-        }
-        self.filtered_entries()
-            .iter()
-            .filter(|e| {
-                terms
-                    .iter()
-                    .any(|(t, _)| term_matches(t, &e.name_lower, &e.extension))
-            })
-            .count()
+        selection::mask_match_count(self, mask)
     }
 
     /// Add the file under the cursor to the selection (range-select step).
     pub fn select_cursor(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        if let Some(path) = self.filtered_get(self.cursor - 1).map(|e| e.path.clone()) {
-            self.selected.insert(path);
-        }
+        selection::select_cursor(self);
     }
 
     pub fn can_go_back(&self) -> bool {
-        self.history_pos > 0
+        nav::can_go_back(self)
     }
 
     pub fn can_go_forward(&self) -> bool {
-        self.history_pos + 1 < self.history.len()
+        nav::can_go_forward(self)
     }
 
     pub fn go_back(&mut self) {
-        if self.can_go_back() {
-            self.history_pos -= 1;
-            self.current_path = self.history[self.history_pos].clone();
-            self.search_query.clear();
-            self.refresh();
-        }
+        nav::go_back(self);
     }
 
     pub fn go_forward(&mut self) {
-        if self.can_go_forward() {
-            self.history_pos += 1;
-            self.current_path = self.history[self.history_pos].clone();
-            self.search_query.clear();
-            self.refresh();
-        }
+        nav::go_forward(self);
     }
 
-    /// Rebuild the cached filtered indices if entries or query changed.
-    /// A warm cache costs two comparisons; the string matching over all
-    /// entries runs only when something actually changed.
     fn ensure_filter_cache(&self) {
-        let mut cache = self.filter_cache.borrow_mut();
-        if cache.generation == self.entries_gen
-            && cache.query == self.search_query
-            && cache.facets == self.facets
-        {
-            return;
-        }
-        cache.generation = self.entries_gen;
-        cache.query = self.search_query.clone();
-        cache.facets = self.facets;
-        cache.indices.clear();
-
-        // Fuzzy subsequence match (shared with the command palette), so "scn"
-        // narrows to "scanner.rs". This is more permissive than a substring
-        // filter; the sort order is left untouched (we narrow, never reorder).
-        let query = self.search_query.as_str();
-        let facets = self.facets;
-        let no_facets = facets.is_empty();
-        let now = SystemTime::now();
-        cache.indices.extend(
-            self.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| crate::fuzzy::is_match(query, &e.name))
-                .filter(|(_, e)| no_facets || facet_matches(e, &facets, now))
-                .map(|(i, _)| i),
-        );
+        filter::ensure_filter_cache(self);
     }
 
     /// Number of entries matching the current filter (no allocation).
@@ -1289,163 +259,48 @@ impl PanelState {
     }
 
     pub fn toggle_select(&mut self, path: PathBuf) {
-        if !self.selected.remove(&path) {
-            self.selected.insert(path);
-        }
+        selection::toggle_select(self, path);
     }
 
     pub fn select_all(&mut self) {
-        let all: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .map(|e| e.path.clone())
-            .collect();
-        let all_selected =
-            self.selected.len() == all.len() && all.iter().all(|p| self.selected.contains(p));
-        if all_selected {
-            self.selected.clear();
-        } else {
-            self.selected = all.into_iter().collect();
-        }
+        selection::select_all(self);
     }
 
-    /// Flip selection membership across the filtered view: selected entries
-    /// become unselected and vice versa. Entries hidden by the current filter
-    /// keep their state, so an invert respects what the user can actually see.
     pub fn invert_selection(&mut self) {
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .map(|e| e.path.clone())
-            .collect();
-        for p in paths {
-            if !self.selected.remove(&p) {
-                self.selected.insert(p);
-            }
-        }
+        selection::invert_selection(self);
     }
 
-    /// Add `paths` to the current selection, keeping any existing picks.
-    /// Used by relationship-based selectors (e.g. "select files also in the
-    /// other panel") so selections compose instead of replacing each other.
     pub fn extend_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
-        self.selected.extend(paths);
+        selection::extend_selection(self, paths);
     }
 
     pub fn selected_entries(&self) -> Vec<FileEntry> {
-        self.filtered_entries()
-            .into_iter()
-            .filter(|e| self.selected.contains(&e.path))
-            .cloned()
-            .collect()
+        selection::selected_entries(self)
     }
 
     pub fn selected_or_cursor(&self) -> Vec<FileEntry> {
-        if self.selected.is_empty() {
-            // cursor 0 = ".." row, real files start at cursor 1
-            if self.cursor == 0 {
-                return vec![];
-            }
-            match self.filtered_get(self.cursor - 1) {
-                Some(entry) => vec![entry.clone()],
-                None => vec![],
-            }
-        } else {
-            self.selected_entries()
-        }
+        selection::selected_or_cursor(self)
     }
 
     pub fn total_size_selected(&self) -> u64 {
-        let sizes = self.dir_sizes.lock().ok();
-        self.selected_entries()
-            .iter()
-            .map(|e| {
-                if e.is_dir {
-                    sizes
-                        .as_ref()
-                        .and_then(|s| s.get(&e.path).copied())
-                        .unwrap_or(0)
-                } else {
-                    e.size
-                }
-            })
-            .sum()
+        selection::total_size_selected(self)
     }
 
     pub fn total_dir_size(&self) -> Option<u64> {
-        let sizes = self.dir_sizes.lock().ok()?;
-        let dir_count = self.entries.iter().filter(|e| e.is_dir).count();
-        let computed = self
-            .entries
-            .iter()
-            .filter(|e| e.is_dir)
-            .filter_map(|e| sizes.get(&e.path))
-            .count();
-        if computed == 0 && dir_count > 0 {
-            return None;
-        }
-        let file_total: u64 = self
-            .entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .map(|e| e.size)
-            .sum();
-        let dir_total: u64 = self
-            .entries
-            .iter()
-            .filter(|e| e.is_dir)
-            .filter_map(|e| sizes.get(&e.path).copied())
-            .sum();
-        Some(file_total + dir_total)
+        selection::total_dir_size(self)
     }
 
     pub fn set_sort(&mut self, col: SortColumn) {
-        if self.sort_col == col {
-            self.sort_order = match self.sort_order {
-                SortOrder::Asc => SortOrder::Desc,
-                SortOrder::Desc => SortOrder::Asc,
-            };
-        } else {
-            self.sort_col = col;
-            self.sort_order = SortOrder::Asc;
-        }
-        self.sort_entries();
+        sort::set_sort(self, col);
     }
 
     /// List subdirectories of `path` (for tree view).
     pub fn subdirs(path: &Path, show_hidden: bool) -> Vec<PathBuf> {
-        let Ok(rd) = fs::read_dir(path) else {
-            return Vec::new();
-        };
-        let mut dirs: Vec<PathBuf> = rd
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .map(|e| e.path())
-            .filter(|p| {
-                show_hidden
-                    || !p
-                        .file_name()
-                        .map(|n| n.to_string_lossy().starts_with('.'))
-                        .unwrap_or(false)
-            })
-            .collect();
-        dirs.sort_by(|a, b| {
-            a.file_name()
-                .map(|n| n.to_string_lossy().to_lowercase())
-                .cmp(&b.file_name().map(|n| n.to_string_lossy().to_lowercase()))
-        });
-        dirs
+        fs::subdirs(path, show_hidden)
     }
 
     pub fn sort_indicator(&self, col: SortColumn) -> &str {
-        if self.sort_col == col {
-            match self.sort_order {
-                SortOrder::Asc => " ▲",
-                SortOrder::Desc => " ▼",
-            }
-        } else {
-            ""
-        }
+        sort::sort_indicator(self, col)
     }
 }
 
@@ -1667,15 +522,8 @@ mod tests {
         assert_eq!(under.name, "mmm");
     }
 
-    #[test]
-    fn natural_cmp_orders_numbers_by_value() {
-        assert_eq!(natural_cmp("file2", "file10"), Ordering::Less);
-        assert_eq!(natural_cmp("file10", "file2"), Ordering::Greater);
-        assert_eq!(natural_cmp("a", "a"), Ordering::Equal);
-        // Equal numeric value: the shorter run (fewer leading zeros) sorts first.
-        assert_eq!(natural_cmp("img9", "img09"), Ordering::Less);
-        assert_eq!(natural_cmp("v1.2", "v1.10"), Ordering::Less);
-    }
+    // natural_cmp test moved to src/panel/sort.rs
+
 
     #[test]
     fn natural_sort_applies_to_listing() {
@@ -1748,11 +596,12 @@ mod tests {
 
     #[test]
     fn format_mode_renders_rwx() {
-        assert_eq!(format_mode(0o755), "rwxr-xr-x");
-        assert_eq!(format_mode(0o644), "rw-r--r--");
-        assert_eq!(format_mode(0o600), "rw-------");
-        assert_eq!(format_mode(0o000), "---------");
-        assert_eq!(format_mode(0o777), "rwxrwxrwx");
+        // format_mode lives in preview (moved for DRY)
+        assert_eq!(crate::preview::format_mode(0o755), "rwxr-xr-x");
+        assert_eq!(crate::preview::format_mode(0o644), "rw-r--r--");
+        assert_eq!(crate::preview::format_mode(0o600), "rw-------");
+        assert_eq!(crate::preview::format_mode(0o000), "---------");
+        assert_eq!(crate::preview::format_mode(0o777), "rwxrwxrwx");
     }
 
     #[test]
@@ -2047,7 +896,7 @@ mod tests {
         p.sizes_dirty
             .store(true, std::sync::atomic::Ordering::Relaxed);
         p.last_sizes_recompute = None; // bypass the debounce in the test
-        reset_walk_log(); // bypass the walk cooldown in the test
+        if let Ok(mut log) = sizes::walk_log().lock() { log.clear(); } // bypass the walk cooldown in the test (reset_walk_log moved)
 
         let reloaded = p.poll_fs_changes();
         assert!(!reloaded, "sizes-only events must not reload the listing");
@@ -2097,5 +946,36 @@ mod tests {
         let meta = std::fs::metadata(&dir).unwrap();
         let de = FileEntry::from_meta(dir, &meta).unwrap();
         assert!(make_preview(&de).is_none());
+    }
+
+    #[test]
+    fn bench_refresh_and_git_status() {
+        // Simple before/after style benchmark for hot path (reload + git).
+        // Run with `cargo test bench_refresh_and_git_status -- --nocapture`
+        // Creates a temp dir + fake .git, populates files, times refreshes.
+        use std::time::Instant;
+        let tmp = TempDir::new();
+        // Simulate git repo
+        let _ = std::fs::create_dir_all(tmp.path().join(".git"));
+        for i in 0..200 {
+            tmp.file(&format!("f{:04}.txt", i), "x");
+        }
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        let n = 5;
+        let mut total = std::time::Duration::ZERO;
+        for _ in 0..n {
+            let t0 = Instant::now();
+            p.refresh();
+            total += t0.elapsed();
+        }
+        println!("BENCH before: {} refreshes avg {:?}", n, total / n as u32);
+
+        // Time just git status (the expensive new part)
+        let t0 = Instant::now();
+        for _ in 0..10 {
+            p.refresh_git_status();
+        }
+        let git_time = t0.elapsed() / 10;
+        println!("BENCH git_status alone (10 calls): avg {:?}", git_time);
     }
 }

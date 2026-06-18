@@ -16,6 +16,15 @@ mod preload;
 mod recent_dialog;
 mod rename_dialog;
 mod render;
+mod preview_pane;
+mod layout;
+mod status_bar;
+mod virtual_list;
+mod input;
+mod facet;
+mod ui_common;
+mod bookmarks_ui;
+mod virtual_tree;
 mod saved_search_dialog;
 mod sync_dialog;
 mod toolbar;
@@ -29,12 +38,14 @@ use std::path::PathBuf;
 
 use crate::panel::{PanelState, SortColumn, format_size};
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
+use crate::config::AppConfig;
 pub(crate) use crate::transfer::{CopyMethod, TransferKind};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
 pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
+    pub config: AppConfig,
     pub ui_scale: f32,
     /// List density tier (row sizes), restored from and saved to the session.
     pub(crate) density: crate::density::Density,
@@ -85,6 +96,41 @@ pub struct App {
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
     /// Whether the saved-search picker is open.
     pub(crate) saved_search_open: bool,
+    /// Toggle for git status column/glyph (column customization from top 50).
+    pub(crate) show_git_status: bool,
+    /// For starting drag reorder on tabs (left or right).
+    pub(crate) dragged_tab: Option<(bool, usize)>, // (is_left, index)
+    /// Bookmarks dialog open + filter buffer (full UI from stub).
+    pub(crate) bookmarks_open: Option<String>,
+    /// Column config dialog open (for widths, toggles like TC).
+    pub(crate) column_config_open: bool,
+    /// Linked scrolling between left/right panels (master/slave when on; idea #13).
+    pub(crate) linked_scroll: bool,
+    /// Mini terminal bottom pane open (idea #11).
+    pub(crate) terminal_open: bool,
+    pub(crate) terminal_history: Vec<String>,
+    /// Macro recorder active (idea #37/46).
+    pub(crate) macro_recording: bool,
+    pub(crate) macro_steps: Vec<String>,
+    /// User tags for color labels (idea #64).
+    pub(crate) user_tags: std::collections::HashMap<std::path::PathBuf, String>,
+    /// File notes/comments attached to paths (idea #92).
+    pub(crate) file_notes: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Grid view toggle (idea #65/72).
+    pub(crate) grid_view: bool,
+    /// Saved named macros (idea #82). key=name, value=steps.
+    pub(crate) saved_macros: std::collections::HashMap<String, Vec<String>>,
+    /// Tag editor open (idea #73).
+    pub(crate) user_tag_editor_open: bool,
+    /// Permissions dialog open (idea #83).
+    pub(crate) permissions_open: bool,
+    /// Archive browser open stub (idea #84).
+    pub(crate) archive_open: bool,
+    /// Notes editor open (idea #92).
+    pub(crate) notes_open: bool,
+    /// Channel for git status updates from bg (ownership + channels instead of Arc<Mutex> on git_status).
+    pub(crate) git_tx: Option<std::sync::mpsc::Sender<(std::path::PathBuf, std::collections::HashMap<std::path::PathBuf, char>)>>,
+    pub(crate) git_rx: Option<std::sync::mpsc::Receiver<(std::path::PathBuf, std::collections::HashMap<std::path::PathBuf, char>)>>,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -256,18 +302,57 @@ impl App {
             } else {
                 ActivePanel::Right
             };
-            ws.left.sort_col = s.left_sort_col;
-            ws.left.sort_order = s.left_sort_order;
-            ws.left.show_hidden = s.left_hidden;
-            ws.right.sort_col = s.right_sort_col;
-            ws.right.sort_order = s.right_sort_order;
-            ws.right.show_hidden = s.right_hidden;
+            // PR2 tabs: if saved tabs present, populate from them (with active indices); else legacy single -> tabs[0]
+            if !s.left_tabs.is_empty() {
+                ws.left.tabs.clear();
+                for t in &s.left_tabs {
+                    let mut st = PanelState::new(t.path.clone());
+                    st.sort_col = t.sort_col;
+                    st.sort_order = t.sort_order;
+                    st.show_hidden = t.hidden;
+                    ws.left.tabs.push(crate::workspace::PanelTab { state: st });
+                }
+                ws.left.active = s.left_active.min(ws.left.tabs.len().saturating_sub(1));
+            } else {
+                // legacy (use current active or 0)
+                let li = ws.left.active.min(ws.left.tabs.len().saturating_sub(1));
+                ws.left.tabs[li].state.sort_col = s.left_sort_col;
+                ws.left.tabs[li].state.sort_order = s.left_sort_order;
+                ws.left.tabs[li].state.show_hidden = s.left_hidden;
+            }
+            // bookmarks from session (or empty)
+            ws.bookmarks = s.bookmarks.clone();
+            if !s.right_tabs.is_empty() {
+                ws.right.tabs.clear();
+                for t in &s.right_tabs {
+                    let mut st = PanelState::new(t.path.clone());
+                    st.sort_col = t.sort_col;
+                    st.sort_order = t.sort_order;
+                    st.show_hidden = t.hidden;
+                    ws.right.tabs.push(crate::workspace::PanelTab { state: st });
+                }
+                ws.right.active = s.right_active.min(ws.right.tabs.len().saturating_sub(1));
+            } else {
+                let ri = ws.right.active.min(ws.right.tabs.len().saturating_sub(1));
+                ws.right.tabs[ri].state.sort_col = s.right_sort_col;
+                ws.right.tabs[ri].state.sort_order = s.right_sort_order;
+                ws.right.tabs[ri].state.show_hidden = s.right_hidden;
+            }
         }
 
-        App {
+        let config = crate::config::AppConfig::default();
+        let show_git_status = config.show_git_status;
+        let show_tree_default = config.show_tree;
+        let density_default = config.density;
+
+        // Channel for git updates from bg threads (ownership + channels, replacing Arc<Mutex> for git_status).
+        let (git_tx, git_rx) = std::sync::mpsc::channel();
+
+        let mut app = App {
             ws,
+            config,
             ui_scale,
-            density: session.as_ref().map(|s| s.density).unwrap_or_default(),
+            density: session.as_ref().map(|s| s.density).unwrap_or(density_default),
             theme_mode: mode,
             colors: match mode {
                 ThemeMode::Light => ThemeColors::light(),
@@ -275,7 +360,7 @@ impl App {
             },
             prev_window_width: 0.0,
             image_cache: crate::image_cache::ImageCache::new(),
-            show_tree: session.as_ref().is_some_and(|s| s.show_tree),
+            show_tree: session.as_ref().map(|s| s.show_tree).unwrap_or(show_tree_default),
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
@@ -301,7 +386,38 @@ impl App {
             find: None,
             smart_folders: None,
             saved_search_open: false,
+            show_git_status: session.as_ref().map_or(show_git_status, |s| s.show_git_status),
+            linked_scroll: session.as_ref().map_or(false, |s| s.linked_scroll),
+            terminal_open: false,
+            terminal_history: vec![],
+            macro_recording: false,
+            macro_steps: vec![],
+            user_tags: std::collections::HashMap::new(),
+            file_notes: std::collections::HashMap::new(),
+            grid_view: false,
+            dragged_tab: None,
+            saved_macros: std::collections::HashMap::new(),
+            user_tag_editor_open: false,
+            permissions_open: false,
+            archive_open: false,
+            notes_open: false,
+            bookmarks_open: None,
+            column_config_open: false,
+            git_tx: Some(git_tx),
+            git_rx: Some(git_rx),
+        };
+
+        // Wire cloned senders to panels' states for bg to send updates (channel instead of Arc<Mutex>).
+        if let Some(tx) = &app.git_tx {
+            let tx = tx.clone();
+            for tab in &mut app.ws.left.tabs {
+                tab.state.git_tx = Some(tx.clone());
+            }
+            for tab in &mut app.ws.right.tabs {
+                tab.state.git_tx = Some(tx.clone());
+            }
         }
+        app
     }
 
     /// The saved-search store, loaded from disk on first access.
@@ -312,9 +428,22 @@ impl App {
 
     /// Snapshot the current state into a persistable [`Session`].
     fn to_session(&self) -> crate::session::Session {
+        // PR2: full tabs snapshot + active indices. Keep legacy paths/sorts for old sessions compat.
+        let left_snap: Vec<crate::session::TabSnapshot> = self.ws.left.tabs.iter().map(|t| crate::session::TabSnapshot {
+            path: t.state.current_path.clone(),
+            sort_col: t.state.sort_col,
+            sort_order: t.state.sort_order,
+            hidden: t.state.show_hidden,
+        }).collect();
+        let right_snap: Vec<crate::session::TabSnapshot> = self.ws.right.tabs.iter().map(|t| crate::session::TabSnapshot {
+            path: t.state.current_path.clone(),
+            sort_col: t.state.sort_col,
+            sort_order: t.state.sort_order,
+            hidden: t.state.show_hidden,
+        }).collect();
         crate::session::Session {
-            left_path: self.ws.left.current_path.clone(),
-            right_path: self.ws.right.current_path.clone(),
+            left_path: self.ws.left.tabs.get(0).map(|t| t.state.current_path.clone()).unwrap_or_default(),
+            right_path: self.ws.right.tabs.get(0).map(|t| t.state.current_path.clone()).unwrap_or_default(),
             active_left: self.ws.active == ActivePanel::Left,
             theme_dark: self.theme_mode == ThemeMode::Dark,
             ui_scale: self.ui_scale,
@@ -322,15 +451,22 @@ impl App {
             tree_width: self.tree_width,
             show_size_bars: self.show_size_bars,
             show_compare: self.show_compare,
-            left_sort_col: self.ws.left.sort_col,
-            left_sort_order: self.ws.left.sort_order,
-            left_hidden: self.ws.left.show_hidden,
-            right_sort_col: self.ws.right.sort_col,
-            right_sort_order: self.ws.right.sort_order,
-            right_hidden: self.ws.right.show_hidden,
+            left_sort_col: self.ws.left.tabs.get(0).map(|t| t.state.sort_col).unwrap_or(crate::panel::SortColumn::Name),
+            left_sort_order: self.ws.left.tabs.get(0).map(|t| t.state.sort_order).unwrap_or(crate::panel::SortOrder::Asc),
+            left_hidden: self.ws.left.tabs.get(0).map(|t| t.state.show_hidden).unwrap_or(false),
+            right_sort_col: self.ws.right.tabs.get(0).map(|t| t.state.sort_col).unwrap_or(crate::panel::SortColumn::Name),
+            right_sort_order: self.ws.right.tabs.get(0).map(|t| t.state.sort_order).unwrap_or(crate::panel::SortOrder::Asc),
+            right_hidden: self.ws.right.tabs.get(0).map(|t| t.state.show_hidden).unwrap_or(false),
             density: self.density,
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
+            left_tabs: left_snap,
+            right_tabs: right_snap,
+            left_active: self.ws.left.active,
+            right_active: self.ws.right.active,
+            bookmarks: self.ws.bookmarks.clone(),
+            show_git_status: self.show_git_status,
+            linked_scroll: self.linked_scroll,
         }
     }
 

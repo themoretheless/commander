@@ -211,7 +211,7 @@ pub fn spawn_transfer(
             let dest = spec.target.join(&entry.name);
 
             {
-                let mut s = progress.lock().unwrap();
+                let mut s = progress.lock().expect("transfer progress mutex poisoned");
                 s.current_file = entry.name.clone();
                 if s.cancelled {
                     return;
@@ -223,7 +223,7 @@ pub fn spawn_transfer(
             // it as processed. `err` is an optional message to surface.
             let skip_entry = |progress: &TransferState, base: &mut u64, err: Option<String>| {
                 *base += entry_size(entry);
-                let mut s = progress.lock().unwrap();
+                let mut s = progress.lock().expect("transfer progress mutex poisoned");
                 s.copied_bytes = *base;
                 if let Some(msg) = err {
                     s.errors.push(format!("{}: {}", entry.name, msg));
@@ -299,7 +299,7 @@ pub fn spawn_transfer(
             match &result {
                 Ok(b) => base_bytes += b,
                 Err(e) => {
-                    let mut s = progress.lock().unwrap();
+                    let mut s = progress.lock().expect("transfer progress mutex poisoned");
                     if s.cancelled {
                         drop(s);
                         let _ = cleanup_path(&copy_target);
@@ -342,7 +342,7 @@ pub fn spawn_transfer(
             }
 
             {
-                let mut s = progress.lock().unwrap();
+                let mut s = progress.lock().expect("transfer progress mutex poisoned");
                 s.files_done = i + 1;
                 s.record_sample();
             }
@@ -350,7 +350,7 @@ pub fn spawn_transfer(
         }
 
         {
-            let mut s = progress.lock().unwrap();
+            let mut s = progress.lock().expect("transfer progress mutex poisoned");
             s.finished = true;
             s.record_sample();
         }

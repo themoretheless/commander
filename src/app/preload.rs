@@ -9,10 +9,12 @@ impl App {
 
         // Texture preloading is a UI concern: warm the image cache around
         // the cursor while an image preview is open.
-        let (source, target) = if self.ws.right.preview.is_some() {
-            (&self.ws.left, &self.ws.right)
-        } else if self.ws.left.preview.is_some() {
-            (&self.ws.right, &self.ws.left)
+        // PR1 tabs model + per review: only the *active tab* on a side can host the visible preview.
+        // A preview on an inactive tab of a side must not affect the opposite side.
+        let (source, target) = if self.ws.right.tabs[self.ws.right.active].state.preview.is_some() {
+            (&self.ws.left.tabs[self.ws.left.active].state, &self.ws.right.tabs[self.ws.right.active].state)
+        } else if self.ws.left.tabs[self.ws.left.active].state.preview.is_some() {
+            (&self.ws.right.tabs[self.ws.right.active].state, &self.ws.left.tabs[self.ws.left.active].state)
         } else {
             return;
         };
@@ -21,7 +23,7 @@ impl App {
         }
 
         let entries = source.filtered_entries();
-        let cur = source.cursor.saturating_sub(1);
+        let cur = source.cursor().saturating_sub(1);
         let start = cur.saturating_sub(10);
         let (_, current_bytes) = self.image_cache.stats();
         let budget = 1024 * 1024 * 1024; // 1 GB

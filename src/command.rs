@@ -69,6 +69,32 @@ pub enum Command {
     BeginFind,
     /// Open the saved-search (smart folder) picker.
     OpenSavedSearch,
+    /// Begin bookmarks / favorites hotlist picker (designer Iteration 2).
+    BeginBookmarks,
+    /// Assign current dir to a bookmark slot / hotlist (designer Iteration 2).
+    AssignCurrentToBookmark,
+    /// Cmd+T: duplicate current tab on the active side (designer Iteration 1).
+    NewTab,
+    /// Cmd+W: close the current tab on the active side (never zero tabs) (designer Iteration 1).
+    CloseTab,
+    /// Ctrl+Tab: cycle to next tab on the active side.
+    NextTab,
+    /// Ctrl+Shift+Tab: cycle to previous tab on the active side.
+    PrevTab,
+    /// Open terminal at active tab dir (like mc / TotalCmd / VSCode integrated terminal; high value "most needed").
+    OpenTerminal,
+    /// Git diff for selected / cursor (basic from top 50).
+    GitDiff,
+    /// Git stage selected paths.
+    GitStage,
+    /// Git discard changes for selected (with confirm in future).
+    GitDiscard,
+    /// Save current tabs as a set (basic for top 50 saved tab sets).
+    SaveTabSet,
+    /// Toggle git status display (column customization).
+    ToggleShowGit,
+    /// Restore last saved tab set (UI stub).
+    RestoreTabSet,
     /// Cmd+Shift+C: copy the selection's full path(s) to the clipboard.
     CopyPath,
     /// Copy the selection's file name(s).
@@ -90,6 +116,10 @@ pub enum Command {
     /// Select active-panel entries whose name also exists in the other panel.
     SelectSameNamed,
     ToggleHidden,
+    /// Permissions / chmod viewer stub (idea #83).
+    ShowPermissions,
+    /// Browse/extract archive stub (zip/tar) (idea #84).
+    BrowseArchive,
 }
 
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
@@ -107,6 +137,19 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
         ("Find files", "Cmd+F", Command::BeginFind),
         ("Open saved search", "", Command::OpenSavedSearch),
+        ("Bookmarks / favorites", "", Command::BeginBookmarks),
+        ("Assign current dir to bookmark", "", Command::AssignCurrentToBookmark),
+        ("New tab", "Cmd+T", Command::NewTab),
+        ("Close tab", "Cmd+W", Command::CloseTab),
+        ("Next tab", "Ctrl+Tab", Command::NextTab),
+        ("Previous tab", "Ctrl+Shift+Tab", Command::PrevTab),
+        ("Open terminal here", "", Command::OpenTerminal),
+        ("Git diff", "", Command::GitDiff),
+        ("Git stage selected", "", Command::GitStage),
+        ("Git discard selected", "", Command::GitDiscard),
+        ("Save current tabs as set", "", Command::SaveTabSet),
+        ("Toggle git status", "", Command::ToggleShowGit),
+        ("Restore last tab set", "", Command::RestoreTabSet),
         ("Copy path", "Cmd+Shift+C", Command::CopyPath),
         ("Copy name", "", Command::CopyName),
         ("Copy parent path", "", Command::CopyParentPath),
@@ -129,6 +172,8 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             "",
             Command::SelectSameNamed,
         ),
+        ("Permissions (chmod)", "", Command::ShowPermissions),
+        ("Browse archive (zip/tar)", "", Command::BrowseArchive),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
         ("Cycle density", "Cmd+Shift+D", Command::CycleDensity),
@@ -272,8 +317,10 @@ pub enum KeyCode {
     F,
     R,
     S,
+    T,
     U,
     V,
+    W,
     Z,
 }
 
@@ -290,7 +337,12 @@ pub struct KeyPress {
 pub fn map_key(press: KeyPress) -> Option<Command> {
     use KeyCode::*;
     match press.code {
+        Tab if press.command && press.shift => Some(Command::PrevTab),
+        Tab if press.command => Some(Command::NextTab),
         Tab => Some(Command::SwitchPanel),
+        KeyCode::T if press.command => Some(Command::NewTab),
+        KeyCode::W if press.command => Some(Command::CloseTab),
+        KeyCode::T if press.command && press.shift => Some(Command::OpenTerminal),
         Up if press.shift => Some(Command::ExtendSelectUp),
         Down if press.shift => Some(Command::ExtendSelectDown),
         Up => Some(Command::CursorUp),

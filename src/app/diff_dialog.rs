@@ -18,7 +18,7 @@ fn read_text(path: &Path) -> Result<String, ()> {
 
 impl App {
     pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.diff_request) {
+        if std::mem::take(&mut self.ws.requests.diff_request) {
             match self.ws.diff_targets() {
                 None => {
                     let now = ctx.input(|i| i.time);

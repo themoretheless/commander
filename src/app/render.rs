@@ -1,91 +1,6 @@
 use super::*;
-use crate::panel::{FacetSet, KindFacet};
 
 impl App {
-    /// A row of toggleable quick-filter chips under the filter box.
-    fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) {
-        Frame::NONE
-            .fill(Color32::TRANSPARENT)
-            .inner_margin(Margin {
-                left: 10,
-                right: 10,
-                top: 0,
-                bottom: 2,
-            })
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-
-                    let chip = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
-                        let fill = if active {
-                            t.accent.linear_multiply(0.3)
-                        } else {
-                            t.bg_card
-                        };
-                        ui.add(
-                            egui::Button::new(
-                                egui::RichText::new(label).size(10.0).color(t.text_primary),
-                            )
-                            .fill(fill)
-                            .corner_radius(CornerRadius::same(2)),
-                        )
-                        .clicked()
-                    };
-
-                    let f = &mut panel.facets;
-                    // Kind chips (mutually exclusive: clicking the active one clears it).
-                    for (label, kind) in [
-                        ("Folders", KindFacet::Folders),
-                        ("Images", KindFacet::Images),
-                        ("Docs", KindFacet::Docs),
-                        ("Archives", KindFacet::Archives),
-                        ("Code", KindFacet::Code),
-                    ] {
-                        if chip(ui, label, f.kind == Some(kind)) {
-                            f.kind = if f.kind == Some(kind) {
-                                None
-                            } else {
-                                Some(kind)
-                            };
-                        }
-                    }
-                    ui.add_space(6.0);
-                    if chip(ui, ">1MB", f.min_size == Some(1 << 20)) {
-                        f.min_size = if f.min_size == Some(1 << 20) {
-                            None
-                        } else {
-                            Some(1 << 20)
-                        };
-                    }
-                    if chip(ui, ">100MB", f.min_size == Some(100 << 20)) {
-                        f.min_size = if f.min_size == Some(100 << 20) {
-                            None
-                        } else {
-                            Some(100 << 20)
-                        };
-                    }
-                    ui.add_space(6.0);
-                    if chip(ui, "Today", f.max_age_days == Some(1)) {
-                        f.max_age_days = if f.max_age_days == Some(1) {
-                            None
-                        } else {
-                            Some(1)
-                        };
-                    }
-                    if chip(ui, "Week", f.max_age_days == Some(7)) {
-                        f.max_age_days = if f.max_age_days == Some(7) {
-                            None
-                        } else {
-                            Some(7)
-                        };
-                    }
-                    if !f.is_empty() && chip(ui, "\u{2715} Clear", false) {
-                        *f = FacetSet::default();
-                    }
-                });
-            });
-    }
-
     /// Render one file panel. Returns `true` if the tree-sidebar toggle
     /// button was clicked (the tree itself is owned by [`App`]).
     // The arguments are mutable borrows of disjoint `self` fields (panel,
@@ -104,6 +19,12 @@ impl App {
         compare: Option<&crate::workspace::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
         metrics: crate::density::DensityMetrics,
+        show_git: bool,
+        column_config: &mut crate::panel::ColumnConfig,
+        mut renaming: Option<&mut crate::app::RenameState>,
+        grid: bool,
+        user_tags: &std::collections::HashMap<std::path::PathBuf, String>,
+        notes: &std::collections::HashMap<std::path::PathBuf, String>,
     ) -> bool {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
@@ -332,21 +253,27 @@ impl App {
                         });
                     });
 
-                // Search bar
+                // Search bar (quick filter, always visible) + regex toggle (idea #91)
                 Frame::NONE
                     .fill(panel_bg)
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut panel.search_query)
-                                .hint_text("\u{1f50d} Filter\u{2026}")
-                                .desired_width(ui.available_width())
-                                .margin(egui::vec2(8.0, 4.0)),
-                        );
+                        ui.horizontal(|ui| {
+                            let edit_w = (ui.available_width() - 32.0).max(60.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut panel.search_query)
+                                    .hint_text("\u{1f50d} Filter\u{2026} (.* for regex)")
+                                    .desired_width(edit_w)
+                                    .margin(egui::vec2(8.0, 4.0)),
+                            );
+                            if crate::app::ui_common::small_toggle(ui, "R", panel.search_regex, "Toggle regex (case-insens) for live filter") {
+                                panel.search_regex = !panel.search_regex;
+                            }
+                        });
                     });
 
                 // Quick-filter facet chips.
-                Self::facet_chips(ui, panel, t);
+                crate::app::facet::render_facet_chips(ui, panel, t);
 
                 // Column headers
                 let header_bg = if is_active {
@@ -425,153 +352,16 @@ impl App {
 
                 ui.add(egui::Separator::default().spacing(0.0));
 
-                // Preview mode (image or text)
-                if let Some(preview) = panel.preview.clone() {
-                    use crate::panel::PreviewContent;
-                    match &preview {
-                        PreviewContent::Image(path) => {
-                            let path = path.clone();
-                            if let Some(texture) = image_cache.get_or_load_sync(ui.ctx(), &path) {
-                                let tex_size = texture.size_vec2();
-                                ui.centered_and_justified(|ui| {
-                                    let avail = ui.available_size();
-                                    let scale =
-                                        (avail.x / tex_size.x).min(avail.y / tex_size.y).min(1.0);
-                                    let display_size =
-                                        egui::vec2(tex_size.x * scale, tex_size.y * scale);
-                                    let resp = ui.add(egui::Image::from_texture(
-                                        egui::load::SizedTexture::new(texture.id(), display_size),
-                                    ));
-                                    if resp.clicked()
-                                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                                    {
-                                        panel.preview = None;
-                                    }
-                                });
-                            } else {
-                                ui.centered_and_justified(|ui| {
-                                    ui.spinner();
-                                });
-                            }
-                        }
-                        PreviewContent::Text { path, content } => {
-                            // Text viewer
-                            Frame::NONE
-                                .fill(t.bg_panel)
-                                .inner_margin(Margin::same(8))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(
-                                                path.file_name()
-                                                    .map(|n| n.to_string_lossy().to_string())
-                                                    .unwrap_or_default(),
-                                            )
-                                            .size(12.0)
-                                            .strong()
-                                            .color(t.text_primary),
-                                        );
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if ui.small_button("✕").clicked()
-                                                    || ui
-                                                        .input(|i| i.key_pressed(egui::Key::Escape))
-                                                {
-                                                    panel.preview = None;
-                                                }
-                                            },
-                                        );
-                                    });
-                                    ui.add(egui::Separator::default().spacing(4.0));
-
-                                    egui::ScrollArea::both()
-                                        .id_salt(format!("text_preview_{}", panel_side))
-                                        .auto_shrink([false; 2])
-                                        .show(ui, |ui| {
-                                            ui.style_mut().interaction.selectable_labels = true;
-                                            ui.add(
-                                                egui::Label::new(
-                                                    egui::RichText::new(content)
-                                                        .size(12.0)
-                                                        .font(egui::FontId::monospace(12.0))
-                                                        .color(t.text_secondary),
-                                                )
-                                                .wrap(),
-                                            );
-                                        });
-                                });
-                        }
-                        PreviewContent::Info(card) => {
-                            Frame::NONE
-                                .fill(t.bg_panel)
-                                .inner_margin(Margin::same(14))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("Get Info")
-                                                .size(13.0)
-                                                .strong()
-                                                .color(t.text_primary),
-                                        );
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if ui.small_button("✕").clicked()
-                                                    || ui
-                                                        .input(|i| i.key_pressed(egui::Key::Escape))
-                                                {
-                                                    panel.preview = None;
-                                                }
-                                            },
-                                        );
-                                    });
-                                    ui.add(egui::Separator::default().spacing(8.0));
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new(&card.name)
-                                            .size(15.0)
-                                            .strong()
-                                            .color(t.text_primary),
-                                    );
-                                    ui.add_space(8.0);
-                                    let mut row = |k: &str, v: &str| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(k)
-                                                    .size(11.0)
-                                                    .color(t.text_muted),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(v)
-                                                    .size(11.0)
-                                                    .color(t.text_secondary),
-                                            );
-                                        });
-                                    };
-                                    row("Kind", &card.kind);
-                                    row("Size", &card.size);
-                                    if let Some(n) = card.children {
-                                        row("Items", &n.to_string());
-                                    }
-                                    row("Modified", &card.modified);
-                                    row("Permissions", &card.permissions);
-                                    ui.add_space(6.0);
-                                    ui.label(
-                                        egui::RichText::new(&card.path)
-                                            .size(10.0)
-                                            .color(t.text_muted),
-                                    );
-                                });
-                        }
-                    }
-                    return;
-                }
-
-                // File list
-                Self::render_file_list(
-                    ui, panel, is_active, t, panel_side, size_bars, compare, opener, metrics,
+                // Preview + grip extracted to preview_pane.rs for SRP (UI layer separation).
+                crate::app::preview_pane::render_preview_and_grip(
+                    panel, ui, t, image_cache, panel_side,
                 );
+
+            // File list (always; its ScrollArea naturally receives less height when a preview strip + grip are allocated above)
+            Self::render_file_list(
+                ui, panel, is_active, t, panel_side, size_bars, compare, opener, metrics,
+                show_git, column_config, renaming, grid, user_tags, notes,
+            );
             });
 
         tree_toggle

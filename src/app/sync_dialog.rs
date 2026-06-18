@@ -7,7 +7,7 @@ use crate::sync::{SyncDirection, SyncPolicy, SyncStatus};
 
 impl App {
     pub(crate) fn show_sync_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.sync_request) {
+        if std::mem::take(&mut self.ws.requests.sync_request) {
             let policy = SyncPolicy::TwoWay;
             let actions = self.ws.build_sync_actions(policy);
             self.sync = Some(SyncState { policy, actions });

@@ -10,7 +10,7 @@ const CANVAS_H: f32 = 420.0;
 
 impl App {
     pub(crate) fn show_treemap_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.treemap_request) {
+        if std::mem::take(&mut self.ws.requests.treemap_request) {
             let items: Vec<(crate::panel::FileEntry, u64)> = self
                 .ws
                 .treemap_items()

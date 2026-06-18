@@ -8,7 +8,7 @@ const FIND_CAP: usize = 1000;
 
 impl App {
     pub(crate) fn show_saved_search_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.saved_search_request) {
+        if std::mem::take(&mut self.ws.requests.saved_search_request) {
             self.smart_folders_mut(); // force a load from disk
             self.saved_search_open = true;
         }

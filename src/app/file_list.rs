@@ -1,4 +1,5 @@
 use super::*;
+use crate::panel::FileColumn;
 
 impl App {
     #[allow(clippy::too_many_arguments)]
@@ -12,6 +13,12 @@ impl App {
         compare: Option<&crate::workspace::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
         metrics: crate::density::DensityMetrics,
+        show_git: bool,
+        column_config: &mut crate::panel::ColumnConfig,
+        mut renaming: Option<&mut crate::app::RenameState>,
+        grid: bool,
+        user_tags: &std::collections::HashMap<std::path::PathBuf, String>,
+        notes: &std::collections::HashMap<std::path::PathBuf, String>,
     ) {
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
@@ -21,10 +28,36 @@ impl App {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
 
+                // Column header + grips (real resize for idea #1 column widths)
+                ui.horizontal(|ui| {
+                    ui.set_min_width(ui.available_width());
+                    let name_w = column_config.name_width.max(80.0);
+                    ui.allocate_ui(egui::vec2(name_w, 18.0), |ui| {
+                        crate::app::ui_common::primary_label(ui, "Name", t);
+                    });
+                    // Grip for name width - consistent affordance
+                    let grip_w = 6.0;
+                    let (grip_r, grip_resp) = ui.allocate_exact_size(egui::vec2(grip_w, 18.0), Sense::drag());
+                    crate::app::ui_common::paint_grip(ui, grip_r, t, true);
+                    if grip_resp.hovered() {
+                        crate::app::ui_common::apply_hover_paint(ui, grip_r, t);
+                    }
+                    if grip_resp.dragged() {
+                        let delta = ui.input(|i| i.pointer.delta().x);
+                        column_config.name_width = (column_config.name_width + delta).max(80.0).min(600.0);
+                    }
+                    if show_git {
+                        ui.allocate_ui(egui::vec2(column_config.git_width.max(20.0), 18.0), |ui| {
+                            crate::app::ui_common::primary_label(ui, "Git", t);
+                        });
+                    }
+                });
+                ui.add_space(2.0);
+
                 // ".." row — go up one directory (cursor == 0)
-                let can_go_up = panel.current_path.parent().is_some();
+                let can_go_up = panel.current_path().parent().is_some();
                 if can_go_up {
-                    let is_cursor_on_up = panel.cursor == 0;
+                    let is_cursor_on_up = panel.cursor() == 0;
                     let up_bg = if is_cursor_on_up && is_active {
                         t.bg_selected.linear_multiply(0.25)
                     } else {
@@ -57,7 +90,7 @@ impl App {
                     if up_row.double_clicked() {
                         panel.go_up();
                     } else if up_row.clicked() {
-                        panel.cursor = 0;
+                        panel.set_cursor(0);
                     }
                     if up_row.hovered() && !is_cursor_on_up {
                         ui.painter().rect_filled(
@@ -75,17 +108,17 @@ impl App {
                 let filtered = panel.filtered_indices();
                 // Active filter query, for highlighting matched characters in
                 // each visible row (cloned once, owned by this frame).
-                let query = panel.search_query.clone();
+                let query = panel.search_query().to_string();
 
                 if filtered.is_empty() {
                     use crate::panel::DirStatus;
                     // Distinguish a filtered-to-nothing list, a truly empty
                     // folder, and an unreadable/vanished one.
                     let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
-                        if !panel.search_query.is_empty() {
+                        if !panel.search_query().is_empty() {
                             ("\u{1f50d}", "No matches", None)
                         } else {
-                            match panel.dir_status {
+                            match panel.dir_status() {
                                 DirStatus::Denied => (
                                     "\u{1f512}",
                                     "No permission to read this folder",
@@ -108,7 +141,7 @@ impl App {
                             ui.add_space(8.0);
                             if ui.button(label).clicked() {
                                 match kind {
-                                    "finder" => opener(&panel.current_path),
+                                    "finder" => opener(panel.current_path()),
                                     "up" => panel.go_up(),
                                     _ => {}
                                 }
@@ -133,9 +166,9 @@ impl App {
                 let dir_counts = counts_arc.lock().ok();
                 let dir_sizes = sizes_arc.lock().ok();
 
-                let cursor = panel.cursor;
-                let scroll_pending = panel.scroll_to_cursor;
-                let dragging = !panel.drag_entries.is_empty();
+                let cursor = panel.cursor();
+                let scroll_pending = panel.scroll_to_cursor();
+                let dragging = !panel.drag_entries().is_empty();
 
                 // Row sizing follows the density tier. `row_content` is the
                 // allocated row height; `row_h` adds the 1px item spacing so the
@@ -153,6 +186,84 @@ impl App {
 
                 // Feed the visible-row count back to the core for PageUp/Down.
                 panel.page_rows = ((viewport.height() / row_h).floor() as usize).max(1);
+
+                if grid {
+                    // Full grid with names, lazy cap, selectable, drag hint (idea #81/72/65).
+                    // Cards: icon + truncated name, click to cursor/select, double open/nav.
+                    let grid_item_w = 68.0f32;
+                    let grid_item_h = 56.0f32;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        let max_show = filtered.len().min(96); // lazy cap for perf
+                        for &entry_idx in &filtered[..max_show] {
+                            let entry = &panel.entries()[entry_idx];
+                            let row_cursor = entry_idx + 1;
+                            let is_cur = row_cursor == cursor;
+                            let is_sel = panel.selected.contains(&entry.path);
+                            let bg = if is_cur && is_active {
+                                t.bg_selected.linear_multiply(0.35)
+                            } else if is_sel {
+                                t.accent_purple.linear_multiply(0.2)
+                            } else {
+                                t.bg_card.linear_multiply(0.25)
+                            };
+                            let (item_r, item_resp) = ui.allocate_exact_size(
+                                egui::vec2(grid_item_w, grid_item_h),
+                                Sense::click_and_drag(),
+                            );
+                            if bg != Color32::TRANSPARENT {
+                                ui.painter().rect_filled(item_r, CornerRadius::same(4), bg);
+                            }
+                            if item_resp.hovered() && !is_cur {
+                                ui.painter().rect_filled(item_r, CornerRadius::same(4), t.bg_hover.linear_multiply(0.25));
+                            }
+                            // content centered
+                            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(item_r.shrink2(egui::vec2(4.0, 2.0))));
+                            c.vertical_centered(|ui| {
+                                let icon = if entry.is_dir { "\u{1f4c1}" } else { &entry.icon() };
+                                ui.label(egui::RichText::new(icon).size(22.0));
+                                let short = if entry.name.len() > 9 {
+                                    format!("{}…", &entry.name[..7])
+                                } else {
+                                    entry.name.clone()
+                                };
+                                ui.label(egui::RichText::new(short).size(9.0).color(t.text_primary));
+                                if let Some(tag) = user_tags.get(&entry.path) {
+                                    ui.label(egui::RichText::new(format!("[{}]", if tag.len()>2 {&tag[..2]} else {tag})).size(7.0).color(t.accent_purple));
+                                }
+                                if notes.contains_key(&entry.path) {
+                                    ui.label(egui::RichText::new("📝").size(7.0));
+                                }
+                            });
+                            if item_resp.hovered() {
+                                let mut tip = format!("{} • {}", entry.name, entry.size_str);
+                                if let Some(n) = notes.get(&entry.path) {
+                                    tip.push_str(&format!(" | {}", n));
+                                }
+                                let _ = item_resp.clone().on_hover_text(tip);
+                            }
+                            if item_resp.double_clicked() {
+                                pending_cursor = Some(row_cursor);
+                                if entry.is_dir {
+                                    navigate_to = Some(entry.path.clone());
+                                } else {
+                                    open_path = Some(entry.path.clone());
+                                }
+                            } else if item_resp.clicked() {
+                                pending_cursor = Some(row_cursor);
+                            }
+                            if item_resp.drag_started() {
+                                pending_cursor = Some(row_cursor);
+                                drag_anchor = Some(entry.path.clone());
+                            }
+                            // subtle drag affordance
+                            if dragging && entry.is_dir && item_resp.hovered() {
+                                pending_drop_target = Some(entry.path.clone());
+                            }
+                        }
+                    });
+                    // grid does not use virtual spacer; fall to apply+status below
+                } else {
 
                 // Largest entry size in the listing, used to scale occupancy
                 // bars. Computed once with the size map already locked above.
@@ -206,7 +317,7 @@ impl App {
                 for (offset, &entry_idx) in filtered[first_visible..last_visible].iter().enumerate()
                 {
                     let idx = first_visible + offset;
-                    let entry = &panel.entries[entry_idx];
+                    let entry = &panel.entries()[entry_idx];
                     let row_cursor = idx + 1;
                     let is_cursor = row_cursor == cursor;
                     let is_selected = panel.selected.contains(&entry.path);
@@ -264,15 +375,19 @@ impl App {
                                 full_rect.min,
                                 Vec2::new(full_rect.width() * frac, full_rect.height()),
                             );
-                            let tint = if frac > 0.66 {
+                            // Heatmap: intensity + color ramp (idea #16)
+                            let intensity = (0.06 + frac * 0.22).min(0.28);
+                            let tint = if frac > 0.75 {
                                 t.accent_warning
-                            } else {
+                            } else if frac > 0.4 {
                                 t.accent
+                            } else {
+                                t.text_muted
                             };
                             ui.painter().rect_filled(
                                 bar,
                                 CornerRadius::ZERO,
-                                tint.linear_multiply(0.12),
+                                tint.linear_multiply(intensity),
                             );
                         }
                     }
@@ -335,6 +450,65 @@ impl App {
                             ui.label(egui::RichText::new(entry.icon()).size(metrics.icon_pt));
                         }
                         ui.add_space(3.0);
+                        // Color label / tag dot (idea #3,21,64): semantic + real user tags badge.
+                        let (r, g, b) = crate::file_color::kind_color(
+                            crate::selection_summary::kind_of(entry),
+                            dark,
+                        );
+                        ui.painter().circle_filled(
+                            ui.cursor().left_top() + egui::vec2(4.0, row_h / 2.0),
+                            3.0,
+                            Color32::from_rgb(r, g, b),
+                        );
+                        if let Some(tag) = user_tags.get(&entry.path) {
+                            // small user tag badge/pill
+                            let bx = ui.cursor().left_top() + egui::vec2(10.0, 2.0);
+                            let bw = 18.0f32.min(tag.len() as f32 * 5.0 + 4.0);
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(bx, egui::vec2(bw, 10.0)),
+                                CornerRadius::same(2),
+                                t.accent_purple.linear_multiply(0.7),
+                            );
+                            ui.painter().text(
+                                bx + egui::vec2(2.0, 0.0),
+                                egui::Align2::LEFT_TOP,
+                                if tag.len() > 3 { &tag[..3] } else { tag },
+                                egui::FontId::proportional(8.0),
+                                t.text_primary,
+                            );
+                            ui.add_space(16.0);
+                        }
+                        if let Some(note) = notes.get(&entry.path) {
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(ui.cursor().left_top() + egui::vec2(2.0, 3.0), egui::vec2(10.0, 8.0)),
+                                CornerRadius::same(1),
+                                t.accent.linear_multiply(0.6),
+                            );
+                            ui.add_space(12.0);
+                        }
+                        ui.add_space(8.0);
+
+                        // Git status glyph (column customization toggle): now uses the new columns::GitColumn abstraction
+                        // (foundation for real multi-column toggle like in TC/Finder/VSCode; see panel/columns.rs).
+                        let cols = crate::panel::active_columns(&crate::panel::ColumnConfig { show_git, ..Default::default() });
+                        if show_git && cols.iter().any(|c| c.header() == "Git") {
+                            let col = crate::panel::GitColumn;
+                            let val = col.cell(entry, panel);
+                            if !val.is_empty() {
+                                let color = match val.chars().next().unwrap_or('?') {
+                                    'M' | 'm' => t.accent_red,
+                                    'A' | 'a' => egui::Color32::from_rgb(80, 160, 80),
+                                    'D' | 'd' => t.accent_red,
+                                    '?' => t.text_muted,
+                                    _ => t.text_muted,
+                                };
+                                let w = crate::panel::column_width(&crate::panel::ColumnConfig::default(), "Git");
+                                ui.allocate_ui(egui::vec2(w.max(20.0), row_h), |ui| {
+                                    ui.label(egui::RichText::new(val).size(metrics.meta_pt).color(color));
+                                });
+                                ui.add_space(2.0);
+                            }
+                        }
 
                         let name_color = if is_selected {
                             t.accent_purple
@@ -344,19 +518,45 @@ impl App {
                             t.text_secondary
                         };
                         if query.is_empty() {
-                            ui.label(
-                                egui::RichText::new(&entry.name)
-                                    .size(metrics.name_pt)
-                                    .color(name_color),
-                            );
+                            ui.allocate_ui(egui::vec2(column_config.name_width.max(50.0), row_h), |ui| {
+                                if renaming.as_ref().map_or(false, |r| r.path == entry.path) {
+                                    if let Some(r) = renaming.as_mut() {
+                                        let resp = ui.add(egui::TextEdit::singleline(&mut r.buffer).desired_width(f32::INFINITY));
+                                        if !r.focused {
+                                            resp.request_focus();
+                                            r.focused = true;
+                                        }
+                                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                            // commit handled outside for now
+                                        }
+                                        return;
+                                    }
+                                }
+                                ui.label(
+                                    egui::RichText::new(&entry.name)
+                                        .size(metrics.name_pt)
+                                        .color(name_color),
+                                );
+                            });
                         } else {
-                            ui.label(highlight_name_job(
-                                &entry.name,
-                                &query,
-                                name_color,
-                                t.accent,
-                                metrics.name_pt,
-                            ));
+                            ui.allocate_ui(egui::vec2(column_config.name_width.max(50.0), row_h), |ui| {
+                                ui.label(highlight_name_job(
+                                    &entry.name,
+                                    &query,
+                                    name_color,
+                                    t.accent,
+                                    metrics.name_pt,
+                                ));
+                            });
+                        }
+
+                        // Hover card / quick info (idea #18) + notes (92)
+                        if row_resp.hovered() {
+                            let mut h = format!("{} • {} • {}", entry.name, entry.size_str, entry.modified_str);
+                            if let Some(n) = notes.get(&entry.path) {
+                                h.push_str(&format!(" | note: {}", n));
+                            }
+                            let _ = row_resp.clone().on_hover_text(h);
                         }
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -418,32 +618,33 @@ impl App {
                 if after > 0 {
                     ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
                 }
+            } // end else list rendering
 
-                // Drop locks before mutating panel
-                drop(dir_counts);
-                drop(dir_sizes);
+            // Drop locks before mutating panel (shared for grid + list paths)
+            drop(dir_counts);
+            drop(dir_sizes);
 
                 // Apply the interactions recorded during the loop.
                 if let Some(c) = pending_cursor {
-                    panel.cursor = c;
+                    panel.set_cursor(c);
                 }
                 if scrolled {
-                    panel.scroll_to_cursor = false;
+                    panel.set_scroll_to_cursor(false);
                 }
                 if let Some(anchor) = drag_anchor {
-                    panel.drag_entries = if panel.selected.is_empty() {
+                    panel.drag_entries = if panel.selected().is_empty() {
                         vec![anchor]
                     } else {
                         panel
                             .filtered_entries()
                             .iter()
-                            .filter(|e| panel.selected.contains(&e.path))
+                            .filter(|e| panel.selected().contains(&e.path))
                             .map(|e| e.path.clone())
                             .collect()
                     };
                 }
                 if let Some(target) = pending_drop_target {
-                    panel.drop_target = Some(target);
+                    panel.set_drop_target(Some(target));
                 }
                 if ctx_refresh {
                     panel.refresh();
@@ -456,77 +657,8 @@ impl App {
                 }
             });
 
-        // Status bar
-        Frame::NONE
-            .fill(Color32::TRANSPARENT)
-            .inner_margin(Margin::symmetric(10, 4))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let total = panel.filtered_count();
-                    let sel = panel.selected.len();
-                    let dir_total = panel.total_dir_size();
-                    let size_str = match dir_total {
-                        Some(s) => format!("{} items ({})", total, format_size(s)),
-                        None => format!("{} items (\u{2026})", total),
-                    };
-                    ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
-                    if sel > 0 {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "  |  {} selected ({})",
-                                sel,
-                                format_size(panel.total_size_selected())
-                            ))
-                            .size(11.0)
-                            .color(t.accent_purple),
-                        );
-                    }
-
-                    // Compare mode: chips to turn the diff into a selection.
-                    if let Some(map) = compare {
-                        use crate::workspace::CompareCriterion;
-                        ui.label(
-                            egui::RichText::new("  |  Select:")
-                                .size(11.0)
-                                .color(t.text_muted),
-                        );
-                        for (label, crit) in [
-                            ("Newer", CompareCriterion::Newer),
-                            ("Differing", CompareCriterion::Differing),
-                            ("Unique", CompareCriterion::Unique),
-                        ] {
-                            let clicked = ui
-                                .add(
-                                    egui::Label::new(
-                                        egui::RichText::new(label).size(11.0).color(t.accent),
-                                    )
-                                    .sense(Sense::click()),
-                                )
-                                .clicked();
-                            if clicked {
-                                panel.selected = crate::workspace::select_by_compare(
-                                    panel.filtered_entries().into_iter(),
-                                    map,
-                                    crit,
-                                );
-                            }
-                        }
-                    }
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let hidden_label = if panel.show_hidden {
-                            "Hidden: ON"
-                        } else {
-                            "Hidden: OFF"
-                        };
-                        ui.label(
-                            egui::RichText::new(hidden_label)
-                                .size(11.0)
-                                .color(t.text_muted),
-                        );
-                    });
-                });
-            });
+        // Status bar extracted to app/status_bar.rs (SRP, DRY)
+        crate::app::status_bar::render_status_bar(ui, panel, t, compare);
     }
 
     pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {
