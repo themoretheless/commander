@@ -451,11 +451,15 @@ impl App {
                     panel.drag_entries = if panel.selected.is_empty() {
                         vec![anchor]
                     } else {
-                        panel
-                            .filtered_entries()
+                        filtered
                             .iter()
-                            .filter(|e| panel.selected.contains(&e.path))
-                            .map(|e| e.path.clone())
+                            .filter_map(|&entry_idx| {
+                                let entry = &panel.entries[entry_idx];
+                                panel
+                                    .selected
+                                    .contains(&entry.path)
+                                    .then(|| entry.path.clone())
+                            })
                             .collect()
                     };
                 }

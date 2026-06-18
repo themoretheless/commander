@@ -63,19 +63,7 @@ impl App {
             ctx.request_repaint();
         }
 
-        if self.focus_mode {
-            let exit_focus = ctx.input(|i| {
-                crate::focus_mode::should_exit(
-                    self.focus_started_at,
-                    i.time,
-                    i.pointer.delta().length_sq(),
-                    i.key_pressed(egui::Key::Escape),
-                )
-            });
-            if exit_focus {
-                self.focus_mode = false;
-            }
-        }
+        self.update_focus_mode(ctx);
 
         // First frame: wire the repaint callback into both panels and do
         // the initial directory read.
@@ -339,7 +327,27 @@ impl App {
         crate::quick_actions::QuickActionContext {
             selected_count: active.selected.len(),
             shelf_count: self.ws.shelf.len(),
-            has_filters: !active.search_query.is_empty() || !active.facets.is_empty(),
+            has_filters: crate::quick_actions::has_filters(
+                &active.search_query,
+                !active.facets.is_empty(),
+            ),
+        }
+    }
+
+    fn update_focus_mode(&mut self, ctx: &egui::Context) {
+        if !self.focus_mode {
+            return;
+        }
+        let exit_focus = ctx.input(|i| {
+            crate::focus_mode::should_exit(
+                self.focus_started_at,
+                i.time,
+                i.pointer.delta().length_sq(),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if exit_focus {
+            self.focus_mode = false;
         }
     }
 
