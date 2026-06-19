@@ -21,11 +21,14 @@ pub type FlatList = Arc<Mutex<Option<Vec<FlatFileEntry>>>>;
 const MAX_FLAT_DEPTH: usize = 5;
 const MAX_FLAT_ENTRIES: usize = 5000;
 
-/// Names of top-level entries that already exist at `target`.
+/// Names of top-level entries whose name is already taken at `target`. A name
+/// occupied by a broken symlink counts: it cannot be written without clobbering
+/// and must be surfaced as a conflict, which `Path::exists` (it follows the
+/// link and reports the missing target as absent) would miss.
 pub fn find_conflicts(entries: &[FileEntry], target: &Path) -> Vec<String> {
     entries
         .iter()
-        .filter(|e| target.join(&e.name).exists())
+        .filter(|e| crate::fs_util::path_is_taken(&target.join(&e.name)))
         .map(|e| e.name.clone())
         .collect()
 }
@@ -103,11 +106,15 @@ fn flatten_entry(
                 }
                 let cp = child.path();
                 let cn = child.file_name().to_string_lossy().to_string();
-                let child_is_dir = cp.is_dir();
+                // Use the directory entry's own type, which does not follow
+                // symlinks: a symlinked directory is shown as a leaf, never
+                // recursed into. That keeps the preview bounded (no escaping the
+                // subtree, no cycles) and matches how the copy treats links.
+                let child_is_dir = child.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 let child_size = if child_is_dir {
                     0
                 } else {
-                    cp.metadata().map(|m| m.len()).unwrap_or(0)
+                    child.metadata().map(|m| m.len()).unwrap_or(0)
                 };
                 flatten_entry(
                     &cp,

@@ -43,11 +43,19 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 ///
 /// Used to reject destructive transfers: copying or moving a directory into
 /// itself or its own subtree, or a file onto itself. Resolves symlinks and
-/// `.`/`..` via `canonicalize` where possible (canonicalizing `dest`'s
-/// existing parent, since `dest` itself may not exist yet), and falls back to
-/// a lexical, component-wise prefix check when canonicalization fails.
+/// `.`/`..` via `canonicalize`, canonicalizing `dest`'s existing parent since
+/// `dest` itself may not exist yet.
+///
+/// Errs on the side of refusal: a lexical prefix check can be defeated by a
+/// symlink (a `dest` outside `src` lexically but inside it once resolved), so
+/// when the source cannot be resolved to a real path we refuse rather than
+/// risk a destructive self-copy the check would miss. The source is always an
+/// entry that was just scanned, so a canonicalize failure here means it raced
+/// away and skipping it is correct anyway.
 pub fn is_within_or_equal(dest: &Path, src: &Path) -> bool {
-    let src_c = src.canonicalize();
+    let Ok(src_c) = src.canonicalize() else {
+        return true;
+    };
     // Prefer canonicalizing the full destination (resolves a symlink in its
     // final component and any `.`/`..`); if it doesn't exist yet, canonicalize
     // its parent and re-attach the file name.
@@ -58,11 +66,22 @@ pub fn is_within_or_equal(dest: &Path, src: &Path) -> bool {
         }),
         None => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
     });
-    match (src_c, dest_c) {
-        (Ok(s), Ok(d)) => d.starts_with(&s),
-        // Canonicalization failed; fall back to a lexical check.
-        _ => dest.starts_with(src),
+    match dest_c {
+        Ok(d) => d.starts_with(&src_c),
+        // Destination doesn't resolve (its parent is missing, so the copy would
+        // fail regardless): compare the resolved source against the lexical
+        // destination as a last resort instead of allowing it unchecked.
+        Err(_) => dest.starts_with(&src_c) || dest.starts_with(src),
     }
+}
+
+/// True when `path` is occupied by anything: a file, a directory, or a symlink
+/// (even a broken one). Unlike [`Path::exists`], this does not follow the final
+/// symlink, so a name pointing at a missing target still counts as taken. Used
+/// for conflict detection, where the question is "is this name free to write?"
+/// not "does the target resolve?".
+pub fn path_is_taken(path: &Path) -> bool {
+    path.symlink_metadata().is_ok()
 }
 
 /// First path produced by `candidate` that doesn't exist yet.
@@ -418,5 +437,26 @@ mod tests {
         // dest does not exist yet but its parent (a/sub) does.
         tmp.dir("a/sub");
         assert!(is_within_or_equal(&a.join("sub").join("new"), &a));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_within_or_equal_sees_through_a_symlinked_destination() {
+        // `link` points back into `a`, so `link/new` is really `a/new` even
+        // though it is not a lexical prefix of `a`. Canonicalization must catch
+        // it; a naive string check would not.
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        std::os::unix::fs::symlink(&a, tmp.path().join("link")).unwrap();
+        assert!(is_within_or_equal(&tmp.path().join("link").join("new"), &a));
+    }
+
+    #[test]
+    fn is_within_or_equal_refuses_when_source_cannot_be_resolved() {
+        // A source that does not exist cannot be reasoned about; refuse rather
+        // than fall back to an unverifiable lexical comparison.
+        let tmp = TempDir::new();
+        let missing = tmp.path().join("gone");
+        assert!(is_within_or_equal(&tmp.path().join("dest"), &missing));
     }
 }

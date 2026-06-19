@@ -238,10 +238,15 @@ fn fit_stats(
 ) -> (u64, Option<u64>, bool) {
     let need = transfer::total_bytes(entries);
     let free = crate::fs_util::free_space(target);
-    let same = entries
-        .first()
-        .and_then(|e| e.path.parent())
-        .is_some_and(|src| crate::fs_util::same_volume(src, target));
+    // "Same volume" must hold for EVERY source, not just the first: a mixed
+    // selection straddling volumes cannot take the no-extra-space move path, so
+    // one cross-volume entry makes the whole batch cross-volume for the guard.
+    let same = !entries.is_empty()
+        && entries.iter().all(|e| {
+            e.path
+                .parent()
+                .is_some_and(|src| crate::fs_util::same_volume(src, target))
+        });
     (need, free, same)
 }
 
@@ -733,7 +738,9 @@ impl Workspace {
     /// Cancel active transfer.
     pub fn cancel_transfer(&mut self) {
         if let Some(ref state) = self.active_transfer {
-            let mut s = state.lock().unwrap();
+            // A poisoned progress mutex (worker thread panicked) must not panic
+            // the UI thread in turn; recover the guard and flag cancellation.
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             s.cancelled = true;
         }
     }
@@ -747,9 +754,14 @@ impl Workspace {
             .active_transfer
             .as_ref()
             .map(|s| {
-                let s = s.lock().unwrap();
+                // Recover from a poisoned lock rather than panicking the UI.
+                let s = s.lock().unwrap_or_else(|e| e.into_inner());
+                // Close only once the worker has set `finished` (it now does so
+                // even on cancel, after its cleanup), so we never tear the
+                // shared state out from under a still-running cleanup pass. A
+                // finished run with errors stays open so the user can read them.
                 let clean = s.finished && s.errors.is_empty() && !s.cancelled;
-                (s.cancelled || (s.finished && s.errors.is_empty()), clean)
+                (s.finished && (s.cancelled || s.errors.is_empty()), clean)
             })
             .unwrap_or((false, false));
 

@@ -214,7 +214,7 @@ pub fn spawn_transfer(
                 let mut s = progress.lock().unwrap();
                 s.current_file = entry.name.clone();
                 if s.cancelled {
-                    return;
+                    break; // fall through to the finished-setter below
                 }
             }
 
@@ -247,7 +247,9 @@ pub fn spawn_transfer(
 
             // Check the destination LIVE, not the scan-time conflict list: the
             // confirmation dialog can sit open while the filesystem changes.
-            let dest_present = dest.exists();
+            // `path_is_taken` (not `exists`) so a broken symlink occupying the
+            // name is honoured as a conflict, matching `find_conflicts`.
+            let dest_present = fs_util::path_is_taken(&dest);
             if dest_present {
                 match spec.policy {
                     OverwritePolicy::SkipAll => {
@@ -303,7 +305,7 @@ pub fn spawn_transfer(
                     if s.cancelled {
                         drop(s);
                         let _ = cleanup_path(&copy_target);
-                        return;
+                        break; // fall through to the finished-setter below
                     }
                     s.errors.push(format!("{}: {}", entry.name, e));
                 }
