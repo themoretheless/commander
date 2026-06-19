@@ -89,6 +89,16 @@ pub enum Command {
     InvertSelection,
     /// Select active-panel entries whose name also exists in the other panel.
     SelectSameNamed,
+    /// Stash the current selection for later set-algebra combinations.
+    StashSelection,
+    /// Replace the selection with (selection ∪ stash).
+    StashUnion,
+    /// Replace the selection with (selection ∩ stash).
+    StashIntersect,
+    /// Replace the selection with (selection - stash).
+    StashSubtract,
+    /// Replace the selection with (selection symmetric-difference stash).
+    StashSymmetricDiff,
     ToggleHidden,
 }
 
@@ -128,6 +138,19 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             "Select files also in other panel",
             "",
             Command::SelectSameNamed,
+        ),
+        ("Stash selection", "", Command::StashSelection),
+        ("Selection: union with stash", "", Command::StashUnion),
+        (
+            "Selection: intersect with stash",
+            "",
+            Command::StashIntersect,
+        ),
+        ("Selection: subtract stash", "", Command::StashSubtract),
+        (
+            "Selection: symmetric difference with stash",
+            "",
+            Command::StashSymmetricDiff,
         ),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
