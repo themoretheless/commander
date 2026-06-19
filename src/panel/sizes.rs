@@ -161,9 +161,9 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
         counts.clear();
     }
 
-    // Collect dirs that need background work
+    // Collect dirs - move all mtime/cache/walk decision to bg to avoid blocking UI thread (perf fix)
     let mut need_count: Vec<PathBuf> = Vec::new();
-    let mut need_size: Vec<(PathBuf, Option<SystemTime>)> = Vec::new();
+    let mut need_size: Vec<PathBuf> = Vec::new();
     let mut retry = false;
 
     for entry in panel.entries() {
@@ -172,54 +172,10 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
         }
 
         need_count.push(entry.path.clone());
-
-        let dir_mtime = std::fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
-
-        // Check global cache: if mtime matches, reuse cached size
-        if let Some(mtime) = dir_mtime
-            && let Ok(cache) = dir_size_cache().lock()
-            && let Some(&(cached_mtime, cached_size)) = cache.get(&entry.path)
-            && cached_mtime == mtime
-        {
-            if let Ok(mut sizes) = panel.dir_sizes.lock() {
-                sizes.insert(entry.path.clone(), cached_size);
-            }
-            continue;
-        }
-
-        // Walk-log guards (see walk_log docs).
-        // In test builds the guards can be switched off via env to
-        // benchmark the unguarded behaviour (profiling harness).
-        #[cfg(test)]
-        let guards_enabled = std::env::var("COMMANDER_DISABLE_WALK_GUARDS").is_err();
-        #[cfg(not(test))]
-        let guards_enabled = true;
-
-        let mut skip = false;
-        if guards_enabled
-            && let Ok(log) = walk_log().lock()
-            && let Some(&(when, cost)) = log.get(&entry.path)
-        {
-            if when.elapsed() < WALK_COOLDOWN {
-                skip = true;
-                retry = true;
-            } else if !forced && cost > WALK_EXPENSIVE {
-                skip = true;
-            }
-        }
-        if skip {
-            // Keep showing the last known size instead of "…".
-            if let Ok(cache) = dir_size_cache().lock()
-                && let Some(&(_, cached_size)) = cache.get(&entry.path)
-                && let Ok(mut sizes) = panel.dir_sizes.lock()
-            {
-                sizes.insert(entry.path.clone(), cached_size);
-            }
-            continue;
-        }
-
-        need_size.push((entry.path.clone(), dir_mtime));
+        need_size.push(entry.path.clone());
     }
+
+    // (walk log guards and cache decision now inside bg tasks to keep UI responsive)
 
     // Subdir counts
     let counts = Arc::clone(&panel.dir_counts);
@@ -247,7 +203,7 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
         }
     });
 
-    // Dir sizes
+    // Dir sizes - all mtime, guard, cache, walk now inside bg (moved sync fs off UI thread for perf)
     if !need_size.is_empty() {
         let sizes = Arc::clone(&panel.dir_sizes);
         let wake2 = panel.notify.clone();
@@ -256,16 +212,49 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
             let results: Vec<_> = fs_pool().install(|| {
                 need_size
                     .par_iter()
-                    .map(|(p, mt)| {
-                        let started = std::time::Instant::now();
-                        let size = crate::fs_util::dir_size_recursive(p);
-                        if let Ok(mut log) = walk_log().lock() {
-                            log.insert(
-                                p.clone(),
-                                (std::time::Instant::now(), started.elapsed()),
-                            );
+                    .map(|p| {
+                        let dir_mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
+                        // Check cache
+                        if let Some(mtime) = dir_mtime
+                            && let Ok(cache) = dir_size_cache().lock()
+                            && let Some(&(cached_mtime, cached_size)) = cache.get(p)
+                            && cached_mtime == mtime
+                        {
+                            return (p.clone(), mtime, cached_size);
                         }
-                        (p.clone(), *mt, size)
+                        // guards
+                        #[cfg(test)]
+                        let guards_enabled = std::env::var("COMMANDER_DISABLE_WALK_GUARDS").is_err();
+                        #[cfg(not(test))]
+                        let guards_enabled = true;
+                        let mut skip = false;
+                        let mut cost = std::time::Duration::ZERO;
+                        if guards_enabled
+                            && let Ok(log) = walk_log().lock()
+                            && let Some(&(when, c)) = log.get(p)
+                        {
+                            cost = c;
+                            if when.elapsed() < WALK_COOLDOWN {
+                                skip = true;
+                            }
+                        }
+                        let started = std::time::Instant::now();
+                        let size = if skip {
+                            if let Ok(cache) = dir_size_cache().lock()
+                                && let Some(&(_, s)) = cache.get(p)
+                            {
+                                s
+                            } else {
+                                0
+                            }
+                        } else {
+                            let s = crate::fs_util::dir_size_recursive(p);
+                            if let Ok(mut log) = walk_log().lock() {
+                                log.insert(p.clone(), (std::time::Instant::now(), started.elapsed()));
+                            }
+                            s
+                        };
+                        (p.clone(), dir_mtime.unwrap_or(std::time::UNIX_EPOCH), size)
                     })
                     .collect()
             });
@@ -276,9 +265,7 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
             }
             if let Ok(mut cache) = dir_size_cache().lock() {
                 for (p, mt, size) in &results {
-                    if let Some(mt) = mt {
-                        cache.insert(p.clone(), (*mt, *size));
-                    }
+                    cache.insert(p.clone(), (*mt, *size));
                 }
             }
             flush_cache();

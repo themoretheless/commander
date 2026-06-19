@@ -141,11 +141,13 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::T)) && !self.macro_recording {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
-                if self.ws.user_tags.contains_key(&p) {
-                    self.ws.user_tags.remove(&p);
+                let mut m = (*self.ws.user_tags).clone();
+                if m.contains_key(&p) {
+                    m.remove(&p);
                 } else {
-                    self.ws.user_tags.insert(p, "★".to_string());
+                    m.insert(p, "★".to_string());
                 }
+                self.ws.user_tags = std::sync::Arc::new(m);
             }
         }
 
@@ -153,11 +155,13 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::N)) && !self.macro_recording {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
-                if self.ws.file_notes.contains_key(&p) {
-                    self.ws.file_notes.remove(&p);
+                let mut m = (*self.ws.file_notes).clone();
+                if m.contains_key(&p) {
+                    m.remove(&p);
                 } else {
-                    self.ws.file_notes.insert(p, "note".to_string());
+                    m.insert(p, "note".to_string());
                 }
+                self.ws.file_notes = std::sync::Arc::new(m);
             }
         }
 
@@ -890,7 +894,7 @@ impl App {
             ui.spacing_mut().item_spacing = egui::vec2(1.0, 0.0);
             let mut to_close: Option<usize> = None;
             for i in 0..len {
-                let tab = if is_left { &self.ws.left.tabs[i] } else { &self.ws.right.tabs[i] };
+                let tab = if is_left { self.ws.left.tab(i) } else { self.ws.right.tab(i) }.unwrap();
                 let title = Self::tab_title(tab);
                 let active = if is_left { self.ws.left.active_index() } else { self.ws.right.active_index() };
                 let is_active = i == active;
@@ -924,7 +928,7 @@ impl App {
                     }
                     if ui.button("Duplicate tab").clicked() {
                         self.ws.active = side_active;
-                        if is_left { self.ws.left.active = i; } else { self.ws.right.active = i; }
+                        if is_left { self.ws.left.set_active(i); } else { self.ws.right.set_active(i); }
                         self.ws.duplicate_active_tab();
                         ui.close_menu();
                     }
@@ -977,19 +981,10 @@ impl App {
                 if let Some((s, di)) = self.dragged_tab.take() {
                     if s == is_left && di < len {
                         if let Some(target) = insert_target {
-                            let tab = if is_left {
-                                self.ws.left.tabs.remove(di)
-                            } else {
-                                self.ws.right.tabs.remove(di)
-                            };
-                            let adj_target = if target > di { target - 1 } else { target };
-                            let final_idx = adj_target.min(if is_left { self.ws.left.tabs.len() } else { self.ws.right.tabs.len() });
                             if is_left {
-                                self.ws.left.tabs.insert(final_idx, tab);
-                                self.ws.left.set_active(final_idx);
+                                self.ws.left.reorder_tab(di, target);
                             } else {
-                                self.ws.right.tabs.insert(final_idx, tab);
-                                self.ws.right.set_active(final_idx);
+                                self.ws.right.reorder_tab(di, target);
                             }
                         }
                     }
@@ -1132,10 +1127,14 @@ impl App {
                     ui.label(format!("Current: {}", e.name));
                     if self.ws.user_tags.contains_key(&p) {
                         if ui.button("Remove tag").clicked() {
-                            self.ws.user_tags.remove(&p);
+                            let mut m = (*self.ws.user_tags).clone();
+                            m.remove(&p);
+                            self.ws.user_tags = std::sync::Arc::new(m);
                         }
                     } else if ui.button("Assign ★ tag").clicked() {
-                        self.ws.user_tags.insert(p.clone(), "★".into());
+                        let mut m = (*self.ws.user_tags).clone();
+                        m.insert(p.clone(), "★".into());
+                        self.ws.user_tags = std::sync::Arc::new(m);
                     }
                 }
                 ui.label(format!("Tagged items: {}", self.ws.user_tags.len()));
@@ -1146,7 +1145,9 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Close").clicked() { close = true; }
-                    if ui.button("Clear all").clicked() { self.ws.user_tags.clear(); }
+                    if ui.button("Clear all").clicked() {
+                        self.ws.user_tags = std::sync::Arc::new(std::collections::HashMap::new());
+                    }
                 });
             });
         if close {
@@ -1238,11 +1239,13 @@ impl App {
                     let mut note = self.ws.file_notes.get(&p).cloned().unwrap_or_default();
                     ui.label(format!("Note for {}", e.name));
                     if ui.add(egui::TextEdit::singleline(&mut note).desired_width(200.0)).changed() {
+                        let mut m = (*self.ws.file_notes).clone();
                         if note.trim().is_empty() {
-                            self.ws.file_notes.remove(&p);
+                            m.remove(&p);
                         } else {
-                            self.ws.file_notes.insert(p.clone(), note);
+                            m.insert(p.clone(), note);
                         }
+                        self.ws.file_notes = std::sync::Arc::new(m);
                     }
                 }
                 ui.label(format!("Notes: {}", self.ws.file_notes.len()));

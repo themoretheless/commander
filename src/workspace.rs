@@ -142,6 +142,7 @@ impl TabSide {
     }
     pub fn len(&self) -> usize { self.tabs.len() }
     pub fn active_index(&self) -> usize { self.active }
+    pub fn tab(&self, i: usize) -> Option<&PanelTab> { self.tabs.get(i) }
 
     pub fn active_tab_state(&self) -> &PanelState { &self.active_tab().state }
     pub fn active_tab_state_mut(&mut self) -> &mut PanelState { &mut self.active_tab_mut().state }
@@ -171,6 +172,16 @@ impl TabSide {
             self.tabs.clear();
             self.tabs.push(keep);
             self.active = 0;
+        }
+    }
+
+    pub fn reorder_tab(&mut self, from: usize, to: usize) {
+        if from < self.tabs.len() && to <= self.tabs.len() && from != to {
+            let tab = self.tabs.remove(from);
+            let adj = if to > from { to - 1 } else { to };
+            let final_idx = adj.min(self.tabs.len());
+            self.tabs.insert(final_idx, tab);
+            self.active = final_idx;
         }
     }
 }
@@ -207,8 +218,8 @@ pub struct Workspace {
     // Presentation / tag data moved here for thinner App (logic + data in ws).
     pub show_git_status: bool,
     pub linked_scroll: bool,
-    pub user_tags: std::collections::HashMap<PathBuf, String>,
-    pub file_notes: std::collections::HashMap<PathBuf, String>,
+    pub user_tags: std::sync::Arc<std::collections::HashMap<PathBuf, String>>,
+    pub file_notes: std::sync::Arc<std::collections::HashMap<PathBuf, String>>,
 
     // Git bg channel owned here (thin App: ws handles receive + apply). Using tokio unbounded channel.
     pub git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
@@ -315,8 +326,8 @@ impl Workspace {
             opener,
             show_git_status: true,
             linked_scroll: false,
-            user_tags: std::collections::HashMap::new(),
-            file_notes: std::collections::HashMap::new(),
+            user_tags: std::sync::Arc::new(std::collections::HashMap::new()),
+            file_notes: std::sync::Arc::new(std::collections::HashMap::new()),
             git_tx: None,
             git_rx: None,
         }
@@ -433,7 +444,7 @@ impl Workspace {
             new_state.set_show_hidden(curr.state.show_hidden());
             side.tabs.push(PanelTab { state: new_state });
             let new_idx = side.tabs.len() - 1;
-            side.active = new_idx;
+            side.set_active(new_idx);
             // Load content immediately for the new tab.
             side.tabs[new_idx].state.refresh();
         }

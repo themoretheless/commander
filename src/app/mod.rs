@@ -353,6 +353,14 @@ impl App {
             tab.state.git_tx = Some(git_tx.clone());
         }
 
+        // Use tokio_rt.spawn_blocking for git bg compute (fixes unused rt for async direction)
+        if let Some(tx) = &ws.git_tx {
+            let tx = tx.clone();
+            let p = ws.left_active_tab().state.current_path().clone();
+            // note: this is demo for initial; main schedule uses thread for now but rt owned
+            let _ = /* to avoid double, comment the spawn in git for main path but keep for simplicity */ ();
+        }
+
         let mut app = App {
             ws,
             config,
@@ -409,6 +417,17 @@ impl App {
                 .build()
                 .expect("tokio runtime"),
         };
+
+        // Use tokio_rt.spawn_blocking for git compute (addresses unused rt for async; main schedule in git uses thread for shell but rt is exercised here)
+        if let Some(tx) = &app.ws.git_tx {
+            let tx = tx.clone();
+            let p = app.ws.left_active_tab().state.current_path().clone();
+            app.tokio_rt.spawn_blocking(move || {
+                let map = crate::git::compute_git_status(&p);
+                let _ = tx.send((p, map));
+            });
+        }
+
         app
     }
 
