@@ -17,6 +17,7 @@ mod native_menu;
 mod panel;
 mod query;
 mod quick_actions;
+mod reldate;
 mod rename;
 mod scan;
 mod selection_summary;

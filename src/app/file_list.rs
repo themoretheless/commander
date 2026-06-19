@@ -159,6 +159,10 @@ impl App {
                 let viewport = ui.clip_rect();
                 let scroll_top = viewport.top() - ui.min_rect().top();
 
+                // One "now" for the whole frame, so every visible row's
+                // relative Modified date is measured from the same instant.
+                let now = std::time::SystemTime::now();
+
                 // Feed the visible-row count back to the core for PageUp/Down.
                 panel.page_rows = ((viewport.height() / row_h).floor() as usize).max(1);
 
@@ -378,11 +382,21 @@ impl App {
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(entry.modified_display())
+                            // Relative date ("3h", "Yesterday", "Jun 5") from
+                            // the live clock; the precise local timestamp stays
+                            // one hover away. Unknown mtime keeps the "–" stub.
+                            let modified_label = match entry.modified {
+                                Some(m) => crate::reldate::relative_date(m, now),
+                                None => entry.modified_display().to_string(),
+                            };
+                            let modified_resp = ui.label(
+                                egui::RichText::new(&modified_label)
                                     .size(metrics.meta_pt)
                                     .color(t.text_muted),
                             );
+                            if entry.modified.is_some() {
+                                modified_resp.on_hover_text(&entry.modified_str);
+                            }
                             ui.add_space(16.0);
                             let size_text = if let Some(ref sizes) = dir_sizes {
                                 entry.size_display_with_dir_size(sizes)
