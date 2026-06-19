@@ -7,9 +7,10 @@
 //! through a temporary). This module turns an `(old, new)` map into an ordered,
 //! mid-batch-safe sequence of single renames.
 //!
-//! Pure and standalone; the studio wires it in a later iteration, so the whole
-//! surface is exercised by the unit tests below until then.
-#![allow(dead_code)] // remove once the rename studio applies this ordering
+//! Pure and standalone: [`safe_rename_order`] computes the plan and
+//! [`apply_steps`] executes it through an injected rename, so the ordering and
+//! rollback are unit-tested without touching disk while the studio runs it for
+//! real.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,6 +31,44 @@ pub enum RenameStep {
     ToTemp { from: String, tmp: String },
     /// Move a previously-staged scratch name into its final place.
     FromTemp { tmp: String, to: String },
+}
+
+impl RenameStep {
+    /// The `(source, destination)` names this step renames, forward.
+    fn endpoints(&self) -> (&str, &str) {
+        match self {
+            RenameStep::Direct { from, to } => (from, to),
+            RenameStep::ToTemp { from, tmp } => (from, tmp),
+            RenameStep::FromTemp { tmp, to } => (tmp, to),
+        }
+    }
+}
+
+/// Execute an ordered plan via an injected `rename(from, to)` (so the same
+/// logic drives `std::fs::rename` in the app and an in-memory map in tests).
+/// On the first failure, the already-applied steps are reversed best-effort
+/// (newest first), so a partial OS error never strands a file at a temp name.
+/// Returns the number of entries landed in their final place on success.
+pub fn apply_steps<E>(
+    steps: &[RenameStep],
+    mut rename: impl FnMut(&str, &str) -> Result<(), E>,
+) -> Result<usize, E> {
+    for (i, step) in steps.iter().enumerate() {
+        let (from, to) = step.endpoints();
+        if let Err(e) = rename(from, to) {
+            for prev in steps[..i].iter().rev() {
+                let (pf, pt) = prev.endpoints();
+                let _ = rename(pt, pf); // reverse; best-effort
+            }
+            return Err(e);
+        }
+    }
+    // Every step except a bare ToTemp lands a name in its final place; a cycle
+    // of k entries is (k-1) Direct + 1 FromTemp, so this is exactly k per cycle.
+    Ok(steps
+        .iter()
+        .filter(|s| !matches!(s, RenameStep::ToTemp { .. }))
+        .count())
 }
 
 /// The result of ordering a rename batch.
@@ -378,6 +417,54 @@ mod tests {
         let present = ["free.txt", "a", "b", "p", "q"];
         let order = safe_rename_order(&map(&pairs), &existing(&present));
         assert_eq!(simulate(&order, &present), expected_final(&present, &pairs));
+    }
+
+    #[test]
+    fn apply_steps_executes_a_swap_through_a_temp() {
+        let pairs = [("a", "b"), ("b", "a")];
+        let order = safe_rename_order(&map(&pairs), &existing(&["a", "b"]));
+        // Track file contents so we can prove the swap actually happened.
+        let mut fs: HashMap<String, String> = HashMap::from([
+            ("a".to_string(), "A".to_string()),
+            ("b".to_string(), "B".to_string()),
+        ]);
+        let done = apply_steps(steps(&order), |from, to| {
+            let v = fs.remove(from).ok_or("missing source")?;
+            fs.insert(to.to_string(), v);
+            Ok::<(), &str>(())
+        })
+        .unwrap();
+        assert_eq!(done, 2);
+        assert_eq!(
+            fs.get("a"),
+            Some(&"B".to_string()),
+            "a now holds b's content"
+        );
+        assert_eq!(
+            fs.get("b"),
+            Some(&"A".to_string()),
+            "b now holds a's content"
+        );
+        assert_eq!(fs.len(), 2, "no temp left behind");
+    }
+
+    #[test]
+    fn apply_steps_rolls_back_on_failure() {
+        // Two independent renames; fail the second and assert the first reverts.
+        let pairs = [("a", "x"), ("b", "y")];
+        let order = safe_rename_order(&map(&pairs), &existing(&["a", "b"]));
+        let mut fs: HashSet<String> = existing(&["a", "b"]);
+        let res = apply_steps(steps(&order), |from, to| {
+            if to == "y" {
+                return Err("boom");
+            }
+            assert!(fs.remove(from));
+            fs.insert(to.to_string());
+            Ok::<(), &str>(())
+        });
+        assert!(res.is_err());
+        // a->x was applied then rolled back; nothing landed.
+        assert_eq!(fs, existing(&["a", "b"]));
     }
 
     #[test]

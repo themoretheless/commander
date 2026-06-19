@@ -872,7 +872,11 @@ impl Workspace {
                 self.start_move_silent(sources, dest_dir, notify);
             }
             crate::undo::Action::BatchRename { dir, pairs } => {
-                let _ = Self::rename_pairs_staged(&dir, &pairs);
+                // Undo/redo replays recorded pairs without re-planning, so order
+                // them against the live directory (the inverse of a swap or a
+                // case-only rename is itself a swap/case-only and needs staging).
+                let existing = Self::dir_names(&dir);
+                let _ = Self::apply_rename_order(&dir, &pairs, &existing);
                 self.left.refresh();
                 self.right.refresh();
             }
@@ -915,38 +919,35 @@ impl Workspace {
         transfer::spawn_transfer(spec, progress, notify);
     }
 
-    /// Rename each `(from, to)` name in `dir`, staging through unique temp names
-    /// so reorderings cannot clobber. Rolls back staged temps on a phase-1
-    /// failure. Returns how many renames landed, or the OS error.
-    fn rename_pairs_staged(dir: &Path, pairs: &[(String, String)]) -> Result<usize, String> {
-        // Refuse to clobber: a target that already exists on disk and is not
-        // itself being renamed away (so it will be vacated) would be silently
-        // overwritten by phase 2. The forward path is pre-validated by the
-        // planner, but undo/redo re-runs recorded pairs without re-planning,
-        // so the directory may have changed underneath us.
-        let from_names: std::collections::HashSet<&str> =
-            pairs.iter().map(|(f, _)| f.as_str()).collect();
-        for (_, to) in pairs {
-            if !from_names.contains(to.as_str()) && dir.join(to).symlink_metadata().is_ok() {
-                return Err(format!("\u{201c}{to}\u{201d} already exists"));
-            }
+    /// Every name currently in `dir` (best-effort), so a rename batch can be
+    /// ordered against the live directory at apply/replay time.
+    fn dir_names(dir: &Path) -> std::collections::HashSet<String> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect()
+    }
+
+    /// Apply a `(from, to)` rename map in `dir` by computing a mid-batch-safe
+    /// order (swaps, rotations and case-only renames are staged through a temp;
+    /// see [`crate::rename_order`]) and executing it, rolling back on an OS
+    /// failure. Returns how many entries were renamed, or a user-facing error
+    /// (an unresolvable conflict, or the first OS error).
+    fn apply_rename_order(
+        dir: &Path,
+        map: &[(String, String)],
+        existing: &std::collections::HashSet<String>,
+    ) -> Result<usize, String> {
+        use crate::rename_order::{RenameOrder, apply_steps, safe_rename_order};
+        match safe_rename_order(map, existing) {
+            RenameOrder::Conflict(why) => Err(why),
+            RenameOrder::Steps(steps) => apply_steps(&steps, |from, to| {
+                std::fs::rename(dir.join(from), dir.join(to))
+            })
+            .map_err(|e: std::io::Error| e.to_string()),
         }
-        let temp_name = |i: usize| format!(".cmdr-rename-{i}.tmp");
-        for (i, (from, _)) in pairs.iter().enumerate() {
-            if let Err(e) = std::fs::rename(dir.join(from), dir.join(temp_name(i))) {
-                for (j, (orig, _)) in pairs.iter().enumerate().take(i) {
-                    let _ = std::fs::rename(dir.join(temp_name(j)), dir.join(orig));
-                }
-                return Err(e.to_string());
-            }
-        }
-        let mut done = 0;
-        for (i, (_, to)) in pairs.iter().enumerate() {
-            if std::fs::rename(dir.join(temp_name(i)), dir.join(to)).is_ok() {
-                done += 1;
-            }
-        }
-        Ok(done)
     }
 
     /// Move every entry to the Trash, counting successes and failures so the
@@ -1062,10 +1063,12 @@ impl Workspace {
             .collect()
     }
 
-    /// Apply a validated batch rename to the active panel. Renames stage through
-    /// unique temporary names first so swaps and rotations cannot clobber each
-    /// other; on any failure the staged files are rolled back. Returns the
-    /// number of entries renamed, or a user-facing error.
+    /// Apply a batch rename to the active panel. Genuine swaps, rotations and
+    /// case-only renames are now allowed: they are ordered safely (staging
+    /// through a temp where needed) by [`Self::apply_rename_order`]. Only
+    /// invalid target names and unresolvable conflicts (a target landing on an
+    /// untouched sibling, or two rows clashing) are refused. Returns the number
+    /// of entries renamed, or a user-facing error.
     pub fn apply_batch_rename(
         &mut self,
         rule: &crate::rename::RenameRule,
@@ -1076,17 +1079,24 @@ impl Workspace {
         }
         let existing = self.active_dir_names();
         let plans = crate::rename::plan_batch_rename(&names, &existing, rule);
-        if !crate::rename::plan_is_applicable(&plans) {
-            return Err("Resolve collisions or invalid names first".into());
+        if plans
+            .iter()
+            .any(|p| p.status == crate::rename::PlanStatus::Invalid)
+        {
+            return Err("Fix the invalid names first".into());
         }
-        let dir = self.active_panel_ref().current_path.clone();
+        // Every row whose name actually changes (Ok or a resolvable collision).
         let changes: Vec<(String, String)> = plans
             .iter()
-            .filter(|p| p.status == crate::rename::PlanStatus::Ok)
+            .filter(|p| p.to != p.from)
             .map(|p| (p.from.clone(), p.to.clone()))
             .collect();
+        if changes.is_empty() {
+            return Ok(0);
+        }
+        let dir = self.active_panel_ref().current_path.clone();
 
-        let done = match Self::rename_pairs_staged(&dir, &changes) {
+        let done = match Self::apply_rename_order(&dir, &changes, &existing) {
             Ok(done) => done,
             Err(e) => {
                 self.active_panel().refresh();
@@ -2372,13 +2382,14 @@ mod tests {
     }
 
     #[test]
-    fn rename_pairs_staged_refuses_to_clobber_unrelated_target() {
+    fn apply_rename_order_refuses_to_clobber_unrelated_target() {
         let tmp = TempDir::new();
         tmp.file("a.txt", "1");
         tmp.file("b.txt", "2"); // not part of the batch
-        let pairs = vec![("a.txt".to_string(), "b.txt".to_string())];
-        let r = Workspace::rename_pairs_staged(tmp.path(), &pairs);
-        assert!(r.is_err(), "renaming onto an existing file is refused");
+        let map = vec![("a.txt".to_string(), "b.txt".to_string())];
+        let existing = Workspace::dir_names(tmp.path());
+        let r = Workspace::apply_rename_order(tmp.path(), &map, &existing);
+        assert!(r.is_err(), "renaming onto an untouched sibling is refused");
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "1"
@@ -2390,16 +2401,16 @@ mod tests {
     }
 
     #[test]
-    fn rename_pairs_staged_allows_rotation_through_vacated_names() {
+    fn apply_rename_order_swaps_two_files() {
         let tmp = TempDir::new();
         tmp.file("a.txt", "A");
         tmp.file("b.txt", "B");
-        // Swap a<->b: both targets are vacated by the batch, so it is allowed.
-        let pairs = vec![
+        let map = vec![
             ("a.txt".to_string(), "b.txt".to_string()),
             ("b.txt".to_string(), "a.txt".to_string()),
         ];
-        let n = Workspace::rename_pairs_staged(tmp.path(), &pairs).unwrap();
+        let existing = Workspace::dir_names(tmp.path());
+        let n = Workspace::apply_rename_order(tmp.path(), &map, &existing).unwrap();
         assert_eq!(n, 2);
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
@@ -2409,6 +2420,44 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
             "A"
         );
+    }
+
+    #[test]
+    fn apply_batch_rename_allows_case_only_rename() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("readme.md", "x");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(l.path().join("readme.md"));
+        // Upper-case the stem: readme.md -> README.md (a case-only change the
+        // old studio refused on a case-insensitive volume).
+        let rule = crate::rename::RenameRule {
+            case: crate::rename::CaseMode::Upper,
+            ..Default::default()
+        };
+        let n = ws.apply_batch_rename(&rule).unwrap();
+        assert_eq!(n, 1);
+        // The on-disk name now reads with the upper-cased stem.
+        let names = Workspace::dir_names(l.path());
+        assert!(names.contains("README.md"), "names: {names:?}");
+    }
+
+    #[test]
+    fn apply_batch_rename_undo_restores_a_case_only_rename() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("readme.md", "x");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(l.path().join("readme.md"));
+        let rule = crate::rename::RenameRule {
+            case: crate::rename::CaseMode::Upper,
+            ..Default::default()
+        };
+        ws.apply_batch_rename(&rule).unwrap();
+        assert!(Workspace::dir_names(l.path()).contains("README.md"));
+        // Undo puts the lower-case name back (itself a case-only rename).
+        ws.perform_undo(|| {});
+        let names = Workspace::dir_names(l.path());
+        assert!(names.contains("readme.md"), "after undo: {names:?}");
+        assert!(!names.contains("README.md"));
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! `crate::rename`; this file is only the egui shell.
 
 use super::*;
-use crate::rename::{PlanStatus, changed_count, plan_batch_rename, plan_is_applicable};
+use crate::rename::{PlanStatus, plan_batch_rename, plan_is_applicable};
+use crate::rename_order::{RenameOrder, safe_rename_order};
 
 impl App {
     pub(crate) fn show_batch_rename_dialog(&mut self, ctx: &egui::Context) {
@@ -36,8 +37,29 @@ impl App {
         let existing = self.ws.active_dir_names();
         let rule = state.rule();
         let plans = plan_batch_rename(&names, &existing, &rule);
-        let changed = changed_count(&plans);
-        let applicable = plan_is_applicable(&plans);
+
+        // Rows whose name actually changes (Ok, or a resolvable collision).
+        let changes: Vec<(String, String)> = plans
+            .iter()
+            .filter(|p| p.to != p.from)
+            .map(|p| (p.from.clone(), p.to.clone()))
+            .collect();
+        let will_change = changes.len();
+        // A strictly-clean batch is applicable; otherwise (no invalid names)
+        // consult the safe-order resolver, which permits swaps, rotations and
+        // case-only renames and blocks only an unresolvable conflict.
+        let (applicable, block_reason): (bool, Option<String>) = if plan_is_applicable(&plans) {
+            (true, None)
+        } else if plans.iter().any(|p| p.status == PlanStatus::Invalid) {
+            (false, Some("Fix the invalid names to continue".to_string()))
+        } else if changes.is_empty() {
+            (false, None)
+        } else {
+            match safe_rename_order(&changes, &existing) {
+                RenameOrder::Steps(s) => (!s.is_empty(), None),
+                RenameOrder::Conflict(why) => (false, Some(why)),
+            }
+        };
 
         let mut commit = false;
         let mut cancel = false;
@@ -155,8 +177,10 @@ impl App {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let summary = if applicable {
-                        format!("{changed} of {} will change", plans.len())
-                    } else if changed == 0 {
+                        format!("{will_change} of {} will change", plans.len())
+                    } else if let Some(reason) = &block_reason {
+                        reason.clone()
+                    } else if will_change == 0 {
                         "Nothing to change".to_string()
                     } else {
                         "Fix the flagged rows to continue".to_string()

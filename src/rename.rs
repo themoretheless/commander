@@ -157,11 +157,6 @@ pub fn plan_is_applicable(plans: &[RenamePlan]) -> bool {
     any_change && !any_bad
 }
 
-/// Count of rows that would actually change (status `Ok`).
-pub fn changed_count(plans: &[RenamePlan]) -> usize {
-    plans.iter().filter(|p| p.status == PlanStatus::Ok).count()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +330,6 @@ mod tests {
         };
         let ok = plan_batch_rename(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
         assert!(plan_is_applicable(&ok));
-        assert_eq!(changed_count(&ok), 1);
+        assert_eq!(ok.iter().filter(|p| p.status == PlanStatus::Ok).count(), 1);
     }
 }
