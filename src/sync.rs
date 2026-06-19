@@ -55,7 +55,7 @@ pub struct SyncAction {
 }
 
 /// Compare two same-named entries by size and mtime.
-fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
+pub(crate) fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
     if left.size == right.size && left.modified == right.modified {
         return SyncStatus::Identical;
     }
@@ -127,6 +127,35 @@ pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) ->
     actions
 }
 
+/// How the active panel's entries relate to the other panel, as index sets
+/// into the active list. Drives "select only-here / differing / identical".
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PaneRelation {
+    /// Present here but not in the other panel (no same-named entry there).
+    pub only_here: Vec<usize>,
+    /// Present in both with identical size and mtime.
+    pub identical: Vec<usize>,
+    /// Present in both but differing in size or mtime.
+    pub differing: Vec<usize>,
+}
+
+/// Classify each `active` entry against `other` (matched case-insensitively by
+/// name), reusing [`compare`] for the size/mtime test so the relation stays
+/// consistent with the sync diff. Pure; indices point into `active`.
+pub fn pane_relation(active: &[FileEntry], other: &[FileEntry]) -> PaneRelation {
+    let omap: HashMap<&str, &FileEntry> =
+        other.iter().map(|e| (e.name_lower.as_str(), e)).collect();
+    let mut rel = PaneRelation::default();
+    for (i, a) in active.iter().enumerate() {
+        match omap.get(a.name_lower.as_str()) {
+            None => rel.only_here.push(i),
+            Some(o) if compare(a, o) == SyncStatus::Identical => rel.identical.push(i),
+            Some(_) => rel.differing.push(i),
+        }
+    }
+    rel
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +180,36 @@ mod tests {
             .iter()
             .find(|a| a.name == name)
             .expect("row present")
+    }
+
+    #[test]
+    fn pane_relation_classifies_only_here_identical_and_differing() {
+        // Active: a (only here), b (identical to other), c (differs), D (matches
+        // other's "d" case-insensitively, identical).
+        let active = vec![
+            entry("a.txt", 1, Some(10)),
+            entry("b.txt", 2, Some(20)),
+            entry("c.txt", 3, Some(30)),
+            entry("D.txt", 4, Some(40)),
+        ];
+        let other = vec![
+            entry("b.txt", 2, Some(20)),  // identical to active b
+            entry("c.txt", 99, Some(30)), // same name, different size -> differing
+            entry("d.txt", 4, Some(40)),  // identical to active D (case-insensitive)
+            entry("z.txt", 5, Some(50)),  // only in other (ignored)
+        ];
+        let rel = pane_relation(&active, &other);
+        assert_eq!(rel.only_here, vec![0]); // a.txt
+        assert_eq!(rel.identical, vec![1, 3]); // b.txt, D.txt
+        assert_eq!(rel.differing, vec![2]); // c.txt
+    }
+
+    #[test]
+    fn pane_relation_empty_other_is_all_only_here() {
+        let active = vec![entry("a", 1, Some(1)), entry("b", 2, Some(2))];
+        let rel = pane_relation(&active, &[]);
+        assert_eq!(rel.only_here, vec![0, 1]);
+        assert!(rel.identical.is_empty() && rel.differing.is_empty());
     }
 
     #[test]

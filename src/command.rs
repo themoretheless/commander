@@ -101,6 +101,12 @@ pub enum Command {
     InvertSelection,
     /// Select active-panel entries whose name also exists in the other panel.
     SelectSameNamed,
+    /// Select active-panel entries that have no same-named entry in the other.
+    SelectOnlyHere,
+    /// Select entries present in both panels but differing in size/mtime.
+    SelectDiffering,
+    /// Select entries present in both panels with identical size and mtime.
+    SelectIdentical,
     /// Stash the current selection for later set-algebra combinations.
     StashSelection,
     /// Replace the selection with (selection ∪ stash).
@@ -153,6 +159,21 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             "Select files also in other panel",
             "",
             Command::SelectSameNamed,
+        ),
+        (
+            "Select files only in this panel",
+            "",
+            Command::SelectOnlyHere,
+        ),
+        (
+            "Select files differing from other panel",
+            "",
+            Command::SelectDiffering,
+        ),
+        (
+            "Select files identical to other panel",
+            "",
+            Command::SelectIdentical,
         ),
         ("Stash selection", "", Command::StashSelection),
         ("Selection: union with stash", "", Command::StashUnion),
@@ -348,6 +369,13 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::SelectAll => &["selection select all mark all"],
         Command::InvertSelection => &["selection invert reverse flip"],
         Command::SelectSameNamed => &["selection same name matching files compare"],
+        Command::SelectOnlyHere => &["selection only here unique missing other panel compare diff"],
+        Command::SelectDiffering => {
+            &["selection differing changed modified other panel compare diff"]
+        }
+        Command::SelectIdentical => {
+            &["selection identical same equal other panel compare diff dedupe"]
+        }
         Command::BeginSelectMask => &["selection mask glob pattern wildcard"],
         Command::BeginRunBar => &["run command shell open with terminal execute tool launcher"],
         Command::ToggleHidden => &["view hidden show hidden dotfiles invisible"],

@@ -438,6 +438,27 @@ impl Workspace {
         self.active_panel().extend_selection(picks);
     }
 
+    /// Replace the active panel's selection with the entries a cross-pane
+    /// relation (vs the inactive panel) picks: only-here, differing, or
+    /// identical. Distinct from [`select_same_named`](Self::select_same_named),
+    /// which adds all same-named entries regardless of content.
+    fn select_by_relation(&mut self, pick: fn(&crate::sync::PaneRelation) -> &Vec<usize>) {
+        let rel = crate::sync::pane_relation(
+            &self.active_panel_ref().entries,
+            &self.inactive_panel().entries,
+        );
+        let paths: Vec<PathBuf> = pick(&rel)
+            .iter()
+            .filter_map(|&i| {
+                self.active_panel_ref()
+                    .entries
+                    .get(i)
+                    .map(|e| e.path.clone())
+            })
+            .collect();
+        self.active_panel().selected = paths.into_iter().collect();
+    }
+
     /// Copy the active panel's current selection into the stash.
     pub fn stash_selection(&mut self) {
         self.selection_stash = self.active_panel_ref().selected.clone();
@@ -695,6 +716,9 @@ impl Workspace {
             Command::SelectAll => self.active_panel().select_all(),
             Command::InvertSelection => self.active_panel().invert_selection(),
             Command::SelectSameNamed => self.select_same_named(),
+            Command::SelectOnlyHere => self.select_by_relation(|r| &r.only_here),
+            Command::SelectDiffering => self.select_by_relation(|r| &r.differing),
+            Command::SelectIdentical => self.select_by_relation(|r| &r.identical),
             Command::StashSelection => self.stash_selection(),
             Command::StashUnion => self.stash_union(),
             Command::StashIntersect => self.stash_intersect(),
@@ -2208,6 +2232,29 @@ mod tests {
         assert!(
             !names.contains(&"note.txt".to_string()),
             "non-match excluded"
+        );
+    }
+
+    #[test]
+    fn select_by_relation_picks_only_here_and_differing() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("only.txt", "x"); // only in the active (left) panel
+        l.file("both.txt", "AAA"); // present both sides, different size -> differing
+        r.file("both.txt", "BBBBB");
+        let mut ws = workspace(&l, &r);
+        ws.left.refresh();
+        ws.right.refresh();
+
+        ws.execute(Command::SelectOnlyHere);
+        assert_eq!(
+            ws.left.selected,
+            [l.path().join("only.txt")].into_iter().collect()
+        );
+
+        ws.execute(Command::SelectDiffering);
+        assert_eq!(
+            ws.left.selected,
+            [l.path().join("both.txt")].into_iter().collect()
         );
     }
 
