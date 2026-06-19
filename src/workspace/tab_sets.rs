@@ -58,6 +58,6 @@ pub fn restore_tab_set(ws: &mut Workspace) {
     if let Some(last) = ws.saved_tab_sets.last().cloned() {
         let set = TabSet { name: last.0, left: last.1, right: last.2 };
         set.restore_to(ws);
-        ws.requests.git_toast = Some(format!("Restored '{}' ({}L/{}R)", set.name, set.left.len(), set.right.len()));
+        ws.effects.push(crate::workspace::Effect::GitToast(format!("Restored '{}' ({}L/{}R)", set.name, set.left.len(), set.right.len())));
     }
 }

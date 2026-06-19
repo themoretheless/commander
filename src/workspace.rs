@@ -70,8 +70,37 @@ pub enum PendingOp {
     },
 }
 
-/// Group of fields used for UI <-> core coordination (requests, toasts, etc).
-/// Extracted to shrink the main Workspace struct (addresses large file issue).
+/// Effects for side effects / UI coordination. This is the "bus" instead of
+/// direct mutation of requests + notify callbacks (better separation, testable).
+#[derive(Debug, Clone)]
+pub enum Effect {
+    BeginRename(PathBuf),
+    BeginMask,
+    BeginGoToPath,
+    BeginRecent,
+    BeginPalette,
+    BeginBatchRename,
+    BeginSync,
+    FindDuplicates,
+    DiffFiles,
+    DiskTreemap,
+    BeginFind,
+    OpenSavedSearch,
+    BeginBookmarks,
+    AssignCurrentToBookmark,
+    GitToast(String),
+    ToggleShowGit,
+    Clipboard(crate::clipboard::PathStyle),
+    Undo,
+    Redo,
+    ShelfDrain,
+    CycleDensity,
+    // Core effects that may need UI refresh
+    RefreshNeeded,
+}
+
+/// Legacy Requests kept temporarily for compatibility during migration.
+/// Will be removed once all consumers use the effects bus.
 #[derive(Default)]
 pub(crate) struct Requests {
     /// Set by [`Command::BeginRename`]; the UI picks this up to open the
@@ -124,12 +153,12 @@ pub use crate::tabs::Tab as PanelTab;
 
 /// Helper to manage tabs on one side (left or right).
 /// Extracted to reduce duplication of indexing logic and make Workspace cleaner.
-pub struct TabSide {
+pub struct TabManager {
     pub(crate) tabs: Vec<PanelTab>,
     pub(crate) active: usize,
 }
 
-impl TabSide {
+impl TabManager {
     pub fn active_tab(&self) -> &PanelTab {
         &self.tabs[self.active]
     }
@@ -189,9 +218,9 @@ impl TabSide {
 
 pub struct Workspace {
     /// Left side's open tabs. Always non-empty (never zero tabs rule).
-    pub(crate) left: TabSide,
+    pub(crate) left: TabManager,
     /// Right side's open tabs. Always non-empty.
-    pub(crate) right: TabSide,
+    pub(crate) right: TabManager,
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
     pub active_transfer: Option<TransferState>,
@@ -225,6 +254,9 @@ pub struct Workspace {
     // Git bg channel owned here (thin App: ws handles receive + apply). Using tokio unbounded channel.
     pub git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
     pub git_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
+
+    // Effects bus: commands push effects here instead of mutating requests directly.
+    pub effects: Vec<Effect>,
 
     // Command handlers (trait based for plugins, CommandHandler trait).
     command_handlers: Vec<Box<dyn crate::workspace::command_handlers::CommandHandler>>,
@@ -315,8 +347,8 @@ impl Workspace {
 
     pub fn with_opener(left: PathBuf, right: PathBuf, opener: std::sync::Arc<dyn Fn(&Path) + Send + Sync>) -> Self {
         Workspace {
-            left: TabSide { tabs: vec![PanelTab { state: PanelState::new(left) }], active: 0 },
-            right: TabSide { tabs: vec![PanelTab { state: PanelState::new(right) }], active: 0 },
+            left: TabManager { tabs: vec![PanelTab { state: PanelState::new(left) }], active: 0 },
+            right: TabManager { tabs: vec![PanelTab { state: PanelState::new(right) }], active: 0 },
             active: ActivePanel::Left,
             pending_op: None,
             active_transfer: None,
@@ -334,6 +366,7 @@ impl Workspace {
             file_notes: std::sync::Arc::new(std::collections::HashMap::new()),
             git_tx: None,
             git_rx: None,
+            effects: vec![],
             command_handlers: vec![
                 Box::new(crate::workspace::command_handlers::handle_tab_commands as fn(&mut Workspace, Command) -> bool),
                 Box::new(crate::workspace::command_handlers::handle_nav_commands as fn(&mut Workspace, Command) -> bool),
@@ -543,8 +576,10 @@ impl Workspace {
             Command::BeginRename => {
                 let panel = self.active_panel_ref();
                 if panel.cursor() > 0 {
-                    self.requests.rename_target =
-                        panel.filtered_get(panel.cursor() - 1).map(|e| e.path.clone());
+                    if let Some(p) = panel.filtered_get(panel.cursor() - 1).map(|e| e.path.clone()) {
+                        self.effects.push(Effect::BeginRename(p.clone()));
+                        self.requests.rename_target = Some(p);
+                    }
                 }
             }
             Command::EqualizePanels => {
@@ -560,22 +595,22 @@ impl Workspace {
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
-            Command::BeginBatchRename => self.requests.batch_rename_request = true,
-            Command::BeginSync => self.requests.sync_request = true,
-            Command::FindDuplicates => self.requests.duplicates_request = true,
-            Command::DiffFiles => self.requests.diff_request = true,
-            Command::DiskTreemap => self.requests.treemap_request = true,
-            Command::BeginFind => self.requests.find_request = true,
-            Command::OpenSavedSearch => self.requests.saved_search_request = true,
+            Command::BeginBatchRename => self.effects.push(Effect::BeginBatchRename),
+            Command::BeginSync => self.effects.push(Effect::BeginSync),
+            Command::FindDuplicates => self.effects.push(Effect::FindDuplicates),
+            Command::DiffFiles => self.effects.push(Effect::DiffFiles),
+            Command::DiskTreemap => self.effects.push(Effect::DiskTreemap),
+            Command::BeginFind => self.effects.push(Effect::BeginFind),
+            Command::OpenSavedSearch => self.effects.push(Effect::OpenSavedSearch),
             Command::BeginBookmarks => {
-                self.requests.bookmarks_request = true;
+                self.effects.push(Effect::BeginBookmarks);
                 // Basic functional: jump to last (full picker/hotkeys/persist per top 50).
                 if let Some(p) = self.bookmarks.last().map(|b| b.path.clone()) {
                     self.active_panel().navigate_to(p);
                 }
             }
             Command::AssignCurrentToBookmark => {
-                self.requests.assign_bookmark_request = true;
+                self.effects.push(Effect::AssignCurrentToBookmark);
                 let p = self.active_panel_ref().current_path().clone();
                 if !self.bookmarks.iter().any(|b| b.path == p) {
                     let name = p.file_name()
@@ -585,24 +620,24 @@ impl Workspace {
                 }
             }
             Command::CopyPath => {
-                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
+                self.effects.push(Effect::Clipboard(crate::clipboard::PathStyle::FullPath))
             }
             Command::CopyName => {
-                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly)
+                self.effects.push(Effect::Clipboard(crate::clipboard::PathStyle::NameOnly))
             }
             Command::CopyParentPath => {
-                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::ParentPath)
+                self.effects.push(Effect::Clipboard(crate::clipboard::PathStyle::ParentPath))
             }
             Command::CopyFileUrl => {
-                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::FileUrl)
+                self.effects.push(Effect::Clipboard(crate::clipboard::PathStyle::FileUrl))
             }
             Command::CopyShellPath => {
-                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::ShellEscaped)
+                self.effects.push(Effect::Clipboard(crate::clipboard::PathStyle::ShellEscaped))
             }
             Command::CopyRelativePath => {
-                self.requests.clipboard_request = Some(crate::clipboard::PathStyle::RelativeToOther)
+                self.effects.push(Effect::Clipboard(crate::clipboard::PathStyle::RelativeToOther))
             }
-            Command::CycleDensity => self.requests.cycle_density_request = true,
+            Command::CycleDensity => self.effects.push(Effect::CycleDensity),
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
                     .active_panel_ref()
@@ -614,21 +649,21 @@ impl Workspace {
             }
             Command::ShelfDrain => {
                 if !self.shelf.is_empty() {
-                    self.requests.drain_request = true;
+                    self.effects.push(Effect::ShelfDrain);
                 }
             }
-            Command::BeginSelectMask => self.requests.mask_request = true,
-            Command::BeginGoToPath => self.requests.path_request = true,
-            Command::BeginRecent => self.requests.recent_request = true,
-            Command::BeginPalette => self.requests.palette_request = true,
+            Command::BeginSelectMask => self.effects.push(Effect::BeginMask),
+            Command::BeginGoToPath => self.effects.push(Effect::BeginGoToPath),
+            Command::BeginRecent => self.effects.push(Effect::BeginRecent),
+            Command::BeginPalette => self.effects.push(Effect::BeginPalette),
             Command::Undo => {
                 if self.stack.can_undo() {
-                    self.requests.undo_request = true;
+                    self.effects.push(Effect::Undo);
                 }
             }
             Command::Redo => {
                 if self.stack.can_redo() {
-                    self.requests.redo_request = true;
+                    self.effects.push(Effect::Redo);
                 }
             }
             Command::ToggleInfo => self.toggle_info(),

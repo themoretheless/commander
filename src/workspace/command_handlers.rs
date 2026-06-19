@@ -65,7 +65,7 @@ pub fn handle_tab_commands(ws: &mut Workspace, cmd: Command) -> bool {
             true
         }
         Command::ToggleShowGit => {
-            ws.requests.toggle_show_git_request = true;
+            ws.effects.push(crate::workspace::Effect::ToggleShowGit);
             true
         }
         Command::OpenTerminal => {
@@ -86,7 +86,7 @@ pub fn handle_tab_commands(ws: &mut Workspace, cmd: Command) -> bool {
                     .arg("diff")
                     .arg("--").arg(&entry.path)
                     .spawn();
-                ws.requests.git_toast = Some("Opened git diff".to_string());
+                ws.effects.push(crate::workspace::Effect::GitToast("Opened git diff".to_string()));
             }
             true
         }
@@ -101,7 +101,7 @@ pub fn handle_tab_commands(ws: &mut Workspace, cmd: Command) -> bool {
                     .args(&paths)
                     .status();
                 ws.active_panel().refresh();
-                ws.requests.git_toast = Some(format!("Staged {} file(s)", paths.len()));
+                ws.effects.push(crate::workspace::Effect::GitToast(format!("Staged {} file(s)", paths.len())));
             }
             true
         }
@@ -116,14 +116,14 @@ pub fn handle_tab_commands(ws: &mut Workspace, cmd: Command) -> bool {
                     .args(&paths)
                     .spawn();
                 ws.active_panel().refresh();
-                ws.requests.git_toast = Some(format!("Discarded changes for {} file(s)", paths.len()));
+                ws.effects.push(crate::workspace::Effect::GitToast(format!("Discarded changes for {} file(s)", paths.len())));
             }
             true
         }
         Command::ShowPermissions => {
             let panel = ws.active_panel_ref();
             if let Some(entry) = panel.filtered_get(panel.cursor().saturating_sub(1)) {
-                ws.requests.git_toast = Some(format!("Perms: {} (rwx stub, idea #83)", entry.name));
+                ws.effects.push(crate::workspace::Effect::GitToast(format!("Perms: {} (rwx stub, idea #83)", entry.name)));
             }
             true
         }
@@ -132,9 +132,9 @@ pub fn handle_tab_commands(ws: &mut Workspace, cmd: Command) -> bool {
             if let Some(entry) = panel.filtered_get(panel.cursor().saturating_sub(1)) {
                 let n = entry.name.to_lowercase();
                 if n.ends_with(".zip") || n.ends_with(".tar") || n.ends_with(".tgz") || n.ends_with(".tar.gz") {
-                    ws.requests.git_toast = Some(format!("Archive browse stub: {}", entry.name));
+                    ws.effects.push(crate::workspace::Effect::GitToast(format!("Archive browse stub: {}", entry.name)));
                 } else {
-                    ws.requests.git_toast = Some("Not an archive (stub)".into());
+                    ws.effects.push(crate::workspace::Effect::GitToast("Not an archive (stub)".into()));
                 }
             }
             true

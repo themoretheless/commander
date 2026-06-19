@@ -116,6 +116,9 @@ impl App {
 
         self.handle_keys(ctx);
 
+        // Consume effects from the bus (core of Effects bus architecture).
+        self.process_effects();
+
         // Macro record stub (idea #37/63).
         if self.macro_recording {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1059,6 +1062,35 @@ impl App {
             }
         });
         ui.add_space(2.0);
+    }
+
+    fn process_effects(&mut self) {
+        while let Some(effect) = self.ws.effects.pop() {
+            match effect {
+                crate::workspace::Effect::BeginRename(p) => self.ws.requests.rename_target = Some(p),
+                crate::workspace::Effect::BeginMask => self.ws.requests.mask_request = true,
+                crate::workspace::Effect::BeginGoToPath => self.ws.requests.path_request = true,
+                crate::workspace::Effect::BeginRecent => self.ws.requests.recent_request = true,
+                crate::workspace::Effect::BeginPalette => self.ws.requests.palette_request = true,
+                crate::workspace::Effect::BeginBatchRename => self.ws.requests.batch_rename_request = true,
+                crate::workspace::Effect::BeginSync => self.ws.requests.sync_request = true,
+                crate::workspace::Effect::FindDuplicates => self.ws.requests.duplicates_request = true,
+                crate::workspace::Effect::DiffFiles => self.ws.requests.diff_request = true,
+                crate::workspace::Effect::DiskTreemap => self.ws.requests.treemap_request = true,
+                crate::workspace::Effect::BeginFind => self.ws.requests.find_request = true,
+                crate::workspace::Effect::OpenSavedSearch => self.ws.requests.saved_search_request = true,
+                crate::workspace::Effect::BeginBookmarks => self.ws.requests.bookmarks_request = true,
+                crate::workspace::Effect::AssignCurrentToBookmark => self.ws.requests.assign_bookmark_request = true,
+                crate::workspace::Effect::GitToast(s) => self.ws.requests.git_toast = Some(s),
+                crate::workspace::Effect::ToggleShowGit => self.ws.requests.toggle_show_git_request = true,
+                crate::workspace::Effect::Clipboard(style) => self.ws.requests.clipboard_request = Some(style),
+                crate::workspace::Effect::Undo => self.ws.requests.undo_request = true,
+                crate::workspace::Effect::Redo => self.ws.requests.redo_request = true,
+                crate::workspace::Effect::ShelfDrain => self.ws.requests.drain_request = true,
+                crate::workspace::Effect::CycleDensity => self.ws.requests.cycle_density_request = true,
+                crate::workspace::Effect::RefreshNeeded => { /* handled by other polls */ }
+            }
+        }
     }
 
     /// Column config dialog (TC style): full functional toggle + widths + reset. (idea #10)
