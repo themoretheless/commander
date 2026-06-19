@@ -5,105 +5,98 @@ A dual-pane file manager for macOS, built in Rust with [egui](https://github.com
 Two side-by-side panels, keyboard-first navigation, and native macOS
 integration (Quick Look, Finder tags, share sheet, APFS clone copies).
 
+The file-manager logic lives in a UI-independent, unit-tested core; the `app`
+module is a thin egui layer over it.
+
 ## Features
 
-- **Dual panels** with an active-panel marker; `Tab` switches sides.
-- **Copy / move / delete** on a background thread with a live progress
-  window (speed graph, ETA, per-file error list). Copies use native
-  `copyfile` with APFS cloning and fall back to a buffered copy.
-- **Safe overwrites**: the confirmation dialog offers Overwrite All,
-  **Keep Both**, and Skip. Overwrites stage the new copy and swap it into
-  place, so an interrupted copy never destroys the existing file. Copying
-  or moving a path into itself is rejected.
-- **Drag and drop** between panels (and onto subfolders), routed through
-  the same engine as the keyboard, so cross-volume moves and conflicts are
-  handled.
-- **Folder tree sidebar**, breadcrumb path bar, and a per-panel filter box.
+### Panels and navigation
+
+- **Dual panels** with an active-panel marker (`Tab` switches sides), a
+  breadcrumb path bar, and a folder tree sidebar with a **Favorites rail**.
+- **Bookmarks** with quick-jump slots: `Cmd+1`..`9` jump the active panel to a
+  pinned folder, `Cmd+Shift+1`..`9` assign one.
+- **Per-pane history**: `Cmd+[` / `Cmd+]` walk back and forward through the
+  directories you visited (a vim-style jump trail).
+- **Go to path** (`Cmd+L`), **recent folders** (`Cmd+P`), type-ahead jump, and
+  a per-panel filter box with quick-filter facets.
+- **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
+  and frequency.
+
+### File operations
+
+- **Copy / move / delete** on a background thread with a live progress window
+  (speed graph, ETA, per-file error list). Copies use native `copyfile` with
+  APFS cloning and fall back to a buffered copy; a same-volume move is an
+  instant atomic rename.
+- **Single transfer queue**: a second operation fired while one runs waits
+  behind it instead of being dropped (the progress window shows how many are
+  queued).
+- **Safe overwrites**: the confirmation dialog offers Overwrite All, **Keep
+  Both**, and Skip. Overwrites stage the new copy and swap it into place, so an
+  interrupted copy never destroys the existing file. Copying or moving a path
+  into itself is rejected, and a **free-space preflight** warns before a copy
+  that will not fit (a clone or same-volume move needs ~0 extra space).
+- **Drag and drop** between panels and onto subfolders, routed through the same
+  engine as the keyboard.
+- **Gather into a new subfolder** (`Cmd+Shift+N`): move the selection into a
+  freshly-named folder in one undoable step (Finder's New Folder with
+  Selection).
+- **Batch-rename studio** (`Cmd+Shift+R`): find/replace, case, prefix/suffix,
+  numbering, with a live preview. Resolvable collisions (swaps, rotations, and
+  the case-only `Foo` -> `foo` rename) are applied through a safe temp-staged
+  order.
+- **Run-command / open-with bar** (palette): run a shell command on the
+  selection with `{paths}` / `{names}` / `{dir}` placeholders expanded and
+  shell-quoted, with a live preview; save reusable templates.
+
+### Comparing and selecting
+
+- **Duplicate finder**, read-only **text diff** (`Cmd+D`), directory
+  **synchronise** sheet (`Cmd+Shift+S`), and a disk-usage **treemap**
+  (`Cmd+Shift+M`).
+- **Compare mode** tints rows by how they differ from the other panel, with
+  relative-size occupancy bars.
+- **Cross-pane selection**: select files only in this panel, differing from the
+  other, identical to the other, or same-named (palette).
+- **Selection algebra**: select-by-mask (`Cmd+G`), and stash/union/intersect/
+  subtract/symmetric-difference of selections.
+- **Drop-stack shelf**: gather files across folders (`Cmd+Shift+A`) and drain
+  them into one destination (`Cmd+Shift+V`).
+
+### Viewing and the rest
+
 - **Preview** of images (via ImageIO, including RAW/HEIC) and text in the
   opposite panel, with look-ahead caching.
+- **Relative dates** in the Modified column (Finder/Things style), with the
+  absolute timestamp on hover.
+- **Density tiers** (`Cmd+Shift+D`), a one-shot **focus mode**, rich
+  **path-to-clipboard** (`Cmd+Shift+C` and palette variants).
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,
   Compress, Copy Path, Reveal in Finder, Tags, Share, Move to Trash.
-- **Light / dark theme** following the system appearance.
+- **Session persistence** (panel paths, layout, view toggles) and a **light /
+  dark theme** following the system appearance.
 
-## Design backlog
+## Roadmap
 
-Top ideas borrowed from polished editors and file tools:
+Shipped from earlier design rounds: pinned favorites, saved searches,
+selection sets, the operation-queue engine, focus mode, compare/diff selection,
+relative dates, gather-into-folder, and the run-command bar. What remains:
 
-1. **Pinned places**: favorites and project roots above the folder tree.
-2. **Saved searches**: reusable filters like "Large media this week".
-3. **Selection sets**: name and recall a temporary selection.
-4. **Diff drawer**: a dedicated compare summary before copy/move.
-5. **Operation queue**: stacked transfers with pause, resume, and reorder.
-6. **Inspector tabs**: Info, Preview, Versions, and Permissions in one panel.
-7. **Shortcut editor**: searchable keybinding map with conflict warnings.
-8. **Command aliases**: user-defined palette aliases for repeat workflows.
-9. **Workspace profiles**: saved two-panel layouts per project/task.
-10. **Inline action rail**: row-level quick actions on hover for common tasks.
-
-Next 10 design ideas:
-
-1. **Keyboard Steer mode**: accessible pick-up, arrow-key move target, drop/cancel.
-2. **Command previews**: palette rows show the affected panel, count, or target.
-3. **Per-folder view memory**: remember density, sort, and filters per location.
-4. **Action review drawer**: one compact place to inspect pending copy/move/delete.
-5. **Compare summary badges**: newer, different, and unique counts before selecting.
-6. **Inline conflict suggestions**: rename/keep-both names previewed before transfer.
-7. **Workspace switcher**: named two-pane setups with shelf and smart-folder context.
-8. **Activity timeline**: searchable operation history with jump-back affordances.
-9. **Quick scopes**: restrict commands and filters to panel, selection, or shelf.
-10. **Inspector lenses**: swap the preview pane between Info, Diff, Media, and Usage.
-
-More editor-grade ideas:
-
-1. **Palette macros**: record a short chain of commands and rerun it by name.
-2. **Transfer dry run**: preview resulting names, conflicts, bytes, and skips.
-3. **Split preview**: pin preview left/right/top/bottom instead of only opposite pane.
-4. **Local command history**: show the last few commands for the current folder.
-5. **Contextual empty states**: folder-specific suggestions for denied, empty, or filtered views.
-6. **Selection algebra**: union, subtract, intersect with mask, compare, and shelf.
-7. **Per-kind columns**: image dimensions, media duration, archive contents, text line count.
-8. **Focus mode**: temporarily hide toolbars/status UI for dense keyboard work.
-9. **Reviewable undo stack**: browse reversible actions before choosing Undo/Redo.
-10. **Pane roles**: label panels as Source, Target, Archive, Review, or Scratch.
-
-Fresh 10 product-design ideas:
-
-1. **Scope action rail**: bottom-bar actions adapt to selection, filters, and shelf.
-2. **Project lanes**: split the shelf into named buckets like Review, Ship, Archive.
-3. **Conflict rehearsal**: run a simulated copy/move and pin the proposed decisions.
-4. **Finder tag lens**: filter, group, and batch-edit macOS tags from the panel header.
-5. **Breadcrumb command zones**: each crumb exposes copy path, open sibling, and pin.
-6. **Search handoff**: turn any active filter into a saved smart folder in one click.
-7. **Transfer receipts**: every operation leaves a compact, searchable receipt.
-8. **Peek compare**: hold a modifier to preview why a compared row is tinted.
-9. **Selection recipes**: save mask/facet/compare combinations as reusable selectors.
-10. **Keyboard command tray**: show the next likely command from recent local context.
-
-Next implementation ideas:
-
-1. **Filter handoff**: promote the current panel filter into a saved smart folder.
-2. **Compare tint explanations**: row hover tells why an item is unique or different.
-3. **Shelf lanes lite**: tag staged files as Copy, Review, Archive, or Later.
-4. **Pinned filter presets**: put saved searches beside the facet chips.
-5. **Receipts drawer**: list the last copy/move/delete outcomes with undo state.
-6. **Conflict rehearsal row**: preview keep-both names before opening the transfer dialog.
-7. **Sibling crumb menu**: jump to neighboring folders from each breadcrumb segment.
-8. **One-shot focus mode**: hide chrome until the next pointer movement.
-9. **Compare quick select**: chips for Unique, Different, and Newer in compare mode.
-10. **Command next-best hint**: status bar suggests one likely follow-up action.
-
-Next 10 interaction ideas:
-
-1. **Saved-search chips**: surface the top smart folders next to filter facets.
-2. **Shelf lane labels**: mark staged items as Copy, Review, Archive, or Later.
-3. **Receipt center**: browse recent operation outcomes and jump to affected paths.
-4. **Undo timeline**: inspect reversible moves/renames before applying undo.
-5. **Crumb sibling menu**: open neighboring folders from a breadcrumb segment.
-6. **Conflict dry run**: preview collision decisions before starting a transfer.
-7. **Panel role badges**: label panes as Source, Target, Review, or Scratch.
-8. **Command follow-up ranking**: bias palette results toward the current context.
-9. **Selection recipe pins**: save and rerun compare/mask/facet selections.
-10. **Hover inspector lens**: show compact metadata beside the cursor row.
+1. **Queue panel UI**: pause / resume / reorder / concurrency for the transfer
+   queue (the engine is wired; only the panel and the input-gate relaxation
+   that lets you queue a second transfer interactively are pending).
+2. **Vim-style key chords**: multi-key leaders and a count prefix (`5j`, `g g`,
+   `s s` to sort), opening a modifier-free command namespace.
+3. **Marked-files set** distinct from the cursor selection, surviving
+   navigation, that the selection algebra can combine with.
+4. **Per-folder view memory**: remember sort, filters, hidden, and density per
+   directory.
+5. **Regex find/replace** in the batch-rename studio.
+6. **Operation receipts**: a searchable history of completed transfers and
+   deletes with jump-back and undo affordances.
+7. **Contextual empty states**: explain whether a panel is truly empty,
+   filtered to nothing, or permission-denied, with a one-click recovery.
 
 ## Keyboard shortcuts
 
@@ -116,16 +109,39 @@ Next 10 interaction ideas:
 | `PageUp` / `PageDown` | Move by one page |
 | `Enter` | Open file / enter folder (`..` row goes up) |
 | `Backspace` | Go up one folder (cursor lands on the folder you left) |
+| `Cmd+[` / `Cmd+]` | History back / forward |
+| `Cmd+1`..`9` | Jump to bookmark slot |
+| `Cmd+Shift+1`..`9` | Assign active folder to bookmark slot |
 | `Space` | Toggle selection |
-| `F3` | Toggle preview |
+| `Cmd+A` | Select all |
+| `Cmd+G` | Select by mask |
+| `F2` / `Cmd+R` | Rename |
+| `Cmd+Shift+R` | Batch rename |
 | `F5` | Copy to the other panel |
 | `F6` | Move to the other panel |
 | `F7` | New folder |
+| `Cmd+Shift+N` | New folder with selection |
 | `F8` / `Delete` | Move to Trash |
-| `Cmd+A` | Select all |
+| `Cmd+Shift+A` / `Cmd+Shift+V` | Add to shelf / drain shelf here |
+| `Cmd+D` | Diff selected pair |
+| `Cmd+Shift+S` | Synchronize panels |
+| `Cmd+Shift+M` | Disk-usage treemap |
+| `Cmd+F` | Find files |
+| `Cmd+Shift+C` | Copy path |
+| `Cmd+L` | Go to path |
+| `Cmd+P` | Recent folders |
+| `Cmd+E` / `Cmd+U` | Equalize / swap panels |
+| `Cmd+I` | Get Info |
+| `Cmd+K` | Command palette |
 | `Cmd+H` | Toggle hidden files |
+| `Cmd+Shift+D` | Cycle list density |
+| `F3` | Toggle preview |
+| `Cmd+Z` / `Cmd+Shift+Z` | Undo / redo |
 
-Names sort naturally (`file2` before `file10`).
+More commands (run command on selection, cross-pane diff selection, copy-name /
+parent / file-URL / shell / relative path, selection stash algebra, duplicates,
+saved searches, bookmark this folder) are available from the command palette
+(`Cmd+K`). Names sort naturally (`file2` before `file10`).
 
 ## Build and run
 
@@ -144,9 +160,10 @@ cargo clippy --all-targets       # lints (the repo is clippy-clean)
 cargo fmt --check                # formatting
 ```
 
-The file-manager logic lives in a UI-independent core (`workspace`,
-`panel`, `transfer`, `scan`, `command`, `fs_util`) that is unit-tested
-without a GUI; the `app` module is a thin egui layer over it.
+The file-manager logic lives in a UI-independent core (`workspace`, `panel`,
+`transfer`, `opqueue`, `scan`, `command`, `fs_util`, `rename`, `sync`,
+`bookmarks`, `jumplist`, `cmdtemplate`, ...) that is unit-tested without a GUI;
+the `app` module is a thin egui layer over it.
 
 ## License
 
