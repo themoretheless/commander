@@ -460,18 +460,20 @@ impl Workspace {
     /// identical. Distinct from [`select_same_named`](Self::select_same_named),
     /// which adds all same-named entries regardless of content.
     fn select_by_relation(&mut self, pick: fn(&crate::sync::PaneRelation) -> &Vec<usize>) {
-        let rel = crate::sync::pane_relation(
-            &self.active_panel_ref().entries,
-            &self.inactive_panel().entries,
-        );
+        // Operate over the active panel's VISIBLE (filtered) entries, like the
+        // other selectors (select_all / invert / same-named), so the picks are
+        // actionable and the on-screen count matches what an op will touch.
+        // Compare against the other directory's full contents.
+        let active: Vec<FileEntry> = self
+            .active_panel_ref()
+            .filtered_entries()
+            .into_iter()
+            .cloned()
+            .collect();
+        let rel = crate::sync::pane_relation(&active, &self.inactive_panel().entries);
         let paths: Vec<PathBuf> = pick(&rel)
             .iter()
-            .filter_map(|&i| {
-                self.active_panel_ref()
-                    .entries
-                    .get(i)
-                    .map(|e| e.path.clone())
-            })
+            .filter_map(|&i| active.get(i).map(|e| e.path.clone()))
             .collect();
         self.active_panel().selected = paths.into_iter().collect();
     }
@@ -971,6 +973,26 @@ impl Workspace {
         // Start the next queued transfer, if any.
         self.pump_queue(notify);
         raised
+    }
+
+    /// Dismiss a finished transfer the user is acknowledging via the OK button.
+    /// `poll_transfer` deliberately leaves a finished-with-errors transfer open
+    /// (so the error list can be read) and does NOT retire its queue job; this
+    /// does that retirement and starts the next queued job, so acknowledging an
+    /// errored transfer can never wedge the queue (running_job stuck Running,
+    /// `runnable()` then forever blocked at the concurrency cap).
+    pub fn dismiss_transfer(&mut self, notify: impl Fn() + Send + 'static) {
+        self.active_transfer = None;
+        if let Some(id) = self.running_job.take() {
+            // It is shown via OK only because it finished with errors.
+            self.queue.fail(id);
+            self.queue.clear_finished();
+        }
+        // An errored/aborted run records no undo history.
+        self.pending_undo_action = None;
+        self.left.refresh();
+        self.right.refresh();
+        self.pump_queue(notify);
     }
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
@@ -2302,6 +2324,64 @@ mod tests {
     }
 
     #[test]
+    fn dismissing_an_errored_transfer_retires_the_job_and_drains_the_queue() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("x.txt", "X");
+        r.file("x.txt", "old"); // conflict: first copy errors under Ask
+        l.file("y.txt", "Y");
+        let mut ws = workspace(&l, &r);
+        let entry = |p: &std::path::Path| {
+            let meta = std::fs::metadata(p).unwrap();
+            FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
+        };
+        // First copy refuses x.txt (dest exists, policy Ask) -> finishes with an
+        // error and is NOT cancelled. Second copy is queued behind it.
+        ws.start_copy(
+            vec![entry(&l.path().join("x.txt"))],
+            r.path().to_path_buf(),
+            OverwritePolicy::Ask,
+            || {},
+        );
+        ws.start_copy(
+            vec![entry(&l.path().join("y.txt"))],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        assert_eq!(ws.queued_count(), 1);
+
+        // Wait for the first to finish; an errored run stays open (poll does not
+        // retire it), so the queue must not advance yet.
+        let st = ws.active_transfer.clone().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !st.lock().unwrap().finished {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        ws.poll_transfer(|| {});
+        assert!(
+            ws.active_transfer.is_some(),
+            "errored transfer stays open for OK"
+        );
+        assert_eq!(ws.queued_count(), 1, "queue waits while the error is shown");
+
+        // Clicking OK must retire the job and start the queued copy (before the
+        // fix this left the job Running forever and wedged the whole queue).
+        ws.dismiss_transfer(|| {});
+        drain_transfers(&mut ws);
+        assert!(ws.active_transfer.is_none());
+        assert!(
+            r.path().join("y.txt").is_file(),
+            "queued copy ran after dismiss"
+        );
+        assert_eq!(
+            std::fs::read_to_string(r.path().join("x.txt")).unwrap(),
+            "old",
+            "the refused copy left the existing file intact"
+        );
+    }
+
+    #[test]
     fn find_duplicates_groups_identical_files_in_active_dir() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "same content");
@@ -2426,6 +2506,29 @@ mod tests {
         assert_eq!(
             ws.left.selected,
             [l.path().join("both.txt")].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn select_by_relation_respects_the_active_filter() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        // Both differ from the other side; only "alpha" will be visible.
+        l.file("alpha.txt", "A");
+        r.file("alpha.txt", "AA");
+        l.file("beta.txt", "B");
+        r.file("beta.txt", "BB");
+        let mut ws = workspace(&l, &r);
+        ws.left.refresh();
+        ws.right.refresh();
+        // Narrow the active view to just "alpha".
+        ws.left.search_query = "alpha".to_string();
+
+        ws.execute(Command::SelectDiffering);
+        // Only the visible differing entry is selected; the filtered-out
+        // "beta.txt" is not, even though it also differs.
+        assert_eq!(
+            ws.left.selected,
+            [l.path().join("alpha.txt")].into_iter().collect()
         );
     }
 

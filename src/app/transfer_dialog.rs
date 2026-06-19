@@ -162,9 +162,11 @@ impl App {
                         )
                         .clicked()
                     {
-                        self.ws.active_transfer = None;
-                        self.ws.left.refresh();
-                        self.ws.right.refresh();
+                        // Retire the finished job and start the next queued one;
+                        // just clearing active_transfer would strand the job
+                        // Running and wedge the queue.
+                        let c = ctx.clone();
+                        self.ws.dismiss_transfer(move || c.request_repaint());
                     }
                 } else {
                     if ui
