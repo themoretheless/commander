@@ -1089,7 +1089,21 @@ impl App {
                         ui.add(egui::Slider::new(&mut self.config.column_config.git_width, 20.0..=80.0).text("w"));
                     }
                 });
+                // Size + Modified widths + order support
+                ui.horizontal(|ui| {
+                    ui.label("Size");
+                    ui.add(egui::Slider::new(&mut self.config.column_config.size_width, 60.0..=150.0).text("w"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Modified");
+                    ui.add(egui::Slider::new(&mut self.config.column_config.modified_width, 80.0..=200.0).text("w"));
+                });
                 ui.separator();
+                // Simple order (up/down for first few)
+                ui.label("Order (edit in future; current default used)");
+                if ui.button("Reset order").clicked() {
+                    self.config.column_config.order = vec!["Name".into(), "Size".into(), "Modified".into(), "Git".into()];
+                }
                 let cols: Vec<_> = crate::panel::active_columns(&self.config.column_config).into_iter().map(|c| c.header().to_string()).collect();
                 ui.label(format!("Active: {}", cols.join(", ")));
                 ui.horizontal(|ui| {

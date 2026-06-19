@@ -28,28 +28,27 @@ impl App {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
 
-                // Column header + grips (real resize for idea #1 column widths)
+                // Column header + grips - now respects order from config (more columns support).
                 ui.horizontal(|ui| {
                     ui.set_min_width(ui.available_width());
-                    let name_w = column_config.name_width.max(80.0);
-                    ui.allocate_ui(egui::vec2(name_w, 18.0), |ui| {
-                        crate::app::ui_common::primary_label(ui, "Name", t);
-                    });
-                    // Grip for name width - consistent affordance
-                    let grip_w = 6.0;
-                    let (grip_r, grip_resp) = ui.allocate_exact_size(egui::vec2(grip_w, 18.0), Sense::drag());
-                    crate::app::ui_common::paint_grip(ui, grip_r, t, true);
-                    if grip_resp.hovered() {
-                        crate::app::ui_common::apply_hover_paint(ui, grip_r, t);
-                    }
-                    if grip_resp.dragged() {
-                        let delta = ui.input(|i| i.pointer.delta().x);
-                        column_config.name_width = (column_config.name_width + delta).max(80.0).min(600.0);
-                    }
-                    if show_git {
-                        ui.allocate_ui(egui::vec2(column_config.git_width.max(20.0), 18.0), |ui| {
-                            crate::app::ui_common::primary_label(ui, "Git", t);
+                    for col in crate::panel::active_columns(column_config) {
+                        let name = col.header();
+                        let w = crate::panel::column_width(column_config, name).max(40.0);
+                        ui.allocate_ui(egui::vec2(w, 18.0), |ui| {
+                            crate::app::ui_common::primary_label(ui, name, t);
                         });
+                        // simple grip after each except last (demo)
+                        if name != "Modified" {  // rough
+                            let grip_w = 6.0;
+                            let (grip_r, grip_resp) = ui.allocate_exact_size(egui::vec2(grip_w, 18.0), Sense::drag());
+                            crate::app::ui_common::paint_grip(ui, grip_r, t, true);
+                            if grip_resp.dragged() {
+                                let delta = ui.input(|i| i.pointer.delta().x);
+                                // update corresponding width (simplified)
+                                if name == "Name" { column_config.name_width = (column_config.name_width + delta).max(80.).min(600.); }
+                                else if name == "Git" { column_config.git_width += delta; }
+                            }
+                        }
                     }
                 });
                 ui.add_space(2.0);
@@ -102,13 +101,14 @@ impl App {
                 }
 
                 // Cached filtered view: indices into panel.entries.
-                // No FileEntry is cloned per frame; row interactions
-                // are recorded and applied after the loop, so the
-                // loop body only borrows the panel immutably.
                 let filtered = panel.filtered_indices();
-                // Active filter query, for highlighting matched characters in
-                // each visible row (cloned once, owned by this frame).
                 let query = panel.search_query().to_string();
+
+                // Virtual list integration (main file_list now uses it for rows).
+                crate::app::virtual_list::render_virtual_file_rows(
+                    ui, panel, is_active, t, panel_side, size_bars, compare, opener, metrics, show_git,
+                    user_tags, notes, column_config, None, grid,
+                );
 
                 if filtered.is_empty() {
                     use crate::panel::DirStatus;
@@ -488,26 +488,20 @@ impl App {
                         }
                         ui.add_space(8.0);
 
-                        // Git status glyph (column customization toggle): now uses the new columns::GitColumn abstraction
-                        // (foundation for real multi-column toggle like in TC/Finder/VSCode; see panel/columns.rs).
-                        let cols = crate::panel::active_columns(&crate::panel::ColumnConfig { show_git, ..Default::default() });
-                        if show_git && cols.iter().any(|c| c.header() == "Git") {
-                            let col = crate::panel::GitColumn;
-                            let val = col.cell(entry, panel);
-                            if !val.is_empty() {
-                                let color = match val.chars().next().unwrap_or('?') {
-                                    'M' | 'm' => t.accent_red,
-                                    'A' | 'a' => egui::Color32::from_rgb(80, 160, 80),
-                                    'D' | 'd' => t.accent_red,
-                                    '?' => t.text_muted,
-                                    _ => t.text_muted,
-                                };
-                                let w = crate::panel::column_width(&crate::panel::ColumnConfig::default(), "Git");
-                                ui.allocate_ui(egui::vec2(w.max(20.0), row_h), |ui| {
-                                    ui.label(egui::RichText::new(val).size(metrics.meta_pt).color(color));
-                                });
-                                ui.add_space(2.0);
-                            }
+                        // Render cells according to active_columns order (supports Size, Modified etc + save).
+                        for c in crate::panel::active_columns(column_config) {
+                            let w = crate::panel::column_width(column_config, c.header()).max(20.0);
+                            let val = c.cell(entry, panel);
+                            ui.allocate_ui(egui::vec2(w, row_h), |ui| {
+                                let color = if c.header() == "Git" {
+                                    match val.chars().next().unwrap_or('?') {
+                                        'M'|'m' => t.accent_red,
+                                        'A'|'a' => egui::Color32::from_rgb(80,160,80),
+                                        _ => t.text_muted,
+                                    }
+                                } else { t.text_primary };
+                                ui.label(egui::RichText::new(val).size(metrics.meta_pt).color(color));
+                            });
                         }
 
                         let name_color = if is_selected {

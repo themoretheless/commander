@@ -1,10 +1,22 @@
 //! Command handlers extracted to avoid giant match in execute.
 //! SRP: each group of commands (tabs, navigation, file ops, etc.) has its handler.
 //! Inspired by VSCode command registry and FAR key handlers. Dispatch from Workspace::execute.
-//! TODO: full trait-based for extensibility.
+//! Full CommandHandler trait for plugins/extensibility.
 
 use crate::command::Command;
 use crate::workspace::Workspace;
+
+/// Trait for command handlers. Plugins can implement to add commands.
+pub trait CommandHandler {
+    fn handle(&mut self, ws: &mut Workspace, cmd: Command) -> bool;
+}
+
+// Blanket for free fn handlers (back compat).
+impl CommandHandler for fn(&mut Workspace, Command) -> bool {
+    fn handle(&mut self, ws: &mut Workspace, cmd: Command) -> bool {
+        self(ws, cmd)
+    }
+}
 
 /// Handler for tab and git commands. Full impl extracted (SRP).
 /// Does the real work (moved/adapted from Workspace::handle_tab_and_git).

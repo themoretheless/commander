@@ -4,24 +4,41 @@
 
 use std::path::PathBuf;
 
-use super::PanelState;
+use super::{nav, PanelState};
 
-/// Trait for a "pane" view (could be file panel, tree, etc.).
+/// Trait for a "pane" view (file panel or future virtual/tree panes).
 pub trait Pane {
     fn current_path(&self) -> &PathBuf;
     fn navigate_to(&mut self, path: PathBuf);
-    // TODO: more methods: refresh, select, etc. to abstract left/right.
+    fn refresh(&mut self);
+    fn cursor(&self) -> usize;
+    fn set_cursor(&mut self, c: usize);
+    fn filtered_count(&self) -> usize;
 }
 
-/// Example impl for file panel state.
+/// Full impl for PanelState (was stubby).
 impl Pane for PanelState {
     fn current_path(&self) -> &PathBuf {
-        &self.current_path
+        self.current_path()
     }
 
     fn navigate_to(&mut self, path: PathBuf) {
-        // delegate to existing
-        // note: this is stub, full would call the nav logic
-        self.current_path = path;
+        nav::navigate_to(self, path);
+    }
+
+    fn refresh(&mut self) {
+        self.refresh();
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor()
+    }
+
+    fn set_cursor(&mut self, c: usize) {
+        self.set_cursor(c);
+    }
+
+    fn filtered_count(&self) -> usize {
+        self.filtered_count()
     }
 }

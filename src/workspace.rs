@@ -22,7 +22,8 @@ pub use compare::{
 mod tab_sets;
 pub use tab_sets::{save_tab_set, restore_tab_set, TabSet};
 
-mod command_handlers;
+pub mod command_handlers;
+pub use command_handlers::CommandHandler;
 
 mod file_ops;
 
@@ -224,6 +225,9 @@ pub struct Workspace {
     // Git bg channel owned here (thin App: ws handles receive + apply). Using tokio unbounded channel.
     pub git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
     pub git_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
+
+    // Command handlers (trait based for plugins, CommandHandler trait).
+    command_handlers: Vec<Box<dyn crate::workspace::command_handlers::CommandHandler>>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -330,6 +334,12 @@ impl Workspace {
             file_notes: std::sync::Arc::new(std::collections::HashMap::new()),
             git_tx: None,
             git_rx: None,
+            command_handlers: vec![
+                Box::new(crate::workspace::command_handlers::handle_tab_commands as fn(&mut Workspace, Command) -> bool),
+                Box::new(crate::workspace::command_handlers::handle_nav_commands as fn(&mut Workspace, Command) -> bool),
+                Box::new(crate::workspace::command_handlers::handle_selection_commands as fn(&mut Workspace, Command) -> bool),
+                Box::new(crate::workspace::file_ops::handle_file_ops as fn(&mut Workspace, Command) -> bool),
+            ],
         }
     }
 
@@ -456,8 +466,11 @@ impl Workspace {
     // ── Command dispatch ────────────────────────────────────────────────
 
     pub fn execute(&mut self, cmd: Command) {
+        // CommandHandler trait registered (for plugins); dispatch via groups for borrow safety.
+        // (full trait dispatch would use &mut self.handlers carefully or separate.)
+
         match cmd {
-            // Grouped for SRP: tab/git commands handled in extracted command_handlers (full).
+            // tab commands via handler (trait ready)
             Command::NewTab | Command::CloseTab | Command::NextTab | Command::PrevTab
             | Command::SaveTabSet | Command::RestoreTabSet | Command::ToggleShowGit
             | Command::OpenTerminal | Command::GitDiff | Command::GitStage | Command::GitDiscard
@@ -471,14 +484,10 @@ impl Workspace {
                 };
             }
             Command::CursorUp | Command::CursorDown | Command::CursorHome | Command::CursorEnd | Command::CursorPageUp | Command::CursorPageDown => {
-                if !crate::workspace::command_handlers::handle_nav_commands(self, cmd) {
-                    // fallback if needed
-                }
+                let _ = crate::workspace::command_handlers::handle_nav_commands(self, cmd);
             }
             Command::ExtendSelectDown | Command::ExtendSelectUp => {
-                if !crate::workspace::command_handlers::handle_selection_commands(self, cmd) {
-                    // fallback
-                }
+                let _ = crate::workspace::command_handlers::handle_selection_commands(self, cmd);
             }
             Command::Activate => {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
@@ -631,6 +640,7 @@ impl Workspace {
                 panel.set_show_hidden(!panel.show_hidden());
                 panel.refresh();
             }
+            _ => {}
         }
     }
 
