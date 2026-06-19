@@ -37,13 +37,47 @@ pub struct PendingTransfer {
 }
 
 impl PendingTransfer {
-    /// True when the operation cannot fit on the target volume (a same-volume
-    /// move needs no extra space, so it never overflows).
-    pub fn overflows(&self) -> bool {
-        if self.kind == TransferKind::Move && self.same_volume {
-            return false;
+    /// Classify how this operation consumes target space: a same-volume move is
+    /// an instant rename, a same-volume Native copy is an APFS clone (both need
+    /// ~0), while a cross-volume transfer or a buffered same-volume copy writes
+    /// the full size.
+    fn op_class(&self) -> crate::fs_util::OpClass {
+        use crate::fs_util::OpClass;
+        match self.kind {
+            TransferKind::Move => OpClass::Move {
+                same_volume: self.same_volume,
+            },
+            TransferKind::Copy => {
+                if self.same_volume && self.method == CopyMethod::Native {
+                    OpClass::Clone
+                } else {
+                    OpClass::Copy
+                }
+            }
         }
-        self.free_bytes.is_some_and(|free| self.need_bytes > free)
+    }
+
+    /// Space verdict driving the will-it-fit guard. (No overwrite reclaim or
+    /// safety reserve is applied yet; both are supported by the pure core.)
+    pub fn space_verdict(&self) -> crate::fs_util::SpaceVerdict {
+        crate::fs_util::space_verdict(self.need_bytes, self.free_bytes, self.op_class(), 0, 0)
+    }
+
+    /// True when the operation needs no meaningful extra space on the target
+    /// (a same-volume move, or a same-volume clone).
+    pub fn needs_no_space(&self) -> bool {
+        matches!(
+            self.op_class(),
+            crate::fs_util::OpClass::Move { same_volume: true } | crate::fs_util::OpClass::Clone
+        )
+    }
+
+    /// True when the operation cannot fit on the target volume.
+    pub fn overflows(&self) -> bool {
+        matches!(
+            self.space_verdict(),
+            crate::fs_util::SpaceVerdict::WontFit { .. }
+        )
     }
 }
 
@@ -2206,28 +2240,40 @@ mod tests {
 
     #[test]
     fn pending_transfer_overflow_logic() {
-        let mk = |kind, need, free, same| PendingTransfer {
+        let mk = |kind, method, need, free, same| PendingTransfer {
             kind,
             entries: vec![],
             target: PathBuf::from("/t"),
             conflicts: vec![],
             policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
+            method,
             flat: scan::spawn_scan(vec![]),
             need_bytes: need,
             free_bytes: free,
             same_volume: same,
         };
-        // Copy needing more than free overflows.
-        assert!(mk(TransferKind::Copy, 100, Some(50), false).overflows());
-        // Copy that fits does not.
-        assert!(!mk(TransferKind::Copy, 40, Some(50), false).overflows());
+        use CopyMethod::{Buffered, Native};
+        // Cross-volume copy needing more than free overflows.
+        assert!(mk(TransferKind::Copy, Native, 100, Some(50), false).overflows());
+        // Cross-volume copy that fits does not.
+        assert!(!mk(TransferKind::Copy, Native, 40, Some(50), false).overflows());
         // Same-volume move never overflows (instant rename).
-        assert!(!mk(TransferKind::Move, 100, Some(50), true).overflows());
+        assert!(!mk(TransferKind::Move, Native, 100, Some(50), true).overflows());
         // Cross-volume move behaves like copy.
-        assert!(mk(TransferKind::Move, 100, Some(50), false).overflows());
+        assert!(mk(TransferKind::Move, Native, 100, Some(50), false).overflows());
         // Unknown free space: don't block.
-        assert!(!mk(TransferKind::Copy, 100, None, false).overflows());
+        assert!(!mk(TransferKind::Copy, Native, 100, None, false).overflows());
+
+        // Same-volume Native copy is an APFS clone: ~0 extra space, so it fits
+        // even when the size dwarfs free (the bug the preflight fixes).
+        let clone = mk(TransferKind::Copy, Native, 1_000, Some(10), true);
+        assert!(!clone.overflows());
+        assert!(clone.needs_no_space());
+        // A same-volume BUFFERED copy writes every byte, so it can overflow.
+        assert!(mk(TransferKind::Copy, Buffered, 1_000, Some(10), true).overflows());
+        assert!(!mk(TransferKind::Copy, Buffered, 1_000, Some(10), true).needs_no_space());
+        // A same-volume move needs no space regardless of method.
+        assert!(mk(TransferKind::Move, Native, 1_000, Some(10), true).needs_no_space());
     }
 
     #[test]

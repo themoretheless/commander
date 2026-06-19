@@ -47,13 +47,15 @@ impl App {
                 ),
             };
 
-        // Will-it-fit snapshot (None for delete): (overflow, need, free, instant_move).
+        // Will-it-fit snapshot (None for delete): (overflow, need, free, no_extra_space).
+        // `no_extra_space` is true for a same-volume move (instant rename) and a
+        // same-volume clone, neither of which writes the full size.
         let fit: Option<(bool, u64, Option<u64>, bool)> = match &self.ws.pending_op {
             Some(PendingOp::Transfer(tr)) => Some((
                 tr.overflows(),
                 tr.need_bytes,
                 tr.free_bytes,
-                tr.kind == TransferKind::Move && tr.same_volume,
+                tr.needs_no_space(),
             )),
             _ => None,
         };
@@ -192,10 +194,10 @@ impl App {
                 }
 
                 // Will-it-fit guard.
-                if let Some((over, need, free, instant)) = fit {
+                if let Some((over, need, free, no_extra_space)) = fit {
                     ui.add_space(2.0);
-                    let (msg, color) = if instant {
-                        ("Instant move (same volume)".to_string(), t.accent)
+                    let (msg, color) = if no_extra_space {
+                        ("No extra space needed (same volume)".to_string(), t.accent)
                     } else if let Some(free) = free {
                         if over {
                             (

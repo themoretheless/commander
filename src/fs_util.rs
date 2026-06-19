@@ -221,6 +221,67 @@ pub fn same_volume(_a: &Path, _b: &Path) -> bool {
     false
 }
 
+/// How a planned transfer consumes space on the target volume, which decides
+/// how much of `need` it actually writes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OpClass {
+    /// A move. A same-volume move is an instant rename needing no extra space;
+    /// a cross-volume move copies to the target first, so it needs the full
+    /// size there until the source is removed.
+    Move { same_volume: bool },
+    /// An APFS clone (a same-volume copy on a clone-capable volume): near-zero
+    /// extra space until the copy diverges from its original.
+    Clone,
+    /// A byte copy (cross-volume, or a same-volume copy without clone support):
+    /// needs the full size on the target.
+    Copy,
+}
+
+/// Whether a planned transfer fits on the target volume.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpaceVerdict {
+    /// Comfortably fits.
+    Fits,
+    /// Fits, but only by dipping into the safety reserve.
+    Tight,
+    /// Does not fit; short by this many bytes.
+    WontFit { short_by: u64 },
+}
+
+/// Decide whether writing `need` bytes for a transfer of class `class` fits in
+/// `free` bytes on the target, after subtracting `reclaim` (bytes freed by
+/// overwriting existing destinations) and keeping a `reserve` safety margin.
+///
+/// A same-volume move and a clone need ~0; a cross-volume move and a plain copy
+/// need the full size. `free == None` (the free space could not be read) is
+/// treated as non-blocking ([`SpaceVerdict::Fits`]) rather than falsely
+/// refusing the operation.
+pub fn space_verdict(
+    need: u64,
+    free: Option<u64>,
+    class: OpClass,
+    reclaim: u64,
+    reserve: u64,
+) -> SpaceVerdict {
+    let need_eff = match class {
+        OpClass::Move { same_volume: true } | OpClass::Clone => 0,
+        OpClass::Move { same_volume: false } | OpClass::Copy => need,
+    };
+    let need_eff = need_eff.saturating_sub(reclaim);
+    let Some(free) = free else {
+        return SpaceVerdict::Fits;
+    };
+    if need_eff > free {
+        SpaceVerdict::WontFit {
+            short_by: need_eff - free,
+        }
+    } else if need_eff.saturating_add(reserve) > free {
+        SpaceVerdict::Tight
+    } else {
+        SpaceVerdict::Fits
+    }
+}
+
 /// Compress a file or directory into "<name>.zip" next to it.
 /// Runs `ditto` in the background; returns once the process is spawned.
 pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
@@ -434,6 +495,50 @@ mod tests {
         let mut temp = path.as_os_str().to_owned();
         temp.push(".tmp");
         assert!(!Path::new(&temp).exists());
+    }
+
+    #[test]
+    fn space_verdict_classes_and_boundaries() {
+        use OpClass::*;
+        use SpaceVerdict::*;
+
+        // Same-volume move and clone need ~0, so they fit even when the size
+        // dwarfs free space.
+        assert_eq!(
+            space_verdict(1_000, Some(10), Move { same_volume: true }, 0, 0),
+            Fits
+        );
+        assert_eq!(space_verdict(1_000, Some(10), Clone, 0, 0), Fits);
+
+        // Cross-volume move and plain copy need the full size.
+        assert_eq!(
+            space_verdict(1_000, Some(10), Move { same_volume: false }, 0, 0),
+            WontFit { short_by: 990 }
+        );
+        assert_eq!(
+            space_verdict(100, Some(40), Copy, 0, 0),
+            WontFit { short_by: 60 }
+        );
+        assert_eq!(space_verdict(40, Some(100), Copy, 0, 0), Fits);
+
+        // Overwrites reclaim space, lowering the effective need.
+        assert_eq!(space_verdict(100, Some(40), Copy, 70, 0), Fits);
+        assert_eq!(
+            space_verdict(100, Some(40), Copy, 30, 0),
+            WontFit { short_by: 30 }
+        );
+
+        // A reserve pushes a just-fits copy into Tight, then WontFit.
+        assert_eq!(space_verdict(100, Some(100), Copy, 0, 0), Fits);
+        assert_eq!(space_verdict(100, Some(100), Copy, 0, 10), Tight);
+        assert_eq!(
+            space_verdict(100, Some(100), Copy, 0, 0),
+            Fits,
+            "exact fit with no reserve is Fits, not WontFit"
+        );
+
+        // Unknown free space never blocks.
+        assert_eq!(space_verdict(u64::MAX, None, Copy, 0, 0), Fits);
     }
 
     #[test]
