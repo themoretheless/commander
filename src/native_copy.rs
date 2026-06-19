@@ -20,6 +20,9 @@ fn path_cstring(p: &Path) -> std::io::Result<CString> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
 }
 
+// renamex_np flag: fail with EEXIST rather than clobber an existing dst.
+const RENAME_EXCL: c_uint = 0x0000_0004;
+
 // copyfile flags
 const COPYFILE_ALL: u32 = 0x000F; // DATA + STAT + ACL + XATTR
 const COPYFILE_EXCL: u32 = 1 << 17; // fail if the destination already exists
@@ -69,6 +72,23 @@ unsafe extern "C" {
         state: copyfile_state_t,
         flags: c_uint,
     ) -> c_int;
+    fn renamex_np(from: *const c_char, to: *const c_char, flags: c_uint) -> c_int;
+}
+
+/// Move `src` to `dst` with a single atomic rename that fails with `EEXIST`
+/// rather than clobbering an existing `dst` (macOS `renamex_np(RENAME_EXCL)`).
+///
+/// This backs the same-volume move fast path, preserving the no-clobber
+/// guarantee the copy path gets from `COPYFILE_EXCL`/`O_EXCL` without a
+/// check-then-rename TOCTOU window.
+pub fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let src_c = path_cstring(src)?;
+    let dst_c = path_cstring(dst)?;
+    let rc = unsafe { renamex_np(src_c.as_ptr(), dst_c.as_ptr(), RENAME_EXCL) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 struct CallbackCtx {
@@ -302,5 +322,33 @@ pub fn copy_dir_native(
         let mut s = state.lock().unwrap();
         s.copied_bytes = base_bytes + copied;
         Ok(copied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+
+    #[test]
+    fn rename_noreplace_moves_into_a_free_name() {
+        let tmp = TempDir::new();
+        let src = tmp.file("a.txt", "hi");
+        let dst = tmp.path().join("b.txt");
+        rename_noreplace(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hi");
+    }
+
+    #[test]
+    fn rename_noreplace_refuses_to_clobber_an_existing_destination() {
+        let tmp = TempDir::new();
+        let src = tmp.file("a.txt", "new");
+        let dst = tmp.file("b.txt", "old");
+        let err = rename_noreplace(&src, &dst).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        // Nothing was moved or clobbered.
+        assert!(src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "old");
     }
 }

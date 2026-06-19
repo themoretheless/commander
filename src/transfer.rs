@@ -290,13 +290,27 @@ pub fn spawn_transfer(
                 fs_util::available_copy_name(&dest)
             };
 
-            let result = spec.method.copy_entry(
-                &entry.path,
-                entry.is_dir,
-                &copy_target,
-                &progress,
-                base_bytes,
-            );
+            // Same-volume moves are an instant, atomic rename instead of a
+            // copy-then-delete: no transient duplication, no walk-and-copy of
+            // every byte, and no second pass to remove the source. The copy
+            // path is reserved for cross-volume moves and all copies.
+            let renamed = is_move
+                && entry
+                    .path
+                    .parent()
+                    .is_some_and(|p| fs_util::same_volume(p, &spec.target));
+
+            let result = if renamed {
+                rename_entry(&entry.path, &copy_target, entry, &progress, base_bytes)
+            } else {
+                spec.method.copy_entry(
+                    &entry.path,
+                    entry.is_dir,
+                    &copy_target,
+                    &progress,
+                    base_bytes,
+                )
+            };
 
             match &result {
                 Ok(b) => base_bytes += b,
@@ -339,7 +353,9 @@ pub fn spawn_transfer(
             };
 
             // Delete the source only once the destination is fully in place.
-            if is_move && placed {
+            // A same-volume rename already moved the source, so there is
+            // nothing left to remove.
+            if is_move && placed && !renamed {
                 let _ = cleanup_path(&entry.path);
             }
 
@@ -358,6 +374,34 @@ pub fn spawn_transfer(
         }
         notify();
     });
+}
+
+/// Move one entry to `dst` with a single atomic, no-clobber rename (the
+/// same-volume move fast path). `dst` is always a path that should not exist
+/// yet (an absent destination, a fresh "copy" name, or a staging sibling), so
+/// the rename mirrors the copy path's `EXCL` no-clobber guarantee. The entry's
+/// full size is reported as copied, since a rename transfers it whole; the size
+/// is read before the move while the source still exists.
+fn rename_entry(
+    src: &Path,
+    dst: &Path,
+    entry: &FileEntry,
+    progress: &TransferState,
+    base_bytes: u64,
+) -> std::io::Result<u64> {
+    let size = entry_size(entry);
+    {
+        let mut s = progress.lock().unwrap();
+        s.current_file = entry.name.clone();
+        s.current_file_size = size;
+        s.current_file_copied = 0;
+    }
+    crate::native_copy::rename_noreplace(src, dst)?;
+    let mut s = progress.lock().unwrap();
+    s.current_file_copied = size;
+    s.copied_bytes = base_bytes + size;
+    s.maybe_sample();
+    Ok(size)
 }
 
 /// A hidden sibling of `dest` that does not exist yet, used to stage an
@@ -666,13 +710,15 @@ mod tests {
     }
 
     #[test]
-    fn move_keeps_source_when_copy_fails() {
+    fn move_keeps_source_when_placement_fails() {
         use std::os::unix::fs::PermissionsExt;
 
         let (src, dst) = (TempDir::new(), TempDir::new());
         let dir = src.dir("folder");
-        let secret = src.file("folder/secret.txt", "no read access");
-        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let inner = src.file("folder/data.txt", "payload");
+        // Make the destination unwritable so neither the rename fast path nor
+        // the copy path can land the entry. The source must survive untouched.
+        std::fs::set_permissions(dst.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let s = run(spec(
             TransferKind::Move,
@@ -684,11 +730,97 @@ mod tests {
         ));
 
         // Restore permissions so TempDir cleanup works everywhere.
-        let _ = std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::set_permissions(dst.path(), std::fs::Permissions::from_mode(0o755));
 
         assert!(!s.errors.is_empty(), "the failure must be reported");
         assert!(dir.exists(), "source must survive a failed move");
-        assert!(secret.exists());
+        assert!(inner.exists());
+    }
+
+    #[test]
+    fn same_volume_move_relocates_whole_tree_via_rename() {
+        // src and dst temp dirs share a volume, so a Move takes the rename
+        // fast path: the source is relinked, not copied byte-by-byte.
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("folder");
+        src.file("folder/a.txt", "one");
+        src.file("folder/sub/b.txt", "two");
+
+        let s = run(spec(
+            TransferKind::Move,
+            CopyMethod::Native,
+            vec![entry_for(&dir)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        assert!(s.errors.is_empty());
+        assert!(!dir.exists(), "source is gone after a move");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("folder/a.txt")).unwrap(),
+            "one"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("folder/sub/b.txt")).unwrap(),
+            "two"
+        );
+        assert_eq!(s.files_done, 1);
+        assert_eq!(s.copied_bytes, s.total_bytes);
+    }
+
+    #[test]
+    fn same_volume_move_needs_no_read_access_to_contents() {
+        use std::os::unix::fs::PermissionsExt;
+        // A rename relocates an unreadable file whole; the old copy-then-delete
+        // path would have failed trying to read it. This documents that a
+        // same-volume move is a true rename, not a copy.
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("folder");
+        let secret = src.file("folder/secret.txt", "unreadable");
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let s = run(spec(
+            TransferKind::Move,
+            CopyMethod::Native,
+            vec![entry_for(&dir)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        ));
+
+        let moved = dst.path().join("folder/secret.txt");
+        let _ = std::fs::set_permissions(&moved, std::fs::Permissions::from_mode(0o644));
+
+        assert!(
+            s.errors.is_empty(),
+            "rename needs no read access to contents"
+        );
+        assert!(!dir.exists());
+        assert!(moved.exists());
+    }
+
+    #[test]
+    fn same_volume_move_overwrite_replaces_destination() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "new contents");
+        dst.file("a.txt", "old contents");
+
+        let s = run(spec(
+            TransferKind::Move,
+            CopyMethod::Native,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::OverwriteAll,
+        ));
+
+        assert!(s.errors.is_empty());
+        assert!(!file.exists(), "source is gone after a move");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "new contents"
+        );
     }
 
     #[test]
