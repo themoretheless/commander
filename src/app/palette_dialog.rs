@@ -6,9 +6,6 @@ use super::*;
 
 impl App {
     pub(crate) fn show_palette_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.requests.palette_request) {
-            self.palette_input = Some(String::new());
-        }
         if self.palette_input.is_none() {
             return;
         }

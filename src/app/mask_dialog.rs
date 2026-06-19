@@ -5,9 +5,6 @@ use super::*;
 
 impl App {
     pub(crate) fn show_mask_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.requests.mask_request) {
-            self.mask_input = Some(String::new());
-        }
         let Some(buffer) = &mut self.mask_input else {
             return;
         };

@@ -117,7 +117,7 @@ impl App {
         self.handle_keys(ctx);
 
         // Consume effects from the bus (core of Effects bus architecture).
-        self.process_effects();
+        self.process_effects(ctx);
 
         // Macro record stub (idea #37/63). Moved to ws for thinner App.
         if self.ws.macro_recording {
@@ -173,27 +173,9 @@ impl App {
             self.sync_linked_scroll();
         }
 
-        // Bookmarks now handled by dedicated dialog (show_bookmarks_dialog) + full UI in bookmarks_ui.
-        // Assign is inside dialog too; request flag consumed there. Basic assign logic kept in ws for compat.
-        if self.ws.requests.assign_bookmark_request {
-            // Fallback direct assign if dialog not used.
-            let p = self.ws.active_panel_ref().current_path().clone();
-            if !self.ws.bookmarks.iter().any(|b| b.path == p) {
-                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string());
-                self.ws.bookmarks.push(crate::session::Bookmark { name, path: p });
-            }
-            self.ws.requests.assign_bookmark_request = false;
-        }
+        // Bookmarks assign handled in process_effects via Effect
+        // toasts and assign handled in process_effects via Effect
 
-        // Git actions toasts + refresh already done in ws
-        if let Some(msg) = std::mem::take(&mut self.ws.requests.git_toast) {
-            self.toasts.push(crate::toasts::Toast::new(
-                msg,
-                crate::toasts::ToastKind::Success,
-                false,
-                ctx.input(|i| i.time),
-            ));
-        }
 
         // Drain centralized errors (from git/report_error etc) into error toasts.
         for e in crate::error::drain_errors() {
@@ -203,10 +185,6 @@ impl App {
                 false,
                 ctx.input(|i| i.time),
             ));
-        }
-
-        if std::mem::take(&mut self.ws.requests.toggle_show_git_request) {
-            self.ws.show_git_status = !self.ws.show_git_status;
         }
 
         self.preload_images(ctx);
@@ -229,52 +207,8 @@ impl App {
             let c = ctx.clone();
             self.ws.start_sync_followup(move || c.request_repaint());
         }
-        // Run a requested undo / redo with a repaint callback.
-        if std::mem::take(&mut self.ws.requests.undo_request) {
-            let c = ctx.clone();
-            self.ws.perform_undo(move || c.request_repaint());
-            // The offered Undo is spent; drop the undoable toast(s).
-            self.toasts.dismiss_undoable();
-        }
-        if std::mem::take(&mut self.ws.requests.redo_request) {
-            let c = ctx.clone();
-            self.ws.perform_redo(move || c.request_repaint());
-        }
-        // Drain the shelf (copy staged items into the active pane).
-        if std::mem::take(&mut self.ws.requests.drain_request) {
-            let c = ctx.clone();
-            self.ws.drain_shelf(move || c.request_repaint());
-        }
-        // Cycle the list density (toward Spacious; wraps).
-        if std::mem::take(&mut self.ws.requests.cycle_density_request) {
-            self.density = crate::density::cycle(self.density, 1);
-        }
-        // Copy the selection's path(s) to the clipboard in the requested style.
-        if let Some(style) = self.ws.requests.clipboard_request.take() {
-            let paths: Vec<std::path::PathBuf> = self
-                .ws
-                .active_panel_ref()
-                .selected_or_cursor()
-                .into_iter()
-                .map(|e| e.path)
-                .collect();
-            if !paths.is_empty() {
-                let other_root = self.ws.inactive_panel().current_path().clone();
-                let text = crate::clipboard::format(&paths, style, Some(&other_root));
-                ctx.copy_text(text);
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!(
-                        "Copied {} ({})",
-                        crate::clipboard::style_label(style),
-                        paths.len()
-                    ),
-                    crate::toasts::ToastKind::Success,
-                    false,
-                    now,
-                ));
-            }
-        }
+        // undo/redo/drain/cycle/clipboard/git_toast handled directly in process_effects via Effect
+        // (requests fully removed)
     }
 
     fn show_toolbar_panel(&mut self, ctx: &egui::Context) {
@@ -1064,30 +998,124 @@ impl App {
         ui.add_space(2.0);
     }
 
-    fn process_effects(&mut self) {
+    fn process_effects(&mut self, ctx: &egui::Context) {
         while let Some(effect) = self.ws.effects.pop() {
             match effect {
-                crate::workspace::Effect::BeginRename(p) => self.ws.requests.rename_target = Some(p),
-                crate::workspace::Effect::BeginMask => self.ws.requests.mask_request = true,
-                crate::workspace::Effect::BeginGoToPath => self.ws.requests.path_request = true,
-                crate::workspace::Effect::BeginRecent => self.ws.requests.recent_request = true,
-                crate::workspace::Effect::BeginPalette => self.ws.requests.palette_request = true,
-                crate::workspace::Effect::BeginBatchRename => self.ws.requests.batch_rename_request = true,
-                crate::workspace::Effect::BeginSync => self.ws.requests.sync_request = true,
-                crate::workspace::Effect::FindDuplicates => self.ws.requests.duplicates_request = true,
-                crate::workspace::Effect::DiffFiles => self.ws.requests.diff_request = true,
-                crate::workspace::Effect::DiskTreemap => self.ws.requests.treemap_request = true,
-                crate::workspace::Effect::BeginFind => self.ws.requests.find_request = true,
-                crate::workspace::Effect::OpenSavedSearch => self.ws.requests.saved_search_request = true,
-                crate::workspace::Effect::BeginBookmarks => self.ws.requests.bookmarks_request = true,
-                crate::workspace::Effect::AssignCurrentToBookmark => self.ws.requests.assign_bookmark_request = true,
-                crate::workspace::Effect::GitToast(s) => self.ws.requests.git_toast = Some(s),
-                crate::workspace::Effect::ToggleShowGit => self.ws.requests.toggle_show_git_request = true,
-                crate::workspace::Effect::Clipboard(style) => self.ws.requests.clipboard_request = Some(style),
-                crate::workspace::Effect::Undo => self.ws.requests.undo_request = true,
-                crate::workspace::Effect::Redo => self.ws.requests.redo_request = true,
-                crate::workspace::Effect::ShelfDrain => self.ws.requests.drain_request = true,
-                crate::workspace::Effect::CycleDensity => self.ws.requests.cycle_density_request = true,
+                crate::workspace::Effect::BeginRename(p) => {
+                    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    self.renaming = Some(RenameState { path: p, buffer: name, error: None, focused: false });
+                }
+                crate::workspace::Effect::BeginMask => { self.mask_input = Some(String::new()); }
+                crate::workspace::Effect::BeginGoToPath => { self.path_input = Some(String::new()); }
+                crate::workspace::Effect::BeginRecent => { self.recent_input = Some(String::new()); }
+                crate::workspace::Effect::BeginPalette => { self.palette_input = Some(String::new()); }
+                crate::workspace::Effect::BeginBatchRename => {
+                    if !self.ws.batch_rename_targets().is_empty() {
+                        self.batch_rename = Some(BatchRenameState {
+                            find: String::new(), replace: String::new(), prefix: String::new(), suffix: String::new(),
+                            case: crate::rename::CaseMode::Keep, numbering_on: false, num_start: 1, num_step: 1, num_pad: 1,
+                            focused: false, error: None,
+                        });
+                    }
+                }
+                crate::workspace::Effect::BeginSync => {
+                    let policy = crate::sync::SyncPolicy::TwoWay;
+                    let actions = self.ws.build_sync_actions(policy);
+                    self.sync = Some(SyncState { policy, actions });
+                }
+                crate::workspace::Effect::FindDuplicates => {
+                    let policy = crate::dedup::KeepPolicy::KeepShortestPath;
+                    let groups = self.ws.find_duplicates();
+                    let keep = groups.iter().map(|g| crate::dedup::default_keep(g, policy)).collect();
+                    self.duplicates = Some(DupState { groups, keep, policy });
+                }
+                crate::workspace::Effect::DiffFiles => {
+                    match self.ws.diff_targets() {
+                        None => {
+                            let now = ctx.input(|i| i.time);
+                            self.toasts.push(crate::toasts::Toast::new("Select a file pair to diff", crate::toasts::ToastKind::Success, false, now));
+                        }
+                        Some((a,b)) => {
+                            if let (Ok(ca), Ok(cb)) = (crate::app::diff_dialog::read_text(&a), crate::app::diff_dialog::read_text(&b)) {
+                                self.diff = Some(DiffState { name_a: a.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default(), name_b: b.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default(), lines: crate::textdiff::diff_lines(&ca, &cb), message: None });
+                            }
+                        }
+                    }
+                }
+                crate::workspace::Effect::DiskTreemap => {
+                    let entries = self.ws.active_panel_ref().entries().to_vec();
+                    let mut items = vec![];
+                    for e in entries {
+                        let sz = if e.is_dir {
+                            self.ws.active_panel_ref().dir_sizes.lock().ok().and_then(|m| m.get(&e.path).copied()).unwrap_or(0)
+                        } else { e.size };
+                        items.push((e, sz));
+                    }
+                    self.treemap = Some(items);
+                }
+                crate::workspace::Effect::BeginFind => {
+                    self.find = Some(FindState { name: String::new(), min_mb: String::new(), max_age_days: String::new(), kind: None, root: self.ws.active_panel_ref().current_path().clone(), results: vec![], ran: false, focused: false, save_name: String::new() });
+                }
+                crate::workspace::Effect::OpenSavedSearch => { self.saved_search_open = true; }
+                crate::workspace::Effect::BeginBookmarks => {
+                    if self.bookmarks_open.is_none() {
+                        self.bookmarks_open = Some(String::new());
+                    }
+                }
+                crate::workspace::Effect::AssignCurrentToBookmark => {
+                    let p = self.ws.active_panel_ref().current_path().clone();
+                    if !self.ws.bookmarks.iter().any(|b| b.path == p) {
+                        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned());
+                        self.ws.bookmarks.push(crate::session::Bookmark { name, path: p });
+                    }
+                }
+                crate::workspace::Effect::GitToast(s) => {
+                    let now = ctx.input(|i| i.time);
+                    self.toasts.push(crate::toasts::Toast::new(s, crate::toasts::ToastKind::Success, false, now));
+                }
+                crate::workspace::Effect::ToggleShowGit => { self.ws.show_git_status = !self.ws.show_git_status; }
+                crate::workspace::Effect::Clipboard(style) => {
+                    let paths: Vec<_> = self.ws.active_panel_ref().selected_or_cursor().into_iter().map(|e| e.path).collect();
+                    if !paths.is_empty() {
+                        let other_root = self.ws.inactive_panel().current_path().clone();
+                        let text = crate::clipboard::format(&paths, style, Some(&other_root));
+                        ctx.copy_text(text);
+                        let now = ctx.input(|i| i.time);
+                        self.toasts.push(crate::toasts::Toast::new(
+                            format!("Copied {} ({})", crate::clipboard::style_label(style), paths.len()),
+                            crate::toasts::ToastKind::Success,
+                            false,
+                            now,
+                        ));
+                    }
+                }
+                crate::workspace::Effect::Undo => {
+                    if self.ws.stack.can_undo() {
+                        let c = ctx.clone();
+                        self.ws.perform_undo(move || c.request_repaint());
+                    }
+                }
+                crate::workspace::Effect::Redo => {
+                    if self.ws.stack.can_redo() {
+                        let c = ctx.clone();
+                        self.ws.perform_redo(move || c.request_repaint());
+                    }
+                }
+                crate::workspace::Effect::ShelfDrain => {
+                    if !self.ws.shelf.is_empty() {
+                        let c = ctx.clone();
+                        self.ws.drain_shelf(move || c.request_repaint());
+                    }
+                }
+                crate::workspace::Effect::CycleDensity => {
+                    // cycle logic
+                    use crate::density::Density;
+                    self.density = match self.density {
+                        Density::Spacious => Density::Comfortable,
+                        Density::Comfortable => Density::Compact,
+                        Density::Compact => Density::Spacious,
+                    };
+                }
                 crate::workspace::Effect::RefreshNeeded => { /* handled by other polls */ }
             }
         }

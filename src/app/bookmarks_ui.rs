@@ -8,11 +8,8 @@ use super::*;
 
 impl App {
     pub(crate) fn show_bookmarks_dialog(&mut self, ctx: &egui::Context) {
-        if !std::mem::take(&mut self.ws.requests.bookmarks_request) && self.bookmarks_open.is_none() {
-            return;
-        }
         if self.bookmarks_open.is_none() {
-            self.bookmarks_open = Some(String::new());
+            return;
         }
         let Some(filter) = &mut self.bookmarks_open else { return; };
         let t = self.colors;

@@ -5,9 +5,6 @@ use super::*;
 
 impl App {
     pub(crate) fn show_recent_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.requests.recent_request) {
-            self.recent_input = Some(String::new());
-        }
         let Some(buffer) = &mut self.recent_input else {
             return;
         };

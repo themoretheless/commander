@@ -99,55 +99,7 @@ pub enum Effect {
     RefreshNeeded,
 }
 
-/// Legacy Requests kept temporarily for compatibility during migration.
-/// Will be removed once all consumers use the effects bus.
-#[derive(Default)]
-pub(crate) struct Requests {
-    /// Set by [`Command::BeginRename`]; the UI picks this up to open the
-    /// inline rename editor seeded with this path, then clears it.
-    pub rename_target: Option<PathBuf>,
-    /// Set by [`Command::BeginSelectMask`]; the UI opens the mask input.
-    pub mask_request: bool,
-    /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
-    pub path_request: bool,
-    /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
-    pub recent_request: bool,
-    /// Set by [`Command::Undo`]; the UI runs the undo with a notify callback.
-    pub undo_request: bool,
-    /// Set by [`Command::BeginPalette`]; the UI opens the command palette.
-    pub palette_request: bool,
-    /// Set by [`Command::BeginBatchRename`]; the UI opens the batch-rename
-    /// studio for the active panel's selection.
-    pub batch_rename_request: bool,
-    /// Set by [`Command::BeginSync`]; the UI opens the synchronise sheet.
-    pub sync_request: bool,
-    /// Set by [`Command::FindDuplicates`]; the UI opens the duplicates sheet.
-    pub duplicates_request: bool,
-    /// Set by [`Command::DiffFiles`]; the UI opens the diff sheet.
-    pub diff_request: bool,
-    /// Set by [`Command::DiskTreemap`]; the UI opens the treemap sheet.
-    pub treemap_request: bool,
-    /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
-    pub find_request: bool,
-    /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
-    pub saved_search_request: bool,
-    /// Set by [`Command::BeginBookmarks`]; the UI will open bookmarks hotlist (designer iter 2).
-    pub bookmarks_request: bool,
-    /// Set by [`Command::AssignCurrentToBookmark`]; triggers assign current path (designer iter 2).
-    pub assign_bookmark_request: bool,
-    /// For git actions to trigger toast in App (with refresh).
-    pub git_toast: Option<String>,
-    /// Request to toggle git column from command.
-    pub toggle_show_git_request: bool,
-    /// Set by the Copy* commands; the UI formats the selection and copies it.
-    pub clipboard_request: Option<crate::clipboard::PathStyle>,
-    /// Set by [`Command::Redo`]; the UI replays the next redoable action.
-    pub redo_request: bool,
-    /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
-    pub drain_request: bool,
-    /// Set by [`Command::CycleDensity`]; the UI cycles its list density.
-    pub cycle_density_request: bool,
-}
+// Requests fully removed; all UI coordination now via Effect enum in effects bus.
 
 pub use crate::tabs::Tab as PanelTab;
 
@@ -229,8 +181,6 @@ pub struct Workspace {
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
     pub active_transfer: Option<TransferState>,
-    /// UI coordination (requests, toasts, etc). Extracted to shrink Workspace struct.
-    pub requests: Requests,
     /// Bookmarks / favorites (full per top 50: name + path, UI, hotkeys, persist).
     pub bookmarks: Vec<crate::session::Bookmark>,
     /// Saved tab sets (basic stub for top 50: save current tabs paths).
@@ -361,7 +311,6 @@ impl Workspace {
             active: ActivePanel::Left,
             pending_op: None,
             active_transfer: None,
-            requests: Requests::default(),
             bookmarks: vec![],
             saved_tab_sets: vec![],
             shelf: crate::shelf::Shelf::default(),
@@ -598,8 +547,7 @@ impl Workspace {
                 let panel = self.active_panel_ref();
                 if panel.cursor() > 0 {
                     if let Some(p) = panel.filtered_get(panel.cursor() - 1).map(|e| e.path.clone()) {
-                        self.effects.push(Effect::BeginRename(p.clone()));
-                        self.requests.rename_target = Some(p);
+                        self.effects.push(Effect::BeginRename(p));
                     }
                 }
             }
@@ -741,10 +689,10 @@ impl Workspace {
         // PR1 tabs: destination is the active tab on the side whose current path matches target (or empty).
         let left = &self.left;
         let right = &self.right;
-        let dest: &[FileEntry] = if left.tabs[left.active].state.current_path() == &tr.target {
-            left.tabs[left.active].state.entries()
-        } else if right.tabs[right.active].state.current_path() == &tr.target {
-            right.tabs[right.active].state.entries()
+        let dest: &[FileEntry] = if left.active_tab_state().current_path() == &tr.target {
+            left.active_tab_state().entries()
+        } else if right.active_tab_state().current_path() == &tr.target {
+            right.active_tab_state().entries()
         } else {
             &[]
         };
@@ -894,7 +842,7 @@ impl Workspace {
                 let _ = Self::rename_pairs_staged(&dir, &pairs);
                 // PR1 tabs
                 self.left_active_tab_mut().state.refresh();
-                self.right.tabs[self.right.active].state.refresh();
+                self.right.active_tab_state_mut().refresh();
             }
         }
     }
@@ -970,7 +918,7 @@ impl Workspace {
                     Self::exec_delete(&entries);
                     // PR1 tabs
                     self.left_active_tab_mut().state.refresh();
-                    self.right.tabs[self.right.active].state.refresh();
+                    self.right.active_tab_state_mut().refresh();
                 }
             }
             Some(PendingOp::Transfer(_)) => {
@@ -1291,7 +1239,7 @@ impl Workspace {
         &self,
         policy: crate::sync::SyncPolicy,
     ) -> Vec<crate::sync::SyncAction> {
-        crate::sync::sync_diff(&self.left.active_tab().state.entries, &self.right.tabs[self.right.active].state.entries, policy)
+        crate::sync::sync_diff(&self.left.active_tab().state.entries, &self.right.active_tab_state().entries, policy)
     }
 
     /// Resolve and start a synchronisation plan: copy each `ToRight` row's left
@@ -1319,14 +1267,14 @@ impl Workspace {
                     }
                 }
                 SyncDirection::ToLeft => {
-                    if let Some(e) = lookup(&self.right.tabs[self.right.active].state.entries, &nl) {
+                    if let Some(e) = lookup(&self.right.active_tab_state().entries, &nl) {
                         to_left.push(e);
                     }
                 }
                 SyncDirection::Skip => {}
             }
         }
-        let right_dir = self.right.tabs[self.right.active].state.current_path().clone();
+        let right_dir = self.right.active_tab_state().current_path().clone();
         let left_dir = self.left.active_tab().state.current_path().clone();
 
         if !to_right.is_empty() {
@@ -1389,7 +1337,7 @@ impl Workspace {
     /// the same file nothing touches the filesystem.
     pub fn sync_preview(&mut self) {
         // PR1 tabs (per design review subsection): only active tab per side can drive visible preview.
-        let (source, target) = if self.right.tabs[self.right.active].state.preview.is_some() {
+        let (source, target) = if self.right.active_tab_state().preview.is_some() {
             (&self.left.active_tab().state, &mut self.right.tabs[self.right.active].state)
         } else if self.left.active_tab().state.preview.is_some() {
             (&self.right.tabs[self.right.active].state, &mut self.left.active_tab_mut().state)
@@ -1508,7 +1456,7 @@ impl Workspace {
         // PR1: drag from the active tab of the side that has drag_entries
         let (source, other) = if !self.left.active_tab().state.drag_entries.is_empty() {
             (&mut self.left.active_tab_mut().state, &mut self.right.active_tab_mut().state)
-        } else if !self.right.tabs[self.right.active].state.drag_entries.is_empty() {
+        } else if !self.right.active_tab_state().drag_entries.is_empty() {
             (&mut self.right.active_tab_mut().state, &mut self.left.active_tab_mut().state)
         } else {
             return None;
@@ -2188,7 +2136,7 @@ mod tests {
         ws.left.tabs[0].state.cursor = 1;
 
         ws.execute(Command::BeginRename);
-        assert_eq!(ws.requests.rename_target.as_deref(), Some(f.as_path()));
+        assert!(ws.effects.iter().any(|e| if let Effect::BeginRename(p) = e { p == f.as_path() } else { false }));
     }
 
     #[test]

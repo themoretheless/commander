@@ -5,20 +5,7 @@ use super::*;
 
 impl App {
     pub(crate) fn show_rename_dialog(&mut self, ctx: &egui::Context) {
-        // Pick up a rename request raised by Command::BeginRename.
-        if let Some(path) = self.ws.requests.rename_target.take() {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            self.renaming = Some(RenameState {
-                path,
-                buffer: name,
-                error: None,
-                focused: false,
-            });
-        }
-
+        // state set directly by Effect in process_effects
         let Some(state) = &mut self.renaming else {
             return;
         };

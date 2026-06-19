@@ -5,15 +5,6 @@ use super::*;
 
 impl App {
     pub(crate) fn show_path_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.requests.path_request) {
-            let current = self
-                .ws
-                .active_panel_ref()
-                .current_path
-                .display()
-                .to_string();
-            self.path_input = Some(current);
-        }
         let Some(buffer) = &mut self.path_input else {
             return;
         };

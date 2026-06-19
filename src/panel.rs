@@ -149,7 +149,7 @@ impl PanelState {
 
     fn refresh_git_status(&mut self) {
         // Always bg now. No direct mutation here.
-        crate::git::refresh_git_status(&self.current_path, &mut self.last_git_refresh, self.notify.clone(), self.git_tx.clone());
+        crate::git::refresh_git_status(&self.current_path, &mut self.last_git_refresh, self.notify.clone(), self.git_tx.clone(), self.tokio_handle.clone());
     }
 
     /// Check if fs watcher flagged a change; if so, refresh.

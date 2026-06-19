@@ -8,16 +8,6 @@ use crate::panel::format_size;
 
 impl App {
     pub(crate) fn show_duplicates_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.requests.duplicates_request) {
-            let policy = KeepPolicy::KeepShortestPath;
-            let groups = self.ws.find_duplicates();
-            let keep = groups.iter().map(|g| default_keep(g, policy)).collect();
-            self.duplicates = Some(DupState {
-                groups,
-                keep,
-                policy,
-            });
-        }
         if self.duplicates.is_none() {
             return;
         }

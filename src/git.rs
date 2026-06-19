@@ -62,6 +62,7 @@ pub fn refresh_git_status(
     last_git_refresh: &mut Option<Instant>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
     git_tx: Option<UnboundedSender<(PathBuf, HashMap<PathBuf, char>)>>,
+    tokio_handle: Option<tokio::runtime::Handle>,
 ) {
     const GIT_DEBOUNCE: Duration = Duration::from_millis(1500);
     if let Some(last) = *last_git_refresh {
@@ -86,8 +87,15 @@ pub fn refresh_git_status(
     let path2 = path.to_path_buf();
     let tx2 = git_tx.clone();
     let notify2 = notify.clone();
-    // Background thread (tokio channel used; later switch to rt.spawn_blocking)
-    std::thread::spawn(move || {
+    let handle = tokio_handle.clone();
+    let spawn = move |f: Box<dyn FnOnce() + Send>| {
+        if let Some(h) = handle {
+            h.spawn_blocking(f);
+        } else {
+            std::thread::spawn(f);
+        }
+    };
+    spawn(Box::new(move || {
         let map = compute_git_status(&path2);
         if let Some(tx) = tx2 {
             let _ = tx.send((path2.clone(), map));
@@ -95,5 +103,5 @@ pub fn refresh_git_status(
         if let Some(n) = notify2 {
             n();
         }
-    });
+    }));
 }

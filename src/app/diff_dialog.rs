@@ -8,7 +8,7 @@ use std::path::Path;
 /// Largest file we will read into memory for a diff.
 const DIFF_SIZE_CAP: u64 = 2 * 1024 * 1024;
 
-fn read_text(path: &Path) -> Result<String, ()> {
+pub(crate) fn read_text(path: &Path) -> Result<String, ()> {
     let meta = std::fs::metadata(path).map_err(|_| ())?;
     if meta.len() > DIFF_SIZE_CAP {
         return Err(());
@@ -18,43 +18,7 @@ fn read_text(path: &Path) -> Result<String, ()> {
 
 impl App {
     pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.requests.diff_request) {
-            match self.ws.diff_targets() {
-                None => {
-                    let now = ctx.input(|i| i.time);
-                    self.toasts.push(crate::toasts::Toast::new(
-                        "Select a file pair to diff",
-                        crate::toasts::ToastKind::Success,
-                        false,
-                        now,
-                    ));
-                }
-                Some((a, b)) => {
-                    let name = |p: &Path| {
-                        p.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    };
-                    let (lines, message) = match (read_text(&a), read_text(&b)) {
-                        (Ok(ta), Ok(tb)) => (diff_lines(&ta, &tb), None),
-                        _ => (
-                            Vec::new(),
-                            Some(
-                                "One or both files are binary, too large, or unreadable."
-                                    .to_string(),
-                            ),
-                        ),
-                    };
-                    self.diff = Some(DiffState {
-                        name_a: name(&a),
-                        name_b: name(&b),
-                        lines,
-                        message,
-                    });
-                }
-            }
-        }
-        let Some(state) = &self.diff else {
+        let Some(state) = &mut self.diff else {
             return;
         };
         let t = self.colors;
