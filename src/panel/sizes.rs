@@ -177,22 +177,28 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
 
     // (walk log guards and cache decision now inside bg tasks to keep UI responsive)
 
-    // Subdir counts
+    // Subdir counts - full tokio transition: use handle.spawn_blocking if available
     let counts = Arc::clone(&panel.dir_counts);
     let wake1 = panel.notify.clone();
-    fs_pool().spawn(move || {
+    let handle1 = panel.tokio_handle.clone();
+    let spawn1 = move |f: Box<dyn FnOnce() + Send>| {
+        if let Some(h) = handle1 {
+            h.spawn_blocking(f);
+        } else {
+            std::thread::spawn(f);
+        }
+    };
+    spawn1(Box::new(move || {
         use rayon::prelude::*;
-        let results: Vec<_> = fs_pool().install(|| {
-            need_count
-                .par_iter()
-                .map(|p| {
-                    let count = std::fs::read_dir(p)
-                        .map(|rd| rd.filter_map(|e| e.ok()).count())
-                        .unwrap_or(0);
-                    (p.clone(), count)
-                })
-                .collect()
-        });
+        let results: Vec<_> = need_count
+            .par_iter()
+            .map(|p| {
+                let count = std::fs::read_dir(p)
+                    .map(|rd| rd.filter_map(|e| e.ok()).count())
+                    .unwrap_or(0);
+                (p.clone(), count)
+            })
+            .collect();
         if let Ok(mut map) = counts.lock() {
             for (p, c) in results {
                 map.insert(p, c);
@@ -201,63 +207,70 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
         if let Some(wake) = wake1 {
             wake();
         }
-    });
+    }));
 
     // Dir sizes - all mtime, guard, cache, walk now inside bg (moved sync fs off UI thread for perf)
+    // Full tokio transition using handle.spawn_blocking
     if !need_size.is_empty() {
         let sizes = Arc::clone(&panel.dir_sizes);
         let wake2 = panel.notify.clone();
-        fs_pool().spawn(move || {
+        let handle2 = panel.tokio_handle.clone();
+        let spawn2 = move |f: Box<dyn FnOnce() + Send>| {
+            if let Some(h) = handle2 {
+                h.spawn_blocking(f);
+            } else {
+                std::thread::spawn(f);
+            }
+        };
+        spawn2(Box::new(move || {
             use rayon::prelude::*;
-            let results: Vec<_> = fs_pool().install(|| {
-                need_size
-                    .par_iter()
-                    .map(|p| {
-                        let dir_mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
-                        // Check cache
-                        if let Some(mtime) = dir_mtime
-                            && let Ok(cache) = dir_size_cache().lock()
-                            && let Some(&(cached_mtime, cached_size)) = cache.get(p)
-                            && cached_mtime == mtime
-                        {
-                            return (p.clone(), mtime, cached_size);
+            let results: Vec<_> = need_size
+                .par_iter()
+                .map(|p| {
+                    let dir_mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
+                    // Check cache
+                    if let Some(mtime) = dir_mtime
+                        && let Ok(cache) = dir_size_cache().lock()
+                        && let Some(&(cached_mtime, cached_size)) = cache.get(p)
+                        && cached_mtime == mtime
+                    {
+                        return (p.clone(), mtime, cached_size);
+                    }
+                    // guards
+                    #[cfg(test)]
+                    let guards_enabled = std::env::var("COMMANDER_DISABLE_WALK_GUARDS").is_err();
+                    #[cfg(not(test))]
+                    let guards_enabled = true;
+                    let mut skip = false;
+                    let mut cost = std::time::Duration::ZERO;
+                    if guards_enabled
+                        && let Ok(log) = walk_log().lock()
+                        && let Some(&(when, c)) = log.get(p)
+                    {
+                        cost = c;
+                        if when.elapsed() < WALK_COOLDOWN {
+                            skip = true;
                         }
-                        // guards
-                        #[cfg(test)]
-                        let guards_enabled = std::env::var("COMMANDER_DISABLE_WALK_GUARDS").is_err();
-                        #[cfg(not(test))]
-                        let guards_enabled = true;
-                        let mut skip = false;
-                        let mut cost = std::time::Duration::ZERO;
-                        if guards_enabled
-                            && let Ok(log) = walk_log().lock()
-                            && let Some(&(when, c)) = log.get(p)
+                    }
+                    let started = std::time::Instant::now();
+                    let size = if skip {
+                        if let Ok(cache) = dir_size_cache().lock()
+                            && let Some(&(_, s)) = cache.get(p)
                         {
-                            cost = c;
-                            if when.elapsed() < WALK_COOLDOWN {
-                                skip = true;
-                            }
-                        }
-                        let started = std::time::Instant::now();
-                        let size = if skip {
-                            if let Ok(cache) = dir_size_cache().lock()
-                                && let Some(&(_, s)) = cache.get(p)
-                            {
-                                s
-                            } else {
-                                0
-                            }
-                        } else {
-                            let s = crate::fs_util::dir_size_recursive(p);
-                            if let Ok(mut log) = walk_log().lock() {
-                                log.insert(p.clone(), (std::time::Instant::now(), started.elapsed()));
-                            }
                             s
-                        };
-                        (p.clone(), dir_mtime.unwrap_or(std::time::UNIX_EPOCH), size)
-                    })
-                    .collect()
-            });
+                        } else {
+                            0
+                        }
+                    } else {
+                        let s = crate::fs_util::dir_size_recursive(p);
+                        if let Ok(mut log) = walk_log().lock() {
+                            log.insert(p.clone(), (std::time::Instant::now(), started.elapsed()));
+                        }
+                        s
+                    };
+                    (p.clone(), dir_mtime.unwrap_or(std::time::UNIX_EPOCH), size)
+                })
+                .collect();
             if let Ok(mut map) = sizes.lock() {
                 for (p, _, size) in &results {
                     map.insert(p.clone(), *size);
@@ -272,7 +285,7 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
             if let Some(wake) = wake2 {
                 wake();
             }
-        });
+        }));
     }
 
     retry

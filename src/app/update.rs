@@ -119,29 +119,29 @@ impl App {
         // Consume effects from the bus (core of Effects bus architecture).
         self.process_effects();
 
-        // Macro record stub (idea #37/63).
-        if self.macro_recording {
+        // Macro record stub (idea #37/63). Moved to ws for thinner App.
+        if self.ws.macro_recording {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-                self.macro_steps.push("Enter".into());
+                self.ws.macro_steps.push("Enter".into());
             }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.macro_steps.push("Esc".into());
+                self.ws.macro_steps.push("Esc".into());
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
-                self.macro_steps.push("Up".into());
+                self.ws.macro_steps.push("Up".into());
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
-                self.macro_steps.push("Down".into());
+                self.ws.macro_steps.push("Down".into());
             }
         }
-        if !self.macro_recording && !self.macro_steps.is_empty() {
+        if !self.ws.macro_recording && !self.ws.macro_steps.is_empty() {
             if ctx.input(|i| i.key_pressed(egui::Key::P)) {
                 self.playback_current_macro_steps();
             }
         }
 
         // User tag toggle 'T' for cursor (idea #64/21): assign/remove demo tag label.
-        if ctx.input(|i| i.key_pressed(egui::Key::T)) && !self.macro_recording {
+        if ctx.input(|i| i.key_pressed(egui::Key::T)) && !self.ws.macro_recording {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
                 let mut m = (*self.ws.user_tags).clone();
@@ -155,7 +155,7 @@ impl App {
         }
 
         // File note toggle 'N' (idea #92): assign/remove simple note.
-        if ctx.input(|i| i.key_pressed(egui::Key::N)) && !self.macro_recording {
+        if ctx.input(|i| i.key_pressed(egui::Key::N)) && !self.ws.macro_recording {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
                 let mut m = (*self.ws.file_notes).clone();
@@ -1017,24 +1017,24 @@ impl App {
             if crate::app::ui_common::small_toggle(ui, "T", self.terminal_open, "Toggle terminal pane") {
                 self.terminal_open = !self.terminal_open;
             }
-            // Macro record/play/save (idea #82/71/37): named last + playback.
-            if crate::app::ui_common::small_toggle(ui, "M", self.macro_recording, "Toggle macro record (stops auto-saves 'last')") {
-                self.macro_recording = !self.macro_recording;
-                if !self.macro_recording && !self.macro_steps.is_empty() {
-                    self.saved_macros.insert("last".to_string(), self.macro_steps.clone());
+            // Macro record/play/save (idea #82/71/37): named last + playback. Moved to ws.
+            if crate::app::ui_common::small_toggle(ui, "M", self.ws.macro_recording, "Toggle macro record (stops auto-saves 'last')") {
+                self.ws.macro_recording = !self.ws.macro_recording;
+                if !self.ws.macro_recording && !self.ws.macro_steps.is_empty() {
+                    self.saved_macros.insert("last".to_string(), self.ws.macro_steps.clone());
                 }
             }
-            if !self.macro_recording && !self.macro_steps.is_empty() {
+            if !self.ws.macro_recording && !self.ws.macro_steps.is_empty() {
                 if ui.small_button("P").on_hover_text("Playback current steps").clicked() {
                     self.playback_current_macro_steps();
                 }
                 if ui.small_button("save").on_hover_text("Save current as 'last' macro").clicked() {
-                    self.saved_macros.insert("last".to_string(), self.macro_steps.clone());
+                    self.saved_macros.insert("last".to_string(), self.ws.macro_steps.clone());
                 }
             }
             if let Some(st) = self.saved_macros.get("last") {
-                if !self.macro_recording && ui.small_button("last").on_hover_text(format!("Play saved last ({} steps)", st.len())).clicked() {
-                    self.macro_steps = st.clone();
+                if !self.ws.macro_recording && ui.small_button("last").on_hover_text(format!("Play saved last ({} steps)", st.len())).clicked() {
+                    self.ws.macro_steps = st.clone();
                     self.playback_current_macro_steps();
                 }
             }
@@ -1304,8 +1304,9 @@ impl App {
 
     /// Centralized macro playback (nav + enter simulation). Deduped from begin_frame + button.
     fn playback_current_macro_steps(&mut self) {
+        let steps = self.ws.macro_steps.clone();
         let panel = self.ws.active_panel();
-        for step in &self.macro_steps {
+        for step in &steps {
             match step.as_str() {
                 "Up" if panel.cursor() > 0 => {
                     panel.set_cursor(panel.cursor() - 1);

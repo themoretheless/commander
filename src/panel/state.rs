@@ -62,6 +62,7 @@ pub struct PanelState {
     pub(crate) watched_path: Option<PathBuf>,
     /// Sender for git updates to avoid shared Arc<Mutex>, use channel from App.
     pub(crate) git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, HashMap<PathBuf, char>)>>,
+    pub(crate) tokio_handle: Option<tokio::runtime::Handle>,
 }
 
 impl PanelState {
@@ -104,6 +105,7 @@ impl PanelState {
             watcher: None,
             watched_path: None,
             git_tx: None,
+            tokio_handle: None,
         }
     }
 

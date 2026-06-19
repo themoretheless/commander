@@ -214,6 +214,11 @@ impl TabManager {
             self.active = final_idx;
         }
     }
+
+    pub fn swap_tabs(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.tabs, &mut other.tabs);
+        std::mem::swap(&mut self.active, &mut other.active);
+    }
 }
 
 pub struct Workspace {
@@ -260,6 +265,10 @@ pub struct Workspace {
 
     // Command handlers (trait based for plugins, CommandHandler trait).
     command_handlers: Vec<Box<dyn crate::workspace::command_handlers::CommandHandler>>,
+
+    // Moved from App for thinner App (pure wiring).
+    pub macro_recording: bool,
+    pub macro_steps: Vec<String>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -373,6 +382,8 @@ impl Workspace {
                 Box::new(crate::workspace::command_handlers::handle_selection_commands as fn(&mut Workspace, Command) -> bool),
                 Box::new(crate::workspace::file_ops::handle_file_ops as fn(&mut Workspace, Command) -> bool),
             ],
+            macro_recording: false,
+            macro_steps: vec![],
         }
     }
 
@@ -598,8 +609,7 @@ impl Workspace {
             }
             Command::SwapPanels => {
                 // PR1 tabs: swap whole tab sets (including their actives); then flip which side is active
-                std::mem::swap(&mut self.left.tabs, &mut self.right.tabs);
-                std::mem::swap(&mut self.left.active, &mut self.right.active);
+                self.left.swap_tabs(&mut self.right);
                 self.active = match self.active {
                     ActivePanel::Left => ActivePanel::Right,
                     ActivePanel::Right => ActivePanel::Left,

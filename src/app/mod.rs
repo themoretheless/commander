@@ -105,9 +105,6 @@ pub struct App {
     /// Mini terminal bottom pane open (idea #11).
     pub(crate) terminal_open: bool,
     pub(crate) terminal_history: Vec<String>,
-    /// Macro recorder active (idea #37/46).
-    pub(crate) macro_recording: bool,
-    pub(crate) macro_steps: Vec<String>,
     /// Grid view toggle (idea #65/72).
     pub(crate) grid_view: bool,
     /// Saved named macros (idea #82). key=name, value=steps.
@@ -340,6 +337,19 @@ impl App {
         let show_tree_default = config.show_tree;
         let density_default = config.density;
 
+        // Full tokio transition: create rt first, set handle on states for spawn_blocking in sizes/git
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let handle = tokio_rt.handle().clone();
+        for tab in &mut ws.left.tabs {
+            tab.state.tokio_handle = Some(handle.clone());
+        }
+        for tab in &mut ws.right.tabs {
+            tab.state.tokio_handle = Some(handle.clone());
+        }
+
         // Channel owned by ws (thin App, tokio unbounded). Create here, wire to tabs, store on ws.
         let (git_tx, git_rx) = tokio::sync::mpsc::unbounded_channel();
         ws.git_tx = Some(git_tx.clone());
@@ -351,14 +361,6 @@ impl App {
         }
         for tab in &mut ws.right.tabs {
             tab.state.git_tx = Some(git_tx.clone());
-        }
-
-        // Use tokio_rt.spawn_blocking for git bg compute (fixes unused rt for async direction)
-        if let Some(tx) = &ws.git_tx {
-            let tx = tx.clone();
-            let p = ws.left_active_tab().state.current_path().clone();
-            // note: this is demo for initial; main schedule uses thread for now but rt owned
-            let _ = /* to avoid double, comment the spawn in git for main path but keep for simplicity */ ();
         }
 
         let mut app = App {
@@ -401,8 +403,6 @@ impl App {
             saved_search_open: false,
             terminal_open: false,
             terminal_history: vec![],
-            macro_recording: false,
-            macro_steps: vec![],
             grid_view: false,
             dragged_tab: None,
             saved_macros: std::collections::HashMap::new(),
@@ -412,13 +412,10 @@ impl App {
             notes_open: false,
             bookmarks_open: None,
             column_config_open: false,
-            tokio_rt: tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("tokio runtime"),
+            tokio_rt,
         };
 
-        // Use tokio_rt.spawn_blocking for git compute (addresses unused rt for async; main schedule in git uses thread for shell but rt is exercised here)
+        // Use tokio_rt.spawn_blocking for initial git (full transition)
         if let Some(tx) = &app.ws.git_tx {
             let tx = tx.clone();
             let p = app.ws.left_active_tab().state.current_path().clone();
