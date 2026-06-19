@@ -64,6 +64,14 @@ pub struct DeleteOutcome {
     pub failed: usize,
 }
 
+/// How a shelf drain turned out: how many copies started, and how many items
+/// could not be read and so were kept on the shelf rather than discarded.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ShelfDrainOutcome {
+    pub started: usize,
+    pub unavailable: usize,
+}
+
 pub struct Workspace {
     pub left: PanelState,
     pub right: PanelState,
@@ -1250,10 +1258,12 @@ impl Workspace {
 
     /// Copy every shelved item into the active panel's directory in one pass,
     /// dropping self-copies and keeping both on name collisions, then clear the
-    /// shelf. Routes through the transfer engine.
-    pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) {
+    /// shelf. Routes through the transfer engine. Items whose source can no
+    /// longer be read are kept on the shelf (not silently discarded), and the
+    /// outcome reports both how many copies started and how many were left.
+    pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
         if self.shelf.is_empty() || self.active_transfer.is_some() {
-            return;
+            return ShelfDrainOutcome::default();
         }
         let dest = self.active_panel_ref().current_path.clone();
         let existing: std::collections::HashSet<String> = self
@@ -1263,21 +1273,35 @@ impl Workspace {
             .map(|e| e.name.clone())
             .collect();
         let plan = crate::shelf::drain_plan(self.shelf.items(), &dest, &existing);
-        // Build FileEntry sources for the planned (non-self) copies.
-        let entries: Vec<FileEntry> = plan
-            .iter()
-            .filter_map(|(src, _)| {
-                let meta = std::fs::metadata(src).ok()?;
-                FileEntry::from_meta(src.clone(), &meta)
-            })
-            .collect();
-        if entries.is_empty() {
-            self.shelf.clear();
-            return;
+
+        // Build sources for the planned copies, keeping any whose source could
+        // not be read so they stay on the shelf rather than vanishing.
+        let mut entries: Vec<FileEntry> = Vec::new();
+        let mut unavailable: Vec<PathBuf> = Vec::new();
+        for (src, _) in &plan {
+            match std::fs::metadata(src)
+                .ok()
+                .and_then(|m| FileEntry::from_meta(src.clone(), &m))
+            {
+                Some(fe) => entries.push(fe),
+                None => unavailable.push(src.clone()),
+            }
         }
-        // KeepBoth so a drained file never clobbers an existing one.
-        self.start_copy(entries, dest, OverwritePolicy::KeepBoth, notify);
+
+        // Self-copies (excluded by the plan) and started copies leave the
+        // shelf; only the unreadable items remain for the user to retry.
         self.shelf.clear();
+        self.shelf.add_all(unavailable.iter().cloned());
+
+        let outcome = ShelfDrainOutcome {
+            started: entries.len(),
+            unavailable: unavailable.len(),
+        };
+        if !entries.is_empty() {
+            // KeepBoth so a drained file never clobbers an existing one.
+            self.start_copy(entries, dest, OverwritePolicy::KeepBoth, notify);
+        }
+        outcome
     }
 
     // ── Directory sync ──────────────────────────────────────────────────
@@ -2019,6 +2043,25 @@ mod tests {
             "drained into the active (left) folder"
         );
         assert!(ws.shelf.is_empty(), "shelf cleared after drain");
+    }
+
+    #[test]
+    fn drain_shelf_keeps_unreadable_items_instead_of_dropping_them() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let src = r.file("ghost.txt", "x"); // staged from the right folder
+        let mut ws = workspace(&l, &r); // active panel is the left
+
+        ws.shelf.add(src.clone());
+        std::fs::remove_file(&src).unwrap(); // source vanishes before the drain
+
+        let outcome = ws.drain_shelf(|| {});
+        assert_eq!(outcome.started, 0);
+        assert_eq!(outcome.unavailable, 1);
+        assert_eq!(ws.shelf.len(), 1, "unreadable item kept for retry");
+        assert!(
+            ws.active_transfer.is_none(),
+            "nothing readable, no transfer"
+        );
     }
 
     #[test]

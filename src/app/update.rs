@@ -127,7 +127,21 @@ impl App {
         // Drain the shelf (copy staged items into the active pane).
         if std::mem::take(&mut self.ws.drain_request) {
             let c = ctx.clone();
-            self.ws.drain_shelf(move || c.request_repaint());
+            let outcome = self.ws.drain_shelf(move || c.request_repaint());
+            if outcome.unavailable > 0 {
+                let now = ctx.input(|i| i.time);
+                let item = |n: usize| if n == 1 { "item" } else { "items" };
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!(
+                        "{} shelf {} unavailable, kept on the shelf",
+                        outcome.unavailable,
+                        item(outcome.unavailable)
+                    ),
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
+            }
         }
         // Cycle the list density (toward Spacious; wraps).
         if std::mem::take(&mut self.ws.cycle_density_request) {
