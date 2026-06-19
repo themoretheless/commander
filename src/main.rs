@@ -23,6 +23,7 @@ mod query;
 mod quick_actions;
 mod reldate;
 mod rename;
+mod rename_order;
 mod scan;
 mod selection_summary;
 mod selset;
