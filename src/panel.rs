@@ -156,11 +156,7 @@ pub fn flush_cache() {
         // Lock dropped here: serialization and IO happen outside it.
     };
     if let Ok(json) = serde_json::to_string(&entries) {
-        let path = cache_path();
-        let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, json).is_ok() {
-            let _ = fs::rename(&tmp, &path);
-        }
+        crate::fs_util::write_atomic(&cache_path(), &json);
     }
 }
 

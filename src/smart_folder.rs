@@ -50,13 +50,8 @@ pub fn load() -> SmartFolders {
 
 /// Save the searches atomically (temp file + rename), best-effort.
 pub fn save(store: &SmartFolders) {
-    let Ok(json) = serde_json::to_string_pretty(store) else {
-        return;
-    };
-    let path = store_path();
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    if let Ok(json) = serde_json::to_string_pretty(store) {
+        crate::fs_util::write_atomic(&store_path(), &json);
     }
 }
 

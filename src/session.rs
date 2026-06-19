@@ -59,13 +59,8 @@ pub fn load() -> Option<Session> {
 
 /// Save the session atomically (temp file + rename), best-effort.
 pub fn save(session: &Session) {
-    let Ok(json) = serde_json::to_string_pretty(session) else {
-        return;
-    };
-    let path = session_path();
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    if let Ok(json) = serde_json::to_string_pretty(session) {
+        crate::fs_util::write_atomic(&session_path(), &json);
     }
 }
 

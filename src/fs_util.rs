@@ -13,6 +13,23 @@ pub fn config_dir() -> PathBuf {
     dir
 }
 
+/// Atomically write `contents` to `path`: write a sibling temp file, then
+/// rename it over the destination, so a crash or concurrent reader mid-write
+/// never sees a truncated file. Best-effort; returns whether it succeeded.
+pub fn write_atomic(path: &Path, contents: &str) -> bool {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    if std::fs::write(&tmp, contents).is_err() {
+        return false;
+    }
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp); // do not leave a stray temp behind
+        return false;
+    }
+    true
+}
+
 /// Total size in bytes of all files under `path` (parallel walk).
 pub fn dir_size_recursive(path: &Path) -> u64 {
     jwalk::WalkDir::new(path)
@@ -399,6 +416,21 @@ mod tests {
             std::fs::read_to_string(copy.join("inner.txt")).unwrap(),
             "x"
         );
+    }
+
+    #[test]
+    fn write_atomic_replaces_contents_and_leaves_no_temp() {
+        let tmp = TempDir::new();
+        let path = tmp.path().join("data.json");
+        assert!(write_atomic(&path, "first"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+        // A second write replaces, not appends.
+        assert!(write_atomic(&path, "second"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        // No stray temp sibling is left behind.
+        let mut temp = path.as_os_str().to_owned();
+        temp.push(".tmp");
+        assert!(!Path::new(&temp).exists());
     }
 
     #[test]
