@@ -33,6 +33,8 @@ impl App {
         let finished = s.finished;
         let errors = s.errors.clone();
         drop(s);
+        // Transfers waiting behind this one in the queue.
+        let queued = self.ws.queued_count();
 
         let title = if finished {
             if errors.is_empty() {
@@ -115,6 +117,17 @@ impl App {
                         );
                     });
                 });
+
+                // Queued-behind indicator: transfers waiting for this to finish.
+                if queued > 0 {
+                    ui.add_space(2.0);
+                    let item = if queued == 1 { "transfer" } else { "transfers" };
+                    ui.label(
+                        egui::RichText::new(format!("{queued} more {item} queued"))
+                            .size(11.0)
+                            .color(t.accent),
+                    );
+                }
 
                 Self::draw_speed_graph(ui, &samples, &t);
 

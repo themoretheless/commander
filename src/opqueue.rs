@@ -11,22 +11,23 @@
 //! The queue is generic over the spec payload `S` so the core never depends on
 //! transfer types; the app instantiates `Queue<TransferSpec>`.
 //!
-//! The public API lands ahead of its caller: the transfer worker is wired to
-//! drive this queue in a later iteration, so the whole surface is exercised by
-//! the unit tests below until then.
-#![allow(dead_code)] // remove once the transfer worker drives the queue
+//! The transfer worker drives this queue: every copy/move enqueues a job and
+//! `poll_transfer` drains the next when a slot frees. The job-management ops
+//! (pause/resume/cancel/reorder/promote/concurrency) are exercised by the unit
+//! tests and wired to the keyboard queue panel in a follow-up iteration; they
+//! carry a narrow allow below until then.
 
 /// Stable identifier for a queued job, assigned at enqueue and unchanged by
 /// reordering, so the UI can refer to a job across frames.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct JobId(pub u64);
 
-/// The kind of file operation a job performs.
+/// The kind of file operation a job performs. (Deletes are synchronous and not
+/// queued, so there is no `Delete` variant yet.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobKind {
     Copy,
     Move,
-    Delete,
 }
 
 /// Lifecycle state of a single job.
@@ -60,6 +61,9 @@ impl JobState {
 #[derive(Clone, Debug)]
 pub struct Job<S> {
     pub id: JobId,
+    /// What the job does. Carried for the queue panel's labels (next iteration);
+    /// the cap-1 scheduler does not branch on it.
+    #[allow(dead_code)]
     pub kind: JobKind,
     pub spec: S,
     pub state: JobState,
@@ -101,6 +105,8 @@ impl<S> Queue<S> {
     }
 
     /// Current concurrency cap.
+    // Concurrency-cap API: used once parallel transfers / the queue panel land.
+    #[allow(dead_code)]
     pub fn concurrency(&self) -> usize {
         self.concurrency
     }
@@ -108,6 +114,7 @@ impl<S> Queue<S> {
     /// Change the concurrency cap (clamped to >= 1). Raising it lets more
     /// pending jobs start on the next `dequeue_next`; lowering it never stops a
     /// job already running, it only throttles future starts.
+    #[allow(dead_code)]
     pub fn set_concurrency(&mut self, concurrency: usize) {
         self.concurrency = concurrency.max(1);
     }
@@ -117,10 +124,12 @@ impl<S> Queue<S> {
         &self.jobs
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.jobs.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.jobs.len()
     }
@@ -188,9 +197,14 @@ impl<S> Queue<S> {
         self.transition(id, JobState::Running, JobState::Failed)
     }
 
+    // Job-management API (pause/resume/cancel/reorder/promote): exercised by
+    // the unit tests and wired to the keyboard queue panel in a follow-up
+    // iteration; cap-1 auto-draining does not call them yet.
+
     /// Hold a job back. A `Pending` or `Running` job becomes `Paused`; anything
     /// else is left untouched. (Pausing a running job marks intent; the worker
     /// shell is responsible for actually stopping it.)
+    #[allow(dead_code)]
     pub fn pause(&mut self, id: JobId) -> bool {
         match self.state_of(id) {
             Some(JobState::Pending) | Some(JobState::Running) => {
@@ -203,12 +217,14 @@ impl<S> Queue<S> {
 
     /// Return a `Paused` job to the back-of-mind `Pending` pool so it can be
     /// dequeued again.
+    #[allow(dead_code)]
     pub fn resume(&mut self, id: JobId) -> bool {
         self.transition(id, JobState::Paused, JobState::Pending)
     }
 
     /// Abandon a job. Any non-terminal job (`Pending`/`Running`/`Paused`)
     /// becomes `Cancelled`; a job that already finished cannot be cancelled.
+    #[allow(dead_code)]
     pub fn cancel(&mut self, id: JobId) -> bool {
         match self.state_of(id) {
             Some(s) if !s.is_terminal() => {
@@ -223,6 +239,7 @@ impl<S> Queue<S> {
     /// relative order of every other job (a remove-then-insert). Only pending
     /// jobs may be reordered; reordering a running or finished job is refused.
     /// `to_index` is clamped into range.
+    #[allow(dead_code)]
     pub fn reorder(&mut self, id: JobId, to_index: usize) -> bool {
         let Some(from) = self.jobs.iter().position(|j| j.id == id) else {
             return false;
@@ -240,6 +257,7 @@ impl<S> Queue<S> {
     }
 
     /// Move a `Pending` job to the front of the queue so it is dequeued next.
+    #[allow(dead_code)]
     pub fn promote(&mut self, id: JobId) -> bool {
         self.reorder(id, 0)
     }

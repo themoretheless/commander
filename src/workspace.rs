@@ -81,6 +81,14 @@ impl PendingTransfer {
     }
 }
 
+/// One transfer waiting in (or running from) the queue: the fully-built spec
+/// plus the undo action to record if it finishes cleanly (a user Move) or
+/// `None` for copies and undo/redo-driven transfers.
+pub struct QueuedJob {
+    spec: TransferSpec,
+    undo: Option<crate::undo::Action>,
+}
+
 /// Pending file operation awaiting user confirmation.
 pub enum PendingOp {
     Transfer(PendingTransfer),
@@ -156,9 +164,14 @@ pub struct Workspace {
     pub bookmarks: crate::bookmarks::Bookmarks,
     /// A stashed selection for set-algebra combinations (union/intersect/...).
     pub selection_stash: std::collections::HashSet<PathBuf>,
-    /// Queued second copy pass (entries, target) for a two-way sync, started
-    /// once the first pass finishes. Keeps the engine single-transfer.
-    sync_followup: Option<(Vec<FileEntry>, PathBuf)>,
+    /// Pending transfer pipeline. Every copy/move enqueues here; the worker
+    /// runs one job at a time (concurrency cap 1 for now) and `poll_transfer`
+    /// drains the next when the active one finishes. Replaces the old ad-hoc
+    /// single-slot sync follow-up.
+    queue: crate::opqueue::Queue<QueuedJob>,
+    /// The queue job currently spawned as `active_transfer`, so it can be
+    /// marked done/failed when the worker finishes.
+    running_job: Option<crate::opqueue::JobId>,
     /// Undo/redo history of reversible operations (moves, batch renames).
     pub stack: crate::undo::UndoStack,
     /// The action the in-flight transfer will record on a clean finish (a user
@@ -386,7 +399,8 @@ impl Workspace {
             shelf: crate::shelf::Shelf::default(),
             bookmarks: crate::bookmarks::load(),
             selection_stash: std::collections::HashSet::new(),
-            sync_followup: None,
+            queue: crate::opqueue::Queue::new(),
+            running_job: None,
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
             opener,
@@ -813,29 +827,18 @@ impl Workspace {
     /// `notify` is invoked when visible progress changes (UI passes a
     /// repaint request).
     pub fn start_transfer(&mut self, notify: impl Fn() + Send + 'static) {
-        // Only one transfer at a time: never replace a live transfer's handle
-        // (that would orphan the running thread and its progress window).
-        if self.active_transfer.is_some() {
-            return;
-        }
         let Some(PendingOp::Transfer(t)) = self.pending_op.take() else {
             return;
         };
-
-        // Record this op for undo only if it is a Move; promoted onto the
-        // history stack when it finishes cleanly (see `poll_transfer`).
-        self.pending_undo_action = if t.kind == TransferKind::Move {
+        // A Move is undoable, promoted onto the history stack when it finishes
+        // cleanly (see `poll_transfer`); a Copy records no history.
+        let undo = if t.kind == TransferKind::Move {
             Some(crate::undo::Action::Move {
                 pairs: move_pairs(&t.entries, &t.target),
             })
         } else {
             None
         };
-
-        let total = t.need_bytes;
-        let progress = Arc::new(Mutex::new(TransferProgress::new(total, t.entries.len())));
-        self.active_transfer = Some(progress.clone());
-
         let spec = TransferSpec {
             kind: t.kind,
             entries: t.entries,
@@ -843,7 +846,52 @@ impl Workspace {
             policy: t.policy,
             method: t.method,
         };
+        self.enqueue_only(spec, undo);
+        self.pump_queue(notify);
+    }
+
+    /// Append a transfer to the queue without starting it.
+    fn enqueue_only(&mut self, spec: TransferSpec, undo: Option<crate::undo::Action>) {
+        let kind = match spec.kind {
+            TransferKind::Copy => crate::opqueue::JobKind::Copy,
+            TransferKind::Move => crate::opqueue::JobKind::Move,
+        };
+        self.queue.enqueue(kind, QueuedJob { spec, undo });
+    }
+
+    /// Start the next queued job if no transfer is active (concurrency cap 1).
+    /// The single place that spawns the worker, so the running job, its undo
+    /// action and `active_transfer` always move together.
+    fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.active_transfer.is_some() {
+            return;
+        }
+        let Some(id) = self.queue.dequeue_next() else {
+            return;
+        };
+        // Clone the spec/undo out of the (now Running) job to launch it.
+        // `job.spec` is the opqueue payload (a QueuedJob); its `.spec` is the
+        // TransferSpec and `.undo` the recorded action.
+        let Some(job) = self.queue.get(id) else {
+            return;
+        };
+        let spec = job.spec.spec.clone();
+        self.pending_undo_action = job.spec.undo.clone();
+        self.running_job = Some(id);
+        let total = transfer::total_bytes(&spec.entries);
+        let progress = Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
+        self.active_transfer = Some(progress.clone());
         transfer::spawn_transfer(spec, progress, notify);
+    }
+
+    /// Number of transfers waiting behind the active one (for a queued-count
+    /// indicator).
+    pub fn queued_count(&self) -> usize {
+        self.queue
+            .jobs()
+            .iter()
+            .filter(|j| j.state == crate::opqueue::JobState::Pending)
+            .count()
     }
 
     /// Cancel active transfer.
@@ -865,8 +913,8 @@ impl Workspace {
     /// stays open so the user can read the error list (dismissed via OK).
     /// Returns `true` when a clean Move just finished, so the UI can raise the
     /// undo toast.
-    pub fn poll_transfer(&mut self) -> bool {
-        let (close, clean) = self
+    pub fn poll_transfer(&mut self, notify: impl Fn() + Send + 'static) -> bool {
+        let (close, clean, had_errors) = self
             .active_transfer
             .as_ref()
             .map(|s| {
@@ -877,26 +925,48 @@ impl Workspace {
                 // shared state out from under a still-running cleanup pass. A
                 // finished run with errors stays open so the user can read them.
                 let clean = s.finished && s.errors.is_empty() && !s.cancelled;
-                (s.finished && (s.cancelled || s.errors.is_empty()), clean)
+                let errs = !s.errors.is_empty();
+                (
+                    s.finished && (s.cancelled || s.errors.is_empty()),
+                    clean,
+                    errs,
+                )
             })
-            .unwrap_or((false, false));
+            .unwrap_or((false, false, false));
 
         if !close {
             return false;
         }
         self.active_transfer = None;
+        // Retire the finished job from the queue so a free slot opens up.
+        if let Some(id) = self.running_job.take() {
+            if had_errors {
+                self.queue.fail(id);
+            } else {
+                self.queue.complete(id);
+            }
+            self.queue.clear_finished();
+        }
         self.left.refresh();
         self.right.refresh();
-        // Record the move on the history stack on a clean run.
-        if clean {
-            if let Some(action) = self.pending_undo_action.take() {
-                self.stack.push(action);
-                return true;
+        // Record the move on the history stack on a clean run; this must read
+        // the finished job's undo action BEFORE pumping the next job (which
+        // overwrites `pending_undo_action`).
+        let raised = if clean {
+            match self.pending_undo_action.take() {
+                Some(action) => {
+                    self.stack.push(action);
+                    true
+                }
+                None => false,
             }
         } else {
             self.pending_undo_action = None;
-        }
-        false
+            false
+        };
+        // Start the next queued transfer, if any.
+        self.pump_queue(notify);
+        raised
     }
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
@@ -953,9 +1023,6 @@ impl Workspace {
         dest_dir: PathBuf,
         notify: impl Fn() + Send + 'static,
     ) {
-        if self.active_transfer.is_some() {
-            return;
-        }
         let entries: Vec<FileEntry> = sources
             .iter()
             .filter_map(|p| {
@@ -966,10 +1033,6 @@ impl Workspace {
         if entries.is_empty() {
             return;
         }
-        self.pending_undo_action = None;
-        let total = transfer::total_bytes(&entries);
-        let progress = Arc::new(Mutex::new(TransferProgress::new(total, entries.len())));
-        self.active_transfer = Some(progress.clone());
         let spec = TransferSpec {
             kind: TransferKind::Move,
             entries,
@@ -977,7 +1040,9 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
         };
-        transfer::spawn_transfer(spec, progress, notify);
+        // Undo-driven: this move records no new history (undo=None).
+        self.enqueue_only(spec, None);
+        self.pump_queue(notify);
     }
 
     /// Add `dir` to the bookmarks if it is not already present, naming it after
@@ -1440,9 +1505,9 @@ impl Workspace {
 
     /// Resolve and start a synchronisation plan: copy each `ToRight` row's left
     /// file into the right directory and each `ToLeft` row's right file into the
-    /// left directory. The right-bound pass runs first; a left-bound pass is
-    /// queued and started when it finishes (see [`Self::start_sync_followup`]),
-    /// keeping the engine single-transfer.
+    /// left directory. Both passes are enqueued on the transfer queue and run in
+    /// order (the left-bound pass starts when the right-bound one finishes), so
+    /// the engine stays single-transfer with no special follow-up handling.
     pub fn apply_sync(
         &mut self,
         actions: &[crate::sync::SyncAction],
@@ -1473,49 +1538,25 @@ impl Workspace {
         let right_dir = self.right.current_path.clone();
         let left_dir = self.left.current_path.clone();
 
+        // Enqueue both passes; the queue runs them in order (the second starts
+        // when the first finishes), so a two-way sync needs no special casing.
         if !to_right.is_empty() {
-            if !to_left.is_empty() {
-                self.sync_followup = Some((to_left, left_dir));
-            }
-            self.start_copy(to_right, right_dir, OverwritePolicy::OverwriteAll, notify);
-        } else if !to_left.is_empty() {
-            self.start_copy(to_left, left_dir, OverwritePolicy::OverwriteAll, notify);
+            self.enqueue_copy(to_right, right_dir, OverwritePolicy::OverwriteAll);
         }
+        if !to_left.is_empty() {
+            self.enqueue_copy(to_left, left_dir, OverwritePolicy::OverwriteAll);
+        }
+        self.pump_queue(notify);
     }
 
-    /// Whether a queued second sync pass is ready to run (no transfer active).
-    pub fn has_sync_followup(&self) -> bool {
-        self.sync_followup.is_some() && self.active_transfer.is_none()
-    }
-
-    /// Start the queued second sync pass, if any and nothing is running.
-    pub fn start_sync_followup(&mut self, notify: impl Fn() + Send + 'static) {
-        if self.active_transfer.is_some() {
+    /// Queue a background Copy of `entries` into `target` under `policy` without
+    /// starting it. Used by the sync sheet and shelf drain, which already
+    /// served as the review step (no confirmation dialog). Copies record no
+    /// undo history.
+    fn enqueue_copy(&mut self, entries: Vec<FileEntry>, target: PathBuf, policy: OverwritePolicy) {
+        if entries.is_empty() {
             return;
         }
-        if let Some((entries, target)) = self.sync_followup.take() {
-            self.start_copy(entries, target, OverwritePolicy::OverwriteAll, notify);
-        }
-    }
-
-    /// Directly start a background Copy of `entries` into `target` under
-    /// `policy`. Bypasses the confirmation dialog: the caller (sync sheet,
-    /// shelf drain) already served as the review step.
-    fn start_copy(
-        &mut self,
-        entries: Vec<FileEntry>,
-        target: PathBuf,
-        policy: OverwritePolicy,
-        notify: impl Fn() + Send + 'static,
-    ) {
-        if entries.is_empty() || self.active_transfer.is_some() {
-            return;
-        }
-        // A copy is not undoable, but it must not erase the move/rename history.
-        self.pending_undo_action = None;
-        let total = transfer::total_bytes(&entries);
-        let progress = Arc::new(Mutex::new(TransferProgress::new(total, entries.len())));
-        self.active_transfer = Some(progress.clone());
         let spec = TransferSpec {
             kind: TransferKind::Copy,
             entries,
@@ -1523,7 +1564,19 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
         };
-        transfer::spawn_transfer(spec, progress, notify);
+        self.enqueue_only(spec, None);
+    }
+
+    /// Queue a copy and start it if idle (single-copy callers, e.g. shelf drain).
+    fn start_copy(
+        &mut self,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        policy: OverwritePolicy,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        self.enqueue_copy(entries, target, policy);
+        self.pump_queue(notify);
     }
 
     // ── Preview ─────────────────────────────────────────────────────────
@@ -1697,7 +1750,20 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "transfer timed out");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        ws.poll_transfer();
+        ws.poll_transfer(|| {});
+    }
+
+    /// Drive the queue to completion: wait out the active transfer and any jobs
+    /// queued behind it, polling between each.
+    fn drain_transfers(ws: &mut Workspace) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while ws.active_transfer.is_some() {
+            wait_transfer(ws);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queue drain timed out"
+            );
+        }
     }
 
     #[test]
@@ -2112,22 +2178,52 @@ mod tests {
         let actions = ws.build_sync_actions(crate::sync::SyncPolicy::TwoWay);
         ws.apply_sync(&actions, || {});
 
-        // First pass: left-only file goes right.
-        wait_transfer(&mut ws);
-        assert!(
-            r.path().join("left.txt").is_file(),
-            "first pass: left -> right"
-        );
+        // Both passes are enqueued; the first runs now, the second waits behind
+        // it on the queue (no more ad-hoc follow-up handling).
+        assert!(ws.active_transfer.is_some(), "first pass running");
+        assert_eq!(ws.queued_count(), 1, "second pass queued behind the first");
 
-        // The second pass is queued; drive it as the UI's begin_frame would.
-        assert!(ws.has_sync_followup(), "second pass queued");
-        ws.start_sync_followup(|| {});
-        wait_transfer(&mut ws);
-        assert!(
-            l.path().join("right.txt").is_file(),
-            "second pass: right -> left"
+        // Drive the queue to completion; poll_transfer drains the second pass.
+        drain_transfers(&mut ws);
+        assert!(r.path().join("left.txt").is_file(), "left -> right");
+        assert!(l.path().join("right.txt").is_file(), "right -> left");
+        assert_eq!(ws.queued_count(), 0, "queue fully drained");
+    }
+
+    #[test]
+    fn second_transfer_queues_and_runs_after_the_first() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "AAA");
+        let b = l.file("b.txt", "BBBB");
+        let mut ws = workspace(&l, &r);
+        let entry = |p: &std::path::Path| {
+            let meta = std::fs::metadata(p).unwrap();
+            FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
+        };
+
+        // Fire two copies into the right dir. The first starts; the second is
+        // queued behind it instead of being dropped (active_transfer stays set
+        // until poll_transfer closes it).
+        ws.start_copy(
+            vec![entry(&a)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
         );
-        assert!(!ws.has_sync_followup(), "queue drained");
+        ws.start_copy(
+            vec![entry(&b)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        assert!(ws.active_transfer.is_some(), "first transfer running");
+        assert_eq!(ws.queued_count(), 1, "second transfer queued, not dropped");
+
+        drain_transfers(&mut ws);
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+        assert!(r.path().join("a.txt").is_file(), "first copy landed");
+        assert!(r.path().join("b.txt").is_file(), "queued copy ran after");
     }
 
     #[test]

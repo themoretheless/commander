@@ -172,6 +172,7 @@ impl CopyMethod {
 /// Note there is no conflict list here: the engine checks the destination
 /// live at copy time (the confirmation dialog may sit open while the
 /// filesystem changes), driven only by [`OverwritePolicy`].
+#[derive(Clone)]
 pub struct TransferSpec {
     pub kind: TransferKind,
     pub entries: Vec<FileEntry>,

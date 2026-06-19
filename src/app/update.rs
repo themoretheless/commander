@@ -95,25 +95,24 @@ impl App {
 
         self.handle_keys(ctx);
         self.preload_images(ctx);
-        if self.ws.poll_transfer() {
-            // A clean move just finished: raise an undoable toast.
-            let now = ctx.input(|i| i.time);
-            if let Some(a) = self.ws.stack.peek_undo() {
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!("{} {} item(s)", a.verb(), a.item_count()),
-                    crate::toasts::ToastKind::Success,
-                    true,
-                    now,
-                ));
+        {
+            let c = ctx.clone();
+            // poll_transfer drains the next queued transfer (two-way sync second
+            // pass, or any op queued behind the active one) via this notify.
+            if self.ws.poll_transfer(move || c.request_repaint()) {
+                // A clean move just finished: raise an undoable toast.
+                let now = ctx.input(|i| i.time);
+                if let Some(a) = self.ws.stack.peek_undo() {
+                    self.toasts.push(crate::toasts::Toast::new(
+                        format!("{} {} item(s)", a.verb(), a.item_count()),
+                        crate::toasts::ToastKind::Success,
+                        true,
+                        now,
+                    ));
+                }
             }
         }
         self.toasts.prune(ctx.input(|i| i.time));
-        // A two-way sync runs in two passes; start the queued second one once
-        // the first finishes.
-        if self.ws.has_sync_followup() {
-            let c = ctx.clone();
-            self.ws.start_sync_followup(move || c.request_repaint());
-        }
         // Run a requested undo / redo with a repaint callback.
         if std::mem::take(&mut self.ws.undo_request) {
             let c = ctx.clone();
