@@ -48,12 +48,7 @@ impl Session {
 }
 
 fn session_path() -> PathBuf {
-    let dir = dirs::config_dir()
-        .or_else(dirs::cache_dir)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("commander");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("session.json")
+    crate::fs_util::config_dir().join("session.json")
 }
 
 /// Load the saved session, or None if absent/corrupt.

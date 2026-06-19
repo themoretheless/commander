@@ -852,6 +852,18 @@ impl Workspace {
     /// so reorderings cannot clobber. Rolls back staged temps on a phase-1
     /// failure. Returns how many renames landed, or the OS error.
     fn rename_pairs_staged(dir: &Path, pairs: &[(String, String)]) -> Result<usize, String> {
+        // Refuse to clobber: a target that already exists on disk and is not
+        // itself being renamed away (so it will be vacated) would be silently
+        // overwritten by phase 2. The forward path is pre-validated by the
+        // planner, but undo/redo re-runs recorded pairs without re-planning,
+        // so the directory may have changed underneath us.
+        let from_names: std::collections::HashSet<&str> =
+            pairs.iter().map(|(f, _)| f.as_str()).collect();
+        for (_, to) in pairs {
+            if !from_names.contains(to.as_str()) && dir.join(to).symlink_metadata().is_ok() {
+                return Err(format!("\u{201c}{to}\u{201d} already exists"));
+            }
+        }
         let temp_name = |i: usize| format!(".cmdr-rename-{i}.tmp");
         for (i, (from, _)) in pairs.iter().enumerate() {
             if let Err(e) = std::fs::rename(dir.join(from), dir.join(temp_name(i))) {
@@ -931,6 +943,13 @@ impl Workspace {
             .parent()
             .map(|p| p.join(new_name))
             .ok_or("Path has no parent")?;
+        // Probe the destination on disk (no-follow), not just the in-memory
+        // sibling list: a hidden file, a case-fold match, or a file created
+        // since the last refresh would otherwise be silently clobbered by the
+        // atomic rename.
+        if dest.symlink_metadata().is_ok() {
+            return Err("Name already in use".into());
+        }
         std::fs::rename(old, &dest).map_err(|e| e.to_string())?;
         self.active_panel().refresh();
         Ok(())
@@ -1005,7 +1024,9 @@ impl Workspace {
 
     /// Find duplicate files in the active panel's directory (files only,
     /// non-recursive for now). Size-prefilters so only files whose size
-    /// collides are content-hashed, then groups the byte-identical ones.
+    /// collides are content-hashed, groups by (size, hash), then confirms each
+    /// group is byte-identical (a 64-bit hash match is not proof) before
+    /// reporting it, so the dialog never offers to trash a false positive.
     pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
         use std::collections::HashMap;
         let files: Vec<&FileEntry> = self
@@ -1033,6 +1054,32 @@ impl Workspace {
             }
         }
         crate::dedup::group_duplicates(&keys)
+            .into_iter()
+            .flat_map(Self::confirm_dup_group)
+            .collect()
+    }
+
+    /// Split a hash-matched group into byte-identical clusters, keeping only
+    /// those with two or more members. Guards against 64-bit hash collisions
+    /// being trashed as duplicates.
+    fn confirm_dup_group(group: crate::dedup::DupGroup) -> Vec<crate::dedup::DupGroup> {
+        let size = group.size;
+        let mut clusters: Vec<Vec<crate::dedup::FileKey>> = Vec::new();
+        for file in group.files {
+            if let Some(c) = clusters
+                .iter_mut()
+                .find(|c| crate::fs_util::files_equal(&c[0].path, &file.path))
+            {
+                c.push(file);
+            } else {
+                clusters.push(vec![file]);
+            }
+        }
+        clusters
+            .into_iter()
+            .filter(|c| c.len() >= 2)
+            .map(|files| crate::dedup::DupGroup { size, files })
+            .collect()
     }
 
     /// Move `paths` to the Trash and refresh both panels. Not yet undoable
@@ -2172,6 +2219,63 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(l.path().join("b.txt")).unwrap(),
             "B"
+        );
+    }
+
+    #[test]
+    fn commit_rename_refuses_to_clobber_a_file_only_on_disk() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "1");
+        let mut ws = workspace(&l, &r);
+        // Create the destination on disk AFTER the panel was loaded, so it is
+        // not in the in-memory sibling list, exercising the disk probe.
+        l.file("b.txt", "2");
+        let err = ws.commit_rename(&a, "b.txt");
+        assert!(err.is_err(), "must refuse to overwrite an existing file");
+        assert_eq!(
+            std::fs::read_to_string(l.path().join("b.txt")).unwrap(),
+            "2"
+        );
+        assert!(a.exists(), "source untouched on refusal");
+    }
+
+    #[test]
+    fn rename_pairs_staged_refuses_to_clobber_unrelated_target() {
+        let tmp = TempDir::new();
+        tmp.file("a.txt", "1");
+        tmp.file("b.txt", "2"); // not part of the batch
+        let pairs = vec![("a.txt".to_string(), "b.txt".to_string())];
+        let r = Workspace::rename_pairs_staged(tmp.path(), &pairs);
+        assert!(r.is_err(), "renaming onto an existing file is refused");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
+            "2"
+        );
+    }
+
+    #[test]
+    fn rename_pairs_staged_allows_rotation_through_vacated_names() {
+        let tmp = TempDir::new();
+        tmp.file("a.txt", "A");
+        tmp.file("b.txt", "B");
+        // Swap a<->b: both targets are vacated by the batch, so it is allowed.
+        let pairs = vec![
+            ("a.txt".to_string(), "b.txt".to_string()),
+            ("b.txt".to_string(), "a.txt".to_string()),
+        ];
+        let n = Workspace::rename_pairs_staged(tmp.path(), &pairs).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "B"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
+            "A"
         );
     }
 

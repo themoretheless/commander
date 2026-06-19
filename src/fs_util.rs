@@ -2,6 +2,17 @@
 
 use std::path::{Path, PathBuf};
 
+/// The app's config directory (created if missing), where persisted state
+/// (session, smart folders) lives. Falls back to the cache dir, then `/tmp`.
+pub fn config_dir() -> PathBuf {
+    let dir = dirs::config_dir()
+        .or_else(dirs::cache_dir)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("commander");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Total size in bytes of all files under `path` (parallel walk).
 pub fn dir_size_recursive(path: &Path) -> u64 {
     jwalk::WalkDir::new(path)
@@ -187,6 +198,51 @@ pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// Whether two files have byte-identical contents. Streams both in lockstep
+/// so large files are not loaded whole. Returns `false` on any read error or
+/// length mismatch (so a failed compare never declares two files equal). Used
+/// to confirm duplicates before deletion, since a size + 64-bit hash match is
+/// not proof of byte-identity.
+pub fn files_equal(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(mut fa), Ok(mut fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else {
+        return false;
+    };
+    let mut ba = [0u8; 64 * 1024];
+    let mut bb = [0u8; 64 * 1024];
+    loop {
+        let na = match fa.read(&mut ba) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let nb = match read_full(&mut fb, &mut bb[..na]) {
+            Some(n) => n,
+            None => return false,
+        };
+        if na != nb || ba[..na] != bb[..nb] {
+            return false;
+        }
+        if na == 0 {
+            return true;
+        }
+    }
+}
+
+/// Read exactly `buf.len()` bytes (or until EOF), returning how many were read,
+/// or `None` on error. Needed because the two files may chunk differently.
+fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> Option<usize> {
+    use std::io::Read;
+    let mut filled = 0;
+    while filled < buf.len() {
+        match f.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return None,
+        }
+    }
+    Some(filled)
+}
+
 /// Content hash of a file, streamed in chunks so large files are not loaded
 /// whole. Returns `None` if the file cannot be read. Non-cryptographic (good
 /// enough to confirm byte-identity for duplicate detection after a size match).
@@ -231,6 +287,22 @@ mod tests {
         let taken2: std::collections::HashSet<String> =
             ["README".to_string()].into_iter().collect();
         assert_eq!(free_name_against("README", &taken2), "README copy");
+    }
+
+    #[test]
+    fn files_equal_compares_bytes_not_just_size() {
+        let tmp = TempDir::new();
+        let a = tmp.file("a.bin", "hello world");
+        let b = tmp.file("b.bin", "hello world");
+        let c = tmp.file("c.bin", "hello WORLD"); // same length, different bytes
+        let d = tmp.file("d.bin", "hello"); // shorter
+        assert!(files_equal(&a, &b), "identical bytes");
+        assert!(!files_equal(&a, &c), "same length, different content");
+        assert!(!files_equal(&a, &d), "different length");
+        assert!(
+            !files_equal(&a, Path::new("/no/such/file")),
+            "missing -> false"
+        );
     }
 
     #[test]

@@ -5,10 +5,20 @@
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::transfer::TransferProgress;
+
+/// Build a C string from a path's exact kernel-visible bytes. macOS file names
+/// are arbitrary byte sequences; going through `to_string_lossy` would replace
+/// invalid UTF-8 with U+FFFD and make copyfile() operate on the wrong path,
+/// which for a Move would then delete the real source. Use the raw OS bytes.
+fn path_cstring(p: &Path) -> std::io::Result<CString> {
+    CString::new(p.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+}
 
 // copyfile flags
 const COPYFILE_ALL: u32 = 0x000F; // DATA + STAT + ACL + XATTR
@@ -157,10 +167,8 @@ pub fn copy_file_native(
     state: &Arc<Mutex<TransferProgress>>,
     base_bytes: u64,
 ) -> std::io::Result<u64> {
-    let src_c = CString::new(src.to_string_lossy().as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let dst_c = CString::new(dst.to_string_lossy().as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let src_c = path_cstring(src)?;
+    let dst_c = path_cstring(dst)?;
 
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -239,10 +247,8 @@ pub fn copy_dir_native(
     state: &Arc<Mutex<TransferProgress>>,
     base_bytes: u64,
 ) -> std::io::Result<u64> {
-    let src_c = CString::new(src.to_string_lossy().as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let dst_c = CString::new(dst.to_string_lossy().as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let src_c = path_cstring(src)?;
+    let dst_c = path_cstring(dst)?;
 
     {
         let mut s = state.lock().unwrap();

@@ -450,10 +450,6 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
         .open(dst)?;
     let mut writer = std::io::BufWriter::with_capacity(COPY_BUF_SIZE, dst_file);
 
-    if let Ok(meta) = src.metadata() {
-        let _ = std::fs::set_permissions(dst, meta.permissions());
-    }
-
     let mut buf = vec![0u8; COPY_BUF_SIZE];
 
     loop {
@@ -481,6 +477,12 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
         }
     }
     writer.flush()?;
+    // Apply the source's permissions only after the contents are complete, so
+    // a concurrent reader never sees a partial file already wearing its final
+    // (possibly executable) mode.
+    if let Ok(meta) = src.metadata() {
+        let _ = std::fs::set_permissions(dst, meta.permissions());
+    }
     Ok(file_size)
 }
 
