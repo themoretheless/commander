@@ -166,7 +166,7 @@ pub(crate) fn compute_dir_sizes(panel: &super::PanelState, forced: bool) -> bool
     let mut need_size: Vec<(PathBuf, Option<SystemTime>)> = Vec::new();
     let mut retry = false;
 
-    for entry in &panel.entries {
+    for entry in panel.entries() {
         if !entry.is_dir {
             continue;
         }

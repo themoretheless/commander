@@ -594,25 +594,31 @@ impl App {
                 self.render_tab_bar(ui, true, &t, ctx, metrics);
 
                 let is_left_active = self.ws.active == ActivePanel::Left;
-                let left_opener = self.ws.opener.as_ref();
+                let left_opener = self.ws.opener.clone();
+                let left_show_git = self.ws.show_git_status;
+                let left_user_tags = self.ws.user_tags.clone();
+                let left_file_notes = self.ws.file_notes.clone();
+                let left_grid = self.grid_view;
+                let left_size_bars = self.show_size_bars;
+                let left_tree = self.show_tree;
                 tree_toggle |= Self::render_panel(
-                    &mut self.ws.left.tabs[self.ws.left.active].state,
+                    &mut self.ws.left_active_tab_mut().state,
                     ui,
                     is_left_active,
                     &t,
                     &mut self.image_cache,
                     "left",
-                    self.show_tree,
-                    self.show_size_bars,
+                    left_tree,
+                    left_size_bars,
                     left_compare.as_ref(),
-                    left_opener,
+                    left_opener.as_ref(),
                     metrics,
-                    self.ws.show_git_status,
+                    left_show_git,
                     &mut self.config.column_config,
                     self.renaming.as_mut(),
-                    self.grid_view,
-                    &self.ws.user_tags,
-                    &self.ws.file_notes
+                    left_grid,
+                    &left_user_tags,
+                    &left_file_notes
                 );
             });
 
@@ -632,25 +638,31 @@ impl App {
                 self.render_tab_bar(ui, false, &t, ctx, metrics);
 
                 let is_right_active = self.ws.active == ActivePanel::Right;
-                let right_opener = self.ws.opener.as_ref();
+                let right_opener = self.ws.opener.clone();
+                let right_show_git = self.ws.show_git_status;
+                let right_user_tags = self.ws.user_tags.clone();
+                let right_file_notes = self.ws.file_notes.clone();
+                let right_grid = self.grid_view;
+                let right_size_bars = self.show_size_bars;
+                let right_tree = self.show_tree;
                 tree_toggle |= Self::render_panel(
-                    &mut self.ws.right.tabs[self.ws.right.active].state,
+                    &mut self.ws.right_active_tab_mut().state,
                     ui,
                     is_right_active,
                     &t,
                     &mut self.image_cache,
                     "right",
-                    self.show_tree,
-                    self.show_size_bars,
+                    right_tree,
+                    right_size_bars,
                     right_compare.as_ref(),
-                    right_opener,
+                    right_opener.as_ref(),
                     metrics,
-                    self.ws.show_git_status,
+                    right_show_git,
                     &mut self.config.column_config,
                     self.renaming.as_mut(),
-                    self.grid_view,
-                    &self.ws.user_tags,
-                    &self.ws.file_notes
+                    right_grid,
+                    &right_user_tags,
+                    &right_file_notes
                 );
             });
 

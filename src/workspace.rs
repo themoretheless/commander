@@ -124,8 +124,8 @@ pub use crate::tabs::Tab as PanelTab;
 /// Helper to manage tabs on one side (left or right).
 /// Extracted to reduce duplication of indexing logic and make Workspace cleaner.
 pub struct TabSide {
-    pub tabs: Vec<PanelTab>,
-    pub active: usize,
+    pub(crate) tabs: Vec<PanelTab>,
+    pub(crate) active: usize,
 }
 
 impl TabSide {
@@ -177,9 +177,9 @@ impl TabSide {
 
 pub struct Workspace {
     /// Left side's open tabs. Always non-empty (never zero tabs rule).
-    pub left: TabSide,
+    pub(crate) left: TabSide,
     /// Right side's open tabs. Always non-empty.
-    pub right: TabSide,
+    pub(crate) right: TabSide,
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
     pub active_transfer: Option<TransferState>,
