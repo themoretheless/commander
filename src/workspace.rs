@@ -376,11 +376,22 @@ impl Workspace {
         }
     }
 
-    pub fn active_panel(&mut self) -> &mut PanelState {
+    fn side(&self) -> &TabManager {
         match self.active {
-            ActivePanel::Left => &mut self.left.active_tab_mut().state,
-            ActivePanel::Right => &mut self.right.active_tab_mut().state,
+            ActivePanel::Left => &self.left,
+            ActivePanel::Right => &self.right,
         }
+    }
+
+    fn side_mut(&mut self) -> &mut TabManager {
+        match self.active {
+            ActivePanel::Left => &mut self.left,
+            ActivePanel::Right => &mut self.right,
+        }
+    }
+
+    pub fn active_panel(&mut self) -> &mut PanelState {
+        self.side_mut().active_tab_state_mut()
     }
 
     // Using Pane trait for abstraction (reduces dupe, future for plugins).
@@ -389,23 +400,21 @@ impl Workspace {
     }
 
     pub fn active_panel_ref(&self) -> &PanelState {
-        match self.active {
-            ActivePanel::Left => &self.left.active_tab().state,
-            ActivePanel::Right => &self.right.tabs[self.right.active].state,
-        }
+        self.side().active_tab_state()
     }
 
     pub fn inactive_panel(&self) -> &PanelState {
+        // simple, but still dupe - can improve
         match self.active {
-            ActivePanel::Left => &self.right.tabs[self.right.active].state,
-            ActivePanel::Right => &self.left.active_tab().state,
+            ActivePanel::Left => &self.right.active_tab_state(),
+            ActivePanel::Right => &self.left.active_tab_state(),
         }
     }
 
     pub fn inactive_panel_mut(&mut self) -> &mut PanelState {
         match self.active {
-            ActivePanel::Left => &mut self.right.tabs[self.right.active].state,
-            ActivePanel::Right => &mut self.left.active_tab_mut().state,
+            ActivePanel::Left => self.right.active_tab_state_mut(),
+            ActivePanel::Right => self.left.active_tab_state_mut(),
         }
     }
 
@@ -446,8 +455,9 @@ impl Workspace {
             }
             for (path, map) in updates {
                 if self.left.active_tab_state().current_path() == &path {
-                    self.left.active_tab_state_mut().set_git_status(map);
-                } else if self.right.active_tab_state().current_path() == &path {
+                    self.left.active_tab_state_mut().set_git_status(map.clone());
+                }
+                if self.right.active_tab_state().current_path() == &path {
                     self.right.active_tab_state_mut().set_git_status(map);
                 }
             }

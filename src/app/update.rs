@@ -450,7 +450,7 @@ impl App {
             self.ws.shelf.clear();
         }
         if drain {
-            self.ws.requests.drain_request = true;
+            self.ws.effects.push(crate::workspace::Effect::ShelfDrain);
         }
     }
 
@@ -869,7 +869,7 @@ impl App {
                 });
         }
         if undo {
-            self.ws.requests.undo_request = true;
+            self.ws.effects.push(crate::workspace::Effect::Undo);
         }
         // Keep animating the countdown.
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
