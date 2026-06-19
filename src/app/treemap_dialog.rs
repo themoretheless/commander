@@ -10,7 +10,7 @@ const CANVAS_H: f32 = 420.0;
 
 impl App {
     pub(crate) fn show_treemap_dialog(&mut self, ctx: &egui::Context) {
-        let Some(items) = &self.treemap else {
+        let Some(items) = &self.ui.treemap else {
             return;
         };
         let t = self.colors;
@@ -142,7 +142,7 @@ impl App {
             });
 
         if close {
-            self.treemap = None;
+            self.ui.treemap = None;
         }
     }
 }

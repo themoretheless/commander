@@ -101,7 +101,7 @@ impl App {
                         }
 
                         // Size-bars toggle
-                        let bars_fill = if self.show_size_bars {
+                        let bars_fill = if self.ui.show_size_bars {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
@@ -115,11 +115,11 @@ impl App {
                             .on_hover_text("Toggle size bars")
                             .clicked()
                         {
-                            self.show_size_bars = !self.show_size_bars;
+                            self.ui.show_size_bars = !self.ui.show_size_bars;
                         }
 
                         // Folder-compare toggle
-                        let cmp_fill = if self.show_compare {
+                        let cmp_fill = if self.ui.show_compare {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
@@ -133,7 +133,7 @@ impl App {
                             .on_hover_text("Compare panels (highlight differences)")
                             .clicked()
                         {
-                            self.show_compare = !self.show_compare;
+                            self.ui.show_compare = !self.ui.show_compare;
                         }
 
                         // Refresh button
@@ -149,9 +149,7 @@ impl App {
                             )
                             .clicked()
                         {
-                            // PR1 tabs: refresh the (current single) active tab per side
-                            self.ws.left.tabs[self.ws.left.active].state.refresh();
-                            self.ws.right.tabs[self.ws.right.active].state.refresh();
+                            self.ws.refresh_active_tabs();
                         }
                     });
                 });

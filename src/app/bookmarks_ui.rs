@@ -8,10 +8,10 @@ use super::*;
 
 impl App {
     pub(crate) fn show_bookmarks_dialog(&mut self, ctx: &egui::Context) {
-        if self.bookmarks_open.is_none() {
+        if self.ui.bookmarks_open.is_none() {
             return;
         }
-        let Some(filter) = &mut self.bookmarks_open else { return; };
+        let Some(filter) = &mut self.ui.bookmarks_open else { return; };
         let t = self.colors;
         let ws = &mut self.ws;
 
@@ -98,7 +98,7 @@ impl App {
             ws.active_panel().navigate_to(path);
         }
         if close {
-            self.bookmarks_open = None;
+            self.ui.bookmarks_open = None;
         }
     }
 }

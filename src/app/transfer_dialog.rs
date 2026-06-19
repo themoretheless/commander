@@ -149,10 +149,8 @@ impl App {
                         )
                         .clicked()
                     {
-                        self.ws.active_transfer = None;
-                        // PR1 tabs: refresh visible tab per side
-                        self.ws.left.tabs[self.ws.left.active].state.refresh();
-                        self.ws.right.tabs[self.ws.right.active].state.refresh();
+                        self.ws.clear_active_transfer();
+                        self.ws.refresh_active_tabs();
                     }
                 } else {
                     if ui

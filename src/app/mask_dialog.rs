@@ -5,7 +5,7 @@ use super::*;
 
 impl App {
     pub(crate) fn show_mask_dialog(&mut self, ctx: &egui::Context) {
-        let Some(buffer) = &mut self.mask_input else {
+        let Some(buffer) = &mut self.ui.mask_input else {
             return;
         };
         let t = self.colors;
@@ -97,10 +97,10 @@ impl App {
         let _ = focus;
 
         if cancel {
-            self.mask_input = None;
+            self.ui.mask_input = None;
             return;
         }
-        if commit && let Some(buf) = self.mask_input.take() {
+        if commit && let Some(buf) = self.ui.mask_input.take() {
             self.ws.active_panel().select_by_mask(&buf);
         }
     }

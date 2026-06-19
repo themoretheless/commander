@@ -8,7 +8,7 @@ const FIND_CAP: usize = 1000;
 
 impl App {
     pub(crate) fn show_saved_search_dialog(&mut self, ctx: &egui::Context) {
-        if !self.saved_search_open {
+        if !self.ui.saved_search_open {
             return;
         }
         let t = self.colors;
@@ -16,8 +16,7 @@ impl App {
         let mut delete: Option<String> = None;
         let mut close = false;
 
-        let items = self
-            .smart_folders
+        let items = self.ui.smart_folders
             .as_ref()
             .map(|s| s.items.clone())
             .unwrap_or_default();
@@ -116,12 +115,12 @@ impl App {
             let query = state.build_query();
             state.results = self.ws.run_find(&query, &def.root, FIND_CAP);
             state.ran = true;
-            self.find = Some(state);
-            self.saved_search_open = false;
+            self.ui.find = Some(state);
+            self.ui.saved_search_open = false;
             return;
         }
         if close {
-            self.saved_search_open = false;
+            self.ui.saved_search_open = false;
         }
     }
 }

@@ -42,6 +42,73 @@ use crate::config::AppConfig;
 pub(crate) use crate::transfer::{CopyMethod, TransferKind};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
+/// Transient UI state extracted from App to kill god-object.
+/// All dialog boxes, input buffers, view toggles and temp data live here.
+/// App now owns only the core (ws + config + resources) + this bucket.
+#[derive(Default)]
+pub(crate) struct UiState {
+    /// Active inline rename: the entry being renamed and the edit buffer.
+    pub renaming: Option<RenameState>,
+    /// Type-ahead buffer and the input time of its last keystroke (seconds,
+    /// from egui). Expires after a short idle.
+    pub type_ahead: Option<(String, f64)>,
+    /// Paint relative size occupancy bars behind file rows.
+    pub show_size_bars: bool,
+    /// Compare mode: tint each row by how it differs from the other panel.
+    pub show_compare: bool,
+    /// Active select-by-mask input buffer.
+    pub mask_input: Option<String>,
+    /// Active go-to-path input buffer.
+    pub path_input: Option<String>,
+    /// Active recent-directories quick-switcher filter buffer.
+    pub recent_input: Option<String>,
+    /// Transient operation toasts (move / rename confirmations with Undo).
+    pub toasts: crate::toasts::ToastQueue,
+    /// Active command-palette filter buffer.
+    pub palette_input: Option<String>,
+    /// Command-palette usage history (recency/frequency ranking).
+    pub palette_usage: crate::command::UsageStats,
+    /// Monotonic counter stamped onto each palette command run.
+    pub palette_tick: u64,
+    /// Active batch-rename studio state.
+    pub batch_rename: Option<BatchRenameState>,
+    /// Active synchronise-sheet state.
+    pub sync: Option<SyncState>,
+    /// Active duplicate-finder sheet state.
+    pub duplicates: Option<DupState>,
+    /// Active read-only diff sheet state.
+    pub diff: Option<DiffState>,
+    /// Active disk-usage treemap state (entries with their bytes, sorted).
+    pub treemap: Option<Vec<(crate::panel::FileEntry, u64)>>,
+    /// Active recursive-find sheet state.
+    pub find: Option<FindState>,
+    /// Saved searches, loaded lazily on first use.
+    pub smart_folders: Option<crate::smart_folder::SmartFolders>,
+    /// Whether the saved-search picker is open.
+    pub saved_search_open: bool,
+    /// For starting drag reorder on tabs (left or right).
+    pub dragged_tab: Option<(bool, usize)>, // (is_left, index)
+    /// Bookmarks dialog open + filter buffer (full UI from stub).
+    pub bookmarks_open: Option<String>,
+    /// Column config dialog open (for widths, toggles like TC).
+    pub column_config_open: bool,
+    /// Mini terminal bottom pane open (idea #11).
+    pub terminal_open: bool,
+    pub terminal_history: Vec<String>,
+    /// Grid view toggle (idea #65/72).
+    pub grid_view: bool,
+    /// Saved named macros (idea #82). key=name, value=steps.
+    pub saved_macros: std::collections::HashMap<String, Vec<String>>,
+    /// Tag editor open (idea #73).
+    pub user_tag_editor_open: bool,
+    /// Permissions dialog open (idea #83).
+    pub permissions_open: bool,
+    /// Archive browser open stub (idea #84).
+    pub archive_open: bool,
+    /// Notes editor open (idea #92).
+    pub notes_open: bool,
+}
+
 pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
@@ -57,66 +124,10 @@ pub struct App {
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: std::collections::HashMap<PathBuf, Vec<PathBuf>>,
     pub(crate) tree_width: f32,
-    /// Active inline rename: the entry being renamed and the edit buffer.
-    pub(crate) renaming: Option<RenameState>,
-    /// Type-ahead buffer and the input time of its last keystroke (seconds,
-    /// from egui). Expires after a short idle.
-    pub(crate) type_ahead: Option<(String, f64)>,
-    /// Paint relative size occupancy bars behind file rows.
-    pub(crate) show_size_bars: bool,
-    /// Compare mode: tint each row by how it differs from the other panel.
-    pub(crate) show_compare: bool,
-    /// Active select-by-mask input buffer.
-    pub(crate) mask_input: Option<String>,
-    /// Active go-to-path input buffer.
-    pub(crate) path_input: Option<String>,
-    /// Active recent-directories quick-switcher filter buffer.
-    pub(crate) recent_input: Option<String>,
-    /// Transient operation toasts (move / rename confirmations with Undo).
-    pub(crate) toasts: crate::toasts::ToastQueue,
-    /// Active command-palette filter buffer.
-    pub(crate) palette_input: Option<String>,
-    /// Command-palette usage history (recency/frequency ranking).
-    pub(crate) palette_usage: crate::command::UsageStats,
-    /// Monotonic counter stamped onto each palette command run.
-    pub(crate) palette_tick: u64,
-    /// Active batch-rename studio state.
-    pub(crate) batch_rename: Option<BatchRenameState>,
-    /// Active synchronise-sheet state.
-    pub(crate) sync: Option<SyncState>,
-    /// Active duplicate-finder sheet state.
-    pub(crate) duplicates: Option<DupState>,
-    /// Active read-only diff sheet state.
-    pub(crate) diff: Option<DiffState>,
-    /// Active disk-usage treemap state (entries with their bytes, sorted).
-    pub(crate) treemap: Option<Vec<(crate::panel::FileEntry, u64)>>,
-    /// Active recursive-find sheet state.
-    pub(crate) find: Option<FindState>,
-    /// Saved searches, loaded lazily on first use.
-    pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
-    /// Whether the saved-search picker is open.
-    pub(crate) saved_search_open: bool,
-    /// For starting drag reorder on tabs (left or right).
-    pub(crate) dragged_tab: Option<(bool, usize)>, // (is_left, index)
-    /// Bookmarks dialog open + filter buffer (full UI from stub).
-    pub(crate) bookmarks_open: Option<String>,
-    /// Column config dialog open (for widths, toggles like TC).
-    pub(crate) column_config_open: bool,
-    /// Mini terminal bottom pane open (idea #11).
-    pub(crate) terminal_open: bool,
-    pub(crate) terminal_history: Vec<String>,
-    /// Grid view toggle (idea #65/72).
-    pub(crate) grid_view: bool,
-    /// Saved named macros (idea #82). key=name, value=steps.
-    pub(crate) saved_macros: std::collections::HashMap<String, Vec<String>>,
-    /// Tag editor open (idea #73).
-    pub(crate) user_tag_editor_open: bool,
-    /// Permissions dialog open (idea #83).
-    pub(crate) permissions_open: bool,
-    /// Archive browser open stub (idea #84).
-    pub(crate) archive_open: bool,
-    /// Notes editor open (idea #92).
-    pub(crate) notes_open: bool,
+
+    /// All transient dialog + input + view toggle state lives here.
+    /// This is the main step to stop App being a god object.
+    pub(crate) ui: UiState,
 
     /// Tokio runtime for background async work (spawn_blocking for fs/git).
     /// Owned here so App remains the thin wiring layer + render owner.
@@ -287,11 +298,11 @@ impl App {
         cc.egui_ctx.set_zoom_factor(ui_scale);
 
         if let Some(s) = &session {
-            ws.active = if s.active_left {
+            ws.set_active_side(if s.active_left {
                 ActivePanel::Left
             } else {
                 ActivePanel::Right
-            };
+            });
             // PR2 tabs: if saved tabs present, populate from them (with active indices); else legacy single -> tabs[0]
             if !s.left_tabs.is_empty() {
                 ws.left.tabs.clear();
@@ -311,7 +322,7 @@ impl App {
                 ws.left.tabs[li].state.show_hidden = s.left_hidden;
             }
             // bookmarks from session (or empty)
-            ws.bookmarks = s.bookmarks.clone();
+            *ws.bookmarks_mut() = s.bookmarks.clone();
             if !s.right_tabs.is_empty() {
                 ws.right.tabs.clear();
                 for t in &s.right_tabs {
@@ -331,8 +342,8 @@ impl App {
         }
 
         let config = crate::config::AppConfig::default();
-        ws.show_git_status = session.as_ref().map_or(config.show_git_status, |s| s.show_git_status);
-        ws.linked_scroll = session.as_ref().map_or(false, |s| s.linked_scroll);
+        ws.set_show_git_status(session.as_ref().map_or(config.show_git_status, |s| s.show_git_status));
+        ws.set_linked_scroll(session.as_ref().map_or(false, |s| s.linked_scroll));
 
         let show_tree_default = config.show_tree;
         let density_default = config.density;
@@ -379,39 +390,41 @@ impl App {
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
-            renaming: None,
-            type_ahead: None,
-            show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
-            show_compare: session.as_ref().is_some_and(|s| s.show_compare),
-            mask_input: None,
-            path_input: None,
-            recent_input: None,
-            toasts: crate::toasts::ToastQueue::default(),
-            palette_input: None,
-            palette_usage: session
-                .as_ref()
-                .map(|s| s.palette_usage.clone())
-                .unwrap_or_default(),
-            palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
-            batch_rename: None,
-            sync: None,
-            duplicates: None,
-            diff: None,
-            treemap: None,
-            find: None,
-            smart_folders: None,
-            saved_search_open: false,
-            terminal_open: false,
-            terminal_history: vec![],
-            grid_view: false,
-            dragged_tab: None,
-            saved_macros: std::collections::HashMap::new(),
-            user_tag_editor_open: false,
-            permissions_open: false,
-            archive_open: false,
-            notes_open: false,
-            bookmarks_open: None,
-            column_config_open: false,
+            ui: UiState {
+                renaming: None,
+                type_ahead: None,
+                show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
+                show_compare: session.as_ref().is_some_and(|s| s.show_compare),
+                mask_input: None,
+                path_input: None,
+                recent_input: None,
+                toasts: crate::toasts::ToastQueue::default(),
+                palette_input: None,
+                palette_usage: session
+                    .as_ref()
+                    .map(|s| s.palette_usage.clone())
+                    .unwrap_or_default(),
+                palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
+                batch_rename: None,
+                sync: None,
+                duplicates: None,
+                diff: None,
+                treemap: None,
+                find: None,
+                smart_folders: None,
+                saved_search_open: false,
+                dragged_tab: None,
+                bookmarks_open: None,
+                column_config_open: false,
+                terminal_open: false,
+                terminal_history: vec![],
+                grid_view: false,
+                saved_macros: std::collections::HashMap::new(),
+                user_tag_editor_open: false,
+                permissions_open: false,
+                archive_open: false,
+                notes_open: false,
+            },
             tokio_rt,
         };
 
@@ -430,7 +443,7 @@ impl App {
 
     /// The saved-search store, loaded from disk on first access.
     pub(crate) fn smart_folders_mut(&mut self) -> &mut crate::smart_folder::SmartFolders {
-        self.smart_folders
+        self.ui.smart_folders
             .get_or_insert_with(crate::smart_folder::load)
     }
 
@@ -452,13 +465,13 @@ impl App {
         crate::session::Session {
             left_path: self.ws.left.tabs.get(0).map(|t| t.state.current_path().clone()).unwrap_or_default(),
             right_path: self.ws.right.tabs.get(0).map(|t| t.state.current_path().clone()).unwrap_or_default(),
-            active_left: self.ws.active == ActivePanel::Left,
+            active_left: self.ws.active_side() == ActivePanel::Left,
             theme_dark: self.theme_mode == ThemeMode::Dark,
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
-            show_size_bars: self.show_size_bars,
-            show_compare: self.show_compare,
+            show_size_bars: self.ui.show_size_bars,
+            show_compare: self.ui.show_compare,
             left_sort_col: self.ws.left.tabs.get(0).map(|t| t.state.sort_col).unwrap_or(crate::panel::SortColumn::Name),
             left_sort_order: self.ws.left.tabs.get(0).map(|t| t.state.sort_order).unwrap_or(crate::panel::SortOrder::Asc),
             left_hidden: self.ws.left.tabs.get(0).map(|t| t.state.show_hidden).unwrap_or(false),
@@ -466,15 +479,15 @@ impl App {
             right_sort_order: self.ws.right.tabs.get(0).map(|t| t.state.sort_order).unwrap_or(crate::panel::SortOrder::Asc),
             right_hidden: self.ws.right.tabs.get(0).map(|t| t.state.show_hidden).unwrap_or(false),
             density: self.density,
-            palette_usage: self.palette_usage.clone(),
-            palette_tick: self.palette_tick,
+            palette_usage: self.ui.palette_usage.clone(),
+            palette_tick: self.ui.palette_tick,
             left_tabs: left_snap,
             right_tabs: right_snap,
             left_active: self.ws.left.active,
             right_active: self.ws.right.active,
-            bookmarks: self.ws.bookmarks.clone(),
-            show_git_status: self.ws.show_git_status,
-            linked_scroll: self.ws.linked_scroll,
+            bookmarks: self.ws.bookmarks().to_vec(),
+            show_git_status: self.ws.show_git_status(),
+            linked_scroll: self.ws.linked_scroll(),
         }
     }
 

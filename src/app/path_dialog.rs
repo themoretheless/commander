@@ -5,7 +5,7 @@ use super::*;
 
 impl App {
     pub(crate) fn show_path_dialog(&mut self, ctx: &egui::Context) {
-        let Some(buffer) = &mut self.path_input else {
+        let Some(buffer) = &mut self.ui.path_input else {
             return;
         };
         let t = self.colors;
@@ -104,11 +104,11 @@ impl App {
             });
 
         if cancel {
-            self.path_input = None;
+            self.ui.path_input = None;
             return;
         }
         if let Some(path) = go {
-            self.path_input = None;
+            self.ui.path_input = None;
             self.ws.active_panel().navigate_to(path);
         }
     }

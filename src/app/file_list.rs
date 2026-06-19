@@ -17,8 +17,8 @@ impl App {
         column_config: &mut crate::panel::ColumnConfig,
         mut renaming: Option<&mut crate::app::RenameState>,
         grid: bool,
-        user_tags: &std::collections::HashMap<std::path::PathBuf, String>,
-        notes: &std::collections::HashMap<std::path::PathBuf, String>,
+        user_tags: &std::sync::Arc<std::collections::HashMap<std::path::PathBuf, String>>,
+        notes: &std::sync::Arc<std::collections::HashMap<std::path::PathBuf, String>>,
     ) {
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))

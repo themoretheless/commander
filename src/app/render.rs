@@ -23,8 +23,8 @@ impl App {
         column_config: &mut crate::panel::ColumnConfig,
         mut renaming: Option<&mut crate::app::RenameState>,
         grid: bool,
-        user_tags: &std::collections::HashMap<std::path::PathBuf, String>,
-        notes: &std::collections::HashMap<std::path::PathBuf, String>,
+        user_tags: &std::sync::Arc<std::collections::HashMap<std::path::PathBuf, String>>,
+        notes: &std::sync::Arc<std::collections::HashMap<std::path::PathBuf, String>>,
     ) -> bool {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;

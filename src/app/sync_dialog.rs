@@ -7,7 +7,7 @@ use crate::sync::{SyncDirection, SyncPolicy, SyncStatus};
 
 impl App {
     pub(crate) fn show_sync_dialog(&mut self, ctx: &egui::Context) {
-        if self.sync.is_none() {
+        if self.ui.sync.is_none() {
             return;
         }
         let t = self.colors;
@@ -18,7 +18,7 @@ impl App {
 
         // Borrow the sync state only for the window body (no `self.ws` use here).
         {
-            let state = self.sync.as_mut().unwrap();
+            let state = self.ui.sync.as_mut().unwrap();
             let mut to_right = 0usize;
             let mut to_left = 0usize;
             for a in &state.actions {
@@ -174,18 +174,18 @@ impl App {
         }
 
         if cancel {
-            self.sync = None;
+            self.ui.sync = None;
             return;
         }
         if let Some(p) = new_policy {
             let actions = self.ws.build_sync_actions(p);
-            if let Some(s) = self.sync.as_mut() {
+            if let Some(s) = self.ui.sync.as_mut() {
                 s.policy = p;
                 s.actions = actions;
             }
         }
         if commit {
-            let actions = self.sync.take().map(|s| s.actions).unwrap_or_default();
+            let actions = self.ui.sync.take().map(|s| s.actions).unwrap_or_default();
             let c = ctx.clone();
             self.ws.apply_sync(&actions, move || c.request_repaint());
         }

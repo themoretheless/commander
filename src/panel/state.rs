@@ -127,17 +127,6 @@ impl PanelState {
         self.search_regex = regex;
     }
 
-    pub fn preview(&self) -> Option<&PreviewContent> { self.preview.as_ref() }
-    pub fn set_preview(&mut self, p: Option<PreviewContent>, h: Option<f32>) {
-        let is_none = p.is_none();
-        self.preview = p;
-        self.preview_height = h;
-        if is_none {
-            self.preview_hex = false;
-            self.preview_hex_bytes = None;
-        }
-    }
-
     pub fn preview_hex(&self) -> bool { self.preview_hex }
     pub fn set_preview_hex(&mut self, hex: bool) { self.preview_hex = hex; }
 
@@ -175,9 +164,12 @@ impl PanelState {
 
     pub fn drag_entries(&self) -> &[PathBuf] { &self.drag_entries }
     pub fn drag_entries_mut(&mut self) -> &mut Vec<PathBuf> { &mut self.drag_entries }
+    pub fn has_drag_entries(&self) -> bool { !self.drag_entries.is_empty() }
+    pub fn take_drag_entries(&mut self) -> Vec<PathBuf> { std::mem::take(&mut self.drag_entries) }
 
     pub fn drop_target(&self) -> Option<&PathBuf> { self.drop_target.as_ref() }
     pub fn set_drop_target(&mut self, t: Option<PathBuf>) { self.drop_target = t; }
+    pub fn take_drop_target(&mut self) -> Option<PathBuf> { self.drop_target.take() }
 
     pub fn current_path(&self) -> &PathBuf { &self.current_path }
     pub fn set_current_path(&mut self, p: PathBuf) { self.current_path = p; }
@@ -187,6 +179,7 @@ impl PanelState {
     pub fn git_status(&self) -> &HashMap<PathBuf, char> { &self.git_status }
     pub fn set_git_status(&mut self, m: HashMap<PathBuf, char>) { self.git_status = m; }
 
+    pub fn preview(&self) -> Option<&PreviewContent> { self.preview.as_ref() }
     pub fn preview_content(&self) -> Option<&PreviewContent> { self.preview.as_ref() }
     pub fn set_preview_content(&mut self, p: Option<PreviewContent>, h: Option<f32>) {
         let clearing = p.is_none();
@@ -197,11 +190,14 @@ impl PanelState {
             self.preview_hex_bytes = None;
         }
     }
+    pub fn set_preview(&mut self, p: Option<PreviewContent>, h: Option<f32>) { self.set_preview_content(p, h); }
 
     pub fn preview_hex_bytes(&self) -> Option<&Vec<u8>> { self.preview_hex_bytes.as_ref() }
     pub fn set_preview_hex_bytes(&mut self, b: Option<Vec<u8>>) { self.preview_hex_bytes = b; }
 
     pub fn set_preview_height(&mut self, h: Option<f32>) { self.preview_height = h; }
+
+    pub fn preview_height(&self) -> Option<f32> { self.preview_height }
 
     // Note: other methods like set_notify, refresh, etc. are delegated
     // from the main panel.rs or submodules for DRY/SRP.

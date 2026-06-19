@@ -18,7 +18,7 @@ pub(crate) fn read_text(path: &Path) -> Result<String, ()> {
 
 impl App {
     pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
-        let Some(state) = &mut self.diff else {
+        let Some(state) = &mut self.ui.diff else {
             return;
         };
         let t = self.colors;
@@ -113,7 +113,7 @@ impl App {
             });
 
         if close {
-            self.diff = None;
+            self.ui.diff = None;
         }
     }
 }

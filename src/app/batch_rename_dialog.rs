@@ -7,7 +7,7 @@ use crate::rename::{PlanStatus, changed_count, plan_batch_rename, plan_is_applic
 
 impl App {
     pub(crate) fn show_batch_rename_dialog(&mut self, ctx: &egui::Context) {
-        let Some(state) = &mut self.batch_rename else {
+        let Some(state) = &mut self.ui.batch_rename else {
             return;
         };
         let t = self.colors;
@@ -193,17 +193,17 @@ impl App {
             });
 
         if cancel {
-            self.batch_rename = None;
+            self.ui.batch_rename = None;
             return;
         }
         if commit {
-            let rule = self.batch_rename.as_ref().unwrap().rule();
+            let rule = self.ui.batch_rename.as_ref().unwrap().rule();
             match self.ws.apply_batch_rename(&rule) {
                 Ok(n) => {
-                    self.batch_rename = None;
+                    self.ui.batch_rename = None;
                     if n > 0 {
                         let now = ctx.input(|i| i.time);
-                        self.toasts.push(crate::toasts::Toast::new(
+                        self.ui.toasts.push(crate::toasts::Toast::new(
                             format!("Renamed {n} item(s)"),
                             crate::toasts::ToastKind::Success,
                             true,
@@ -214,13 +214,13 @@ impl App {
                 Err(msg) => {
                     // Surface the failure both inline and as an error toast.
                     let now = ctx.input(|i| i.time);
-                    self.toasts.push(crate::toasts::Toast::new(
+                    self.ui.toasts.push(crate::toasts::Toast::new(
                         format!("Rename failed: {msg}"),
                         crate::toasts::ToastKind::Error,
                         false,
                         now,
                     ));
-                    if let Some(s) = &mut self.batch_rename {
+                    if let Some(s) = &mut self.ui.batch_rename {
                         s.error = Some(msg);
                     }
                 }

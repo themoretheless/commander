@@ -14,22 +14,22 @@ impl App {
         }
         // Dialogs own the keyboard too: they handle Enter/Esc themselves,
         // and hotkeys must not fire underneath a modal window.
-        if self.ws.pending_op.is_some()
-            || self.ws.active_transfer.is_some()
-            || self.renaming.is_some()
-            || self.mask_input.is_some()
-            || self.path_input.is_some()
-            || self.recent_input.is_some()
-            || self.palette_input.is_some()
-            || self.batch_rename.is_some()
-            || self.sync.is_some()
-            || self.duplicates.is_some()
-            || self.diff.is_some()
-            || self.treemap.is_some()
-            || self.find.is_some()
-            || self.saved_search_open
+        if self.ws.has_pending_op()
+            || self.ws.has_active_transfer()
+            || self.ui.renaming.is_some()
+            || self.ui.mask_input.is_some()
+            || self.ui.path_input.is_some()
+            || self.ui.recent_input.is_some()
+            || self.ui.palette_input.is_some()
+            || self.ui.batch_rename.is_some()
+            || self.ui.sync.is_some()
+            || self.ui.duplicates.is_some()
+            || self.ui.diff.is_some()
+            || self.ui.treemap.is_some()
+            || self.ui.find.is_some()
+            || self.ui.saved_search_open
         {
-            self.type_ahead = None;
+            self.ui.type_ahead = None;
             return;
         }
         let presses = ctx.input(Self::collect_presses);
@@ -57,22 +57,22 @@ impl App {
         });
 
         // Expire a stale buffer.
-        if let Some((_, last)) = &self.type_ahead
+        if let Some((_, last)) = &self.ui.type_ahead
             && now - last > IDLE
         {
-            self.type_ahead = None;
+            self.ui.type_ahead = None;
         }
         if typed.is_empty() {
             return;
         }
-        let buffer = match &mut self.type_ahead {
+        let buffer = match &mut self.ui.type_ahead {
             Some((b, t)) => {
                 b.push_str(&typed);
                 *t = now;
                 b.clone()
             }
             None => {
-                self.type_ahead = Some((typed.clone(), now));
+                self.ui.type_ahead = Some((typed.clone(), now));
                 typed
             }
         };

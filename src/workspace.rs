@@ -178,47 +178,47 @@ pub struct Workspace {
     pub(crate) left: TabManager,
     /// Right side's open tabs. Always non-empty.
     pub(crate) right: TabManager,
-    pub active: ActivePanel,
-    pub pending_op: Option<PendingOp>,
-    pub active_transfer: Option<TransferState>,
+    pub(crate) active: ActivePanel,
+    pub(crate) pending_op: Option<PendingOp>,
+    pub(crate) active_transfer: Option<TransferState>,
     /// Bookmarks / favorites (full per top 50: name + path, UI, hotkeys, persist).
-    pub bookmarks: Vec<crate::session::Bookmark>,
+    pub(crate) bookmarks: Vec<crate::session::Bookmark>,
     /// Saved tab sets (basic stub for top 50: save current tabs paths).
-    pub saved_tab_sets: Vec<(String, Vec<PathBuf>, Vec<PathBuf>)>, // name, left, right for named workspaces
+    pub(crate) saved_tab_sets: Vec<(String, Vec<PathBuf>, Vec<PathBuf>)>, // name, left, right for named workspaces
     /// The drop stack: paths gathered across folders to copy in one go.
-    pub shelf: crate::shelf::Shelf,
+    pub(crate) shelf: crate::shelf::Shelf,
     /// Queued second copy pass (entries, target) for a two-way sync, started
     /// once the first pass finishes. Keeps the engine single-transfer.
     sync_followup: Option<(Vec<FileEntry>, PathBuf)>,
     /// Undo/redo history of reversible operations (moves, batch renames).
-    pub stack: crate::undo::UndoStack,
+    pub(crate) stack: crate::undo::UndoStack,
     /// The action the in-flight transfer will record on a clean finish (a user
     /// Move). `None` for copies and for undo/redo-driven transfers, which must
     /// not record fresh history.
     pending_undo_action: Option<crate::undo::Action>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
-    pub opener: std::sync::Arc<dyn Fn(&Path) + Send + Sync>,
+    pub(crate) opener: std::sync::Arc<dyn Fn(&Path) + Send + Sync>,
 
     // Presentation / tag data moved here for thinner App (logic + data in ws).
-    pub show_git_status: bool,
-    pub linked_scroll: bool,
-    pub user_tags: std::sync::Arc<std::collections::HashMap<PathBuf, String>>,
-    pub file_notes: std::sync::Arc<std::collections::HashMap<PathBuf, String>>,
+    pub(crate) show_git_status: bool,
+    pub(crate) linked_scroll: bool,
+    pub(crate) user_tags: std::sync::Arc<std::collections::HashMap<PathBuf, String>>,
+    pub(crate) file_notes: std::sync::Arc<std::collections::HashMap<PathBuf, String>>,
 
     // Git bg channel owned here (thin App: ws handles receive + apply). Using tokio unbounded channel.
-    pub git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
-    pub git_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
+    pub(crate) git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
+    pub(crate) git_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
 
     // Effects bus: commands push effects here instead of mutating requests directly.
-    pub effects: Vec<Effect>,
+    pub(crate) effects: Vec<Effect>,
 
     // Command handlers (trait based for plugins, CommandHandler trait).
     command_handlers: Vec<Box<dyn crate::workspace::command_handlers::CommandHandler>>,
 
     // Moved from App for thinner App (pure wiring).
-    pub macro_recording: bool,
-    pub macro_steps: Vec<String>,
+    pub(crate) macro_recording: bool,
+    pub(crate) macro_steps: Vec<String>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -405,6 +405,45 @@ impl Workspace {
     pub fn left_active_tab_mut(&mut self) -> &mut PanelTab { self.left.active_tab_mut() }
     pub fn right_active_tab_mut(&mut self) -> &mut PanelTab { self.right.active_tab_mut() }
 
+    // Accessors for commonly reached fields to reduce direct pub(crate) field use from UI.
+    pub fn active_side(&self) -> ActivePanel { self.active }
+    pub fn set_active_side(&mut self, side: ActivePanel) { self.active = side; }
+
+    pub fn show_git_status(&self) -> bool { self.show_git_status }
+    pub fn set_show_git_status(&mut self, v: bool) { self.show_git_status = v; }
+    pub fn toggle_show_git(&mut self) { self.show_git_status = !self.show_git_status; }
+
+    pub fn linked_scroll(&self) -> bool { self.linked_scroll }
+    pub fn set_linked_scroll(&mut self, v: bool) { self.linked_scroll = v; }
+
+    pub fn user_tags(&self) -> &std::sync::Arc<std::collections::HashMap<PathBuf, String>> { &self.user_tags }
+    pub fn set_user_tags(&mut self, v: std::collections::HashMap<PathBuf, String>) { self.user_tags = std::sync::Arc::new(v); }
+    pub fn file_notes(&self) -> &std::sync::Arc<std::collections::HashMap<PathBuf, String>> { &self.file_notes }
+    pub fn set_file_notes(&mut self, v: std::collections::HashMap<PathBuf, String>) { self.file_notes = std::sync::Arc::new(v); }
+    pub fn opener(&self) -> &std::sync::Arc<dyn Fn(&Path) + Send + Sync> { &self.opener }
+
+    pub fn bookmarks(&self) -> &[crate::session::Bookmark] { &self.bookmarks }
+    pub fn bookmarks_mut(&mut self) -> &mut Vec<crate::session::Bookmark> { &mut self.bookmarks }
+
+    pub fn shelf(&self) -> &crate::shelf::Shelf { &self.shelf }
+    pub fn shelf_mut(&mut self) -> &mut crate::shelf::Shelf { &mut self.shelf }
+
+    pub fn stack(&self) -> &crate::undo::UndoStack { &self.stack }
+    pub fn stack_mut(&mut self) -> &mut crate::undo::UndoStack { &mut self.stack }
+
+    pub fn effects_mut(&mut self) -> &mut Vec<Effect> { &mut self.effects }
+
+    pub fn macro_recording(&self) -> bool { self.macro_recording }
+    pub fn set_macro_recording(&mut self, v: bool) { self.macro_recording = v; }
+    pub fn macro_steps(&self) -> &[String] { &self.macro_steps }
+    pub fn macro_steps_mut(&mut self) -> &mut Vec<String> { &mut self.macro_steps }
+
+    /// Refresh both sides' active tabs. Use instead of raw tabs indexing in UI.
+    pub fn refresh_active_tabs(&mut self) {
+        self.left.active_tab_state_mut().refresh();
+        self.right.active_tab_state_mut().refresh();
+    }
+
     /// Poll pending git status messages and apply to matching tab (pure apply by message).
     /// Called from UI layer each frame.
     pub fn poll_git(&mut self) {
@@ -524,8 +563,8 @@ impl Workspace {
                 }
             }
             Command::TogglePreview => {
-                if self.inactive_panel().preview.is_some() {
-                    self.inactive_panel_mut().preview = None;
+                if self.inactive_panel().preview().is_some() {
+                    self.inactive_panel_mut().set_preview(None, None);
                 } else {
                     let preview = {
                         let panel = self.active_panel_ref();
@@ -533,10 +572,7 @@ impl Workspace {
                             .filtered_get(panel.cursor().saturating_sub(1))
                             .and_then(panel::make_preview)
                     };
-                    self.inactive_panel_mut().preview = preview;
-                    if self.inactive_panel_mut().preview.is_some() {
-                        self.inactive_panel_mut().preview_height = Some(180.0);
-                    }
+                    self.inactive_panel_mut().set_preview(preview, Some(180.0));
                 }
             }
             Command::RequestCopy | Command::RequestMove | Command::RequestDelete => {
@@ -769,7 +805,17 @@ impl Workspace {
             let mut s = state.lock().unwrap();
             s.cancelled = true;
         }
+        self.clear_active_transfer();
     }
+
+    pub fn clear_active_transfer(&mut self) {
+        self.active_transfer = None;
+    }
+
+    pub fn pending_op(&self) -> Option<&PendingOp> { self.pending_op.as_ref() }
+    pub fn has_pending_op(&self) -> bool { self.pending_op.is_some() }
+    pub fn active_transfer(&self) -> Option<TransferState> { self.active_transfer.clone() }
+    pub fn has_active_transfer(&self) -> bool { self.active_transfer.is_some() }
 
     /// Auto-close finished transfers. A transfer that finished with errors
     /// stays open so the user can read the error list (dismissed via OK).
@@ -789,10 +835,9 @@ impl Workspace {
         if !close {
             return false;
         }
-        self.active_transfer = None;
+        self.clear_active_transfer();
         // PR1: refresh active tab per side (post-op)
-        self.left_active_tab_mut().state.refresh();
-        self.right_active_tab_mut().state.refresh();
+        self.refresh_active_tabs();
         // Record the move on the history stack on a clean run.
         if clean {
             if let Some(action) = self.pending_undo_action.take() {
@@ -1337,10 +1382,10 @@ impl Workspace {
     /// the same file nothing touches the filesystem.
     pub fn sync_preview(&mut self) {
         // PR1 tabs (per design review subsection): only active tab per side can drive visible preview.
-        let (source, target) = if self.right.active_tab_state().preview.is_some() {
-            (&self.left.active_tab().state, &mut self.right.tabs[self.right.active].state)
-        } else if self.left.active_tab().state.preview.is_some() {
-            (&self.right.tabs[self.right.active].state, &mut self.left.active_tab_mut().state)
+        let (source, target_mut) = if self.right.active_tab_state().preview().is_some() {
+            (&self.left.active_tab().state, self.right.active_tab_state_mut())
+        } else if self.left.active_tab().state.preview().is_some() {
+            (&self.right.active_tab().state, self.left.active_tab_state_mut())
         } else {
             return;
         };
@@ -1349,7 +1394,7 @@ impl Workspace {
             return;
         };
 
-        let shown = match &target.preview {
+        let shown = match target_mut.preview() {
             Some(PreviewContent::Image(p)) => Some(p.as_path()),
             Some(PreviewContent::Text { path, .. }) => Some(path.as_path()),
             // The Get-Info card is a deliberate snapshot; don't auto-follow it.
@@ -1359,14 +1404,14 @@ impl Workspace {
         if shown == Some(entry.path.as_path()) {
             return;
         }
-        target.preview = panel::make_preview(entry);
+        target_mut.set_preview(panel::make_preview(entry), None);
     }
 
     /// Toggle the Get-Info inspector for the cursor entry, shown in the
     /// opposite panel (like preview).
     pub fn toggle_info(&mut self) {
-        if matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))) {
-            self.inactive_panel_mut().preview = None;
+        if matches!(self.inactive_panel().preview(), Some(PreviewContent::Info(_))) {
+            self.inactive_panel_mut().set_preview(None, None);
             return;
         }
         let panel = self.active_panel_ref();
@@ -1454,21 +1499,20 @@ impl Workspace {
     /// panel; otherwise the other panel's current directory is the target.
     fn take_drop_plan(&mut self) -> Option<(Vec<PathBuf>, PathBuf)> {
         // PR1: drag from the active tab of the side that has drag_entries
-        let (source, other) = if !self.left.active_tab().state.drag_entries.is_empty() {
-            (&mut self.left.active_tab_mut().state, &mut self.right.active_tab_mut().state)
-        } else if !self.right.active_tab_state().drag_entries.is_empty() {
-            (&mut self.right.active_tab_mut().state, &mut self.left.active_tab_mut().state)
+        let (source, other) = if self.left.active_tab().state.has_drag_entries() {
+            (self.left.active_tab_state_mut(), self.right.active_tab_state_mut())
+        } else if self.right.active_tab_state().has_drag_entries() {
+            (self.right.active_tab_state_mut(), self.left.active_tab_state_mut())
         } else {
             return None;
         };
         let target = source
-            .drop_target
-            .take()
-            .or_else(|| other.drop_target.take())
+            .take_drop_target()
+            .or_else(|| other.take_drop_target())
             .unwrap_or_else(|| other.current_path().clone());
-        let paths = std::mem::take(&mut source.drag_entries);
-        source.drop_target = None;
-        other.drop_target = None;
+        let paths = source.take_drag_entries();
+        // ensure cleared
+        other.set_drop_target(None);
         if paths.is_empty() {
             return None;
         }

@@ -9,18 +9,18 @@ impl eframe::App for App {
         self.show_confirm_dialog(ctx);
         self.show_rename_dialog(ctx);
         // Wire inline rename commit/cancel from list TextEdit (Enter/Esc) for quick F2 inline.
-        if let Some(r) = &mut self.renaming {
+        if let Some(r) = &mut self.ui.renaming {
             let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
             let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
             if enter {
                 let path = r.path.clone();
                 let buffer = r.buffer.clone();
                 match self.ws.commit_rename(&path, &buffer) {
-                    Ok(()) => self.renaming = None,
+                    Ok(()) => self.ui.renaming = None,
                     Err(msg) => r.error = Some(msg),
                 }
             } else if esc {
-                self.renaming = None;
+                self.ui.renaming = None;
             }
         }
         self.show_batch_rename_dialog(ctx);
@@ -120,56 +120,56 @@ impl App {
         self.process_effects(ctx);
 
         // Macro record stub (idea #37/63). Moved to ws for thinner App.
-        if self.ws.macro_recording {
+        if self.ws.macro_recording() {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-                self.ws.macro_steps.push("Enter".into());
+                self.ws.macro_steps_mut().push("Enter".into());
             }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.ws.macro_steps.push("Esc".into());
+                self.ws.macro_steps_mut().push("Esc".into());
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
-                self.ws.macro_steps.push("Up".into());
+                self.ws.macro_steps_mut().push("Up".into());
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
-                self.ws.macro_steps.push("Down".into());
+                self.ws.macro_steps_mut().push("Down".into());
             }
         }
-        if !self.ws.macro_recording && !self.ws.macro_steps.is_empty() {
+        if !self.ws.macro_recording() && !self.ws.macro_steps().is_empty() {
             if ctx.input(|i| i.key_pressed(egui::Key::P)) {
                 self.playback_current_macro_steps();
             }
         }
 
         // User tag toggle 'T' for cursor (idea #64/21): assign/remove demo tag label.
-        if ctx.input(|i| i.key_pressed(egui::Key::T)) && !self.ws.macro_recording {
+        if ctx.input(|i| i.key_pressed(egui::Key::T)) && !self.ws.macro_recording() {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
-                let mut m = (*self.ws.user_tags).clone();
+                let mut m = self.ws.user_tags().as_ref().clone();
                 if m.contains_key(&p) {
                     m.remove(&p);
                 } else {
                     m.insert(p, "★".to_string());
                 }
-                self.ws.user_tags = std::sync::Arc::new(m);
+                self.ws.set_user_tags(m);
             }
         }
 
         // File note toggle 'N' (idea #92): assign/remove simple note.
-        if ctx.input(|i| i.key_pressed(egui::Key::N)) && !self.ws.macro_recording {
+        if ctx.input(|i| i.key_pressed(egui::Key::N)) && !self.ws.macro_recording() {
             if let Some(e) = self.ws.active_panel_ref().filtered_get(self.ws.active_panel_ref().cursor().saturating_sub(1)) {
                 let p = e.path.clone();
-                let mut m = (*self.ws.file_notes).clone();
+                let mut m = self.ws.file_notes().as_ref().clone();
                 if m.contains_key(&p) {
                     m.remove(&p);
                 } else {
                     m.insert(p, "note".to_string());
                 }
-                self.ws.file_notes = std::sync::Arc::new(m);
+                self.ws.set_file_notes(m);
             }
         }
 
         // Linked scroll sync (idea #13): when on, keep cursors in sync for "master" feel (scroll/cursor moves affect other).
-        if self.ws.linked_scroll {
+        if self.ws.linked_scroll() {
             self.sync_linked_scroll();
         }
 
@@ -179,7 +179,7 @@ impl App {
 
         // Drain centralized errors (from git/report_error etc) into error toasts.
         for e in crate::error::drain_errors() {
-            self.toasts.push(crate::toasts::Toast::new(
+            self.ui.toasts.push(crate::toasts::Toast::new(
                 e,
                 crate::toasts::ToastKind::Error,
                 false,
@@ -192,7 +192,7 @@ impl App {
             // A clean move just finished: raise an undoable toast.
             let now = ctx.input(|i| i.time);
             if let Some(a) = self.ws.stack.peek_undo() {
-                self.toasts.push(crate::toasts::Toast::new(
+                self.ui.toasts.push(crate::toasts::Toast::new(
                     format!("{} {} item(s)", a.verb(), a.item_count()),
                     crate::toasts::ToastKind::Success,
                     true,
@@ -200,7 +200,7 @@ impl App {
                 ));
             }
         }
-        self.toasts.prune(ctx.input(|i| i.time));
+        self.ui.toasts.prune(ctx.input(|i| i.time));
         // A two-way sync runs in two passes; start the queued second one once
         // the first finishes.
         if self.ws.has_sync_followup() {
@@ -464,7 +464,7 @@ impl App {
 
         // Build cross-panel comparison maps before borrowing panels mutably:
         // each panel is tinted against the OTHER panel's entries.
-        let (left_compare, right_compare) = if self.show_compare {
+        let (left_compare, right_compare) = if self.ui.show_compare {
             (
                 Some(crate::workspace::build_compare_map(&self.ws.right_active_tab().state.entries)),
                 Some(crate::workspace::build_compare_map(&self.ws.left_active_tab().state.entries)),
@@ -528,19 +528,19 @@ impl App {
             .show(ctx, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
                 {
-                    self.ws.active = ActivePanel::Left;
+                    self.ws.set_active_side(ActivePanel::Left);
                 }
 
                 // Tab bar for left (DRY extracted)
                 self.render_tab_bar(ui, true, &t, ctx, metrics);
 
-                let is_left_active = self.ws.active == ActivePanel::Left;
-                let left_opener = self.ws.opener.clone();
-                let left_show_git = self.ws.show_git_status;
-                let left_user_tags = self.ws.user_tags.clone();
-                let left_file_notes = self.ws.file_notes.clone();
-                let left_grid = self.grid_view;
-                let left_size_bars = self.show_size_bars;
+                let is_left_active = self.ws.active_side() == ActivePanel::Left;
+                let left_opener = self.ws.opener().clone();
+                let left_show_git = self.ws.show_git_status();
+                let left_user_tags = self.ws.user_tags().clone();
+                let left_file_notes = self.ws.file_notes().clone();
+                let left_grid = self.ui.grid_view;
+                let left_size_bars = self.ui.show_size_bars;
                 let left_tree = self.show_tree;
                 tree_toggle |= Self::render_panel(
                     &mut self.ws.left_active_tab_mut().state,
@@ -556,7 +556,7 @@ impl App {
                     metrics,
                     left_show_git,
                     &mut self.config.column_config,
-                    self.renaming.as_mut(),
+                    self.ui.renaming.as_mut(),
                     left_grid,
                     &left_user_tags,
                     &left_file_notes
@@ -572,19 +572,19 @@ impl App {
             .show(ctx, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
                 {
-                    self.ws.active = ActivePanel::Right;
+                    self.ws.set_active_side(ActivePanel::Right);
                 }
 
                 // Tab bar for right (DRY extracted)
                 self.render_tab_bar(ui, false, &t, ctx, metrics);
 
-                let is_right_active = self.ws.active == ActivePanel::Right;
-                let right_opener = self.ws.opener.clone();
-                let right_show_git = self.ws.show_git_status;
-                let right_user_tags = self.ws.user_tags.clone();
-                let right_file_notes = self.ws.file_notes.clone();
-                let right_grid = self.grid_view;
-                let right_size_bars = self.show_size_bars;
+                let is_right_active = self.ws.active_side() == ActivePanel::Right;
+                let right_opener = self.ws.opener().clone();
+                let right_show_git = self.ws.show_git_status();
+                let right_user_tags = self.ws.user_tags().clone();
+                let right_file_notes = self.ws.file_notes().clone();
+                let right_grid = self.ui.grid_view;
+                let right_size_bars = self.ui.show_size_bars;
                 let right_tree = self.show_tree;
                 tree_toggle |= Self::render_panel(
                     &mut self.ws.right_active_tab_mut().state,
@@ -600,7 +600,7 @@ impl App {
                     metrics,
                     right_show_git,
                     &mut self.config.column_config,
-                    self.renaming.as_mut(),
+                    self.ui.renaming.as_mut(),
                     right_grid,
                     &right_user_tags,
                     &right_file_notes
@@ -608,7 +608,7 @@ impl App {
             });
 
         // Terminal as bottom pane (idea #11, like preview grip area).
-        if self.terminal_open {
+        if self.ui.terminal_open {
             egui::TopBottomPanel::bottom("terminal")
                 .default_height(90.0)
                 .min_height(50.0)
@@ -628,7 +628,7 @@ impl App {
                                     .spawn();
                             }
                             if ui.small_button("X").clicked() {
-                                self.terminal_open = false;
+                                self.ui.terminal_open = false;
                             }
                         });
                         ui.horizontal(|ui| {
@@ -637,16 +637,16 @@ impl App {
                             let resp = ui.add(egui::TextEdit::singleline(&mut cmd).desired_width(300.0));
                             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                 if !cmd.trim().is_empty() {
-                                    self.terminal_history.push(cmd.clone());
-                                    if self.terminal_history.len() > 5 { self.terminal_history.remove(0); }
+                                    self.ui.terminal_history.push(cmd.clone());
+                                    if self.ui.terminal_history.len() > 5 { self.ui.terminal_history.remove(0); }
                                 }
                                 // stub run
                                 crate::app::ui_common::muted_label(ui, &format!("(stub ran: {})", cmd), &t);
                             }
                         });
-                        if !self.terminal_history.is_empty() {
+                        if !self.ui.terminal_history.is_empty() {
                             crate::app::ui_common::muted_label(ui, "History:", &t);
-                            for h in self.terminal_history.iter().rev().take(3) {
+                            for h in self.ui.terminal_history.iter().rev().take(3) {
                                 crate::app::ui_common::muted_label(ui, h, &t);
                             }
                         }
@@ -701,12 +701,12 @@ impl App {
 
     /// Floating capsule showing the current type-ahead buffer.
     fn show_type_ahead_overlay(&mut self, ctx: &egui::Context) {
-        let Some((buffer, last)) = &self.type_ahead else {
+        let Some((buffer, last)) = &self.ui.type_ahead else {
             return;
         };
         let now = ctx.input(|i| i.time);
         if now - last > 1.5 {
-            self.type_ahead = None;
+            self.ui.type_ahead = None;
             return;
         }
         let t = self.colors;
@@ -735,7 +735,7 @@ impl App {
     /// Bottom-right stack of operation toasts, each with a hairline countdown
     /// and an inline Undo on undoable ops.
     fn show_toasts(&mut self, ctx: &egui::Context) {
-        if self.toasts.is_empty() {
+        if self.ui.toasts.is_empty() {
             return;
         }
         let t = self.colors;
@@ -744,7 +744,7 @@ impl App {
         let mut undo = false;
 
         // Newest on top: stack upward from the bottom-right corner.
-        for (i, toast) in self.toasts.active().iter().enumerate().rev() {
+        for (i, toast) in self.ui.toasts.active().iter().enumerate().rev() {
             let y = screen.bottom() - 70.0 - (i as f32) * 44.0;
             let accent = match toast.kind {
                 crate::toasts::ToastKind::Success => t.accent,
@@ -848,10 +848,10 @@ impl App {
                 tab_rects.push((i, resp.rect));
                 if resp.clicked() {
                     if is_left { self.ws.left.set_active(i); } else { self.ws.right.set_active(i); }
-                    self.ws.active = side_active;
+                    self.ws.set_active_side(side_active);
                 }
                 if resp.drag_started() {
-                    self.dragged_tab = Some((is_left, i));
+                    self.ui.dragged_tab = Some((is_left, i));
                 }
                 // Tab context menu (ideas #2,14)
                 resp.context_menu(|ui| {
@@ -864,7 +864,7 @@ impl App {
                         ui.close_menu();
                     }
                     if ui.button("Duplicate tab").clicked() {
-                        self.ws.active = side_active;
+                        self.ws.set_active_side(side_active);
                         if is_left { self.ws.left.set_active(i); } else { self.ws.right.set_active(i); }
                         self.ws.duplicate_active_tab();
                         ui.close_menu();
@@ -880,7 +880,7 @@ impl App {
             }
             // Live drag reorder with visual marker (full impl of proposed idea)
             let mut insert_target: Option<usize> = None;
-            if let Some((side, _)) = self.dragged_tab {
+            if let Some((side, _)) = self.ui.dragged_tab {
                 if side == is_left {
                     let pointer = ui.input(|i| i.pointer.interact_pos());
                     if let Some(pos) = pointer {
@@ -915,7 +915,7 @@ impl App {
                 }
             }
             if ctx.input(|i| i.pointer.any_released()) {
-                if let Some((s, di)) = self.dragged_tab.take() {
+                if let Some((s, di)) = self.ui.dragged_tab.take() {
                     if s == is_left && di < len {
                         if let Some(target) = insert_target {
                             if is_left {
@@ -941,58 +941,59 @@ impl App {
                 self.ws.active = side_active;
             }
             if ui.small_button("C").on_hover_text("Columns config").clicked() {
-                self.column_config_open = true;
+                self.ui.column_config_open = true;
             }
             // Linked scroll toggle (idea #13)
             if crate::app::ui_common::small_toggle(ui, "L", self.ws.linked_scroll, "Toggle linked scroll") {
                 self.ws.linked_scroll = !self.ws.linked_scroll;
             }
             // Mini terminal toggle (idea #11)
-            if crate::app::ui_common::small_toggle(ui, "T", self.terminal_open, "Toggle terminal pane") {
-                self.terminal_open = !self.terminal_open;
+            if crate::app::ui_common::small_toggle(ui, "T", self.ui.terminal_open, "Toggle terminal pane") {
+                self.ui.terminal_open = !self.ui.terminal_open;
             }
             // Macro record/play/save (idea #82/71/37): named last + playback. Moved to ws.
-            if crate::app::ui_common::small_toggle(ui, "M", self.ws.macro_recording, "Toggle macro record (stops auto-saves 'last')") {
-                self.ws.macro_recording = !self.ws.macro_recording;
-                if !self.ws.macro_recording && !self.ws.macro_steps.is_empty() {
-                    self.saved_macros.insert("last".to_string(), self.ws.macro_steps.clone());
+            if crate::app::ui_common::small_toggle(ui, "M", self.ws.macro_recording(), "Toggle macro record (stops auto-saves 'last')") {
+                let newv = !self.ws.macro_recording();
+                self.ws.set_macro_recording(newv);
+                if !newv && !self.ws.macro_steps().is_empty() {
+                    self.ui.saved_macros.insert("last".to_string(), self.ws.macro_steps().to_vec());
                 }
             }
-            if !self.ws.macro_recording && !self.ws.macro_steps.is_empty() {
+            if !self.ws.macro_recording() && !self.ws.macro_steps().is_empty() {
                 if ui.small_button("P").on_hover_text("Playback current steps").clicked() {
                     self.playback_current_macro_steps();
                 }
                 if ui.small_button("save").on_hover_text("Save current as 'last' macro").clicked() {
-                    self.saved_macros.insert("last".to_string(), self.ws.macro_steps.clone());
+                    self.ui.saved_macros.insert("last".to_string(), self.ws.macro_steps().to_vec());
                 }
             }
-            if let Some(st) = self.saved_macros.get("last") {
-                if !self.ws.macro_recording && ui.small_button("last").on_hover_text(format!("Play saved last ({} steps)", st.len())).clicked() {
-                    self.ws.macro_steps = st.clone();
+            if let Some(st) = self.ui.saved_macros.get("last") {
+                if !self.ws.macro_recording() && ui.small_button("last").on_hover_text(format!("Play saved last ({} steps)", st.len())).clicked() {
+                    *self.ws.macro_steps_mut() = st.clone();
                     self.playback_current_macro_steps();
                 }
             }
             // Grid toggle (idea #65/72)
-            if crate::app::ui_common::small_toggle(ui, "G", self.grid_view, "Toggle grid/list") {
-                self.grid_view = !self.grid_view;
+            if crate::app::ui_common::small_toggle(ui, "G", self.ui.grid_view, "Toggle grid/list") {
+                self.ui.grid_view = !self.ui.grid_view;
             }
             ui.add_space(6.0);
             // Action buttons (less frequent, separated for UX clarity)
             // Tag editor (idea #73)
             if ui.small_button("tag").on_hover_text("User tags editor").clicked() {
-                self.user_tag_editor_open = true;
+                self.ui.user_tag_editor_open = true;
             }
             // Notes (idea #92)
             if ui.small_button("note").on_hover_text("File notes editor").clicked() {
-                self.notes_open = true;
+                self.ui.notes_open = true;
             }
             // Permissions (idea #83)
             if ui.small_button("perm").on_hover_text("Permissions/chmod stub").clicked() {
-                self.permissions_open = true;
+                self.ui.permissions_open = true;
             }
             // Archive (idea #84)
             if ui.small_button("zip").on_hover_text("Browse archive stub").clicked() {
-                self.archive_open = true;
+                self.ui.archive_open = true;
             }
         });
         ui.add_space(2.0);
@@ -1003,15 +1004,15 @@ impl App {
             match effect {
                 crate::workspace::Effect::BeginRename(p) => {
                     let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    self.renaming = Some(RenameState { path: p, buffer: name, error: None, focused: false });
+                    self.ui.renaming = Some(RenameState { path: p, buffer: name, error: None, focused: false });
                 }
-                crate::workspace::Effect::BeginMask => { self.mask_input = Some(String::new()); }
-                crate::workspace::Effect::BeginGoToPath => { self.path_input = Some(String::new()); }
-                crate::workspace::Effect::BeginRecent => { self.recent_input = Some(String::new()); }
-                crate::workspace::Effect::BeginPalette => { self.palette_input = Some(String::new()); }
+                crate::workspace::Effect::BeginMask => { self.ui.mask_input = Some(String::new()); }
+                crate::workspace::Effect::BeginGoToPath => { self.ui.path_input = Some(String::new()); }
+                crate::workspace::Effect::BeginRecent => { self.ui.recent_input = Some(String::new()); }
+                crate::workspace::Effect::BeginPalette => { self.ui.palette_input = Some(String::new()); }
                 crate::workspace::Effect::BeginBatchRename => {
                     if !self.ws.batch_rename_targets().is_empty() {
-                        self.batch_rename = Some(BatchRenameState {
+                        self.ui.batch_rename = Some(BatchRenameState {
                             find: String::new(), replace: String::new(), prefix: String::new(), suffix: String::new(),
                             case: crate::rename::CaseMode::Keep, numbering_on: false, num_start: 1, num_step: 1, num_pad: 1,
                             focused: false, error: None,
@@ -1021,23 +1022,23 @@ impl App {
                 crate::workspace::Effect::BeginSync => {
                     let policy = crate::sync::SyncPolicy::TwoWay;
                     let actions = self.ws.build_sync_actions(policy);
-                    self.sync = Some(SyncState { policy, actions });
+                    self.ui.sync = Some(SyncState { policy, actions });
                 }
                 crate::workspace::Effect::FindDuplicates => {
                     let policy = crate::dedup::KeepPolicy::KeepShortestPath;
                     let groups = self.ws.find_duplicates();
                     let keep = groups.iter().map(|g| crate::dedup::default_keep(g, policy)).collect();
-                    self.duplicates = Some(DupState { groups, keep, policy });
+                    self.ui.duplicates = Some(DupState { groups, keep, policy });
                 }
                 crate::workspace::Effect::DiffFiles => {
                     match self.ws.diff_targets() {
                         None => {
                             let now = ctx.input(|i| i.time);
-                            self.toasts.push(crate::toasts::Toast::new("Select a file pair to diff", crate::toasts::ToastKind::Success, false, now));
+                            self.ui.toasts.push(crate::toasts::Toast::new("Select a file pair to diff", crate::toasts::ToastKind::Success, false, now));
                         }
                         Some((a,b)) => {
                             if let (Ok(ca), Ok(cb)) = (crate::app::diff_dialog::read_text(&a), crate::app::diff_dialog::read_text(&b)) {
-                                self.diff = Some(DiffState { name_a: a.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default(), name_b: b.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default(), lines: crate::textdiff::diff_lines(&ca, &cb), message: None });
+                                self.ui.diff = Some(DiffState { name_a: a.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default(), name_b: b.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default(), lines: crate::textdiff::diff_lines(&ca, &cb), message: None });
                             }
                         }
                     }
@@ -1051,15 +1052,15 @@ impl App {
                         } else { e.size };
                         items.push((e, sz));
                     }
-                    self.treemap = Some(items);
+                    self.ui.treemap = Some(items);
                 }
                 crate::workspace::Effect::BeginFind => {
-                    self.find = Some(FindState { name: String::new(), min_mb: String::new(), max_age_days: String::new(), kind: None, root: self.ws.active_panel_ref().current_path().clone(), results: vec![], ran: false, focused: false, save_name: String::new() });
+                    self.ui.find = Some(FindState { name: String::new(), min_mb: String::new(), max_age_days: String::new(), kind: None, root: self.ws.active_panel_ref().current_path().clone(), results: vec![], ran: false, focused: false, save_name: String::new() });
                 }
-                crate::workspace::Effect::OpenSavedSearch => { self.saved_search_open = true; }
+                crate::workspace::Effect::OpenSavedSearch => { self.ui.saved_search_open = true; }
                 crate::workspace::Effect::BeginBookmarks => {
-                    if self.bookmarks_open.is_none() {
-                        self.bookmarks_open = Some(String::new());
+                    if self.ui.bookmarks_open.is_none() {
+                        self.ui.bookmarks_open = Some(String::new());
                     }
                 }
                 crate::workspace::Effect::AssignCurrentToBookmark => {
@@ -1071,9 +1072,9 @@ impl App {
                 }
                 crate::workspace::Effect::GitToast(s) => {
                     let now = ctx.input(|i| i.time);
-                    self.toasts.push(crate::toasts::Toast::new(s, crate::toasts::ToastKind::Success, false, now));
+                    self.ui.toasts.push(crate::toasts::Toast::new(s, crate::toasts::ToastKind::Success, false, now));
                 }
-                crate::workspace::Effect::ToggleShowGit => { self.ws.show_git_status = !self.ws.show_git_status; }
+                crate::workspace::Effect::ToggleShowGit => { self.ws.toggle_show_git(); }
                 crate::workspace::Effect::Clipboard(style) => {
                     let paths: Vec<_> = self.ws.active_panel_ref().selected_or_cursor().into_iter().map(|e| e.path).collect();
                     if !paths.is_empty() {
@@ -1081,7 +1082,7 @@ impl App {
                         let text = crate::clipboard::format(&paths, style, Some(&other_root));
                         ctx.copy_text(text);
                         let now = ctx.input(|i| i.time);
-                        self.toasts.push(crate::toasts::Toast::new(
+                        self.ui.toasts.push(crate::toasts::Toast::new(
                             format!("Copied {} ({})", crate::clipboard::style_label(style), paths.len()),
                             crate::toasts::ToastKind::Success,
                             false,
@@ -1123,7 +1124,7 @@ impl App {
 
     /// Column config dialog (TC style): full functional toggle + widths + reset. (idea #10)
     pub(crate) fn show_column_config_dialog(&mut self, ctx: &egui::Context) {
-        if !self.column_config_open {
+        if !self.ui.column_config_open {
             return;
         }
         let t = self.colors;
@@ -1143,7 +1144,7 @@ impl App {
                 // Git toggle + width
                 ui.horizontal(|ui| {
                     if ui.checkbox(&mut self.config.column_config.show_git, "Git").changed() {
-                        self.ws.show_git_status = self.config.column_config.show_git;
+                        self.ws.set_show_git_status(self.config.column_config.show_git);
                     }
                     if self.config.column_config.show_git {
                         ui.add(egui::Slider::new(&mut self.config.column_config.git_width, 20.0..=80.0).text("w"));
@@ -1169,7 +1170,7 @@ impl App {
                 ui.horizontal(|ui| {
                     if ui.button("Reset defaults").clicked() {
                         self.config.column_config = crate::panel::ColumnConfig::default();
-                        self.ws.show_git_status = true;
+                        self.ws.set_show_git_status(true);
                     }
                     if ui.button("Close").clicked() {
                         close = true;
@@ -1177,13 +1178,13 @@ impl App {
                 });
             });
         if close {
-            self.column_config_open = false;
+            self.ui.column_config_open = false;
         }
     }
 
     /// User tag editor stub dialog (idea #73/83/64). Lists current, allows assign/remove for active cursor.
     pub(crate) fn show_user_tag_editor(&mut self, ctx: &egui::Context) {
-        if !self.user_tag_editor_open {
+        if !self.ui.user_tag_editor_open {
             return;
         }
         let t = self.colors;
@@ -1225,13 +1226,13 @@ impl App {
                 });
             });
         if close {
-            self.user_tag_editor_open = false;
+            self.ui.user_tag_editor_open = false;
         }
     }
 
     /// Permissions stub dialog (idea #83, modeled on Finder Get Info + mc chmod).
     pub(crate) fn show_permissions_dialog(&mut self, ctx: &egui::Context) {
-        if !self.permissions_open { return; }
+        if !self.ui.permissions_open { return; }
         let t = self.colors;
         let mut close = false;
         egui::Window::new("Permissions")
@@ -1245,7 +1246,7 @@ impl App {
                     ui.label(format!("File: {}", e.name));
                     ui.label("Owner: rwx  Group: r-x  Other: r--  (demo)");
                     if ui.button("Apply (stub)").clicked() {
-                        self.toasts.push(crate::toasts::Toast::new(
+                        self.ui.toasts.push(crate::toasts::Toast::new(
                             format!("chmod stub on {}", e.name),
                             crate::toasts::ToastKind::Success,
                             false,
@@ -1256,13 +1257,13 @@ impl App {
                 if ui.button("Close").clicked() { close = true; }
             });
         if close {
-            self.permissions_open = false;
+            self.ui.permissions_open = false;
         }
     }
 
     /// Basic archive stub (idea #84): detect + list contents stub, extract action stub.
     pub(crate) fn show_archive_dialog(&mut self, ctx: &egui::Context) {
-        if !self.archive_open { return; }
+        if !self.ui.archive_open { return; }
         let t = self.colors;
         let mut close = false;
         egui::Window::new("Archive")
@@ -1277,7 +1278,7 @@ impl App {
                     if n.ends_with(".zip") || n.ends_with(".tar") || n.contains(".tar.") {
                         ui.label("Contents (stub): file1.txt\n dir/\n file2.rs");
                         if ui.button("Extract here (stub)").clicked() {
-                            self.toasts.push(crate::toasts::Toast::new(
+                            self.ui.toasts.push(crate::toasts::Toast::new(
                                 "Extract stub done",
                                 crate::toasts::ToastKind::Success,
                                 false,
@@ -1291,13 +1292,13 @@ impl App {
                 if ui.button("Close").clicked() { close = true; }
             });
         if close {
-            self.archive_open = false;
+            self.ui.archive_open = false;
         }
     }
 
     /// Notes editor stub (idea #92): view/edit note for current file, list some.
     pub(crate) fn show_notes_dialog(&mut self, ctx: &egui::Context) {
-        if !self.notes_open { return; }
+        if !self.ui.notes_open { return; }
         let t = self.colors;
         let mut close = false;
         egui::Window::new("Notes")
@@ -1326,7 +1327,7 @@ impl App {
                 if ui.button("Close").clicked() { close = true; }
             });
         if close {
-            self.notes_open = false;
+            self.ui.notes_open = false;
         }
     }
 

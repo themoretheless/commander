@@ -9,7 +9,7 @@ const FIND_CAP: usize = 1000;
 
 impl App {
     pub(crate) fn show_find_dialog(&mut self, ctx: &egui::Context) {
-        if self.find.is_none() {
+        if self.ui.find.is_none() {
             return;
         }
         let t = self.colors;
@@ -20,7 +20,7 @@ impl App {
         let mut reveal: Option<std::path::PathBuf> = None;
 
         {
-            let state = self.find.as_mut().unwrap();
+            let state = self.ui.find.as_mut().unwrap();
             let root_name = state
                 .root
                 .file_name()
@@ -226,16 +226,16 @@ impl App {
 
         if let Some(path) = reveal {
             self.ws.reveal(&path);
-            self.find = None;
+            self.ui.find = None;
             return;
         }
         if cancel {
-            self.find = None;
+            self.ui.find = None;
             return;
         }
         if save {
             let def = {
-                let s = self.find.as_ref().unwrap();
+                let s = self.ui.find.as_ref().unwrap();
                 crate::smart_folder::Definition {
                     name: s.save_name.trim().to_string(),
                     root: s.root.clone(),
@@ -246,7 +246,7 @@ impl App {
             self.smart_folders_mut().add(def);
             crate::smart_folder::save(self.smart_folders_mut());
             let now = ctx.input(|i| i.time);
-            self.toasts.push(crate::toasts::Toast::new(
+            self.ui.toasts.push(crate::toasts::Toast::new(
                 format!("Saved smart folder \u{201c}{name}\u{201d}"),
                 crate::toasts::ToastKind::Success,
                 false,
@@ -255,11 +255,11 @@ impl App {
         }
         if run {
             let (query, root) = {
-                let s = self.find.as_ref().unwrap();
+                let s = self.ui.find.as_ref().unwrap();
                 (s.build_query(), s.root.clone())
             };
             let results = self.ws.run_find(&query, &root, FIND_CAP);
-            if let Some(s) = self.find.as_mut() {
+            if let Some(s) = self.ui.find.as_mut() {
                 s.results = results;
                 s.ran = true;
             }

@@ -5,7 +5,7 @@ use super::*;
 
 impl App {
     pub(crate) fn show_recent_dialog(&mut self, ctx: &egui::Context) {
-        let Some(buffer) = &mut self.recent_input else {
+        let Some(buffer) = &mut self.ui.recent_input else {
             return;
         };
         let t = self.colors;
@@ -90,11 +90,11 @@ impl App {
             });
 
         if cancel {
-            self.recent_input = None;
+            self.ui.recent_input = None;
             return;
         }
         if let Some(path) = go {
-            self.recent_input = None;
+            self.ui.recent_input = None;
             self.ws.active_panel().navigate_to(path);
         }
     }

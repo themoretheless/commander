@@ -8,14 +8,14 @@ use crate::panel::format_size;
 
 impl App {
     pub(crate) fn show_duplicates_dialog(&mut self, ctx: &egui::Context) {
-        if self.duplicates.is_none() {
+        if self.ui.duplicates.is_none() {
             return;
         }
         let t = self.colors;
 
         // Snapshot display data so the window body only mutates `keep`.
         let (view, delete_total) = {
-            let s = self.duplicates.as_ref().unwrap();
+            let s = self.ui.duplicates.as_ref().unwrap();
             let view: Vec<(u64, Vec<String>)> = s
                 .groups
                 .iter()
@@ -41,7 +41,7 @@ impl App {
         let mut cancel = false;
 
         {
-            let s = self.duplicates.as_mut().unwrap();
+            let s = self.ui.duplicates.as_mut().unwrap();
             egui::Window::new("Duplicates")
                 .collapsible(false)
                 .resizable(false)
@@ -183,11 +183,11 @@ impl App {
         }
 
         if cancel {
-            self.duplicates = None;
+            self.ui.duplicates = None;
             return;
         }
         if let Some(p) = new_policy
-            && let Some(s) = self.duplicates.as_mut()
+            && let Some(s) = self.ui.duplicates.as_mut()
         {
             s.policy = p;
             s.keep = s.groups.iter().map(|g| default_keep(g, p)).collect();
@@ -195,7 +195,7 @@ impl App {
         if commit {
             // Every non-kept file across all groups goes to the Trash.
             let to_trash: Vec<std::path::PathBuf> = {
-                let s = self.duplicates.as_ref().unwrap();
+                let s = self.ui.duplicates.as_ref().unwrap();
                 s.groups
                     .iter()
                     .enumerate()
@@ -210,7 +210,7 @@ impl App {
                     .collect()
             };
             self.ws.trash_paths(&to_trash);
-            self.duplicates = None;
+            self.ui.duplicates = None;
         }
     }
 }

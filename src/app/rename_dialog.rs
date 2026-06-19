@@ -6,7 +6,7 @@ use super::*;
 impl App {
     pub(crate) fn show_rename_dialog(&mut self, ctx: &egui::Context) {
         // state set directly by Effect in process_effects
-        let Some(state) = &mut self.renaming else {
+        let Some(state) = &mut self.ui.renaming else {
             return;
         };
         // For inline quick-rename (idea): only set state from target, edit happens in list row via TextEdit.
