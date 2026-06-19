@@ -100,6 +100,8 @@ pub struct Workspace {
     pub cycle_density_request: bool,
     /// The drop stack: paths gathered across folders to copy in one go.
     pub shelf: crate::shelf::Shelf,
+    /// A stashed selection for set-algebra combinations (union/intersect/...).
+    pub selection_stash: std::collections::HashSet<PathBuf>,
     /// Queued second copy pass (entries, target) for a two-way sync, started
     /// once the first pass finishes. Keeps the engine single-transfer.
     sync_followup: Option<(Vec<FileEntry>, PathBuf)>,
@@ -304,6 +306,7 @@ impl Workspace {
             drain_request: false,
             cycle_density_request: false,
             shelf: crate::shelf::Shelf::default(),
+            selection_stash: std::collections::HashSet::new(),
             sync_followup: None,
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
@@ -354,6 +357,41 @@ impl Workspace {
             matching_name_paths(active.filtered_entries().into_iter(), &names)
         };
         self.active_panel().extend_selection(picks);
+    }
+
+    /// Copy the active panel's current selection into the stash.
+    pub fn stash_selection(&mut self) {
+        self.selection_stash = self.active_panel_ref().selected.clone();
+    }
+
+    /// Replace the active panel's selection with `op(current, stash)`, dropping
+    /// any paths no longer present in the panel so the result stays valid.
+    fn combine_with_stash(
+        &mut self,
+        op: fn(
+            &std::collections::HashSet<PathBuf>,
+            &std::collections::HashSet<PathBuf>,
+        ) -> std::collections::HashSet<PathBuf>,
+    ) {
+        let stash = self.selection_stash.clone();
+        let panel = self.active_panel();
+        let present: std::collections::HashSet<PathBuf> =
+            panel.entries.iter().map(|e| e.path.clone()).collect();
+        let combined = op(&panel.selected, &stash);
+        panel.selected = combined.intersection(&present).cloned().collect();
+    }
+
+    pub fn stash_union(&mut self) {
+        self.combine_with_stash(crate::selset::union);
+    }
+    pub fn stash_intersect(&mut self) {
+        self.combine_with_stash(crate::selset::intersect);
+    }
+    pub fn stash_subtract(&mut self) {
+        self.combine_with_stash(crate::selset::difference);
+    }
+    pub fn stash_symmetric_diff(&mut self) {
+        self.combine_with_stash(crate::selset::symmetric_difference);
     }
 
     // ── Command dispatch ────────────────────────────────────────────────
@@ -547,6 +585,11 @@ impl Workspace {
             Command::SelectAll => self.active_panel().select_all(),
             Command::InvertSelection => self.active_panel().invert_selection(),
             Command::SelectSameNamed => self.select_same_named(),
+            Command::StashSelection => self.stash_selection(),
+            Command::StashUnion => self.stash_union(),
+            Command::StashIntersect => self.stash_intersect(),
+            Command::StashSubtract => self.stash_subtract(),
+            Command::StashSymmetricDiff => self.stash_symmetric_diff(),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
@@ -1703,6 +1746,34 @@ mod tests {
         assert!(ws.left.selected.contains(&shared), "common name selected");
         assert!(ws.left.selected.contains(&only_here), "prior pick kept");
         assert_eq!(ws.left.selected.len(), 2, "no spurious selections");
+    }
+
+    #[test]
+    fn stash_union_and_subtract_combine_with_current_selection() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "1");
+        let b = l.file("b.txt", "2");
+        let c = l.file("c.txt", "3");
+        let mut ws = workspace(&l, &r);
+
+        // Stash {a, b}, then change the selection to {c}.
+        ws.left.selected = [a.clone(), b.clone()].into_iter().collect();
+        ws.stash_selection();
+        ws.left.selected = [c.clone()].into_iter().collect();
+
+        // Union with the stash -> {a, b, c}.
+        ws.stash_union();
+        assert_eq!(ws.left.selected.len(), 3);
+        assert!(ws.left.selected.contains(&a) && ws.left.selected.contains(&c));
+
+        // Subtract the stash {a, b} from {a, b, c} -> {c}.
+        ws.stash_subtract();
+        assert_eq!(
+            ws.left.selected,
+            [c.clone()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+        );
     }
 
     #[test]

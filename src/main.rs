@@ -18,6 +18,7 @@ mod query;
 mod rename;
 mod scan;
 mod selection_summary;
+mod selset;
 mod session;
 mod shelf;
 mod smart_folder;
