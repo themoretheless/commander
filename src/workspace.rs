@@ -142,6 +142,9 @@ impl TabSide {
     }
     pub fn len(&self) -> usize { self.tabs.len() }
     pub fn active_index(&self) -> usize { self.active }
+
+    pub fn active_tab_state(&self) -> &PanelState { &self.active_tab().state }
+    pub fn active_tab_state_mut(&mut self) -> &mut PanelState { &mut self.active_tab_mut().state }
     pub fn close_tab(&mut self, i: usize) {
         if self.tabs.len() > 1 && i < self.tabs.len() {
             self.tabs.remove(i);
@@ -321,8 +324,8 @@ impl Workspace {
 
     pub fn active_panel(&mut self) -> &mut PanelState {
         match self.active {
-            ActivePanel::Left => &mut self.left.tabs[self.left.active].state,
-            ActivePanel::Right => &mut self.right.tabs[self.right.active].state,
+            ActivePanel::Left => &mut self.left.active_tab_mut().state,
+            ActivePanel::Right => &mut self.right.active_tab_mut().state,
         }
     }
 
@@ -333,7 +336,7 @@ impl Workspace {
 
     pub fn active_panel_ref(&self) -> &PanelState {
         match self.active {
-            ActivePanel::Left => &self.left.tabs[self.left.active].state,
+            ActivePanel::Left => &self.left.active_tab().state,
             ActivePanel::Right => &self.right.tabs[self.right.active].state,
         }
     }
@@ -341,14 +344,14 @@ impl Workspace {
     pub fn inactive_panel(&self) -> &PanelState {
         match self.active {
             ActivePanel::Left => &self.right.tabs[self.right.active].state,
-            ActivePanel::Right => &self.left.tabs[self.left.active].state,
+            ActivePanel::Right => &self.left.active_tab().state,
         }
     }
 
     pub fn inactive_panel_mut(&mut self) -> &mut PanelState {
         match self.active {
             ActivePanel::Left => &mut self.right.tabs[self.right.active].state,
-            ActivePanel::Right => &mut self.left.tabs[self.left.active].state,
+            ActivePanel::Right => &mut self.left.active_tab_mut().state,
         }
     }
 
@@ -388,10 +391,10 @@ impl Workspace {
                 updates.push(v);
             }
             for (path, map) in updates {
-                if self.left.active_tab().state.current_path() == &path {
-                    self.left.active_tab_mut().state.set_git_status(map);
-                } else if self.right.active_tab().state.current_path() == &path {
-                    self.right.active_tab_mut().state.set_git_status(map);
+                if self.left.active_tab_state().current_path() == &path {
+                    self.left.active_tab_state_mut().set_git_status(map);
+                } else if self.right.active_tab_state().current_path() == &path {
+                    self.right.active_tab_state_mut().set_git_status(map);
                 }
             }
         }
@@ -494,7 +497,7 @@ impl Workspace {
                 }
                 let max = panel.filtered_count();
                 if panel.cursor() < max {
-                    panel.cursor += 1;
+                    panel.set_cursor(panel.cursor() + 1);
                 }
             }
             Command::TogglePreview => {
@@ -504,7 +507,7 @@ impl Workspace {
                     let preview = {
                         let panel = self.active_panel_ref();
                         panel
-                            .filtered_get(panel.cursor.saturating_sub(1))
+                            .filtered_get(panel.cursor().saturating_sub(1))
                             .and_then(panel::make_preview)
                     };
                     self.inactive_panel_mut().preview = preview;
@@ -521,7 +524,7 @@ impl Workspace {
                 let panel = self.active_panel_ref();
                 if panel.cursor() > 0 {
                     self.requests.rename_target =
-                        panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
+                        panel.filtered_get(panel.cursor() - 1).map(|e| e.path.clone());
                 }
             }
             Command::EqualizePanels => {
@@ -764,8 +767,8 @@ impl Workspace {
         }
         self.active_transfer = None;
         // PR1: refresh active tab per side (post-op)
-        self.left.tabs[self.left.active].state.refresh();
-        self.right.tabs[self.right.active].state.refresh();
+        self.left_active_tab_mut().state.refresh();
+        self.right_active_tab_mut().state.refresh();
         // Record the move on the history stack on a clean run.
         if clean {
             if let Some(action) = self.pending_undo_action.take() {
@@ -814,7 +817,7 @@ impl Workspace {
             crate::undo::Action::BatchRename { dir, pairs } => {
                 let _ = Self::rename_pairs_staged(&dir, &pairs);
                 // PR1 tabs
-                self.left.tabs[self.left.active].state.refresh();
+                self.left_active_tab_mut().state.refresh();
                 self.right.tabs[self.right.active].state.refresh();
             }
         }
@@ -890,7 +893,7 @@ impl Workspace {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
                     Self::exec_delete(&entries);
                     // PR1 tabs
-                    self.left.tabs[self.left.active].state.refresh();
+                    self.left_active_tab_mut().state.refresh();
                     self.right.tabs[self.right.active].state.refresh();
                 }
             }
@@ -912,8 +915,8 @@ impl Workspace {
         });
         let _ = std::fs::create_dir(&path);
         // PR1: refresh active tab per side (post-op)
-        self.left.tabs[self.left.active].state.refresh();
-        self.right.tabs[self.right.active].state.refresh();
+        self.left_active_tab_mut().state.refresh();
+        self.right_active_tab_mut().state.refresh();
     }
 
     /// Rename `old` to `new_name` in the same directory. Validates against the
@@ -1055,8 +1058,8 @@ impl Workspace {
             }
         }
         // PR1: refresh active tab per side (post-op)
-        self.left.tabs[self.left.active].state.refresh();
-        self.right.tabs[self.right.active].state.refresh();
+        self.left_active_tab_mut().state.refresh();
+        self.right_active_tab_mut().state.refresh();
         n
     }
 
@@ -1154,9 +1157,9 @@ impl Workspace {
         // One file (selected, else under the cursor) vs the same name opposite.
         let one = if files.len() == 1 {
             files.into_iter().next()
-        } else if active.cursor > 0 {
+        } else if active.cursor() > 0 {
             active
-                .filtered_get(active.cursor - 1)
+                .filtered_get(active.cursor() - 1)
                 .filter(|e| !e.is_dir)
                 .map(|e| e.path.clone())
         } else {
@@ -1212,7 +1215,7 @@ impl Workspace {
         &self,
         policy: crate::sync::SyncPolicy,
     ) -> Vec<crate::sync::SyncAction> {
-        crate::sync::sync_diff(&self.left.tabs[self.left.active].state.entries, &self.right.tabs[self.right.active].state.entries, policy)
+        crate::sync::sync_diff(&self.left.active_tab().state.entries, &self.right.tabs[self.right.active].state.entries, policy)
     }
 
     /// Resolve and start a synchronisation plan: copy each `ToRight` row's left
@@ -1235,7 +1238,7 @@ impl Workspace {
             let nl = a.name.to_lowercase();
             match a.direction {
                 SyncDirection::ToRight => {
-                    if let Some(e) = lookup(&self.left.tabs[self.left.active].state.entries, &nl) {
+                    if let Some(e) = lookup(&self.left.active_tab().state.entries, &nl) {
                         to_right.push(e);
                     }
                 }
@@ -1248,7 +1251,7 @@ impl Workspace {
             }
         }
         let right_dir = self.right.tabs[self.right.active].state.current_path().clone();
-        let left_dir = self.left.tabs[self.left.active].state.current_path().clone();
+        let left_dir = self.left.active_tab().state.current_path().clone();
 
         if !to_right.is_empty() {
             if !to_left.is_empty() {
@@ -1311,14 +1314,14 @@ impl Workspace {
     pub fn sync_preview(&mut self) {
         // PR1 tabs (per design review subsection): only active tab per side can drive visible preview.
         let (source, target) = if self.right.tabs[self.right.active].state.preview.is_some() {
-            (&self.left.tabs[self.left.active].state, &mut self.right.tabs[self.right.active].state)
-        } else if self.left.tabs[self.left.active].state.preview.is_some() {
-            (&self.right.tabs[self.right.active].state, &mut self.left.tabs[self.left.active].state)
+            (&self.left.active_tab().state, &mut self.right.tabs[self.right.active].state)
+        } else if self.left.active_tab().state.preview.is_some() {
+            (&self.right.tabs[self.right.active].state, &mut self.left.active_tab_mut().state)
         } else {
             return;
         };
 
-        let Some(entry) = source.filtered_get(source.cursor.saturating_sub(1)) else {
+        let Some(entry) = source.filtered_get(source.cursor().saturating_sub(1)) else {
             return;
         };
 
@@ -1427,10 +1430,10 @@ impl Workspace {
     /// panel; otherwise the other panel's current directory is the target.
     fn take_drop_plan(&mut self) -> Option<(Vec<PathBuf>, PathBuf)> {
         // PR1: drag from the active tab of the side that has drag_entries
-        let (source, other) = if !self.left.tabs[self.left.active].state.drag_entries.is_empty() {
-            (&mut self.left.tabs[self.left.active].state, &mut self.right.tabs[self.right.active].state)
+        let (source, other) = if !self.left.active_tab().state.drag_entries.is_empty() {
+            (&mut self.left.active_tab_mut().state, &mut self.right.active_tab_mut().state)
         } else if !self.right.tabs[self.right.active].state.drag_entries.is_empty() {
-            (&mut self.right.tabs[self.right.active].state, &mut self.left.tabs[self.left.active].state)
+            (&mut self.right.active_tab_mut().state, &mut self.left.active_tab_mut().state)
         } else {
             return None;
         };

@@ -120,6 +120,10 @@ pub struct App {
     pub(crate) archive_open: bool,
     /// Notes editor open (idea #92).
     pub(crate) notes_open: bool,
+
+    /// Tokio runtime for background async work (spawn_blocking for fs/git).
+    /// Owned here so App remains the thin wiring layer + render owner.
+    pub(crate) tokio_rt: tokio::runtime::Runtime,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -400,6 +404,10 @@ impl App {
             notes_open: false,
             bookmarks_open: None,
             column_config_open: false,
+            tokio_rt: tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime"),
         };
         app
     }
