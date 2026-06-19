@@ -757,7 +757,12 @@ impl Workspace {
             // A poisoned progress mutex (worker thread panicked) must not panic
             // the UI thread in turn; recover the guard and flag cancellation.
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-            s.cancelled = true;
+            // Ignore a cancel that races in after the worker already finished
+            // cleanly: flagging it would demote a completed Move to "not clean"
+            // in poll_transfer and silently drop its undo entry.
+            if !s.finished {
+                s.cancelled = true;
+            }
         }
     }
 

@@ -318,7 +318,10 @@ pub fn spawn_transfer(
                     let mut s = progress.lock().unwrap();
                     if s.cancelled {
                         drop(s);
-                        let _ = cleanup_path(&copy_target);
+                        // For a rename this is a no-op (a failed rename never
+                        // created `copy_target`); for a copy it drops the
+                        // partial. Either way the source is left intact.
+                        let _ = undo_placement(&copy_target, &entry.path, renamed);
                         break; // fall through to the finished-setter below
                     }
                     s.errors.push(format!("{}: {}", entry.name, e));
@@ -330,19 +333,32 @@ pub fn spawn_transfer(
             let clean = result.is_ok() && progress.lock().unwrap().errors.len() == errors_before;
 
             let placed = if !clean {
-                // Remove only what we produced; a pre-existing dest is untouched.
-                let _ = cleanup_path(&copy_target);
+                // Undo our placement; a pre-existing dest is untouched. For a
+                // rename this restores the source rather than deleting its only
+                // copy.
+                if let Some(msg) = undo_placement(&copy_target, &entry.path, renamed) {
+                    progress
+                        .lock()
+                        .unwrap()
+                        .errors
+                        .push(format!("{}: {}", entry.name, msg));
+                }
                 false
             } else if overwrite {
                 match swap_into_place(&copy_target, &dest) {
                     Ok(()) => true,
                     Err(e) => {
-                        let _ = cleanup_path(&copy_target);
-                        progress
-                            .lock()
-                            .unwrap()
-                            .errors
-                            .push(format!("{}: {}", entry.name, e));
+                        // The swap left the staged data at `copy_target`. For a
+                        // rename that is the source's ONLY copy, so move it back
+                        // to the source instead of deleting it (the previous
+                        // unconditional cleanup here lost the source on a failed
+                        // same-volume overwrite move).
+                        let extra = undo_placement(&copy_target, &entry.path, renamed);
+                        let mut s = progress.lock().unwrap();
+                        s.errors.push(format!("{}: {}", entry.name, e));
+                        if let Some(msg) = extra {
+                            s.errors.push(format!("{}: {}", entry.name, msg));
+                        }
                         false
                     }
                 }
@@ -426,6 +442,29 @@ fn cleanup_path(path: &Path) -> std::io::Result<()> {
     match result {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
+    }
+}
+
+/// Undo our own placement at `staged` after a failed transfer of one entry.
+///
+/// For a COPY, `staged` is a disposable duplicate (the original still sits at
+/// `source`), so it is simply removed. For the same-volume rename fast path,
+/// `staged` IS the source's only copy (the source was already moved into it),
+/// so it must be moved back to `source` rather than deleted, or the user's data
+/// would be lost. If the restore cannot complete, the data is left in place
+/// (never deleted) and its location is returned so it can be recovered.
+fn undo_placement(staged: &Path, source: &Path, was_renamed: bool) -> Option<String> {
+    if !was_renamed {
+        let _ = cleanup_path(staged);
+        return None;
+    }
+    if std::fs::rename(staged, source).is_ok() {
+        return None;
+    }
+    if staged.symlink_metadata().is_ok() {
+        Some(format!("data preserved at {}", staged.display()))
+    } else {
+        None
     }
 }
 
@@ -821,6 +860,51 @@ mod tests {
             std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
             "new contents"
         );
+    }
+
+    #[test]
+    fn undo_placement_restores_a_renamed_source_instead_of_deleting_it() {
+        // The same-volume move fast path moves the source INTO `staged`; on a
+        // later failure `undo_placement` must put it back, not delete the only
+        // copy (the data-loss bug the swap-failure path used to have).
+        let tmp = TempDir::new();
+        let staged = tmp.file("staged.tmp", "the only copy");
+        let source = tmp.path().join("source.txt"); // emptied by the rename
+
+        let msg = undo_placement(&staged, &source, true);
+        assert!(msg.is_none(), "restore should succeed");
+        assert!(!staged.exists(), "staged moved back");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "the only copy");
+    }
+
+    #[test]
+    fn undo_placement_deletes_a_copied_duplicate() {
+        let tmp = TempDir::new();
+        let staged = tmp.file("dup.tmp", "disposable");
+        let source = tmp.file("source.txt", "original stays");
+
+        let msg = undo_placement(&staged, &source, false);
+        assert!(msg.is_none());
+        assert!(!staged.exists(), "disposable copy removed");
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            "original stays",
+            "the real source is never touched on a copy"
+        );
+    }
+
+    #[test]
+    fn undo_placement_preserves_data_when_a_rename_restore_cannot_complete() {
+        // If the source location is unreachable (its parent is gone), the data
+        // must be left at `staged`, never deleted, and its path surfaced.
+        let tmp = TempDir::new();
+        let staged = tmp.file("staged.tmp", "irreplaceable");
+        let source = tmp.path().join("missing_dir").join("source.txt");
+
+        let msg = undo_placement(&staged, &source, true);
+        assert!(msg.is_some(), "must report where the data was kept");
+        assert!(msg.unwrap().contains("staged.tmp"));
+        assert!(staged.exists(), "data left in place, not destroyed");
     }
 
     #[test]

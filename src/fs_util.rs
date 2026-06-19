@@ -107,7 +107,10 @@ pub fn first_available(mut candidate: impl FnMut(usize) -> PathBuf) -> PathBuf {
     let mut i = 0;
     loop {
         let p = candidate(i);
-        if !p.exists() {
+        // `path_is_taken` (no-follow), not `exists`: a name held by a broken
+        // symlink is still taken, and the EXCL write/rename that follows would
+        // fail on it, so skip to the next candidate rather than return it.
+        if !path_is_taken(&p) {
             return p;
         }
         i += 1;
