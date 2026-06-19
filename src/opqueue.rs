@@ -390,20 +390,33 @@ mod tests {
 
     #[test]
     fn cancel_works_from_any_non_terminal_state_only() {
+        // Enqueue the three to-be-started jobs first and the pending one last,
+        // so starting three (cap 3) leaves `pending` genuinely Pending.
         let mut queue = q();
-        let pending = queue.enqueue(JobKind::Copy, "p");
         let running = queue.enqueue(JobKind::Copy, "r");
-        queue.set_concurrency(2);
-        queue.dequeue_next();
-        queue.dequeue_next();
-        // running is Running, pending was started too; reset one to test states.
-        assert_eq!(queue.get(running).unwrap().state, JobState::Running);
-        assert!(queue.cancel(running));
-        assert_eq!(queue.get(running).unwrap().state, JobState::Cancelled);
-        // Cancelling a terminal job is refused.
-        assert!(!queue.cancel(running));
-        // A pending (here already running) and paused job can also be cancelled.
+        let paused = queue.enqueue(JobKind::Copy, "x");
+        let done = queue.enqueue(JobKind::Copy, "d");
+        let pending = queue.enqueue(JobKind::Copy, "p");
+
+        queue.set_concurrency(3);
+        queue.dequeue_next(); // r -> Running
+        queue.dequeue_next(); // x -> Running
+        queue.dequeue_next(); // d -> Running
+        assert!(queue.pause(paused)); // x -> Paused
+        assert!(queue.complete(done)); // d -> Done (terminal)
+        assert_eq!(queue.get(pending).unwrap().state, JobState::Pending);
+
+        // Cancel succeeds from each non-terminal state: Pending, Running, Paused.
         assert!(queue.cancel(pending));
+        assert!(queue.cancel(running));
+        assert!(queue.cancel(paused));
+        assert_eq!(queue.get(pending).unwrap().state, JobState::Cancelled);
+        assert_eq!(queue.get(running).unwrap().state, JobState::Cancelled);
+        assert_eq!(queue.get(paused).unwrap().state, JobState::Cancelled);
+
+        // Cancel is refused from a terminal state (Done, or already-Cancelled).
+        assert!(!queue.cancel(done));
+        assert!(!queue.cancel(running));
     }
 
     #[test]
