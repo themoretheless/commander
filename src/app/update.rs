@@ -851,6 +851,7 @@ impl App {
             let accent = match toast.kind {
                 crate::toasts::ToastKind::Success => t.accent,
                 crate::toasts::ToastKind::Error => t.accent_red,
+                crate::toasts::ToastKind::Info => t.text_muted,
             };
             let frac = crate::toasts::remaining_fraction(toast, now);
             egui::Area::new(egui::Id::new(("toast", i)))

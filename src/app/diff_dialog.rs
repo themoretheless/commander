@@ -24,7 +24,7 @@ impl App {
                     let now = ctx.input(|i| i.time);
                     self.toasts.push(crate::toasts::Toast::new(
                         "Select a file pair to diff",
-                        crate::toasts::ToastKind::Success,
+                        crate::toasts::ToastKind::Info,
                         false,
                         now,
                     ));

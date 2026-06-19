@@ -6,6 +6,9 @@
 pub enum ToastKind {
     Success,
     Error,
+    /// Neutral notice (an instruction or a "nothing to do" result), styled
+    /// muted rather than the success green so it does not read as a win.
+    Info,
 }
 
 #[derive(Clone, PartialEq, Debug)]

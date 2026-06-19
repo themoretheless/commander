@@ -56,6 +56,14 @@ pub enum PendingOp {
     },
 }
 
+/// How a delete-to-Trash turned out, so the UI can confirm it and flag any
+/// entries that could not be removed instead of failing silently.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct DeleteOutcome {
+    pub trashed: usize,
+    pub failed: usize,
+}
+
 pub struct Workspace {
     pub left: PanelState,
     pub right: PanelState,
@@ -894,25 +902,43 @@ impl Workspace {
         Ok(done)
     }
 
-    pub fn exec_delete(entries: &[FileEntry]) {
+    /// Move every entry to the Trash, counting successes and failures so the
+    /// caller can confirm the outcome (and flag any that could not be removed)
+    /// rather than failing silently.
+    pub fn exec_delete(entries: &[FileEntry]) -> DeleteOutcome {
+        let mut outcome = DeleteOutcome::default();
         for entry in entries {
-            let _ = trash::delete(&entry.path);
+            if trash::delete(&entry.path).is_ok() {
+                outcome.trashed += 1;
+            } else {
+                outcome.failed += 1;
+            }
         }
+        outcome
     }
 
-    pub fn confirm_pending_op(&mut self, notify: impl Fn() + Send + 'static) {
+    /// Confirm the pending op. Returns `Some` only for a Delete (the synchronous
+    /// op), so the caller can raise a result toast; a Transfer reports its own
+    /// outcome asynchronously through [`poll_transfer`](Self::poll_transfer).
+    pub fn confirm_pending_op(
+        &mut self,
+        notify: impl Fn() + Send + 'static,
+    ) -> Option<DeleteOutcome> {
         match &self.pending_op {
             Some(PendingOp::Delete { .. }) => {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
-                    Self::exec_delete(&entries);
+                    let outcome = Self::exec_delete(&entries);
                     self.left.refresh();
                     self.right.refresh();
+                    return Some(outcome);
                 }
+                None
             }
             Some(PendingOp::Transfer(_)) => {
                 self.start_transfer(notify);
+                None
             }
-            None => {}
+            None => None,
         }
     }
 

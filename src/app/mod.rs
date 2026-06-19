@@ -340,9 +340,44 @@ impl App {
     }
 
     /// Confirm the pending operation; progress wakes the UI via repaint.
+    /// A Delete reports its outcome synchronously, so confirm it with a toast
+    /// (and flag anything the Trash refused) rather than letting it vanish
+    /// without acknowledgement.
     pub(crate) fn confirm_pending_op(&mut self, ctx: &egui::Context) {
-        let ctx = ctx.clone();
-        self.ws.confirm_pending_op(move || ctx.request_repaint());
+        let ctx2 = ctx.clone();
+        if let Some(outcome) = self.ws.confirm_pending_op(move || ctx2.request_repaint()) {
+            let now = ctx.input(|i| i.time);
+            let item = |n: usize| if n == 1 { "item" } else { "items" };
+            let (message, kind) = if outcome.failed == 0 {
+                (
+                    format!(
+                        "Moved {} {} to Trash",
+                        outcome.trashed,
+                        item(outcome.trashed)
+                    ),
+                    crate::toasts::ToastKind::Success,
+                )
+            } else if outcome.trashed == 0 {
+                (
+                    format!(
+                        "Could not delete {} {}",
+                        outcome.failed,
+                        item(outcome.failed)
+                    ),
+                    crate::toasts::ToastKind::Error,
+                )
+            } else {
+                (
+                    format!(
+                        "Moved {} to Trash, {} failed",
+                        outcome.trashed, outcome.failed
+                    ),
+                    crate::toasts::ToastKind::Error,
+                )
+            };
+            self.toasts
+                .push(crate::toasts::Toast::new(message, kind, false, now));
+        }
     }
 
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {

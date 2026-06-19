@@ -219,8 +219,33 @@ impl App {
                     })
                     .collect()
             };
-            self.ws.trash_paths(&to_trash);
+            let requested = to_trash.len();
+            let trashed = self.ws.trash_paths(&to_trash);
             self.duplicates = None;
+
+            if requested == 0 {
+                return;
+            }
+            let now = ctx.input(|i| i.time);
+            let item = |n: usize| if n == 1 { "duplicate" } else { "duplicates" };
+            let (message, kind) = if trashed == requested {
+                (
+                    format!("Moved {} {} to Trash", trashed, item(trashed)),
+                    crate::toasts::ToastKind::Success,
+                )
+            } else {
+                (
+                    format!(
+                        "Moved {} of {} {} to Trash",
+                        trashed,
+                        requested,
+                        item(requested)
+                    ),
+                    crate::toasts::ToastKind::Error,
+                )
+            };
+            self.toasts
+                .push(crate::toasts::Toast::new(message, kind, false, now));
         }
     }
 }
