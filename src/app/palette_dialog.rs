@@ -6,7 +6,8 @@ use super::*;
 
 impl App {
     pub(crate) fn show_palette_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.palette_request) {
+        let just_opened = std::mem::take(&mut self.ws.palette_request);
+        if just_opened {
             self.palette_input = Some(String::new());
         }
         if self.palette_input.is_none() {
@@ -25,7 +26,6 @@ impl App {
         let buffer = self.palette_input.as_mut().unwrap();
         let mut run: Option<(&'static str, crate::command::Command)> = None;
         let mut cancel = false;
-        let mut first = false;
 
         egui::Window::new("Command palette")
             .collapsible(false)
@@ -62,9 +62,8 @@ impl App {
                         .hint_text("Search commands, shortcuts, views\u{2026}")
                         .margin(egui::vec2(8.0, 6.0)),
                 );
-                if !first {
+                if just_opened {
                     resp.request_focus();
-                    first = true;
                 }
                 ui.add_space(6.0);
 

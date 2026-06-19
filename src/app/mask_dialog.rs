@@ -5,7 +5,8 @@ use super::*;
 
 impl App {
     pub(crate) fn show_mask_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.mask_request) {
+        let just_opened = std::mem::take(&mut self.ws.mask_request);
+        if just_opened {
             self.mask_input = Some(String::new());
         }
         let Some(buffer) = &mut self.mask_input else {
@@ -15,10 +16,14 @@ impl App {
 
         let mut commit = false;
         let mut cancel = false;
-        let mut focus = false;
 
         // Live match count against the active panel.
         let count = self.ws.active_panel_ref().mask_match_count(buffer);
+        let match_label = if count == 1 {
+            "1 match".to_string()
+        } else {
+            format!("{count} matches")
+        };
 
         egui::Window::new("Select by mask")
             .collapsible(false)
@@ -45,18 +50,14 @@ impl App {
                     .hint_text("*.jpg, !*raw*")
                     .margin(egui::vec2(8.0, 6.0));
                 let resp = ui.add(edit);
-                if resp.lost_focus() {
-                    // Keep focus across frames until committed/cancelled.
-                    focus = true;
+                // Grab focus on the opening frame only; yanking it every frame
+                // would trap the caret and stop the user clicking the buttons.
+                if just_opened {
+                    resp.request_focus();
                 }
-                resp.request_focus();
 
                 ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(format!("{count} match"))
-                        .size(11.0)
-                        .color(t.accent),
-                );
+                ui.label(egui::RichText::new(&match_label).size(11.0).color(t.accent));
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -97,7 +98,6 @@ impl App {
                     }
                 });
             });
-        let _ = focus;
 
         if cancel {
             self.mask_input = None;

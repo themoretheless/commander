@@ -5,7 +5,8 @@ use super::*;
 
 impl App {
     pub(crate) fn show_recent_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.recent_request) {
+        let just_opened = std::mem::take(&mut self.ws.recent_request);
+        if just_opened {
             self.recent_input = Some(String::new());
         }
         let Some(buffer) = &mut self.recent_input else {
@@ -18,7 +19,6 @@ impl App {
 
         let mut go: Option<std::path::PathBuf> = None;
         let mut cancel = false;
-        let mut first = false;
 
         egui::Window::new("Recent folders")
             .collapsible(false)
@@ -39,9 +39,8 @@ impl App {
                         .hint_text("Filter recent folders\u{2026}")
                         .margin(egui::vec2(8.0, 6.0)),
                 );
-                if !first {
+                if just_opened {
                     resp.request_focus();
-                    first = true;
                 }
                 ui.add_space(6.0);
 

@@ -5,7 +5,8 @@ use super::*;
 
 impl App {
     pub(crate) fn show_path_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.path_request) {
+        let just_opened = std::mem::take(&mut self.ws.path_request);
+        if just_opened {
             let current = self
                 .ws
                 .active_panel_ref()
@@ -23,7 +24,6 @@ impl App {
         let resolved = crate::workspace::resolve_dir_input(buffer, &home);
         let mut go: Option<std::path::PathBuf> = None;
         let mut cancel = false;
-        let mut first = false;
 
         egui::Window::new("Go to path")
             .collapsible(false)
@@ -50,9 +50,8 @@ impl App {
                         .hint_text("~/Documents")
                         .margin(egui::vec2(8.0, 6.0)),
                 );
-                if !first {
+                if just_opened {
                     resp.request_focus();
-                    first = true;
                 }
 
                 ui.add_space(4.0);
