@@ -116,6 +116,8 @@ impl App {
             (egui::Key::U, KeyCode::U),
             (egui::Key::V, KeyCode::V),
             (egui::Key::Z, KeyCode::Z),
+            (egui::Key::OpenBracket, KeyCode::BracketLeft),
+            (egui::Key::CloseBracket, KeyCode::BracketRight),
         ];
         BINDINGS
             .iter()

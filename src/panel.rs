@@ -693,8 +693,9 @@ pub struct PanelState {
     /// read by PageUp/PageDown. Zero until the panel has been drawn once.
     pub page_rows: usize,
     pub preview: Option<PreviewContent>,
-    pub history: Vec<PathBuf>,
-    pub history_pos: usize,
+    /// Per-pane directory history (back/forward); a vim-style jump trail that
+    /// truncates its forward tail on a new navigation.
+    pub history: crate::jumplist::JumpList,
     pub search_query: String,
     /// Active quick-filter facets, ANDed with the substring filter.
     pub facets: FacetSet,
@@ -732,8 +733,11 @@ impl PanelState {
             dir_status: DirStatus::Empty,
             page_rows: 0,
             preview: None,
-            history: vec![path],
-            history_pos: 0,
+            history: {
+                let mut h = crate::jumplist::JumpList::new();
+                h.push(path);
+                h
+            },
             search_query: String::new(),
             facets: FacetSet::default(),
             sort_col: SortColumn::Name,
@@ -1090,12 +1094,9 @@ impl PanelState {
     }
 
     pub fn navigate_to(&mut self, path: PathBuf) {
-        // Trim forward history when navigating to a new path
-        if self.history_pos + 1 < self.history.len() {
-            self.history.truncate(self.history_pos + 1);
-        }
+        // The jump trail truncates any forward tail and collapses a repeat of
+        // the current directory, so every navigation entry point records here.
         self.history.push(path.clone());
-        self.history_pos = self.history.len() - 1;
         record_visit(&path);
         self.current_path = path;
         self.search_query.clear();
@@ -1206,26 +1207,25 @@ impl PanelState {
     }
 
     pub fn can_go_back(&self) -> bool {
-        self.history_pos > 0
+        self.history.can_back()
     }
 
     pub fn can_go_forward(&self) -> bool {
-        self.history_pos + 1 < self.history.len()
+        self.history.can_forward()
     }
 
     pub fn go_back(&mut self) {
-        if self.can_go_back() {
-            self.history_pos -= 1;
-            self.current_path = self.history[self.history_pos].clone();
+        // `back` walks the existing trail without recording a new jump.
+        if let Some(path) = self.history.back().map(|p| p.to_path_buf()) {
+            self.current_path = path;
             self.search_query.clear();
             self.refresh();
         }
     }
 
     pub fn go_forward(&mut self) {
-        if self.can_go_forward() {
-            self.history_pos += 1;
-            self.current_path = self.history[self.history_pos].clone();
+        if let Some(path) = self.history.forward().map(|p| p.to_path_buf()) {
+            self.current_path = path;
             self.search_query.clear();
             self.refresh();
         }
@@ -1650,6 +1650,36 @@ mod tests {
 
         p.go_forward();
         assert_eq!(p.current_path, sub);
+    }
+
+    #[test]
+    fn history_jump_back_twice_then_forward_and_truncate() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        let b = tmp.dir("b");
+        let c = tmp.dir("c");
+        let d = tmp.dir("d");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        p.navigate_to(a.clone()); // trail: [root, a]
+        p.navigate_to(b.clone()); // [root, a, b]
+        p.navigate_to(c.clone()); // [root, a, b, c]
+
+        // Back twice lands on `a`; forward returns to `b`.
+        p.go_back();
+        p.go_back();
+        assert_eq!(p.current_path, a);
+        p.go_forward();
+        assert_eq!(p.current_path, b);
+
+        // A fresh navigation from `b` truncates the forward tail (drops c).
+        p.navigate_to(d.clone());
+        assert_eq!(p.current_path, d);
+        assert!(!p.can_go_forward(), "forward tail truncated by a new jump");
+        // Back now steps to `b`, not the discarded `c`.
+        p.go_back();
+        assert_eq!(p.current_path, b);
     }
 
     #[test]

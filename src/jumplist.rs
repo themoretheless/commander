@@ -3,9 +3,7 @@
 //! made after stepping back TRUNCATES the forward tail, so the history always
 //! reflects the path actually travelled.
 //!
-//! Pure and standalone (no I/O); the whole surface is exercised by the unit
-//! tests below until the per-pane navigation wiring lands.
-#![allow(dead_code)] // remove once panes record jumps into this
+//! Pure and standalone (no I/O); it backs each panel's back/forward history.
 
 use std::path::{Path, PathBuf};
 
@@ -101,14 +99,6 @@ impl JumpList {
     pub fn can_forward(&self) -> bool {
         matches!(self.cursor, Some(c) if c + 1 < self.trail.len())
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.trail.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.trail.len()
-    }
 }
 
 #[cfg(test)]
@@ -129,7 +119,6 @@ mod tests {
     #[test]
     fn empty_list_has_no_current_and_cannot_move() {
         let mut j = JumpList::new();
-        assert!(j.is_empty());
         assert_eq!(j.current(), None);
         assert_eq!(j.back(), None);
         assert_eq!(j.forward(), None);
@@ -150,7 +139,7 @@ mod tests {
         let mut j = JumpList::new();
         j.push("/a");
         j.push("/a"); // same as current -> no-op
-        assert_eq!(j.len(), 1);
+        assert_eq!(trail(&j), vec!["/a"]);
         // After stepping back, re-pushing the focused entry is still a no-op.
         j.push("/b");
         j.back(); // focus /a
@@ -221,7 +210,6 @@ mod tests {
         }
         // "/a" evicted; newest stays focused.
         assert_eq!(trail(&j), vec!["/b", "/c", "/d"]);
-        assert_eq!(j.len(), 3);
         assert_eq!(cur(&j), Some("/d".to_string()));
         // Cursor still walks the retained range correctly.
         assert_eq!(

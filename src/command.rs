@@ -24,6 +24,10 @@ pub enum Command {
     /// Enter: open file / enter dir / go up on the ".." row.
     Activate,
     GoUp,
+    /// Cmd+[: walk back through this panel's directory history.
+    JumpBack,
+    /// Cmd+]: walk forward again after a [`JumpBack`](Command::JumpBack).
+    JumpForward,
     /// Space: toggle selection and advance cursor.
     ToggleSelect,
     /// F3: open/close preview in the other panel.
@@ -131,6 +135,8 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Drain shelf here", "Cmd+Shift+V", Command::ShelfDrain),
         ("Get Info", "Cmd+I", Command::ToggleInfo),
         ("Go to path", "Cmd+L", Command::BeginGoToPath),
+        ("Back", "Cmd+[", Command::JumpBack),
+        ("Forward", "Cmd+]", Command::JumpForward),
         ("Recent folders", "Cmd+P", Command::BeginRecent),
         ("Select all", "Cmd+A", Command::SelectAll),
         ("Invert selection", "", Command::InvertSelection),
@@ -323,6 +329,8 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::ShelfDrain => &["shelf stack drain paste copy here"],
         Command::ToggleInfo => &["view info get info properties metadata"],
         Command::BeginGoToPath => &["navigation go path location jump"],
+        Command::JumpBack => &["navigation back history previous jump return"],
+        Command::JumpForward => &["navigation forward history next jump"],
         Command::BeginRecent => &["navigation recent folders history projects"],
         Command::SelectAll => &["selection select all mark all"],
         Command::InvertSelection => &["selection invert reverse flip"],
@@ -383,6 +391,8 @@ pub enum KeyCode {
     U,
     V,
     Z,
+    BracketLeft,
+    BracketRight,
 }
 
 /// A single key press with modifier state.
@@ -409,6 +419,8 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         PageDown => Some(Command::CursorPageDown),
         Enter => Some(Command::Activate),
         Backspace => Some(Command::GoUp),
+        BracketLeft if press.command => Some(Command::JumpBack),
+        BracketRight if press.command => Some(Command::JumpForward),
         Space => Some(Command::ToggleSelect),
         F2 => Some(Command::BeginRename),
         R if press.command && press.shift => Some(Command::BeginBatchRename),
@@ -471,6 +483,20 @@ mod tests {
             command: false,
             shift: true,
         }
+    }
+
+    #[test]
+    fn cmd_brackets_walk_history() {
+        assert_eq!(
+            map_key(cmd_press(KeyCode::BracketLeft)),
+            Some(Command::JumpBack)
+        );
+        assert_eq!(
+            map_key(cmd_press(KeyCode::BracketRight)),
+            Some(Command::JumpForward)
+        );
+        // Without Cmd the brackets are not history navigation.
+        assert_eq!(map_key(press(KeyCode::BracketLeft)), None);
     }
 
     #[test]

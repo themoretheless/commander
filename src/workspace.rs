@@ -552,6 +552,12 @@ impl Workspace {
             Command::GoUp => {
                 self.active_panel().go_up();
             }
+            Command::JumpBack => {
+                self.active_panel().go_back();
+            }
+            Command::JumpForward => {
+                self.active_panel().go_forward();
+            }
             Command::ToggleSelect => {
                 let panel = self.active_panel();
                 if panel.cursor > 0 {
