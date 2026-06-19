@@ -14,6 +14,7 @@ mod fuzzy;
 mod image_cache;
 mod native_copy;
 mod native_menu;
+mod opqueue;
 mod panel;
 mod query;
 mod quick_actions;
