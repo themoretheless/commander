@@ -22,7 +22,6 @@ pub struct ImageCache {
     frame: u64,
     /// Images currently being loaded in background
     pending: PendingMap,
-    last_displayed: Option<PathBuf>,
     current_dir: Option<PathBuf>,
 }
 
@@ -33,7 +32,6 @@ impl ImageCache {
             total_bytes: 0,
             frame: 0,
             pending: Arc::new(Mutex::new(HashMap::new())),
-            last_displayed: None,
             current_dir: None,
         }
     }
@@ -56,13 +54,7 @@ impl ImageCache {
             .to_string_lossy()
             .to_string();
 
-        let is_new = self.last_displayed.as_ref() != Some(&path.to_path_buf());
-
         if self.entries.contains_key(path) {
-            if is_new {
-                eprintln!("[preview] displaying from cache: {}", fname);
-                self.last_displayed = Some(path.to_path_buf());
-            }
             return self.get(path);
         }
 
@@ -72,12 +64,9 @@ impl ImageCache {
             p.remove(path).flatten()
         };
 
-        let loaded = if let Some((img, byte_size)) = from_pending {
-            eprintln!("[preview] background load ready, caching: {}", fname);
-            Some((img, byte_size))
-        } else {
-            eprintln!("[preview] not in cache, sync loading: {}", fname);
-            load_image_from_disk(path).ok()
+        let loaded = match from_pending {
+            Some(ready) => Some(ready),
+            None => load_image_from_disk(path).ok(),
         };
 
         if let Some((img, byte_size)) = loaded {
@@ -90,15 +79,6 @@ impl ImageCache {
                     byte_size,
                     last_used: self.frame,
                 },
-            );
-            let remaining_mb = (MAX_CACHE_BYTES.saturating_sub(self.total_bytes)) / 1024 / 1024;
-            eprintln!(
-                "[preview] cached: {} (used: {} MB / {} MB, remaining: {} MB, entries: {})",
-                fname,
-                self.total_bytes / 1024 / 1024,
-                MAX_CACHE_BYTES / 1024 / 1024,
-                remaining_mb,
-                self.entries.len(),
             );
         }
 
@@ -151,10 +131,6 @@ impl ImageCache {
                         p.insert(path_clone.clone(), Some((img, byte_size)));
                     }
                     ctx_clone.request_repaint();
-                    eprintln!(
-                        "[cache] loaded: {}",
-                        path_clone.file_name().unwrap_or_default().to_string_lossy()
-                    );
                 } else {
                     // Remove from pending on error
                     if let Ok(mut p) = pending_clone.lock() {
@@ -190,16 +166,6 @@ impl ImageCache {
                             last_used: self.frame,
                         },
                     );
-                    let remaining_mb =
-                        (MAX_CACHE_BYTES.saturating_sub(self.total_bytes)) / 1024 / 1024;
-                    eprintln!(
-                        "[cache] +{} (used: {} MB / {} MB, remaining: {} MB, entries: {})",
-                        name,
-                        self.total_bytes / 1024 / 1024,
-                        MAX_CACHE_BYTES / 1024 / 1024,
-                        remaining_mb,
-                        self.entries.len(),
-                    );
                 }
             }
         }
@@ -221,13 +187,6 @@ impl ImageCache {
             .filter(|k| !keep.contains(k))
             .cloned()
             .collect();
-        if !to_remove.is_empty() {
-            eprintln!(
-                "[cache] over budget ({} MB), evicting {} old entries",
-                self.total_bytes / 1024 / 1024,
-                to_remove.len(),
-            );
-        }
         for path in to_remove {
             if let Some(entry) = self.entries.remove(&path) {
                 self.total_bytes -= entry.byte_size;
@@ -424,12 +383,6 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
 
         let gpu_size = w * h * 4;
         let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
-        eprintln!(
-            "[imageio] decoded: {}x{} {}",
-            w,
-            h,
-            path.file_name().unwrap_or_default().to_string_lossy()
-        );
         Ok((color_image, gpu_size))
     }
 }
@@ -602,12 +555,6 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
 
         let gpu_size = w * h * 4;
         let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
-        eprintln!(
-            "[video] thumbnail: {}x{} {}",
-            w,
-            h,
-            path.file_name().unwrap_or_default().to_string_lossy()
-        );
         Ok((color_image, gpu_size))
     }
 }

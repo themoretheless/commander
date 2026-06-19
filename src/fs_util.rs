@@ -161,19 +161,24 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
     Ok(dest)
 }
 
-/// Parse the available bytes from `df -k` output (the Available column,
-/// index 3, is in 1024-byte blocks). Pure, so it is unit-testable.
+/// Parse the available bytes from `df -Pk` output (the Available column,
+/// index 3, is in 1024-byte blocks). Reads the last non-empty line rather than
+/// line 2, so a trailing newline does not matter and (under `-P`, which never
+/// wraps the row) a long device name cannot shift the columns. Pure, so it is
+/// unit-testable.
 pub fn parse_df_avail_bytes(out: &str) -> Option<u64> {
-    let line = out.lines().nth(1)?;
+    let line = out.lines().rfind(|l| !l.trim().is_empty())?;
     let cols: Vec<&str> = line.split_whitespace().collect();
     let avail_kib: u64 = cols.get(3)?.parse().ok()?;
     Some(avail_kib * 1024)
 }
 
-/// Free space in bytes on the volume containing `path`, via `df -k`.
+/// Free space in bytes on the volume containing `path`, via `df -Pk`.
+/// `-P` forces POSIX one-line-per-filesystem output so a long device name
+/// never wraps onto a second line and misaligns the Available column.
 pub fn free_space(path: &Path) -> Option<u64> {
     let out = std::process::Command::new("df")
-        .arg("-k")
+        .arg("-Pk")
         .arg(path)
         .output()
         .ok()?;
@@ -403,6 +408,12 @@ mod tests {
         assert_eq!(parse_df_avail_bytes(out), Some(800_000_000 * 1024));
         assert_eq!(parse_df_avail_bytes("only a header line\n"), None);
         assert_eq!(parse_df_avail_bytes(""), None);
+
+        // Trailing blank lines must not defeat the parse (last non-empty row
+        // wins, not literally the last line).
+        let trailing = "Filesystem 1024-blocks Used Available Capacity Mounted on\n\
+                        /dev/disk3s1 971350180 100000000 800000000 12% /\n\n";
+        assert_eq!(parse_df_avail_bytes(trailing), Some(800_000_000 * 1024));
     }
 
     #[test]
