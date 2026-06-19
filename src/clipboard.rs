@@ -82,7 +82,7 @@ fn percent_encode_path(s: &str) -> String {
 
 /// Wrap in single quotes for the shell, escaping embedded single quotes as
 /// the standard `'\''` sequence.
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for c in s.chars() {

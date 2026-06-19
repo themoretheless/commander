@@ -3,6 +3,7 @@
 mod app;
 mod bookmarks;
 mod clipboard;
+mod cmdtemplate;
 mod command;
 mod conflict;
 mod crumbs;
