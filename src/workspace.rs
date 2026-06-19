@@ -127,6 +127,8 @@ pub struct Workspace {
     pub mask_request: bool,
     /// Set by [`Command::BeginRunBar`]; the UI opens the run-command bar.
     pub run_command_request: bool,
+    /// Set by [`Command::GatherIntoFolder`]; the UI runs it with a notify.
+    pub gather_request: bool,
     /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
     pub path_request: bool,
     /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
@@ -381,6 +383,7 @@ impl Workspace {
             rename_target: None,
             mask_request: false,
             run_command_request: false,
+            gather_request: false,
             path_request: false,
             recent_request: false,
             undo_request: false,
@@ -713,6 +716,7 @@ impl Workspace {
             }
             Command::BeginSelectMask => self.mask_request = true,
             Command::BeginRunBar => self.run_command_request = true,
+            Command::GatherIntoFolder => self.gather_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
             Command::BeginPalette => self.palette_request = true,
@@ -1142,6 +1146,45 @@ impl Workspace {
         let _ = std::fs::create_dir(&path);
         self.left.refresh();
         self.right.refresh();
+    }
+
+    /// Gather the active panel's selection into a fresh subfolder (Finder's
+    /// "New Folder with Selection"): create a uniquely-named folder under the
+    /// active directory and move the selection into it as one undoable Move
+    /// (queued through the transfer pipeline, so it takes the same-volume rename
+    /// fast path). A no-op on an empty selection or if the folder can't be made.
+    pub fn gather_into_folder(&mut self, notify: impl Fn() + Send + 'static) {
+        let entries = self.active_panel_ref().selected_or_cursor();
+        if entries.is_empty() {
+            return;
+        }
+        let base = self.active_panel_ref().current_path.clone();
+        let name = crate::selection_summary::suggest_folder_name(&entries);
+        // A collision-free folder name (never clobbers an existing sibling,
+        // including one of the entries being gathered).
+        let folder = crate::fs_util::first_available(|i| {
+            if i == 0 {
+                base.join(&name)
+            } else {
+                base.join(format!("{name} {}", i + 1))
+            }
+        });
+        if std::fs::create_dir(&folder).is_err() {
+            return;
+        }
+        // One undoable Move of the whole selection into the new folder.
+        let undo = crate::undo::Action::Move {
+            pairs: move_pairs(&entries, &folder),
+        };
+        let spec = TransferSpec {
+            kind: TransferKind::Move,
+            entries,
+            target: folder,
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+        };
+        self.enqueue_only(spec, Some(undo));
+        self.pump_queue(notify);
     }
 
     /// Rename `old` to `new_name` in the same directory. Validates against the
@@ -2188,6 +2231,38 @@ mod tests {
         assert!(r.path().join("left.txt").is_file(), "left -> right");
         assert!(l.path().join("right.txt").is_file(), "right -> left");
         assert_eq!(ws.queued_count(), 0, "queue fully drained");
+    }
+
+    #[test]
+    fn gather_into_folder_moves_selection_and_undoes() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("IMG_1.jpg", "a");
+        l.file("IMG_2.jpg", "b");
+        l.file("keep.txt", "c"); // not selected
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(l.path().join("IMG_1.jpg"));
+        ws.left.selected.insert(l.path().join("IMG_2.jpg"));
+
+        ws.gather_into_folder(|| {});
+        drain_transfers(&mut ws);
+
+        // The selection moved into a new "IMG" subfolder; the rest stays put.
+        let folder = l.path().join("IMG");
+        assert!(folder.is_dir(), "gather folder created");
+        assert!(folder.join("IMG_1.jpg").is_file());
+        assert!(folder.join("IMG_2.jpg").is_file());
+        assert!(!l.path().join("IMG_1.jpg").exists(), "originals moved out");
+        assert!(l.path().join("keep.txt").is_file(), "unselected untouched");
+
+        // Cmd+Z moves them back out of the folder.
+        ws.perform_undo(|| {});
+        drain_transfers(&mut ws);
+        assert!(l.path().join("IMG_1.jpg").is_file(), "undo restored IMG_1");
+        assert!(l.path().join("IMG_2.jpg").is_file(), "undo restored IMG_2");
+        assert!(
+            !folder.join("IMG_1.jpg").exists(),
+            "moved back out of folder"
+        );
     }
 
     #[test]

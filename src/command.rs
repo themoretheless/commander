@@ -56,6 +56,8 @@ pub enum Command {
     BeginSelectMask,
     /// Open the run-command / open-with bar for the current selection.
     BeginRunBar,
+    /// Cmd+Shift+N: move the selection into a new subfolder.
+    GatherIntoFolder,
     /// Cmd+I: toggle the Get-Info inspector for the cursor entry.
     ToggleInfo,
     /// Cmd+L: open the go-to-path input.
@@ -126,6 +128,11 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Copy to other panel", "F5", Command::RequestCopy),
         ("Move to other panel", "F6", Command::RequestMove),
         ("New folder", "F7", Command::CreateDir),
+        (
+            "New folder with selection",
+            "Cmd+Shift+N",
+            Command::GatherIntoFolder,
+        ),
         ("Delete (to Trash)", "F8", Command::RequestDelete),
         ("Rename", "F2", Command::BeginRename),
         ("Batch rename", "Cmd+Shift+R", Command::BeginBatchRename),
@@ -341,6 +348,9 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::RequestCopy => &["file copy duplicate transfer send"],
         Command::RequestMove => &["file move transfer relocate send"],
         Command::CreateDir => &["file new folder directory mkdir create"],
+        Command::GatherIntoFolder => {
+            &["file new folder with selection gather group move into subfolder"]
+        }
         Command::RequestDelete => &["file delete remove trash"],
         Command::BeginRename => &["file rename edit name"],
         Command::BeginBatchRename => &["file batch rename bulk multi rename studio"],
@@ -432,6 +442,7 @@ pub enum KeyCode {
     S,
     U,
     V,
+    N,
     Z,
     BracketLeft,
     BracketRight,
@@ -477,6 +488,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         D if press.command && press.shift => Some(Command::CycleDensity),
         D if press.command => Some(Command::DiffFiles),
         M if press.command && press.shift => Some(Command::DiskTreemap),
+        N if press.command && press.shift => Some(Command::GatherIntoFolder),
         F if press.command => Some(Command::BeginFind),
         C if press.command && press.shift => Some(Command::CopyPath),
         F3 => Some(Command::TogglePreview),

@@ -124,6 +124,11 @@ impl App {
             let c = ctx.clone();
             self.ws.perform_redo(move || c.request_repaint());
         }
+        // Gather the selection into a new subfolder (queues an undoable Move).
+        if std::mem::take(&mut self.ws.gather_request) {
+            let c = ctx.clone();
+            self.ws.gather_into_folder(move || c.request_repaint());
+        }
         // Drain the shelf (copy staged items into the active pane).
         if std::mem::take(&mut self.ws.drain_request) {
             let c = ctx.clone();

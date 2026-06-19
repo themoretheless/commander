@@ -111,6 +111,7 @@ impl App {
             (egui::Key::K, KeyCode::K),
             (egui::Key::L, KeyCode::L),
             (egui::Key::M, KeyCode::M),
+            (egui::Key::N, KeyCode::N),
             (egui::Key::P, KeyCode::P),
             (egui::Key::R, KeyCode::R),
             (egui::Key::S, KeyCode::S),
