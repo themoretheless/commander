@@ -117,6 +117,8 @@ pub struct Workspace {
     pub rename_target: Option<PathBuf>,
     /// Set by [`Command::BeginSelectMask`]; the UI opens the mask input.
     pub mask_request: bool,
+    /// Set by [`Command::BeginRunBar`]; the UI opens the run-command bar.
+    pub run_command_request: bool,
     /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
     pub path_request: bool,
     /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
@@ -365,6 +367,7 @@ impl Workspace {
             active_transfer: None,
             rename_target: None,
             mask_request: false,
+            run_command_request: false,
             path_request: false,
             recent_request: false,
             undo_request: false,
@@ -674,6 +677,7 @@ impl Workspace {
                 }
             }
             Command::BeginSelectMask => self.mask_request = true,
+            Command::BeginRunBar => self.run_command_request = true,
             Command::BeginGoToPath => self.path_request = true,
             Command::BeginRecent => self.recent_request = true,
             Command::BeginPalette => self.palette_request = true,

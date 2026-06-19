@@ -28,6 +28,7 @@ impl eframe::App for App {
         self.show_mask_dialog(ctx);
         self.show_path_dialog(ctx);
         self.show_recent_dialog(ctx);
+        self.show_run_command_dialog(ctx);
         self.show_palette_dialog(ctx);
         if !self.focus_mode {
             self.show_toolbar_panel(ctx);

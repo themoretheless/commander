@@ -54,6 +54,8 @@ pub enum Command {
     SwapPanels,
     /// Cmd+G: open the select-by-mask input.
     BeginSelectMask,
+    /// Open the run-command / open-with bar for the current selection.
+    BeginRunBar,
     /// Cmd+I: toggle the Get-Info inspector for the cursor entry.
     ToggleInfo,
     /// Cmd+L: open the go-to-path input.
@@ -166,6 +168,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             Command::StashSymmetricDiff,
         ),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
+        ("Run command on selection", "", Command::BeginRunBar),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
         ("Cycle density", "Cmd+Shift+D", Command::CycleDensity),
         ("Toggle preview", "F3", Command::TogglePreview),
@@ -346,6 +349,7 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::InvertSelection => &["selection invert reverse flip"],
         Command::SelectSameNamed => &["selection same name matching files compare"],
         Command::BeginSelectMask => &["selection mask glob pattern wildcard"],
+        Command::BeginRunBar => &["run command shell open with terminal execute tool launcher"],
         Command::ToggleHidden => &["view hidden show hidden dotfiles invisible"],
         Command::CycleDensity => &["view density rows compact comfortable spacious"],
         Command::TogglePreview => &["view preview quick look viewer inspect"],

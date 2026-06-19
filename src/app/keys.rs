@@ -18,6 +18,7 @@ impl App {
             || self.ws.active_transfer.is_some()
             || self.renaming.is_some()
             || self.mask_input.is_some()
+            || self.run_command.is_some()
             || self.path_input.is_some()
             || self.recent_input.is_some()
             || self.palette_input.is_some()

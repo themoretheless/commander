@@ -16,6 +16,7 @@ mod preload;
 mod recent_dialog;
 mod rename_dialog;
 mod render;
+mod run_command_dialog;
 mod saved_search_dialog;
 mod sync_dialog;
 mod toolbar;
@@ -88,6 +89,16 @@ pub struct App {
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
     /// Whether the saved-search picker is open.
     pub(crate) saved_search_open: bool,
+    /// Saved command templates, loaded lazily on first use.
+    pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
+    /// Active run-command bar state (the editable command line).
+    pub(crate) run_command: Option<RunCommandState>,
+}
+
+/// UI state for the run-command / open-with bar.
+pub(crate) struct RunCommandState {
+    /// The editable command line (placeholders expand against the selection).
+    pub line: String,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -306,7 +317,15 @@ impl App {
             find: None,
             smart_folders: None,
             saved_search_open: false,
+            command_templates: None,
+            run_command: None,
         }
+    }
+
+    /// The command-template store, loaded from disk on first access.
+    pub(crate) fn command_templates_mut(&mut self) -> &mut crate::cmdtemplate::Templates {
+        self.command_templates
+            .get_or_insert_with(crate::cmdtemplate::load)
     }
 
     /// The saved-search store, loaded from disk on first access.
