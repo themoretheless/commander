@@ -3,9 +3,9 @@
 //! (1..=9, e.g. Cmd+1..9). Pure and serde-backed, mirroring [`crate::smart_folder`];
 //! load/save touch a JSON file under the config dir.
 //!
-//! The store is landed ahead of its UI; the whole surface is exercised by the
-//! unit tests below until the sidebar/quick-jump wiring lands.
-#![allow(dead_code)] // remove once the bookmarks sidebar/quick-jump is wired
+//! Backs the Favorites rail in the tree sidebar and the Cmd+1..9 quick-jump
+//! slots; [`rail_model`] turns the store into a render-ready row list (pure, so
+//! the current-dir marker and slot glyphs are unit-tested away from egui).
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -55,6 +55,10 @@ impl Bookmarks {
     }
 
     /// Rename the bookmark for `path`. Returns whether one was found.
+    // Bookmark-management ops (rename/reorder/clear_slot/by_path) are tested
+    // and ready; the favorites context menu that drives them is the next
+    // bookmark iteration, so they are not called from non-test code yet.
+    #[allow(dead_code)]
     pub fn rename(&mut self, path: &Path, new_name: impl Into<String>) -> bool {
         match self.items.iter_mut().find(|b| b.path == path) {
             Some(b) => {
@@ -68,6 +72,7 @@ impl Bookmarks {
     /// Move the bookmark at index `from` to index `to`, preserving the relative
     /// order of the rest (a remove-then-insert). `to` is clamped into range.
     /// Returns whether `from` was a valid index.
+    #[allow(dead_code)]
     pub fn reorder(&mut self, from: usize, to: usize) -> bool {
         if from >= self.items.len() {
             return false;
@@ -105,6 +110,7 @@ impl Bookmarks {
 
     /// Clear any quick-jump slot bound to `path`. Returns whether the bookmark
     /// was found.
+    #[allow(dead_code)]
     pub fn clear_slot(&mut self, path: &Path) -> bool {
         match self.items.iter_mut().find(|b| b.path == path) {
             Some(b) => {
@@ -121,6 +127,7 @@ impl Bookmarks {
     }
 
     /// The bookmark for `path`, if any.
+    #[allow(dead_code)]
     pub fn by_path(&self, path: &Path) -> Option<&Bookmark> {
         self.items.iter().find(|b| b.path == path)
     }
@@ -128,14 +135,31 @@ impl Bookmarks {
     pub fn contains(&self, path: &Path) -> bool {
         self.items.iter().any(|b| b.path == path)
     }
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
+/// A render-ready Favorites row: the bookmark plus whether either panel is
+/// currently in it (for a "you are here" dot).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RailRow {
+    pub name: String,
+    pub path: PathBuf,
+    pub slot: Option<u8>,
+    pub is_current: bool,
+}
 
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
+/// Build the Favorites rail in stored order, marking a row current when either
+/// panel (`left`/`right`) is in that directory. Pure; the sidebar renders this.
+pub fn rail_model(store: &Bookmarks, left: &Path, right: &Path) -> Vec<RailRow> {
+    store
+        .items
+        .iter()
+        .map(|b| RailRow {
+            name: b.name.clone(),
+            path: b.path.clone(),
+            slot: b.slot,
+            is_current: b.path == left || b.path == right,
+        })
+        .collect()
 }
 
 fn store_path() -> PathBuf {
@@ -174,7 +198,7 @@ mod tests {
         let mut b = Bookmarks::default();
         assert!(b.add("Code", "/a"));
         assert!(!b.add("Code again", "/a")); // same path -> rejected
-        assert_eq!(b.len(), 1);
+        assert_eq!(b.items.len(), 1);
         // First-seen name is kept.
         assert_eq!(b.items[0].name, "Code");
     }
@@ -199,7 +223,7 @@ mod tests {
         assert!(b.remove(Path::new("/home/me/docs")));
         assert!(!b.contains(Path::new("/home/me/docs")));
         assert!(!b.remove(Path::new("/home/me/docs"))); // already gone
-        assert_eq!(b.len(), 2);
+        assert_eq!(b.items.len(), 2);
     }
 
     #[test]
@@ -268,6 +292,24 @@ mod tests {
         let json = serde_json::to_string(&b).unwrap();
         let back: Bookmarks = serde_json::from_str(&json).unwrap();
         assert_eq!(b, back);
+    }
+
+    #[test]
+    fn rail_model_marks_current_panels_and_keeps_order_and_slots() {
+        let mut b = bm();
+        b.assign_slot(Path::new("/home/me/code"), 1);
+        // Left panel sits in code, right panel in dl.
+        let rows = rail_model(&b, Path::new("/home/me/code"), Path::new("/home/me/dl"));
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Code", "Docs", "Downloads"],
+            "stored order kept"
+        );
+        assert_eq!(rows[0].slot, Some(1));
+        assert!(rows[0].is_current, "left panel is in Code");
+        assert!(!rows[1].is_current, "no panel is in Docs");
+        assert!(rows[2].is_current, "right panel is in Downloads");
     }
 
     #[test]

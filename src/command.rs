@@ -28,6 +28,12 @@ pub enum Command {
     JumpBack,
     /// Cmd+]: walk forward again after a [`JumpBack`](Command::JumpBack).
     JumpForward,
+    /// Cmd+1..9: jump the active panel to the bookmark in that quick-jump slot.
+    JumpSlot(u8),
+    /// Cmd+Shift+1..9: bind the active directory to that quick-jump slot.
+    AssignSlot(u8),
+    /// Bookmark the active directory (palette command).
+    BookmarkCurrentDir,
     /// Space: toggle selection and advance cursor.
     ToggleSelect,
     /// F3: open/close preview in the other panel.
@@ -137,6 +143,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Go to path", "Cmd+L", Command::BeginGoToPath),
         ("Back", "Cmd+[", Command::JumpBack),
         ("Forward", "Cmd+]", Command::JumpForward),
+        ("Bookmark this folder", "", Command::BookmarkCurrentDir),
         ("Recent folders", "Cmd+P", Command::BeginRecent),
         ("Select all", "Cmd+A", Command::SelectAll),
         ("Invert selection", "", Command::InvertSelection),
@@ -331,6 +338,9 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::BeginGoToPath => &["navigation go path location jump"],
         Command::JumpBack => &["navigation back history previous jump return"],
         Command::JumpForward => &["navigation forward history next jump"],
+        Command::JumpSlot(_) => &["navigation bookmark favorite slot jump go"],
+        Command::AssignSlot(_) => &["navigation bookmark favorite slot assign set"],
+        Command::BookmarkCurrentDir => &["navigation bookmark favorite add pin folder this"],
         Command::BeginRecent => &["navigation recent folders history projects"],
         Command::SelectAll => &["selection select all mark all"],
         Command::InvertSelection => &["selection invert reverse flip"],
@@ -393,6 +403,8 @@ pub enum KeyCode {
     Z,
     BracketLeft,
     BracketRight,
+    /// Number-row digits 1..9 (0 is intentionally excluded; slots are 1..9).
+    Digit(u8),
 }
 
 /// A single key press with modifier state.
@@ -421,6 +433,10 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         Backspace => Some(Command::GoUp),
         BracketLeft if press.command => Some(Command::JumpBack),
         BracketRight if press.command => Some(Command::JumpForward),
+        // Cmd+Shift+1..9 assigns the active dir to a slot; Cmd+1..9 jumps to it.
+        // A bare digit falls through (None) so type-ahead can use it.
+        Digit(n) if press.command && press.shift => Some(Command::AssignSlot(n)),
+        Digit(n) if press.command => Some(Command::JumpSlot(n)),
         Space => Some(Command::ToggleSelect),
         F2 => Some(Command::BeginRename),
         R if press.command && press.shift => Some(Command::BeginBatchRename),
@@ -483,6 +499,22 @@ mod tests {
             command: false,
             shift: true,
         }
+    }
+
+    #[test]
+    fn cmd_digits_are_quick_jump_slots() {
+        assert_eq!(
+            map_key(cmd_press(KeyCode::Digit(1))),
+            Some(Command::JumpSlot(1))
+        );
+        let cmd_shift_3 = KeyPress {
+            code: KeyCode::Digit(3),
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_3), Some(Command::AssignSlot(3)));
+        // A bare digit is not a command, so type-ahead can use it.
+        assert_eq!(map_key(press(KeyCode::Digit(1))), None);
     }
 
     #[test]

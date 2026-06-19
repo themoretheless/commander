@@ -150,6 +150,8 @@ pub struct Workspace {
     pub cycle_density_request: bool,
     /// The drop stack: paths gathered across folders to copy in one go.
     pub shelf: crate::shelf::Shelf,
+    /// Persisted directory bookmarks (favorites + quick-jump slots 1..9).
+    pub bookmarks: crate::bookmarks::Bookmarks,
     /// A stashed selection for set-algebra combinations (union/intersect/...).
     pub selection_stash: std::collections::HashSet<PathBuf>,
     /// Queued second copy pass (entries, target) for a two-way sync, started
@@ -379,6 +381,7 @@ impl Workspace {
             drain_request: false,
             cycle_density_request: false,
             shelf: crate::shelf::Shelf::default(),
+            bookmarks: crate::bookmarks::load(),
             selection_stash: std::collections::HashSet::new(),
             sync_followup: None,
             stack: crate::undo::UndoStack::default(),
@@ -557,6 +560,30 @@ impl Workspace {
             }
             Command::JumpForward => {
                 self.active_panel().go_forward();
+            }
+            Command::JumpSlot(n) => {
+                if let Some(path) = self.bookmarks.by_slot(n).map(|b| b.path.clone())
+                    && path.is_dir()
+                {
+                    self.active_panel().navigate_to(path);
+                }
+            }
+            Command::AssignSlot(n) => {
+                let dir = self.active_panel_ref().current_path.clone();
+                self.bookmark_dir(dir.clone());
+                self.bookmarks.assign_slot(&dir, n);
+                crate::bookmarks::save(&self.bookmarks);
+            }
+            Command::BookmarkCurrentDir => {
+                // Toggle: bookmark the active directory, or un-bookmark it if it
+                // is already a favorite.
+                let dir = self.active_panel_ref().current_path.clone();
+                if self.bookmarks.contains(&dir) {
+                    self.bookmarks.remove(&dir);
+                } else {
+                    self.bookmark_dir(dir);
+                }
+                crate::bookmarks::save(&self.bookmarks);
             }
             Command::ToggleSelect => {
                 let panel = self.active_panel();
@@ -923,6 +950,20 @@ impl Workspace {
             method: CopyMethod::Native,
         };
         transfer::spawn_transfer(spec, progress, notify);
+    }
+
+    /// Add `dir` to the bookmarks if it is not already present, naming it after
+    /// its final path component (the volume root falls back to its display
+    /// path). A no-op when already bookmarked, so a slot assign keeps the name.
+    fn bookmark_dir(&mut self, dir: PathBuf) {
+        if self.bookmarks.contains(&dir) {
+            return;
+        }
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| dir.display().to_string());
+        self.bookmarks.add(name, dir);
     }
 
     /// Every name currently in `dir` (best-effort), so a rename batch can be
@@ -2164,6 +2205,29 @@ mod tests {
             !names.contains(&"note.txt".to_string()),
             "non-match excluded"
         );
+    }
+
+    #[test]
+    fn jump_slot_navigates_active_panel_to_the_bookmarked_dir() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let project = l.dir("project");
+        let mut ws = workspace(&l, &r);
+        // Bookmark `project` in slot 1 (set the store directly; the execute
+        // path for AssignSlot persists to the real config, so it is not used
+        // in tests).
+        ws.bookmarks.add("project", project.clone());
+        assert!(ws.bookmarks.assign_slot(&project, 1));
+
+        // Active panel elsewhere, then Cmd+1 jumps it to the bookmark.
+        ws.left.navigate_to(l.path().to_path_buf());
+        assert_eq!(ws.active_panel_ref().current_path, l.path());
+        ws.execute(Command::JumpSlot(1));
+        assert_eq!(ws.active_panel_ref().current_path, project);
+
+        // An empty slot is a no-op (no panic, no navigation).
+        let before = ws.active_panel_ref().current_path.clone();
+        ws.execute(Command::JumpSlot(7));
+        assert_eq!(ws.active_panel_ref().current_path, before);
     }
 
     #[test]

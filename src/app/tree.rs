@@ -9,8 +9,18 @@ impl App {
     ) -> Option<PathBuf> {
         let active_path = self.ws.active_panel_ref().current_path.clone();
         let show_hidden = self.ws.active_panel_ref().show_hidden;
+
+        // Favorites rail: bookmarked directories with their quick-jump slots,
+        // above the filesystem tree. Clicking one navigates the active panel.
+        let rows = crate::bookmarks::rail_model(
+            &self.ws.bookmarks,
+            &self.ws.left.current_path,
+            &self.ws.right.current_path,
+        );
+        let mut nav = Self::render_favorites(ui, t, &rows);
+
         let root = PathBuf::from("/");
-        Self::render_tree_node_recursive(
+        let tree_nav = Self::render_tree_node_recursive(
             ui,
             &root,
             0,
@@ -19,7 +29,73 @@ impl App {
             show_hidden,
             &mut self.tree_expanded,
             &mut self.tree_children_cache,
-        )
+        );
+        nav = nav.or(tree_nav);
+        nav
+    }
+
+    /// Draw the Favorites rail from a pure [`rail_model`](crate::bookmarks::rail_model)
+    /// row list. Returns the path of a clicked favorite, if any.
+    fn render_favorites(
+        ui: &mut egui::Ui,
+        t: &ThemeColors,
+        rows: &[crate::bookmarks::RailRow],
+    ) -> Option<PathBuf> {
+        if rows.is_empty() {
+            return None;
+        }
+        let mut nav = None;
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("FAVORITES")
+                .size(9.0)
+                .color(t.text_muted),
+        );
+        let full_w = ui.available_width();
+        for row in rows {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(full_w, 22.0), Sense::click());
+            if row.is_current {
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(2),
+                    t.bg_selected.linear_multiply(0.25),
+                );
+            } else if resp.hovered() {
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(2),
+                    t.bg_hover.linear_multiply(0.3),
+                );
+            }
+            let mut x = rect.left() + 6.0;
+            // Slot digit (fixed-width gutter so names align with/without a slot).
+            let slot_text = row.slot.map(|n| n.to_string()).unwrap_or_default();
+            ui.painter().text(
+                egui::pos2(x, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &slot_text,
+                egui::FontId::proportional(11.0),
+                t.accent,
+            );
+            x += 14.0;
+            ui.painter().text(
+                egui::pos2(x, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &row.name,
+                egui::FontId::proportional(12.0),
+                if row.is_current {
+                    t.text_primary
+                } else {
+                    t.text_secondary
+                },
+            );
+            if resp.clicked() {
+                nav = Some(row.path.clone());
+            }
+            resp.on_hover_text(row.path.display().to_string());
+        }
+        ui.add_space(6.0);
+        nav
     }
 
     // Recursive walk threading mutable `expanded`/`cache` borrows through

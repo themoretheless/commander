@@ -118,6 +118,17 @@ impl App {
             (egui::Key::Z, KeyCode::Z),
             (egui::Key::OpenBracket, KeyCode::BracketLeft),
             (egui::Key::CloseBracket, KeyCode::BracketRight),
+            // Quick-jump slots: Cmd+1..9 jump, Cmd+Shift+1..9 assign. A bare
+            // digit is left to type-ahead (map_key returns None without Cmd).
+            (egui::Key::Num1, KeyCode::Digit(1)),
+            (egui::Key::Num2, KeyCode::Digit(2)),
+            (egui::Key::Num3, KeyCode::Digit(3)),
+            (egui::Key::Num4, KeyCode::Digit(4)),
+            (egui::Key::Num5, KeyCode::Digit(5)),
+            (egui::Key::Num6, KeyCode::Digit(6)),
+            (egui::Key::Num7, KeyCode::Digit(7)),
+            (egui::Key::Num8, KeyCode::Digit(8)),
+            (egui::Key::Num9, KeyCode::Digit(9)),
         ];
         BINDINGS
             .iter()
