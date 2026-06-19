@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod bookmarks;
 mod clipboard;
 mod command;
 mod conflict;
@@ -12,6 +13,7 @@ mod focus_mode;
 mod fs_util;
 mod fuzzy;
 mod image_cache;
+mod jumplist;
 mod native_copy;
 mod native_menu;
 mod opqueue;
