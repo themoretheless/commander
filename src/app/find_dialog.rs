@@ -11,7 +11,7 @@ impl App {
     pub(crate) fn show_find_dialog(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.ws.requests.find_request) {
             self.find = Some(FindState {
-                root: self.ws.active_panel_ref().current_path.clone(),
+                root: self.ws.active_panel_ref().current_path().clone(),
                 ..Default::default()
             });
         }

@@ -88,7 +88,7 @@ impl App {
             ws.bookmarks.remove(idx);
         }
         if do_assign {
-            let p = ws.active_panel_ref().current_path.clone();
+            let p = ws.active_panel_ref().current_path().clone();
             if !ws.bookmarks.iter().any(|b| b.path == p) {
                 let name = p
                     .file_name()

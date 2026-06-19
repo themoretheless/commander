@@ -162,6 +162,14 @@ impl TabSide {
             self.active = ins;
         }
     }
+    pub fn keep_only(&mut self, i: usize) {
+        if i < self.tabs.len() {
+            let keep = self.tabs.remove(i);
+            self.tabs.clear();
+            self.tabs.push(keep);
+            self.active = 0;
+        }
+    }
 }
 
 pub struct Workspace {
@@ -199,9 +207,9 @@ pub struct Workspace {
     pub user_tags: std::collections::HashMap<PathBuf, String>,
     pub file_notes: std::collections::HashMap<PathBuf, String>,
 
-    // Git bg channel owned here (thin App: ws handles receive + apply).
-    pub git_tx: Option<std::sync::mpsc::Sender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
-    pub git_rx: Option<std::sync::mpsc::Receiver<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
+    // Git bg channel owned here (thin App: ws handles receive + apply). Using tokio unbounded channel.
+    pub git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
+    pub git_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(PathBuf, std::collections::HashMap<PathBuf, char>)>>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -374,14 +382,14 @@ impl Workspace {
     /// Poll pending git status messages and apply to matching tab (pure apply by message).
     /// Called from UI layer each frame.
     pub fn poll_git(&mut self) {
-        if let Some(rx) = &self.git_rx {
+        if let Some(rx) = &mut self.git_rx {
             let mut updates = Vec::new();
             while let Ok(v) = rx.try_recv() {
                 updates.push(v);
             }
             for (path, map) in updates {
                 if self.left.active_tab().state.current_path() == &path {
-                    self.left.active_tab_mut().state.set_git_status(map.clone());
+                    self.left.active_tab_mut().state.set_git_status(map);
                 } else if self.right.active_tab().state.current_path() == &path {
                     self.right.active_tab_mut().state.set_git_status(map);
                 }
@@ -517,7 +525,7 @@ impl Workspace {
                 }
             }
             Command::EqualizePanels => {
-                let target = self.active_panel_ref().current_path.clone();
+                let target = self.active_panel_ref().current_path().clone();
                 self.inactive_panel_mut().navigate_to(target);
             }
             Command::SwapPanels => {
@@ -545,7 +553,7 @@ impl Workspace {
             }
             Command::AssignCurrentToBookmark => {
                 self.requests.assign_bookmark_request = true;
-                let p = self.active_panel_ref().current_path.clone();
+                let p = self.active_panel_ref().current_path().clone();
                 if !self.bookmarks.iter().any(|b| b.path == p) {
                     let name = p.file_name()
                         .map(|n| n.to_string_lossy().into_owned())
@@ -623,7 +631,7 @@ impl Workspace {
     }
 
     fn request_transfer(&mut self, kind: TransferKind) {
-        let target = self.inactive_panel().current_path.clone();
+        let target = self.inactive_panel().current_path().clone();
         let entries = self.active_panel_ref().selected_or_cursor();
         if entries.is_empty() {
             return;
@@ -894,7 +902,7 @@ impl Workspace {
     }
 
     pub fn create_dir(&mut self) {
-        let base = self.active_panel_ref().current_path.clone();
+        let base = self.active_panel_ref().current_path().clone();
         let path = crate::fs_util::first_available(|i| {
             if i == 0 {
                 base.join("New Folder")
@@ -977,7 +985,7 @@ impl Workspace {
         if !crate::rename::plan_is_applicable(&plans) {
             return Err("Resolve collisions or invalid names first".into());
         }
-        let dir = self.active_panel_ref().current_path.clone();
+        let dir = self.active_panel_ref().current_path().clone();
         let changes: Vec<(String, String)> = plans
             .iter()
             .filter(|p| p.status == crate::rename::PlanStatus::Ok)
@@ -1172,7 +1180,7 @@ impl Workspace {
         if self.shelf.is_empty() || self.active_transfer.is_some() {
             return;
         }
-        let dest = self.active_panel_ref().current_path.clone();
+        let dest = self.active_panel_ref().current_path().clone();
         let existing: std::collections::HashSet<String> = self
             .active_panel_ref()
             .entries
@@ -1239,8 +1247,8 @@ impl Workspace {
                 SyncDirection::Skip => {}
             }
         }
-        let right_dir = self.right.tabs[self.right.active].state.current_path.clone();
-        let left_dir = self.left.tabs[self.left.active].state.current_path.clone();
+        let right_dir = self.right.tabs[self.right.active].state.current_path().clone();
+        let left_dir = self.left.tabs[self.left.active].state.current_path().clone();
 
         if !to_right.is_empty() {
             if !to_left.is_empty() {
@@ -1430,7 +1438,7 @@ impl Workspace {
             .drop_target
             .take()
             .or_else(|| other.drop_target.take())
-            .unwrap_or_else(|| other.current_path.clone());
+            .unwrap_or_else(|| other.current_path().clone());
         let paths = std::mem::take(&mut source.drag_entries);
         source.drop_target = None;
         other.drop_target = None;

@@ -17,8 +17,8 @@ pub struct TabSet {
 
 impl TabSet {
     pub fn from_workspace(ws: &Workspace, name: impl Into<String>) -> Self {
-        let left = ws.left.tabs.iter().map(|t| t.state.current_path.clone()).collect();
-        let right = ws.right.tabs.iter().map(|t| t.state.current_path.clone()).collect();
+        let left = ws.left.tabs.iter().map(|t| t.state.current_path().clone()).collect();
+        let right = ws.right.tabs.iter().map(|t| t.state.current_path().clone()).collect();
         TabSet { name: name.into(), left, right }
     }
 

@@ -7,7 +7,7 @@ impl App {
         ui: &mut egui::Ui,
         t: &ThemeColors,
     ) -> Option<PathBuf> {
-        let active_path = self.ws.active_panel_ref().current_path.clone();
+        let active_path = self.ws.active_panel_ref().current_path().clone();
         let show_hidden = self.ws.active_panel_ref().show_hidden;
         let root = PathBuf::from("/");
         Self::render_tree_node_recursive(

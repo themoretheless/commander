@@ -61,7 +61,7 @@ pub struct PanelState {
     pub(crate) watcher: Option<notify::RecommendedWatcher>,
     pub(crate) watched_path: Option<PathBuf>,
     /// Sender for git updates to avoid shared Arc<Mutex>, use channel from App.
-    pub(crate) git_tx: Option<std::sync::mpsc::Sender<(PathBuf, HashMap<PathBuf, char>)>>,
+    pub(crate) git_tx: Option<tokio::sync::mpsc::UnboundedSender<(PathBuf, HashMap<PathBuf, char>)>>,
 }
 
 impl PanelState {

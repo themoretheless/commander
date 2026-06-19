@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -61,7 +61,7 @@ pub fn refresh_git_status(
     path: &Path,
     last_git_refresh: &mut Option<Instant>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
-    git_tx: Option<Sender<(PathBuf, HashMap<PathBuf, char>)>>,
+    git_tx: Option<UnboundedSender<(PathBuf, HashMap<PathBuf, char>)>>,
 ) {
     const GIT_DEBOUNCE: Duration = Duration::from_millis(1500);
     if let Some(last) = *last_git_refresh {
@@ -86,7 +86,7 @@ pub fn refresh_git_status(
     let path2 = path.to_path_buf();
     let tx2 = git_tx.clone();
     let notify2 = notify.clone();
-    // Background thread (towards full tokio spawn_blocking later)
+    // Background thread (tokio channel used; later switch to rt.spawn_blocking)
     std::thread::spawn(move || {
         let map = compute_git_status(&path2);
         if let Some(tx) = tx2 {

@@ -336,8 +336,8 @@ impl App {
         let show_tree_default = config.show_tree;
         let density_default = config.density;
 
-        // Channel owned by ws (thin App). Create here, wire to tabs, store on ws.
-        let (git_tx, git_rx) = std::sync::mpsc::channel();
+        // Channel owned by ws (thin App, tokio unbounded). Create here, wire to tabs, store on ws.
+        let (git_tx, git_rx) = tokio::sync::mpsc::unbounded_channel();
         ws.git_tx = Some(git_tx.clone());
         ws.git_rx = Some(git_rx);
 
@@ -414,20 +414,20 @@ impl App {
     fn to_session(&self) -> crate::session::Session {
         // PR2: full tabs snapshot + active indices. Keep legacy paths/sorts for old sessions compat.
         let left_snap: Vec<crate::session::TabSnapshot> = self.ws.left.tabs.iter().map(|t| crate::session::TabSnapshot {
-            path: t.state.current_path.clone(),
+            path: t.state.current_path().clone(),
             sort_col: t.state.sort_col,
             sort_order: t.state.sort_order,
             hidden: t.state.show_hidden,
         }).collect();
         let right_snap: Vec<crate::session::TabSnapshot> = self.ws.right.tabs.iter().map(|t| crate::session::TabSnapshot {
-            path: t.state.current_path.clone(),
+            path: t.state.current_path().clone(),
             sort_col: t.state.sort_col,
             sort_order: t.state.sort_order,
             hidden: t.state.show_hidden,
         }).collect();
         crate::session::Session {
-            left_path: self.ws.left.tabs.get(0).map(|t| t.state.current_path.clone()).unwrap_or_default(),
-            right_path: self.ws.right.tabs.get(0).map(|t| t.state.current_path.clone()).unwrap_or_default(),
+            left_path: self.ws.left.tabs.get(0).map(|t| t.state.current_path().clone()).unwrap_or_default(),
+            right_path: self.ws.right.tabs.get(0).map(|t| t.state.current_path().clone()).unwrap_or_default(),
             active_left: self.ws.active == ActivePanel::Left,
             theme_dark: self.theme_mode == ThemeMode::Dark,
             ui_scale: self.ui_scale,

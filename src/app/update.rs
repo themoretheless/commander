@@ -73,21 +73,23 @@ impl App {
             ctx.request_repaint();
         }
 
-        // Wire/refresh active tabs only (fix for multi-tab: was always [0], missing events/polls on other tabs).
-        // Use active indices instead of hardcoded 0. Full all-tabs wiring can be lazy later.
+        // Wire/refresh active tabs only. Share one notify closure (less clone).
+        // Use active indices. Full all-tabs wiring lazy later.
+        let notify = std::sync::Arc::new({
+            let c = ctx.clone();
+            move || c.request_repaint()
+        });
         {
             let left = self.ws.left_active_tab_mut();
             if !left.state.has_notify() {
-                let c = ctx.clone();
-                left.state.set_notify(std::sync::Arc::new(move || c.request_repaint()));
+                left.state.set_notify(notify.clone());
                 left.state.refresh();
             }
         }
         {
             let right = self.ws.right_active_tab_mut();
             if !right.state.has_notify() {
-                let c = ctx.clone();
-                right.state.set_notify(std::sync::Arc::new(move || c.request_repaint()));
+                right.state.set_notify(notify);
                 right.state.refresh();
             }
         }
@@ -665,7 +667,7 @@ impl App {
                             let dir = self.ws.active_panel_ref().current_path().display().to_string();
                             crate::app::ui_common::muted_label(ui, &format!("@ {}", dir), &t);
                             if ui.small_button("Open native").clicked() {
-                                let d = self.ws.active_panel_ref().current_path.clone();
+                                let d = self.ws.active_panel_ref().current_path().clone();
                                 let _ = std::process::Command::new("open")
                                     .arg("-a")
                                     .arg("Terminal")
@@ -702,7 +704,7 @@ impl App {
         if tree_toggle {
             self.show_tree = !self.show_tree;
             if self.show_tree {
-                let path = self.ws.active_panel().current_path.clone();
+                let path = self.ws.active_panel().current_path().clone();
                 self.tree_expand_to_path(&path);
             }
         }
@@ -902,15 +904,9 @@ impl App {
                 resp.context_menu(|ui| {
                     if ui.button("Close others").clicked() {
                         if is_left {
-                            let keep = self.ws.left.tabs.remove(i);
-                            self.ws.left.tabs.clear();
-                            self.ws.left.tabs.push(keep);
-                            self.ws.left.set_active(0);
+                            self.ws.left.keep_only(i);
                         } else {
-                            let keep = self.ws.right.tabs.remove(i);
-                            self.ws.right.tabs.clear();
-                            self.ws.right.tabs.push(keep);
-                            self.ws.right.set_active(0);
+                            self.ws.right.keep_only(i);
                         }
                         ui.close_menu();
                     }
