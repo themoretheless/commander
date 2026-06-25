@@ -1376,29 +1376,36 @@ impl PanelState {
 
     pub fn total_dir_size(&self) -> Option<u64> {
         let sizes = self.dir_sizes.lock().ok()?;
-        let dir_count = self.entries.iter().filter(|e| e.is_dir).count();
-        let computed = self
-            .entries
-            .iter()
-            .filter(|e| e.is_dir)
-            .filter_map(|e| sizes.get(&e.path))
-            .count();
+        // One pass over the entries (this runs every status-bar paint), taking
+        // the lock once: sum file bytes directly and add each subdirectory's
+        // background-computed size.
+        let mut dir_count = 0usize;
+        let mut computed = 0usize;
+        let mut total = 0u64;
+        for e in &self.entries {
+            if e.is_dir {
+                dir_count += 1;
+                if let Some(&s) = sizes.get(&e.path) {
+                    computed += 1;
+                    total += s;
+                }
+            } else {
+                total += e.size;
+            }
+        }
+        // Report nothing until at least one subdirectory has been sized, so the
+        // total never flashes a misleadingly-small figure mid-scan.
         if computed == 0 && dir_count > 0 {
             return None;
         }
-        let file_total: u64 = self
-            .entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .map(|e| e.size)
-            .sum();
-        let dir_total: u64 = self
-            .entries
-            .iter()
-            .filter(|e| e.is_dir)
-            .filter_map(|e| sizes.get(&e.path).copied())
-            .sum();
-        Some(file_total + dir_total)
+        Some(total)
+    }
+
+    /// Monotonic generation of this panel's entry list, bumped on every content
+    /// or order change. Lets the app cache per-panel derived data (e.g. the
+    /// cross-panel compare map) and rebuild only when the entries change.
+    pub fn entries_gen(&self) -> u64 {
+        self.entries_gen
     }
 
     pub fn set_sort(&mut self, col: SortColumn) {

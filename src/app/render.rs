@@ -462,9 +462,13 @@ impl App {
                 ui.add(egui::Separator::default().spacing(0.0));
 
                 // Preview mode (image or text)
-                if let Some(preview) = panel.preview.clone() {
+                if let Some(preview) = &panel.preview {
                     use crate::panel::PreviewContent;
-                    match &preview {
+                    // Borrow the preview rather than cloning its (up to 1MB) text
+                    // body every frame; defer the close so the immutable borrow
+                    // ends before we clear it.
+                    let mut close_preview = false;
+                    match preview {
                         PreviewContent::Image(path) => {
                             let path = path.clone();
                             if let Some(texture) = image_cache.get_or_load_sync(ui.ctx(), &path) {
@@ -481,7 +485,7 @@ impl App {
                                     if resp.clicked()
                                         || ui.input(|i| i.key_pressed(egui::Key::Escape))
                                     {
-                                        panel.preview = None;
+                                        close_preview = true;
                                     }
                                 });
                             } else {
@@ -514,7 +518,7 @@ impl App {
                                                     || ui
                                                         .input(|i| i.key_pressed(egui::Key::Escape))
                                                 {
-                                                    panel.preview = None;
+                                                    close_preview = true;
                                                 }
                                             },
                                         );
@@ -557,7 +561,7 @@ impl App {
                                                     || ui
                                                         .input(|i| i.key_pressed(egui::Key::Escape))
                                                 {
-                                                    panel.preview = None;
+                                                    close_preview = true;
                                                 }
                                             },
                                         );
@@ -600,6 +604,9 @@ impl App {
                                     );
                                 });
                         }
+                    }
+                    if close_preview {
+                        panel.preview = None;
                     }
                     return;
                 }

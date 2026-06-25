@@ -93,6 +93,16 @@ pub struct App {
     pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
     /// Active run-command bar state (the editable command line).
     pub(crate) run_command: Option<RunCommandState>,
+    /// Cached cross-panel compare maps and the panel generations they were built
+    /// from, so compare mode does not rebuild two HashMaps (cloning every
+    /// `name_lower`) on every painted frame. `(right_gen, left_gen, left_map,
+    /// right_map)`: `left_map` indexes the right panel and vice versa.
+    pub(crate) compare_cache: Option<(
+        u64,
+        u64,
+        crate::workspace::CompareMap,
+        crate::workspace::CompareMap,
+    )>,
 }
 
 /// UI state for the run-command / open-with bar.
@@ -319,6 +329,7 @@ impl App {
             saved_search_open: false,
             command_templates: None,
             run_command: None,
+            compare_cache: None,
         }
     }
 

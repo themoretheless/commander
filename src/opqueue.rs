@@ -224,7 +224,8 @@ impl<S> Queue<S> {
 
     /// Abandon a job. Any non-terminal job (`Pending`/`Running`/`Paused`)
     /// becomes `Cancelled`; a job that already finished cannot be cancelled.
-    #[allow(dead_code)]
+    /// Used by the transfer shell when the user cancels (the running job and any
+    /// jobs queued behind it).
     pub fn cancel(&mut self, id: JobId) -> bool {
         match self.state_of(id) {
             Some(s) if !s.is_terminal() => {

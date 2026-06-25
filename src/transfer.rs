@@ -55,6 +55,10 @@ pub struct TransferProgress {
     pub cancelled: bool,
     /// Per-file failures collected during the transfer.
     pub errors: Vec<String>,
+    /// `(source, final landing)` for every entry a Move actually placed, so
+    /// undo can target where files really landed: a KeepBoth conflict lands at
+    /// "name copy.ext", not "name". Empty for copies.
+    pub placements: Vec<(PathBuf, PathBuf)>,
 }
 
 pub type TransferState = Arc<Mutex<TransferProgress>>;
@@ -74,6 +78,7 @@ impl TransferProgress {
             finished: false,
             cancelled: false,
             errors: Vec::new(),
+            placements: Vec::new(),
         }
     }
 
@@ -207,8 +212,14 @@ pub fn spawn_transfer(
     std::thread::spawn(move || {
         let is_move = spec.kind == TransferKind::Move;
         let mut base_bytes: u64 = 0;
+        // Size every entry once (a directory walk) and reuse the figures for the
+        // grand total and per-entry progress, so a same-volume move never walks
+        // the tree a second time just to advance the bar.
+        let sizes: Vec<u64> = spec.entries.iter().map(entry_size).collect();
+        progress.lock().unwrap().total_bytes = sizes.iter().sum();
 
         for (i, entry) in spec.entries.iter().enumerate() {
+            let this_size = sizes[i];
             let dest = spec.target.join(&entry.name);
 
             {
@@ -223,7 +234,7 @@ pub fn spawn_transfer(
             // (self-reference, skip-on-conflict, refused overwrite) and record
             // it as processed. `err` is an optional message to surface.
             let skip_entry = |progress: &TransferState, base: &mut u64, err: Option<String>| {
-                *base += entry_size(entry);
+                *base += this_size;
                 let mut s = progress.lock().unwrap();
                 s.copied_bytes = *base;
                 if let Some(msg) = err {
@@ -302,7 +313,14 @@ pub fn spawn_transfer(
                     .is_some_and(|p| fs_util::same_volume(p, &spec.target));
 
             let result = if renamed {
-                rename_entry(&entry.path, &copy_target, entry, &progress, base_bytes)
+                rename_entry(
+                    &entry.path,
+                    &copy_target,
+                    entry,
+                    this_size,
+                    &progress,
+                    base_bytes,
+                )
             } else {
                 spec.method.copy_entry(
                     &entry.path,
@@ -376,6 +394,22 @@ pub fn spawn_transfer(
                 let _ = cleanup_path(&entry.path);
             }
 
+            // Record where a successfully moved entry actually landed, so undo
+            // reverses the real placement (a KeepBoth conflict lands at a "copy"
+            // name, not the original).
+            if is_move && placed {
+                let landed = if overwrite {
+                    dest.clone()
+                } else {
+                    copy_target.clone()
+                };
+                progress
+                    .lock()
+                    .unwrap()
+                    .placements
+                    .push((entry.path.clone(), landed));
+            }
+
             {
                 let mut s = progress.lock().unwrap();
                 s.files_done = i + 1;
@@ -403,10 +437,10 @@ fn rename_entry(
     src: &Path,
     dst: &Path,
     entry: &FileEntry,
+    size: u64,
     progress: &TransferState,
     base_bytes: u64,
 ) -> std::io::Result<u64> {
-    let size = entry_size(entry);
     {
         let mut s = progress.lock().unwrap();
         s.current_file = entry.name.clone();
@@ -1147,7 +1181,7 @@ mod tests {
         let file = src.file("a.txt", "NEW");
         dst.file("a.txt", "OLD");
 
-        run(spec(
+        let s = run(spec(
             TransferKind::Move,
             CopyMethod::Buffered,
             vec![entry_for(&file)],
@@ -1165,6 +1199,12 @@ mod tests {
             "NEW"
         );
         assert!(!file.exists(), "move removes the source after keep-both");
+        // The placement records the REAL landing path ("a copy.txt"), so undo
+        // can tell it apart from a faithfully-reversible move to "a.txt".
+        assert_eq!(
+            s.placements,
+            vec![(file.clone(), dst.path().join("a copy.txt"))]
+        );
     }
 
     #[test]

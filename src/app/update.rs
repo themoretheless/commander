@@ -622,13 +622,23 @@ impl App {
         let panel_id = egui::Id::new("left_panel");
 
         // Build cross-panel comparison maps before borrowing panels mutably:
-        // each panel is tinted against the OTHER panel's entries.
+        // each panel is tinted against the OTHER panel's entries. Reuse the
+        // cached maps while neither panel's entries changed, so compare mode does
+        // not rebuild two HashMaps (cloning every name) on every painted frame.
+        let cmp_right_gen = self.ws.right.entries_gen();
+        let cmp_left_gen = self.ws.left.entries_gen();
         let (left_compare, right_compare) = if self.show_compare {
-            (
-                Some(crate::workspace::build_compare_map(&self.ws.right.entries)),
-                Some(crate::workspace::build_compare_map(&self.ws.left.entries)),
-            )
+            match self.compare_cache.take() {
+                Some((rg, lg, lmap, rmap)) if rg == cmp_right_gen && lg == cmp_left_gen => {
+                    (Some(lmap), Some(rmap))
+                }
+                _ => (
+                    Some(crate::workspace::build_compare_map(&self.ws.right.entries)),
+                    Some(crate::workspace::build_compare_map(&self.ws.left.entries)),
+                ),
+            }
         } else {
+            self.compare_cache = None;
             (None, None)
         };
 
@@ -757,6 +767,13 @@ impl App {
                 let path = self.ws.active_panel().current_path.clone();
                 self.tree_expand_to_path(&path);
             }
+        }
+
+        // Stash the freshly-used compare maps (keyed by the generations they were
+        // built from) so the next frame reuses them while the entries are
+        // unchanged.
+        if let (Some(lmap), Some(rmap)) = (left_compare, right_compare) {
+            self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
         }
     }
 

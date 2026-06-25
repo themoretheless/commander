@@ -195,6 +195,17 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
         .collect()
 }
 
+/// Keep only the move placements that landed under their original name, so undo
+/// reverses them faithfully. A KeepBoth conflict lands at "name copy.ext"; a
+/// move there cannot be undone by relocating the file under the original name
+/// (that would be a different operation), so it is dropped. Pure/testable.
+fn faithfully_undoable(placements: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
+    placements
+        .into_iter()
+        .filter(|(src, dst)| src.file_name() == dst.file_name())
+        .collect()
+}
+
 /// How an entry relates to the same-named entry in the other panel.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum CompareStatus {
@@ -884,8 +895,10 @@ impl Workspace {
         let spec = job.spec.spec.clone();
         self.pending_undo_action = job.spec.undo.clone();
         self.running_job = Some(id);
-        let total = transfer::total_bytes(&spec.entries);
-        let progress = Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
+        // The worker sizes the entries once and fills in `total_bytes`; passing
+        // 0 here keeps a same-volume move from walking the tree twice (once for
+        // the denominator, once for the rename's progress).
+        let progress = Arc::new(Mutex::new(TransferProgress::new(0, spec.entries.len())));
         self.active_transfer = Some(progress.clone());
         transfer::spawn_transfer(spec, progress, notify);
     }
@@ -920,7 +933,7 @@ impl Workspace {
     /// Returns `true` when a clean Move just finished, so the UI can raise the
     /// undo toast.
     pub fn poll_transfer(&mut self, notify: impl Fn() + Send + 'static) -> bool {
-        let (close, clean, had_errors) = self
+        let (close, clean, had_errors, cancelled, placements) = self
             .active_transfer
             .as_ref()
             .map(|s| {
@@ -932,13 +945,21 @@ impl Workspace {
                 // finished run with errors stays open so the user can read them.
                 let clean = s.finished && s.errors.is_empty() && !s.cancelled;
                 let errs = !s.errors.is_empty();
+                // Only a clean Move needs its placements (to record undo).
+                let placements = if clean {
+                    s.placements.clone()
+                } else {
+                    Vec::new()
+                };
                 (
                     s.finished && (s.cancelled || s.errors.is_empty()),
                     clean,
                     errs,
+                    s.cancelled,
+                    placements,
                 )
             })
-            .unwrap_or((false, false, false));
+            .unwrap_or((false, false, false, false, Vec::new()));
 
         if !close {
             return false;
@@ -946,7 +967,13 @@ impl Workspace {
         self.active_transfer = None;
         // Retire the finished job from the queue so a free slot opens up.
         if let Some(id) = self.running_job.take() {
-            if had_errors {
+            if cancelled {
+                // Record the truthful terminal state, and stop the rest of the
+                // pipeline: a user Cancel means "stop", not "skip to the next
+                // queued op" (e.g. the second pass of a two-way sync).
+                self.queue.cancel(id);
+                self.cancel_pending_jobs();
+            } else if had_errors {
                 self.queue.fail(id);
             } else {
                 self.queue.complete(id);
@@ -955,11 +982,22 @@ impl Workspace {
         }
         self.left.refresh();
         self.right.refresh();
-        // Record the move on the history stack on a clean run; this must read
-        // the finished job's undo action BEFORE pumping the next job (which
-        // overwrites `pending_undo_action`).
+        // Record the move on the history stack on a clean run, built from where
+        // the files ACTUALLY landed: a KeepBoth conflict renames to "name copy",
+        // which is not faithfully reversible, so those entries are dropped (and
+        // an all-KeepBoth move raises no undo toast). Read this BEFORE pumping
+        // the next job (which overwrites `pending_undo_action`).
         let raised = if clean {
             match self.pending_undo_action.take() {
+                Some(crate::undo::Action::Move { .. }) => {
+                    let pairs = faithfully_undoable(placements);
+                    if pairs.is_empty() {
+                        false
+                    } else {
+                        self.stack.push(crate::undo::Action::Move { pairs });
+                        true
+                    }
+                }
                 Some(action) => {
                     self.stack.push(action);
                     true
@@ -973,6 +1011,23 @@ impl Workspace {
         // Start the next queued transfer, if any.
         self.pump_queue(notify);
         raised
+    }
+
+    /// Cancel every still-pending queued job. Used when the user cancels the
+    /// active transfer: the queued work (e.g. a two-way sync's second pass) was
+    /// part of the same intent, so a Cancel stops it too rather than letting
+    /// `pump_queue` start it next.
+    fn cancel_pending_jobs(&mut self) {
+        let pending: Vec<crate::opqueue::JobId> = self
+            .queue
+            .jobs()
+            .iter()
+            .filter(|j| j.state == crate::opqueue::JobState::Pending)
+            .map(|j| j.id)
+            .collect();
+        for id in pending {
+            self.queue.cancel(id);
+        }
     }
 
     /// Dismiss a finished transfer the user is acknowledging via the OK button.
@@ -1238,10 +1293,31 @@ impl Workspace {
         // sibling list: a hidden file, a case-fold match, or a file created
         // since the last refresh would otherwise be silently clobbered by the
         // atomic rename.
-        if dest.symlink_metadata().is_ok() {
+        let dest_meta = dest.symlink_metadata().ok();
+        // On a case-insensitive volume, a case-only rename (Foo.txt -> foo.txt)
+        // resolves `dest` to `old` itself. That is a legitimate rename, not a
+        // collision, so allow it when both names are the same on-disk inode.
+        let same_file = match &dest_meta {
+            Some(dm) => old.symlink_metadata().ok().is_some_and(|om| {
+                use std::os::unix::fs::MetadataExt;
+                om.ino() == dm.ino() && om.dev() == dm.dev()
+            }),
+            None => false,
+        };
+        if dest_meta.is_some() && !same_file {
             return Err("Name already in use".into());
         }
-        std::fs::rename(old, &dest).map_err(|e| e.to_string())?;
+        if same_file {
+            // Stage through a temp so the case actually flips even when the
+            // filesystem treats `Foo` and `foo` as the same directory entry
+            // (mirrors the batch-rename studio's safe ordering).
+            let parent = dest.parent().ok_or("Path has no parent")?;
+            let tmp = crate::fs_util::first_available(|i| parent.join(format!(".cmdr-rename.{i}")));
+            std::fs::rename(old, &tmp).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::rename(old, &dest).map_err(|e| e.to_string())?;
+        }
         self.active_panel().refresh();
         Ok(())
     }
@@ -2382,6 +2458,111 @@ mod tests {
     }
 
     #[test]
+    fn faithfully_undoable_drops_keep_both_renames() {
+        let pairs = vec![
+            // A clean move kept its name and is reversible.
+            (PathBuf::from("/src/a.txt"), PathBuf::from("/dst/a.txt")),
+            // A Keep Both conflict landed at "b copy.txt" and is dropped.
+            (
+                PathBuf::from("/src/b.txt"),
+                PathBuf::from("/dst/b copy.txt"),
+            ),
+        ];
+        let kept = faithfully_undoable(pairs);
+        assert_eq!(
+            kept,
+            vec![(PathBuf::from("/src/a.txt"), PathBuf::from("/dst/a.txt"))]
+        );
+    }
+
+    #[test]
+    fn keep_both_move_undo_does_not_relocate_the_existing_file() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("dup.txt", "moved"); // source to move
+        r.file("dup.txt", "existing"); // name conflict in the destination
+        let mut ws = workspace(&l, &r);
+        // Select the source and move it into the right (inactive) panel.
+        ws.left.selected.insert(l.path().join("dup.txt"));
+        ws.request_move();
+        // Resolve the conflict as Keep Both: the moved file lands at "dup copy.txt".
+        assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::KeepBoth));
+        ws.start_transfer(|| {});
+        drain_transfers(&mut ws);
+
+        assert_eq!(
+            std::fs::read_to_string(r.path().join("dup.txt")).unwrap(),
+            "existing",
+            "the pre-existing destination is left intact"
+        );
+        assert_eq!(
+            std::fs::read_to_string(r.path().join("dup copy.txt")).unwrap(),
+            "moved",
+            "the moved file landed under a Keep Both name"
+        );
+        assert!(!l.path().join("dup.txt").exists(), "source moved out");
+
+        // A Keep Both rename is not faithfully reversible, so no undo is recorded
+        // and Cmd+Z must not relocate the pre-existing file (the old bug did).
+        assert!(
+            ws.stack.peek_undo().is_none(),
+            "no bogus undo recorded for an all-KeepBoth move"
+        );
+        ws.perform_undo(|| {});
+        drain_transfers(&mut ws);
+        assert_eq!(
+            std::fs::read_to_string(r.path().join("dup.txt")).unwrap(),
+            "existing",
+            "undo left the existing file in place"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_transfer_drops_the_queued_jobs() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "AAA");
+        let b = l.file("b.txt", "BBBB");
+        let mut ws = workspace(&l, &r);
+        let entry = |p: &std::path::Path| {
+            let m = std::fs::metadata(p).unwrap();
+            FileEntry::from_meta(p.to_path_buf(), &m).unwrap()
+        };
+        ws.start_copy(
+            vec![entry(&a)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        ws.start_copy(
+            vec![entry(&b)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        assert_eq!(ws.queued_count(), 1, "second copy queued behind the first");
+
+        // Simulate the user cancelling the active transfer and the worker
+        // stopping: flag it cancelled+finished, then poll.
+        {
+            let st = ws.active_transfer.clone().unwrap();
+            let mut s = st.lock().unwrap();
+            s.cancelled = true;
+            s.finished = true;
+        }
+        ws.poll_transfer(|| {});
+
+        assert!(ws.active_transfer.is_none(), "cancelled transfer closed");
+        assert_eq!(
+            ws.queued_count(),
+            0,
+            "a Cancel stops the queued work too, not just the active op"
+        );
+        assert!(
+            !r.path().join("b.txt").exists(),
+            "the queued copy never started"
+        );
+    }
+
+    #[test]
     fn find_duplicates_groups_identical_files_in_active_dir() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "same content");
@@ -2862,6 +3043,20 @@ mod tests {
         let mut ws = workspace(&l, &r);
         assert!(ws.commit_rename(&f, "a.txt").is_ok());
         assert!(f.exists());
+    }
+
+    #[test]
+    fn commit_rename_allows_a_case_only_change() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let f = l.file("readme.md", "x");
+        let mut ws = workspace(&l, &r);
+        // On a case-insensitive volume "README.md" resolves to "readme.md"; the
+        // inline rename used to refuse this legitimate change as "Name already in
+        // use". Staging through a temp makes the case actually flip.
+        ws.commit_rename(&f, "README.md").unwrap();
+        let names = Workspace::dir_names(l.path());
+        assert!(names.contains("README.md"), "names: {names:?}");
+        assert!(!names.contains("readme.md"), "old case gone: {names:?}");
     }
 
     #[test]
