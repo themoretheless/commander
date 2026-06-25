@@ -79,6 +79,13 @@ impl App {
                             Some(7)
                         };
                     }
+                    if chip(ui, "Month", f.max_age_days == Some(30)) {
+                        f.max_age_days = if f.max_age_days == Some(30) {
+                            None
+                        } else {
+                            Some(30)
+                        };
+                    }
                     let active_count = f.active_count();
                     if active_count > 0 {
                         ui.add_space(6.0);

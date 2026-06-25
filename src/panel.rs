@@ -701,6 +701,10 @@ pub struct PanelState {
     pub facets: FacetSet,
     pub sort_col: SortColumn,
     pub sort_order: SortOrder,
+    /// Pin folders to the top of the listing (classic dual-pane default).
+    pub folders_first: bool,
+    /// Natural numeric name ordering (`file2` < `file10`); off = plain A-Z.
+    pub natural_name_sort: bool,
     pub show_hidden: bool,
     pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
@@ -742,6 +746,8 @@ impl PanelState {
             facets: FacetSet::default(),
             sort_col: SortColumn::Name,
             sort_order: SortOrder::Asc,
+            folders_first: true,
+            natural_name_sort: true,
             show_hidden: false,
             dir_sizes: Arc::new(Mutex::new(HashMap::new())),
             dir_counts: Arc::new(Mutex::new(HashMap::new())),
@@ -1067,19 +1073,24 @@ impl PanelState {
     pub fn sort_entries(&mut self) {
         let col = self.sort_col;
         let order = self.sort_order;
+        let folders_first = self.folders_first;
+        let natural = self.natural_name_sort;
 
         self.entries.sort_by(|a, b| {
-            // Dirs always first
-            match (a.is_dir, b.is_dir) {
-                (true, false) => return Ordering::Less,
-                (false, true) => return Ordering::Greater,
-                _ => {}
+            // Folders pinned to the top, unless that grouping is turned off.
+            if folders_first {
+                match (a.is_dir, b.is_dir) {
+                    (true, false) => return Ordering::Less,
+                    (false, true) => return Ordering::Greater,
+                    _ => {}
+                }
             }
 
             let cmp = match col {
                 // Natural order over the precomputed lowercase name, so
-                // "file2" sorts before "file10".
-                SortColumn::Name => natural_cmp(&a.name_lower, &b.name_lower),
+                // "file2" sorts before "file10"; plain A-Z when disabled.
+                SortColumn::Name if natural => natural_cmp(&a.name_lower, &b.name_lower),
+                SortColumn::Name => a.name_lower.cmp(&b.name_lower),
                 SortColumn::Size => a.size.cmp(&b.size),
                 SortColumn::Modified => a.modified.cmp(&b.modified),
             };
@@ -1091,6 +1102,18 @@ impl PanelState {
         });
         // Content/order changed: filtered indices must be rebuilt.
         self.entries_gen = self.entries_gen.wrapping_add(1);
+    }
+
+    /// Toggle pinning folders to the top, then re-sort in place.
+    pub fn toggle_folders_first(&mut self) {
+        self.folders_first = !self.folders_first;
+        self.sort_entries();
+    }
+
+    /// Toggle natural vs plain A-Z name ordering, then re-sort in place.
+    pub fn toggle_natural_sort(&mut self) {
+        self.natural_name_sort = !self.natural_name_sort;
+        self.sort_entries();
     }
 
     pub fn navigate_to(&mut self, path: PathBuf) {
@@ -1516,6 +1539,40 @@ mod tests {
         p.set_sort(SortColumn::Size); // same column again -> desc
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["b.txt", "a.txt"]);
+    }
+
+    #[test]
+    fn folders_first_off_sorts_dirs_inline() {
+        let mut p = panel_with(vec![
+            entry("zeta.txt", false, 1),
+            entry("Apple", true, 0),
+            entry("beta.txt", false, 1),
+            entry("zoo", true, 0),
+        ]);
+        // Off: folders are no longer pinned, names sort as one stream.
+        p.toggle_folders_first();
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Apple", "beta.txt", "zeta.txt", "zoo"]);
+        // Back on: folders return to the top.
+        p.toggle_folders_first();
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Apple", "zoo", "beta.txt", "zeta.txt"]);
+    }
+
+    #[test]
+    fn natural_sort_toggle_switches_to_ascii_order() {
+        let mut p = panel_with(vec![
+            entry("file10.txt", false, 1),
+            entry("file2.txt", false, 1),
+        ]);
+        // Natural (default): file2 before file10.
+        p.sort_entries();
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["file2.txt", "file10.txt"]);
+        // ASCII: "file10" sorts before "file2" lexicographically.
+        p.toggle_natural_sort();
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["file10.txt", "file2.txt"]);
     }
 
     #[test]

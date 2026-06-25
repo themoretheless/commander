@@ -120,6 +120,10 @@ pub enum Command {
     /// Replace the selection with (selection symmetric-difference stash).
     StashSymmetricDiff,
     ToggleHidden,
+    /// Toggle whether folders are pinned to the top of the active listing.
+    ToggleFoldersFirst,
+    /// Toggle natural (`file2` < `file10`) vs plain A-Z name ordering.
+    ToggleNaturalSort,
 }
 
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
@@ -161,7 +165,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Bookmark this folder", "", Command::BookmarkCurrentDir),
         ("Recent folders", "Cmd+P", Command::BeginRecent),
         ("Select all", "Cmd+A", Command::SelectAll),
-        ("Invert selection", "", Command::InvertSelection),
+        ("Invert selection", "Cmd+Shift+I", Command::InvertSelection),
         (
             "Select files also in other panel",
             "",
@@ -198,6 +202,16 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Run command on selection", "", Command::BeginRunBar),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
+        (
+            "Sort: folders first (toggle)",
+            "",
+            Command::ToggleFoldersFirst,
+        ),
+        (
+            "Sort: natural order (toggle)",
+            "",
+            Command::ToggleNaturalSort,
+        ),
         ("Cycle density", "Cmd+Shift+D", Command::CycleDensity),
         ("Toggle preview", "F3", Command::TogglePreview),
         ("Equalize panels", "Cmd+E", Command::EqualizePanels),
@@ -389,6 +403,10 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::BeginSelectMask => &["selection mask glob pattern wildcard"],
         Command::BeginRunBar => &["run command shell open with terminal execute tool launcher"],
         Command::ToggleHidden => &["view hidden show hidden dotfiles invisible"],
+        Command::ToggleFoldersFirst => &["sort folders first dirs top order grouping directories"],
+        Command::ToggleNaturalSort => {
+            &["sort natural numeric ascii alphabetical order names file10"]
+        }
         Command::CycleDensity => &["view density rows compact comfortable spacious"],
         Command::TogglePreview => &["view preview quick look viewer inspect"],
         Command::EqualizePanels => &["panels equalize same folder mirror"],
@@ -502,6 +520,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         E if press.command => Some(Command::EqualizePanels),
         U if press.command => Some(Command::SwapPanels),
         G if press.command => Some(Command::BeginSelectMask),
+        I if press.command && press.shift => Some(Command::InvertSelection),
         I if press.command => Some(Command::ToggleInfo),
         L if press.command => Some(Command::BeginGoToPath),
         P if press.command => Some(Command::BeginRecent),
@@ -593,6 +612,17 @@ mod tests {
         assert_eq!(map_key(press(KeyCode::H)), None);
         assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
         assert_eq!(map_key(cmd_press(KeyCode::H)), Some(Command::ToggleHidden));
+    }
+
+    #[test]
+    fn cmd_i_is_info_but_cmd_shift_i_inverts_selection() {
+        assert_eq!(map_key(cmd_press(KeyCode::I)), Some(Command::ToggleInfo));
+        let cmd_shift_i = KeyPress {
+            code: KeyCode::I,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_i), Some(Command::InvertSelection));
     }
 
     #[test]

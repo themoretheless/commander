@@ -4,6 +4,7 @@
 
 use crate::panel::FileEntry;
 use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
 
 /// Coarse kind of an entry, for the selection breakdown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -134,6 +135,11 @@ pub struct SelectionSummary {
     pub total_bytes: u64,
     /// (kind, count) sorted by count descending; ties keep first-seen order.
     pub kinds: Vec<(Kind, usize)>,
+    /// The single largest entry by byte size (name, bytes); first-seen on ties.
+    pub largest: Option<(String, u64)>,
+    /// The single oldest entry by modified time (name, mtime); entries with an
+    /// unknown mtime are ignored, and ties keep the first-seen entry.
+    pub oldest: Option<(String, SystemTime)>,
 }
 
 /// Aggregate `entries` into a [`SelectionSummary`].
@@ -141,11 +147,23 @@ pub fn summarize(entries: &[FileEntry]) -> SelectionSummary {
     let mut kinds: Vec<(Kind, usize)> = Vec::new();
     let mut dir_count = 0;
     let mut total_bytes = 0u64;
+    let mut largest: Option<(String, u64)> = None;
+    let mut oldest: Option<(String, SystemTime)> = None;
     for e in entries {
         if e.is_dir {
             dir_count += 1;
         }
         total_bytes += e.size;
+        // Strictly-greater keeps the first-seen entry on a size tie.
+        if largest.as_ref().is_none_or(|(_, sz)| e.size > *sz) {
+            largest = Some((e.name.clone(), e.size));
+        }
+        // Strictly-older (smaller mtime) keeps the first-seen entry on a tie.
+        if let Some(m) = e.modified
+            && oldest.as_ref().is_none_or(|(_, om)| m < *om)
+        {
+            oldest = Some((e.name.clone(), m));
+        }
         let k = kind_of(e);
         if let Some(slot) = kinds.iter_mut().find(|(kk, _)| *kk == k) {
             slot.1 += 1;
@@ -160,6 +178,8 @@ pub fn summarize(entries: &[FileEntry]) -> SelectionSummary {
         dir_count,
         total_bytes,
         kinds,
+        largest,
+        oldest,
     }
 }
 
@@ -271,6 +291,34 @@ mod tests {
             suggest_folder_name(&[entry("Vacation2024.jpg", false, 1)]),
             "Vacation"
         );
+    }
+
+    #[test]
+    fn summarize_tracks_largest_and_oldest() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let mut a = entry("a.txt", false, 100);
+        a.modified = Some(UNIX_EPOCH + Duration::from_secs(300));
+        let mut big = entry("big.bin", false, 900);
+        big.modified = Some(UNIX_EPOCH + Duration::from_secs(200));
+        let mut old = entry("old.log", false, 50);
+        old.modified = Some(UNIX_EPOCH + Duration::from_secs(100));
+        let s = summarize(&[a, big, old]);
+        assert_eq!(s.largest, Some(("big.bin".to_string(), 900)));
+        assert_eq!(
+            s.oldest,
+            Some(("old.log".to_string(), UNIX_EPOCH + Duration::from_secs(100)))
+        );
+    }
+
+    #[test]
+    fn oldest_ignores_unknown_mtime_and_empty_is_none() {
+        // The default helper leaves modified = None, so no entry is "oldest".
+        let s = summarize(&[entry("x.txt", false, 1)]);
+        assert_eq!(s.oldest, None);
+        assert_eq!(s.largest, Some(("x.txt".to_string(), 1)));
+        let empty = summarize(&[]);
+        assert_eq!(empty.largest, None);
+        assert_eq!(empty.oldest, None);
     }
 
     #[test]

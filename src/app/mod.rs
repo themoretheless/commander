@@ -283,9 +283,13 @@ impl App {
             ws.left.sort_col = s.left_sort_col;
             ws.left.sort_order = s.left_sort_order;
             ws.left.show_hidden = s.left_hidden;
+            ws.left.folders_first = s.left_folders_first;
+            ws.left.natural_name_sort = s.left_natural_sort;
             ws.right.sort_col = s.right_sort_col;
             ws.right.sort_order = s.right_sort_order;
             ws.right.show_hidden = s.right_hidden;
+            ws.right.folders_first = s.right_folders_first;
+            ws.right.natural_name_sort = s.right_natural_sort;
         }
 
         App {
@@ -363,6 +367,10 @@ impl App {
             right_sort_col: self.ws.right.sort_col,
             right_sort_order: self.ws.right.sort_order,
             right_hidden: self.ws.right.show_hidden,
+            left_folders_first: self.ws.left.folders_first,
+            left_natural_sort: self.ws.left.natural_name_sort,
+            right_folders_first: self.ws.right.folders_first,
+            right_natural_sort: self.ws.right.natural_name_sort,
             density: self.density,
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,

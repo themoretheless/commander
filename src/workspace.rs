@@ -760,6 +760,8 @@ impl Workspace {
                 panel.show_hidden = !panel.show_hidden;
                 panel.refresh();
             }
+            Command::ToggleFoldersFirst => self.active_panel().toggle_folders_first(),
+            Command::ToggleNaturalSort => self.active_panel().toggle_natural_sort(),
         }
     }
 

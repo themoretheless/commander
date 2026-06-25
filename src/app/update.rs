@@ -568,6 +568,30 @@ impl App {
                 crate::panel::format_size(s.total_bytes)
             ));
         }
+        // Largest/oldest are only meaningful once more than one item is picked.
+        if s.count >= 2 {
+            let short = |name: &str| -> String {
+                const MAX: usize = 18;
+                if name.chars().count() > MAX {
+                    let head: String = name.chars().take(MAX - 1).collect();
+                    format!("{head}\u{2026}")
+                } else {
+                    name.to_string()
+                }
+            };
+            if let Some((name, sz)) = &s.largest
+                && *sz > 0
+            {
+                head.push_str(&format!(
+                    " \u{00b7} largest {} ({})",
+                    short(name),
+                    crate::panel::format_size(*sz)
+                ));
+            }
+            if let Some((name, _)) = &s.oldest {
+                head.push_str(&format!(" \u{00b7} oldest {}", short(name)));
+            }
+        }
         let breakdown: String = s
             .kinds
             .iter()

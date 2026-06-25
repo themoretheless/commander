@@ -114,6 +114,7 @@ relative dates, gather-into-folder, and the run-command bar. What remains:
 | `Cmd+Shift+1`..`9` | Assign active folder to bookmark slot |
 | `Space` | Toggle selection |
 | `Cmd+A` | Select all |
+| `Cmd+Shift+I` | Invert selection |
 | `Cmd+G` | Select by mask |
 | `F2` / `Cmd+R` | Rename |
 | `Cmd+Shift+R` | Batch rename |
@@ -140,8 +141,9 @@ relative dates, gather-into-folder, and the run-command bar. What remains:
 
 More commands (run command on selection, cross-pane diff selection, copy-name /
 parent / file-URL / shell / relative path, selection stash algebra, duplicates,
-saved searches, bookmark this folder) are available from the command palette
-(`Cmd+K`). Names sort naturally (`file2` before `file10`).
+saved searches, bookmark this folder, and the **sort toggles** for
+folders-first and natural-vs-A-Z ordering) are available from the command
+palette (`Cmd+K`). Names sort naturally (`file2` before `file10`) by default.
 
 ## Build and run
 

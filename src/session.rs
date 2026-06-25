@@ -22,6 +22,15 @@ pub struct Session {
     pub right_sort_col: SortColumn,
     pub right_sort_order: SortOrder,
     pub right_hidden: bool,
+    /// Sort toggles, defaulted true for sessions written before they existed.
+    #[serde(default = "default_true")]
+    pub left_folders_first: bool,
+    #[serde(default = "default_true")]
+    pub left_natural_sort: bool,
+    #[serde(default = "default_true")]
+    pub right_folders_first: bool,
+    #[serde(default = "default_true")]
+    pub right_natural_sort: bool,
     /// List density. Defaulted for sessions written before density existed.
     #[serde(default)]
     pub density: crate::density::Density,
@@ -31,6 +40,12 @@ pub struct Session {
     /// Monotonic counter stamped onto each palette command run.
     #[serde(default)]
     pub palette_tick: u64,
+}
+
+/// Serde default for booleans that should restore as `true` (the live
+/// default) when a key is absent from an older session file.
+fn default_true() -> bool {
+    true
 }
 
 impl Session {
@@ -86,6 +101,10 @@ mod tests {
             right_sort_col: SortColumn::Name,
             right_sort_order: SortOrder::Asc,
             right_hidden: false,
+            left_folders_first: true,
+            left_natural_sort: false,
+            right_folders_first: false,
+            right_natural_sort: true,
             density: crate::density::Density::Compact,
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 7,
@@ -100,6 +119,23 @@ mod tests {
         val.as_object_mut().unwrap().remove("density");
         let back: Session = serde_json::from_value(val).unwrap();
         assert_eq!(back.density, crate::density::Density::Comfortable);
+    }
+
+    #[test]
+    fn sort_toggles_default_true_when_absent() {
+        // A session written before the sort toggles existed has none of the keys.
+        let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut val = serde_json::to_value(&s).unwrap();
+        let obj = val.as_object_mut().unwrap();
+        obj.remove("left_folders_first");
+        obj.remove("left_natural_sort");
+        obj.remove("right_folders_first");
+        obj.remove("right_natural_sort");
+        let back: Session = serde_json::from_value(val).unwrap();
+        assert!(back.left_folders_first);
+        assert!(back.left_natural_sort);
+        assert!(back.right_folders_first);
+        assert!(back.right_natural_sort);
     }
 
     #[test]
