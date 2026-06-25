@@ -19,7 +19,8 @@ module is a thin egui layer over it.
 - **Per-pane history**: `Cmd+[` / `Cmd+]` walk back and forward through the
   directories you visited (a vim-style jump trail).
 - **Go to path** (`Cmd+L`), **recent folders** (`Cmd+P`), type-ahead jump, and
-  a per-panel filter box with quick-filter facets.
+  a per-panel filter box with quick-filter facets (kind, size, and date
+  buckets: Today / Week / Month, plus an Older-than-a-month bucket).
 - **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
   and frequency.
 
@@ -70,6 +71,10 @@ module is a thin egui layer over it.
   opposite panel, with look-ahead caching.
 - **Relative dates** in the Modified column (Finder/Things style), with the
   absolute timestamp on hover.
+- **Status bar and selection summary**: each panel's footer shows item count and
+  total size, and with nothing selected the folder's largest and oldest item;
+  selecting swaps in a summary of the selection (count, size, kinds, largest,
+  oldest).
 - **Density tiers** (`Cmd+Shift+D`), a one-shot **focus mode**, rich
   **path-to-clipboard** (`Cmd+Shift+C` and palette variants).
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,

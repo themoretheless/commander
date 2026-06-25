@@ -84,6 +84,17 @@ impl App {
                                 .desired_width(48.0)
                                 .margin(egui::vec2(6.0, 4.0)),
                         );
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new("min age (days)")
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.min_age_days)
+                                .desired_width(48.0)
+                                .margin(egui::vec2(6.0, 4.0)),
+                        );
                     });
 
                     ui.add_space(6.0);

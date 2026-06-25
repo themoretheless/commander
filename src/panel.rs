@@ -569,17 +569,24 @@ pub struct FacetSet {
     pub min_size: Option<u64>,
     /// Maximum age in days by mtime (entries with unknown mtime fail this).
     pub max_age_days: Option<u64>,
+    /// Minimum age in days by mtime: the entry must be at least this old
+    /// (entries with unknown mtime fail this). Drives the "Older" chip.
+    pub min_age_days: Option<u64>,
 }
 
 impl FacetSet {
     pub fn is_empty(&self) -> bool {
-        self.kind.is_none() && self.min_size.is_none() && self.max_age_days.is_none()
+        self.kind.is_none()
+            && self.min_size.is_none()
+            && self.max_age_days.is_none()
+            && self.min_age_days.is_none()
     }
 
     pub fn active_count(&self) -> usize {
         usize::from(self.kind.is_some())
             + usize::from(self.min_size.is_some())
             + usize::from(self.max_age_days.is_some())
+            + usize::from(self.min_age_days.is_some())
     }
 }
 
@@ -643,6 +650,18 @@ pub fn facet_matches(entry: &FileEntry, facets: &FacetSet, now: SystemTime) -> b
             Err(_) => {}
         }
     }
+    if let Some(days) = facets.min_age_days {
+        let Some(modified) = entry.modified else {
+            return false;
+        };
+        let cutoff = std::time::Duration::from_secs(days * 24 * 60 * 60);
+        match now.duration_since(modified) {
+            Ok(age) if age >= cutoff => {} // old enough: passes
+            Ok(_) => return false,         // too fresh
+            // modified in the future: definitely not old enough.
+            Err(_) => return false,
+        }
+    }
     true
 }
 
@@ -677,6 +696,16 @@ pub enum SortColumn {
 pub enum SortOrder {
     Asc,
     Desc,
+}
+
+/// One-pass folder aggregates for the status bar: total bytes (`None` until at
+/// least one subdirectory has been sized), the largest entry by size, and the
+/// oldest entry by mtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FolderOverview {
+    pub total: Option<u64>,
+    pub largest: Option<(String, u64)>,
+    pub oldest: Option<(String, SystemTime)>,
 }
 
 pub struct PanelState {
@@ -1397,31 +1426,55 @@ impl PanelState {
             .sum()
     }
 
-    pub fn total_dir_size(&self) -> Option<u64> {
-        let sizes = self.dir_sizes.lock().ok()?;
-        // One pass over the entries (this runs every status-bar paint), taking
-        // the lock once: sum file bytes directly and add each subdirectory's
-        // background-computed size.
+    /// Folder aggregates for the status bar, computed in a single pass over the
+    /// listing with one lock on the size map: total bytes, the largest entry,
+    /// and the oldest. `total` is `None` until at least one subdirectory has
+    /// been sized, so it never flashes a misleadingly-small figure mid-scan.
+    /// Subdirectory sizes come from the background-computed map; an unsized
+    /// subdir counts as 0. Largest/oldest keep the first-seen entry on ties.
+    pub fn folder_overview(&self) -> FolderOverview {
+        let sizes = self.dir_sizes.lock().ok();
         let mut dir_count = 0usize;
         let mut computed = 0usize;
         let mut total = 0u64;
-        for e in &self.entries {
-            if e.is_dir {
+        // Track winners by index and clone their names once at the end, so the
+        // per-frame pass allocates at most twice (not once per new maximum).
+        let mut largest: Option<(usize, u64)> = None;
+        let mut oldest: Option<(usize, SystemTime)> = None;
+        for (i, e) in self.entries.iter().enumerate() {
+            let size = if e.is_dir {
                 dir_count += 1;
-                if let Some(&s) = sizes.get(&e.path) {
-                    computed += 1;
-                    total += s;
+                match sizes.as_ref().and_then(|s| s.get(&e.path).copied()) {
+                    Some(s) => {
+                        computed += 1;
+                        total += s;
+                        s
+                    }
+                    None => 0,
                 }
             } else {
                 total += e.size;
+                e.size
+            };
+            if largest.is_none_or(|(_, sz)| size > sz) {
+                largest = Some((i, size));
+            }
+            if let Some(m) = e.modified
+                && oldest.is_none_or(|(_, om)| m < om)
+            {
+                oldest = Some((i, m));
             }
         }
-        // Report nothing until at least one subdirectory has been sized, so the
-        // total never flashes a misleadingly-small figure mid-scan.
-        if computed == 0 && dir_count > 0 {
-            return None;
+        let total = if computed == 0 && dir_count > 0 {
+            None
+        } else {
+            Some(total)
+        };
+        FolderOverview {
+            total,
+            largest: largest.map(|(i, sz)| (self.entries[i].name.clone(), sz)),
+            oldest: oldest.map(|(i, m)| (self.entries[i].name.clone(), m)),
         }
-        Some(total)
     }
 
     /// Monotonic generation of this panel's entry list, bumped on every content
@@ -1913,8 +1966,35 @@ mod tests {
         assert!(facet_matches(&img, &recent, now)); // 1 day
         assert!(!facet_matches(&code, &recent, now)); // 50 days
 
+        let stale = FacetSet {
+            min_age_days: Some(30),
+            ..Default::default()
+        };
+        assert!(!facet_matches(&img, &stale, now)); // 1 day: too fresh
+        assert!(facet_matches(&code, &stale, now)); // 50 days: old enough
+        assert!(!facet_matches(&dir, &stale, now)); // unknown mtime: fails
+
         // Empty facets pass everything.
         assert!(facet_matches(&code, &FacetSet::default(), now));
+    }
+
+    #[test]
+    fn folder_overview_reports_largest_and_oldest() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let mut a = entry("a.txt", false, 100);
+        a.modified = Some(UNIX_EPOCH + Duration::from_secs(300));
+        let mut big = entry("big.bin", false, 900);
+        big.modified = Some(UNIX_EPOCH + Duration::from_secs(200));
+        let mut old = entry("old.log", false, 50);
+        old.modified = Some(UNIX_EPOCH + Duration::from_secs(100));
+        let p = panel_with(vec![a, big, old]);
+        let o = p.folder_overview();
+        assert_eq!(o.total, Some(1050));
+        assert_eq!(o.largest, Some(("big.bin".to_string(), 900)));
+        assert_eq!(
+            o.oldest,
+            Some(("old.log".to_string(), UNIX_EPOCH + Duration::from_secs(100)))
+        );
     }
 
     #[test]

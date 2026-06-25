@@ -118,6 +118,7 @@ pub(crate) struct FindState {
     pub name: String,
     pub min_mb: String,
     pub max_age_days: String,
+    pub min_age_days: String,
     pub kind: Option<crate::selection_summary::Kind>,
     pub root: PathBuf,
     pub results: Vec<crate::panel::FileEntry>,
@@ -148,6 +149,11 @@ impl FindState {
         {
             preds.push(Predicate::MaxAgeDays(d));
         }
+        if let Ok(d) = self.min_age_days.trim().parse::<u64>()
+            && d > 0
+        {
+            preds.push(Predicate::MinAgeDays(d));
+        }
         crate::query::Query { predicates: preds }
     }
 
@@ -164,6 +170,7 @@ impl FindState {
                 Predicate::Kind(k) => s.kind = Some(*k),
                 Predicate::MinSize(b) => s.min_mb = (b / (1024 * 1024)).to_string(),
                 Predicate::MaxAgeDays(d) => s.max_age_days = d.to_string(),
+                Predicate::MinAgeDays(d) => s.min_age_days = d.to_string(),
             }
         }
         s

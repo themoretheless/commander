@@ -500,7 +500,8 @@ impl App {
                     let shown = panel.filtered_count();
                     let total = panel.entries.len();
                     let sel = panel.selected.len();
-                    let dir_total = panel.total_dir_size();
+                    // One pass for the folder total plus its largest/oldest entry.
+                    let overview = panel.folder_overview();
                     let filters_active =
                         !panel.search_query.trim().is_empty() || !panel.facets.is_empty();
                     let count_prefix = if filters_active {
@@ -508,7 +509,7 @@ impl App {
                     } else {
                         format!("{shown} items")
                     };
-                    let size_str = match dir_total {
+                    let size_str = match overview.total {
                         Some(s) => format!("{count_prefix} ({})", format_size(s)),
                         None => format!("{count_prefix} (\u{2026})"),
                     };
@@ -532,6 +533,37 @@ impl App {
                             .size(11.0)
                             .color(t.accent_purple),
                         );
+                    }
+
+                    // Folder largest/oldest: the always-on complement to the
+                    // selection HUD (which shows the same for the selection).
+                    // Hidden once a selection is active, so the two don't clash.
+                    if sel == 0 && total >= 2 {
+                        let short = |name: &str| -> String {
+                            const MAX: usize = 16;
+                            if name.chars().count() > MAX {
+                                let head: String = name.chars().take(MAX - 1).collect();
+                                format!("{head}\u{2026}")
+                            } else {
+                                name.to_string()
+                            }
+                        };
+                        let mut extra = String::new();
+                        if let Some((name, sz)) = &overview.largest
+                            && *sz > 0
+                        {
+                            extra.push_str(&format!(
+                                "  |  largest {} ({})",
+                                short(name),
+                                format_size(*sz)
+                            ));
+                        }
+                        if let Some((name, _)) = &overview.oldest {
+                            extra.push_str(&format!("  |  oldest {}", short(name)));
+                        }
+                        if !extra.is_empty() {
+                            ui.label(egui::RichText::new(extra).size(11.0).color(t.text_muted));
+                        }
                     }
 
                     // Compare mode: chips to turn the diff into a selection.

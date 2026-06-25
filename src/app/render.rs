@@ -86,6 +86,14 @@ impl App {
                             Some(30)
                         };
                     }
+                    // Older than a month (min-age): the stale-files bucket.
+                    if chip(ui, "Older", f.min_age_days == Some(30)) {
+                        f.min_age_days = if f.min_age_days == Some(30) {
+                            None
+                        } else {
+                            Some(30)
+                        };
+                    }
                     let active_count = f.active_count();
                     if active_count > 0 {
                         ui.add_space(6.0);

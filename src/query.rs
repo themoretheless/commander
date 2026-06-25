@@ -20,6 +20,8 @@ pub enum Predicate {
     MinSize(u64),
     /// Modified within this many days (unknown mtime never matches).
     MaxAgeDays(u64),
+    /// Modified at least this many days ago (unknown mtime never matches).
+    MinAgeDays(u64),
 }
 
 impl Predicate {
@@ -32,6 +34,13 @@ impl Predicate {
                 Some(m) => now
                     .duration_since(m)
                     .map(|d| d.as_secs() <= days * SECONDS_PER_DAY)
+                    .unwrap_or(false),
+                None => false,
+            },
+            Predicate::MinAgeDays(days) => match e.modified {
+                Some(m) => now
+                    .duration_since(m)
+                    .map(|d| d.as_secs() >= days * SECONDS_PER_DAY)
                     .unwrap_or(false),
                 None => false,
             },
@@ -67,6 +76,9 @@ pub fn from_panel_filter(search: &str, facets: &crate::panel::FacetSet) -> Query
     }
     if let Some(days) = facets.max_age_days {
         predicates.push(Predicate::MaxAgeDays(days));
+    }
+    if let Some(days) = facets.min_age_days {
+        predicates.push(Predicate::MinAgeDays(days));
     }
     Query { predicates }
 }
@@ -171,6 +183,7 @@ mod tests {
             kind: Some(crate::panel::KindFacet::Images),
             min_size: Some(1 << 20),
             max_age_days: Some(7),
+            min_age_days: Some(30),
         };
         let query = from_panel_filter(" raw ", &facets);
         assert_eq!(
@@ -180,7 +193,20 @@ mod tests {
                 Predicate::Kind(Kind::Image),
                 Predicate::MinSize(1 << 20),
                 Predicate::MaxAgeDays(7),
+                Predicate::MinAgeDays(30),
             ]
         );
+    }
+
+    #[test]
+    fn min_age_days_requires_old_enough_and_known_mtime() {
+        let now = SystemTime::now();
+        let recent = now - Duration::from_secs(2 * SECONDS_PER_DAY);
+        let old = now - Duration::from_secs(40 * SECONDS_PER_DAY);
+        let stale = q(vec![Predicate::MinAgeDays(30)]);
+        assert!(!stale.matches(&entry("a", false, 1, Some(recent)), now)); // too fresh
+        assert!(stale.matches(&entry("a", false, 1, Some(old)), now)); // 40 days
+        // Unknown mtime never matches an age predicate.
+        assert!(!stale.matches(&entry("a", false, 1, None), now));
     }
 }
