@@ -124,6 +124,12 @@ pub enum Command {
     ToggleFoldersFirst,
     /// Toggle natural (`file2` < `file10`) vs plain A-Z name ordering.
     ToggleNaturalSort,
+    /// Sort the active panel by file extension.
+    SortByExtension,
+    /// Sort the active panel by coarse kind (folder/image/doc/...).
+    SortByKind,
+    /// Select the well-known clutter files (`.DS_Store`, `Thumbs.db`, ...).
+    SelectJunk,
 }
 
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
@@ -199,6 +205,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             "",
             Command::StashSymmetricDiff,
         ),
+        ("Select clutter files", "", Command::SelectJunk),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Run command on selection", "", Command::BeginRunBar),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
@@ -212,6 +219,8 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             "",
             Command::ToggleNaturalSort,
         ),
+        ("Sort by extension", "", Command::SortByExtension),
+        ("Sort by kind", "", Command::SortByKind),
         ("Cycle density", "Cmd+Shift+D", Command::CycleDensity),
         ("Toggle preview", "F3", Command::TogglePreview),
         ("Equalize panels", "Cmd+E", Command::EqualizePanels),
@@ -406,6 +415,11 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::ToggleFoldersFirst => &["sort folders first dirs top order grouping directories"],
         Command::ToggleNaturalSort => {
             &["sort natural numeric ascii alphabetical order names file10"]
+        }
+        Command::SortByExtension => &["sort extension type suffix group ext"],
+        Command::SortByKind => &["sort kind category group images docs code archives"],
+        Command::SelectJunk => {
+            &["selection junk clutter ds_store thumbs desktop.ini cleanup cruft"]
         }
         Command::CycleDensity => &["view density rows compact comfortable spacious"],
         Command::TogglePreview => &["view preview quick look viewer inspect"],

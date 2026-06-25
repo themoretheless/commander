@@ -6,8 +6,10 @@ use crate::panel::FileEntry;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
-/// Coarse kind of an entry, for the selection breakdown.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+/// Coarse kind of an entry, for the selection breakdown. The declaration order
+/// (folders, then media, documents, code, archives, other) is also the order
+/// used when sorting a listing by kind, so the derived `Ord` is deliberate.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub enum Kind {
     Folder,
     Image,

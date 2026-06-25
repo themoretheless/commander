@@ -73,8 +73,8 @@ module is a thin egui layer over it.
   absolute timestamp on hover.
 - **Status bar and selection summary**: each panel's footer shows item count and
   total size, and with nothing selected the folder's largest and oldest item;
-  selecting swaps in a summary of the selection (count, size, kinds, largest,
-  oldest).
+  selecting swaps in a summary of the selection (count, size, average, kinds,
+  largest, oldest).
 - **Density tiers** (`Cmd+Shift+D`), a one-shot **focus mode**, rich
   **path-to-clipboard** (`Cmd+Shift+C` and palette variants).
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,
@@ -145,8 +145,9 @@ relative dates, gather-into-folder, and the run-command bar. What remains:
 | `Cmd+Z` / `Cmd+Shift+Z` | Undo / redo |
 
 More commands (run command on selection, cross-pane diff selection, copy-name /
-parent / file-URL / shell / relative path, selection stash algebra, duplicates,
-saved searches, bookmark this folder, and the **sort toggles** for
+parent / file-URL / shell / relative path, selection stash algebra, **select
+clutter files** like `.DS_Store`, duplicates, saved searches, bookmark this
+folder, **sort by extension / kind**, and the **sort toggles** for
 folders-first and natural-vs-A-Z ordering) are available from the command
 palette (`Cmd+K`). Names sort naturally (`file2` before `file10`) by default.
 

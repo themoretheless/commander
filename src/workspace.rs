@@ -762,6 +762,13 @@ impl Workspace {
             }
             Command::ToggleFoldersFirst => self.active_panel().toggle_folders_first(),
             Command::ToggleNaturalSort => self.active_panel().toggle_natural_sort(),
+            Command::SortByExtension => self
+                .active_panel()
+                .set_sort(crate::panel::SortColumn::Extension),
+            Command::SortByKind => self.active_panel().set_sort(crate::panel::SortColumn::Kind),
+            Command::SelectJunk => {
+                self.active_panel().select_junk();
+            }
         }
     }
 

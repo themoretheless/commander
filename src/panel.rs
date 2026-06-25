@@ -690,6 +690,8 @@ pub enum SortColumn {
     Name,
     Size,
     Modified,
+    Extension,
+    Kind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1122,6 +1124,15 @@ impl PanelState {
                 SortColumn::Name => a.name_lower.cmp(&b.name_lower),
                 SortColumn::Size => a.size.cmp(&b.size),
                 SortColumn::Modified => a.modified.cmp(&b.modified),
+                // Group by extension, then by name within an extension.
+                SortColumn::Extension => a
+                    .extension
+                    .cmp(&b.extension)
+                    .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
+                // Group by coarse kind, then by name within a kind.
+                SortColumn::Kind => crate::selection_summary::kind_of(a)
+                    .cmp(&crate::selection_summary::kind_of(b))
+                    .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
             };
 
             match order {
@@ -1195,6 +1206,30 @@ impl PanelState {
         } else {
             false
         }
+    }
+
+    /// Add the well-known clutter files in the filtered view to the selection
+    /// (`.DS_Store`, `.localized`, `Thumbs.db`, `desktop.ini`, the custom-icon
+    /// `Icon\r`). Folders are never matched. Returns how many were added.
+    pub fn select_junk(&mut self) -> usize {
+        const JUNK_NAMES: &[&str] = &[
+            ".DS_Store",
+            ".localized",
+            "Thumbs.db",
+            "desktop.ini",
+            "Icon\r",
+        ];
+        let paths: Vec<PathBuf> = self
+            .filtered_entries()
+            .iter()
+            .filter(|e| !e.is_dir && JUNK_NAMES.contains(&e.name.as_str()))
+            .map(|e| e.path.clone())
+            .collect();
+        let added = paths.len();
+        for p in paths {
+            self.selected.insert(p);
+        }
+        added
     }
 
     /// Apply a select-by-mask line to the selection over the filtered view:
@@ -1626,6 +1661,58 @@ mod tests {
         p.toggle_natural_sort();
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file10.txt", "file2.txt"]);
+    }
+
+    #[test]
+    fn sort_by_extension_groups_by_ext_then_name() {
+        let mut p = panel_with(vec![
+            entry("b.txt", false, 1),
+            entry("a.rs", false, 1),
+            entry("c.txt", false, 1),
+            entry("z.rs", false, 1),
+        ]);
+        for e in &mut p.entries {
+            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+        }
+        p.set_sort(SortColumn::Extension);
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a.rs", "z.rs", "b.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn sort_by_kind_orders_image_before_doc_before_code() {
+        let mut p = panel_with(vec![
+            entry("main.rs", false, 1),
+            entry("pic.jpg", false, 1),
+            entry("doc.pdf", false, 1),
+        ]);
+        for e in &mut p.entries {
+            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+        }
+        p.set_sort(SortColumn::Kind);
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        // Declaration order of Kind: Image, Document, Code.
+        assert_eq!(names, vec!["pic.jpg", "doc.pdf", "main.rs"]);
+    }
+
+    #[test]
+    fn select_junk_picks_known_clutter_only() {
+        let mut p = panel_with(vec![
+            entry(".DS_Store", false, 6),
+            entry("photo.jpg", false, 100),
+            entry("Thumbs.db", false, 10),
+            entry("notes.txt", false, 20),
+        ]);
+        let n = p.select_junk();
+        assert_eq!(n, 2);
+        let names: std::collections::HashSet<String> = p
+            .selected
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert!(names.contains(".DS_Store"));
+        assert!(names.contains("Thumbs.db"));
+        assert!(!names.contains("photo.jpg"));
     }
 
     #[test]

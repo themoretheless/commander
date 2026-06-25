@@ -568,6 +568,13 @@ impl App {
                 crate::panel::format_size(s.total_bytes)
             ));
         }
+        // Average file size, once more than one item is picked.
+        if s.count >= 2 && s.total_bytes > 0 {
+            head.push_str(&format!(
+                " \u{00b7} avg {}",
+                crate::panel::format_size(s.total_bytes / s.count as u64)
+            ));
+        }
         // Largest/oldest are only meaningful once more than one item is picked.
         if s.count >= 2 {
             let short = |name: &str| -> String {
