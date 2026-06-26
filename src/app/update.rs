@@ -178,6 +178,17 @@ impl App {
                 ));
             }
         }
+        // Copy an arbitrary text payload (e.g. an exported listing).
+        if let Some((text, label)) = self.ws.clipboard_text_request.take() {
+            ctx.copy_text(text);
+            let now = ctx.input(|i| i.time);
+            self.toasts.push(crate::toasts::Toast::new(
+                format!("Copied {label}"),
+                crate::toasts::ToastKind::Success,
+                false,
+                now,
+            ));
+        }
     }
 
     fn show_toolbar_panel(&mut self, ctx: &egui::Context) {

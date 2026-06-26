@@ -1232,6 +1232,75 @@ impl PanelState {
         added
     }
 
+    /// Select the `n` largest files in the filtered view (folders excluded).
+    /// Returns how many entries were newly added to the selection.
+    pub fn select_largest(&mut self, n: usize) -> usize {
+        let mut sized: Vec<(PathBuf, u64)> = self
+            .filtered_entries()
+            .iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| (e.path.clone(), e.size))
+            .collect();
+        sized.sort_by_key(|e| std::cmp::Reverse(e.1)); // largest first
+        let mut added = 0;
+        for (p, _) in sized.into_iter().take(n) {
+            if self.selected.insert(p) {
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Select every filtered file sharing the cursor file's extension. Does
+    /// nothing if the cursor is on `..`, a folder, or an extension-less file.
+    /// Returns how many entries were added.
+    pub fn select_same_extension_as_cursor(&mut self) -> usize {
+        let ext = match self
+            .cursor
+            .checked_sub(1)
+            .and_then(|i| self.filtered_get(i))
+        {
+            Some(e) if !e.is_dir && !e.extension.is_empty() => e.extension.clone(),
+            _ => return 0,
+        };
+        let paths: Vec<PathBuf> = self
+            .filtered_entries()
+            .iter()
+            .filter(|e| !e.is_dir && e.extension == ext)
+            .map(|e| e.path.clone())
+            .collect();
+        let added = paths.len();
+        for p in paths {
+            self.selected.insert(p);
+        }
+        added
+    }
+
+    /// Select the zero-byte files in the filtered view (folders excluded).
+    /// Returns how many entries were added.
+    pub fn select_empty_files(&mut self) -> usize {
+        let paths: Vec<PathBuf> = self
+            .filtered_entries()
+            .iter()
+            .filter(|e| !e.is_dir && e.size == 0)
+            .map(|e| e.path.clone())
+            .collect();
+        let added = paths.len();
+        for p in paths {
+            self.selected.insert(p);
+        }
+        added
+    }
+
+    /// Flip the current sort order (ascending <-> descending) and re-sort.
+    pub fn reverse_sort(&mut self) {
+        self.sort_order = match self.sort_order {
+            SortOrder::Asc => SortOrder::Desc,
+            SortOrder::Desc => SortOrder::Asc,
+        };
+        self.sort_entries();
+    }
+
     /// Apply a select-by-mask line to the selection over the filtered view:
     /// add terms select matching entries, `!`/`-` terms deselect them
     /// (subtraction wins per entry). Returns how many entries were added.
@@ -1713,6 +1782,70 @@ mod tests {
         assert!(names.contains(".DS_Store"));
         assert!(names.contains("Thumbs.db"));
         assert!(!names.contains("photo.jpg"));
+    }
+
+    fn selected_names(p: &PanelState) -> std::collections::HashSet<String> {
+        p.selected
+            .iter()
+            .filter_map(|x| x.file_name().map(|s| s.to_string_lossy().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn select_largest_picks_top_n_by_size() {
+        let mut p = panel_with(vec![
+            entry("a", false, 10),
+            entry("b", false, 50),
+            entry("c", false, 30),
+            entry("dir", true, 0),
+        ]);
+        assert_eq!(p.select_largest(2), 2);
+        let names = selected_names(&p);
+        assert!(names.contains("b")); // 50
+        assert!(names.contains("c")); // 30
+        assert!(!names.contains("a"));
+        assert!(!names.contains("dir"));
+    }
+
+    #[test]
+    fn select_like_cursor_matches_extension() {
+        let mut p = panel_with(vec![
+            entry("a.rs", false, 1),
+            entry("b.txt", false, 1),
+            entry("c.rs", false, 1),
+        ]);
+        for e in &mut p.entries {
+            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+        }
+        p.cursor = 1; // first filtered entry: a.rs
+        assert_eq!(p.select_same_extension_as_cursor(), 2);
+        let names = selected_names(&p);
+        assert!(names.contains("a.rs"));
+        assert!(names.contains("c.rs"));
+        assert!(!names.contains("b.txt"));
+    }
+
+    #[test]
+    fn select_empty_files_picks_zero_byte_only() {
+        let mut p = panel_with(vec![
+            entry("empty", false, 0),
+            entry("full", false, 100),
+            entry("dir", true, 0),
+        ]);
+        assert_eq!(p.select_empty_files(), 1);
+        let names = selected_names(&p);
+        assert!(names.contains("empty"));
+        assert!(!names.contains("full"));
+        assert!(!names.contains("dir")); // a folder is never "empty file"
+    }
+
+    #[test]
+    fn reverse_sort_flips_order() {
+        let mut p = panel_with(vec![entry("a.txt", false, 1), entry("b.txt", false, 2)]);
+        p.sort_entries(); // Name asc: a, b
+        p.reverse_sort(); // -> desc: b, a
+        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["b.txt", "a.txt"]);
     }
 
     #[test]

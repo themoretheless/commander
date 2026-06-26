@@ -154,6 +154,9 @@ pub struct Workspace {
     pub saved_search_request: bool,
     /// Set by the Copy* commands; the UI formats the selection and copies it.
     pub clipboard_request: Option<crate::clipboard::PathStyle>,
+    /// Set by the Copy-listing commands: (text to copy, toast label). The UI
+    /// puts the text on the clipboard and shows the label.
+    pub clipboard_text_request: Option<(String, String)>,
     /// Set by [`Command::Redo`]; the UI replays the next redoable action.
     pub redo_request: bool,
     /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
@@ -407,6 +410,7 @@ impl Workspace {
             find_request: false,
             saved_search_request: false,
             clipboard_request: None,
+            clipboard_text_request: None,
             redo_request: false,
             drain_request: false,
             cycle_density_request: false,
@@ -769,7 +773,37 @@ impl Workspace {
             Command::SelectJunk => {
                 self.active_panel().select_junk();
             }
+            Command::ReverseSort => self.active_panel().reverse_sort(),
+            Command::SelectLargest => {
+                self.active_panel().select_largest(10);
+            }
+            Command::SelectLikeCursor => {
+                self.active_panel().select_same_extension_as_cursor();
+            }
+            Command::SelectEmptyFiles => {
+                self.active_panel().select_empty_files();
+            }
+            Command::CopyListingText => {
+                self.request_listing_copy(crate::listing_export::ListingFormat::Text)
+            }
+            Command::CopyListingCsv => {
+                self.request_listing_copy(crate::listing_export::ListingFormat::Csv)
+            }
+            Command::CopyListingMarkdown => {
+                self.request_listing_copy(crate::listing_export::ListingFormat::Markdown)
+            }
         }
+    }
+
+    /// Build the active panel's filtered listing in `fmt` and stage it for the
+    /// UI to copy to the clipboard (with a row-count toast label).
+    fn request_listing_copy(&mut self, fmt: crate::listing_export::ListingFormat) {
+        let (text, count) = {
+            let entries = self.active_panel_ref().filtered_entries();
+            (crate::listing_export::format(&entries, fmt), entries.len())
+        };
+        let label = format!("listing ({count} rows as {})", fmt.label());
+        self.clipboard_text_request = Some((text, label));
     }
 
     // ── File operations ─────────────────────────────────────────────────

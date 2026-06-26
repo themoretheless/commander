@@ -145,11 +145,13 @@ relative dates, gather-into-folder, and the run-command bar. What remains:
 | `Cmd+Z` / `Cmd+Shift+Z` | Undo / redo |
 
 More commands (run command on selection, cross-pane diff selection, copy-name /
-parent / file-URL / shell / relative path, selection stash algebra, **select
-clutter files** like `.DS_Store`, duplicates, saved searches, bookmark this
-folder, **sort by extension / kind**, and the **sort toggles** for
-folders-first and natural-vs-A-Z ordering) are available from the command
-palette (`Cmd+K`). Names sort naturally (`file2` before `file10`) by default.
+parent / file-URL / shell / relative path, **copy the listing as text / CSV /
+Markdown**, selection stash algebra, **select clutter files** like `.DS_Store`,
+**select the 10 largest**, **files like the cursor**, or **empty files**,
+duplicates, saved searches, bookmark this folder, **sort by extension / kind**,
+**reverse sort**, and the **sort toggles** for folders-first and
+natural-vs-A-Z ordering) are available from the command palette (`Cmd+K`).
+Names sort naturally (`file2` before `file10`) by default.
 
 ## Build and run
 

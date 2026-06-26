@@ -130,6 +130,20 @@ pub enum Command {
     SortByKind,
     /// Select the well-known clutter files (`.DS_Store`, `Thumbs.db`, ...).
     SelectJunk,
+    /// Reverse the active panel's current sort order.
+    ReverseSort,
+    /// Select the largest files in the active panel's filtered view.
+    SelectLargest,
+    /// Select files sharing the cursor file's extension.
+    SelectLikeCursor,
+    /// Select zero-byte files in the filtered view.
+    SelectEmptyFiles,
+    /// Copy the active listing to the clipboard as plain text.
+    CopyListingText,
+    /// Copy the active listing to the clipboard as CSV.
+    CopyListingCsv,
+    /// Copy the active listing to the clipboard as a Markdown table.
+    CopyListingMarkdown,
 }
 
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
@@ -206,6 +220,16 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             Command::StashSymmetricDiff,
         ),
         ("Select clutter files", "", Command::SelectJunk),
+        ("Select 10 largest files", "", Command::SelectLargest),
+        (
+            "Select files like cursor (same extension)",
+            "",
+            Command::SelectLikeCursor,
+        ),
+        ("Select empty files", "", Command::SelectEmptyFiles),
+        ("Copy listing as text", "", Command::CopyListingText),
+        ("Copy listing as CSV", "", Command::CopyListingCsv),
+        ("Copy listing as Markdown", "", Command::CopyListingMarkdown),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Run command on selection", "", Command::BeginRunBar),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
@@ -221,6 +245,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ),
         ("Sort by extension", "", Command::SortByExtension),
         ("Sort by kind", "", Command::SortByKind),
+        ("Reverse sort order", "", Command::ReverseSort),
         ("Cycle density", "Cmd+Shift+D", Command::CycleDensity),
         ("Toggle preview", "F3", Command::TogglePreview),
         ("Equalize panels", "Cmd+E", Command::EqualizePanels),
@@ -421,6 +446,13 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::SelectJunk => {
             &["selection junk clutter ds_store thumbs desktop.ini cleanup cruft"]
         }
+        Command::ReverseSort => &["sort reverse flip order ascending descending invert"],
+        Command::SelectLargest => &["selection largest biggest top size files heavy"],
+        Command::SelectLikeCursor => &["selection same extension like cursor type matching"],
+        Command::SelectEmptyFiles => &["selection empty zero byte blank files cleanup"],
+        Command::CopyListingText => &["clipboard copy listing export text list folder contents"],
+        Command::CopyListingCsv => &["clipboard copy listing export csv spreadsheet folder"],
+        Command::CopyListingMarkdown => &["clipboard copy listing export markdown table folder"],
         Command::CycleDensity => &["view density rows compact comfortable spacious"],
         Command::TogglePreview => &["view preview quick look viewer inspect"],
         Command::EqualizePanels => &["panels equalize same folder mirror"],
