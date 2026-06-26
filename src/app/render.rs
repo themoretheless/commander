@@ -363,11 +363,8 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            let clear_width = if panel.search_query.is_empty() {
-                                0.0
-                            } else {
-                                30.0
-                            };
+                            let text_filter_active = !panel.search_query.trim().is_empty();
+                            let clear_width = if text_filter_active { 30.0 } else { 0.0 };
                             let input_width = (ui.available_width() - clear_width).max(80.0);
                             ui.add_sized(
                                 Vec2::new(input_width, 26.0),
@@ -376,7 +373,7 @@ impl App {
                                     .desired_width(f32::INFINITY)
                                     .margin(egui::vec2(8.0, 4.0)),
                             );
-                            if !panel.search_query.is_empty()
+                            if text_filter_active
                                 && ui
                                     .add_sized(
                                         Vec2::new(26.0, 24.0),

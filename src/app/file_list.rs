@@ -74,15 +74,15 @@ impl App {
                 // loop body only borrows the panel immutably.
                 let filtered = panel.filtered_indices();
                 // Active filter query, for highlighting matched characters in
-                // each visible row (cloned once, owned by this frame).
-                let query = panel.search_query.clone();
+                // each visible row. Trimmed to match panel filtering semantics.
+                let query = panel.search_query.trim().to_string();
 
                 if filtered.is_empty() {
                     use crate::panel::DirStatus;
                     // Distinguish a filtered-to-nothing list, a truly empty
                     // folder, and an unreadable/vanished one.
                     let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
-                        if !panel.search_query.is_empty() || !panel.facets.is_empty() {
+                        if crate::panel::filter_is_active(&panel.search_query, &panel.facets) {
                             (
                                 "\u{1f50d}",
                                 "No matches",
@@ -503,7 +503,7 @@ impl App {
                     // One pass for the folder total plus its largest/oldest entry.
                     let overview = panel.folder_overview();
                     let filters_active =
-                        !panel.search_query.trim().is_empty() || !panel.facets.is_empty();
+                        crate::panel::filter_is_active(&panel.search_query, &panel.facets);
                     let count_prefix = if filters_active {
                         format!("{shown} of {total} items")
                     } else {
@@ -589,7 +589,10 @@ impl App {
                                 .clicked();
                             if clicked {
                                 panel.selected = crate::workspace::select_by_compare(
-                                    panel.filtered_entries().into_iter(),
+                                    panel
+                                        .filtered_indices()
+                                        .into_iter()
+                                        .filter_map(|i| panel.entries.get(i)),
                                     map,
                                     crit,
                                 );

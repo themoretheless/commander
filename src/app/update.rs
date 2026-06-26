@@ -357,10 +357,7 @@ impl App {
         crate::quick_actions::QuickActionContext {
             selected_count: active.selected.len(),
             shelf_count: self.ws.shelf.len(),
-            has_filters: crate::quick_actions::has_filters(
-                &active.search_query,
-                !active.facets.is_empty(),
-            ),
+            has_filters: crate::panel::filter_is_active(&active.search_query, &active.facets),
         }
     }
 

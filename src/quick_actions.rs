@@ -101,10 +101,6 @@ pub fn actions(ctx: QuickActionContext) -> Vec<QuickActionSpec> {
     specs
 }
 
-pub fn has_filters(search_query: &str, facets_active: bool) -> bool {
-    !search_query.trim().is_empty() || facets_active
-}
-
 pub fn next_hint(ctx: QuickActionContext) -> &'static str {
     if ctx.has_filters {
         "save or clear the active filter"
@@ -212,12 +208,5 @@ mod tests {
             }),
             "save or clear the active filter"
         );
-    }
-
-    #[test]
-    fn whitespace_only_filter_is_not_active_scope() {
-        assert!(!has_filters("   ", false));
-        assert!(has_filters("   ", true));
-        assert!(has_filters(" report ", false));
     }
 }

@@ -590,6 +590,10 @@ impl FacetSet {
     }
 }
 
+pub fn filter_is_active(search_query: &str, facets: &FacetSet) -> bool {
+    !search_query.trim().is_empty() || !facets.is_empty()
+}
+
 /// Whether `entry` passes all active facets, relative to `now`. Pure.
 pub fn facet_matches(entry: &FileEntry, facets: &FacetSet, now: SystemTime) -> bool {
     if let Some(kind) = facets.kind {
@@ -1405,21 +1409,21 @@ impl PanelState {
     /// entries runs only when something actually changed.
     fn ensure_filter_cache(&self) {
         let mut cache = self.filter_cache.borrow_mut();
+        let query = self.search_query.trim();
         if cache.generation == self.entries_gen
-            && cache.query == self.search_query
+            && cache.query == query
             && cache.facets == self.facets
         {
             return;
         }
         cache.generation = self.entries_gen;
-        cache.query = self.search_query.clone();
+        cache.query = query.to_string();
         cache.facets = self.facets;
         cache.indices.clear();
 
         // Fuzzy subsequence match (shared with the command palette), so "scn"
         // narrows to "scanner.rs". This is more permissive than a substring
         // filter; the sort order is left untouched (we narrow, never reorder).
-        let query = self.search_query.as_str();
         let facets = self.facets;
         let no_facets = facets.is_empty();
         let now = SystemTime::now();
@@ -1527,9 +1531,14 @@ impl PanelState {
     }
 
     pub fn total_size_selected(&self) -> u64 {
+        self.ensure_filter_cache();
         let sizes = self.dir_sizes.lock().ok();
-        self.selected_entries()
+        let cache = self.filter_cache.borrow();
+        cache
+            .indices
             .iter()
+            .filter_map(|&i| self.entries.get(i))
+            .filter(|e| self.selected.contains(&e.path))
             .map(|e| {
                 if e.is_dir {
                     sizes
@@ -1889,6 +1898,17 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(names, vec!["Cargo.toml"]);
+    }
+
+    #[test]
+    fn whitespace_only_filter_is_inactive_and_matches_everything() {
+        let mut p = panel_with(vec![
+            entry("Cargo.toml", false, 1),
+            entry("main.rs", false, 1),
+        ]);
+        p.search_query = "   ".to_string();
+        assert!(!filter_is_active(&p.search_query, &p.facets));
+        assert_eq!(p.filtered_count(), 2);
     }
 
     #[test]
