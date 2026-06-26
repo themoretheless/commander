@@ -4,8 +4,9 @@ Commander is a dual-pane macOS file manager written in Rust with
 [egui](https://github.com/emilk/egui). This document describes how the code is
 organised today, the structural debt that has accumulated, and the target shape
 the refactoring is moving toward. It is kept in sync with [README.md](README.md)
-(user-facing capabilities) and [recommendation.md](recommendation.md) (the
-prioritised plan of what to do next).
+(user-facing capabilities), [recommendation.md](recommendation.md) (the
+prioritised plan of what to do next), and [audit.md](audit.md) (the ranked list
+of concrete defects).
 
 ## Guiding principle
 
@@ -98,7 +99,11 @@ coupling they create:
   Clipboard, Trash, persistence and free-space probing are called inline from
   the core, so the domain is not testable without real side-effects.
 - **Async intermixed with view state** on `PanelState`, which prevents the
-  panel from being cloned or snapshot-tested.
+  panel from being cloned or snapshot-tested. The [audit](audit.md) found
+  concrete bugs in exactly this plumbing: a clear/spawn race in the dir-size
+  index (#5), a redundant nested rayon `install()` (#6), and a stale watcher
+  callback after navigation (#40). Extracting a `DirIndex` / `BackgroundScan`
+  owner fixes all three at once.
 
 ## Target architecture
 

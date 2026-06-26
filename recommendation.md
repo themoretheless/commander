@@ -1,8 +1,9 @@
 # Recommendations
 
 The prioritised plan of what to do next, kept in sync with
-[architecture.md](architecture.md) (the target shape) and
-[README.md](README.md) (user-facing capabilities).
+[architecture.md](architecture.md) (the target shape),
+[README.md](README.md) (user-facing capabilities), and
+[audit.md](audit.md) (the ranked list of concrete defects).
 
 ## Strategy
 
@@ -90,8 +91,32 @@ From the README-vs-code audit:
 The rest of the README is accurate: the Features bullets, the keyboard table,
 and the module list all matched the code in the audit (zero other drift).
 
+## Track D - correctness fixes from the audit
+
+The full ranked list of 50 defects (with manual-verification notes) is in
+[audit.md](audit.md). After verification, the items worth scheduling as bug
+fixes, in priority order:
+
+| # | Fix | audit rank | Effort |
+| --- | --- | --- | --- |
+| D1 | Surface save failures: check `write_atomic`'s return in the four save fns and toast on failure | 7 | small |
+| D2 | Stop swallowing `Result` in the rename undo/redo path (`apply_rename_order`) and the rollback (`rename_order`); report via toast | 3, 20 | small |
+| D3 | Evict the image cache on directory change (honour the docstring) | 2 | trivial |
+| D4 | Cheap per-frame perf: cache `size_max`; stop cloning `FontId` per char; `HashSet`-back the shelf; pre-lowercase `NameContains`/fuzzy queries | 12, 29, 30, 13, 46 | small |
+| D5 | Make the dir-size index race-safe (generation counter or staged swap) and drop the redundant nested `install()` | 5, 6, 40 | medium; pairs with the `DirIndex` extraction |
+| D6 | Fix reachable panics: guard `batch_rename` unwrap, `default_keep` empty group, `lock().unwrap()` poisoning | 10, 14, 22 | small |
+| D7 | Size-filter chips: independent thresholds; clipboard-empty and run-command-error feedback | 26, 27, 35 | small |
+| D8 | Rename temp-name correctness: homogenise the reserved-set casing, bound the allocator loop, composite rollback error | 9, 8, 3 | medium; one pass with tests |
+
+Do **not** schedule audit items 1, 8, 11 as written: 1 is a fragile-but-not-live
+pattern, 8 has no practical trigger, and 11 is a false positive (the egui idiom).
+See the corrections table in [audit.md](audit.md).
+
 ## Tracking
 
-Suggested immediate order: **C (docs) -> B1 (regex) -> A2 -> A3 -> B2 -> A4 ...**
-Front-load the trivial doc fixes and the cheap high-value feature, then proceed
-down Track A, slotting B2 in right after `ViewConfig` lands.
+Suggested immediate order: **C (docs, done) -> D1+D2+D3 (cheap correctness) ->
+B1 (regex) -> A2 -> A3 -> B2 -> A4 ...** Front-load the trivial doc fixes and the
+cheap error-handling/cache fixes (they remove silent data-loss and stale-state
+footguns for almost no risk), then the cheap high-value feature, then proceed
+down Track A, slotting B2 in right after `ViewConfig` lands and D5 alongside the
+`DirIndex` extraction.
