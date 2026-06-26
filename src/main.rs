@@ -5,6 +5,7 @@ mod bookmarks;
 mod clipboard;
 mod cmdtemplate;
 mod command;
+mod compare;
 mod conflict;
 mod crumbs;
 mod dedup;
