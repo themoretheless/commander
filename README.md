@@ -78,7 +78,7 @@ module is a thin egui layer over it.
 - **Density tiers** (`Cmd+Shift+D`), a one-shot **focus mode**, rich
   **path-to-clipboard** (`Cmd+Shift+C` and palette variants).
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,
-  Compress, Copy Path, Reveal in Finder, Tags, Share, Move to Trash.
+  Compress, Copy Path, Show in Finder, Tags, Share, Move to Trash.
 - **Session persistence** (panel paths, layout, view toggles) and a **light /
   dark theme** following the system appearance.
 
@@ -86,7 +86,9 @@ module is a thin egui layer over it.
 
 Shipped from earlier design rounds: pinned favorites, saved searches,
 selection sets, the operation-queue engine, focus mode, compare/diff selection,
-relative dates, gather-into-folder, and the run-command bar. What remains:
+relative dates, gather-into-folder, the run-command bar, and contextual empty
+states (truly empty vs filtered-to-nothing vs permission-denied, each with a
+one-click recovery). What remains:
 
 1. **Queue panel UI**: pause / resume / reorder / concurrency for the transfer
    queue (the engine is wired; only the panel and the input-gate relaxation
@@ -100,8 +102,9 @@ relative dates, gather-into-folder, and the run-command bar. What remains:
 5. **Regex find/replace** in the batch-rename studio.
 6. **Operation receipts**: a searchable history of completed transfers and
    deletes with jump-back and undo affordances.
-7. **Contextual empty states**: explain whether a panel is truly empty,
-   filtered to nothing, or permission-denied, with a one-click recovery.
+
+The architecture and the prioritised plan for these items live in
+[architecture.md](architecture.md) and [recommendation.md](recommendation.md).
 
 ## Keyboard shortcuts
 
@@ -172,9 +175,11 @@ cargo fmt --check                # formatting
 ```
 
 The file-manager logic lives in a UI-independent core (`workspace`, `panel`,
-`transfer`, `opqueue`, `scan`, `command`, `fs_util`, `rename`, `sync`,
-`bookmarks`, `jumplist`, `cmdtemplate`, ...) that is unit-tested without a GUI;
-the `app` module is a thin egui layer over it.
+`transfer`, `opqueue`, `scan`, `command`, `compare`, `fs_util`, `rename`,
+`sync`, `bookmarks`, `jumplist`, `cmdtemplate`, ...) that is unit-tested without
+a GUI; the `app` module is a thin egui layer over it. The architecture and the
+refactoring plan are documented in [architecture.md](architecture.md) and
+[recommendation.md](recommendation.md).
 
 ## License
 
