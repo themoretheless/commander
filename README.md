@@ -146,7 +146,8 @@ relative dates, gather-into-folder, and the run-command bar. What remains:
 
 More commands (run command on selection, cross-pane diff selection, copy-name /
 parent / file-URL / shell / relative path, **copy the listing as text / CSV /
-Markdown**, selection stash algebra, **select clutter files** like `.DS_Store`,
+Markdown** (the selection if any, else the whole folder), selection stash
+algebra, **select clutter files** like `.DS_Store`,
 **select the 10 largest**, **files like the cursor**, or **empty files**,
 duplicates, saved searches, bookmark this folder, **sort by extension / kind**,
 **reverse sort**, and the **sort toggles** for folders-first and

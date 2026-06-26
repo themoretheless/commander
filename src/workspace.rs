@@ -799,7 +799,7 @@ impl Workspace {
     /// UI to copy to the clipboard (with a row-count toast label).
     fn request_listing_copy(&mut self, fmt: crate::listing_export::ListingFormat) {
         let (text, count) = {
-            let entries = self.active_panel_ref().filtered_entries();
+            let entries = self.active_panel_ref().listing_entries();
             (crate::listing_export::format(&entries, fmt), entries.len())
         };
         let label = format!("listing ({count} rows as {})", fmt.label());

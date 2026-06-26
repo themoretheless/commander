@@ -1301,6 +1301,19 @@ impl PanelState {
         self.sort_entries();
     }
 
+    /// Entries to export/copy as a listing: the current selection if anything
+    /// is selected, otherwise the whole filtered view (in display order).
+    pub fn listing_entries(&self) -> Vec<&FileEntry> {
+        let all = self.filtered_entries();
+        if self.selected.is_empty() {
+            all
+        } else {
+            all.into_iter()
+                .filter(|e| self.selected.contains(&e.path))
+                .collect()
+        }
+    }
+
     /// Apply a select-by-mask line to the selection over the filtered view:
     /// add terms select matching entries, `!`/`-` terms deselect them
     /// (subtraction wins per entry). Returns how many entries were added.
@@ -1846,6 +1859,21 @@ mod tests {
         p.reverse_sort(); // -> desc: b, a
         let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["b.txt", "a.txt"]);
+    }
+
+    #[test]
+    fn listing_entries_uses_selection_when_present() {
+        let mut p = panel_with(vec![
+            entry("a", false, 1),
+            entry("b", false, 2),
+            entry("c", false, 3),
+        ]);
+        // Nothing selected: the whole filtered view.
+        assert_eq!(p.listing_entries().len(), 3);
+        // With a selection: only the selected rows, in display order.
+        p.selected.insert(PathBuf::from("/test/b"));
+        let names: Vec<String> = p.listing_entries().iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["b"]);
     }
 
     #[test]
