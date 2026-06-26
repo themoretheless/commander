@@ -125,7 +125,7 @@ impl App {
         panel_side: &str,
         tree_open: bool,
         size_bars: bool,
-        compare: Option<&crate::workspace::CompareMap>,
+        compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
         metrics: crate::density::DensityMetrics,
     ) -> bool {

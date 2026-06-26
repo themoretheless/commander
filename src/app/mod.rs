@@ -100,8 +100,8 @@ pub struct App {
     pub(crate) compare_cache: Option<(
         u64,
         u64,
-        crate::workspace::CompareMap,
-        crate::workspace::CompareMap,
+        crate::compare::CompareMap,
+        crate::compare::CompareMap,
     )>,
 }
 

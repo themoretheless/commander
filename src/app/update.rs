@@ -672,8 +672,8 @@ impl App {
                     (Some(lmap), Some(rmap))
                 }
                 _ => (
-                    Some(crate::workspace::build_compare_map(&self.ws.right.entries)),
-                    Some(crate::workspace::build_compare_map(&self.ws.left.entries)),
+                    Some(crate::compare::build_compare_map(&self.ws.right.entries)),
+                    Some(crate::compare::build_compare_map(&self.ws.left.entries)),
                 ),
             }
         } else {

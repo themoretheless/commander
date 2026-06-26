@@ -9,7 +9,7 @@ impl App {
         t: &ThemeColors,
         panel_side: &str,
         size_bars: bool,
-        compare: Option<&crate::workspace::CompareMap>,
+        compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
         metrics: crate::density::DensityMetrics,
     ) {
@@ -242,7 +242,7 @@ impl App {
                         Sense::click_and_drag(),
                     );
                     let row_resp = if let Some(map) = compare {
-                        if let Some(hint) = crate::workspace::compare_hint(entry, map) {
+                        if let Some(hint) = crate::compare::compare_hint(entry, map) {
                             row_resp.on_hover_text(hint)
                         } else {
                             row_resp
@@ -301,8 +301,8 @@ impl App {
                     // Compare mode: a left-edge stripe showing how this entry
                     // relates to the other panel.
                     if let Some(map) = compare {
-                        use crate::workspace::CompareStatus;
-                        let stripe = match crate::workspace::classify_entry(entry, map) {
+                        use crate::compare::CompareStatus;
+                        let stripe = match crate::compare::classify_entry(entry, map) {
                             CompareStatus::Unique => Some(t.accent),
                             CompareStatus::Differs => Some(t.accent_warning),
                             CompareStatus::Identical => None,
@@ -568,7 +568,7 @@ impl App {
 
                     // Compare mode: chips to turn the diff into a selection.
                     if let Some(map) = compare {
-                        use crate::workspace::CompareCriterion;
+                        use crate::compare::CompareCriterion;
                         ui.label(
                             egui::RichText::new("  |  Select:")
                                 .size(11.0)
@@ -588,7 +588,7 @@ impl App {
                                 )
                                 .clicked();
                             if clicked {
-                                panel.selected = crate::workspace::select_by_compare(
+                                panel.selected = crate::compare::select_by_compare(
                                     panel
                                         .filtered_indices()
                                         .into_iter()
