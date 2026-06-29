@@ -48,10 +48,12 @@ pub fn load() -> SmartFolders {
         .unwrap_or_default()
 }
 
-/// Save the searches atomically (temp file + rename), best-effort.
-pub fn save(store: &SmartFolders) {
-    if let Ok(json) = serde_json::to_string_pretty(store) {
-        crate::fs_util::write_atomic(&store_path(), &json);
+/// Save the searches atomically (temp file + rename). Returns `false` if
+/// serialization or the atomic write failed, so the caller can surface it.
+pub fn save(store: &SmartFolders) -> bool {
+    match serde_json::to_string_pretty(store) {
+        Ok(json) => crate::fs_util::write_atomic(&store_path(), &json),
+        Err(_) => false,
     }
 }
 

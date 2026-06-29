@@ -992,45 +992,58 @@ impl Workspace {
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
     /// move it onto the redo stack.
-    pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) {
-        if let Some(inverse) = self.stack.undo() {
-            self.execute_action(inverse, notify);
+    pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
+        match self.stack.undo() {
+            Some(inverse) => self.execute_action(inverse, notify),
+            None => Ok(()),
         }
     }
 
     /// Redo the most recently undone action (Cmd+Shift+Z): re-apply it and move
-    /// it back onto the undo stack.
-    pub fn perform_redo(&mut self, notify: impl Fn() + Send + 'static) {
-        if let Some(action) = self.stack.redo() {
-            self.execute_action(action, notify);
+    /// it back onto the undo stack. Returns the same error surface as
+    /// [`perform_undo`].
+    pub fn perform_redo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
+        match self.stack.redo() {
+            Some(action) => self.execute_action(action, notify),
+            None => Ok(()),
         }
     }
 
     /// Execute `action` forward against the filesystem. Used by undo (with an
     /// inverted action) and redo (with the original). It records no new history
     /// of its own: the stack was already shuffled by `undo`/`redo`.
-    fn execute_action(&mut self, action: crate::undo::Action, notify: impl Fn() + Send + 'static) {
+    fn execute_action(
+        &mut self,
+        action: crate::undo::Action,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<(), String> {
         match action {
             crate::undo::Action::Move { pairs } => {
                 // Each pair is (from, to): move the file at `from` into dir(to).
+                // Move errors surface through the transfer engine's error list,
+                // not here, so a started move is reported as Ok.
                 let Some(dest_dir) = pairs
                     .first()
                     .and_then(|(_, to)| to.parent())
                     .map(Path::to_path_buf)
                 else {
-                    return;
+                    return Ok(());
                 };
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
                 self.start_move_silent(sources, dest_dir, notify);
+                Ok(())
             }
             crate::undo::Action::BatchRename { dir, pairs } => {
                 // Undo/redo replays recorded pairs without re-planning, so order
                 // them against the live directory (the inverse of a swap or a
                 // case-only rename is itself a swap/case-only and needs staging).
                 let existing = Self::dir_names(&dir);
-                let _ = Self::apply_rename_order(&dir, &pairs, &existing);
+                let result = Self::apply_rename_order(&dir, &pairs, &existing);
                 self.left.refresh();
                 self.right.refresh();
+                // A failed rename undo/redo leaves the filesystem out of step
+                // with the stack: surface it rather than swallowing the error.
+                result.map(|_| ())
             }
         }
     }
@@ -2189,7 +2202,7 @@ mod tests {
         assert!(l.path().join("keep.txt").is_file(), "unselected untouched");
 
         // Cmd+Z moves them back out of the folder.
-        ws.perform_undo(|| {});
+        let _ = ws.perform_undo(|| {});
         drain_transfers(&mut ws);
         assert!(l.path().join("IMG_1.jpg").is_file(), "undo restored IMG_1");
         assert!(l.path().join("IMG_2.jpg").is_file(), "undo restored IMG_2");
@@ -2343,7 +2356,7 @@ mod tests {
             ws.stack.peek_undo().is_none(),
             "no bogus undo recorded for an all-KeepBoth move"
         );
-        ws.perform_undo(|| {});
+        let _ = ws.perform_undo(|| {});
         drain_transfers(&mut ws);
         assert_eq!(
             std::fs::read_to_string(r.path().join("dup.txt")).unwrap(),
@@ -2603,7 +2616,7 @@ mod tests {
         assert!(r.path().join("doc.txt").exists());
         assert!(ws.stack.can_undo(), "a clean move is undoable");
 
-        ws.perform_undo(|| {});
+        let _ = ws.perform_undo(|| {});
         wait_transfer(&mut ws);
         assert!(f.exists(), "undo restored the source");
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "data");
@@ -2614,7 +2627,7 @@ mod tests {
 
         // Redo re-applies the move.
         assert!(ws.stack.can_redo(), "the undone move is redoable");
-        ws.perform_redo(|| {});
+        let _ = ws.perform_redo(|| {});
         wait_transfer(&mut ws);
         assert!(!f.exists(), "redo re-moved the source away");
         assert!(
@@ -2640,11 +2653,11 @@ mod tests {
         assert!(l.path().join("x_a.txt").is_file());
         assert!(ws.stack.can_undo());
 
-        ws.perform_undo(|| {});
+        let _ = ws.perform_undo(|| {});
         assert!(l.path().join("a.txt").is_file(), "undo restored names");
         assert!(!l.path().join("x_a.txt").exists());
 
-        ws.perform_redo(|| {});
+        let _ = ws.perform_redo(|| {});
         assert!(l.path().join("x_a.txt").is_file(), "redo re-applied names");
         assert!(!l.path().join("a.txt").exists());
     }
@@ -2802,6 +2815,30 @@ mod tests {
     }
 
     #[test]
+    fn batch_rename_undo_surfaces_a_failed_rename() {
+        // A rename whose target clobbers an unrelated sibling is refused by
+        // apply_rename_order; the undo/redo path (execute_action) must surface
+        // that error instead of swallowing it via `let _ =` (audit #20).
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let dir = l.path().to_path_buf();
+        l.file("a.txt", "1");
+        l.file("b.txt", "2"); // unrelated existing target the rename would clobber
+        let mut ws = workspace(&l, &r);
+        let action = crate::undo::Action::BatchRename {
+            dir: dir.clone(),
+            pairs: vec![("a.txt".to_string(), "b.txt".to_string())],
+        };
+        let result = ws.execute_action(action, || {});
+        assert!(
+            result.is_err(),
+            "a clobbering rename during undo must surface an error, not be swallowed"
+        );
+        // The refusal leaves both files untouched.
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "1");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "2");
+    }
+
+    #[test]
     fn apply_rename_order_swaps_two_files() {
         let tmp = TempDir::new();
         tmp.file("a.txt", "A");
@@ -2855,7 +2892,7 @@ mod tests {
         ws.apply_batch_rename(&rule).unwrap();
         assert!(Workspace::dir_names(l.path()).contains("README.md"));
         // Undo puts the lower-case name back (itself a case-only rename).
-        ws.perform_undo(|| {});
+        let _ = ws.perform_undo(|| {});
         let names = Workspace::dir_names(l.path());
         assert!(names.contains("readme.md"), "after undo: {names:?}");
         assert!(!names.contains("README.md"));

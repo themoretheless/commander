@@ -174,10 +174,13 @@ pub fn load() -> Bookmarks {
         .unwrap_or_default()
 }
 
-/// Save the bookmarks atomically (temp file + rename), best-effort.
-pub fn save(store: &Bookmarks) {
-    if let Ok(json) = serde_json::to_string_pretty(store) {
-        crate::fs_util::write_atomic(&store_path(), &json);
+/// Save the bookmarks atomically (temp file + rename). Returns `false` if
+/// serialization or the atomic write failed, so a caller with UI access can
+/// surface the failure instead of letting it pass silently.
+pub fn save(store: &Bookmarks) -> bool {
+    match serde_json::to_string_pretty(store) {
+        Ok(json) => crate::fs_util::write_atomic(&store_path(), &json),
+        Err(_) => false,
     }
 }
 

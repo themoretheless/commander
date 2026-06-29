@@ -206,19 +206,23 @@ impl App {
                         raw: trimmed.to_string(),
                         exts: Vec::new(),
                     });
-                if added {
-                    crate::cmdtemplate::save(self.command_templates_mut());
-                }
-                self.toasts.push(crate::toasts::Toast::new(
-                    if added {
-                        "Template saved"
-                    } else {
-                        "Template already saved"
-                    },
-                    crate::toasts::ToastKind::Info,
-                    false,
-                    now,
-                ));
+                let saved_ok = if added {
+                    crate::cmdtemplate::save(self.command_templates_mut())
+                } else {
+                    true
+                };
+                let (text, kind) = if !added {
+                    ("Template already saved", crate::toasts::ToastKind::Info)
+                } else if saved_ok {
+                    ("Template saved", crate::toasts::ToastKind::Info)
+                } else {
+                    (
+                        "Could not save template to disk",
+                        crate::toasts::ToastKind::Error,
+                    )
+                };
+                self.toasts
+                    .push(crate::toasts::Toast::new(text, kind, false, now));
             }
             return; // keep the bar open after saving
         }

@@ -238,10 +238,12 @@ pub fn load() -> Templates {
         .unwrap_or_default()
 }
 
-/// Save templates atomically (temp file + rename), best-effort.
-pub fn save(store: &Templates) {
-    if let Ok(json) = serde_json::to_string_pretty(store) {
-        crate::fs_util::write_atomic(&store_path(), &json);
+/// Save templates atomically (temp file + rename). Returns `false` if
+/// serialization or the atomic write failed, so the caller can surface it.
+pub fn save(store: &Templates) -> bool {
+    match serde_json::to_string_pretty(store) {
+        Ok(json) => crate::fs_util::write_atomic(&store_path(), &json),
+        Err(_) => false,
     }
 }
 

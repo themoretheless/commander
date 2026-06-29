@@ -116,13 +116,29 @@ impl App {
         // Run a requested undo / redo with a repaint callback.
         if std::mem::take(&mut self.ws.undo_request) {
             let c = ctx.clone();
-            self.ws.perform_undo(move || c.request_repaint());
+            if let Err(e) = self.ws.perform_undo(move || c.request_repaint()) {
+                let now = ctx.input(|i| i.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!("Undo failed: {e}"),
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
+            }
             // The offered Undo is spent; drop the undoable toast(s).
             self.toasts.dismiss_undoable();
         }
         if std::mem::take(&mut self.ws.redo_request) {
             let c = ctx.clone();
-            self.ws.perform_redo(move || c.request_repaint());
+            if let Err(e) = self.ws.perform_redo(move || c.request_repaint()) {
+                let now = ctx.input(|i| i.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!("Redo failed: {e}"),
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
+            }
         }
         // Gather the selection into a new subfolder (queues an undoable Move).
         if std::mem::take(&mut self.ws.gather_request) {
@@ -442,14 +458,21 @@ impl App {
                 root,
                 query,
             });
-        crate::smart_folder::save(self.smart_folders_mut());
+        let ok = crate::smart_folder::save(self.smart_folders_mut());
         let now = ctx.input(|i| i.time);
-        self.toasts.push(crate::toasts::Toast::new(
-            format!("Saved smart folder \"{name}\""),
-            crate::toasts::ToastKind::Success,
-            false,
-            now,
-        ));
+        let (msg, kind) = if ok {
+            (
+                format!("Saved smart folder \"{name}\""),
+                crate::toasts::ToastKind::Success,
+            )
+        } else {
+            (
+                format!("Could not save smart folder \"{name}\" to disk"),
+                crate::toasts::ToastKind::Error,
+            )
+        };
+        self.toasts
+            .push(crate::toasts::Toast::new(msg, kind, false, now));
     }
 
     /// Bottom shelf (drop stack) tray, shown only when something is staged:
