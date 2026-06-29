@@ -261,14 +261,21 @@ impl App {
             };
             let name = def.name.clone();
             self.smart_folders_mut().add(def);
-            crate::smart_folder::save(self.smart_folders_mut());
+            let ok = crate::smart_folder::save(self.smart_folders_mut());
             let now = ctx.input(|i| i.time);
-            self.toasts.push(crate::toasts::Toast::new(
-                format!("Saved smart folder \u{201c}{name}\u{201d}"),
-                crate::toasts::ToastKind::Success,
-                false,
-                now,
-            ));
+            let (msg, kind) = if ok {
+                (
+                    format!("Saved smart folder \u{201c}{name}\u{201d}"),
+                    crate::toasts::ToastKind::Success,
+                )
+            } else {
+                (
+                    format!("Could not save smart folder \u{201c}{name}\u{201d} to disk"),
+                    crate::toasts::ToastKind::Error,
+                )
+            };
+            self.toasts
+                .push(crate::toasts::Toast::new(msg, kind, false, now));
         }
         if run {
             let (query, root) = {

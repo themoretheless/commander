@@ -117,7 +117,15 @@ impl App {
 
         if let Some(name) = delete {
             self.smart_folders_mut().remove(&name);
-            crate::smart_folder::save(self.smart_folders_mut());
+            if !crate::smart_folder::save(self.smart_folders_mut()) {
+                let now = ctx.input(|i| i.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    "Could not save saved searches to disk",
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
+            }
         }
         if let Some(def) = open_def {
             let mut state = FindState::from_definition(&def);

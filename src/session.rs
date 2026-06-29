@@ -72,10 +72,13 @@ pub fn load() -> Option<Session> {
     serde_json::from_str(&data).ok()
 }
 
-/// Save the session atomically (temp file + rename), best-effort.
-pub fn save(session: &Session) {
-    if let Ok(json) = serde_json::to_string_pretty(session) {
-        crate::fs_util::write_atomic(&session_path(), &json);
+/// Save the session atomically (temp file + rename). Returns `false` if
+/// serialization or the atomic write failed. The autosave caller treats this
+/// as best-effort; an explicit caller could surface the failure.
+pub fn save(session: &Session) -> bool {
+    match serde_json::to_string_pretty(session) {
+        Ok(json) => crate::fs_util::write_atomic(&session_path(), &json),
+        Err(_) => false,
     }
 }
 

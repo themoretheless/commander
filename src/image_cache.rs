@@ -91,9 +91,13 @@ impl ImageCache {
     pub fn preload(&mut self, ctx: &Context, paths: &[PathBuf], dir: &Path) {
         self.frame += 1;
 
-        // Track directory change
-        if self.current_dir.as_ref() != Some(&dir.to_path_buf()) {
+        // Track directory change: flush the cache so a stale preview from the
+        // old folder can never be served (the get() path only checks by path,
+        // and two folders can hold same-named-but-different images).
+        if self.current_dir.as_deref() != Some(dir) {
             self.current_dir = Some(dir.to_path_buf());
+            self.entries.clear();
+            self.total_bytes = 0;
         }
 
         // Start loading any paths not in cache and not already pending
