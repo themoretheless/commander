@@ -101,9 +101,10 @@ coupling they create:
 - **Async intermixed with view state** on `PanelState`, which prevents the
   panel from being cloned or snapshot-tested. The [audit](audit.md) found
   concrete bugs in exactly this plumbing: a clear/spawn race in the dir-size
-  index (#5), a redundant nested rayon `install()` (#6), and a stale watcher
-  callback after navigation (#40). Extracting a `DirIndex` / `BackgroundScan`
-  owner fixes all three at once.
+  index (round-2 #21), a redundant nested rayon `install()` (#17), a stale
+  watcher callback after navigation (#20), and two unbounded caches that never
+  evict (`walk_log` #38, `dir_size_cache` #39). Extracting a `DirIndex` /
+  `BackgroundScan` owner fixes all of them at once.
 
 ## Target architecture
 

@@ -94,23 +94,31 @@ and the module list all matched the code in the audit (zero other drift).
 ## Track D - correctness fixes from the audit
 
 The full ranked list of 50 defects (with manual-verification notes) is in
-[audit.md](audit.md). After verification, the items worth scheduling as bug
-fixes, in priority order:
+[audit.md](audit.md), refreshed after round 2 and with already-fixed items
+removed. After verification, the items worth scheduling, in priority order
+(ranks reference the **round-2** audit table):
 
-| # | Fix | audit rank | Effort |
-| --- | --- | --- | --- |
-| D1 | Surface save failures: check `write_atomic`'s return in the four save fns and toast on failure | 7 | small |
-| D2 | Stop swallowing `Result` in the rename undo/redo path (`apply_rename_order`) and the rollback (`rename_order`); report via toast | 3, 20 | small |
-| D3 | Evict the image cache on directory change (honour the docstring) | 2 | trivial |
-| D4 | Cheap per-frame perf: cache `size_max`; stop cloning `FontId` per char; `HashSet`-back the shelf; pre-lowercase `NameContains`/fuzzy queries | 12, 29, 30, 13, 46 | small |
-| D5 | Make the dir-size index race-safe (generation counter or staged swap) and drop the redundant nested `install()` | 5, 6, 40 | medium; pairs with the `DirIndex` extraction |
-| D6 | Fix reachable panics: guard `batch_rename` unwrap, `default_keep` empty group, `lock().unwrap()` poisoning | 10, 14, 22 | small |
-| D7 | Size-filter chips: independent thresholds; clipboard-empty and run-command-error feedback | 26, 27, 35 | small |
-| D8 | Rename temp-name correctness: homogenise the reserved-set casing, bound the allocator loop, composite rollback error | 9, 8, 3 | medium; one pass with tests |
+| # | Fix | round-2 rank | Effort | Status |
+| --- | --- | --- | --- | --- |
+| D1 | Surface save failures: check `write_atomic`'s return and toast | (was r1 #7) | small | **done** (`177e67c`) |
+| D2 | Stop swallowing `Result` in the undo/redo apply path; toast | (was r1 #20) | small | **done** (`177e67c`) |
+| D3 | Evict the image cache on directory change (honour the docstring) | (was r1 #2) | trivial | **done** (`177e67c`) |
+| D4 | Cheap per-frame perf: clone `FontId` once per row; `HashSet`-back the shelf; pre-lowercase `NameContains`; avoid the per-call/per-keystroke `filtered_entries` Vec | 34, 35, 15, 16, 36, 37 | small | open |
+| D5 | Make the dir-size index race-safe (generation counter or staged swap), drop the redundant nested `install()`, and bound `walk_log`/`dir_size_cache` | 17, 19, 20, 21, 38, 39 | medium; pairs with the `DirIndex` extraction | open |
+| D6 | Fix reachable panics and overflow: `lock().unwrap()` poisoning, ObjC `unwrap`, `batch_rename` unwrap, unchecked `keep[gi]`, `checked_mul` the thumbnail buffers | 3, 24, 29, 13, 10, 4, 2 | small | open |
+| D8 | Rename temp-name correctness: homogenise the reserved-set casing and make the rollback composite-error / atomic | 9, 8 | medium; one pass with tests | open |
+| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, and add the on-disk undo round-trip test | 1, 25, 11, 12, 46, 7, 14 | medium; with integration tests | open |
+| D10 | Panel filter/cursor invariants: `ensure_cursor_valid()` after every filter/facet/sort change, bounds-checked `filtered_entries`, and an explicit (not silent-empty) `selected_or_cursor` miss | 5, 6, 33 | small; strongest case for the `ViewState` encapsulation in Track A | open |
+| D11 | egui widget-Id hygiene: add `id_salt` to the three dialog `ScrollArea`s and derive toast Ids from stable identity | 26, 27, 28, 41 | trivial | open |
 
-Do **not** schedule audit items 1, 8, 11 as written: 1 is a fragile-but-not-live
-pattern, 8 has no practical trigger, and 11 is a false positive (the egui idiom).
-See the corrections table in [audit.md](audit.md).
+Severity caveats from manual verification (do not act on these as written):
+round-2 **#1** is a real `exists()`/`path_is_taken()` inconsistency but the
+"overwrites the symlink target" framing is wrong (`rename` replaces a broken
+symlink atomically); round-2 **#2** needs CoreGraphics to actually decode a
+pathological image, so treat `checked_mul` as defense-in-depth; round-2 **#17**
+is a redundant nested `install()`, not a proven deadlock; round-2 **#18** is a
+fragile-but-not-live pattern (`copyfile` is synchronous). See the corrections
+table in [audit.md](audit.md).
 
 ## Tracking
 
@@ -119,7 +127,10 @@ their success bool and the explicit-save dialogs toast on failure; undo/redo
 surface a refused rename instead of swallowing it; the image cache is flushed on
 directory change.
 
-Next suggested order: **B1 (regex) -> A2 -> A3 -> B2 -> A4 ...**, with the
-remaining Track D items (D4 cheap perf, D6 reachable panics) slotted in as
-low-risk fillers. Proceed down Track A, slotting B2 in right after `ViewConfig`
-lands and D5 alongside the `DirIndex` extraction.
+Next suggested order: **D6 (panics/overflow) + D10 (cursor invariants) first**
+(both small, both close reachable crashes that round 2 surfaced), then **B1
+(regex) -> A2 -> A3 -> B2 -> A4 ...**, with D4 (cheap perf) and D11 (id_salt)
+slotted in as low-risk fillers. Schedule **D9** (destructive-op partial-failure
+integrity, with on-disk undo tests) as a dedicated pass, and **D5** alongside the
+`DirIndex` extraction. D10 is also the strongest concrete motivation for the
+`ViewState` encapsulation in Track A.
