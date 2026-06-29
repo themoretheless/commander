@@ -114,9 +114,12 @@ See the corrections table in [audit.md](audit.md).
 
 ## Tracking
 
-Suggested immediate order: **C (docs, done) -> D1+D2+D3 (cheap correctness) ->
-B1 (regex) -> A2 -> A3 -> B2 -> A4 ...** Front-load the trivial doc fixes and the
-cheap error-handling/cache fixes (they remove silent data-loss and stale-state
-footguns for almost no risk), then the cheap high-value feature, then proceed
-down Track A, slotting B2 in right after `ViewConfig` lands and D5 alongside the
-`DirIndex` extraction.
+Done: **C** (docs), and **D1 + D2 + D3** (commit `177e67c`): save writers return
+their success bool and the explicit-save dialogs toast on failure; undo/redo
+surface a refused rename instead of swallowing it; the image cache is flushed on
+directory change.
+
+Next suggested order: **B1 (regex) -> A2 -> A3 -> B2 -> A4 ...**, with the
+remaining Track D items (D4 cheap perf, D6 reachable panics) slotted in as
+low-risk fillers. Proceed down Track A, slotting B2 in right after `ViewConfig`
+lands and D5 alongside the `DirIndex` extraction.
