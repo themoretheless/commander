@@ -18,9 +18,10 @@ module is a thin egui layer over it.
   pinned folder, `Cmd+Shift+1`..`9` assign one.
 - **Per-pane history**: `Cmd+[` / `Cmd+]` walk back and forward through the
   directories you visited (a vim-style jump trail).
-- **Go to path** (`Cmd+L`), **recent folders** (`Cmd+P`), type-ahead jump, and
-  a per-panel filter box with quick-filter facets (kind, size, and date
-  buckets: Today / Week / Month, plus an Older-than-a-month bucket).
+- **Go to path** (`Cmd+L`), **recent folders** (`Cmd+P`, last 200 visited
+  folders), type-ahead jump, and a per-panel filter box with quick-filter
+  facets (kind, size, and date buckets: Today / Week / Month, plus an
+  Older-than-a-month bucket).
 - **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
   and frequency.
 

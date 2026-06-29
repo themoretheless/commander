@@ -54,7 +54,9 @@ impl App {
                     egui::ScrollArea::vertical()
                         .max_height(300.0)
                         .show(ui, |ui| {
-                            for (i, path) in matches.iter().enumerate().take(20) {
+                            for (i, path) in
+                                matches.iter().enumerate().take(crate::panel::VISITED_CAP)
+                            {
                                 let name = path
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string())

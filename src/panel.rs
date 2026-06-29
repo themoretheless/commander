@@ -80,7 +80,7 @@ fn visited_log() -> &'static Mutex<Vec<PathBuf>> {
     V.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-const VISITED_CAP: usize = 50;
+pub const VISITED_CAP: usize = 200;
 
 /// Push `path` to the front of `list`, de-duplicating and capping. Pure, so
 /// the ordering logic is unit-testable without the global.
@@ -2148,6 +2148,18 @@ mod tests {
                 PathBuf::from("/a"),
             ]
         );
+    }
+
+    #[test]
+    fn recent_visit_policy_keeps_two_hundred_paths() {
+        let mut v: Vec<PathBuf> = Vec::new();
+        for i in 0..205 {
+            push_visit(&mut v, Path::new(&format!("/recent/{i}")), VISITED_CAP);
+        }
+
+        assert_eq!(v.len(), 200);
+        assert_eq!(v.first(), Some(&PathBuf::from("/recent/204")));
+        assert_eq!(v.last(), Some(&PathBuf::from("/recent/5")));
     }
 
     #[test]
