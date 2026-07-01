@@ -13,9 +13,10 @@ of concrete defects).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: ~40 small modules and 373 GUI-free
-tests sit under a thin presentation layer. The debt is concentrated in two
-oversized core types and in how the core signals the UI.
+That split is real and worth protecting: ~40 small modules and 375 GUI-free
+tests (376 `#[test]` functions, one an `#[ignore]`d manual profiling harness)
+sit under a thin presentation layer. The debt is concentrated in two oversized
+core types and in how the core signals the UI.
 
 ## Module map (current, on `master`)
 
@@ -38,7 +39,8 @@ Grouped by the bounded context each module really belongs to:
   `shelf`, `treemap`.
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
-  `session`, `density`, `focus_mode`, `quick_actions`, `textdiff`.
+  `session`, `density`, `focus_mode`, `quick_actions`, `textdiff`, `toasts`
+  (a pure, time-driven toast queue with an injected clock; no egui types).
 
 ### UI adapter (`app/`, egui)
 
@@ -97,14 +99,71 @@ coupling they create:
   smeared across ~20 fields with no single drain point.
 - **Leaky ports.** The only injected capability is `opener: Box<dyn Fn(&Path)>`.
   Clipboard, Trash, persistence and free-space probing are called inline from
-  the core, so the domain is not testable without real side-effects.
+  the core, so the domain is not testable without real side-effects. The same
+  gap is security-relevant, not just a testability one: `native_menu`'s
+  "Get Info" action hand-builds an AppleScript string and shells out to
+  `osascript` with no escaping port in front of it, which the audit's #1
+  (round 3, still open in round 4) shows is an actual AppleScript-injection
+  vulnerability via a crafted filename.
 - **Async intermixed with view state** on `PanelState`, which prevents the
   panel from being cloned or snapshot-tested. The [audit](audit.md) found
   concrete bugs in exactly this plumbing: a clear/spawn race in the dir-size
-  index (round-2 #21), a redundant nested rayon `install()` (#17), a stale
-  watcher callback after navigation (#20), and two unbounded caches that never
-  evict (`walk_log` #38, `dir_size_cache` #39). Extracting a `DirIndex` /
-  `BackgroundScan` owner fixes all of them at once.
+  index, a redundant nested rayon `install()` (round-4 #26), a stale watcher
+  callback after navigation, and two unbounded caches that never evict
+  (`walk_log`, `dir_size_cache`) — the first three are below the round-4 cut on
+  severity but still open. Extracting a `DirIndex` / `BackgroundScan` owner
+  fixes all of them at once.
+- **The comparison bounded context is directory-blind.** `sync::compare`,
+  `compare::classify_entry`, and `conflict::detect` all classify entries using
+  only `FileEntry.size`/`modified`, and every directory's `size` is hardcoded
+  to `0`. None of the three checks `is_dir`, so folder-level Sync/Compare/
+  Conflict results are resolved on synthetic data (audit round-4 #27, #28).
+  One `is_dir` guard, or reusing the existing recursive `dir_size_cache`,
+  closes all three call sites at once.
+- **Four independent, identical, fragile persistence loaders.** `bookmarks`,
+  `smart_folder`, `cmdtemplate`, and `session` each hand-roll the same
+  read-file -> `serde_json::from_str` -> `unwrap_or_default()` load path, which
+  discards the entire store on any single deserialization error with no
+  partial recovery or warning (audit round-4 #31). A shared `load_lenient<T>`
+  helper (or promoting this into the `Persist` port planned in A7) would fix
+  all four at once instead of one at a time.
+- **Dialogs are non-modal and re-derive their target from live state.** Every
+  dialog in the app is a plain `egui::Window` with no blocking backdrop (zero
+  `egui::Modal` usage anywhere), and several dialogs recompute their working
+  panel/selection/directory from live `Workspace`/`PanelState` fields every
+  frame instead of capturing it once when they open. Round 4 found this causes
+  two distinct bugs from the same root cause: the batch-rename studio silently
+  retargets to whichever panel is active *at commit time*, not the one it
+  opened against, if the user clicks the other panel mid-dialog (audit round-4
+  #3); and the treemap dialog's title updates live while its tile data is a
+  frozen snapshot, so switching panels mid-dialog shows one folder's name over
+  another's sizes (#42). The fix is the same in both cases: snapshot the
+  target context once at dialog-open time instead of re-deriving it every
+  frame, which also strengthens the case for the `UiState` extraction (A5) —
+  a dedicated dialog-state struct is the natural place to hold that snapshot.
+- **`undo::Action` only models two of the app's destructive operations.**
+  `Move` and `BatchRename` are undoable; a plain single-file rename (F2, the
+  most common rename path) pushes nothing onto the undo stack at all, so
+  Cmd+Z afterward either no-ops or silently reverts a different, older action
+  instead (audit round-4 #8) — and even where undo *is* modeled,
+  "Gather into Folder"'s undo moves the files back out but never removes the
+  folder it created, leaving orphaned empty directories after an otherwise
+  clean undo (below the round-4 cut). Both point at the same gap: undo
+  coverage was added action-by-action rather than being a property every
+  `Command` that mutates the filesystem is checked against.
+- **Drag-and-drop state is split across four independent bugs in the same
+  plumbing.** `app/file_list.rs`'s per-panel `drag_entries`/`drop_target` and
+  `workspace.rs`'s `drop_dragged`/`take_drop_plan` are the site of: the
+  drop-target highlight reading the wrong panel's drag state so it never
+  renders (audit round-4 #44); a stray click while a transfer/pending-op is in
+  flight leaving a phantom "drop here" overlay stuck on screen (#43); starting
+  a drag on a row outside the current keyboard selection silently dragging the
+  stale selection instead of the row under the cursor (#4); and (already
+  tracked pre-round-4) releasing off a directory row silently falling back to
+  a whole-selection Move with no cancel (#6). One focused rewrite of this
+  plumbing — capture the actual dragged row(s) explicitly, mirror drag state
+  so both panels can render highlights for a cross-pane drag — closes all four
+  at once, similarly to the dir-size-index cluster above.
 
 ## Target architecture
 
@@ -158,7 +217,8 @@ validates.
 
 ## Invariants and testing
 
-The pure core is covered by 373 GUI-free tests. The one area the tests do **not**
+The pure core is covered by 375 GUI-free tests (376 `#[test]` functions, one
+`#[ignore]`d manual profiling harness). The one area the tests do **not**
 exercise is egui-frame behaviour: the dialog focus edge-trigger driven by the
 flag bus is invisible to the test suite, which is why the Effect-bus migration
 must be verified manually in the running app, not just by `cargo test`.
