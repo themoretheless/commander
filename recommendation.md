@@ -2,8 +2,12 @@
 
 The prioritised plan of what to do next, kept in sync with
 [architecture.md](architecture.md) (the target shape),
-[README.md](README.md) (user-facing capabilities), and
-[audit.md](audit.md) (the ranked list of concrete defects).
+[README.md](README.md) (user-facing capabilities),
+[audit.md](audit.md) (the ranked, verified list of concrete defects), and
+[backlog.md](backlog.md) (a wider, unverified single-pass inventory of 621
+smaller bugs/problems/improvements/suggestions from a file-by-file sweep of
+the whole codebase - nothing in it is scheduled; treat it as a source to pull
+from, not a plan).
 
 ## Strategy
 
@@ -26,19 +30,35 @@ risk. The keystone (A4) is deliberately not first: its payoff lives in
 egui-frame focus behaviour the 375 tests cannot guard, so it must be verified by
 hand in the running app.
 
+The table below is now a **high-level index only**. A dedicated design pass
+(3 independent architects, a synthesis, then 3 rounds of adversarial critique
+against SOLID-compliance/DRY/"reviewable in isolation" lenses) turned this
+into a fully detailed **33-step, 75-module** decomposition - see
+[architecture.md's "SOLID/DRY module decomposition"](architecture.md#solid-dry-module-decomposition-design-pass-3-critiquerefine-iterations)
+section for the exact module list, dependency graph, migration-step-by-step
+detail (with file:line citations), suggested reading order, and the risks the
+design pass itself flagged. **That section is the authoritative plan**; the
+A1-A7 table here is a stable quick index onto it (each row points at the
+detailed steps), kept because A1-A7 are the names everything else in this doc
+references. When the two disagree, architecture.md wins.
+
 | # | Step | Risk | Notes |
 | --- | --- | --- | --- |
 | A1 | Extract `compare` module | done | Shipped on `master` (`ddab764`). |
-| A2 | Extract `pathname` validators (`resolve_dir_input`, `validate_new_name`); move `workspace.rs`'s ~1,300-line test module into `workspace/tests.rs` | low | Pure file moves, compiler-verified. |
-| A3 | Introduce `ViewConfig` value object (sort/filter/hidden + `sort_entries`) | low-med | Covered by existing sort tests. Unblocks B2. |
-| A4 | Replace the `*_request` flag bus with one typed `effects: Vec<Effect>` queue | **med** | Keystone. Mine from spike (`process_effects`, `Requests` removed). Preserve the dialog focus edge-trigger; verify manually in-app. |
-| A5 | Extract `UiState` (group the ~20 dialog buffers out of `App`) | med | Mine from spike. Shrinks the `App` god object. |
-| A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | med | Delegation; behaviour-preserving. |
-| A7 | Define and inject `Clipboard` / `Trash` / `Persist` ports; return a structured `OpOutcome` | med | Completes the hexagon; makes the core side-effect-free in tests. |
+| A2 | Move `workspace.rs`'s test module to `workspace/tests.rs` (Step 0), then extract `pathname` (Step 1) | low | Pure file moves, compiler-verified. Detailed as architecture.md's Steps 0-1. |
+| A3 | Introduce `ViewConfig` value object (sort/filter/hidden + `sort_entries`) | low-med | Covered by existing sort tests. Unblocks B2. Now Steps 3-9 of the detailed plan (panel leaves extracted first, `ViewConfig` and its `filter_cache` sibling-fix land together at Steps 7-8 since they share one invariant). |
+| A4 | Replace the `*_request` flag bus with one typed `effects: Vec<Effect>` queue | **med** | Keystone. Mine from spike (`process_effects`, `Requests` removed). Preserve the dialog focus edge-trigger; verify manually in-app. Split into Steps 14-16 (a `DialogKind` leaf first, then an additive `effects` field, then the risky cutover alone) plus the UI-side drain in Step 29. |
+| A5 | Extract `UiState` (group the ~20 dialog buffers out of `App`) | med | Mine from spike. Shrinks the `App` god object. Split into Steps 16-17 (`dialog_state_types` then `dialog_buffers`); D19's dialog-retargeting fix lands in the same commit as Step 17 since both touch the same lines. |
+| A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | med | Delegation; behaviour-preserving. Steps 13, 18-21 - `TransferCenter` takes a narrow `Refreshable` trait rather than `&mut PanelState` (an ISP fix the critique required), and `workspace::transfer_requests` splits off as a peer module for pure plan computation. |
+| A7 | Define and inject `Clipboard` / `Trash` / `Persist` ports; return a structured `OpOutcome` | med | Completes the hexagon; makes the core side-effect-free in tests. Steps 26-28 - note `Persist` grew to three helpers (`load_lenient`, `load_optional` for `session.rs`'s no-`Default` case, `save_atomic`) once the design pass checked every call site's actual signature, and D12's AppleScript-injection fix is a plain escaping function, not a port (the call site is a static `extern "C"` callback with no `self` to inject one onto). |
 
 Deferred from the spike (re-land only on explicit demand, each is a feature in
 its own right, not cleanup): tokio runtime + `spawn_blocking`, virtualised file
-list, tabs, git status column, tags, notes, configurable columns.
+list, tabs, git status column, tags, notes, configurable columns. Two more
+splits are in the detailed plan as **optional, beyond committed Track A**
+(Steps 31-32): `command.rs`'s palette-ranking machinery into `palette.rs`, and
+`app/confirm_dialog.rs`'s two list-rendering strategies into their own files -
+land only if reviewers want them after A1-A7 lands clean.
 
 ## Track B - unbuilt features from the README roadmap
 
@@ -112,6 +132,9 @@ merged in and 16 items pushed below the cut. Ranks below reference the
 **round-4** audit table; items no longer in the numbered table are cited as
 "(below the cut)", matching audit.md's plain-list convention (rank numbers are
 not carried across rounds since the synthesis re-ranks everything each time).
+(The D-numbering skips D7: it was a round-2 item folded into D6/D8 during an
+earlier refresh and the label was retired rather than reused, so the gap is
+intentional, not a dropped row.)
 
 | # | Fix | round-4 rank(s) | Effort | Status |
 | --- | --- | --- | --- | --- |
@@ -157,7 +180,7 @@ permanent trap but the existing "Go up" affordance on the Gone-state screen
 already escapes it each time, so it's a recurring papercut, not a dead end;
 round-4 **#50** (`rename_noreplace` `ENOTSUP` fallback) rests on an honestly
 un-reproduced OS behavior (no exotic filesystem was available to test against)
-— real gap, narrow trigger. See the corrections tables in
+- real gap, narrow trigger. See the corrections tables in
 [audit.md](audit.md).
 
 ## Track E - ideas backlog (unscoped, not yet prioritised)
@@ -165,7 +188,7 @@ un-reproduced OS behavior (no exotic filesystem was available to test against)
 A round-4 brainstorm from 5 angles (competitive gap analysis, power-user
 workflow, architecture, reliability/data-safety, scale/performance) surfaced
 30 ideas that are not bugs and not yet on the roadmap. These are a parking
-lot, not a commitment — nothing here is scheduled. Promote an idea into
+lot, not a commitment - nothing here is scheduled. Promote an idea into
 Track A/B by giving it a letter once it's actually prioritised.
 
 **Feature ideas (from competitive-gap and power-user-workflow angles):**
@@ -212,7 +235,7 @@ at a time):
 
 | Idea | Effort | Note |
 | --- | --- | --- |
-| Move directory listing (`read_dir`/`jwalk`) off the main thread | medium | Distinct from the deferred "virtualised file list" — this is about the synchronous read, not render cost |
+| Move directory listing (`read_dir`/`jwalk`) off the main thread | medium | Distinct from the deferred "virtualised file list" - this is about the synchronous read, not render cost |
 | Cap/pool image-preload thread spawns and gate them by volume speed | small | Complements D16; a slow network volume can turn the look-ahead cache into a thundering herd |
 | Make the free-space preflight non-blocking with a timeout | small | Same root cause as D23's `free_space()` hang fix, framed as a proactive UX improvement |
 | Make the recursive fs watcher opt-out/shallow on non-local volumes | medium | FSEvents doesn't work reliably over SMB/NFS; `notify` falls back to a polling backend that can hammer a share |
@@ -242,13 +265,13 @@ Done: **C** (docs, round-1 and round-3 batches), and **D1 + D2 + D3**
 explicit-save dialogs toast on failure; undo/redo surface a refused rename
 instead of swallowing it; the image cache is flushed on directory change.
 
-Next suggested order: **D12 (AppleScript injection) first** — still an actual
+Next suggested order: **D12 (AppleScript injection) first** - still an actual
 local code-execution vulnerability, not a robustness nit, and the fix is small
 (escape the interpolated string or drop the AppleScript call). Then the other
 round-4 discoveries that are silent-wrong-destructive-action bugs reachable
-through completely ordinary interaction — **D19 (dialog retargeting), D21
+through completely ordinary interaction - **D19 (dialog retargeting), D21
 (conflict-resolution deadlock), D20 (undo coverage), D22 (drag-and-drop
-rewrite)** — since these are worse in kind than a crash (they do the wrong
+rewrite)** - since these are worse in kind than a crash (they do the wrong
 thing to the wrong files with no warning), even though several individually
 rank below D6's panics on raw severity. Then **D6 (panics/overflow) + D10
 (cursor invariants) + D14 (textdiff DoS) + D15 (unconfirmed drag/toolbar
@@ -263,6 +286,6 @@ motivation for the `ViewState` encapsulation in Track A, and D19's dialog-
 snapshot fix is the strongest concrete motivation for the `UiState`
 extraction (A5).
 
-Track E (ideas) is deliberately unscheduled — revisit it after the D-track
+Track E (ideas) is deliberately unscheduled - revisit it after the D-track
 correctness work above lands, and pull specific ideas into Track A/B once
 prioritised.

@@ -106,6 +106,9 @@ one-click recovery). What remains:
 
 The architecture and the prioritised plan for these items live in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
+A ranked, verified list of concrete defects is in [audit.md](audit.md); a much
+wider, unverified single-pass inventory (621 bugs/problems/improvements/
+suggestions from a file-by-file sweep) is in [backlog.md](backlog.md).
 
 ## Keyboard shortcuts
 
