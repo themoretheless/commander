@@ -24,6 +24,12 @@ module is a thin egui layer over it.
   Older-than-a-month bucket).
 - **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
   and frequency.
+- **Per-folder view memory**: sort, filters, hidden, and density are
+  remembered per directory for the running session (not persisted across
+  restarts) and restored when you navigate back.
+- **Vim-style chords**, modifier-free: `j` / `k` move the cursor down/up
+  (with a leading count, e.g. `5j`, picked up from the type-ahead buffer),
+  `g g` jumps to the top, and `s s` reverses the sort.
 
 ### File operations
 
@@ -31,9 +37,15 @@ module is a thin egui layer over it.
   (speed graph, ETA, per-file error list). Copies use native `copyfile` with
   APFS cloning and fall back to a buffered copy; a same-volume move is an
   instant atomic rename.
-- **Single transfer queue**: a second operation fired while one runs waits
-  behind it instead of being dropped (the progress window shows how many are
-  queued).
+- **Transfer queue**: firing a second operation while one runs queues it
+  instead of dropping it (F5/F6 stay live during an active transfer just for
+  this). The **queue panel** (palette: "Transfer queue") lists every waiting
+  job with pause / resume / reorder / cancel; concurrency stays capped at one
+  transfer at a time (the progress UI is built around a single active job).
+- **Operation history** (palette: "Operation history"): a searchable log of
+  completed moves, deletes, and batch renames, each with a jump-back button
+  and, while it is still the exact top of the undo stack, a live Undo button.
+  Session-lifetime, not persisted across restarts.
 - **Safe overwrites**: the confirmation dialog offers Overwrite All, **Keep
   Both**, and Skip. Overwrites stage the new copy and swap it into place, so an
   interrupted copy never destroys the existing file. Copying or moving a path
@@ -44,10 +56,10 @@ module is a thin egui layer over it.
 - **Gather into a new subfolder** (`Cmd+Shift+N`): move the selection into a
   freshly-named folder in one undoable step (Finder's New Folder with
   Selection).
-- **Batch-rename studio** (`Cmd+Shift+R`): find/replace, case, prefix/suffix,
-  numbering, with a live preview. Resolvable collisions (swaps, rotations, and
-  the case-only `Foo` -> `foo` rename) are applied through a safe temp-staged
-  order.
+- **Batch-rename studio** (`Cmd+Shift+R`): find/replace (plain or **regex**,
+  with `$1`-style capture groups), case, prefix/suffix, numbering, with a live
+  preview. Resolvable collisions (swaps, rotations, and the case-only
+  `Foo` -> `foo` rename) are applied through a safe temp-staged order.
 - **Run-command / open-with bar** (palette): run a shell command on the
   selection with `{paths}` / `{names}` / `{dir}` placeholders expanded and
   shell-quoted, with a live preview; save reusable templates.
@@ -63,6 +75,10 @@ module is a thin egui layer over it.
   other, identical to the other, or same-named (palette).
 - **Selection algebra**: select-by-mask (`Cmd+G`), and stash/union/intersect/
   subtract/symmetric-difference of selections.
+- **Marked-files set** (`M` to toggle), distinct from the interactive
+  selection and never cleared by select-all/invert/clear-selection, with its
+  own union/intersect/subtract/symmetric-difference against the selection
+  (palette).
 - **Drop-stack shelf**: gather files across folders (`Cmd+Shift+A`) and drain
   them into one destination (`Cmd+Shift+V`).
 
@@ -87,24 +103,28 @@ module is a thin egui layer over it.
 
 Shipped from earlier design rounds: pinned favorites, saved searches,
 selection sets, the operation-queue engine, focus mode, compare/diff selection,
-relative dates, gather-into-folder, the run-command bar, and contextual empty
+relative dates, gather-into-folder, the run-command bar, contextual empty
 states (truly empty vs filtered-to-nothing vs permission-denied, each with a
-one-click recovery). What remains:
+one-click recovery), the transfer-queue panel, vim-style chords, the
+marked-files set, per-folder view memory, regex batch-rename, and operation
+receipts.
 
-1. **Queue panel UI**: pause / resume / reorder / concurrency for the transfer
-   queue (the engine is wired; only the panel and the input-gate relaxation
-   that lets you queue a second transfer interactively are pending).
-2. **Vim-style key chords**: multi-key leaders and a count prefix (`5j`, `g g`,
-   `s s` to sort), opening a modifier-free command namespace.
-3. **Marked-files set** distinct from the cursor selection, surviving
-   navigation, that the selection algebra can combine with.
-4. **Per-folder view memory**: remember sort, filters, hidden, and density per
-   directory.
-5. **Regex find/replace** in the batch-rename studio.
-6. **Operation receipts**: a searchable history of completed transfers and
-   deletes with jump-back and undo affordances.
+A few scope decisions from the last round, so they don't read as oversights:
 
-The architecture and the prioritised plan for these items live in
+- The queue panel's concurrency is fixed at one transfer at a time; the
+  progress UI and `active_transfer` state are built around a single job; true
+  parallel transfers would need that to become a collection.
+- Per-folder view memory and operation receipts are session-lifetime only
+  (not written to disk), unlike the current directory's own settings, which
+  the session file already persists.
+- Operation receipts cover moves, deletes, and batch renames (the operations
+  that already raise a completion signal); plain copies aren't logged, since
+  they have no undo counterpart in this app.
+- Vim chords claim `g`, `s`, `j`, `k` away from type-ahead when they're used
+  as chord leaders/motions; mid-search (e.g. typing "backjack") they still
+  fall through as ordinary search characters.
+
+The architecture and the prioritised plan for what's next live in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
 A ranked, verified list of concrete defects is in [audit.md](audit.md); a much
 wider, unverified single-pass inventory (621 bugs/problems/improvements/
@@ -125,6 +145,10 @@ suggestions from a file-by-file sweep) is in [backlog.md](backlog.md).
 | `Cmd+1`..`9` | Jump to bookmark slot |
 | `Cmd+Shift+1`..`9` | Assign active folder to bookmark slot |
 | `Space` | Toggle selection |
+| `M` | Toggle mark |
+| `j` / `k` | Move cursor down / up (`5j` moves 5 rows) |
+| `g g` | Jump to first row |
+| `s s` | Reverse sort |
 | `Cmd+A` | Select all |
 | `Cmd+Shift+I` | Invert selection |
 | `Cmd+G` | Select by mask |
@@ -153,13 +177,14 @@ suggestions from a file-by-file sweep) is in [backlog.md](backlog.md).
 
 More commands (run command on selection, cross-pane diff selection, copy-name /
 parent / file-URL / shell / relative path, **copy the listing as text / CSV /
-Markdown** (the selection if any, else the whole folder), selection stash
-algebra, **select clutter files** like `.DS_Store`,
+Markdown** (the selection if any, else the whole folder), selection stash and
+marked-set algebra, **select clutter files** like `.DS_Store`,
 **select the 10 largest**, **files like the cursor**, or **empty files**,
 duplicates, saved searches, bookmark this folder, **sort by extension / kind**,
-**reverse sort**, and the **sort toggles** for folders-first and
-natural-vs-A-Z ordering) are available from the command palette (`Cmd+K`).
-Names sort naturally (`file2` before `file10`) by default.
+**reverse sort**, the **sort toggles** for folders-first and natural-vs-A-Z
+ordering, the **transfer queue** panel, and **operation history**) are
+available from the command palette (`Cmd+K`). Names sort naturally (`file2`
+before `file10`) by default.
 
 ## Build and run
 
@@ -180,10 +205,10 @@ cargo fmt --check                # formatting
 
 The file-manager logic lives in a UI-independent core (`workspace`, `panel`,
 `transfer`, `opqueue`, `scan`, `command`, `compare`, `fs_util`, `rename`,
-`sync`, `bookmarks`, `jumplist`, `cmdtemplate`, ...) that is unit-tested without
-a GUI; the `app` module is a thin egui layer over it. The architecture and the
-refactoring plan are documented in [architecture.md](architecture.md) and
-[recommendation.md](recommendation.md).
+`sync`, `bookmarks`, `jumplist`, `cmdtemplate`, `undo`, `receipts`, ...) that
+is unit-tested without a GUI; the `app` module is a thin egui layer over it.
+The architecture and the refactoring plan are documented in
+[architecture.md](architecture.md) and [recommendation.md](recommendation.md).
 
 ## License
 

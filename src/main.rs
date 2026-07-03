@@ -23,6 +23,7 @@ mod opqueue;
 mod panel;
 mod query;
 mod quick_actions;
+mod receipts;
 mod reldate;
 mod rename;
 mod rename_order;
@@ -55,8 +56,10 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([900.0, 500.0])
             .with_titlebar_shown(false)
             .with_fullsize_content_view(true),
-        vsync: true,
-        hardware_acceleration: eframe::HardwareAcceleration::Required,
+        // eframe 0.35 moved vsync/hardware-acceleration into the
+        // backend-specific `wgpu_options`/`glow_options`; the wgpu
+        // defaults (AutoVsync, hardware-accelerated Metal adapter on
+        // macOS) already match what this app wants.
         ..Default::default()
     };
 

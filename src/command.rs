@@ -17,6 +17,10 @@ pub enum Command {
     CursorPageUp,
     /// Move down by one visible page.
     CursorPageDown,
+    /// Move the cursor by `n` rows (negative = up, positive = down),
+    /// clamped to the filtered view. Driven by the vim-style `j`/`k` chords,
+    /// with an optional leading count (e.g. `5j`).
+    CursorMove(i32),
     /// Shift+Up: select the current row and move up (range selection).
     ExtendSelectUp,
     /// Shift+Down: select the current row and move down (range selection).
@@ -119,6 +123,24 @@ pub enum Command {
     StashSubtract,
     /// Replace the selection with (selection symmetric-difference stash).
     StashSymmetricDiff,
+    /// M: flip whether the cursor entry is in the mark set (distinct from
+    /// `selected`; survives navigation and feeds the selection algebra).
+    ToggleMark,
+    /// Clear all marks in the active panel.
+    ClearMarks,
+    /// Replace the selection with (selection ∪ marked).
+    MarkedUnion,
+    /// Replace the selection with (selection ∩ marked).
+    MarkedIntersect,
+    /// Replace the selection with (selection - marked).
+    MarkedSubtract,
+    /// Replace the selection with (selection symmetric-difference marked).
+    MarkedSymmetricDiff,
+    /// Show/hide the transfer-queue panel (pause/resume/reorder/cancel the
+    /// jobs waiting behind the active transfer).
+    ToggleQueuePanel,
+    /// Open the searchable history of completed moves/deletes/batch-renames.
+    OpenReceipts,
     ToggleHidden,
     /// Toggle whether folders are pinned to the top of the active listing.
     ToggleFoldersFirst,
@@ -219,6 +241,22 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             "",
             Command::StashSymmetricDiff,
         ),
+        ("Toggle mark", "M", Command::ToggleMark),
+        ("Clear marks", "", Command::ClearMarks),
+        ("Selection: union with marked", "", Command::MarkedUnion),
+        (
+            "Selection: intersect with marked",
+            "",
+            Command::MarkedIntersect,
+        ),
+        ("Selection: subtract marked", "", Command::MarkedSubtract),
+        (
+            "Selection: symmetric difference with marked",
+            "",
+            Command::MarkedSymmetricDiff,
+        ),
+        ("Transfer queue", "", Command::ToggleQueuePanel),
+        ("Operation history", "", Command::OpenReceipts),
         ("Select clutter files", "", Command::SelectJunk),
         ("Select 10 largest files", "", Command::SelectLargest),
         (
@@ -552,6 +590,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         D if press.command && press.shift => Some(Command::CycleDensity),
         D if press.command => Some(Command::DiffFiles),
         M if press.command && press.shift => Some(Command::DiskTreemap),
+        M => Some(Command::ToggleMark),
         N if press.command && press.shift => Some(Command::GatherIntoFolder),
         F if press.command => Some(Command::BeginFind),
         C if press.command && press.shift => Some(Command::CopyPath),
@@ -855,7 +894,8 @@ mod tests {
             shift: true,
         };
         assert_eq!(map_key(cmd_shift_m), Some(Command::DiskTreemap));
-        assert_eq!(map_key(press(KeyCode::M)), None);
+        // Bare M (no modifiers) toggles the mark on the cursor entry.
+        assert_eq!(map_key(press(KeyCode::M)), Some(Command::ToggleMark));
     }
 
     #[test]

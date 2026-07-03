@@ -31,9 +31,13 @@ pub struct Session {
     pub right_folders_first: bool,
     #[serde(default = "default_true")]
     pub right_natural_sort: bool,
-    /// List density. Defaulted for sessions written before density existed.
+    /// List density, per panel. Defaulted for sessions written before
+    /// density existed (and before it moved from a single app-wide tier to
+    /// one per panel).
     #[serde(default)]
-    pub density: crate::density::Density,
+    pub left_density: crate::density::Density,
+    #[serde(default)]
+    pub right_density: crate::density::Density,
     /// Command-palette usage history, for recency/frequency ranking.
     #[serde(default)]
     pub palette_usage: crate::command::UsageStats,
@@ -108,7 +112,8 @@ mod tests {
             left_natural_sort: false,
             right_folders_first: false,
             right_natural_sort: true,
-            density: crate::density::Density::Compact,
+            left_density: crate::density::Density::Compact,
+            right_density: crate::density::Density::Spacious,
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 7,
         }
@@ -116,12 +121,15 @@ mod tests {
 
     #[test]
     fn density_defaults_when_absent_from_json() {
-        // A session written before density existed has no `density` key.
+        // A session written before per-panel density existed has neither key.
         let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
         let mut val = serde_json::to_value(&s).unwrap();
-        val.as_object_mut().unwrap().remove("density");
+        let obj = val.as_object_mut().unwrap();
+        obj.remove("left_density");
+        obj.remove("right_density");
         let back: Session = serde_json::from_value(val).unwrap();
-        assert_eq!(back.density, crate::density::Density::Comfortable);
+        assert_eq!(back.left_density, crate::density::Density::Comfortable);
+        assert_eq!(back.right_density, crate::density::Density::Comfortable);
     }
 
     #[test]

@@ -23,16 +23,31 @@ pub struct Numbering {
 }
 
 /// A composable rename rule. Operations apply in a fixed, documented order:
-/// literal find/replace over the whole name, then split off the extension,
-/// then case, prefix, suffix, and finally the optional counter on the stem.
+/// find/replace over the whole name, then split off the extension, then
+/// case, prefix, suffix, and finally the optional counter on the stem.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct RenameRule {
     pub find: String,
+    /// In regex mode, `$1`/`${name}`-style capture-group references are
+    /// expanded (see [`regex::Regex::replace_all`]).
     pub replace: String,
+    /// Treat `find` as a regular expression instead of a literal substring.
+    pub regex: bool,
     pub prefix: String,
     pub suffix: String,
     pub case: CaseMode,
     pub numbering: Option<Numbering>,
+}
+
+/// The pattern error to show the user when `rule` is in regex mode with a
+/// non-empty, invalid pattern. Planning itself never fails on a bad pattern
+/// (see [`rename_one`]); this is the side channel the UI checks separately.
+pub fn regex_error(rule: &RenameRule) -> Option<String> {
+    if rule.regex && !rule.find.is_empty() {
+        regex::Regex::new(&rule.find).err().map(|e| e.to_string())
+    } else {
+        None
+    }
 }
 
 /// Outcome of planning one entry.
@@ -75,10 +90,25 @@ fn apply_case(stem: &str, mode: CaseMode) -> String {
 }
 
 /// Compute the proposed new name for a single entry at position `index`.
-fn rename_one(name: &str, index: usize, rule: &RenameRule) -> String {
-    // 1) literal find/replace over the full name (may touch the extension).
+/// `compiled` is the pre-compiled pattern for regex mode (`None` when not in
+/// regex mode, or when the pattern failed to compile — see [`regex_error`]).
+fn rename_one(
+    name: &str,
+    index: usize,
+    rule: &RenameRule,
+    compiled: Option<&regex::Regex>,
+) -> String {
+    // 1) find/replace over the full name (may touch the extension).
     let replaced = if rule.find.is_empty() {
         name.to_string()
+    } else if rule.regex {
+        match compiled {
+            // $1 / ${name} capture-group references in `replace` are
+            // expanded automatically by `replace_all`.
+            Some(re) => re.replace_all(name, rule.replace.as_str()).into_owned(),
+            // Invalid pattern: no-op here, `regex_error` surfaces it.
+            None => name.to_string(),
+        }
     } else {
         name.replace(&rule.find, &rule.replace)
     };
@@ -109,10 +139,14 @@ pub fn plan_batch_rename(
     let batch_lower: HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
     let existing_lower: HashSet<String> = existing.iter().map(|n| n.to_lowercase()).collect();
 
+    // Compiled once for the whole batch, not per name.
+    let compiled = (rule.regex && !rule.find.is_empty())
+        .then(|| regex::Regex::new(&rule.find).ok())
+        .flatten();
     let targets: Vec<String> = names
         .iter()
         .enumerate()
-        .map(|(i, n)| rename_one(n, i, rule))
+        .map(|(i, n)| rename_one(n, i, rule, compiled.as_ref()))
         .collect();
 
     // How many targets share each lowercased name (intra-batch clashes).
@@ -182,6 +216,59 @@ mod tests {
         assert_eq!(plans[0].to, "Photo_01.jpg");
         assert_eq!(plans[1].to, "Photo_02.jpg");
         assert_eq!(plans[0].status, PlanStatus::Ok);
+    }
+
+    #[test]
+    fn regex_find_replace_expands_capture_groups() {
+        let rule = RenameRule {
+            find: r"IMG_(\d+)".into(),
+            replace: "Photo-$1".into(),
+            regex: true,
+            ..Default::default()
+        };
+        let n = names(&["IMG_042.jpg", "IMG_007.jpg"]);
+        let ex = existing(&["IMG_042.jpg", "IMG_007.jpg"]);
+        let plans = plan_batch_rename(&n, &ex, &rule);
+        assert_eq!(plans[0].to, "Photo-042.jpg");
+        assert_eq!(plans[1].to, "Photo-007.jpg");
+    }
+
+    #[test]
+    fn regex_error_reports_an_invalid_pattern() {
+        let rule = RenameRule {
+            find: "(unclosed".into(),
+            regex: true,
+            ..Default::default()
+        };
+        assert!(regex_error(&rule).is_some());
+    }
+
+    #[test]
+    fn regex_error_is_none_outside_regex_mode_or_with_an_empty_pattern() {
+        assert_eq!(regex_error(&RenameRule::default()), None);
+        let literal = RenameRule {
+            find: "(unclosed".into(), // invalid as regex, fine as a literal
+            ..Default::default()
+        };
+        assert_eq!(regex_error(&literal), None);
+        let empty_pattern = RenameRule {
+            regex: true,
+            ..Default::default()
+        };
+        assert_eq!(regex_error(&empty_pattern), None);
+    }
+
+    #[test]
+    fn invalid_regex_pattern_leaves_names_unchanged_instead_of_panicking() {
+        let rule = RenameRule {
+            find: "(unclosed".into(),
+            replace: "x".into(),
+            regex: true,
+            ..Default::default()
+        };
+        let plans = plan_batch_rename(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
+        assert_eq!(plans[0].to, "a.txt");
+        assert_eq!(plans[0].status, PlanStatus::Unchanged);
     }
 
     #[test]

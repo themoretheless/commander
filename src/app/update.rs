@@ -13,34 +13,37 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.begin_frame(ctx);
-        self.show_transfer_dialog(ctx);
-        self.show_confirm_dialog(ctx);
-        self.show_rename_dialog(ctx);
-        self.show_batch_rename_dialog(ctx);
-        self.show_sync_dialog(ctx);
-        self.show_duplicates_dialog(ctx);
-        self.show_diff_dialog(ctx);
-        self.show_treemap_dialog(ctx);
-        self.show_find_dialog(ctx);
-        self.show_saved_search_dialog(ctx);
-        self.show_mask_dialog(ctx);
-        self.show_path_dialog(ctx);
-        self.show_recent_dialog(ctx);
-        self.show_run_command_dialog(ctx);
-        self.show_palette_dialog(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.begin_frame(&ctx);
+        self.show_transfer_dialog(&ctx);
+        self.show_confirm_dialog(&ctx);
+        self.show_rename_dialog(&ctx);
+        self.show_batch_rename_dialog(&ctx);
+        self.show_sync_dialog(&ctx);
+        self.show_duplicates_dialog(&ctx);
+        self.show_diff_dialog(&ctx);
+        self.show_treemap_dialog(&ctx);
+        self.show_find_dialog(&ctx);
+        self.show_saved_search_dialog(&ctx);
+        self.show_mask_dialog(&ctx);
+        self.show_path_dialog(&ctx);
+        self.show_recent_dialog(&ctx);
+        self.show_run_command_dialog(&ctx);
+        self.show_palette_dialog(&ctx);
+        self.show_queue_panel(&ctx);
+        self.show_receipts_dialog(&ctx);
         if !self.focus_mode {
-            self.show_toolbar_panel(ctx);
-            self.show_shortcut_bar(ctx);
-            self.show_shelf_tray(ctx);
-            self.show_selection_hud(ctx);
+            self.show_toolbar_panel(ui);
+            self.show_shortcut_bar(ui);
+            self.show_shelf_tray(ui);
+            self.show_selection_hud(ui);
         }
-        self.show_main_area(ctx);
-        self.show_drag_overlay(ctx);
-        self.show_type_ahead_overlay(ctx);
-        self.show_toasts(ctx);
-        self.handle_drop(ctx);
+        self.show_main_area(ui);
+        self.show_drag_overlay(&ctx);
+        self.show_type_ahead_overlay(&ctx);
+        self.show_toasts(&ctx);
+        self.handle_drop(&ctx);
     }
 
     /// eframe calls this on exit and on its auto-save interval; persist our
@@ -56,7 +59,7 @@ impl App {
     fn begin_frame(&mut self, ctx: &egui::Context) {
         // Repaint only when there's activity (scroll animation, background loads)
         // egui will auto-repaint on user input (mouse, keyboard)
-        let has_animation = ctx.is_using_pointer()
+        let has_animation = ctx.egui_is_using_pointer()
             || ctx.input(|i| i.smooth_scroll_delta.length() > 0.0)
             || self.ws.left.preview.is_some()
             || self.ws.right.preview.is_some();
@@ -100,7 +103,8 @@ impl App {
             // poll_transfer drains the next queued transfer (two-way sync second
             // pass, or any op queued behind the active one) via this notify.
             if self.ws.poll_transfer(move || c.request_repaint()) {
-                // A clean move just finished: raise an undoable toast.
+                // A clean move just finished: raise an undoable toast and
+                // log a receipt (jump-back + the same live undo affordance).
                 let now = ctx.input(|i| i.time);
                 if let Some(a) = self.ws.stack.peek_undo() {
                     self.toasts.push(crate::toasts::Toast::new(
@@ -109,6 +113,15 @@ impl App {
                         true,
                         now,
                     ));
+                    if let Some(jump_to) = a.jump_to() {
+                        self.receipts.push(crate::receipts::Receipt {
+                            verb: a.verb(),
+                            item_count: a.item_count(),
+                            timestamp: now,
+                            jump_to,
+                            undo_action: Some(a.clone()),
+                        });
+                    }
                 }
             }
         }
@@ -164,10 +177,6 @@ impl App {
                 ));
             }
         }
-        // Cycle the list density (toward Spacious; wraps).
-        if std::mem::take(&mut self.ws.cycle_density_request) {
-            self.density = crate::density::cycle(self.density, 1);
-        }
         // Copy the selection's path(s) to the clipboard in the requested style.
         if let Some(style) = self.ws.clipboard_request.take() {
             let paths: Vec<std::path::PathBuf> = self
@@ -207,29 +216,32 @@ impl App {
         }
     }
 
-    fn show_toolbar_panel(&mut self, ctx: &egui::Context) {
+    fn show_toolbar_panel(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
-        egui::TopBottomPanel::top("toolbar")
+        let ctx = ui.ctx().clone();
+        egui::Panel::top("toolbar")
             .frame(Frame::NONE.fill(t.bg_toolbar))
-            .show(ctx, |ui| {
-                self.toolbar(ui, ctx);
+            .show(ui, |ui| {
+                self.toolbar(ui, &ctx);
             });
     }
 
-    fn show_shortcut_bar(&mut self, ctx: &egui::Context) {
+    fn show_shortcut_bar(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
+        let ctx = ui.ctx().clone();
         let quick_context = self.quick_action_context();
         let quick_actions = crate::quick_actions::actions(quick_context);
         let next_hint = crate::quick_actions::next_hint(quick_context);
-        let max_quick_actions = if ctx.available_rect().width() < 1120.0 {
-            2
-        } else {
-            4
-        };
+        // Top/bottom panels don't reduce the panel-carving `Ui`'s width, so
+        // this doubles as "the window's content width" for the inner
+        // `>= 1280.0` check below, deep inside nested layout closures where
+        // `ui.available_width()` would only see the narrow nested region.
+        let panel_width = ui.available_width();
+        let max_quick_actions = if panel_width < 1120.0 { 2 } else { 4 };
         let mut quick_action: Option<crate::quick_actions::QuickAction> = None;
-        egui::TopBottomPanel::bottom("shortcuts")
+        egui::Panel::bottom("shortcuts")
             .frame(Frame::NONE.fill(t.bg_toolbar))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 Frame::NONE
                     .inner_margin(Margin::symmetric(12, 6))
                     .show(ui, |ui| {
@@ -304,7 +316,12 @@ impl App {
                                 ui.add_space(10.0);
                                 chip(
                                     ui,
-                                    format!("Rows {}", crate::density::short_label(self.density)),
+                                    format!(
+                                        "Rows {}",
+                                        crate::density::short_label(
+                                            self.ws.active_panel_ref().density
+                                        )
+                                    ),
                                     true,
                                 );
                                 chip(ui, "Tree".to_string(), self.show_tree);
@@ -351,7 +368,7 @@ impl App {
                                         }
                                     }
                                 }
-                                if ctx.available_rect().width() >= 1280.0 {
+                                if panel_width >= 1280.0 {
                                     ui.add_space(8.0);
                                     ui.label(
                                         egui::RichText::new(format!("Next: {next_hint}"))
@@ -364,7 +381,7 @@ impl App {
                     });
             });
         if let Some(action) = quick_action {
-            self.run_quick_action(action, ctx);
+            self.run_quick_action(action, &ctx);
         }
     }
 
@@ -477,7 +494,7 @@ impl App {
 
     /// Bottom shelf (drop stack) tray, shown only when something is staged:
     /// count + total size, removable chips, Drain-here and Clear.
-    fn show_shelf_tray(&mut self, ctx: &egui::Context) {
+    fn show_shelf_tray(&mut self, ui: &mut egui::Ui) {
         if self.ws.shelf.is_empty() {
             return;
         }
@@ -493,9 +510,9 @@ impl App {
         let mut clear = false;
         let mut drain = false;
 
-        egui::TopBottomPanel::bottom("shelf_tray")
+        egui::Panel::bottom("shelf_tray")
             .frame(Frame::NONE.fill(t.bg_card))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 Frame::NONE
                     .inner_margin(Margin::symmetric(12, 6))
                     .show(ui, |ui| {
@@ -581,7 +598,8 @@ impl App {
     /// A quiet pill near the bottom of the central area summarizing the active
     /// panel's selection (count, folders, size, kind breakdown). Shown only
     /// when something is selected; complements the per-panel status bar.
-    fn show_selection_hud(&mut self, ctx: &egui::Context) {
+    fn show_selection_hud(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         let selected = self.ws.active_panel_ref().selected_entries();
         if selected.is_empty() {
             return;
@@ -638,18 +656,19 @@ impl App {
             .collect::<Vec<_>>()
             .join("  \u{00b7}  ");
 
-        let area = ctx.available_rect();
+        let area = ui.available_rect_before_wrap();
+        let screen = ctx.input(|i| i.viewport_rect());
         egui::Area::new(egui::Id::new("selection_hud"))
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
                 [
-                    area.center().x - ctx.screen_rect().center().x,
-                    -(ctx.screen_rect().bottom() - area.bottom()) - 14.0,
+                    area.center().x - screen.center().x,
+                    -(screen.bottom() - area.bottom()) - 14.0,
                 ],
             )
             .order(egui::Order::Foreground)
             .interactable(false)
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 egui::Frame::popup(ui.style())
                     .fill(t.bg_card)
                     .stroke(Stroke::new(1.0_f32, t.border))
@@ -677,10 +696,12 @@ impl App {
     }
 
     /// Tree sidebar plus the two file panels with the resizable divider.
-    fn show_main_area(&mut self, ctx: &egui::Context) {
+    fn show_main_area(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         let t = self.colors;
-        let metrics = crate::density::metrics(self.density);
-        let window_width = ctx.screen_rect().width();
+        let left_metrics = crate::density::metrics(self.ws.left.density);
+        let right_metrics = crate::density::metrics(self.ws.right.density);
+        let window_width = ctx.input(|i| i.viewport_rect()).width();
         let panel_id = egui::Id::new("left_panel");
 
         // Build cross-panel comparison maps before borrowing panels mutably:
@@ -707,13 +728,13 @@ impl App {
         // Global tree sidebar
         let mut tree_actual_width: f32 = 0.0;
         if self.show_tree {
-            let tree_resp = egui::SidePanel::left("global_tree")
+            let tree_resp = egui::Panel::left("global_tree")
                 .resizable(true)
-                .default_width(self.tree_width)
-                .min_width(100.0)
-                .max_width(400.0)
+                .default_size(self.tree_width)
+                .min_size(100.0)
+                .max_size(400.0)
                 .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     egui::ScrollArea::both()
                         .id_salt("global_tree_scroll")
                         .auto_shrink([false; 2])
@@ -752,12 +773,12 @@ impl App {
         let mut tree_toggle = false;
 
         // Left panel
-        let left_resp = egui::SidePanel::left(panel_id)
+        let left_resp = egui::Panel::left(panel_id)
             .resizable(true)
-            .default_width(half)
-            .min_width(300.0)
+            .default_size(half)
+            .min_size(300.0)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
                 {
                     self.ws.active = ActivePanel::Left;
@@ -773,7 +794,7 @@ impl App {
                     self.show_size_bars,
                     left_compare.as_ref(),
                     self.ws.opener.as_ref(),
-                    metrics,
+                    left_metrics,
                 );
             });
 
@@ -803,7 +824,7 @@ impl App {
         // Right panel (takes remaining space)
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
                 {
                     self.ws.active = ActivePanel::Right;
@@ -819,7 +840,7 @@ impl App {
                     self.show_size_bars,
                     right_compare.as_ref(),
                     self.ws.opener.as_ref(),
-                    metrics,
+                    right_metrics,
                 );
             });
 
@@ -911,7 +932,7 @@ impl App {
         }
         let t = self.colors;
         let label = format!("\u{2192} {buffer}");
-        let screen = ctx.screen_rect();
+        let screen = ctx.input(|i| i.viewport_rect());
         egui::Area::new(egui::Id::new("type_ahead_overlay"))
             .fixed_pos(egui::pos2(screen.center().x - 60.0, screen.bottom() - 80.0))
             .order(egui::Order::Tooltip)
@@ -940,7 +961,7 @@ impl App {
         }
         let t = self.colors;
         let now = ctx.input(|i| i.time);
-        let screen = ctx.screen_rect();
+        let screen = ctx.input(|i| i.viewport_rect());
         let mut undo = false;
 
         // Newest on top: stack upward from the bottom-right corner.

@@ -145,8 +145,9 @@ impl App {
                             panel.refresh();
                         }
 
-                        // Density cycle
-                        let density_label = crate::density::short_label(self.density);
+                        // Density cycle (active panel)
+                        let density = self.ws.active_panel_ref().density;
+                        let density_label = crate::density::short_label(density);
                         if ui
                             .add(
                                 egui::Button::new(
@@ -159,11 +160,11 @@ impl App {
                             )
                             .on_hover_text(format!(
                                 "List density: {} (\u{2318}\u{21e7}D)",
-                                crate::density::label(self.density)
+                                crate::density::label(density)
                             ))
                             .clicked()
                         {
-                            self.density = crate::density::cycle(self.density, 1);
+                            self.ws.active_panel().density = crate::density::cycle(density, 1);
                         }
 
                         // Size-bars toggle

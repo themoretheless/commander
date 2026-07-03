@@ -322,7 +322,7 @@ impl App {
                                         for c in &layout.collapsed {
                                             if ui.button(&c.label).clicked() {
                                                 nav_to_crumb = Some(c.full_path.clone());
-                                                ui.close_menu();
+                                                ui.close();
                                             }
                                         }
                                     });

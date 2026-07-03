@@ -3,24 +3,24 @@
 //! them to the workspace. No file-manager logic lives here.
 
 use super::*;
-use crate::command::{KeyCode, KeyPress, map_keys};
+use crate::command::{Command, KeyCode, KeyPress, map_keys};
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
         // A text field (e.g. the filter box) owns the keyboard:
         // typing there must not trigger navigation/file-op hotkeys.
-        if ctx.wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() {
             return;
         }
         // Dialogs own the keyboard too: they handle Enter/Esc themselves,
         // and hotkeys must not fire underneath a modal window.
         if self.ws.pending_op.is_some()
-            || self.ws.active_transfer.is_some()
             || self.renaming.is_some()
             || self.mask_input.is_some()
             || self.run_command.is_some()
             || self.path_input.is_some()
             || self.recent_input.is_some()
+            || self.receipts_input.is_some()
             || self.palette_input.is_some()
             || self.batch_rename.is_some()
             || self.sync.is_some()
@@ -31,19 +31,113 @@ impl App {
             || self.saved_search_open
         {
             self.type_ahead = None;
+            self.chord = None;
             return;
         }
         let presses = ctx.input(Self::collect_presses);
+        if self.ws.active_transfer.is_some() {
+            // A transfer's progress window is effectively modal, but Copy/Move
+            // stay live so a second transfer can be queued behind it instead
+            // of the hotkey being dropped on the floor.
+            for cmd in map_keys(&presses) {
+                if matches!(cmd, Command::RequestCopy | Command::RequestMove) {
+                    self.ws.execute(cmd);
+                }
+            }
+            self.type_ahead = None;
+            self.chord = None;
+            return;
+        }
         for cmd in map_keys(&presses) {
             self.ws.execute(cmd);
         }
-        self.handle_type_ahead(ctx);
+        let claimed = self.handle_chords(ctx);
+        self.handle_type_ahead(ctx, claimed);
+    }
+
+    /// Vim-style chords, modifier-free: `g g` jumps to the top, `s s`
+    /// reverses the sort, and `j`/`k` move the cursor down/up, picking up a
+    /// leading numeric count already buffered by type-ahead (`5j` moves 5
+    /// rows). `j`/`k` only claim the motion while that buffer is empty or
+    /// purely numeric; mid-search (e.g. typing "backjack") they fall through
+    /// to type-ahead as ordinary characters instead of hijacking it.
+    ///
+    /// Returns the character (if any) claimed this frame, so
+    /// [`Self::handle_type_ahead`] can leave it out of its own buffer.
+    fn handle_chords(&mut self, ctx: &egui::Context) -> char {
+        const CHORD_IDLE: f64 = 1.0;
+        let now = ctx.input(|i| i.time);
+        if let Some((_, started)) = self.chord
+            && now - started > CHORD_IDLE
+        {
+            self.chord = None;
+        }
+
+        let (g, s, j, k, plain) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::G),
+                i.key_pressed(egui::Key::S),
+                i.key_pressed(egui::Key::J),
+                i.key_pressed(egui::Key::K),
+                !i.modifiers.command && !i.modifiers.shift && !i.modifiers.alt && !i.modifiers.ctrl,
+            )
+        });
+        if !plain {
+            return '\0';
+        }
+
+        if let Some((leader, _)) = self.chord {
+            self.chord = None;
+            return match (leader, g, s) {
+                ('g', true, _) => {
+                    self.ws.execute(Command::CursorHome);
+                    'g'
+                }
+                ('s', _, true) => {
+                    self.ws.execute(Command::ReverseSort);
+                    's'
+                }
+                // Unrecognized second key: the chord just cancels.
+                _ => '\0',
+            };
+        }
+        if g {
+            self.chord = Some(('g', now));
+            return 'g';
+        }
+        if s {
+            self.chord = Some(('s', now));
+            return 's';
+        }
+
+        if j || k {
+            let count_mode = self
+                .type_ahead
+                .as_ref()
+                .map(|(buf, _)| buf.chars().all(|c| c.is_ascii_digit()))
+                .unwrap_or(true);
+            if count_mode {
+                let count: i32 = self
+                    .type_ahead
+                    .as_ref()
+                    .and_then(|(buf, _)| buf.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(1);
+                self.type_ahead = None;
+                self.ws
+                    .execute(Command::CursorMove(if j { count } else { -count }));
+                return if j { 'j' } else { 'k' };
+            }
+        }
+        '\0'
     }
 
     /// Type-to-jump: printable characters build a short-lived buffer that
     /// moves the cursor to the first matching name. Expires after ~1.5s idle.
-    /// Command-modified keys and the mapped hotkeys never reach here as text.
-    fn handle_type_ahead(&mut self, ctx: &egui::Context) {
+    /// Command-modified keys and the mapped hotkeys never reach here as text;
+    /// `claimed` (from [`Self::handle_chords`]) is also excluded, so a bare
+    /// `g`/`s`/`j`/`k` used as a chord doesn't also start/extend a search.
+    fn handle_type_ahead(&mut self, ctx: &egui::Context, claimed: char) {
         const IDLE: f64 = 1.5;
         let (typed, now) = ctx.input(|i| {
             let typed: String = i
@@ -56,6 +150,7 @@ impl App {
                 .collect();
             (typed, i.time)
         });
+        let typed: String = typed.chars().filter(|&c| c != claimed).collect();
 
         // Expire a stale buffer.
         if let Some((_, last)) = &self.type_ahead

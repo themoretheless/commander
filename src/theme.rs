@@ -127,7 +127,12 @@ pub fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
     // Enable smooth animated scrolling
     style.animation_time = 0.15;
 
-    ctx.set_style(style);
+    let theme = match mode {
+        ThemeMode::Light => egui::Theme::Light,
+        ThemeMode::Dark => egui::Theme::Dark,
+    };
+    ctx.set_style_of(theme, style);
+    ctx.set_theme(theme);
 
     let mut fonts = FontDefinitions::default();
     fonts.families.entry(FontFamily::Proportional).or_default();

@@ -16,6 +16,7 @@ impl App {
             self.batch_rename = Some(BatchRenameState {
                 find: String::new(),
                 replace: String::new(),
+                regex_mode: false,
                 prefix: String::new(),
                 suffix: String::new(),
                 case: crate::rename::CaseMode::Keep,
@@ -36,6 +37,7 @@ impl App {
         let names = self.ws.batch_rename_targets();
         let existing = self.ws.active_dir_names();
         let rule = state.rule();
+        let regex_err = crate::rename::regex_error(&rule);
         let plans = plan_batch_rename(&names, &existing, &rule);
 
         // Rows whose name actually changes (Ok, or a resolvable collision).
@@ -48,7 +50,9 @@ impl App {
         // A strictly-clean batch is applicable; otherwise (no invalid names)
         // consult the safe-order resolver, which permits swaps, rotations and
         // case-only renames and blocks only an unresolvable conflict.
-        let (applicable, block_reason): (bool, Option<String>) = if plan_is_applicable(&plans) {
+        let (applicable, block_reason): (bool, Option<String>) = if let Some(err) = &regex_err {
+            (false, Some(format!("Invalid regex: {err}")))
+        } else if plan_is_applicable(&plans) {
             (true, None)
         } else if plans.iter().any(|p| p.status == PlanStatus::Invalid) {
             (false, Some("Fix the invalid names to continue".to_string()))
@@ -99,18 +103,27 @@ impl App {
                     .num_columns(4)
                     .spacing([10.0, 8.0])
                     .show(ui, |ui| {
-                        let first = field(ui, "Find", &mut state.find, "text or empty");
+                        let find_hint = if state.regex_mode {
+                            "regex pattern"
+                        } else {
+                            "text or empty"
+                        };
+                        let first = field(ui, "Find", &mut state.find, find_hint);
                         if !state.focused {
                             first.request_focus();
                             state.focused = true;
                         }
-                        field(ui, "Replace", &mut state.replace, "");
+                        let replace_hint = if state.regex_mode { "$1 groups ok" } else { "" };
+                        field(ui, "Replace", &mut state.replace, replace_hint);
                         ui.end_row();
 
                         field(ui, "Prefix", &mut state.prefix, "before name");
                         field(ui, "Suffix", &mut state.suffix, "after name");
                         ui.end_row();
                     });
+
+                ui.add_space(4.0);
+                ui.checkbox(&mut state.regex_mode, "Find is a regex");
 
                 ui.add_space(8.0);
 
@@ -252,6 +265,20 @@ impl App {
                             true,
                             now,
                         ));
+                        // apply_batch_rename just pushed this run onto the
+                        // undo stack; reuse it for the receipt so the undo
+                        // affordance stays exactly in sync with Cmd+Z.
+                        if let Some(a) = self.ws.stack.peek_undo()
+                            && let Some(jump_to) = a.jump_to()
+                        {
+                            self.receipts.push(crate::receipts::Receipt {
+                                verb: a.verb(),
+                                item_count: a.item_count(),
+                                timestamp: now,
+                                jump_to,
+                                undo_action: Some(a.clone()),
+                            });
+                        }
                     }
                 }
                 Err(msg) => {

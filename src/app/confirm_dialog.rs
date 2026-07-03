@@ -71,7 +71,7 @@ impl App {
         let has_conflicts = !conflicts.is_empty();
         let is_delete = target.is_none();
         let win_title = format!("{} — {} item(s)", title, count);
-        let screen = ctx.screen_rect();
+        let screen = ctx.input(|i| i.viewport_rect());
         let pad = 120.0;
         let avail_w = (screen.width() - pad * 2.0).max(300.0);
         let avail_h = (screen.height() - pad * 2.0).max(200.0);

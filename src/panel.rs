@@ -714,12 +714,31 @@ pub struct FolderOverview {
     pub oldest: Option<(String, SystemTime)>,
 }
 
+/// A directory's sort/filter/hidden/density settings, remembered per path so
+/// returning to a directory restores how it was last left. In-memory only:
+/// scoped to the running session, not persisted across restarts (unlike the
+/// current directory's own settings, which the session file already saves).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewSettings {
+    pub sort_col: SortColumn,
+    pub sort_order: SortOrder,
+    pub show_hidden: bool,
+    pub folders_first: bool,
+    pub natural_name_sort: bool,
+    pub facets: FacetSet,
+    pub density: crate::density::Density,
+}
+
 pub struct PanelState {
     pub current_path: PathBuf,
     pub entries: Vec<FileEntry>,
     /// Selected entries, keyed by path so selection survives
     /// filtering, sorting and directory refreshes.
     pub selected: std::collections::HashSet<PathBuf>,
+    /// Files flagged for later reference, independent of `selected`: not
+    /// touched by select-all/invert/clear-selection, and available to the
+    /// selection algebra the same way the stash is.
+    pub marked: std::collections::HashSet<PathBuf>,
     pub cursor: usize,
     pub scroll_to_cursor: bool,
     /// Why the current listing is empty/non-empty (for the empty-state UI).
@@ -741,6 +760,14 @@ pub struct PanelState {
     /// Natural numeric name ordering (`file2` < `file10`); off = plain A-Z.
     pub natural_name_sort: bool,
     pub show_hidden: bool,
+    /// List density tier (row sizes). Restored from and saved to the
+    /// session, and remembered per directory in `view_memory` like the
+    /// other view fields above.
+    pub density: crate::density::Density,
+    /// Sort/filter/hidden/density settings remembered per visited
+    /// directory (session-lifetime only), keyed by that directory's path.
+    /// Applied by `navigate_to` when returning to a remembered directory.
+    pub view_memory: HashMap<PathBuf, ViewSettings>,
     pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
     notify: Option<Notify>,
@@ -767,6 +794,7 @@ impl PanelState {
             current_path: path.clone(),
             entries: Vec::new(),
             selected: std::collections::HashSet::new(),
+            marked: std::collections::HashSet::new(),
             cursor: 0,
             scroll_to_cursor: false,
             dir_status: DirStatus::Empty,
@@ -784,6 +812,8 @@ impl PanelState {
             folders_first: true,
             natural_name_sort: true,
             show_hidden: false,
+            density: crate::density::Density::default(),
+            view_memory: HashMap::new(),
             dir_sizes: Arc::new(Mutex::new(HashMap::new())),
             dir_counts: Arc::new(Mutex::new(HashMap::new())),
             notify: None,
@@ -839,6 +869,7 @@ impl PanelState {
             let existing: std::collections::HashSet<&PathBuf> =
                 self.entries.iter().map(|e| &e.path).collect();
             self.selected.retain(|p| existing.contains(p));
+            self.marked.retain(|p| existing.contains(p));
         }
 
         let restored = cursor_path
@@ -1161,13 +1192,51 @@ impl PanelState {
     }
 
     pub fn navigate_to(&mut self, path: PathBuf) {
+        // Remember the outgoing directory's view before leaving it, then
+        // restore the incoming one's if we've seen it before this session.
+        self.stash_view_settings();
         // The jump trail truncates any forward tail and collapses a repeat of
         // the current directory, so every navigation entry point records here.
         self.history.push(path.clone());
         record_visit(&path);
         self.current_path = path;
         self.search_query.clear();
+        self.restore_view_settings();
         self.refresh();
+    }
+
+    fn snapshot_view_settings(&self) -> ViewSettings {
+        ViewSettings {
+            sort_col: self.sort_col,
+            sort_order: self.sort_order,
+            show_hidden: self.show_hidden,
+            folders_first: self.folders_first,
+            natural_name_sort: self.natural_name_sort,
+            facets: self.facets,
+            density: self.density,
+        }
+    }
+
+    /// Remember the current directory's view settings under its own path.
+    fn stash_view_settings(&mut self) {
+        let settings = self.snapshot_view_settings();
+        self.view_memory.insert(self.current_path.clone(), settings);
+    }
+
+    /// Apply the current directory's remembered view settings, if any.
+    /// Leaves everything unchanged (carrying over whatever was already
+    /// active) when this directory has never been visited this session.
+    fn restore_view_settings(&mut self) {
+        let Some(s) = self.view_memory.get(&self.current_path).copied() else {
+            return;
+        };
+        self.sort_col = s.sort_col;
+        self.sort_order = s.sort_order;
+        self.show_hidden = s.show_hidden;
+        self.folders_first = s.folders_first;
+        self.natural_name_sort = s.natural_name_sort;
+        self.facets = s.facets;
+        self.density = s.density;
     }
 
     pub fn go_up(&mut self) {
@@ -1467,6 +1536,18 @@ impl PanelState {
         if !self.selected.remove(&path) {
             self.selected.insert(path);
         }
+    }
+
+    /// Flip `path`'s membership in the mark set. Unlike `toggle_select`,
+    /// marks are never cleared by select-all/invert/clear-selection.
+    pub fn toggle_mark(&mut self, path: PathBuf) {
+        if !self.marked.remove(&path) {
+            self.marked.insert(path);
+        }
+    }
+
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
     }
 
     pub fn select_all(&mut self) {
@@ -1947,6 +2028,36 @@ mod tests {
     }
 
     #[test]
+    fn toggle_mark_adds_then_removes_independently_of_selection() {
+        let mut p = panel_with(vec![entry("a", false, 1)]);
+        let path = p.entries[0].path.clone();
+        p.toggle_select(path.clone());
+        p.toggle_mark(path.clone());
+        assert!(p.marked.contains(&path));
+        assert!(
+            p.selected.contains(&path),
+            "marking does not touch selection"
+        );
+        p.toggle_mark(path.clone());
+        assert!(!p.marked.contains(&path));
+        assert!(
+            p.selected.contains(&path),
+            "unmarking does not touch selection"
+        );
+    }
+
+    #[test]
+    fn clear_marks_empties_the_set_without_touching_selection() {
+        let mut p = panel_with(vec![entry("a", false, 1)]);
+        let path = p.entries[0].path.clone();
+        p.toggle_select(path.clone());
+        p.toggle_mark(path.clone());
+        p.clear_marks();
+        assert!(p.marked.is_empty());
+        assert!(p.selected.contains(&path));
+    }
+
+    #[test]
     fn select_all_toggles_between_all_and_none() {
         let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
         p.select_all();
@@ -2004,11 +2115,12 @@ mod tests {
         p.refresh();
         assert_eq!(p.entries.len(), 3);
 
-        // Cursor on "b.txt" (row 2), select "c.txt".
+        // Cursor on "b.txt" (row 2), select and mark "c.txt".
         p.cursor = 2;
         p.toggle_select(doomed.clone());
+        p.toggle_mark(doomed.clone());
 
-        // A new file shifts sort order; a selected file disappears.
+        // A new file shifts sort order; a selected/marked file disappears.
         tmp.file("0-first.txt", "0");
         std::fs::remove_file(&doomed).unwrap();
         p.refresh();
@@ -2016,6 +2128,7 @@ mod tests {
         let under_cursor = p.filtered_entries()[p.cursor - 1].path.clone();
         assert!(under_cursor.ends_with("b.txt"), "cursor follows the path");
         assert!(p.selected.is_empty(), "selection drops deleted paths");
+        assert!(p.marked.is_empty(), "marks drop deleted paths");
     }
 
     #[test]
@@ -2082,6 +2195,48 @@ mod tests {
         // Cursor should sit on "mmm" (the dir we came from), not row 0.
         let under = p.filtered_get(p.cursor - 1).unwrap();
         assert_eq!(under.name, "mmm");
+    }
+
+    #[test]
+    fn navigate_to_restores_the_view_remembered_for_that_directory() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        let docs = tmp.dir("docs");
+
+        let mut p = PanelState::new(downloads.clone());
+        p.refresh();
+        p.sort_col = SortColumn::Size;
+        p.sort_order = SortOrder::Desc;
+        p.show_hidden = true;
+        p.density = crate::density::Density::Compact;
+
+        // "docs" has never been visited: like before per-folder memory
+        // existed, its view carries over from wherever we came from.
+        p.navigate_to(docs.clone());
+        assert_eq!(p.sort_col, SortColumn::Size);
+        assert_eq!(p.sort_order, SortOrder::Desc);
+        assert!(p.show_hidden);
+        assert_eq!(p.density, crate::density::Density::Compact);
+
+        // Now give "docs" its own, different view.
+        p.sort_col = SortColumn::Extension;
+        p.sort_order = SortOrder::Asc;
+        p.show_hidden = false;
+        p.density = crate::density::Density::Spacious;
+
+        // Back to "downloads": its own remembered view returns, not "docs"'s.
+        p.navigate_to(downloads.clone());
+        assert_eq!(p.sort_col, SortColumn::Size);
+        assert_eq!(p.sort_order, SortOrder::Desc);
+        assert!(p.show_hidden);
+        assert_eq!(p.density, crate::density::Density::Compact);
+
+        // And "docs" kept its own distinct view too.
+        p.navigate_to(docs);
+        assert_eq!(p.sort_col, SortColumn::Extension);
+        assert_eq!(p.sort_order, SortOrder::Asc);
+        assert!(!p.show_hidden);
+        assert_eq!(p.density, crate::density::Density::Spacious);
     }
 
     #[test]

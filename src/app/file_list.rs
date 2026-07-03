@@ -222,6 +222,7 @@ impl App {
                     let row_cursor = idx + 1;
                     let is_cursor = row_cursor == cursor;
                     let is_selected = panel.selected.contains(&entry.path);
+                    let is_marked = panel.marked.contains(&entry.path);
 
                     let zebra = if idx % 2 == 1 {
                         t.bg_card.linear_multiply(0.3)
@@ -336,6 +337,17 @@ impl App {
                             },
                             Color32::from_rgb(r, g, b),
                         );
+                    }
+
+                    // Marked indicator: a right-edge stripe, independent of
+                    // selection/cursor and of the left-edge kind/compare stripe.
+                    if is_marked {
+                        let edge = egui::Rect::from_min_size(
+                            egui::pos2(full_rect.right() - 3.0, full_rect.top()),
+                            Vec2::new(3.0, full_rect.height()),
+                        );
+                        ui.painter()
+                            .rect_filled(edge, CornerRadius::ZERO, t.accent_warning);
                     }
 
                     // Content

@@ -15,9 +15,9 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [dependencies]
-eframe = "0.31"
-egui = "0.31"
-egui_extras = { version = "0.31", features = ["all_loaders"] }
+eframe = "0.35"
+egui = "0.35"
+egui_extras = { version = "0.35", features = ["all_loaders"] }
 image = { version = "0.25", features = ["png", "jpeg", "gif", "bmp", "ico", "webp"] }
 dirs = "6"
 open = "5"
@@ -26,6 +26,7 @@ chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 objc = "0.2"
-notify = "7"
+notify = "8"
 jwalk = "0.8"
 rayon = "1"
+regex = "1"

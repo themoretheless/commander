@@ -89,6 +89,14 @@ pub struct QueuedJob {
     undo: Option<crate::undo::Action>,
 }
 
+/// One row for the queue panel: enough to label and act on a job without
+/// exposing the opqueue/transfer internals to the UI layer.
+pub struct QueueRow {
+    pub id: crate::opqueue::JobId,
+    pub label: String,
+    pub state: crate::opqueue::JobState,
+}
+
 /// Pending file operation awaiting user confirmation.
 pub enum PendingOp {
     Transfer(PendingTransfer),
@@ -152,6 +160,11 @@ pub struct Workspace {
     pub find_request: bool,
     /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
     pub saved_search_request: bool,
+    /// Set by [`Command::ToggleQueuePanel`]; the UI flips the transfer-queue
+    /// panel's visibility.
+    pub queue_panel_request: bool,
+    /// Set by [`Command::OpenReceipts`]; the UI opens the operation history.
+    pub receipts_request: bool,
     /// Set by the Copy* commands; the UI formats the selection and copies it.
     pub clipboard_request: Option<crate::clipboard::PathStyle>,
     /// Set by the Copy-listing commands: (text to copy, toast label). The UI
@@ -161,8 +174,6 @@ pub struct Workspace {
     pub redo_request: bool,
     /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
     pub drain_request: bool,
-    /// Set by [`Command::CycleDensity`]; the UI cycles its list density.
-    pub cycle_density_request: bool,
     /// The drop stack: paths gathered across folders to copy in one go.
     pub shelf: crate::shelf::Shelf,
     /// Persisted directory bookmarks (favorites + quick-jump slots 1..9).
@@ -306,11 +317,12 @@ impl Workspace {
             treemap_request: false,
             find_request: false,
             saved_search_request: false,
+            queue_panel_request: false,
+            receipts_request: false,
             clipboard_request: None,
             clipboard_text_request: None,
             redo_request: false,
             drain_request: false,
-            cycle_density_request: false,
             shelf: crate::shelf::Shelf::default(),
             bookmarks: crate::bookmarks::load(),
             selection_stash: std::collections::HashSet::new(),
@@ -425,6 +437,52 @@ impl Workspace {
         self.combine_with_stash(crate::selset::symmetric_difference);
     }
 
+    /// Toggle the mark on the cursor entry and advance the cursor,
+    /// mirroring `Command::ToggleSelect`.
+    pub fn toggle_mark(&mut self) {
+        let panel = self.active_panel();
+        if panel.cursor > 0 {
+            let path = panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
+            if let Some(path) = path {
+                panel.toggle_mark(path);
+            }
+        }
+        let max = panel.filtered_count();
+        if panel.cursor < max {
+            panel.cursor += 1;
+        }
+    }
+
+    /// Replace the active panel's selection with `op(current, marked)`,
+    /// dropping any paths no longer present in the panel.
+    fn combine_with_marked(
+        &mut self,
+        op: fn(
+            &std::collections::HashSet<PathBuf>,
+            &std::collections::HashSet<PathBuf>,
+        ) -> std::collections::HashSet<PathBuf>,
+    ) {
+        let panel = self.active_panel();
+        let marked = panel.marked.clone();
+        let present: std::collections::HashSet<PathBuf> =
+            panel.entries.iter().map(|e| e.path.clone()).collect();
+        let combined = op(&panel.selected, &marked);
+        panel.selected = combined.intersection(&present).cloned().collect();
+    }
+
+    pub fn marked_union(&mut self) {
+        self.combine_with_marked(crate::selset::union);
+    }
+    pub fn marked_intersect(&mut self) {
+        self.combine_with_marked(crate::selset::intersect);
+    }
+    pub fn marked_subtract(&mut self) {
+        self.combine_with_marked(crate::selset::difference);
+    }
+    pub fn marked_symmetric_diff(&mut self) {
+        self.combine_with_marked(crate::selset::symmetric_difference);
+    }
+
     // ── Command dispatch ────────────────────────────────────────────────
 
     pub fn execute(&mut self, cmd: Command) {
@@ -471,6 +529,12 @@ impl Workspace {
                 let page = panel.page_rows.max(1);
                 let max = panel.filtered_count();
                 panel.cursor = (panel.cursor + page).min(max);
+                panel.scroll_to_cursor = true;
+            }
+            Command::CursorMove(delta) => {
+                let panel = self.active_panel();
+                let max = panel.filtered_count() as i32;
+                panel.cursor = (panel.cursor as i32 + delta).clamp(0, max) as usize;
                 panel.scroll_to_cursor = true;
             }
             Command::ExtendSelectDown => {
@@ -613,7 +677,10 @@ impl Workspace {
             Command::CopyRelativePath => {
                 self.clipboard_request = Some(crate::clipboard::PathStyle::RelativeToOther)
             }
-            Command::CycleDensity => self.cycle_density_request = true,
+            Command::CycleDensity => {
+                let panel = self.active_panel();
+                panel.density = crate::density::cycle(panel.density, 1);
+            }
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
                     .active_panel_ref()
@@ -656,6 +723,14 @@ impl Workspace {
             Command::StashIntersect => self.stash_intersect(),
             Command::StashSubtract => self.stash_subtract(),
             Command::StashSymmetricDiff => self.stash_symmetric_diff(),
+            Command::ToggleMark => self.toggle_mark(),
+            Command::ClearMarks => self.active_panel().clear_marks(),
+            Command::MarkedUnion => self.marked_union(),
+            Command::MarkedIntersect => self.marked_intersect(),
+            Command::MarkedSubtract => self.marked_subtract(),
+            Command::MarkedSymmetricDiff => self.marked_symmetric_diff(),
+            Command::ToggleQueuePanel => self.queue_panel_request = true,
+            Command::OpenReceipts => self.receipts_request = true,
             Command::ToggleHidden => {
                 let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
@@ -988,6 +1063,79 @@ impl Workspace {
         self.left.refresh();
         self.right.refresh();
         self.pump_queue(notify);
+    }
+
+    /// Snapshot of every job in the transfer queue, in priority order, for
+    /// the queue panel to render.
+    pub fn queue_snapshot(&self) -> Vec<QueueRow> {
+        self.queue
+            .jobs()
+            .iter()
+            .map(|j| {
+                let verb = match j.kind {
+                    crate::opqueue::JobKind::Copy => "Copy",
+                    crate::opqueue::JobKind::Move => "Move",
+                };
+                let dest = j
+                    .spec
+                    .spec
+                    .target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| j.spec.spec.target.display().to_string());
+                let n = j.spec.spec.entries.len();
+                let item = if n == 1 { "item" } else { "items" };
+                QueueRow {
+                    id: j.id,
+                    label: format!("{verb} {n} {item} \u{2192} {dest}"),
+                    state: j.state,
+                }
+            })
+            .collect()
+    }
+
+    /// Hold a `Pending` job back so it waits for an explicit resume.
+    pub fn queue_pause(&mut self, id: crate::opqueue::JobId) {
+        self.queue.pause(id);
+    }
+
+    /// Return a held job to the `Pending` pool.
+    pub fn queue_resume(&mut self, id: crate::opqueue::JobId) {
+        self.queue.resume(id);
+    }
+
+    /// Move a `Pending` job to the front so it runs next.
+    pub fn queue_promote(&mut self, id: crate::opqueue::JobId) {
+        self.queue.promote(id);
+    }
+
+    /// Swap a `Pending` job with its immediate neighbour in queue order.
+    /// `offset` is `-1` (move up / earlier) or `1` (move down / later).
+    pub fn queue_move(&mut self, id: crate::opqueue::JobId, offset: i32) {
+        let Some(from) = self.queue.jobs().iter().position(|j| j.id == id) else {
+            return;
+        };
+        let last = self.queue.jobs().len() as i32 - 1;
+        let to = (from as i32 + offset).clamp(0, last.max(0)) as usize;
+        self.queue.reorder(id, to);
+    }
+
+    /// Cancel a queued job. The running job is stopped through the live
+    /// transfer (so its worker thread actually stops, same as the transfer
+    /// dialog's own Cancel); a pending/paused job is simply dropped from the
+    /// queue, since no worker exists for it yet.
+    pub fn queue_cancel(&mut self, id: crate::opqueue::JobId) {
+        if self.running_job == Some(id) {
+            self.cancel_transfer();
+        } else {
+            self.queue.cancel(id);
+            self.queue.clear_finished();
+        }
+    }
+
+    /// Drop every finished (Done/Failed/Cancelled) job from the queue panel.
+    pub fn queue_clear_finished(&mut self) {
+        self.queue.clear_finished();
     }
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
@@ -1916,6 +2064,27 @@ mod tests {
     }
 
     #[test]
+    fn cursor_move_jumps_by_a_signed_count_and_clamps() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        for n in 0..10 {
+            l.file(&format!("f{n:02}.txt"), "x");
+        }
+        let mut ws = workspace(&l, &r);
+
+        ws.execute(Command::CursorMove(5));
+        assert_eq!(ws.left.cursor, 5, "5j-style jump moves 5 rows down");
+
+        ws.execute(Command::CursorMove(-2));
+        assert_eq!(ws.left.cursor, 3, "negative delta moves up");
+
+        ws.execute(Command::CursorMove(100));
+        assert_eq!(ws.left.cursor, 10, "clamped to the last entry");
+
+        ws.execute(Command::CursorMove(-100));
+        assert_eq!(ws.left.cursor, 0, "clamped to the first row");
+    }
+
+    #[test]
     fn home_end_and_page_navigation() {
         let (l, r) = (TempDir::new(), TempDir::new());
         for n in 0..20 {
@@ -2097,6 +2266,58 @@ mod tests {
     }
 
     #[test]
+    fn marked_union_and_subtract_combine_with_current_selection() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "1");
+        let b = l.file("b.txt", "2");
+        let c = l.file("c.txt", "3");
+        let mut ws = workspace(&l, &r);
+
+        // Mark {a, b}, then set the selection to {c}.
+        ws.left.marked = [a.clone(), b.clone()].into_iter().collect();
+        ws.left.selected = [c.clone()].into_iter().collect();
+
+        // Union with the marked set -> {a, b, c}.
+        ws.marked_union();
+        assert_eq!(ws.left.selected.len(), 3);
+        assert!(ws.left.selected.contains(&a) && ws.left.selected.contains(&c));
+
+        // Subtract the marked {a, b} from {a, b, c} -> {c}.
+        ws.marked_subtract();
+        assert_eq!(
+            ws.left.selected,
+            [c.clone()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn toggle_mark_flips_the_cursor_entry_and_survives_a_same_dir_refresh() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "1");
+        let mut ws = workspace(&l, &r);
+        ws.left.cursor = ws
+            .left
+            .filtered_entries()
+            .iter()
+            .position(|e| e.path == a)
+            .unwrap()
+            + 1;
+
+        ws.toggle_mark();
+        assert!(ws.left.marked.contains(&a));
+
+        // Like `selected`, marks are keyed by path: an unrelated refresh of
+        // the same directory (e.g. an external file appearing) keeps them,
+        // same as `reload_preserves_cursor_by_path_and_prunes_selection`
+        // proves for `selected` at the panel level.
+        l.file("b.txt", "2");
+        ws.left.refresh();
+        assert!(ws.left.marked.contains(&a));
+    }
+
+    #[test]
     fn apply_batch_rename_renames_only_the_selection() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "1");
@@ -2246,6 +2467,173 @@ mod tests {
         assert_eq!(ws.queued_count(), 0);
         assert!(r.path().join("a.txt").is_file(), "first copy landed");
         assert!(r.path().join("b.txt").is_file(), "queued copy ran after");
+    }
+
+    #[test]
+    fn queue_snapshot_reports_running_and_pending_jobs() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "AAA");
+        let b = l.file("b.txt", "BBBB");
+        let mut ws = workspace(&l, &r);
+        let entry = |p: &std::path::Path| {
+            let meta = std::fs::metadata(p).unwrap();
+            FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
+        };
+
+        ws.start_copy(
+            vec![entry(&a)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        ws.start_copy(
+            vec![entry(&b)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+
+        let rows = ws.queue_snapshot();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].state, crate::opqueue::JobState::Running);
+        assert_eq!(rows[1].state, crate::opqueue::JobState::Pending);
+        assert!(rows[0].label.contains("Copy 1 item"));
+
+        drain_transfers(&mut ws);
+    }
+
+    #[test]
+    fn queue_pause_resume_and_reorder_only_touch_pending_jobs() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "A");
+        let b = l.file("b.txt", "B");
+        let c = l.file("c.txt", "C");
+        let mut ws = workspace(&l, &r);
+        let entry = |p: &std::path::Path| {
+            let meta = std::fs::metadata(p).unwrap();
+            FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
+        };
+        ws.start_copy(
+            vec![entry(&a)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        ); // running
+        ws.start_copy(
+            vec![entry(&b)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        ); // pending
+        ws.start_copy(
+            vec![entry(&c)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        ); // pending
+
+        let rows = ws.queue_snapshot();
+        let (running_id, pending1, pending2) = (rows[0].id, rows[1].id, rows[2].id);
+
+        // Pause the first pending job; the running one is untouched.
+        ws.queue_pause(pending1);
+        let rows = ws.queue_snapshot();
+        assert_eq!(rows[0].state, crate::opqueue::JobState::Running);
+        assert_eq!(rows[1].state, crate::opqueue::JobState::Paused);
+
+        // Move the second pending job ahead of the paused one.
+        ws.queue_move(pending2, -1);
+        let ids_after_move: Vec<_> = ws.queue_snapshot().iter().map(|row| row.id).collect();
+        assert_eq!(ids_after_move, vec![running_id, pending2, pending1]);
+
+        // Resume the paused job.
+        ws.queue_resume(pending1);
+        let resumed = ws
+            .queue_snapshot()
+            .into_iter()
+            .find(|row| row.id == pending1)
+            .unwrap();
+        assert_eq!(resumed.state, crate::opqueue::JobState::Pending);
+
+        drain_transfers(&mut ws);
+        assert!(r.path().join("a.txt").is_file());
+        assert!(r.path().join("b.txt").is_file());
+        assert!(r.path().join("c.txt").is_file());
+    }
+
+    #[test]
+    fn queue_cancel_on_the_running_job_stops_it_through_cancel_transfer() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "A");
+        let mut ws = workspace(&l, &r);
+        let entry = |p: &std::path::Path| {
+            let meta = std::fs::metadata(p).unwrap();
+            FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
+        };
+        ws.start_copy(
+            vec![entry(&a)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        let running_id = ws.queue_snapshot()[0].id;
+
+        ws.queue_cancel(running_id);
+        // Cancelling the running job routes through `cancel_transfer`: the
+        // queue bookkeeping only catches up once the live worker actually
+        // stops and `poll_transfer` retires it (same as the transfer
+        // dialog's own Cancel button).
+        assert_eq!(
+            ws.queue_snapshot()[0].state,
+            crate::opqueue::JobState::Running
+        );
+
+        drain_transfers(&mut ws);
+        assert!(ws.active_transfer.is_none());
+        assert!(
+            !r.path().join("a.txt").is_file(),
+            "cancelled copy did not land"
+        );
+    }
+
+    #[test]
+    fn queue_cancel_on_a_pending_job_drops_it_without_touching_the_running_one() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let a = l.file("a.txt", "A");
+        let b = l.file("b.txt", "B");
+        let mut ws = workspace(&l, &r);
+        let entry = |p: &std::path::Path| {
+            let meta = std::fs::metadata(p).unwrap();
+            FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
+        };
+        ws.start_copy(
+            vec![entry(&a)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        ws.start_copy(
+            vec![entry(&b)],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+            || {},
+        );
+        let pending_id = ws.queue_snapshot()[1].id;
+
+        ws.queue_cancel(pending_id);
+        assert_eq!(
+            ws.queue_snapshot().len(),
+            1,
+            "cancelled pending job is dropped immediately"
+        );
+        assert_eq!(
+            ws.queue_snapshot()[0].state,
+            crate::opqueue::JobState::Running
+        );
+
+        drain_transfers(&mut ws);
+        assert!(r.path().join("a.txt").is_file());
+        assert!(!r.path().join("b.txt").is_file(), "cancelled job never ran");
     }
 
     #[test]

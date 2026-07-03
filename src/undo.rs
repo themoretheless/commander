@@ -35,6 +35,18 @@ impl Action {
             Action::BatchRename { .. } => "Renamed",
         }
     }
+
+    /// Where "jump back" should navigate for a receipts/history view: the
+    /// directory the action's targets ended up in.
+    pub fn jump_to(&self) -> Option<PathBuf> {
+        match self {
+            Action::Move { pairs } => pairs
+                .first()
+                .and_then(|(_, to)| to.parent())
+                .map(PathBuf::from),
+            Action::BatchRename { dir, .. } => Some(dir.clone()),
+        }
+    }
 }
 
 /// The action that reverses `action`, or `None` if it cannot be inverted.
@@ -107,6 +119,26 @@ mod tests {
         Action::Move {
             pairs: vec![(PathBuf::from(from), PathBuf::from(to))],
         }
+    }
+
+    #[test]
+    fn jump_to_is_the_destination_parent_for_a_move() {
+        let a = Action::Move {
+            pairs: vec![
+                (PathBuf::from("/a/x"), PathBuf::from("/b/x")),
+                (PathBuf::from("/a/y"), PathBuf::from("/b/y")),
+            ],
+        };
+        assert_eq!(a.jump_to(), Some(PathBuf::from("/b")));
+    }
+
+    #[test]
+    fn jump_to_is_the_directory_itself_for_a_batch_rename() {
+        let a = Action::BatchRename {
+            dir: PathBuf::from("/d"),
+            pairs: vec![("a.txt".into(), "b.txt".into())],
+        };
+        assert_eq!(a.jump_to(), Some(PathBuf::from("/d")));
     }
 
     #[test]

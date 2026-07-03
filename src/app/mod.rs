@@ -13,6 +13,8 @@ mod mask_dialog;
 mod palette_dialog;
 mod path_dialog;
 mod preload;
+mod queue_dialog;
+mod receipts_dialog;
 mod recent_dialog;
 mod rename_dialog;
 mod render;
@@ -37,8 +39,6 @@ pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
     pub ui_scale: f32,
-    /// List density tier (row sizes), restored from and saved to the session.
-    pub(crate) density: crate::density::Density,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
     pub(crate) prev_window_width: f32,
@@ -52,10 +52,15 @@ pub struct App {
     /// Type-ahead buffer and the input time of its last keystroke (seconds,
     /// from egui). Expires after a short idle.
     pub(crate) type_ahead: Option<(String, f64)>,
+    /// Pending vim-style chord leader (`'g'` or `'s'`) and when it was
+    /// pressed (seconds, from egui). Expires after a short idle.
+    pub(crate) chord: Option<(char, f64)>,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
     pub(crate) show_compare: bool,
+    /// Whether the transfer-queue panel is visible.
+    pub(crate) show_queue_panel: bool,
     /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
     pub(crate) focus_mode: bool,
     pub(crate) focus_started_at: f64,
@@ -67,6 +72,10 @@ pub struct App {
     pub(crate) recent_input: Option<String>,
     /// Transient operation toasts (move / rename confirmations with Undo).
     pub(crate) toasts: crate::toasts::ToastQueue,
+    /// Searchable history of completed moves/deletes/batch-renames.
+    pub(crate) receipts: crate::receipts::ReceiptLog,
+    /// Active receipts-search buffer; `Some` while the dialog is open.
+    pub(crate) receipts_input: Option<String>,
     /// Active command-palette filter buffer.
     pub(crate) palette_input: Option<String>,
     /// Command-palette usage history (recency/frequency ranking).
@@ -208,6 +217,9 @@ pub(crate) struct SyncState {
 pub(crate) struct BatchRenameState {
     pub find: String,
     pub replace: String,
+    /// Treat `find` as a regular expression (`$1`-style groups in `replace`)
+    /// instead of a literal substring.
+    pub regex_mode: bool,
     pub prefix: String,
     pub suffix: String,
     pub case: crate::rename::CaseMode,
@@ -226,6 +238,7 @@ impl BatchRenameState {
         crate::rename::RenameRule {
             find: self.find.clone(),
             replace: self.replace.clone(),
+            regex: self.regex_mode,
             prefix: self.prefix.clone(),
             suffix: self.suffix.clone(),
             case: self.case,
@@ -256,7 +269,7 @@ impl App {
         let mode = match &session {
             Some(s) if s.theme_dark => ThemeMode::Dark,
             Some(_) => ThemeMode::Light,
-            None if cc.egui_ctx.style().visuals.dark_mode => ThemeMode::Dark,
+            None if cc.egui_ctx.theme() == egui::Theme::Dark => ThemeMode::Dark,
             None => {
                 let is_dark = std::process::Command::new("defaults")
                     .args(["read", "-g", "AppleInterfaceStyle"])
@@ -292,17 +305,18 @@ impl App {
             ws.left.show_hidden = s.left_hidden;
             ws.left.folders_first = s.left_folders_first;
             ws.left.natural_name_sort = s.left_natural_sort;
+            ws.left.density = s.left_density;
             ws.right.sort_col = s.right_sort_col;
             ws.right.sort_order = s.right_sort_order;
             ws.right.show_hidden = s.right_hidden;
             ws.right.folders_first = s.right_folders_first;
             ws.right.natural_name_sort = s.right_natural_sort;
+            ws.right.density = s.right_density;
         }
 
         App {
             ws,
             ui_scale,
-            density: session.as_ref().map(|s| s.density).unwrap_or_default(),
             theme_mode: mode,
             colors: match mode {
                 ThemeMode::Light => ThemeColors::light(),
@@ -316,14 +330,18 @@ impl App {
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             renaming: None,
             type_ahead: None,
+            chord: None,
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
+            show_queue_panel: false,
             focus_mode: false,
             focus_started_at: 0.0,
             mask_input: None,
             path_input: None,
             recent_input: None,
             toasts: crate::toasts::ToastQueue::default(),
+            receipts: crate::receipts::ReceiptLog::default(),
+            receipts_input: None,
             palette_input: None,
             palette_usage: session
                 .as_ref()
@@ -378,7 +396,8 @@ impl App {
             left_natural_sort: self.ws.left.natural_name_sort,
             right_folders_first: self.ws.right.folders_first,
             right_natural_sort: self.ws.right.natural_name_sort,
-            density: self.density,
+            left_density: self.ws.left.density,
+            right_density: self.ws.right.density,
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
         }
@@ -422,6 +441,17 @@ impl App {
             };
             self.toasts
                 .push(crate::toasts::Toast::new(message, kind, false, now));
+            if outcome.trashed > 0 {
+                self.receipts.push(crate::receipts::Receipt {
+                    verb: "Deleted",
+                    item_count: outcome.trashed,
+                    timestamp: now,
+                    jump_to: self.ws.active_panel_ref().current_path.clone(),
+                    // No undo path for a delete in this app today; jump-back
+                    // still gets you to where it happened.
+                    undo_action: None,
+                });
+            }
         }
     }
 
