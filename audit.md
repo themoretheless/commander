@@ -19,8 +19,8 @@ like rounds 2-3 (default to REFUTED unless the mechanism is provable by
 reading the cited lines); two findings were live-reproduced with a temporary
 test that was written, run, and reverted. **No round-4 finding was refuted.**
 This complements [architecture.md](architecture.md) (structural debt) and
-feeds [recommendation.md](recommendation.md) (the plan, including a new
-unscoped ideas backlog in Track E).
+feeds [recommendation.md](recommendation.md) (the plan, including the
+unscoped ideas backlog in Track E and the compact Top-500 digest in Track F).
 
 ## How to read this
 
@@ -32,11 +32,20 @@ synthesis every round (this table supersedes round 3's numbering entirely);
 the "Below the cut" section uses plain item descriptions rather than trying to
 carry stale rank numbers forward across rounds.
 
+## Resolved after round 4
+
+- **Top-50 #1 / D12 fixed:** `native_menu.rs` now escapes double quotes and
+  backslashes before embedding a path in the Finder Get Info AppleScript
+  literal, with unit tests covering the escaping helper. The round-4 table
+  below remains the historical audited ranking; act on item #1 as resolved in
+  current code.
+
 ## Resolved since round 3
 
-**None.** No source file was touched between the round-3 audit and this round
-(only `audit.md`/`architecture.md`/`recommendation.md` were edited, to sync
-docs). All 50 round-3 items are still open in the code as audited.
+No source file was touched between the round-3 audit and round 4 itself (only
+`audit.md`/`architecture.md`/`recommendation.md` were edited, to sync docs).
+All 50 round-3 items were still open in the code as audited at the start of
+round 4.
 
 ## Verification corrections (round 4, re-checked by hand/agent against source)
 
@@ -249,7 +258,7 @@ rounds 1-3:
 | No negative-cache for undecodable image/video formats | high/high, "resource-leak" | **Downgraded to med.** The uncapped per-frame thread-spawn and the main-thread synchronous re-decode of the active preview are both real and unbounded in *count*, but individual decode-attempt failures return fast (CoreGraphics/AVFoundation reject unsupported formats near-instantly), so this is sustained thread churn and UI jank, not the unbounded-memory-growth or multi-second-hang class of "high". |
 | `SmartFolders`/`Bookmarks` duplicate-key cascade delete | low/med | **Confidence raised to high, severity stays low.** The `retain(|d| d.name != name)` bulk-delete mechanism is confirmed exactly as described, but no in-app code path can create the duplicate-name precondition today (only an externally edited/merged JSON file can) — real but low-likelihood; kept out of the top 50, see "Below the cut". |
 | `recommendation.md` Track C text already stale on arrival | med/high | **Downgraded to low.** The document's own "Tracking" section already tells the reader Track C is done, which substantially defuses the "reader wastes time re-fixing it" scenario the reviewer described. Fixed directly in that pass rather than tracked as a numbered defect. |
-| `architecture.md` "373 GUI-free tests" is stale | low/med | **Confidence raised to high.** Reproduced directly: `cargo test` on current `HEAD` reports 375 passed, 1 ignored (a `#[ignore]`d profiling harness at `panel.rs:2519`), 376 `#[test]` functions total. Fixed directly in `architecture.md`. |
+| `architecture.md` "373 GUI-free tests" is stale | low/med | **Confidence raised to high.** Reproduced directly: the latest `cargo test` reports 398 passed, 1 ignored, 399 `#[test]` functions total. Fixed directly in `architecture.md`. |
 
 ## Verification corrections (round 2, re-checked by hand)
 

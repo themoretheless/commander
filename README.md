@@ -126,9 +126,23 @@ A few scope decisions from the last round, so they don't read as oversights:
 
 The architecture and the prioritised plan for what's next live in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
-A ranked, verified list of concrete defects is in [audit.md](audit.md); a much
-wider, unverified single-pass inventory (621 bugs/problems/improvements/
-suggestions from a file-by-file sweep) is in [backlog.md](backlog.md).
+The review material is split by trust level: [audit.md](audit.md) is the
+verified defect ranking, [recommendation.md](recommendation.md) now contains a
+compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
+full 621-item raw sweep.
+
+## Review backlog
+
+The 2026-07-09 pass adds a compact Top-500 list to
+[recommendation.md](recommendation.md): 79 bugs,
+194 problems, 115 improvements, and
+112 suggestions, all preserving the original
+`backlog.md` numbering and locations. [architecture.md](architecture.md) now
+mirrors the same work as ten small SOLID/DRY reading slices, so the project can
+be understood and refactored one bounded context at a time.
+
+One critical review item was fixed during the pass: the native macOS Get Info
+action now escapes paths before embedding them in an AppleScript literal.
 
 ## Keyboard shortcuts
 

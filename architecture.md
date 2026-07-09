@@ -5,21 +5,19 @@ Commander is a dual-pane macOS file manager written in Rust with
 organised today, the structural debt that has accumulated, and the target shape
 the refactoring is moving toward. It is kept in sync with [README.md](README.md)
 (user-facing capabilities), [recommendation.md](recommendation.md) (the
-prioritised plan of what to do next), [audit.md](audit.md) (the ranked,
-adversarially-verified list of the top 50 concrete defects), and
-[backlog.md](backlog.md) (a wider, unverified single-pass inventory: 621 bugs/
-problems/improvements/suggestions from a file-by-file sweep of the whole
-`src/` tree - 92 bugs, 243 design/quality problems, 148 improvements, 138
-module-scoped suggestions - read that if audit.md's top 50 isn't enough
-detail).
+prioritised plan plus the requested compact Top-500 review backlog),
+[audit.md](audit.md) (the ranked, adversarially-verified list of concrete
+defects), and [backlog.md](backlog.md) (the wider 621-item raw inventory: 92
+bugs, 243 design/quality problems, 148 improvements, 138 module-scoped
+suggestions).
 
 ## Guiding principle
 
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: ~40 small modules and 375 GUI-free
-tests (376 `#[test]` functions, one an `#[ignore]`d manual profiling harness)
+That split is real and worth protecting: ~40 small modules and 398 GUI-free
+tests (399 `#[test]` functions, one an `#[ignore]`d manual profiling harness)
 sit under a thin presentation layer. The debt is concentrated in two oversized
 core types and in how the core signals the UI.
 
@@ -60,11 +58,11 @@ dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | ~2,980 | God object; ~1,300 lines are its test module |
-| `src/panel.rs` | ~2,545 | God object; `PanelState` mixes 4 concerns |
-| `src/transfer.rs` | ~1,380 | Cohesive; large but single-purpose |
-| `src/app/update.rs` | ~1,000 | Per-frame hub; drains the flag bus |
-| `src/app/confirm_dialog.rs` | ~780 | One dialog |
+| `src/workspace.rs` | 3,401 | God object; ~1,300 lines are its test module |
+| `src/panel.rs` | 2,712 | God object; `PanelState` mixes 4 concerns |
+| `src/transfer.rs` | 1,382 | Cohesive; large but single-purpose |
+| `src/app/update.rs` | 1,042 | Per-frame hub; drains the flag bus |
+| `src/app/confirm_dialog.rs` | 778 | One dialog |
 
 ## The core <-> UI boundary today
 
@@ -107,9 +105,10 @@ coupling they create:
   the core, so the domain is not testable without real side-effects. The same
   gap is security-relevant, not just a testability one: `native_menu`'s
   "Get Info" action hand-builds an AppleScript string and shells out to
-  `osascript` with no escaping port in front of it, which the audit's #1
-  (round 3, still open in round 4) shows is an actual AppleScript-injection
-  vulnerability via a crafted filename.
+  `osascript`. The audit's #1/D12 AppleScript-injection finding is now
+  fixed in `native_menu.rs` by escaping double quotes and backslashes before
+  interpolation; the remaining design debt is that native OS side-effects still
+  report no structured outcome back to the UI.
 - **Async intermixed with view state** on `PanelState`, which prevents the
   panel from being cloned or snapshot-tested. The [audit](audit.md) found
   concrete bugs in exactly this plumbing: a clear/spawn race in the dir-size
@@ -169,6 +168,38 @@ coupling they create:
   plumbing - capture the actual dragged row(s) explicitly, mirror drag state
   so both panels can render highlights for a cross-pane drag - closes all four
   at once, similarly to the dir-size-index cluster above.
+
+## 2026-07-09 SOLID/DRY reading slices
+
+This pass deliberately does not physically move every module in one huge diff.
+Instead, it splits the project into ten small review/refactor chunks that line up
+with Track F's 500 findings in [recommendation.md](recommendation.md). Use this
+as the human reading order before executing the larger 75-module migration plan
+below.
+
+| Chunk | Primary files / concern | How to use it |
+| --- | --- | --- |
+| 1-50 | Focus mode, preload, temp/test helpers, recent/mask/path dialogs, export/date/theme | Clear small correctness and per-frame UI costs first; most are low-risk leaf fixes. |
+| 51-100 | Text diff, saved searches, shelf, key guards, rename dialog, toasts, diff dialog | Stabilise user-visible command/dialog semantics before touching larger state owners. |
+| 101-150 | Treemap/session/crumbs, dedup/clipboard/file-color, undo/fuzzy/scan/query/sync toolbar | Pull pure helpers and persistence boundaries apart; many are test-first refactors. |
+| 151-200 | Jump list, compare, duplicates/run-command dialogs, batch rename, tree | Attack cross-pane correctness, saved-command UX, and rename/tree state in narrow commits. |
+| 201-250 | Transfer/find/palette/sync/bookmarks/rename | Pair blocking-work fixes with command-surface cleanup; keep every commit runnable. |
+| 251-300 | Selection summary/native copy, App state, command templates, rename order, opqueue | Extract durable value objects and queue state before broader orchestration changes. |
+| 301-350 | Native menu, image cache, fs utilities | Treat this as the OS-integration and media-safety slice; D12 was fixed here. |
+| 351-400 | Render, file list, confirm dialog | Apply the designer pass: interaction affordances, disabled states, and visual feedback. |
+| 401-450 | Command map and app/update first half | Reduce frame-loop branching; move command effects toward one typed queue. |
+| 451-500 | App/update second half | Finish the per-frame orchestration split after the smaller pure pieces are stable. |
+
+Design notes from the 3-iteration pass:
+
+- **Iteration 1, inventory:** the first 500 findings were pulled from the
+  621-item raw backlog without renumbering, preserving code locations.
+- **Iteration 2, designer/SOLID pass:** UI chunks are separated from domain
+  chunks: rendering and dialog affordances stay apart from transfer, compare,
+  rename, persistence, and file-system ports.
+- **Iteration 3, review/fix:** the highest-leverage small security fix landed
+  immediately (D12 in `native_menu.rs`); the rest of the split stays as small
+  commits so a reviewer can understand one bounded context at a time.
 
 ## Target architecture
 
@@ -501,7 +532,7 @@ can be taken on faith until that port is read.
 
 26. Step 25: assemble workspace::mod as the slimmed Workspace struct (left, right, active, pending_op, transfers: TransferCenter, undo: UndoCenter, effects, opener, shelf, bookmarks, selection_stash, notify: Arc<dyn NotifyPort + Send + Sync>) plus active_panel()/active_panel_ref()/inactive_panel()/inactive_panel_mut()/new()/with_opener() and the execute() dispatch table (now a thin router pushing Effects or delegating one line per arm to the modules above, using Step 24's checkpoint comment to confirm every arm is accounted for before deleting it). This commit is almost pure deletion of already-moved fields/methods, verified against Step 24's running checklist. Redistribute workspace/tests.rs's remaining dispatch/navigation/stash tests to stay here; the transfer/undo/rename/fileops-specific tests move into their owning module's own test slice as each Step 18-22 commit lands. NOTE ON SRP: execute() as a top-level command router legitimately fans out to ~9 modules -- an accepted exception to single-reason-to-change for a dispatch table, bounded explicitly: if a future PR needs to add inline logic (not a one-line delegate) to more than 2-3 arms at once, that is the trigger to carve a new leaf module rather than grow execute() further.
 
-27. Step 26 (A7a, do first among the A7 sub-steps since it is the one open security defect, not just testability): define ports::trash (Trash trait: delete(&Path) -> Result<(), Error>, a RealTrash impl wrapping the trash crate, a FakeTrash for tests) and rewire fileops::delete's two trash::delete call sites (workspace.rs original lines ~1133, ~1419) through it, injected into Workspace the same way opener already is. NEW FIX vs round 3 (the ports::os_integration structural defect the critique found -- verified: native_menu.rs's action_get_info, at native_menu.rs:101-112, is a genuine `extern "C" fn(_: &Object, _: Sel, _: *mut Object)` AppKit action callback registered via `decl.add_method(sel!(actionGetInfo:), action_get_info as Fn)`; it has NO receiver capturing Workspace or any injected struct, and reads its target path from a thread_local, `MENU_PATH.with(|p| ...)` -- there is structurally no `self` for a trait-object port to be injected onto, and no path from Workspace's fields to a static extern fn): DO NOT introduce a ports::os_integration trait/impl/injection port for D12. Instead, in a SEPARATE, immediately-following commit, fix D12 with a plain pure function `fn escape_for_applescript_literal(s: &str) -> String` (escaping backslashes and double-quotes, the two characters that break out of an AppleScript string literal) defined as a free function in native_menu.rs itself (or a tiny shared `applescript_escape` leaf if a second call site emerges later) and called directly from inside action_get_info's `with_path` closure before interpolating the path into the osascript command string: `format!("... POSIX file \"{}\" as alias)", escape_for_applescript_literal(&p.display().to_string()))`. This is a pure function fix with a unit test (escape_for_applescript_literal_escapes_quotes_and_backslashes), not a DIP abstraction -- no trait, no port, no injection, because the call site cannot structurally hold one. Do not fold native_menu.rs's own independent trash::delete call (native_menu.rs:146) into ports::trash or this commit; that is an unrelated one-line call-site change with no shared reason to change with the D12 fix, and is left as its own optional trivial follow-up (Step 26b, not required). ALSO FLAG EXPLICITLY (the critique's under-scoped-shell-outs finding): native_menu.rs has three MORE std::process::Command::new(...).spawn() shell-outs sharing the exact same swallowed-error (`let _ = ...`) pattern as the osascript call -- 'open -a' (line 81), 'qlmanage -p' (line 92), 'open -R' (line 140). These are explicitly OUT OF SCOPE for this step (they are not AppleScript-injection vectors -- Command::new with separate args, unlike osascript -e string interpolation, is not vulnerable to the same injection class), named here so a reviewer doesn't wonder why only one of four shell-outs was touched.
+27. Step 26 (A7a): define ports::trash (Trash trait: delete(&Path) -> Result<(), Error>, a RealTrash impl wrapping the trash crate, a FakeTrash for tests) and rewire fileops::delete's two trash::delete call sites (workspace.rs original lines ~1133, ~1419) through it, injected into Workspace the same way opener already is. NEW FIX vs round 3 (the ports::os_integration structural defect the critique found -- verified: native_menu.rs's action_get_info, at native_menu.rs:101-112, is a genuine `extern "C" fn(_: &Object, _: Sel, _: *mut Object)` AppKit action callback registered via `decl.add_method(sel!(actionGetInfo:), action_get_info as Fn)`; it has NO receiver capturing Workspace or any injected struct, and reads its target path from a thread_local, `MENU_PATH.with(|p| ...)` -- there is structurally no `self` for a trait-object port to be injected onto, and no path from Workspace's fields to a static extern fn): DO NOT introduce a ports::os_integration trait/impl/injection port for D12. D12 has now been fixed with a plain pure function `fn escape_for_applescript_literal(s: &str) -> String` (escaping backslashes and double-quotes, the two characters that break out of an AppleScript string literal) defined as a free function in native_menu.rs itself (or a tiny shared `applescript_escape` leaf if a second call site emerges later) and called directly from inside action_get_info's `with_path` closure before interpolating the path into the osascript command string: `format!("... POSIX file \"{}\" as alias)", escape_for_applescript_literal(&p.display().to_string()))`. This remains a pure function fix with unit tests, not a DIP abstraction -- no trait, no port, no injection, because the call site cannot structurally hold one. Do not fold native_menu.rs's own independent trash::delete call (native_menu.rs:146) into ports::trash or this commit; that is an unrelated one-line call-site change with no shared reason to change with the D12 fix, and is left as its own optional trivial follow-up (Step 26b, not required). ALSO FLAG EXPLICITLY (the critique's under-scoped-shell-outs finding): native_menu.rs has three MORE std::process::Command::new(...).spawn() shell-outs sharing the exact same swallowed-error (`let _ = ...`) pattern as the osascript call -- 'open -a' (line 81), 'qlmanage -p' (line 92), 'open -R' (line 140). These are explicitly OUT OF SCOPE for this step (they are not AppleScript-injection vectors -- Command::new with separate args, unlike osascript -e string interpolation, is not vulnerable to the same injection class), named here so a reviewer doesn't wonder why only one of four shell-outs was touched.
 
 28. Step 27 (A7b): define ports::clipboard (Clipboard trait: copy_text; an EguiClipboard impl wrapping ctx.copy_text; a FakeClipboard for tests) and rewire the effects-bus clipboard drain in app/update.rs's drain_effects loop to call it instead of calling ctx.copy_text inline. crate::clipboard's existing PathStyle/format_path pure formatting is unchanged and reused as-is.
 
@@ -524,7 +555,7 @@ can be taken on faith until that port is read.
 - ports::os_integration was fully discarded and replaced with a plain pure function (applescript_escape) after verifying that native_menu.rs's action_get_info is a static `extern "C" fn` AppKit callback with no receiver to inject a trait object onto -- it reads its target path from a thread_local, not from any struct. This is a case where the round 2/3 plan's own DIP instinct (wrap this in a port, like opener) was simply the wrong tool for a call site with no `self`; the corrected plan ships a one-function fix with a unit test instead of an unused trait. Reviewers should confirm no OTHER AppleScript/osascript call site exists anywhere in the crate that WOULD benefit from a real port (grep for `osascript` found exactly one call site, native_menu.rs:101-112, at the time of this plan).
 - ports::persist grew from one helper (load_lenient<T:Default>) to three (load_lenient, load_optional<T> for session.rs's Option<Session>-returning, no-Default case, and save_atomic<T> for the four-way-duplicated save side) after verifying session.rs's load() genuinely does not fit the single-signature framing round 2 proposed, and that the save-side duplication is exactly as real as the load-side duplication round 2 already targeted. Three small helpers instead of one is slightly more surface area to review, but each is a straightforward 10-20 line generic function; the alternative (forcing session.rs to adopt a Default impl it doesn't have today, purely to fit one helper's signature) would be a behavior change disguised as a refactor, which is worse.
 - poll_transfer/dismiss_transfer straddle transfer_center, undo_center, AND panel::state::Refreshable by design today (workspace.rs:875-948 and 979-987 both call self.left.refresh()/self.right.refresh() in addition to the undo-recording read-before-pump ordering). This plan resolves both the panel coupling (via the explicit Refreshable parameter) and the ISP over-widening (via the narrow trait instead of the concrete struct) -- but poll()'s own internal, unconditional call to pump_queue() before returning is a separate, pre-existing control-flow fact this plan does NOT change, only documents explicitly in poll's own doc-comment so its Option<undo::Action> return-value change is not mistaken for altering that internal ordering. Run the full transfer+undo suite by hand, not just cargo test, both before and after this step.
-- The Effect bus is the one module in this plan whose correctness the 375-test suite cannot verify at all: the dialog focus edge-trigger is egui-frame behavior. The dual-write staging (additive field first, then the actual cutover) de-risks the diff size but does not de-risk the verification gap -- every commit touching effects.rs or its app/update.rs drain loop needs a manual pass in the running app testing each dialog's open/focus behavior individually. This round adds explicit obligations beyond round 2's: (a) Effect::Open's just_opened payload must actually reach RenameState's D19 snapshot field end-to-end, AND (b) the just_opened flag must correctly REPLACE (not merely supplement) all three dialogs' own focused:bool fields once Step 16 deletes them -- a regression here (e.g. a dialog re-grabbing focus every frame because just_opened is read wrong) would not be caught by cargo test and needs the same by-hand verification as (a).
+- The Effect bus is the one module in this plan whose correctness the 398-test suite cannot verify at all: the dialog focus edge-trigger is egui-frame behavior. The dual-write staging (additive field first, then the actual cutover) de-risks the diff size but does not de-risk the verification gap -- every commit touching effects.rs or its app/update.rs drain loop needs a manual pass in the running app testing each dialog's open/focus behavior individually. This round adds explicit obligations beyond round 2's: (a) Effect::Open's just_opened payload must actually reach RenameState's D19 snapshot field end-to-end, AND (b) the just_opened flag must correctly REPLACE (not merely supplement) all three dialogs' own focused:bool fields once Step 16 deletes them -- a regression here (e.g. a dialog re-grabbing focus every frame because just_opened is read wrong) would not be caught by cargo test and needs the same by-hand verification as (a).
 - ports::notify's abstraction shape is fixed as Arc<dyn NotifyPort + Send + Sync> uniformly for ~8 of ~9 call sites, but spawn_transfer's own `impl Fn() + Send + 'static` bound requires ONE explicit adapter closure (`move || n.on_progress()`) rather than a bare Arc clone -- this is a real, if small, asymmetry in the ~9 call sites this plan now states explicitly rather than leaving implicit. Confirm at Step 13's landing that this one adapter closure is present and tested (or at minimum exercised by the existing transfer-completion tests), since a missed adapter at this one site is a compile error, not a silent bug, so the risk here is review clarity rather than correctness.
 - panel::watcher's fs-event closure crosses three module boundaries at closure-construction time (writes panel::size_cache's needs_refresh/sizes_dirty flags via RefreshHandle/DirtyHandle accessors, and calls panel::persist_cache's invalidate_size_cache directly) -- this round additionally documents panel::size_cache's own SIZES_DEBOUNCE timer as a third, previously-unnamed timing policy in the same subsystem (alongside panel::walk_log's WALK_COOLDOWN/WALK_EXPENSIVE and panel::watcher's own notify-driven trigger), giving a reviewer a complete three-policy inventory across three files instead of the two the plan tracked before. This is a documented, narrowed coupling, not an eliminated one -- a reviewer of any future change to panel.rs's timing/debounce logic must still read three modules' doc-comments together, and that residual review cost is accepted rather than solved.
 - panel::drag_state's privatization commit now explicitly includes rewriting three workspace.rs test-module call sites (drop_prefers_source_panel_target, drop_falls_back_to_other_panel_path, drop_with_conflict_opens_dialog_instead_of_moving) in addition to the five production call sites round 2 already accounted for -- a genuinely larger single commit (production code in three files plus test code in a fourth) than a pure 40-line struct extraction, landing in one commit specifically so the crate compiles with zero EXTERNAL raw-field access at any intermediate point. Reviewers should expect this commit's diff to touch four files, not three, and should re-verify by grepping for `.drag_entries` and `.drop_target` outside panel::state's own module after this step lands -- the only remaining hits should be inside workspace.rs's drop_dragged/take_drop_plan PRODUCTION bodies (deferred to the drop_glue step), not test code.
@@ -551,7 +582,7 @@ validates.
 
 ## Invariants and testing
 
-The pure core is covered by 375 GUI-free tests (376 `#[test]` functions, one
+The pure core is covered by 398 GUI-free tests (399 `#[test]` functions, one
 `#[ignore]`d manual profiling harness). The one area the tests do **not**
 exercise is egui-frame behaviour: the dialog focus edge-trigger driven by the
 flag bus is invisible to the test suite, which is why the Effect-bus migration

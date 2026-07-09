@@ -28,6 +28,18 @@ fn with_path<F: FnOnce(&Path)>(f: F) {
     MENU_PATH.with(|p| f(&p.borrow()));
 }
 
+fn escape_for_applescript_literal(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 unsafe fn add_item(menu: *mut Object, title: &str, target: *mut Object, action: Sel) {
     let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
     let title_ns = unsafe { nsstring(title) };
@@ -100,9 +112,10 @@ fn ensure_class() {
 
         extern "C" fn action_get_info(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
+                let path = escape_for_applescript_literal(&p.display().to_string());
                 let script = format!(
                     "tell application \"Finder\" to open information window of (POSIX file \"{}\" as alias)",
-                    p.display()
+                    path
                 );
                 let _ = std::process::Command::new("osascript")
                     .arg("-e")
@@ -552,4 +565,25 @@ pub fn show(path: &Path) -> bool {
     }
 
     NEEDS_REFRESH.with(|r| r.get())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_for_applescript_literal;
+
+    #[test]
+    fn applescript_literal_escape_leaves_safe_paths_alone() {
+        assert_eq!(
+            escape_for_applescript_literal("/Users/me/Documents/report.txt"),
+            "/Users/me/Documents/report.txt"
+        );
+    }
+
+    #[test]
+    fn applescript_literal_escape_quotes_and_backslashes() {
+        assert_eq!(
+            escape_for_applescript_literal(r#"/tmp/a "quoted" \ path"#),
+            r#"/tmp/a \"quoted\" \\ path"#
+        );
+    }
 }
