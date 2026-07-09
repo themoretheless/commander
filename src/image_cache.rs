@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
+pub(crate) const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
 
 struct CacheEntry {
     texture: TextureHandle,

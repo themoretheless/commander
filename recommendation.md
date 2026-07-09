@@ -27,7 +27,7 @@ Two tracks run in parallel: **Track A** decomposes the two god objects
 
 Each step is one green commit (`cargo test` + `clippy` + `fmt`), ordered by
 risk. The keystone (A4) is deliberately not first: its payoff lives in
-egui-frame focus behaviour the 398 tests cannot guard, so it must be verified by
+egui-frame focus behaviour the 401 tests cannot guard, so it must be verified by
 hand in the running app.
 
 The table below is now a **high-level index only**. A dedicated design pass
@@ -109,8 +109,8 @@ From the round-1 README-vs-code audit (all **done**, landed in `9b306f0`):
 From the round-3 docs-vs-code audit (**done** in this pass):
 
 - `architecture.md` said "373 GUI-free tests" in three places; the current
-  `cargo test` reports 398 passing (399 `#[test]` functions, 1 `#[ignore]`d
-  profiling harness). Fixed and refreshed after the Top-500 pass.
+  `cargo test` reports 401 passing (402 `#[test]` functions, 1 `#[ignore]`d
+  profiling harness). Fixed and refreshed after the Top-500 implementation pass.
 - `architecture.md`'s module map omitted `toasts` (`src/toasts.rs`), a
   genuinely UI-independent, unit-tested module (no egui types) that has
   existed since the toast system landed. Added to the "Presentation-independent
@@ -152,7 +152,7 @@ intentional, not a dropped row.)
 | D13 | Cross-pane comparison directory-blindness: add `is_dir` checks to `sync::compare`/`compare::classify_entry`/`conflict::detect`, and key `apply_sync`'s name-collision resolution by path/index instead of lowercased name | 2, 27, 28 | medium | open |
 | D14 | Cap `textdiff`'s line count (or switch to a linear-space diff) before the O(n·m) DP allocation, so two ordinary text files can't abort the process | 5 | small | open |
 | D15 | Data-safety gating: require an explicit drop-target (or a confirmation) before `drop_dragged` falls back to Move-into-other-panel, and gate toolbar Copy/Move/Delete on `pending_op`/`active_transfer` like the keyboard and drag-drop paths already do | 6, 32 | small-medium | open |
-| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | open |
+| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | open; preload-window budget cap partially done |
 | D17 | Persistence hardening: bound `MaxAgeDays`/`MinAgeDays` (or use `checked_mul`/`saturating_mul`), and give the four config-store loaders item-level fault tolerance instead of discarding the whole file on one bad field | 29, 31 | small-medium | open |
 | D18 | Small UI/data-integrity fixes: `select_all` should preserve filtered-out selections like `invert_selection` does; run Find's directory walk off the UI thread; clear the batch-rename dialog's stale error on rule edit; scope `Escape` to the active panel's preview only | 33, 35, 49, below the cut | small each | open |
 | D19 | **Non-modal dialog retargeting: snapshot the working panel/selection/directory once at dialog-open time** instead of re-deriving it live from `Workspace` every frame, for the batch-rename studio and the treemap dialog | 3, 42 | medium; natural fit for the `UiState` extraction (A5) | open |
@@ -316,14 +316,14 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 ### Items 1-500
 
 1. `ошибка` `src/focus_mode.rs:6-8` - should_exit's exit-on-move check uses the per-frame pointer delta, not cumulative movement since focus mode was armed, so a slow continuous drag never triggers an exit
-2. `проблема` `src/app/preload.rs:27` - The 1 GB cache budget is duplicated as a bare literal in preload.rs instead of reusing image_cache's MAX_CACHE_BYTES constant
+2. `проблема` `src/app/preload.rs:27` - The 1 GB cache budget is duplicated as a bare literal in preload.rs instead of reusing image_cache's MAX_CACHE_BYTES constant (resolved: `MAX_CACHE_BYTES` is now shared from `image_cache.rs`)
 3. `проблема` `src/main.rs:1` - main.rs sets `windows_subsystem = "windows"` in a codebase that is macOS-only
 4. `проблема` `src/main.rs:59` - NativeOptions requests HardwareAcceleration::Required instead of Preferred, so the app hard-fails to start on any machine/VM lacking a hardware-accelerated GPU context
-5. `проблема` `src/app/preload.rs:23` - preload_images calls source.filtered_entries() every frame while any preview is open, allocating a fresh Vec<&FileEntry> proportional to the filtered listing size just to slice out ~60 paths
+5. `проблема` `src/app/preload.rs:23` - preload_images calls source.filtered_entries() every frame while any preview is open, allocating a fresh Vec<&FileEntry> proportional to the filtered listing size just to slice out ~60 paths (resolved: the preload loop now uses `filtered_count()` + `filtered_get()` over the needed range)
 6. `проблема` `src/app/preload.rs:12-21` - preload_images silently returns without preloading anything when neither panel has an image preview open, but also silently no-ops when the panel that has focus isn't the one holding the image preview
 7. `предложение` `src/focus_mode.rs:6-8` - focus_mode's should_exit could take the pointer position/accumulated displacement since focus_started_at instead of a raw per-frame delta, giving a real 'exit if the mouse has moved past a distance threshold since arming' semantics
-8. `предложение` `src/app/preload.rs:27 and src/image_cache.rs:6` - Expose the 1 GB cache budget as a single shared pub const (e.g. in image_cache.rs) that both eviction and preload window sizing read from
-9. `улучшение` `src/app/preload.rs:24-34` - preload_images' forward-window formula (50 + remaining/(5MB)) is inlined with three magic numbers (50, 10, 5*1024*1024) with no named constants or comment on why those specific values were chosen
+8. `предложение` `src/app/preload.rs:27 and src/image_cache.rs:6` - Expose the 1 GB cache budget as a single shared pub const (e.g. in image_cache.rs) that both eviction and preload window sizing read from (resolved: `image_cache::MAX_CACHE_BYTES` is `pub(crate)` and reused by preload)
+9. `улучшение` `src/app/preload.rs:24-34` - preload_images' forward-window formula (50 + remaining/(5MB)) is inlined with three magic numbers (50, 10, 5*1024*1024) with no named constants or comment on why those specific values were chosen (resolved: named constants and tested budget-capped `forward_preload_window` helper)
 10. `проблема` `src/testutil.rs:11-16` - TempDir::new() derives uniqueness from process id + a per-process atomic counter, so directories from a previous crashed/killed test run under the same recycled PID are never cleaned up and could theoretically collide
 11. `проблема` `src/testutil.rs:42-44` - TempDir::drop swallows all errors from remove_dir_all, so a cleanup failure (e.g. a file still open, permissions issue) is invisible and leaves test temp dirs accumulating on disk with no diagnostic
 12. `предложение` `src/testutil.rs:9-17` - TempDir could implement Drop-time cleanup verification or offer a `try_new` no-panic constructor for tests that want to assert on directory-creation failure paths themselves
@@ -817,6 +817,12 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 500. `улучшение` `src/app/update.rs:737-750` - The '50/50 reset' logic in show_main_area recomputing prev_half via ctx temp data on every frame could instead be tracked as a struct field, avoiding an egui data_mut lookup+insert pair every single frame regardless of whether the window resized
 
 ## Tracking
+
+**Round-6 Top-500 implementation pass: done.** Closed Track F items 2, 5,
+8, and 9 by sharing the image-cache budget constant, naming the preload window
+heuristics, budget-capping the forward preload window, avoiding the per-frame
+`filtered_entries()` allocation, and adding helper tests. This also partially
+chips away at D16; the thread cap, negative-cache, and orientation work remain.
 
 **Round-5 Top-500/docs + D12 fix: done.** The first 500 items from
 `backlog.md` are now copied into Track F as a compact review backlog with ten
