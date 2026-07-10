@@ -4,7 +4,8 @@
 //! Names are matched case-insensitively, matching the default macOS FS.
 
 use crate::panel::FileEntry;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// How to reconcile the two panels.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -34,6 +35,9 @@ pub enum SyncStatus {
     Differing,
     /// Present both sides with identical size and mtime.
     Identical,
+    /// Multiple entries fold to the same case-insensitive name, so choosing a
+    /// source by display name would be ambiguous on a case-sensitive volume.
+    CaseConflict,
 }
 
 /// Which way a row's file should flow when the plan is applied.
@@ -52,6 +56,28 @@ pub struct SyncAction {
     /// The default direction for this status under the policy; the UI may flip
     /// it per row before applying.
     pub direction: SyncDirection,
+    left_path: Option<PathBuf>,
+    right_path: Option<PathBuf>,
+}
+
+impl SyncAction {
+    /// Whether this row has a stable source for `direction`.
+    pub fn allows(&self, direction: SyncDirection) -> bool {
+        match direction {
+            SyncDirection::ToLeft => self.right_path.is_some(),
+            SyncDirection::ToRight => self.left_path.is_some(),
+            SyncDirection::Skip => true,
+        }
+    }
+
+    /// Stable source path for the row's currently selected direction.
+    pub fn source_path(&self) -> Option<&Path> {
+        match self.direction {
+            SyncDirection::ToLeft => self.right_path.as_deref(),
+            SyncDirection::ToRight => self.left_path.as_deref(),
+            SyncDirection::Skip => None,
+        }
+    }
 }
 
 /// Compare two same-named entries by size and mtime.
@@ -77,16 +103,16 @@ fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirection {
     match policy {
         SyncPolicy::MirrorLeftToRight => match status {
             LeftOnly | LeftNewer | RightNewer | Differing => ToRight,
-            RightOnly | Identical => Skip,
+            RightOnly | Identical | CaseConflict => Skip,
         },
         SyncPolicy::MirrorRightToLeft => match status {
             RightOnly | RightNewer | LeftNewer | Differing => ToLeft,
-            LeftOnly | Identical => Skip,
+            LeftOnly | Identical | CaseConflict => Skip,
         },
         SyncPolicy::TwoWay => match status {
             LeftOnly | LeftNewer => ToRight,
             RightOnly | RightNewer => ToLeft,
-            Differing | Identical => Skip,
+            Differing | Identical | CaseConflict => Skip,
         },
     }
 }
@@ -94,37 +120,93 @@ fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirection {
 /// Build the synchronisation plan between the two panels' entry lists. Left
 /// entries are walked first (stable order), then right-only entries.
 pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) -> Vec<SyncAction> {
-    let rmap: HashMap<&str, &FileEntry> =
-        right.iter().map(|e| (e.name_lower.as_str(), e)).collect();
+    let mut left_counts: HashMap<&str, usize> = HashMap::new();
+    let mut right_counts: HashMap<&str, usize> = HashMap::new();
+    for entry in left {
+        *left_counts.entry(entry.name_lower.as_str()).or_default() += 1;
+    }
+    for entry in right {
+        *right_counts.entry(entry.name_lower.as_str()).or_default() += 1;
+    }
 
     let mut actions = Vec::new();
-    let mut seen: HashSet<&str> = HashSet::new();
+    let mut used_right = vec![false; right.len()];
 
     for l in left {
-        seen.insert(l.name_lower.as_str());
-        let status = match rmap.get(l.name_lower.as_str()) {
-            None => SyncStatus::LeftOnly,
-            Some(r) => compare(l, r),
+        let exact = right
+            .iter()
+            .enumerate()
+            .find(|(i, r)| !used_right[*i] && r.name == l.name)
+            .map(|(i, _)| i);
+        let unique_fold = left_counts.get(l.name_lower.as_str()) == Some(&1)
+            && right_counts.get(l.name_lower.as_str()) == Some(&1);
+        let matched = exact.or_else(|| {
+            if !unique_fold {
+                return None;
+            }
+            right
+                .iter()
+                .enumerate()
+                .find(|(i, r)| !used_right[*i] && r.name_lower == l.name_lower)
+                .map(|(i, _)| i)
+        });
+
+        let ambiguous = left_counts.get(l.name_lower.as_str()).copied().unwrap_or(0) > 1
+            || right_counts
+                .get(l.name_lower.as_str())
+                .copied()
+                .unwrap_or(0)
+                > 1;
+        let (status, right_path) = match matched {
+            Some(i) => {
+                used_right[i] = true;
+                (compare(l, &right[i]), Some(right[i].path.clone()))
+            }
+            None if ambiguous => (SyncStatus::CaseConflict, None),
+            None => (SyncStatus::LeftOnly, None),
         };
         actions.push(SyncAction {
             name: l.name.clone(),
             status,
             direction: default_direction(status, policy),
+            left_path: Some(l.path.clone()),
+            right_path,
         });
     }
 
-    for r in right {
-        if seen.contains(r.name_lower.as_str()) {
+    for (i, r) in right.iter().enumerate() {
+        if used_right[i] {
             continue;
         }
+        let ambiguous = left_counts.get(r.name_lower.as_str()).copied().unwrap_or(0) > 1
+            || right_counts
+                .get(r.name_lower.as_str())
+                .copied()
+                .unwrap_or(0)
+                > 1;
+        let status = if ambiguous {
+            SyncStatus::CaseConflict
+        } else {
+            SyncStatus::RightOnly
+        };
         actions.push(SyncAction {
             name: r.name.clone(),
-            status: SyncStatus::RightOnly,
-            direction: default_direction(SyncStatus::RightOnly, policy),
+            status,
+            direction: default_direction(status, policy),
+            left_path: None,
+            right_path: Some(r.path.clone()),
         });
     }
 
     actions
+}
+
+/// Reapply a policy to an existing snapshot without rebuilding it from panels
+/// that may have changed while the synchronization sheet was open.
+pub fn apply_policy(actions: &mut [SyncAction], policy: SyncPolicy) {
+    for action in actions {
+        action.direction = default_direction(action.status, policy);
+    }
 }
 
 /// How the active panel's entries relate to the other panel, as index sets
@@ -159,6 +241,7 @@ pub fn pane_relation(active: &[FileEntry], other: &[FileEntry]) -> PaneRelation 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::time::{Duration, UNIX_EPOCH};
 
     fn entry(name: &str, size: u64, secs: Option<u64>) -> FileEntry {
@@ -240,6 +323,28 @@ mod tests {
         let actions = sync_diff(&left, &right, SyncPolicy::TwoWay);
         assert_eq!(actions.len(), 1, "matched as the same file");
         assert_eq!(actions[0].status, SyncStatus::Identical);
+    }
+
+    #[test]
+    fn case_collisions_keep_distinct_sources_and_default_to_skip() {
+        let left = [
+            entry("Photo.JPG", 10, Some(100)),
+            entry("photo.jpg", 20, Some(200)),
+        ];
+        let actions = sync_diff(&left, &[], SyncPolicy::MirrorLeftToRight);
+
+        assert_eq!(actions.len(), 2);
+        assert!(actions.iter().all(|a| a.status == SyncStatus::CaseConflict));
+        assert!(actions.iter().all(|a| a.direction == SyncDirection::Skip));
+        let paths: HashSet<_> = actions
+            .iter()
+            .map(|a| {
+                let mut action = a.clone();
+                action.direction = SyncDirection::ToRight;
+                action.source_path().unwrap().to_path_buf()
+            })
+            .collect();
+        assert_eq!(paths.len(), 2);
     }
 
     #[test]

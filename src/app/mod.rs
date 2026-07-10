@@ -210,11 +210,14 @@ pub(crate) struct DupState {
 pub(crate) struct SyncState {
     pub policy: crate::sync::SyncPolicy,
     pub actions: Vec<crate::sync::SyncAction>,
+    pub left_dir: PathBuf,
+    pub right_dir: PathBuf,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in
 /// `crate::rename`; this only holds the editable rule fields.
 pub(crate) struct BatchRenameState {
+    pub context: crate::workspace::BatchRenameContext,
     pub find: String,
     pub replace: String,
     /// Treat `find` as a regular expression (`$1`-style groups in `replace`)

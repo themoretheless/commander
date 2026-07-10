@@ -1538,6 +1538,20 @@ impl PanelState {
         }
     }
 
+    /// Start a row drag. An unselected anchor always drags only itself; a
+    /// selected anchor drags the visible selected set in listing order.
+    pub fn begin_drag(&mut self, anchor: PathBuf) {
+        self.drag_entries = if self.selected.contains(&anchor) {
+            self.filtered_entries()
+                .into_iter()
+                .filter(|entry| self.selected.contains(&entry.path))
+                .map(|entry| entry.path.clone())
+                .collect()
+        } else {
+            vec![anchor]
+        };
+    }
+
     /// Flip `path`'s membership in the mark set. Unlike `toggle_select`,
     /// marks are never cleared by select-all/invert/clear-selection.
     pub fn toggle_mark(&mut self, path: PathBuf) {
@@ -1769,6 +1783,34 @@ mod tests {
         let mut p = PanelState::new(PathBuf::from("/test"));
         p.entries = entries;
         p
+    }
+
+    #[test]
+    fn dragging_an_unselected_row_does_not_use_the_stale_selection() {
+        let mut panel = panel_with(vec![
+            entry("selected.txt", false, 1),
+            entry("dragged.txt", false, 1),
+        ]);
+        panel.selected.insert(PathBuf::from("/test/selected.txt"));
+
+        panel.begin_drag(PathBuf::from("/test/dragged.txt"));
+
+        assert_eq!(panel.drag_entries, [PathBuf::from("/test/dragged.txt")]);
+    }
+
+    #[test]
+    fn dragging_a_selected_row_uses_the_visible_selection() {
+        let mut panel = panel_with(vec![entry("a.txt", false, 1), entry("b.txt", false, 1)]);
+        panel
+            .selected
+            .extend([PathBuf::from("/test/a.txt"), PathBuf::from("/test/b.txt")]);
+
+        panel.begin_drag(PathBuf::from("/test/b.txt"));
+
+        assert_eq!(
+            panel.drag_entries,
+            [PathBuf::from("/test/a.txt"), PathBuf::from("/test/b.txt")]
+        );
     }
 
     #[test]

@@ -13,10 +13,21 @@ use crate::transfer::{
     self, CopyMethod, OverwritePolicy, TransferKind, TransferProgress, TransferSpec, TransferState,
 };
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ActivePanel {
     Left,
     Right,
+}
+
+/// Immutable target captured when the batch-rename sheet opens. Keeping the
+/// panel side, directory, names, and collision set together prevents a later
+/// click in the other panel from silently retargeting the operation.
+#[derive(Clone)]
+pub struct BatchRenameContext {
+    pub panel: ActivePanel,
+    pub dir: PathBuf,
+    pub targets: Vec<String>,
+    pub existing: std::collections::HashSet<String>,
 }
 
 /// A copy/move awaiting user confirmation in the dialog.
@@ -1425,24 +1436,22 @@ impl Workspace {
 
     // ── Batch rename ────────────────────────────────────────────────────
 
-    /// Names the batch-rename studio operates on: the active panel's selection,
-    /// falling back to the entry under the cursor. Order drives the counter.
-    pub fn batch_rename_targets(&self) -> Vec<String> {
-        self.active_panel_ref()
+    pub fn batch_rename_context(&self) -> Option<BatchRenameContext> {
+        let panel = self.active_panel_ref();
+        let targets: Vec<String> = panel
             .selected_or_cursor()
             .into_iter()
             .map(|e| e.name)
-            .collect()
-    }
-
-    /// Every name currently in the active directory, so the planner can catch
-    /// collisions with siblings that are not part of the rename.
-    pub fn active_dir_names(&self) -> std::collections::HashSet<String> {
-        self.active_panel_ref()
-            .entries
-            .iter()
-            .map(|e| e.name.clone())
-            .collect()
+            .collect();
+        if targets.is_empty() {
+            return None;
+        }
+        Some(BatchRenameContext {
+            panel: self.active,
+            dir: panel.current_path.clone(),
+            targets,
+            existing: panel.entries.iter().map(|e| e.name.clone()).collect(),
+        })
     }
 
     /// Apply a batch rename to the active panel. Genuine swaps, rotations and
@@ -1451,16 +1460,19 @@ impl Workspace {
     /// invalid target names and unresolvable conflicts (a target landing on an
     /// untouched sibling, or two rows clashing) are refused. Returns the number
     /// of entries renamed, or a user-facing error.
-    pub fn apply_batch_rename(
+    /// Apply a batch rename to the exact context captured when its dialog
+    /// opened. The live directory is re-read at commit time so newly-created
+    /// siblings still participate in collision checks.
+    pub fn apply_batch_rename_in(
         &mut self,
+        context: &BatchRenameContext,
         rule: &crate::rename::RenameRule,
     ) -> Result<usize, String> {
-        let names = self.batch_rename_targets();
-        if names.is_empty() {
+        if context.targets.is_empty() {
             return Err("Nothing selected to rename".into());
         }
-        let existing = self.active_dir_names();
-        let plans = crate::rename::plan_batch_rename(&names, &existing, rule);
+        let existing = Self::dir_names(&context.dir);
+        let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule);
         if plans
             .iter()
             .any(|p| p.status == crate::rename::PlanStatus::Invalid)
@@ -1476,12 +1488,18 @@ impl Workspace {
         if changes.is_empty() {
             return Ok(0);
         }
-        let dir = self.active_panel_ref().current_path.clone();
+        let dir = context.dir.clone();
 
         let done = match Self::apply_rename_order(&dir, &changes, &existing) {
             Ok(done) => done,
             Err(e) => {
-                self.active_panel().refresh();
+                let panel = match context.panel {
+                    ActivePanel::Left => &mut self.left,
+                    ActivePanel::Right => &mut self.right,
+                };
+                if panel.current_path == context.dir {
+                    panel.refresh();
+                }
                 return Err(e);
             }
         };
@@ -1492,8 +1510,14 @@ impl Workspace {
                 pairs: changes,
             });
         }
-        self.active_panel().selected.clear();
-        self.active_panel().refresh();
+        let panel = match context.panel {
+            ActivePanel::Left => &mut self.left,
+            ActivePanel::Right => &mut self.right,
+        };
+        if panel.current_path == context.dir {
+            panel.selected.clear();
+            panel.refresh();
+        }
         Ok(done)
     }
 
@@ -1750,43 +1774,53 @@ impl Workspace {
     /// left directory. Both passes are enqueued on the transfer queue and run in
     /// order (the left-bound pass starts when the right-bound one finishes), so
     /// the engine stays single-transfer with no special follow-up handling.
-    pub fn apply_sync(
+    /// Apply a synchronization snapshot to the directories it was opened for.
+    /// Sources are resolved by their captured paths, never by a lowercased
+    /// display name or by whichever panels happen to be active now.
+    pub fn apply_sync_between(
         &mut self,
         actions: &[crate::sync::SyncAction],
+        left_dir: &Path,
+        right_dir: &Path,
         notify: impl Fn() + Send + 'static,
     ) {
         use crate::sync::SyncDirection;
-        let lookup = |entries: &[FileEntry], name_lower: &str| {
-            entries.iter().find(|e| e.name_lower == name_lower).cloned()
+        let load = |path: &Path| {
+            let meta = std::fs::metadata(path).ok()?;
+            FileEntry::from_meta(path.to_path_buf(), &meta)
         };
         let mut to_right = Vec::new();
         let mut to_left = Vec::new();
         for a in actions {
-            let nl = a.name.to_lowercase();
             match a.direction {
                 SyncDirection::ToRight => {
-                    if let Some(e) = lookup(&self.left.entries, &nl) {
+                    if let Some(e) = a.source_path().and_then(load) {
                         to_right.push(e);
                     }
                 }
                 SyncDirection::ToLeft => {
-                    if let Some(e) = lookup(&self.right.entries, &nl) {
+                    if let Some(e) = a.source_path().and_then(load) {
                         to_left.push(e);
                     }
                 }
                 SyncDirection::Skip => {}
             }
         }
-        let right_dir = self.right.current_path.clone();
-        let left_dir = self.left.current_path.clone();
-
         // Enqueue both passes; the queue runs them in order (the second starts
         // when the first finishes), so a two-way sync needs no special casing.
         if !to_right.is_empty() {
-            self.enqueue_copy(to_right, right_dir, OverwritePolicy::OverwriteAll);
+            self.enqueue_copy(
+                to_right,
+                right_dir.to_path_buf(),
+                OverwritePolicy::OverwriteAll,
+            );
         }
         if !to_left.is_empty() {
-            self.enqueue_copy(to_left, left_dir, OverwritePolicy::OverwriteAll);
+            self.enqueue_copy(
+                to_left,
+                left_dir.to_path_buf(),
+                OverwritePolicy::OverwriteAll,
+            );
         }
         self.pump_queue(notify);
     }
@@ -1899,6 +1933,7 @@ impl Workspace {
         // Ignore drops while a transfer or another dialog is in flight, so we
         // never stack a second operation over the first.
         if self.active_transfer.is_some() || self.pending_op.is_some() {
+            self.clear_drag_state();
             return;
         }
         let Some((paths, target)) = self.take_drop_plan() else {
@@ -1941,7 +1976,7 @@ impl Workspace {
     /// Resolve which panel is the drag source and where the drop lands,
     /// consuming the drag/drop state. A target hovered in the source panel
     /// itself (drag onto its own subdirectory) takes priority over the other
-    /// panel; otherwise the other panel's current directory is the target.
+    /// panel. With no explicit target the drag is consumed as a cancellation.
     fn take_drop_plan(&mut self) -> Option<(Vec<PathBuf>, PathBuf)> {
         let (source, other) = if !self.left.drag_entries.is_empty() {
             (&mut self.left, &mut self.right)
@@ -1953,15 +1988,21 @@ impl Workspace {
         let target = source
             .drop_target
             .take()
-            .or_else(|| other.drop_target.take())
-            .unwrap_or_else(|| other.current_path.clone());
+            .or_else(|| other.drop_target.take());
         let paths = std::mem::take(&mut source.drag_entries);
         source.drop_target = None;
         other.drop_target = None;
         if paths.is_empty() {
             return None;
         }
-        Some((paths, target))
+        Some((paths, target?))
+    }
+
+    fn clear_drag_state(&mut self) {
+        self.left.drag_entries.clear();
+        self.right.drag_entries.clear();
+        self.left.drop_target = None;
+        self.right.drop_target = None;
     }
 }
 
@@ -1980,6 +2021,22 @@ mod tests {
         ws.left.refresh();
         ws.right.refresh();
         ws
+    }
+
+    fn apply_batch_rename(
+        ws: &mut Workspace,
+        rule: &crate::rename::RenameRule,
+    ) -> Result<usize, String> {
+        let context = ws
+            .batch_rename_context()
+            .ok_or("Nothing selected to rename")?;
+        ws.apply_batch_rename_in(&context, rule)
+    }
+
+    fn apply_sync(ws: &mut Workspace, actions: &[crate::sync::SyncAction]) {
+        let left_dir = ws.left.current_path.clone();
+        let right_dir = ws.right.current_path.clone();
+        ws.apply_sync_between(actions, &left_dir, &right_dir, || {});
     }
 
     fn wait_transfer(ws: &mut Workspace) {
@@ -2331,7 +2388,7 @@ mod tests {
             prefix: "x_".into(),
             ..Default::default()
         };
-        let n = ws.apply_batch_rename(&rule).unwrap();
+        let n = apply_batch_rename(&mut ws, &rule).unwrap();
         assert_eq!(n, 2);
         assert!(l.path().join("x_a.txt").is_file());
         assert!(l.path().join("x_b.txt").is_file());
@@ -2344,6 +2401,28 @@ mod tests {
             ws.left.selected.is_empty(),
             "selection cleared after rename"
         );
+    }
+
+    #[test]
+    fn batch_rename_context_does_not_follow_a_later_panel_switch() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let left_file = l.file("left.txt", "left");
+        let right_file = r.file("right.txt", "right");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(left_file);
+        let context = ws.batch_rename_context().unwrap();
+
+        ws.active = ActivePanel::Right;
+        ws.right.selected.insert(right_file);
+        let rule = crate::rename::RenameRule {
+            prefix: "renamed_".into(),
+            ..Default::default()
+        };
+        assert_eq!(ws.apply_batch_rename_in(&context, &rule).unwrap(), 1);
+
+        assert!(l.path().join("renamed_left.txt").is_file());
+        assert!(r.path().join("right.txt").is_file());
+        assert!(!r.path().join("renamed_right.txt").exists());
     }
 
     #[test]
@@ -2362,7 +2441,7 @@ mod tests {
             replace: "v2".into(),
             ..Default::default()
         };
-        let err = ws.apply_batch_rename(&dup);
+        let err = apply_batch_rename(&mut ws, &dup);
         assert!(err.is_err(), "colliding plan rejected: {err:?}");
         // Both files are left untouched on refusal.
         assert!(l.path().join("report_v1.txt").is_file());
@@ -2375,9 +2454,27 @@ mod tests {
         l.file("new.txt", "hello");
         let mut ws = workspace(&l, &r);
         let actions = ws.build_sync_actions(crate::sync::SyncPolicy::MirrorLeftToRight);
-        ws.apply_sync(&actions, || {});
+        apply_sync(&mut ws, &actions);
         wait_transfer(&mut ws);
         assert!(r.path().join("new.txt").is_file(), "left -> right copied");
+    }
+
+    #[test]
+    fn sync_snapshot_does_not_follow_later_panel_navigation() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let elsewhere = TempDir::new();
+        l.file("a.txt", "left");
+        let mut ws = workspace(&l, &r);
+        let actions = ws.build_sync_actions(crate::sync::SyncPolicy::MirrorLeftToRight);
+        let left_dir = ws.left.current_path.clone();
+        let right_dir = ws.right.current_path.clone();
+
+        ws.right.navigate_to(elsewhere.path().to_path_buf());
+        ws.apply_sync_between(&actions, &left_dir, &right_dir, || {});
+        wait_transfer(&mut ws);
+
+        assert!(r.path().join("a.txt").is_file());
+        assert!(!elsewhere.path().join("a.txt").exists());
     }
 
     #[test]
@@ -2387,7 +2484,7 @@ mod tests {
         r.file("right.txt", "R");
         let mut ws = workspace(&l, &r);
         let actions = ws.build_sync_actions(crate::sync::SyncPolicy::TwoWay);
-        ws.apply_sync(&actions, || {});
+        apply_sync(&mut ws, &actions);
 
         // Both passes are enqueued; the first runs now, the second waits behind
         // it on the queue (no more ad-hoc follow-up handling).
@@ -3037,7 +3134,7 @@ mod tests {
             prefix: "x_".into(),
             ..Default::default()
         };
-        assert_eq!(ws.apply_batch_rename(&rule).unwrap(), 2);
+        assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 2);
         assert!(l.path().join("x_a.txt").is_file());
         assert!(ws.stack.can_undo());
 
@@ -3260,7 +3357,7 @@ mod tests {
             case: crate::rename::CaseMode::Upper,
             ..Default::default()
         };
-        let n = ws.apply_batch_rename(&rule).unwrap();
+        let n = apply_batch_rename(&mut ws, &rule).unwrap();
         assert_eq!(n, 1);
         // The on-disk name now reads with the upper-cased stem.
         let names = Workspace::dir_names(l.path());
@@ -3277,7 +3374,7 @@ mod tests {
             case: crate::rename::CaseMode::Upper,
             ..Default::default()
         };
-        ws.apply_batch_rename(&rule).unwrap();
+        apply_batch_rename(&mut ws, &rule).unwrap();
         assert!(Workspace::dir_names(l.path()).contains("README.md"));
         // Undo puts the lower-case name back (itself a case-only rename).
         let _ = ws.perform_undo(|| {});
@@ -3365,17 +3462,33 @@ mod tests {
     }
 
     #[test]
-    fn drop_falls_back_to_other_panel_path() {
+    fn drop_to_explicit_other_panel_target_moves_the_file() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let file = l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
 
         ws.left.drag_entries = vec![file];
+        ws.right.drop_target = Some(r.path().to_path_buf());
         ws.drop_dragged(|| {});
         wait_transfer(&mut ws);
 
         assert!(r.path().join("a.txt").exists());
         assert!(!l.path().join("a.txt").exists(), "drop is a move");
+    }
+
+    #[test]
+    fn drop_without_an_explicit_target_is_cancelled() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let file = l.file("a.txt", "x");
+        let mut ws = workspace(&l, &r);
+
+        ws.left.drag_entries = vec![file.clone()];
+        ws.drop_dragged(|| {});
+
+        assert!(file.exists());
+        assert!(ws.active_transfer.is_none());
+        assert!(ws.pending_op.is_none());
+        assert!(ws.left.drag_entries.is_empty());
     }
 
     #[test]
@@ -3386,6 +3499,7 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         ws.left.drag_entries = vec![file];
+        ws.right.drop_target = Some(r.path().to_path_buf());
         ws.drop_dragged(|| {});
 
         // A conflicting drop must NOT move immediately; it stages a

@@ -39,6 +39,12 @@ carry stale rank numbers forward across rounds.
   literal, with unit tests covering the escaping helper. The round-4 table
   below remains the historical audited ranking; act on item #1 as resolved in
   current code.
+- **Top-50 #2-#6 fixed in the 2026-07-11 pass:** sync actions retain stable
+  source paths and directory snapshots (case collisions default to an explicit
+  skip); Batch Rename retains its opening context; drag start/drop targeting is
+  explicit and release outside a target cancels; text diff checks a bounded,
+  flattened matrix budget before allocation. The table remains the historical
+  round-4 ranking; act on items #2-#6 as resolved in current code.
 
 ## Resolved since round 3
 
@@ -258,7 +264,7 @@ rounds 1-3:
 | No negative-cache for undecodable image/video formats | high/high, "resource-leak" | **Downgraded to med.** The uncapped per-frame thread-spawn and the main-thread synchronous re-decode of the active preview are both real and unbounded in *count*, but individual decode-attempt failures return fast (CoreGraphics/AVFoundation reject unsupported formats near-instantly), so this is sustained thread churn and UI jank, not the unbounded-memory-growth or multi-second-hang class of "high". |
 | `SmartFolders`/`Bookmarks` duplicate-key cascade delete | low/med | **Confidence raised to high, severity stays low.** The `retain(|d| d.name != name)` bulk-delete mechanism is confirmed exactly as described, but no in-app code path can create the duplicate-name precondition today (only an externally edited/merged JSON file can) — real but low-likelihood; kept out of the top 50, see "Below the cut". |
 | `recommendation.md` Track C text already stale on arrival | med/high | **Downgraded to low.** The document's own "Tracking" section already tells the reader Track C is done, which substantially defuses the "reader wastes time re-fixing it" scenario the reviewer described. Fixed directly in that pass rather than tracked as a numbered defect. |
-| `architecture.md` "373 GUI-free tests" is stale | low/med | **Confidence raised to high.** Reproduced directly: the latest `cargo test` reports 401 passed, 1 ignored, 402 `#[test]` functions total. Fixed directly in `architecture.md`. |
+| `architecture.md` "373 GUI-free tests" is stale | low/med | **Confidence raised to high.** Reproduced directly; after the 2026-07-11 regression additions, `cargo test` reports 408 passed, 1 ignored, 409 `#[test]` functions total. Fixed directly in `architecture.md`. |
 
 ## Verification corrections (round 2, re-checked by hand)
 

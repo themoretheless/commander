@@ -10,7 +10,12 @@ impl App {
         if std::mem::take(&mut self.ws.sync_request) {
             let policy = SyncPolicy::TwoWay;
             let actions = self.ws.build_sync_actions(policy);
-            self.sync = Some(SyncState { policy, actions });
+            self.sync = Some(SyncState {
+                policy,
+                actions,
+                left_dir: self.ws.left.current_path.clone(),
+                right_dir: self.ws.right.current_path.clone(),
+            });
         }
         if self.sync.is_none() {
             return;
@@ -101,14 +106,25 @@ impl App {
                                         (SyncDirection::ToRight, "\u{2192}"),
                                     ] {
                                         let active = a.direction == dir;
+                                        let available = a.allows(dir);
+                                        let hint = match dir {
+                                            SyncDirection::ToLeft => "Copy to left",
+                                            SyncDirection::Skip => "Skip",
+                                            SyncDirection::ToRight => "Copy to right",
+                                        };
                                         let color = if active { t.accent } else { t.text_muted };
-                                        if ui
-                                            .selectable_label(
-                                                active,
-                                                egui::RichText::new(glyph).size(13.0).color(color),
+                                        let response = ui
+                                            .add_enabled(
+                                                available,
+                                                egui::Button::selectable(
+                                                    active,
+                                                    egui::RichText::new(glyph)
+                                                        .size(13.0)
+                                                        .color(color),
+                                                ),
                                             )
-                                            .clicked()
-                                        {
+                                            .on_hover_text(hint);
+                                        if response.clicked() {
                                             a.direction = dir;
                                         }
                                     }
@@ -182,17 +198,23 @@ impl App {
             self.sync = None;
             return;
         }
-        if let Some(p) = new_policy {
-            let actions = self.ws.build_sync_actions(p);
-            if let Some(s) = self.sync.as_mut() {
-                s.policy = p;
-                s.actions = actions;
-            }
+        if let Some(p) = new_policy
+            && let Some(s) = self.sync.as_mut()
+        {
+            s.policy = p;
+            crate::sync::apply_policy(&mut s.actions, p);
         }
         if commit {
-            let actions = self.sync.take().map(|s| s.actions).unwrap_or_default();
+            let Some(state) = self.sync.take() else {
+                return;
+            };
             let c = ctx.clone();
-            self.ws.apply_sync(&actions, move || c.request_repaint());
+            self.ws.apply_sync_between(
+                &state.actions,
+                &state.left_dir,
+                &state.right_dir,
+                move || c.request_repaint(),
+            );
         }
     }
 }
@@ -205,13 +227,14 @@ fn status_label(status: SyncStatus) -> &'static str {
         SyncStatus::RightNewer => "right newer",
         SyncStatus::Differing => "differs",
         SyncStatus::Identical => "identical",
+        SyncStatus::CaseConflict => "case conflict",
     }
 }
 
 fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
     match status {
         SyncStatus::Identical => t.text_muted,
-        SyncStatus::Differing => t.accent_warning,
+        SyncStatus::Differing | SyncStatus::CaseConflict => t.accent_warning,
         _ => t.accent,
     }
 }

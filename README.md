@@ -133,7 +133,7 @@ full 621-item raw sweep.
 
 ## Review backlog
 
-The 2026-07-09 pass adds a compact Top-500 list to
+The 2026-07-09 pass added a compact Top-500 list to
 [recommendation.md](recommendation.md): 79 bugs,
 194 problems, 115 improvements, and
 112 suggestions, all preserving the original
@@ -141,8 +141,13 @@ The 2026-07-09 pass adds a compact Top-500 list to
 mirrors the same work as ten small SOLID/DRY reading slices, so the project can
 be understood and refactored one bounded context at a time.
 
-One critical review item was fixed during the pass: the native macOS Get Info
-action now escapes paths before embedding them in an AppleScript literal.
+The 2026-07-11 three-pass refresh revalidated all 500 numbers, kept that file
+as the single source of truth, and closed the next high-risk interaction
+cluster: sync rows now retain stable source paths and directory snapshots,
+Batch Rename retains its opening panel/directory/selection, drag-and-drop
+requires a visible target and cancels elsewhere, and text diff rejects
+quadratic work before allocating its matrix. The native macOS Get Info action
+from the earlier pass also remains protected by AppleScript-literal escaping.
 
 ## Keyboard shortcuts
 

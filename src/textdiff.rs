@@ -1,6 +1,10 @@
 //! Pure line-level text diff via a longest-common-subsequence backtrack.
 //! Deterministic and free of I/O, so the edit script is unit-tested directly.
 
+/// Upper bound for the LCS matrix. At four bytes per cell this keeps the core
+/// allocation near 32 MiB and, just as importantly, caps quadratic CPU work.
+const MAX_DIFF_CELLS: usize = 8_000_000;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DiffKind {
     Equal,
@@ -14,22 +18,33 @@ pub struct DiffLine {
     pub text: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DiffTooLarge;
+
 /// Diff `a` against `b` line by line. Equal lines are shared context; lines
 /// only in `a` are `Delete`, lines only in `b` are `Insert`. A changed line
 /// surfaces as a `Delete` of the old text followed by an `Insert` of the new.
-pub fn diff_lines(a: &str, b: &str) -> Vec<DiffLine> {
+pub fn diff_lines(a: &str, b: &str) -> Result<Vec<DiffLine>, DiffTooLarge> {
     let a: Vec<&str> = a.lines().collect();
     let b: Vec<&str> = b.lines().collect();
     let (n, m) = (a.len(), b.len());
 
+    let rows = n.checked_add(1).ok_or(DiffTooLarge)?;
+    let cols = m.checked_add(1).ok_or(DiffTooLarge)?;
+    let cells = rows.checked_mul(cols).ok_or(DiffTooLarge)?;
+    if cells > MAX_DIFF_CELLS {
+        return Err(DiffTooLarge);
+    }
+
     // dp[i][j] = LCS length of a[i..] and b[j..].
-    let mut dp = vec![vec![0u32; m + 1]; n + 1];
+    let mut dp = vec![0u32; cells];
+    let at = |i: usize, j: usize| i * cols + j;
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            dp[i][j] = if a[i] == b[j] {
-                dp[i + 1][j + 1] + 1
+            dp[at(i, j)] = if a[i] == b[j] {
+                dp[at(i + 1, j + 1)] + 1
             } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+                dp[at(i + 1, j)].max(dp[at(i, j + 1)])
             };
         }
     }
@@ -44,7 +59,7 @@ pub fn diff_lines(a: &str, b: &str) -> Vec<DiffLine> {
             });
             i += 1;
             j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
+        } else if dp[at(i + 1, j)] >= dp[at(i, j + 1)] {
             out.push(DiffLine {
                 kind: DiffKind::Delete,
                 text: a[i].to_string(),
@@ -72,14 +87,18 @@ pub fn diff_lines(a: &str, b: &str) -> Vec<DiffLine> {
         });
         j += 1;
     }
-    out
+    Ok(out)
 }
 
 /// Count of inserted and deleted lines, for a header summary.
 pub fn change_counts(lines: &[DiffLine]) -> (usize, usize) {
-    let ins = lines.iter().filter(|l| l.kind == DiffKind::Insert).count();
-    let del = lines.iter().filter(|l| l.kind == DiffKind::Delete).count();
-    (ins, del)
+    lines
+        .iter()
+        .fold((0, 0), |(ins, del), line| match line.kind {
+            DiffKind::Insert => (ins + 1, del),
+            DiffKind::Delete => (ins, del + 1),
+            DiffKind::Equal => (ins, del),
+        })
 }
 
 #[cfg(test)]
@@ -92,7 +111,7 @@ mod tests {
 
     #[test]
     fn identical_inputs_are_all_equal() {
-        let d = diff_lines("a\nb\nc", "a\nb\nc");
+        let d = diff_lines("a\nb\nc", "a\nb\nc").unwrap();
         assert_eq!(
             kinds(&d),
             vec![DiffKind::Equal, DiffKind::Equal, DiffKind::Equal]
@@ -103,7 +122,7 @@ mod tests {
     #[test]
     fn pure_insertion() {
         // "b" inserted between a and c.
-        let d = diff_lines("a\nc", "a\nb\nc");
+        let d = diff_lines("a\nc", "a\nb\nc").unwrap();
         assert_eq!(
             kinds(&d),
             vec![DiffKind::Equal, DiffKind::Insert, DiffKind::Equal]
@@ -114,7 +133,7 @@ mod tests {
 
     #[test]
     fn pure_deletion() {
-        let d = diff_lines("a\nb\nc", "a\nc");
+        let d = diff_lines("a\nb\nc", "a\nc").unwrap();
         assert_eq!(
             kinds(&d),
             vec![DiffKind::Equal, DiffKind::Delete, DiffKind::Equal]
@@ -125,7 +144,7 @@ mod tests {
 
     #[test]
     fn replacement_is_delete_then_insert() {
-        let d = diff_lines("x", "y");
+        let d = diff_lines("x", "y").unwrap();
         assert_eq!(kinds(&d), vec![DiffKind::Delete, DiffKind::Insert]);
         assert_eq!(d[0].text, "x");
         assert_eq!(d[1].text, "y");
@@ -133,8 +152,22 @@ mod tests {
 
     #[test]
     fn empty_versus_nonempty() {
-        assert_eq!(kinds(&diff_lines("", "a\nb")), vec![DiffKind::Insert; 2]);
-        assert_eq!(kinds(&diff_lines("a\nb", "")), vec![DiffKind::Delete; 2]);
-        assert!(diff_lines("", "").is_empty());
+        assert_eq!(
+            kinds(&diff_lines("", "a\nb").unwrap()),
+            vec![DiffKind::Insert; 2]
+        );
+        assert_eq!(
+            kinds(&diff_lines("a\nb", "").unwrap()),
+            vec![DiffKind::Delete; 2]
+        );
+        assert!(diff_lines("", "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_quadratic_work_before_allocating_the_matrix() {
+        let many_lines = std::iter::repeat_n("x", 3_000)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(diff_lines(&many_lines, &many_lines), Err(DiffTooLarge));
     }
 }

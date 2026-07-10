@@ -11,6 +11,7 @@ impl App {
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
+        dragging: bool,
         metrics: crate::density::DensityMetrics,
     ) {
         egui::ScrollArea::vertical()
@@ -143,8 +144,6 @@ impl App {
 
                 let cursor = panel.cursor;
                 let scroll_pending = panel.scroll_to_cursor;
-                let dragging = !panel.drag_entries.is_empty();
-
                 // Row sizing follows the density tier. `row_content` is the
                 // allocated row height; `row_h` adds the 1px item spacing so the
                 // virtualization stride matches (Comfortable == 28 + 1 == 29,
@@ -474,20 +473,7 @@ impl App {
                     panel.scroll_to_cursor = false;
                 }
                 if let Some(anchor) = drag_anchor {
-                    panel.drag_entries = if panel.selected.is_empty() {
-                        vec![anchor]
-                    } else {
-                        filtered
-                            .iter()
-                            .filter_map(|&entry_idx| {
-                                let entry = &panel.entries[entry_idx];
-                                panel
-                                    .selected
-                                    .contains(&entry.path)
-                                    .then(|| entry.path.clone())
-                            })
-                            .collect()
-                    };
+                    panel.begin_drag(anchor);
                 }
                 if let Some(target) = pending_drop_target {
                     panel.drop_target = Some(target);

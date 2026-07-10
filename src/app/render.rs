@@ -127,6 +127,7 @@ impl App {
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(&std::path::Path),
+        dragging: bool,
         metrics: crate::density::DensityMetrics,
     ) -> bool {
         let panel_bg = t.bg_panel;
@@ -625,7 +626,8 @@ impl App {
 
                 // File list
                 Self::render_file_list(
-                    ui, panel, is_active, t, panel_side, size_bars, compare, opener, metrics,
+                    ui, panel, is_active, t, panel_side, size_bars, compare, opener, dragging,
+                    metrics,
                 );
             });
 

@@ -701,6 +701,14 @@ impl App {
         let t = self.colors;
         let left_metrics = crate::density::metrics(self.ws.left.density);
         let right_metrics = crate::density::metrics(self.ws.right.density);
+        let drag_source = if !self.ws.left.drag_entries.is_empty() {
+            Some(ActivePanel::Left)
+        } else if !self.ws.right.drag_entries.is_empty() {
+            Some(ActivePanel::Right)
+        } else {
+            None
+        };
+        let dragging = drag_source.is_some();
         let window_width = ctx.input(|i| i.viewport_rect()).width();
         let panel_id = egui::Id::new("left_panel");
 
@@ -794,9 +802,27 @@ impl App {
                     self.show_size_bars,
                     left_compare.as_ref(),
                     self.ws.opener.as_ref(),
+                    dragging,
                     left_metrics,
                 );
             });
+
+        let hover_pos = ctx.input(|i| i.pointer.hover_pos());
+        if dragging
+            && drag_source != Some(ActivePanel::Left)
+            && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
+            && self.ws.left.drop_target.is_none()
+        {
+            self.ws.left.drop_target = Some(self.ws.left.current_path.clone());
+        }
+        if self.ws.left.drop_target.is_some() {
+            ctx.layer_painter(left_resp.response.layer_id).rect_stroke(
+                left_resp.response.rect.shrink(1.0),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, t.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         // Double-click on panel divider → reset to 50/50
         {
@@ -822,7 +848,7 @@ impl App {
         }
 
         // Right panel (takes remaining space)
-        egui::CentralPanel::default()
+        let right_resp = egui::CentralPanel::default()
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
@@ -840,9 +866,26 @@ impl App {
                     self.show_size_bars,
                     right_compare.as_ref(),
                     self.ws.opener.as_ref(),
+                    dragging,
                     right_metrics,
                 );
             });
+
+        if dragging
+            && drag_source != Some(ActivePanel::Right)
+            && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
+            && self.ws.right.drop_target.is_none()
+        {
+            self.ws.right.drop_target = Some(self.ws.right.current_path.clone());
+        }
+        if self.ws.right.drop_target.is_some() {
+            ctx.layer_painter(right_resp.response.layer_id).rect_stroke(
+                right_resp.response.rect.shrink(1.0),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, t.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         if tree_toggle {
             self.show_tree = !self.show_tree;
@@ -886,15 +929,14 @@ impl App {
                 format!("{} items", count)
             };
             let explicit_target = source.drop_target.as_ref().or(other.drop_target.as_ref());
-            let target = explicit_target.unwrap_or(&other.current_path);
-            let target_name = target
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| target.display().to_string());
-            let target_label = if explicit_target.is_some() {
-                format!("Drop into {target_name}")
+            let target_label = if let Some(target) = explicit_target {
+                let target_name = target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| target.display().to_string());
+                format!("Move to {target_name}")
             } else {
-                format!("Drop to other panel: {target_name}")
+                "No drop target".to_string()
             };
             egui::Area::new(egui::Id::new("drag_overlay"))
                 .fixed_pos(pos + egui::vec2(12.0, 12.0))

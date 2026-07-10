@@ -36,7 +36,16 @@ impl App {
                             .unwrap_or_default()
                     };
                     let (lines, message) = match (read_text(&a), read_text(&b)) {
-                        (Ok(ta), Ok(tb)) => (diff_lines(&ta, &tb), None),
+                        (Ok(ta), Ok(tb)) => match diff_lines(&ta, &tb) {
+                            Ok(lines) => (lines, None),
+                            Err(_) => (
+                                Vec::new(),
+                                Some(
+                                    "These files contain too many line combinations to compare safely."
+                                        .to_string(),
+                                ),
+                            ),
+                        },
                         _ => (
                             Vec::new(),
                             Some(

@@ -9,11 +9,11 @@ use crate::rename_order::{RenameOrder, safe_rename_order};
 impl App {
     pub(crate) fn show_batch_rename_dialog(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.ws.batch_rename_request) {
-            // Only open when there is something to rename.
-            if self.ws.batch_rename_targets().is_empty() {
+            let Some(context) = self.ws.batch_rename_context() else {
                 return;
-            }
+            };
             self.batch_rename = Some(BatchRenameState {
+                context,
                 find: String::new(),
                 replace: String::new(),
                 regex_mode: false,
@@ -34,11 +34,11 @@ impl App {
         let t = self.colors;
 
         // Compute the live plan from the current rule.
-        let names = self.ws.batch_rename_targets();
-        let existing = self.ws.active_dir_names();
+        let names = &state.context.targets;
+        let existing = &state.context.existing;
         let rule = state.rule();
         let regex_err = crate::rename::regex_error(&rule);
-        let plans = plan_batch_rename(&names, &existing, &rule);
+        let plans = plan_batch_rename(names, existing, &rule);
 
         // Rows whose name actually changes (Ok, or a resolvable collision).
         let changes: Vec<(String, String)> = plans
@@ -59,7 +59,7 @@ impl App {
         } else if changes.is_empty() {
             (false, None)
         } else {
-            match safe_rename_order(&changes, &existing) {
+            match safe_rename_order(&changes, existing) {
                 RenameOrder::Steps(s) => (!s.is_empty(), None),
                 RenameOrder::Conflict(why) => (false, Some(why)),
             }
@@ -86,6 +86,11 @@ impl App {
                         .size(13.0)
                         .strong()
                         .color(t.text_primary),
+                );
+                ui.label(
+                    egui::RichText::new(state.context.dir.display().to_string())
+                        .size(10.0)
+                        .color(t.text_muted),
                 );
                 ui.add_space(10.0);
 
@@ -253,8 +258,11 @@ impl App {
             return;
         }
         if commit {
-            let rule = self.batch_rename.as_ref().unwrap().rule();
-            match self.ws.apply_batch_rename(&rule) {
+            let (rule, context) = {
+                let state = self.batch_rename.as_ref().unwrap();
+                (state.rule(), state.context.clone())
+            };
+            match self.ws.apply_batch_rename_in(&context, &rule) {
                 Ok(n) => {
                     self.batch_rename = None;
                     if n > 0 {
