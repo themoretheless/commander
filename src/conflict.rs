@@ -84,13 +84,12 @@ pub fn resolve(
     conflicts: &[Conflict],
     policy: RelationPolicy,
 ) -> Resolution {
-    // SkipAll keeps every source and lets the engine skip collisions at copy
-    // time; KeepNewer/KeepLarger pre-drop the conflict losers and overwrite the
-    // rest; ReplaceAll/KeepBoth keep everything.
+    // SkipAll removes known collisions up front (the engine still uses SkipAll
+    // for races that appear after confirmation); KeepNewer/KeepLarger pre-drop
+    // conflict losers and overwrite the rest; ReplaceAll/KeepBoth keep all.
     let drop: HashSet<PathBuf> = match policy {
-        RelationPolicy::ReplaceAll | RelationPolicy::KeepBoth | RelationPolicy::SkipAll => {
-            HashSet::new()
-        }
+        RelationPolicy::ReplaceAll | RelationPolicy::KeepBoth => HashSet::new(),
+        RelationPolicy::SkipAll => conflicts.iter().map(|c| c.src_path.clone()).collect(),
         RelationPolicy::KeepNewer => conflicts
             .iter()
             .filter(|c| c.dst_newer)
@@ -176,11 +175,10 @@ mod tests {
     }
 
     #[test]
-    fn skip_all_keeps_all_with_skip_decision() {
+    fn skip_all_drops_known_conflicts_with_skip_decision() {
         let (s, c) = sample();
         let r = resolve(&s, &c, RelationPolicy::SkipAll);
-        // Skip keeps every source; the engine skips the collisions at copy time.
-        assert_eq!(r.keep.len(), 3);
+        assert_eq!(r.keep, vec![PathBuf::from("/src/c.txt")]);
         assert_eq!(r.decision, Decision::Skip);
     }
 

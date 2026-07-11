@@ -90,8 +90,8 @@ pub struct App {
     pub(crate) duplicates: Option<DupState>,
     /// Active read-only diff sheet state.
     pub(crate) diff: Option<DiffState>,
-    /// Active disk-usage treemap state (entries with their bytes, sorted).
-    pub(crate) treemap: Option<Vec<(crate::panel::FileEntry, u64)>>,
+    /// Active disk-usage treemap snapshot (opening directory + sorted rows).
+    pub(crate) treemap: Option<crate::workspace::TreemapSnapshot>,
     /// Active recursive-find sheet state.
     pub(crate) find: Option<FindState>,
     /// Saved searches, loaded lazily on first use.
@@ -257,6 +257,7 @@ impl BatchRenameState {
 /// UI state for the rename editor.
 pub(crate) struct RenameState {
     pub path: PathBuf,
+    pub siblings: Vec<String>,
     pub buffer: String,
     pub error: Option<String>,
     /// Set once so the text field grabs focus on the first frame.

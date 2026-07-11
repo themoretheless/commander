@@ -12,6 +12,7 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             self.renaming = Some(RenameState {
+                siblings: crate::workspace::Workspace::rename_siblings(&path),
                 path,
                 buffer: name,
                 error: None,
@@ -58,28 +59,19 @@ impl App {
                     state.focused = true;
                 }
 
-                // Validate live for inline feedback (siblings come from the
-                // active panel, excluding the entry being renamed).
+                // Validate against the directory snapshot captured when the
+                // editor opened. Commit validates once more against live disk.
                 let old_name = state
                     .path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let siblings: Vec<String> = self
-                    .ws
-                    .active_panel_ref()
-                    .entries
-                    .iter()
-                    .map(|e| e.name.clone())
-                    .filter(|n| n != &old_name)
-                    .collect();
-                let valid = state.buffer.trim() == old_name
-                    || crate::workspace::validate_new_name(&state.buffer, &siblings).is_ok();
-                state.error = if valid {
+                state.error = if state.buffer.trim() == old_name {
                     None
                 } else {
-                    crate::workspace::validate_new_name(&state.buffer, &siblings).err()
+                    crate::workspace::validate_new_name(&state.buffer, &state.siblings).err()
                 };
+                let valid = state.error.is_none();
 
                 if let Some(err) = &state.error {
                     ui.add_space(4.0);
@@ -136,12 +128,43 @@ impl App {
             return;
         }
         if commit {
-            let (path, buffer) = {
+            let (path, buffer, changed) = {
                 let s = self.renaming.as_ref().unwrap();
-                (s.path.clone(), s.buffer.clone())
+                let old_name = s
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default();
+                (
+                    s.path.clone(),
+                    s.buffer.clone(),
+                    s.buffer.trim() != old_name,
+                )
             };
             match self.ws.commit_rename(&path, &buffer) {
-                Ok(()) => self.renaming = None,
+                Ok(()) => {
+                    self.renaming = None;
+                    if changed {
+                        let now = ctx.input(|i| i.time);
+                        self.toasts.push(crate::toasts::Toast::new(
+                            "Renamed 1 item",
+                            crate::toasts::ToastKind::Success,
+                            true,
+                            now,
+                        ));
+                        if let Some(action) = self.ws.stack.peek_undo().cloned()
+                            && let Some(jump_to) = action.jump_to()
+                        {
+                            self.receipts.push(crate::receipts::Receipt {
+                                verb: action.verb(),
+                                item_count: action.item_count(),
+                                timestamp: now,
+                                jump_to,
+                                undo_action: Some(action),
+                            });
+                        }
+                    }
+                }
                 Err(msg) => {
                     if let Some(s) = &mut self.renaming {
                         s.error = Some(msg);

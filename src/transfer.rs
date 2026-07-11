@@ -418,13 +418,21 @@ pub fn spawn_transfer(
             notify();
         }
 
-        {
-            let mut s = progress.lock().unwrap();
-            s.finished = true;
-            s.record_sample();
-        }
+        finish_progress(&progress);
         notify();
     });
+}
+
+/// Publish the terminal state. A cancel request that arrived after the final
+/// entry was committed is too late to cancel anything; treating that as a
+/// cancelled Move would discard its valid undo action.
+fn finish_progress(progress: &TransferState) {
+    let mut s = progress.lock().unwrap();
+    if s.files_done == s.files_total {
+        s.cancelled = false;
+    }
+    s.finished = true;
+    s.record_sample();
 }
 
 /// Move one entry to `dst` with a single atomic, no-clobber rename (the
@@ -671,6 +679,32 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "transfer timed out");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn finish_distinguishes_a_late_cancel_from_a_partial_cancel() {
+        let completed = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = completed.lock().unwrap();
+            state.files_done = 1;
+            state.cancelled = true;
+        }
+        finish_progress(&completed);
+        let state = completed.lock().unwrap();
+        assert!(state.finished);
+        assert!(!state.cancelled);
+        drop(state);
+
+        let partial = Arc::new(Mutex::new(TransferProgress::new(2, 2)));
+        {
+            let mut state = partial.lock().unwrap();
+            state.files_done = 1;
+            state.cancelled = true;
+        }
+        finish_progress(&partial);
+        let state = partial.lock().unwrap();
+        assert!(state.finished);
+        assert!(state.cancelled);
     }
 
     // The engine no longer consults a conflict list (it checks the

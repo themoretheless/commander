@@ -17,6 +17,9 @@ pub enum Action {
         dir: PathBuf,
         pairs: Vec<(String, String)>,
     },
+    /// One path renamed in place. Full paths keep the action independent from
+    /// whichever panel is active when undo/redo is requested.
+    Rename { from: PathBuf, to: PathBuf },
 }
 
 impl Action {
@@ -25,6 +28,7 @@ impl Action {
         match self {
             Action::Move { pairs } => pairs.len(),
             Action::BatchRename { pairs, .. } => pairs.len(),
+            Action::Rename { .. } => 1,
         }
     }
 
@@ -32,7 +36,7 @@ impl Action {
     pub fn verb(&self) -> &'static str {
         match self {
             Action::Move { .. } => "Moved",
-            Action::BatchRename { .. } => "Renamed",
+            Action::BatchRename { .. } | Action::Rename { .. } => "Renamed",
         }
     }
 
@@ -45,12 +49,13 @@ impl Action {
                 .and_then(|(_, to)| to.parent())
                 .map(PathBuf::from),
             Action::BatchRename { dir, .. } => Some(dir.clone()),
+            Action::Rename { to, .. } => to.parent().map(PathBuf::from),
         }
     }
 }
 
 /// The action that reverses `action`, or `None` if it cannot be inverted.
-/// Both current variants invert by swapping the direction of every pair.
+/// Every current variant inverts by swapping its source and destination.
 pub fn invert(action: &Action) -> Option<Action> {
     match action {
         Action::Move { pairs } => Some(Action::Move {
@@ -59,6 +64,10 @@ pub fn invert(action: &Action) -> Option<Action> {
         Action::BatchRename { dir, pairs } => Some(Action::BatchRename {
             dir: dir.clone(),
             pairs: pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect(),
+        }),
+        Action::Rename { from, to } => Some(Action::Rename {
+            from: to.clone(),
+            to: from.clone(),
         }),
     }
 }
@@ -177,6 +186,24 @@ mod tests {
                 pairs: vec![("b.txt".into(), "a.txt".into())],
             }
         );
+    }
+
+    #[test]
+    fn invert_single_rename_swaps_paths() {
+        let action = Action::Rename {
+            from: PathBuf::from("/d/old.txt"),
+            to: PathBuf::from("/d/new.txt"),
+        };
+        assert_eq!(
+            invert(&action),
+            Some(Action::Rename {
+                from: PathBuf::from("/d/new.txt"),
+                to: PathBuf::from("/d/old.txt"),
+            })
+        );
+        assert_eq!(action.item_count(), 1);
+        assert_eq!(action.verb(), "Renamed");
+        assert_eq!(action.jump_to(), Some(PathBuf::from("/d")));
     }
 
     #[test]

@@ -11,23 +11,18 @@ const CANVAS_H: f32 = 420.0;
 impl App {
     pub(crate) fn show_treemap_dialog(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.ws.treemap_request) {
-            let items: Vec<(crate::panel::FileEntry, u64)> = self
-                .ws
-                .treemap_items()
-                .into_iter()
-                .filter(|(_, b)| *b > 0)
-                .collect();
-            self.treemap = Some(items);
+            let mut snapshot = self.ws.treemap_snapshot();
+            snapshot.items.retain(|(_, bytes)| *bytes > 0);
+            self.treemap = Some(snapshot);
         }
-        let Some(items) = &self.treemap else {
+        let Some(state) = &self.treemap else {
             return;
         };
+        let items = &state.items;
         let t = self.colors;
         let dark = (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
-        let folder = self
-            .ws
-            .active_panel_ref()
-            .current_path
+        let folder = state
+            .dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "/".to_string());

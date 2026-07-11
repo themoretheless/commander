@@ -148,6 +148,9 @@ Batch Rename retains its opening panel/directory/selection, drag-and-drop
 requires a visible target and cancels elsewhere, and text diff rejects
 quadratic work before allocating its matrix. The native macOS Get Info action
 from the earlier pass also remains protected by AppleScript-literal escaping.
+The continuation pass adds undo/redo for F2 rename, fixes conflict policies
+that can reduce an over-budget transfer, and keeps treemap titles bound to the
+directory snapshot they visualize.
 
 ## Keyboard shortcuts
 

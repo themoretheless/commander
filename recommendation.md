@@ -27,7 +27,7 @@ Two tracks run in parallel: **Track A** decomposes the two god objects
 
 Each step is one green commit (`cargo test` + `clippy` + `fmt`), ordered by
 risk. The keystone (A4) is deliberately not first: its payoff lives in
-egui-frame focus behaviour the 408 tests cannot guard, so it must be verified by
+egui-frame focus behaviour the 415 tests cannot guard, so it must be verified by
 hand in the running app.
 
 The table below is now a **high-level index only**. A dedicated design pass
@@ -109,7 +109,7 @@ From the round-1 README-vs-code audit (all **done**, landed in `9b306f0`):
 From the round-3 docs-vs-code audit (**done** in this pass):
 
 - `architecture.md` said "373 GUI-free tests" in three places; the current
-  `cargo test` reports 408 passing (409 `#[test]` functions, 1 `#[ignore]`d
+  `cargo test` reports 415 passing (416 `#[test]` functions, 1 `#[ignore]`d
   profiling harness). Fixed and refreshed after the Top-500 implementation pass.
 - `architecture.md`'s module map omitted `toasts` (`src/toasts.rs`), a
   genuinely UI-independent, unit-tested module (no egui types) that has
@@ -145,7 +145,7 @@ intentional, not a dropped row.)
 | D5 | Make the dir-size index race-safe (generation counter or staged swap), drop the redundant nested `install()`, and bound `walk_log`/`dir_size_cache` | 26, 45, below the cut (x3) | medium; pairs with the `DirIndex` extraction | open |
 | D6 | Fix reachable panics and overflow: `lock().unwrap()` poisoning (transfer, image_cache/confirm_dialog, and the `copyfile` C callback), ObjC `unwrap`, `batch_rename` unwrap, unchecked `keep[gi]`, `checked_mul` the thumbnail buffers | 9, 10, 11, 12, 21, below the cut (x2) | small | open |
 | D8 | Rename temp-name correctness: homogenise the reserved-set casing and make the rollback composite-error / atomic | 15, 16 | medium; one pass with tests | open |
-| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | open |
+| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | **partial:** no-clobber single rename + case-only rollback done; remaining transfer/gather cases open |
 | D10 | Panel filter/cursor invariants: `ensure_cursor_valid()` after every filter/facet/sort change, bounds-checked `filtered_entries`, and an explicit (not silent-empty) `selected_or_cursor` miss | 18, 19, below the cut | small; strongest case for the `ViewState` encapsulation in Track A | open |
 | D11 | egui widget-Id hygiene: add `id_salt` to the three dialog `ScrollArea`s and derive toast Ids from stable identity | below the cut (x4) | trivial | open |
 | D12 | **Security: escape or eliminate the AppleScript injection in `action_get_info`** (interpolated filename breaks out of the AppleScript string literal into `do shell script`) | 1 | small; escape `"`/`\` or drop the AppleScript call for a native `NSWorkspace`/Finder API | **done in this pass** (`escape_for_applescript_literal` + unit tests) |
@@ -155,9 +155,9 @@ intentional, not a dropped row.)
 | D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | open; preload-window budget cap partially done |
 | D17 | Persistence hardening: bound `MaxAgeDays`/`MinAgeDays` (or use `checked_mul`/`saturating_mul`), and give the four config-store loaders item-level fault tolerance instead of discarding the whole file on one bad field | 29, 31 | small-medium | open |
 | D18 | Small UI/data-integrity fixes: `select_all` should preserve filtered-out selections like `invert_selection` does; run Find's directory walk off the UI thread; clear the batch-rename dialog's stale error on rule edit; scope `Escape` to the active panel's preview only | 33, 35, 49, below the cut | small each | open |
-| D19 | **Non-modal dialog retargeting: snapshot the working panel/selection/directory once at dialog-open time** instead of re-deriving it live from `Workspace` every frame, for the batch-rename studio and the treemap dialog | 3, 42 | medium; natural fit for the `UiState` extraction (A5) | **partial:** Batch Rename context done; treemap open |
-| D20 | Undo coverage gaps: add a `Rename` variant to `undo::Action` so F2 single-file rename is undoable (and toast when an action genuinely can't be undone, instead of silently reverting something else or no-op'ing); make "Gather into Folder"'s undo also remove the now-empty folder it created | 8, below the cut | medium | open |
-| D21 | Conflict-resolution UI deadlock: recompute `need_bytes`/`overflow` after `resolve_pending_conflicts` shrinks `tr.entries`, so a chosen policy (Skip Existing, Keep Newer, ...) can actually un-stick the disabled buttons it was meant to fix | 7 | small-medium | open |
+| D19 | **Non-modal dialog retargeting: snapshot the working panel/selection/directory once at dialog-open time** instead of re-deriving it live from `Workspace` every frame, for the batch-rename studio and the treemap dialog | 3, 42 | medium; natural fit for the `UiState` extraction (A5) | **done:** Batch Rename and treemap snapshots retain their opening context |
+| D20 | Undo coverage gaps: add a `Rename` variant to `undo::Action` so F2 single-file rename is undoable (and toast when an action genuinely can't be undone, instead of silently reverting something else or no-op'ing); make "Gather into Folder"'s undo also remove the now-empty folder it created | 8, below the cut | medium | **partial:** F2 rename undo/redo + toast/receipt done; Gather cleanup open |
+| D21 | Conflict-resolution UI deadlock: recompute `need_bytes`/`overflow` after `resolve_pending_conflicts` shrinks `tr.entries`, so a chosen policy (Skip Existing, Keep Newer, ...) can actually un-stick the disabled buttons it was meant to fix | 7 | small-medium | **done:** policies remain selectable and rebuild entries/size/conflicts/scan |
 | D22 | Drag-and-drop plumbing rewrite: capture the actual dragged row(s) explicitly instead of falling back to a stale `panel.selected` when the drag starts on an unselected row; mirror drag state so the destination panel can render its own drop-target highlight; clear `drag_entries`/`drop_target` on `drop_dragged`'s early-return concurrency guard instead of leaving a phantom overlay | 4, 43, 44 | medium; one rewrite closes all three plus the already-tracked #6 | **done:** explicit anchor, cross-panel target feedback, cancel path, full cleanup |
 | D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | open |
 | D24 | Silent no-op cleanup: toast when `JumpSlot` targets a missing directory; toast on copy-path commands with an empty selection; give `JumpList` a way to prune a dead entry instead of only bypassing it; fix `select_by_mask`'s live-count preview to agree with what Select will actually do for a subtraction-only mask | 46, 47, below the cut (x2) | small each | open |
@@ -398,10 +398,10 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 81. `предложение` `src/app/keys.rs:43-45,60-68` - Type-ahead has no visual indicator (no on-screen buffer display like "Jump: fo_") shown anywhere that this file's logic populates -- the user has no feedback for what's currently typed before the cursor jumps, especially relevant since it silently expires after 1.5s with no visual countdown.
 82. `проблема` `src/app/keys.rs:85-137` - collect_presses builds a fresh 39-entry const BINDINGS array and does a full linear O(39) scan with key_pressed() on every single frame regardless of whether any key was pressed, since it's called unconditionally from handle_keys every frame the UI isn't blocked by a modal.
 83. `предложение` `src/app/keys.rs:96-101` - F4 is conspicuously absent from both KeyCode/BINDINGS despite F2/F3/F5/F6/F7/F8 all being bound (classic Norton/Total-Commander-style function-key row: F3 View, F4 Edit, F5 Copy, F6 Move, F7 MkDir, F8 Delete) -- an Edit/Open-in-editor action bound to F4 would complete the familiar function-key set that dual-pane file manager users expect from muscle memory.
-84. `ошибка` `src/app/rename_dialog.rs:68-77,143 (also src/app/update.rs:761-763,807-809)` - Rename dialog validates against and commits into the active panel, but the active panel can change (via mouse click) while the modal is open, silently swapping the sibling-collision context and rename destination.
-85. `ошибка` `src/app/rename_dialog.rs:76-82` - validate_new_name is called twice per frame while invalid (once to compute `valid`, once more to fetch `.err()`), doubling redundant validation work every keystroke for no functional reason.
+84. `ошибка` `src/app/rename_dialog.rs:68-77,143 (also src/app/update.rs:761-763,807-809)` - Rename dialog validates against and commits into the active panel, but the active panel can change (via mouse click) while the modal is open, silently swapping the sibling-collision context and rename destination. (resolved: path+sibling context is captured at open; commit validates that path's live directory)
+85. `ошибка` `src/app/rename_dialog.rs:76-82` - validate_new_name is called twice per frame while invalid (once to compute `valid`, once more to fetch `.err()`), doubling redundant validation work every keystroke for no functional reason. (resolved: one validation populates both error and validity)
 86. `проблема` `src/app/rename_dialog.rs:76 vs src/workspace.rs:1230-1232` - commit_rename's own no-op/duplicate detection ('new_name == old_name') is unreachable from this dialog because the UI already special-cases that exact condition into `valid`, hiding the fact that two independent 'is this a no-op' checks exist and can drift.
-87. `проблема` `src/app/mod.rs:242-248, src/app/rename_dialog.rs:68-75` - RenameState has no field remembering which panel it was opened against, so the dialog has no way to defend against the active-panel-swap bug above even if it wanted to.
+87. `проблема` `src/app/mod.rs:242-248, src/app/rename_dialog.rs:68-75` - RenameState has no field remembering which panel it was opened against, so the dialog has no way to defend against the active-panel-swap bug above even if it wanted to. (resolved: RenameState owns the exact path and sibling snapshot, making panel identity unnecessary)
 88. `проблема` `src/app/rename_dialog.rs:38,42; src/app/diff_dialog.rs:73,77,111` - The 14.0 window inner margin, 360.0/720.0 window widths, 420.0 scroll max-height, and font sizes (12.0/13.0/11.0) are all inline magic numbers repeated ad hoc rather than shared constants, making the two dialogs' visual language easy to drift out of sync when one is tweaked and the other isn't.
 89. `ошибка` `src/app/diff_dialog.rs:38-39, src/textdiff.rs:20-35` - diff_lines builds an O(n*m) dynamic-programming table (`vec![vec![0u32; m+1]; n+1]`) with no line-count guard beyond the 2 MiB byte cap, so two large text files near the cap can allocate hundreds of millions of u32 cells and freeze/OOM the UI thread synchronously inside show_diff_dialog. (resolved: bounded complexity returns a normal dialog message before allocation)
 90. `проблема` `src/app/diff_dialog.rs:11-17,38-46` - read_text collapses every failure mode (file too large, not UTF-8, permission denied, vanished mid-read) into the same generic `Err(())`, and show_diff_dialog then reports one blanket message regardless of which actually happened.
@@ -419,7 +419,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 102. `ошибка` `src/app/treemap_dialog.rs:110-124` - Treemap tile labels are drawn with the raw file/folder name and no truncation or measurement, so a long name silently overflows into neighboring tiles or off the window
 103. `ошибка` `src/app/treemap_dialog.rs:147` - Escape-key handling for the treemap dialog fires even when the Escape was meant for a different focused widget/overlay, because it reads global input state unconditionally on every frame the dialog is open
 104. `ошибка` `src/crumbs.rs:74-88` - elide_crumbs' capacity check silently changes meaning when max_visible == 2 and n == 3: the whole path fits (n <= max_visible is false, since 3 > 2), forcing a collapse chip even though only one segment is being hidden and could have simply been shown
-105. `проблема` `src/app/treemap_dialog.rs:12-33` - show_treemap_dialog mixes a one-shot data-snapshot trigger (treemap_request) with a live per-frame recompute of the folder-name label, so the two data sources can visibly disagree (already tracked in audit.md #42), but the file also has no guard against the active panel changing entirely (e.g. user switches panels) mid-dialog
+105. `проблема` `src/app/treemap_dialog.rs:12-33` - show_treemap_dialog mixes a one-shot data-snapshot trigger (treemap_request) with a live per-frame recompute of the folder-name label, so the two data sources can visibly disagree (already tracked in audit.md #42), but the file also has no guard against the active panel changing entirely (e.g. user switches panels) mid-dialog (resolved: `TreemapSnapshot` owns directory and items together)
 106. `проблема` `src/app/treemap_dialog.rs:26, 111-112` - The dark/light luminance threshold for tile-fill background (used to decide the panel-background-based `dark` flag) and the separate per-tile luminance threshold (used to pick label text color) use different formulas and different magic constants with no shared helper or named constant
 107. `проблема` `src/app/treemap_dialog.rs:8-9` - CANVAS_W and CANVAS_H are hardcoded pixel constants; the treemap dialog does not scale with the app's ui_scale/DPI setting used elsewhere in the app (session.rs even persists ui_scale)
 108. `проблема` `src/app/treemap_dialog.rs:126-131` - The hover tooltip is built with format! on every one of the up-to-N tiles every frame regardless of whether the tile is actually hovered, since `on_hover_text` takes an eagerly-evaluated String rather than a closure
@@ -763,7 +763,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 446. `предложение` `src/app/file_list.rs:33-69,436-444` - Extend the drop-target highlight to also render on the '..' row when dragging (drop-to-parent), since currently only directory rows inside the current listing can show the highlighted drop outline
 447. `предложение` `src/app/file_list.rs:653-666` - Show the folder item-count on a row even when the background dir-count scan is still pending, e.g. with a small spinner/ellipsis glyph inside paint_folder_icon, to distinguish 'not yet counted' from 'confirmed empty' (both currently render as a blank folder icon)
 448. `ошибка` `src/app/confirm_dialog.rs:64` - `flat_arc.lock().unwrap()` panics the whole app if the background scan thread poisons the mutex
-449. `ошибка` `src/app/confirm_dialog.rs:53-62, 274, 354-356, 374` - Conflict-resolution buttons and Enter/confirm are gated on `overflow`, which is computed from the pre-resolution `need_bytes` and never recomputed after a policy like Skip/Keep Newer shrinks the transfer
+449. `ошибка` `src/app/confirm_dialog.rs:53-62, 274, 354-356, 374` - Conflict-resolution buttons and Enter/confirm are gated on `overflow`, which is computed from the pre-resolution `need_bytes` and never recomputed after a policy like Skip/Keep Newer shrinks the transfer (resolved: policy controls stay enabled and rebuild the pending transfer budget before confirmation)
 450. `ошибка` `src/app/confirm_dialog.rs:738` - Strikethrough line length is estimated as `fe.name.len() * 6.5` (byte length, not glyph width), so any non-ASCII filename produces a mismatched strikethrough
 451. `ошибка` `src/app/confirm_dialog.rs:530-534, 657-659` - Virtualized list scroll math falls apart when there are 0 items: `flat.len().saturating_sub(first + visible_count)` and `min(flat.len())` avoid underflow, but if `flat` is empty and the scroll area still reports a nonzero `clip_rect` offset from a previous larger list reusing the same `id_salt`, `first` can be computed against stale scroll state producing an empty slice silently - not a crash, but worth checking together with the next item.
 452. `ошибка` `src/app/confirm_dialog.rs:632-636, 657-668` - `render_flat_list_animated`'s destination pane indexes `flat[..transferred]` where `transferred` is clamped to `flat.len()` in the caller, but `visible_flat[first..first+visible_count]` recomputes `first`/`visible_count` from `visible_flat.len()` using the *current* `max_height`/scroll offset without re-clamping against a shrinking `transferred` mid-animation frame
@@ -818,6 +818,17 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 
 ## Tracking
 
+**Round-8 continuation pass: done.** Closed audit #7 (conflict-resolution
+deadlock), #8 (single rename had no undo), and #42 (treemap title/data
+retargeting), plus the case-only rollback half of #34. `PendingTransfer` now
+rebuilds entries, byte budget, conflict names, and flat scan after a policy;
+`Action::Rename` provides path-stable undo/redo with an undoable toast and
+receipt; `TreemapSnapshot` keeps directory and rows together. Track F items
+84, 85, 87, 105, and 449 are resolved. Transfer finalization also preserves a
+completed Move's undo when Cancel arrives after its final placement. Seven
+regression tests bring the suite to 415 passing plus one ignored profiling
+harness.
+
 **Round-7 three-pass correctness/design cycle: done.** Re-counted the Top-500
 as exactly 500 unique entries, refined the SOLID/DRY owners, then implemented
 and adversarially reviewed the highest-risk interaction cluster. Audit #2-#6
@@ -861,15 +872,10 @@ Done: **C** (docs, round-1 and round-3 batches), and **D1 + D2 + D3**
 explicit-save dialogs toast on failure; undo/redo surface a refused rename
 instead of swallowing it; the image cache is flushed on directory change.
 
-Next suggested order: D12 is done, so start with the other round-4
-discoveries that are silent-wrong-destructive-action bugs reachable through
-completely ordinary interaction - **D19 (dialog retargeting), D21
-(conflict-resolution deadlock), D20 (undo coverage), D22 (drag-and-drop
-rewrite)** - since these are worse in kind than a crash (they do the wrong
-thing to the wrong files with no warning), even though several individually
-rank below D6's panics on raw severity. Then **D6 (panics/overflow) + D10
-(cursor invariants) + D14 (textdiff DoS) + D15 (unconfirmed drag/toolbar
-ops)**. Then **B1 (regex) -> A2 -> A3 -> B2 -> A4 ...**, with D4 (cheap perf),
+Next suggested order: the wrong-file interaction cluster is now closed, so
+continue with **D6 (panics/overflow) + D10 (cursor invariants) + D15's remaining
+toolbar gating**, then finish **D20's Gather-folder cleanup**. After that use
+**B1 (regex) -> A2 -> A3 -> B2 -> A4 ...**, with D4 (cheap perf),
 D11 (id_salt), D18, and D24 (small UI/no-op fixes) slotted in as low-risk
 fillers. Schedule **D9** (destructive-op partial-failure integrity, with
 on-disk undo tests), **D13** (directory-blind comparison), and **D23**

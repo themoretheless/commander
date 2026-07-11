@@ -270,8 +270,7 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         let mut btn = |ui: &mut egui::Ui, label: &str, fill, fg, policy| {
                             if ui
-                                .add_enabled(
-                                    !overflow,
+                                .add(
                                     egui::Button::new(
                                         egui::RichText::new(label).size(12.0).color(fg),
                                     )
@@ -322,7 +321,13 @@ impl App {
                     });
                     if let Some(policy) = chosen {
                         if self.ws.resolve_pending_conflicts(policy) {
-                            self.confirm_pending_op(ctx);
+                            let still_overflows = matches!(
+                                &self.ws.pending_op,
+                                Some(PendingOp::Transfer(tr)) if tr.overflows()
+                            );
+                            if !still_overflows {
+                                self.confirm_pending_op(ctx);
+                            }
                         } else {
                             // Nothing left to transfer (everything skipped).
                             self.dismiss_pending_op(ctx);

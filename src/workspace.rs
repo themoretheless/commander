@@ -30,6 +30,14 @@ pub struct BatchRenameContext {
     pub existing: std::collections::HashSet<String>,
 }
 
+/// Immutable disk-usage view captured when the treemap opens. The directory
+/// and sized rows travel together so later panel navigation cannot relabel the
+/// existing layout.
+pub struct TreemapSnapshot {
+    pub dir: PathBuf,
+    pub items: Vec<(FileEntry, u64)>,
+}
+
 /// A copy/move awaiting user confirmation in the dialog.
 pub struct PendingTransfer {
     pub kind: TransferKind,
@@ -828,13 +836,25 @@ impl Workspace {
         let Some(PendingOp::Transfer(tr)) = &self.pending_op else {
             return Vec::new();
         };
-        // The destination listing is whichever loaded panel shows the target.
+        // Prefer an already-loaded destination panel. A drop into a subfolder
+        // that neither panel displays still needs rich conflict metadata, so
+        // fall back to the known conflicting names on disk.
+        let disk_dest;
         let dest: &[FileEntry] = if self.left.current_path == tr.target {
             &self.left.entries
         } else if self.right.current_path == tr.target {
             &self.right.entries
         } else {
-            &[]
+            disk_dest = tr
+                .conflicts
+                .iter()
+                .filter_map(|name| {
+                    let path = tr.target.join(name);
+                    let meta = std::fs::symlink_metadata(&path).ok()?;
+                    FileEntry::from_meta(path, &meta)
+                })
+                .collect::<Vec<_>>();
+            &disk_dest
         };
         crate::conflict::detect(&tr.entries, dest)
     }
@@ -855,6 +875,9 @@ impl Workspace {
             crate::conflict::Decision::KeepBoth => OverwritePolicy::KeepBoth,
             crate::conflict::Decision::Skip => OverwritePolicy::SkipAll,
         };
+        tr.need_bytes = transfer::total_bytes(&tr.entries);
+        tr.conflicts = scan::find_conflicts(&tr.entries, &tr.target);
+        tr.flat = scan::spawn_scan(tr.entries.clone());
         !tr.entries.is_empty()
     }
 
@@ -1204,6 +1227,12 @@ impl Workspace {
                 // with the stack: surface it rather than swallowing the error.
                 result.map(|_| ())
             }
+            crate::undo::Action::Rename { from, to } => {
+                let result = Self::rename_path_no_clobber(&from, &to);
+                self.left.refresh();
+                self.right.refresh();
+                result
+            }
         }
     }
 
@@ -1376,10 +1405,58 @@ impl Workspace {
         self.pump_queue(notify);
     }
 
-    /// Rename `old` to `new_name` in the same directory. Validates against the
-    /// active panel's siblings; a no-op (unchanged name) succeeds silently.
-    /// On success the panel is refreshed and the cursor follows the file by
-    /// path. Returns a user-facing message on failure.
+    /// Names beside `old`, excluding `old` itself. Captured by the rename UI at
+    /// open time; commit performs the same check again against the live disk.
+    pub fn rename_siblings(old: &Path) -> Vec<String> {
+        let old_name = old.file_name().map(|n| n.to_string_lossy().to_string());
+        old.parent()
+            .map(Self::dir_names)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|name| Some(name) != old_name.as_ref())
+            .collect()
+    }
+
+    /// Rename one path without replacing an unrelated destination. Case-only
+    /// changes stage through a temporary name and roll back if the second move
+    /// fails, preserving the recovery path in a composite error if rollback
+    /// itself also fails.
+    fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), String> {
+        if from == to {
+            return Ok(());
+        }
+        let dest_meta = to.symlink_metadata().ok();
+        let same_file = match &dest_meta {
+            Some(dest) => from.symlink_metadata().ok().is_some_and(|source| {
+                use std::os::unix::fs::MetadataExt;
+                source.ino() == dest.ino() && source.dev() == dest.dev()
+            }),
+            None => false,
+        };
+        if dest_meta.is_some() && !same_file {
+            return Err("Name already in use".into());
+        }
+        if !same_file {
+            return crate::native_copy::rename_noreplace(from, to).map_err(|e| e.to_string());
+        }
+
+        let parent = to.parent().ok_or("Path has no parent")?;
+        let tmp = crate::fs_util::first_available(|i| parent.join(format!(".cmdr-rename.{i}")));
+        crate::native_copy::rename_noreplace(from, &tmp).map_err(|e| e.to_string())?;
+        match crate::native_copy::rename_noreplace(&tmp, to) {
+            Ok(()) => Ok(()),
+            Err(rename_error) => match crate::native_copy::rename_noreplace(&tmp, from) {
+                Ok(()) => Err(rename_error.to_string()),
+                Err(rollback_error) => Err(format!(
+                    "{rename_error}; rollback failed: {rollback_error}; file preserved at {}",
+                    tmp.display()
+                )),
+            },
+        }
+    }
+
+    /// Rename `old` to `new_name` in the same directory. A no-op (unchanged
+    /// name) succeeds silently. Successful changes are recorded for undo/redo.
     pub fn commit_rename(&mut self, old: &Path, new_name: &str) -> Result<(), String> {
         let new_name = new_name.trim();
         let old_name = old
@@ -1389,48 +1466,19 @@ impl Workspace {
         if new_name == old_name {
             return Ok(()); // nothing to do
         }
-        let siblings: Vec<String> = self
-            .active_panel_ref()
-            .entries
-            .iter()
-            .map(|e| e.name.clone())
-            .filter(|n| n != &old_name)
-            .collect();
+        let siblings = Self::rename_siblings(old);
         validate_new_name(new_name, &siblings)?;
         let dest = old
             .parent()
             .map(|p| p.join(new_name))
             .ok_or("Path has no parent")?;
-        // Probe the destination on disk (no-follow), not just the in-memory
-        // sibling list: a hidden file, a case-fold match, or a file created
-        // since the last refresh would otherwise be silently clobbered by the
-        // atomic rename.
-        let dest_meta = dest.symlink_metadata().ok();
-        // On a case-insensitive volume, a case-only rename (Foo.txt -> foo.txt)
-        // resolves `dest` to `old` itself. That is a legitimate rename, not a
-        // collision, so allow it when both names are the same on-disk inode.
-        let same_file = match &dest_meta {
-            Some(dm) => old.symlink_metadata().ok().is_some_and(|om| {
-                use std::os::unix::fs::MetadataExt;
-                om.ino() == dm.ino() && om.dev() == dm.dev()
-            }),
-            None => false,
-        };
-        if dest_meta.is_some() && !same_file {
-            return Err("Name already in use".into());
-        }
-        if same_file {
-            // Stage through a temp so the case actually flips even when the
-            // filesystem treats `Foo` and `foo` as the same directory entry
-            // (mirrors the batch-rename studio's safe ordering).
-            let parent = dest.parent().ok_or("Path has no parent")?;
-            let tmp = crate::fs_util::first_available(|i| parent.join(format!(".cmdr-rename.{i}")));
-            std::fs::rename(old, &tmp).map_err(|e| e.to_string())?;
-            std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
-        } else {
-            std::fs::rename(old, &dest).map_err(|e| e.to_string())?;
-        }
-        self.active_panel().refresh();
+        Self::rename_path_no_clobber(old, &dest)?;
+        self.stack.push(crate::undo::Action::Rename {
+            from: old.to_path_buf(),
+            to: dest,
+        });
+        self.left.refresh();
+        self.right.refresh();
         Ok(())
     }
 
@@ -1599,10 +1647,10 @@ impl Workspace {
 
     // ── Disk usage treemap ──────────────────────────────────────────────
 
-    /// The active folder's direct children as (entry, bytes), sized by file
-    /// length or the cached recursive directory size (0 if not computed yet),
-    /// sorted largest first. Reads the existing dir-size cache; never walks.
-    pub fn treemap_items(&self) -> Vec<(FileEntry, u64)> {
+    /// Capture the active folder and its direct children as (entry, bytes),
+    /// sized by file length or cached recursive directory size (0 if not ready),
+    /// sorted largest first. Reads the existing cache; never walks.
+    pub fn treemap_snapshot(&self) -> TreemapSnapshot {
         let active = self.active_panel_ref();
         let sizes = active.dir_sizes.lock().ok();
         let mut items: Vec<(FileEntry, u64)> = active
@@ -1621,7 +1669,10 @@ impl Workspace {
             })
             .collect();
         items.sort_by_key(|i| std::cmp::Reverse(i.1));
-        items
+        TreemapSnapshot {
+            dir: active.current_path.clone(),
+            items,
+        }
     }
 
     // ── Find ────────────────────────────────────────────────────────────
@@ -2426,6 +2477,21 @@ mod tests {
     }
 
     #[test]
+    fn treemap_snapshot_keeps_its_opening_directory() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("left.txt", "left");
+        r.file("right.txt", "right");
+        let mut ws = workspace(&l, &r);
+
+        let snapshot = ws.treemap_snapshot();
+        ws.active = ActivePanel::Right;
+
+        assert_eq!(snapshot.dir, l.path());
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].0.name, "left.txt");
+    }
+
+    #[test]
     fn apply_batch_rename_refuses_a_colliding_plan() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("report_v1.txt", "a");
@@ -2659,7 +2725,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_cancel_on_the_running_job_stops_it_through_cancel_transfer() {
+    fn queue_cancel_on_the_running_job_reports_a_truthful_outcome() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let a = l.file("a.txt", "A");
         let mut ws = workspace(&l, &r);
@@ -2674,6 +2740,7 @@ mod tests {
             || {},
         );
         let running_id = ws.queue_snapshot()[0].id;
+        let progress = ws.active_transfer.clone().unwrap();
 
         ws.queue_cancel(running_id);
         // Cancelling the running job routes through `cancel_transfer`: the
@@ -2687,10 +2754,20 @@ mod tests {
 
         drain_transfers(&mut ws);
         assert!(ws.active_transfer.is_none());
-        assert!(
-            !r.path().join("a.txt").is_file(),
-            "cancelled copy did not land"
-        );
+        let state = progress.lock().unwrap();
+        assert!(state.finished);
+        if state.cancelled {
+            assert!(
+                !r.path().join("a.txt").is_file(),
+                "a cancelled copy must clean its partial destination"
+            );
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(r.path().join("a.txt")).unwrap(),
+                "A",
+                "a copy that beat cancellation must finish cleanly"
+            );
+        }
     }
 
     #[test]
@@ -3186,6 +3263,35 @@ mod tests {
     }
 
     #[test]
+    fn conflict_resolution_recomputes_the_space_budget() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let conflict = l.file("conflict.txt", &"x".repeat(100));
+        let fresh = l.file("fresh.txt", &"y".repeat(10));
+        r.file("conflict.txt", "existing");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.extend([conflict, fresh.clone()]);
+        ws.request_copy();
+
+        let Some(PendingOp::Transfer(tr)) = &mut ws.pending_op else {
+            panic!("copy should be pending");
+        };
+        tr.method = CopyMethod::Buffered;
+        tr.free_bytes = Some(10);
+        assert_eq!(tr.need_bytes, 110);
+        assert!(tr.overflows());
+
+        assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
+        let Some(PendingOp::Transfer(tr)) = &ws.pending_op else {
+            panic!("non-conflicting copy should remain pending");
+        };
+        assert_eq!(tr.entries.len(), 1);
+        assert_eq!(tr.entries[0].path, fresh);
+        assert_eq!(tr.need_bytes, 10);
+        assert!(tr.conflicts.is_empty());
+        assert!(!tr.overflows());
+    }
+
+    #[test]
     fn resolve_dir_input_expands_tilde_and_validates() {
         let home = TempDir::new();
         home.dir("Documents");
@@ -3245,6 +3351,39 @@ mod tests {
             ws.left.filtered_get(ws.left.cursor - 1).unwrap().name,
             "new.txt"
         );
+    }
+
+    #[test]
+    fn commit_rename_is_undoable_and_redoable() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let old = l.file("old.txt", "data");
+        let new = l.path().join("new.txt");
+        let mut ws = workspace(&l, &r);
+
+        ws.commit_rename(&old, "new.txt").unwrap();
+        assert!(ws.stack.can_undo());
+        ws.perform_undo(|| {}).unwrap();
+        assert!(old.is_file());
+        assert!(!new.exists());
+
+        ws.perform_redo(|| {}).unwrap();
+        assert!(new.is_file());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn commit_rename_does_not_follow_the_active_panel() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let left = l.file("left.txt", "left");
+        r.file("right.txt", "right");
+        let mut ws = workspace(&l, &r);
+        ws.active = ActivePanel::Right;
+
+        ws.commit_rename(&left, "renamed.txt").unwrap();
+
+        assert!(l.path().join("renamed.txt").is_file());
+        assert!(r.path().join("right.txt").is_file());
+        assert!(!r.path().join("renamed.txt").exists());
     }
 
     #[test]
@@ -3390,6 +3529,7 @@ mod tests {
         let mut ws = workspace(&l, &r);
         assert!(ws.commit_rename(&f, "a.txt").is_ok());
         assert!(f.exists());
+        assert!(!ws.stack.can_undo());
     }
 
     #[test]
@@ -3404,6 +3544,11 @@ mod tests {
         let names = Workspace::dir_names(l.path());
         assert!(names.contains("README.md"), "names: {names:?}");
         assert!(!names.contains("readme.md"), "old case gone: {names:?}");
+
+        ws.perform_undo(|| {}).unwrap();
+        let names = Workspace::dir_names(l.path());
+        assert!(names.contains("readme.md"), "after undo: {names:?}");
+        assert!(!names.contains("README.md"));
     }
 
     #[test]
@@ -3511,5 +3656,22 @@ mod tests {
             std::fs::read_to_string(r.path().join("a.txt")).unwrap(),
             "old"
         );
+    }
+
+    #[test]
+    fn skip_conflict_in_unopened_subfolder_handles_a_broken_symlink() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let file = l.file("a.txt", "new");
+        let sub = r.dir("sub");
+        std::os::unix::fs::symlink("missing-target", sub.join("a.txt")).unwrap();
+        let mut ws = workspace(&l, &r);
+
+        ws.left.drag_entries = vec![file.clone()];
+        ws.right.drop_target = Some(sub);
+        ws.drop_dragged(|| {});
+
+        assert_eq!(ws.pending_conflicts().len(), 1);
+        assert!(!ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
+        assert!(file.is_file());
     }
 }
