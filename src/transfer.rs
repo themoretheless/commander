@@ -178,12 +178,21 @@ impl CopyMethod {
 /// live at copy time (the confirmation dialog may sit open while the
 /// filesystem changes), driven only by [`OverwritePolicy`].
 #[derive(Clone)]
+pub enum PostTransferAction {
+    /// Remove a directory only if it is empty after a successful transfer.
+    /// Used by Undo for "New Folder with Selection"; `remove_dir` deliberately
+    /// preserves the folder if another process added anything to it.
+    RemoveEmptyDir(PathBuf),
+}
+
+#[derive(Clone)]
 pub struct TransferSpec {
     pub kind: TransferKind,
     pub entries: Vec<FileEntry>,
     pub target: PathBuf,
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
+    pub post_success: Option<PostTransferAction>,
 }
 
 /// Size of one entry: its byte length, or the recursive size of a directory.
@@ -216,14 +225,14 @@ pub fn spawn_transfer(
         // grand total and per-entry progress, so a same-volume move never walks
         // the tree a second time just to advance the bar.
         let sizes: Vec<u64> = spec.entries.iter().map(entry_size).collect();
-        progress.lock().unwrap().total_bytes = sizes.iter().sum();
+        crate::lock_util::recover(&progress).total_bytes = sizes.iter().sum();
 
         for (i, entry) in spec.entries.iter().enumerate() {
             let this_size = sizes[i];
             let dest = spec.target.join(&entry.name);
 
             {
-                let mut s = progress.lock().unwrap();
+                let mut s = crate::lock_util::recover(&progress);
                 s.current_file = entry.name.clone();
                 if s.cancelled {
                     break; // fall through to the finished-setter below
@@ -235,7 +244,7 @@ pub fn spawn_transfer(
             // it as processed. `err` is an optional message to surface.
             let skip_entry = |progress: &TransferState, base: &mut u64, err: Option<String>| {
                 *base += this_size;
-                let mut s = progress.lock().unwrap();
+                let mut s = crate::lock_util::recover(progress);
                 s.copied_bytes = *base;
                 if let Some(msg) = err {
                     s.errors.push(format!("{}: {}", entry.name, msg));
@@ -284,7 +293,7 @@ pub fn spawn_transfer(
                 }
             }
 
-            let errors_before = progress.lock().unwrap().errors.len();
+            let errors_before = crate::lock_util::recover(&progress).errors.len();
 
             // Pick the copy target and whether a swap is needed:
             // - new destination: copy straight to `dest`.
@@ -334,7 +343,7 @@ pub fn spawn_transfer(
             match &result {
                 Ok(b) => base_bytes += b,
                 Err(e) => {
-                    let mut s = progress.lock().unwrap();
+                    let mut s = crate::lock_util::recover(&progress);
                     if s.cancelled {
                         drop(s);
                         // For a rename this is a no-op (a failed rename never
@@ -349,16 +358,15 @@ pub fn spawn_transfer(
 
             // "Clean" = Ok return AND no per-file errors recorded by the
             // native callback during this entry.
-            let clean = result.is_ok() && progress.lock().unwrap().errors.len() == errors_before;
+            let clean = result.is_ok()
+                && crate::lock_util::recover(&progress).errors.len() == errors_before;
 
             let placed = if !clean {
                 // Undo our placement; a pre-existing dest is untouched. For a
                 // rename this restores the source rather than deleting its only
                 // copy.
                 if let Some(msg) = undo_placement(&copy_target, &entry.path, renamed) {
-                    progress
-                        .lock()
-                        .unwrap()
+                    crate::lock_util::recover(&progress)
                         .errors
                         .push(format!("{}: {}", entry.name, msg));
                 }
@@ -373,7 +381,7 @@ pub fn spawn_transfer(
                         // unconditional cleanup here lost the source on a failed
                         // same-volume overwrite move).
                         let extra = undo_placement(&copy_target, &entry.path, renamed);
-                        let mut s = progress.lock().unwrap();
+                        let mut s = crate::lock_util::recover(&progress);
                         s.errors.push(format!("{}: {}", entry.name, e));
                         if let Some(msg) = extra {
                             s.errors.push(format!("{}: {}", entry.name, msg));
@@ -403,31 +411,62 @@ pub fn spawn_transfer(
                 } else {
                     copy_target.clone()
                 };
-                progress
-                    .lock()
-                    .unwrap()
+                crate::lock_util::recover(&progress)
                     .placements
                     .push((entry.path.clone(), landed));
             }
 
             {
-                let mut s = progress.lock().unwrap();
+                let mut s = crate::lock_util::recover(&progress);
                 s.files_done = i + 1;
                 s.record_sample();
             }
             notify();
         }
 
+        run_post_success(spec.post_success.as_ref(), &progress);
         finish_progress(&progress);
         notify();
     });
+}
+
+/// Run a transfer-owned follow-up only after every entry completed without an
+/// error or cancellation. Failure is appended to the normal transfer error
+/// surface, so the progress dialog remains open instead of hiding cleanup loss.
+fn run_post_success(action: Option<&PostTransferAction>, progress: &TransferState) {
+    let Some(action) = action else {
+        return;
+    };
+    let ready = {
+        let state = crate::lock_util::recover(progress);
+        state.files_done == state.files_total && state.errors.is_empty() && !state.cancelled
+    };
+    if !ready {
+        return;
+    }
+
+    let PostTransferAction::RemoveEmptyDir(path) = action;
+    let result = std::fs::remove_dir(path).or_else(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(e)
+        }
+    });
+    if let Err(error) = result {
+        let mut state = crate::lock_util::recover(progress);
+        state.errors.push(format!(
+            "Post-transfer cleanup failed for {}: {error}",
+            path.display()
+        ));
+    }
 }
 
 /// Publish the terminal state. A cancel request that arrived after the final
 /// entry was committed is too late to cancel anything; treating that as a
 /// cancelled Move would discard its valid undo action.
 fn finish_progress(progress: &TransferState) {
-    let mut s = progress.lock().unwrap();
+    let mut s = crate::lock_util::recover(progress);
     if s.files_done == s.files_total {
         s.cancelled = false;
     }
@@ -450,13 +489,13 @@ fn rename_entry(
     base_bytes: u64,
 ) -> std::io::Result<u64> {
     {
-        let mut s = progress.lock().unwrap();
+        let mut s = crate::lock_util::recover(progress);
         s.current_file = entry.name.clone();
         s.current_file_size = size;
         s.current_file_copied = 0;
     }
     crate::native_copy::rename_noreplace(src, dst)?;
-    let mut s = progress.lock().unwrap();
+    let mut s = crate::lock_util::recover(progress);
     s.current_file_copied = size;
     s.copied_bytes = base_bytes + size;
     s.maybe_sample();
@@ -560,7 +599,7 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
 
     // Init per-file progress
     {
-        let mut s = state.lock().unwrap();
+        let mut s = crate::lock_util::recover(state);
         s.current_file = src
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -582,7 +621,7 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
 
     loop {
         {
-            let s = state.lock().unwrap();
+            let s = crate::lock_util::recover(state);
             if s.cancelled {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
@@ -598,7 +637,7 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
         writer.write_all(&buf[..n])?;
 
         {
-            let mut s = state.lock().unwrap();
+            let mut s = crate::lock_util::recover(state);
             s.copied_bytes += n as u64;
             s.current_file_copied += n as u64;
             s.maybe_sample();
@@ -707,6 +746,46 @@ mod tests {
         assert!(state.cancelled);
     }
 
+    #[test]
+    fn successful_post_action_removes_the_empty_source_folder() {
+        let root = TempDir::new();
+        let folder = root.dir("Gathered");
+        let file = root.file("Gathered/a.txt", "a");
+        let state = run(TransferSpec {
+            kind: TransferKind::Move,
+            entries: vec![entry_for(&file)],
+            target: root.path().to_path_buf(),
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
+        });
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert!(root.path().join("a.txt").is_file());
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn post_action_preserves_a_folder_that_gained_another_file() {
+        let root = TempDir::new();
+        let folder = root.dir("Gathered");
+        let file = root.file("Gathered/a.txt", "a");
+        root.file("Gathered/foreign.txt", "foreign");
+        let state = run(TransferSpec {
+            kind: TransferKind::Move,
+            entries: vec![entry_for(&file)],
+            target: root.path().to_path_buf(),
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
+        });
+
+        assert!(root.path().join("a.txt").is_file());
+        assert!(folder.join("foreign.txt").is_file());
+        assert_eq!(state.errors.len(), 1);
+        assert!(state.errors[0].contains("Post-transfer cleanup failed"));
+    }
+
     // The engine no longer consults a conflict list (it checks the
     // destination live), but the tests keep passing one to document intent;
     // it is ignored here.
@@ -724,6 +803,7 @@ mod tests {
             target: target.to_path_buf(),
             policy,
             method,
+            post_success: None,
         }
     }
 

@@ -183,6 +183,7 @@ impl App {
                 .ws
                 .active_panel_ref()
                 .selected_or_cursor()
+                .unwrap_or_default()
                 .into_iter()
                 .map(|e| e.path)
                 .collect();
@@ -426,9 +427,7 @@ impl App {
                 self.ws.active_panel().selected.clear();
             }
             QuickAction::ClearFilters => {
-                let panel = self.ws.active_panel();
-                panel.search_query.clear();
-                panel.facets = crate::panel::FacetSet::default();
+                self.ws.active_panel().clear_filters();
             }
             QuickAction::SaveFilter => self.save_active_filter_as_smart_folder(ctx),
             QuickAction::OpenPalette => self.ws.palette_request = true,

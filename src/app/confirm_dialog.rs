@@ -61,7 +61,7 @@ impl App {
         };
         let overflow = fit.map(|f| f.0).unwrap_or(false);
 
-        let flat_opt = flat_arc.lock().unwrap().clone();
+        let flat_opt = crate::lock_util::recover(&flat_arc).clone();
         let flat_ready = flat_opt.is_some();
         let flat = flat_opt.unwrap_or_default();
 

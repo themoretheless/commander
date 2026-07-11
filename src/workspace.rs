@@ -10,7 +10,8 @@ use crate::command::Command;
 use crate::panel::{self, FileEntry, PanelState, PreviewContent};
 use crate::scan::{self, FlatList};
 use crate::transfer::{
-    self, CopyMethod, OverwritePolicy, TransferKind, TransferProgress, TransferSpec, TransferState,
+    self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferProgress,
+    TransferSpec, TransferState,
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -704,6 +705,7 @@ impl Workspace {
                 let paths: Vec<PathBuf> = self
                     .active_panel_ref()
                     .selected_or_cursor()
+                    .unwrap_or_default()
                     .into_iter()
                     .map(|e| e.path)
                     .collect();
@@ -807,9 +809,26 @@ impl Workspace {
         self.request_transfer(TransferKind::Move);
     }
 
+    /// Copy/Move may queue behind an active transfer, but must never replace an
+    /// operation that is already waiting for confirmation.
+    pub fn can_request_transfer(&self) -> bool {
+        self.pending_op.is_none()
+    }
+
+    /// Delete is not queue-backed, so it is available only while no operation
+    /// is pending or running.
+    pub fn can_request_delete(&self) -> bool {
+        self.pending_op.is_none() && self.active_transfer.is_none()
+    }
+
     fn request_transfer(&mut self, kind: TransferKind) {
+        if !self.can_request_transfer() {
+            return;
+        }
         let target = self.inactive_panel().current_path.clone();
-        let entries = self.active_panel_ref().selected_or_cursor();
+        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+            return;
+        };
         if entries.is_empty() {
             return;
         }
@@ -882,7 +901,12 @@ impl Workspace {
     }
 
     pub fn request_delete(&mut self) {
-        let entries = self.active_panel_ref().selected_or_cursor();
+        if !self.can_request_delete() {
+            return;
+        }
+        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+            return;
+        };
         if !entries.is_empty() {
             let flat = scan::spawn_scan(entries.clone());
             self.pending_op = Some(PendingOp::Delete { entries, flat });
@@ -911,6 +935,7 @@ impl Workspace {
             target: t.target,
             policy: t.policy,
             method: t.method,
+            post_success: None,
         };
         self.enqueue_only(spec, undo);
         self.pump_queue(notify);
@@ -967,7 +992,7 @@ impl Workspace {
         if let Some(ref state) = self.active_transfer {
             // A poisoned progress mutex (worker thread panicked) must not panic
             // the UI thread in turn; recover the guard and flag cancellation.
-            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = crate::lock_util::recover(state);
             // Ignore a cancel that races in after the worker already finished
             // cleanly: flagging it would demote a completed Move to "not clean"
             // in poll_transfer and silently drop its undo entry.
@@ -987,7 +1012,7 @@ impl Workspace {
             .as_ref()
             .map(|s| {
                 // Recover from a poisoned lock rather than panicking the UI.
-                let s = s.lock().unwrap_or_else(|e| e.into_inner());
+                let s = crate::lock_util::recover(s);
                 // Close only once the worker has set `finished` (it now does so
                 // even on cancel, after its cleanup), so we never tear the
                 // shared state out from under a still-running cleanup pass. A
@@ -1044,6 +1069,16 @@ impl Workspace {
                         false
                     } else {
                         self.stack.push(crate::undo::Action::Move { pairs });
+                        true
+                    }
+                }
+                Some(crate::undo::Action::Gather { folder, .. }) => {
+                    let pairs = faithfully_undoable(placements);
+                    if pairs.is_empty() {
+                        false
+                    } else {
+                        self.stack
+                            .push(crate::undo::Action::Gather { folder, pairs });
                         true
                     }
                 }
@@ -1212,8 +1247,7 @@ impl Workspace {
                     return Ok(());
                 };
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
-                self.start_move_silent(sources, dest_dir, notify);
-                Ok(())
+                self.start_move_silent(sources, dest_dir, None, notify)
             }
             crate::undo::Action::BatchRename { dir, pairs } => {
                 // Undo/redo replays recorded pairs without re-planning, so order
@@ -1233,7 +1267,66 @@ impl Workspace {
                 self.right.refresh();
                 result
             }
+            crate::undo::Action::Gather { folder, pairs } => {
+                let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
+                let entries = Self::entries_for_paths(&sources)?;
+                if entries.is_empty() {
+                    return Ok(());
+                }
+                std::fs::create_dir(&folder)
+                    .map_err(|error| format!("Could not recreate {}: {error}", folder.display()))?;
+                self.enqueue_silent_move(entries, folder, None, notify);
+                Ok(())
+            }
+            crate::undo::Action::Ungather { folder, pairs } => {
+                let Some(dest_dir) = pairs
+                    .first()
+                    .and_then(|(_, to)| to.parent())
+                    .map(Path::to_path_buf)
+                else {
+                    return Ok(());
+                };
+                let sources = pairs.into_iter().map(|(from, _)| from).collect();
+                self.start_move_silent(
+                    sources,
+                    dest_dir,
+                    Some(PostTransferAction::RemoveEmptyDir(folder)),
+                    notify,
+                )
+            }
         }
+    }
+
+    fn entries_for_paths(sources: &[PathBuf]) -> Result<Vec<FileEntry>, String> {
+        sources
+            .iter()
+            .map(|path| {
+                let meta = std::fs::symlink_metadata(path)
+                    .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+                FileEntry::from_meta(path.clone(), &meta)
+                    .ok_or_else(|| format!("Invalid source path: {}", path.display()))
+            })
+            .collect()
+    }
+
+    fn enqueue_silent_move(
+        &mut self,
+        entries: Vec<FileEntry>,
+        dest_dir: PathBuf,
+        post_success: Option<PostTransferAction>,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        let spec = TransferSpec {
+            kind: TransferKind::Move,
+            entries,
+            target: dest_dir,
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            post_success,
+        };
+        // Undo-driven: this move records no new history (undo=None).
+        self.enqueue_only(spec, None);
+        self.pump_queue(notify);
     }
 
     /// Move the files at `sources` into `dest_dir` without recording undo
@@ -1243,28 +1336,15 @@ impl Workspace {
         &mut self,
         sources: Vec<PathBuf>,
         dest_dir: PathBuf,
+        post_success: Option<PostTransferAction>,
         notify: impl Fn() + Send + 'static,
-    ) {
-        let entries: Vec<FileEntry> = sources
-            .iter()
-            .filter_map(|p| {
-                let meta = std::fs::metadata(p).ok()?;
-                FileEntry::from_meta(p.clone(), &meta)
-            })
-            .collect();
+    ) -> Result<(), String> {
+        let entries = Self::entries_for_paths(&sources)?;
         if entries.is_empty() {
-            return;
+            return Ok(());
         }
-        let spec = TransferSpec {
-            kind: TransferKind::Move,
-            entries,
-            target: dest_dir,
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
-        };
-        // Undo-driven: this move records no new history (undo=None).
-        self.enqueue_only(spec, None);
-        self.pump_queue(notify);
+        self.enqueue_silent_move(entries, dest_dir, post_success, notify);
+        Ok(())
     }
 
     /// Add `dir` to the bookmarks if it is not already present, naming it after
@@ -1372,7 +1452,9 @@ impl Workspace {
     /// (queued through the transfer pipeline, so it takes the same-volume rename
     /// fast path). A no-op on an empty selection or if the folder can't be made.
     pub fn gather_into_folder(&mut self, notify: impl Fn() + Send + 'static) {
-        let entries = self.active_panel_ref().selected_or_cursor();
+        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+            return;
+        };
         if entries.is_empty() {
             return;
         }
@@ -1390,8 +1472,10 @@ impl Workspace {
         if std::fs::create_dir(&folder).is_err() {
             return;
         }
-        // One undoable Move of the whole selection into the new folder.
-        let undo = crate::undo::Action::Move {
+        // Record the folder lifecycle separately from an ordinary Move so undo
+        // can remove it and redo can recreate it.
+        let undo = crate::undo::Action::Gather {
+            folder: folder.clone(),
             pairs: move_pairs(&entries, &folder),
         };
         let spec = TransferSpec {
@@ -1400,6 +1484,7 @@ impl Workspace {
             target: folder,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            post_success: None,
         };
         self.enqueue_only(spec, Some(undo));
         self.pump_queue(notify);
@@ -1488,6 +1573,7 @@ impl Workspace {
         let panel = self.active_panel_ref();
         let targets: Vec<String> = panel
             .selected_or_cursor()
+            .ok()?
             .into_iter()
             .map(|e| e.name)
             .collect();
@@ -1890,6 +1976,7 @@ impl Workspace {
             target,
             policy,
             method: CopyMethod::Native,
+            post_success: None,
         };
         self.enqueue_only(spec, None);
     }
@@ -2318,6 +2405,42 @@ mod tests {
     }
 
     #[test]
+    fn file_op_requests_do_not_replace_an_existing_confirmation() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("a.txt", "a");
+        let mut ws = workspace(&l, &r);
+        ws.left.cursor = 1;
+
+        ws.request_copy();
+        assert!(matches!(
+            ws.pending_op,
+            Some(PendingOp::Transfer(PendingTransfer {
+                kind: TransferKind::Copy,
+                ..
+            }))
+        ));
+
+        ws.request_move();
+        ws.request_delete();
+        assert!(matches!(
+            ws.pending_op,
+            Some(PendingOp::Transfer(PendingTransfer {
+                kind: TransferKind::Copy,
+                ..
+            }))
+        ));
+
+        ws.pending_op = None;
+        ws.active_transfer = Some(Arc::new(Mutex::new(TransferProgress::new(0, 1))));
+        assert!(
+            ws.can_request_transfer(),
+            "Copy/Move may queue while active"
+        );
+        ws.request_delete();
+        assert!(ws.pending_op.is_none(), "Delete is blocked while active");
+    }
+
+    #[test]
     fn create_dir_picks_first_free_name() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let mut ws = workspace(&l, &r);
@@ -2585,15 +2708,19 @@ mod tests {
         assert!(!l.path().join("IMG_1.jpg").exists(), "originals moved out");
         assert!(l.path().join("keep.txt").is_file(), "unselected untouched");
 
-        // Cmd+Z moves them back out of the folder.
-        let _ = ws.perform_undo(|| {});
+        // Cmd+Z moves them back out and removes the now-empty folder.
+        ws.perform_undo(|| {}).unwrap();
         drain_transfers(&mut ws);
         assert!(l.path().join("IMG_1.jpg").is_file(), "undo restored IMG_1");
         assert!(l.path().join("IMG_2.jpg").is_file(), "undo restored IMG_2");
-        assert!(
-            !folder.join("IMG_1.jpg").exists(),
-            "moved back out of folder"
-        );
+        assert!(!folder.exists(), "undo removes the empty gather folder");
+
+        // Cmd+Shift+Z recreates the exact folder and gathers the same files.
+        ws.perform_redo(|| {}).unwrap();
+        drain_transfers(&mut ws);
+        assert!(folder.join("IMG_1.jpg").is_file());
+        assert!(folder.join("IMG_2.jpg").is_file());
+        assert!(!l.path().join("IMG_1.jpg").exists());
     }
 
     #[test]
@@ -3460,6 +3587,27 @@ mod tests {
         // The refusal leaves both files untouched.
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "1");
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "2");
+    }
+
+    #[test]
+    fn move_replay_refuses_all_sources_before_starting_a_partial_undo() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let existing = l.file("existing.txt", "data");
+        let missing = l.path().join("missing.txt");
+        let mut ws = workspace(&l, &r);
+        let action = crate::undo::Action::Move {
+            pairs: vec![
+                (existing.clone(), r.path().join("existing.txt")),
+                (missing, r.path().join("missing.txt")),
+            ],
+        };
+
+        let result = ws.execute_action(action, || {});
+
+        assert!(result.is_err());
+        assert!(existing.is_file());
+        assert!(!r.path().join("existing.txt").exists());
+        assert!(ws.active_transfer.is_none());
     }
 
     #[test]

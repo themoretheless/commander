@@ -17,6 +17,7 @@ mod fuzzy;
 mod image_cache;
 mod jumplist;
 mod listing_export;
+mod lock_util;
 mod native_copy;
 mod native_menu;
 mod opqueue;

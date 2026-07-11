@@ -60,7 +60,7 @@ impl ImageCache {
 
         // Check if pending load completed
         let from_pending = {
-            let mut p = self.pending.lock().unwrap();
+            let mut p = crate::lock_util::recover(&self.pending);
             p.remove(path).flatten()
         };
 
@@ -71,7 +71,7 @@ impl ImageCache {
 
         if let Some((img, byte_size)) = loaded {
             let texture = ctx.load_texture(&fname, img, TextureOptions::LINEAR);
-            self.total_bytes += byte_size;
+            self.total_bytes = self.total_bytes.saturating_add(byte_size);
             self.entries.insert(
                 path.to_path_buf(),
                 CacheEntry {
@@ -112,7 +112,7 @@ impl ImageCache {
             }
 
             let already_pending = {
-                let p = pending.lock().unwrap();
+                let p = crate::lock_util::recover(&pending);
                 p.contains_key(path)
             };
             if already_pending {
@@ -121,7 +121,7 @@ impl ImageCache {
 
             // Mark as pending (None = loading)
             {
-                let mut p = pending.lock().unwrap();
+                let mut p = crate::lock_util::recover(&pending);
                 p.insert(path.clone(), None);
             }
 
@@ -131,22 +131,19 @@ impl ImageCache {
             std::thread::spawn(move || {
                 let result = load_image_from_disk(&path_clone);
                 if let Ok((img, byte_size)) = result {
-                    if let Ok(mut p) = pending_clone.lock() {
-                        p.insert(path_clone.clone(), Some((img, byte_size)));
-                    }
+                    crate::lock_util::recover(&pending_clone)
+                        .insert(path_clone.clone(), Some((img, byte_size)));
                     ctx_clone.request_repaint();
                 } else {
                     // Remove from pending on error
-                    if let Ok(mut p) = pending_clone.lock() {
-                        p.remove(&path_clone);
-                    }
+                    crate::lock_util::recover(&pending_clone).remove(&path_clone);
                 }
             });
         }
 
         // Collect completed loads into the cache
         {
-            let mut p = self.pending.lock().unwrap();
+            let mut p = crate::lock_util::recover(&self.pending);
             let completed: Vec<_> = p
                 .iter()
                 .filter(|(_, v)| v.is_some())
@@ -161,7 +158,7 @@ impl ImageCache {
                         .to_string_lossy()
                         .to_string();
                     let texture = ctx.load_texture(&name, img, TextureOptions::LINEAR);
-                    self.total_bytes += byte_size;
+                    self.total_bytes = self.total_bytes.saturating_add(byte_size);
                     self.entries.insert(
                         path,
                         CacheEntry {
@@ -193,7 +190,7 @@ impl ImageCache {
             .collect();
         for path in to_remove {
             if let Some(entry) = self.entries.remove(&path) {
-                self.total_bytes -= entry.byte_size;
+                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
             }
         }
 
@@ -207,7 +204,7 @@ impl ImageCache {
             if let Some(path) = oldest
                 && let Some(entry) = self.entries.remove(&path)
             {
-                self.total_bytes -= entry.byte_size;
+                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
             }
         }
     }
@@ -224,6 +221,24 @@ fn is_video_ext(path: &Path) -> bool {
             .as_deref(),
         Some("mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "wmv" | "flv")
     )
+}
+
+/// Allocate a zeroed RGBA buffer without integer wrap or an aborting reserve.
+/// CoreGraphics dimensions are trusted only after both multiplications and the
+/// allocation request have succeeded.
+fn allocate_rgba_pixels(width: usize, height: usize) -> Result<(usize, Vec<u8>), String> {
+    let bytes_per_row = width
+        .checked_mul(4)
+        .ok_or_else(|| "image row is too wide".to_string())?;
+    let byte_len = height
+        .checked_mul(bytes_per_row)
+        .ok_or_else(|| "image pixel buffer is too large".to_string())?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(byte_len)
+        .map_err(|_| "image pixel buffer allocation failed".to_string())?;
+    pixels.resize(byte_len, 0);
+    Ok((bytes_per_row, pixels))
 }
 
 fn load_image_from_disk(path: &Path) -> Result<(ColorImage, usize), String> {
@@ -245,8 +260,8 @@ fn load_image_from_disk(path: &Path) -> Result<(ColorImage, usize), String> {
     let rgba = img.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
+    let gpu_size = pixels.len();
     let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-    let gpu_size = size[0] * size[1] * 4;
     Ok((color_image, gpu_size.max(data.len())))
 }
 
@@ -338,9 +353,22 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         }
 
         // Draw into RGBA bitmap context
-        let bytes_per_row = w * 4;
-        let mut pixels = vec![0u8; h * bytes_per_row];
+        let (bytes_per_row, mut pixels) = match allocate_rgba_pixels(w, h) {
+            Ok(layout) => layout,
+            Err(error) => {
+                CGImageRelease(cg_image);
+                CFRelease(source);
+                let _: () = msg_send![pool, drain];
+                return Err(error);
+            }
+        };
         let color_space = CGColorSpaceCreateDeviceRGB();
+        if color_space.is_null() {
+            CGImageRelease(cg_image);
+            CFRelease(source);
+            let _: () = msg_send![pool, drain];
+            return Err("CGColorSpaceCreateDeviceRGB failed".into());
+        }
         // kCGImageAlphaPremultipliedLast = 1
         let bitmap_info: u32 = 1;
         let cg_ctx = CGBitmapContextCreate(
@@ -385,7 +413,7 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         CFRelease(source);
         let _: () = msg_send![pool, drain];
 
-        let gpu_size = w * h * 4;
+        let gpu_size = pixels.len();
         let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
         Ok((color_image, gpu_size))
     }
@@ -513,9 +541,20 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
             return Err("video frame has zero dimensions".into());
         }
 
-        let bytes_per_row = w * 4;
-        let mut pixels = vec![0u8; h * bytes_per_row];
+        let (bytes_per_row, mut pixels) = match allocate_rgba_pixels(w, h) {
+            Ok(layout) => layout,
+            Err(error) => {
+                CGImageRelease(cg_image);
+                let _: () = msg_send![pool, drain];
+                return Err(error);
+            }
+        };
         let color_space = CGColorSpaceCreateDeviceRGB();
+        if color_space.is_null() {
+            CGImageRelease(cg_image);
+            let _: () = msg_send![pool, drain];
+            return Err("CGColorSpaceCreateDeviceRGB failed for video".into());
+        }
         let bitmap_info: u32 = 1; // kCGImageAlphaPremultipliedLast
         let cg_ctx = CGBitmapContextCreate(
             pixels.as_mut_ptr(),
@@ -557,8 +596,22 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
         CGImageRelease(cg_image);
         let _: () = msg_send![pool, drain];
 
-        let gpu_size = w * h * 4;
+        let gpu_size = pixels.len();
         let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
         Ok((color_image, gpu_size))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allocate_rgba_pixels;
+
+    #[test]
+    fn rgba_allocation_checks_both_dimension_products() {
+        let (row, pixels) = allocate_rgba_pixels(3, 2).unwrap();
+        assert_eq!(row, 12);
+        assert_eq!(pixels.len(), 24);
+        assert!(allocate_rgba_pixels(usize::MAX, 1).is_err());
+        assert!(allocate_rgba_pixels(usize::MAX / 4, 5).is_err());
     }
 }

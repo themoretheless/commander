@@ -258,9 +258,12 @@ impl App {
             return;
         }
         if commit {
-            let (rule, context) = {
-                let state = self.batch_rename.as_ref().unwrap();
-                (state.rule(), state.context.clone())
+            let Some((rule, context)) = self
+                .batch_rename
+                .as_ref()
+                .map(|state| (state.rule(), state.context.clone()))
+            else {
+                return;
             };
             match self.ws.apply_batch_rename_in(&context, &rule) {
                 Ok(n) => {

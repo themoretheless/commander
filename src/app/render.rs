@@ -3,7 +3,8 @@ use crate::panel::{FacetSet, KindFacet};
 
 impl App {
     /// A row of toggleable quick-filter chips under the filter box.
-    fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) {
+    fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) -> bool {
+        let before = panel.facets;
         Frame::NONE
             .fill(Color32::TRANSPARENT)
             .inner_margin(Margin {
@@ -108,6 +109,7 @@ impl App {
                     }
                 });
             });
+        panel.facets != before
     }
 
     /// Render one file panel. Returns `true` if the tree-sidebar toggle
@@ -143,6 +145,7 @@ impl App {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 10.0);
 
                 // Path bar: back/forward + breadcrumb arrows
+                let mut filter_changed = false;
                 Frame::NONE
                     .fill(Color32::TRANSPARENT)
                     .inner_margin(Margin {
@@ -367,13 +370,15 @@ impl App {
                             let text_filter_active = !panel.search_query.trim().is_empty();
                             let clear_width = if text_filter_active { 30.0 } else { 0.0 };
                             let input_width = (ui.available_width() - clear_width).max(80.0);
-                            ui.add_sized(
-                                Vec2::new(input_width, 26.0),
-                                egui::TextEdit::singleline(&mut panel.search_query)
-                                    .hint_text("\u{1f50d} Filter\u{2026}")
-                                    .desired_width(f32::INFINITY)
-                                    .margin(egui::vec2(8.0, 4.0)),
-                            );
+                            filter_changed |= ui
+                                .add_sized(
+                                    Vec2::new(input_width, 26.0),
+                                    egui::TextEdit::singleline(&mut panel.search_query)
+                                        .hint_text("\u{1f50d} Filter\u{2026}")
+                                        .desired_width(f32::INFINITY)
+                                        .margin(egui::vec2(8.0, 4.0)),
+                                )
+                                .changed();
                             if text_filter_active
                                 && ui
                                     .add_sized(
@@ -390,12 +395,16 @@ impl App {
                                     .clicked()
                             {
                                 panel.search_query.clear();
+                                filter_changed = true;
                             }
                         });
                     });
 
                 // Quick-filter facet chips.
-                Self::facet_chips(ui, panel, t);
+                let facets_changed = Self::facet_chips(ui, panel, t);
+                if filter_changed || facets_changed {
+                    panel.ensure_cursor_valid();
+                }
 
                 // Column headers
                 let header_bg = if is_active {

@@ -173,7 +173,9 @@ impl App {
         use crate::command::Command;
         let active = self.ws.active_panel_ref();
         let inactive = self.ws.inactive_panel();
-        let picked = active.selected_or_cursor().len();
+        let picked = active
+            .selected_or_cursor()
+            .map_or(0, |entries| entries.len());
         let active_path = Self::palette_path_label(&active.current_path);
         let inactive_path = Self::palette_path_label(&inactive.current_path);
         match command {

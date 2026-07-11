@@ -9,7 +9,7 @@ impl App {
         };
         let t = self.colors;
 
-        let s = state.lock().unwrap();
+        let s = crate::lock_util::recover(&state);
         let progress_frac = if s.total_bytes > 0 {
             s.copied_bytes as f32 / s.total_bytes as f32
         } else {

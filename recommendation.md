@@ -27,7 +27,7 @@ Two tracks run in parallel: **Track A** decomposes the two god objects
 
 Each step is one green commit (`cargo test` + `clippy` + `fmt`), ordered by
 risk. The keystone (A4) is deliberately not first: its payoff lives in
-egui-frame focus behaviour the 415 tests cannot guard, so it must be verified by
+egui-frame focus behaviour the 424 tests cannot guard, so it must be verified by
 hand in the running app.
 
 The table below is now a **high-level index only**. A dedicated design pass
@@ -109,7 +109,7 @@ From the round-1 README-vs-code audit (all **done**, landed in `9b306f0`):
 From the round-3 docs-vs-code audit (**done** in this pass):
 
 - `architecture.md` said "373 GUI-free tests" in three places; the current
-  `cargo test` reports 415 passing (416 `#[test]` functions, 1 `#[ignore]`d
+  `cargo test` reports 424 passing (425 `#[test]` functions, 1 `#[ignore]`d
   profiling harness). Fixed and refreshed after the Top-500 implementation pass.
 - `architecture.md`'s module map omitted `toasts` (`src/toasts.rs`), a
   genuinely UI-independent, unit-tested module (no egui types) that has
@@ -143,20 +143,20 @@ intentional, not a dropped row.)
 | D3 | Evict the image cache on directory change (honour the docstring) | (was r1 #2) | trivial | **done** (`177e67c`) |
 | D4 | Cheap per-frame perf: clone `FontId` once per row; `HashSet`-back the shelf; pre-lowercase `NameContains`; avoid the per-call/per-keystroke `filtered_entries` Vec | 24, 25, below the cut (x3) | small | open |
 | D5 | Make the dir-size index race-safe (generation counter or staged swap), drop the redundant nested `install()`, and bound `walk_log`/`dir_size_cache` | 26, 45, below the cut (x3) | medium; pairs with the `DirIndex` extraction | open |
-| D6 | Fix reachable panics and overflow: `lock().unwrap()` poisoning (transfer, image_cache/confirm_dialog, and the `copyfile` C callback), ObjC `unwrap`, `batch_rename` unwrap, unchecked `keep[gi]`, `checked_mul` the thumbnail buffers | 9, 10, 11, 12, 21, below the cut (x2) | small | open |
+| D6 | Fix reachable panics and overflow: `lock().unwrap()` poisoning (transfer, image_cache/confirm_dialog, and the `copyfile` C callback), ObjC `unwrap`, `batch_rename` unwrap, unchecked `keep[gi]`, `checked_mul` the thumbnail buffers | 9, 10, 11, 12, 21, below the cut (x2) | small | **done:** shared poison recovery, fallible ObjC/state access, bounded indices, checked/fallible RGBA allocation |
 | D8 | Rename temp-name correctness: homogenise the reserved-set casing and make the rollback composite-error / atomic | 15, 16 | medium; one pass with tests | open |
-| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | **partial:** no-clobber single rename + case-only rollback done; remaining transfer/gather cases open |
-| D10 | Panel filter/cursor invariants: `ensure_cursor_valid()` after every filter/facet/sort change, bounds-checked `filtered_entries`, and an explicit (not silent-empty) `selected_or_cursor` miss | 18, 19, below the cut | small; strongest case for the `ViewState` encapsulation in Track A | open |
+| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | **partial:** no-clobber rename, case-only rollback, and all-source Move replay preflight done; transfer cleanup propagation + failed-Gather rollback open |
+| D10 | Panel filter/cursor invariants: `ensure_cursor_valid()` after every filter/facet/sort change, bounds-checked `filtered_entries`, and an explicit (not silent-empty) `selected_or_cursor` miss | 18, 19, below the cut | small; strongest case for the `ViewState` encapsulation in Track A | **done:** filter/facet/sort re-clamp immediately; cached indices are bounded; stale cursor is typed `Result` |
 | D11 | egui widget-Id hygiene: add `id_salt` to the three dialog `ScrollArea`s and derive toast Ids from stable identity | below the cut (x4) | trivial | open |
 | D12 | **Security: escape or eliminate the AppleScript injection in `action_get_info`** (interpolated filename breaks out of the AppleScript string literal into `do shell script`) | 1 | small; escape `"`/`\` or drop the AppleScript call for a native `NSWorkspace`/Finder API | **done in this pass** (`escape_for_applescript_literal` + unit tests) |
 | D13 | Cross-pane comparison directory-blindness: add `is_dir` checks to `sync::compare`/`compare::classify_entry`/`conflict::detect`, and key `apply_sync`'s name-collision resolution by path/index instead of lowercased name | 2, 27, 28 | medium | **partial:** stable source paths + explicit case-conflict rows done; directory-type checks open |
 | D14 | Cap `textdiff`'s line count (or switch to a linear-space diff) before the O(n·m) DP allocation, so two ordinary text files can't abort the process | 5 | small | **done:** checked 8M-cell budget + flat matrix + regression test |
-| D15 | Data-safety gating: require an explicit drop-target (or a confirmation) before `drop_dragged` falls back to Move-into-other-panel, and gate toolbar Copy/Move/Delete on `pending_op`/`active_transfer` like the keyboard and drag-drop paths already do | 6, 32 | small-medium | **partial:** explicit drop target/cancel done; toolbar gating open |
+| D15 | Data-safety gating: require an explicit drop-target (or a confirmation) before `drop_dragged` falls back to Move-into-other-panel, and gate toolbar Copy/Move/Delete on `pending_op`/`active_transfer` like the keyboard and drag-drop paths already do | 6, 32 | small-medium | **done:** explicit drop target/cancel plus queue-aware toolbar/core guards and disabled-state reasons |
 | D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | open; preload-window budget cap partially done |
 | D17 | Persistence hardening: bound `MaxAgeDays`/`MinAgeDays` (or use `checked_mul`/`saturating_mul`), and give the four config-store loaders item-level fault tolerance instead of discarding the whole file on one bad field | 29, 31 | small-medium | open |
 | D18 | Small UI/data-integrity fixes: `select_all` should preserve filtered-out selections like `invert_selection` does; run Find's directory walk off the UI thread; clear the batch-rename dialog's stale error on rule edit; scope `Escape` to the active panel's preview only | 33, 35, 49, below the cut | small each | open |
 | D19 | **Non-modal dialog retargeting: snapshot the working panel/selection/directory once at dialog-open time** instead of re-deriving it live from `Workspace` every frame, for the batch-rename studio and the treemap dialog | 3, 42 | medium; natural fit for the `UiState` extraction (A5) | **done:** Batch Rename and treemap snapshots retain their opening context |
-| D20 | Undo coverage gaps: add a `Rename` variant to `undo::Action` so F2 single-file rename is undoable (and toast when an action genuinely can't be undone, instead of silently reverting something else or no-op'ing); make "Gather into Folder"'s undo also remove the now-empty folder it created | 8, below the cut | medium | **partial:** F2 rename undo/redo + toast/receipt done; Gather cleanup open |
+| D20 | Undo coverage gaps: add a `Rename` variant to `undo::Action` so F2 single-file rename is undoable (and toast when an action genuinely can't be undone, instead of silently reverting something else or no-op'ing); make "Gather into Folder"'s undo also remove the now-empty folder it created | 8, below the cut | medium | **done:** F2 rename undo/redo + feedback; typed Gather/Ungather removes/recreates the folder safely |
 | D21 | Conflict-resolution UI deadlock: recompute `need_bytes`/`overflow` after `resolve_pending_conflicts` shrinks `tr.entries`, so a chosen policy (Skip Existing, Keep Newer, ...) can actually un-stick the disabled buttons it was meant to fix | 7 | small-medium | **done:** policies remain selectable and rebuild entries/size/conflicts/scan |
 | D22 | Drag-and-drop plumbing rewrite: capture the actual dragged row(s) explicitly instead of falling back to a stale `panel.selected` when the drag starts on an unselected row; mirror drag state so the destination panel can render its own drop-target highlight; clear `drag_entries`/`drop_target` on `drop_dragged`'s early-return concurrency guard instead of leaving a phantom overlay | 4, 43, 44 | medium; one rewrite closes all three plus the already-tracked #6 | **done:** explicit anchor, cross-panel target feedback, cancel path, full cleanup |
 | D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | open |
@@ -496,7 +496,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 179. `проблема` `src/app/toolbar.rs:3-18` - compact_path counts by `.chars()` (Unicode scalar values) not grapheme clusters, so a path containing combining characters or multi-codepoint emoji (common in some macOS filenames) can be split in the middle of a grapheme cluster when truncated, producing a mis-rendered or replacement-glyph tail.
 180. `улучшение` `src/app/toolbar.rs:27` - compact_path's max_chars=54 is a magic number embedded directly in the call site rather than a named constant, inconsistent with this same file's use of crate::theme::ROUNDING_SM and other named constants elsewhere for UI sizing.
 181. `проблема` `src/app/toolbar.rs:66-221` - The `btn` closure captures `t` (self.colors) by copy from the enclosing scope and is redefined inline on every toolbar() call; it duplicates the same Button::new/.fill/.corner_radius/.on_hover_text pattern that recurs (with slight variation) for the theme, hidden-files, density, size-bars, compare, and refresh buttons below it -- none of which reuse the `btn` helper because they need custom fill colors or icon-only labels, leading to ~6 near-identical repeated Button-construction blocks in one function.
-182. `улучшение` `src/app/toolbar.rs:21-225` - toolbar() is a single ~200-line function mixing branding/path display, the 5 primary action buttons, and 6 right-aligned toggle/utility buttons; splitting into smaller helpers (e.g. `title_and_path`, `action_buttons`, `right_toolbar`) would make the already-known toolbar gating bug (audit item 32: Copy/Move/Delete not gated on pending_op) easier to fix consistently across all three actions instead of requiring three separate edits buried in one long closure body.
+182. `улучшение` `src/app/toolbar.rs:21-225` - toolbar() is a single ~200-line function mixing branding/path display, the 5 primary action buttons, and 6 right-aligned toggle/utility buttons; splitting into smaller helpers (e.g. `title_and_path`, `action_buttons`, `right_toolbar`) would make the already-known toolbar gating bug easier to fix consistently. (partial: gating is now centralized and queue-aware; the helper split remains)
 183. `ошибка` `src/app/toolbar.rs:142-146` - The hidden-files toggle button directly flips `panel.show_hidden` and calls `panel.refresh()` without any check for an in-flight scan/transfer on that panel, unlike other state-mutating entry points in the app that gate on pending_op; toggling hidden files rapidly (or while a background scan populates entries) could race with `refresh()`'s own directory read.
 184. `проблема` `src/app/toolbar.rs:124-146` - The emoji-based icons (theme sun/moon, eye/eye-with-speech-bubble for hidden files, bar-chart for size bars, left-right-arrow for compare, circular-arrow for refresh) rely on specific Unicode codepoints rendered via egui's font stack; there is no fallback text label if the active font lacks glyph coverage for e.g. \u{1f441}\u{200d}\u{1f5e8} (eye+ZWJ+speech-bubble, a compound emoji sequence that many fonts render as two separate glyphs or a fallback box), unlike the theme toggle which at least uses hover text for both states.
 185. `предложение` `src/app/toolbar.rs:129-133, 170-174, 188-192` - Each right-side toggle button (theme, hidden files, density, size bars, compare) recomputes its own fill color inline via `if <flag> { t.accent.linear_multiply(0.3) } else { t.bg_card }`; extracting a small `toggle_fill(active: bool) -> Color32` helper (paralleling the existing `btn` closure pattern) would remove the repeated ternary and make the 'active tint' visual language consistent if it's ever tweaked.
@@ -534,7 +534,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 217. `предложение` `src/app/duplicates_dialog.rs:139-141` - No way to open/reveal a candidate file from the duplicates list before deciding which to keep
 218. `предложение` `src/app/run_command_dialog.rs:15-17` - Run-command dialog has no history/recall of previously typed (but not saved-as-template) command lines
 219. `предложение` `src/app/run_command_dialog.rs:104-123` - No inline template management (rename/remove/reorder) even though `Templates::remove` and `Templates::reorder` already exist in cmdtemplate.rs and are marked `#[allow(dead_code)]` pending exactly this UI
-220. `ошибка` `src/app/batch_rename_dialog.rs:230-232,242-244` - Enter-key commit re-checks `applicable` computed from that frame's plan but the actual commit reads `self.batch_rename.as_ref().unwrap().rule()` after `state` borrow ended, so a second Enter press while a toast/error is displayed can re-run apply_batch_rename with a rule unchanged since the failed attempt, silently retrying without any debounce
+220. `ошибка` `src/app/batch_rename_dialog.rs:230-232,242-244` - Enter-key commit re-checks `applicable` computed from that frame's plan but the actual commit used to unwrap dialog state after the borrow ended, while a second Enter press can still retry an unchanged failed rule. (partial: the panic path is removed with optional state extraction; retry/debounce semantics remain)
 221. `ошибка` `src/app/batch_rename_dialog.rs:145,235` - `state.num_pad` is a `u32` DragValue clamped only to 0..=6 in the UI, but nothing stops a user from typing a value via keyboard entry into the DragValue outside that clamp before it registers, and `num_pad as usize` is then used directly as zero-pad width with no upper sanity bound if the rule struct is ever constructed by another path
 222. `проблема` `src/app/tree.rs:119-125` - `tree_children_cache` is only invalidated wholesale on `poll_fs_changes` (update.rs:86-89); manually creating/deleting a subdirectory of a directory that is not currently displayed by either panel (e.g. via a background process, or a directory three levels deep that isn't polled) leaves a stale child list and the folder-icon child-count badge in the tree can go wrong until the next fs-change poll fires for that specific path
 223. `проблема` `src/app/tree.rs:103-113` - `render_tree_node_recursive` takes 8 positional parameters including two mutable collection borrows, and is annotated `#[allow(clippy::too_many_arguments)]` rather than being restructured into a small context struct
@@ -674,7 +674,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 357. `предложение` `src/opqueue.rs:184-188` - No batch accessor to fill all currently-free concurrency slots at once (drain_runnable() -> Vec<JobId>); callers must loop dequeue_next() and check is_some() themselves
 358. `предложение` `src/opqueue.rs:44-45` - JobState::Failed carries no error payload; the module has no way to represent or query why a job failed
 359. `ошибка` `src/native_menu.rs:101-112` - action_get_info builds an AppleScript string by directly interpolating the file path with no escaping, allowing AppleScript/shell injection or a broken script for names containing quotes or backslashes (resolved in this pass by `escape_for_applescript_literal` + tests)
-360. `ошибка` `src/native_menu.rs:50-51` - ensure_class() uses unwrap() on Class::get("NSObject") and ClassDecl::new(...), so any failure (e.g. a stray class name collision, or ClassDecl::new returning None if 'CmdrMenuHandler' is already registered) panics the app the first time a context menu is opened
+360. `ошибка` `src/native_menu.rs:50-51` - ensure_class() uses unwrap() on Class::get("NSObject") and ClassDecl::new(...), so any failure (e.g. a stray class name collision, or ClassDecl::new returning None if 'CmdrMenuHandler' is already registered) panics the app the first time a context menu is opened (resolved: `OnceLock<bool>` and fallible class lookup return a safe no-menu outcome)
 361. `ошибка` `src/native_menu.rs:172-179,205-209,346-354` - action_toggle_tag and build_tags_submenu pass a null NSError** to getResourceValue:forKey:error: and never check the returned bool, so a failed tag read/write (e.g. sandboxed or network volume) is silently indistinguishable from 'no tags' or from a successful write
 362. `ошибка` `src/native_menu.rs:81-86,121-126` - action_compress spawns ditto asynchronously and action_open_with spawns open -a asynchronously, but NEEDS_REFRESH is set (for compress) or the function simply returns (for open-with) before the external process has actually finished, so the reported refresh signal races the real filesystem change
 363. `проблема` `src/native_menu.rs:114-119,121-126,144-149` - Error handling is inconsistent within this one file: action_duplicate/action_compress/action_trash all silently discard io::Result errors with `let
@@ -748,7 +748,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 431. `проблема` `src/app/render.rs:118-131` - render_panel takes 10 positional parameters (panel, ui, is_active, t, image_cache, panel_side, tree_open, size_bars, compare, opener, metrics) and is annotated `#[allow(clippy::too_many_arguments)]` with a comment justifying it as a borrow-checker workaround; while understandable, this makes every call site order-sensitive and error-prone (e.g. swapping two `&str`/`bool` args of the same type would compile silently) -- at minimum grouping the read-only display config (t, size_bars, compare, metrics, panel_side) into a small `RenderConfig` struct would reduce the chance of a mis-ordered call.
 432. `ошибка` `src/app/render.rs:159-181,185-207` - The back/forward button rectangles are drawn with `Stroke::new(1.0_f32, t.border)` and manual text painting via `ui.painter()` rather than using `ui.add(egui::Button::...)`, so unlike every other clickable control in this file these buttons get no hover-highlight, no pressed-state feedback, and no disabled visual affordance beyond a slightly dimmer text/border color -- `can_back`/`can_fwd` being false still leaves the button fully clickable-looking and the click handler silently no-ops (`if back_resp.clicked() && can_back`), giving no feedback to the user why nothing happened when they click a disabled-looking-but-not-actually-disabled back button at the start of history.
 433. `ошибка` `src/app/file_list.rs:436-444` - Drop-target highlight never excludes the entries currently being dragged, so hovering a dragged folder over its own row (or over itself while the list re-renders mid-drag) marks it as a valid drop target
-434. `ошибка` `src/app/file_list.rs:195-207,255-258,461-463` - When the search/facet filter narrows the list while panel.cursor still points past the new total_rows, scroll_to_cursor can never be cleared because no row ever matches row_cursor==cursor to set `scrolled=true`
+434. `ошибка` `src/app/file_list.rs:195-207,255-258,461-463` - When the search/facet filter narrows the list while panel.cursor still points past the new total_rows, scroll_to_cursor can never be cleared because no row ever matches row_cursor==cursor to set `scrolled=true` (resolved: every search/facet/sort mutation immediately calls `ensure_cursor_valid`)
 435. `проблема` `src/app/file_list.rs:414-416` - Right-click context menu (`native_menu::show`) is invoked with only the single row's path, ignoring `panel.selected`, so right-clicking any row inside an existing multi-selection acts on just that one row instead of the whole selection
 436. `проблема` `src/app/file_list.rs:156-157` - Dark-theme detection re-implements an unweighted RGB-sum heuristic (`r+g+b < 384`) instead of reusing the project's own `file_color::relative_luminance`, duplicating logic that already exists and is less accurate (ignores perceptual green weighting)
 437. `проблема` `src/app/file_list.rs:353,619-621` - `paint_folder_icon` hardcodes its glyph size (24x18) and never receives `metrics`/`DensityMetrics`, so folder icons stay a fixed size across all density tiers while file icons scale via `metrics.icon_pt`, producing visibly inconsistent icon sizing between folders and files in Compact/Spacious modes
@@ -762,7 +762,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 445. `предложение` `src/app/file_list.rs:418-427` - Add a plain ctrl/cmd-click and shift-click gesture directly on file_list.rs's rows to toggle single-row selection or select a contiguous range, since today selection is keyboard-only from this view
 446. `предложение` `src/app/file_list.rs:33-69,436-444` - Extend the drop-target highlight to also render on the '..' row when dragging (drop-to-parent), since currently only directory rows inside the current listing can show the highlighted drop outline
 447. `предложение` `src/app/file_list.rs:653-666` - Show the folder item-count on a row even when the background dir-count scan is still pending, e.g. with a small spinner/ellipsis glyph inside paint_folder_icon, to distinguish 'not yet counted' from 'confirmed empty' (both currently render as a blank folder icon)
-448. `ошибка` `src/app/confirm_dialog.rs:64` - `flat_arc.lock().unwrap()` panics the whole app if the background scan thread poisons the mutex
+448. `ошибка` `src/app/confirm_dialog.rs:64` - `flat_arc.lock().unwrap()` panics the whole app if the background scan thread poisons the mutex (resolved: all UI/worker boundary locks use shared poison recovery)
 449. `ошибка` `src/app/confirm_dialog.rs:53-62, 274, 354-356, 374` - Conflict-resolution buttons and Enter/confirm are gated on `overflow`, which is computed from the pre-resolution `need_bytes` and never recomputed after a policy like Skip/Keep Newer shrinks the transfer (resolved: policy controls stay enabled and rebuild the pending transfer budget before confirmation)
 450. `ошибка` `src/app/confirm_dialog.rs:738` - Strikethrough line length is estimated as `fe.name.len() * 6.5` (byte length, not glyph width), so any non-ASCII filename produces a mismatched strikethrough
 451. `ошибка` `src/app/confirm_dialog.rs:530-534, 657-659` - Virtualized list scroll math falls apart when there are 0 items: `flat.len().saturating_sub(first + visible_count)` and `min(flat.len())` avoid underflow, but if `flat` is empty and the scroll area still reports a nonzero `clip_rect` offset from a previous larger list reusing the same `id_salt`, `first` can be computed against stale scroll state producing an empty slice silently - not a crash, but worth checking together with the next item.
@@ -818,6 +818,18 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 
 ## Tracking
 
+**Round-9 safety/invariants pass: done.** Closed audit #9-#12, #14, #18,
+#19, #21, and #32 plus the below-cut stale-cursor and Gather-folder gaps.
+`lock_util::recover` is the single poison policy for UI/worker mutexes;
+thumbnail RGBA buffers use checked products and fallible reservation; ObjC and
+dialog/index access fail soft. `PanelState` now owns cursor revalidation and
+returns a typed stale-cursor error. Toolbar guards mirror queue semantics in
+the core. `Gather`/`Ungather` actions run empty-folder removal as a typed
+post-success transfer step and redo recreates the exact folder. Nine regression
+tests bring the suite to 424 passing plus one ignored profiling harness. Track
+F items 360, 434, and 448 are resolved; items 182 and 220 are narrowed but keep
+their still-open structural/interaction halves.
+
 **Round-8 continuation pass: done.** Closed audit #7 (conflict-resolution
 deadlock), #8 (single rename had no undo), and #42 (treemap title/data
 retargeting), plus the case-only rollback half of #34. `PendingTransfer` now
@@ -837,8 +849,8 @@ explicit case-conflict state; Batch Rename holds an immutable opening context;
 drag/drop has correct anchor semantics, destination feedback, cancellation,
 and early-return cleanup; text diff checks a bounded flat-matrix budget before
 allocation. Seven focused regression tests were added. Track F items 56, 59, 89,
-153, and 498 are resolved; D13/D15/D19 remain honestly partial where their
-unrelated directory-type, toolbar, and treemap halves are still open.
+153, and 498 are resolved. D13 remains partial; the toolbar and treemap halves
+of D15/D19 that were open in that round closed in rounds 8-9.
 
 **Round-6 Top-500 implementation pass: done.** Closed Track F items 2, 5,
 8, and 9 by sharing the image-cache budget constant, naming the preload window
@@ -872,12 +884,10 @@ Done: **C** (docs, round-1 and round-3 batches), and **D1 + D2 + D3**
 explicit-save dialogs toast on failure; undo/redo surface a refused rename
 instead of swallowing it; the image cache is flushed on directory change.
 
-Next suggested order: the wrong-file interaction cluster is now closed, so
-continue with **D6 (panics/overflow) + D10 (cursor invariants) + D15's remaining
-toolbar gating**, then finish **D20's Gather-folder cleanup**. After that use
-**B1 (regex) -> A2 -> A3 -> B2 -> A4 ...**, with D4 (cheap perf),
-D11 (id_salt), D18, and D24 (small UI/no-op fixes) slotted in as low-risk
-fillers. Schedule **D9** (destructive-op partial-failure integrity, with
+Next suggested order: the safety/invariant cluster is now closed, so continue
+with **B1 (regex) + D4 (cheap perf) + D11 (id_salt) + D18/D24's small UI/data
+fixes**, then **A2 -> A3 -> B2 -> A4 ...**. Schedule **D9** (remaining
+destructive-op partial-failure integrity, with
 on-disk undo tests), **D13** (directory-blind comparison), and **D23**
 (filesystem edge cases) as dedicated passes, **D16** (image pipeline) and
 **D17** (persistence hardening) whenever those modules are next touched, and

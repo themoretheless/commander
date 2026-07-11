@@ -50,6 +50,13 @@ carry stale rank numbers forward across rounds.
   path-stable undo/redo action and undoable feedback; case-only staging rolls
   back on second-step failure; treemap directory identity is part of its data
   snapshot. Treat those historical rows as resolved in current code.
+- **Top-50 #9-#12, #14, #18, #19, #21, and #32 fixed in the safety pass:**
+  worker/UI mutexes recover from poisoning; duplicate/batch/ObjC access is
+  fallible; Move replay validates every source before starting; filter/sort
+  changes re-clamp the cursor and stale cached indices are bounds-checked;
+  thumbnail allocation is checked and fallible; toolbar actions cannot replace
+  pending work. The below-cut stale-cursor and Gather empty-folder gaps are
+  closed too. The historical rows below remain useful as provenance.
 
 ## Resolved since round 3
 
@@ -167,7 +174,7 @@ rounds 1-3:
 | Negative float cast to `usize` in file_list size math | app/file_list.rs:189 |
 | Empty-input CSV/Markdown export emits header-only output, untested | listing_export.rs:126-127 |
 | `SmartFolders::remove`/`Bookmarks` rely on a uniqueness invariant enforced only by the mutating API, not `Deserialize`; a duplicate-keyed store cascades a delete/slot-assign meant for one entry to all of them (needs an externally edited file) | smart_folder.rs:34-36, bookmarks.rs:37-48,92-109 |
-| Undoing "Gather into Folder" moves the files back out but never removes the now-empty folder it created | workspace.rs:1186-1218,1021-1034 (test at 2183-2213 tacitly documents the gap) |
+| Undoing "Gather into Folder" moves the files back out but never removes the now-empty folder it created (resolved: typed Ungather post-success cleanup removes only the empty folder; redo recreates it) | workspace.rs:1186-1218,1021-1034 (test at 2183-2213 originally documented the gap) |
 | `select_by_mask`'s live "N matches" preview counts subtraction-only terms as matches, but Select adds zero of them — misleading the count | panel.rs:1324-1370, app/mask_dialog.rs:21-26 |
 | Copy-path family commands (Copy Path/Name/Parent/URL/Shell/Relative) silently no-op with zero feedback when nothing is selected and the cursor sits on the ".." row | app/update.rs:172-196, panel.rs:1518-1531 |
 
@@ -236,12 +243,12 @@ rounds 1-3:
     panel silently retargets an open dialog's operation. This is a new,
     codebase-wide pattern worth fixing once (capture context at dialog-open
     time) rather than per-dialog.
-11. **Undo coverage has real gaps beyond the already-tracked partial-undo bug.**
-    Single-file rename (F2, item 8) has *zero* undo support — `undo::Action`
-    only models `Move` and `BatchRename` — and undoing "Gather into Folder"
-    doesn't clean up the folder it created (below the cut). Both are silent:
-    no toast tells the user rename isn't undoable, and Cmd+Z can even revert a
-    different, older action instead when the stack isn't empty.
+11. **Undo coverage gaps were real and are now narrowed to other mutations.**
+    `undo::Action` now models path-stable single Rename plus typed
+    Gather/Ungather; Gather undo removes its empty folder through a transfer
+    post-success action and redo recreates it. Delete-to-Trash and a
+    partially-failed initial Gather still need their own dedicated integrity
+    pass rather than being conflated with the now-closed empty-folder gap.
 12. **Drag-and-drop state has three bugs stacked in the same plumbing.** The
     drop-target highlight reads the wrong panel's `drag_entries` so it never
     lights up (44), a stray click while a transfer/pending-op is in flight
@@ -269,7 +276,7 @@ rounds 1-3:
 | No negative-cache for undecodable image/video formats | high/high, "resource-leak" | **Downgraded to med.** The uncapped per-frame thread-spawn and the main-thread synchronous re-decode of the active preview are both real and unbounded in *count*, but individual decode-attempt failures return fast (CoreGraphics/AVFoundation reject unsupported formats near-instantly), so this is sustained thread churn and UI jank, not the unbounded-memory-growth or multi-second-hang class of "high". |
 | `SmartFolders`/`Bookmarks` duplicate-key cascade delete | low/med | **Confidence raised to high, severity stays low.** The `retain(|d| d.name != name)` bulk-delete mechanism is confirmed exactly as described, but no in-app code path can create the duplicate-name precondition today (only an externally edited/merged JSON file can) — real but low-likelihood; kept out of the top 50, see "Below the cut". |
 | `recommendation.md` Track C text already stale on arrival | med/high | **Downgraded to low.** The document's own "Tracking" section already tells the reader Track C is done, which substantially defuses the "reader wastes time re-fixing it" scenario the reviewer described. Fixed directly in that pass rather than tracked as a numbered defect. |
-| `architecture.md` "373 GUI-free tests" is stale | low/med | **Confidence raised to high.** Reproduced directly; after the 2026-07-11 regression additions, `cargo test` reports 415 passed, 1 ignored, 416 `#[test]` functions total. Fixed directly in `architecture.md`. |
+| `architecture.md` "373 GUI-free tests" is stale | low/med | **Confidence raised to high.** Reproduced directly; after the 2026-07-11 regression additions, `cargo test` reports 424 passed, 1 ignored, 425 `#[test]` functions total. Fixed directly in `architecture.md`. |
 
 ## Verification corrections (round 2, re-checked by hand)
 

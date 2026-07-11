@@ -16,8 +16,8 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: ~40 small modules and 415 GUI-free
-tests (416 `#[test]` functions, one an `#[ignore]`d manual profiling harness)
+That split is real and worth protecting: ~42 small modules and 424 GUI-free
+tests (425 `#[test]` functions, one an `#[ignore]`d manual profiling harness)
 sit under a thin presentation layer. The debt is concentrated in two oversized
 core types and in how the core signals the UI.
 
@@ -43,7 +43,8 @@ Grouped by the bounded context each module really belongs to:
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
   `session`, `density`, `focus_mode`, `quick_actions`, `textdiff`, `toasts`
-  (a pure, time-driven toast queue with an injected clock; no egui types).
+  (a pure, time-driven toast queue with an injected clock; no egui types),
+  `lock_util` (the single poison-recovery policy at worker/UI mutex borders).
 
 ### UI adapter (`app/`, egui)
 
@@ -58,10 +59,10 @@ dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 3,677 | God object; ~1,618 lines are its test module |
-| `src/panel.rs` | 2,754 | God object; `PanelState` mixes 4 concerns |
-| `src/transfer.rs` | 1,416 | Cohesive; large but single-purpose |
-| `src/app/update.rs` | 1,084 | Per-frame hub; drains the flag bus |
+| `src/workspace.rs` | 3,825 | God object; ~1,679 lines are its test module |
+| `src/panel.rs` | 2,825 | God object; `PanelState` mixes 4 concerns |
+| `src/transfer.rs` | 1,496 | Cohesive; large but single-purpose |
+| `src/app/update.rs` | 1,083 | Per-frame hub; drains the flag bus |
 | `src/app/confirm_dialog.rs` | 783 | One dialog |
 
 ## The core <-> UI boundary today
@@ -139,11 +140,12 @@ coupling they create:
   The remaining structural work is the `UiState`/Effect extraction (A5), not
   another round of ad-hoc target fields.
 - **`undo::Action` still does not cover every filesystem mutation.** `Move`,
-  `BatchRename`, and the new path-stable `Rename` variant are undoable; F2 now
-  emits the same undoable toast/receipt contract as larger operations. The
-  remaining known gap is "Gather into Folder": undo moves files back out but
-  never removes the folder it created, leaving an orphaned empty directory.
-  Undo coverage should become an invariant checked for every mutating command,
+  `BatchRename`, path-stable `Rename`, and typed `Gather`/`Ungather` are now
+  undoable. Gather folder cleanup is a transfer-owned post-success action:
+  undo removes only an empty folder, reports cleanup failure normally, and
+  redo recreates the exact path before moving. Delete-to-Trash and rollback of
+  a partially failed initial Gather remain separate integrity work. Undo
+  coverage should become an invariant checked for every mutating command,
   rather than continuing to grow action-by-action.
 - **The drag-and-drop bug cluster was closed as one ownership change.**
   `PanelState::begin_drag` now owns selection semantics, both panel renderers
@@ -213,6 +215,19 @@ this time landing four bounded changes instead of expanding the backlog:
   failed second rename before the action is recorded.
 - `TreemapSnapshot` owns directory identity and sized rows as one value, so the
   title and visualization cannot drift after panel navigation.
+- `lock_util::recover` owns mutex-poison policy across transfer, image loading,
+  scan, confirmation, and native-copy FFI boundaries. RGBA buffers validate
+  both products and reserve fallibly before CoreGraphics receives a pointer.
+- `PanelState` owns cursor revalidation after search/facet/sort changes;
+  filtered cache reads are bounds-checked and stale cursor access is a typed
+  error instead of an empty selection. The O(1) hot `filtered_count` path stays
+  unchanged.
+- Toolbar availability delegates to queue-aware `Workspace` guards, while
+  disabled controls explain the pending/active reason. Copy/Move may still
+  queue behind an active transfer; Delete cannot replace in-flight work.
+- `Action::Gather`/`Ungather` and `PostTransferAction::RemoveEmptyDir` keep
+  filesystem cleanup out of UI code. Move replay validates every source before
+  starting, preventing a known half-undo path.
 
 ## Target architecture
 
@@ -568,7 +583,7 @@ can be taken on faith until that port is read.
 - ports::os_integration was fully discarded and replaced with a plain pure function (applescript_escape) after verifying that native_menu.rs's action_get_info is a static `extern "C" fn` AppKit callback with no receiver to inject a trait object onto -- it reads its target path from a thread_local, not from any struct. This is a case where the round 2/3 plan's own DIP instinct (wrap this in a port, like opener) was simply the wrong tool for a call site with no `self`; the corrected plan ships a one-function fix with a unit test instead of an unused trait. Reviewers should confirm no OTHER AppleScript/osascript call site exists anywhere in the crate that WOULD benefit from a real port (grep for `osascript` found exactly one call site, native_menu.rs:101-112, at the time of this plan).
 - ports::persist grew from one helper (load_lenient<T:Default>) to three (load_lenient, load_optional<T> for session.rs's Option<Session>-returning, no-Default case, and save_atomic<T> for the four-way-duplicated save side) after verifying session.rs's load() genuinely does not fit the single-signature framing round 2 proposed, and that the save-side duplication is exactly as real as the load-side duplication round 2 already targeted. Three small helpers instead of one is slightly more surface area to review, but each is a straightforward 10-20 line generic function; the alternative (forcing session.rs to adopt a Default impl it doesn't have today, purely to fit one helper's signature) would be a behavior change disguised as a refactor, which is worse.
 - poll_transfer/dismiss_transfer straddle transfer_center, undo_center, AND panel::state::Refreshable by design today (workspace.rs:875-948 and 979-987 both call self.left.refresh()/self.right.refresh() in addition to the undo-recording read-before-pump ordering). This plan resolves both the panel coupling (via the explicit Refreshable parameter) and the ISP over-widening (via the narrow trait instead of the concrete struct) -- but poll()'s own internal, unconditional call to pump_queue() before returning is a separate, pre-existing control-flow fact this plan does NOT change, only documents explicitly in poll's own doc-comment so its Option<undo::Action> return-value change is not mistaken for altering that internal ordering. Run the full transfer+undo suite by hand, not just cargo test, both before and after this step.
-- The Effect bus is the one module in this plan whose correctness the 415-test suite cannot verify at all: the dialog focus edge-trigger is egui-frame behavior. The dual-write staging (additive field first, then the actual cutover) de-risks the diff size but does not de-risk the verification gap -- every commit touching effects.rs or its app/update.rs drain loop needs a manual pass in the running app testing each dialog's open/focus behavior individually. This round adds explicit obligations beyond round 2's: (a) Effect::Open's just_opened payload must actually reach RenameState's D19 snapshot field end-to-end, AND (b) the just_opened flag must correctly REPLACE (not merely supplement) all three dialogs' own focused:bool fields once Step 16 deletes them -- a regression here (e.g. a dialog re-grabbing focus every frame because just_opened is read wrong) would not be caught by cargo test and needs the same by-hand verification as (a).
+- The Effect bus is the one module in this plan whose correctness the 424-test suite cannot verify at all: the dialog focus edge-trigger is egui-frame behavior. The dual-write staging (additive field first, then the actual cutover) de-risks the diff size but does not de-risk the verification gap -- every commit touching effects.rs or its app/update.rs drain loop needs a manual pass in the running app testing each dialog's open/focus behavior individually. This round adds explicit obligations beyond round 2's: (a) Effect::Open's just_opened payload must actually reach RenameState's D19 snapshot field end-to-end, AND (b) the just_opened flag must correctly REPLACE (not merely supplement) all three dialogs' own focused:bool fields once Step 16 deletes them -- a regression here (e.g. a dialog re-grabbing focus every frame because just_opened is read wrong) would not be caught by cargo test and needs the same by-hand verification as (a).
 - ports::notify's abstraction shape is fixed as Arc<dyn NotifyPort + Send + Sync> uniformly for ~8 of ~9 call sites, but spawn_transfer's own `impl Fn() + Send + 'static` bound requires ONE explicit adapter closure (`move || n.on_progress()`) rather than a bare Arc clone -- this is a real, if small, asymmetry in the ~9 call sites this plan now states explicitly rather than leaving implicit. Confirm at Step 13's landing that this one adapter closure is present and tested (or at minimum exercised by the existing transfer-completion tests), since a missed adapter at this one site is a compile error, not a silent bug, so the risk here is review clarity rather than correctness.
 - panel::watcher's fs-event closure crosses three module boundaries at closure-construction time (writes panel::size_cache's needs_refresh/sizes_dirty flags via RefreshHandle/DirtyHandle accessors, and calls panel::persist_cache's invalidate_size_cache directly) -- this round additionally documents panel::size_cache's own SIZES_DEBOUNCE timer as a third, previously-unnamed timing policy in the same subsystem (alongside panel::walk_log's WALK_COOLDOWN/WALK_EXPENSIVE and panel::watcher's own notify-driven trigger), giving a reviewer a complete three-policy inventory across three files instead of the two the plan tracked before. This is a documented, narrowed coupling, not an eliminated one -- a reviewer of any future change to panel.rs's timing/debounce logic must still read three modules' doc-comments together, and that residual review cost is accepted rather than solved.
 - panel::drag_state's privatization commit now explicitly includes rewriting three workspace.rs test-module call sites (drop_prefers_source_panel_target, drop_falls_back_to_other_panel_path, drop_with_conflict_opens_dialog_instead_of_moving) in addition to the five production call sites round 2 already accounted for -- a genuinely larger single commit (production code in three files plus test code in a fourth) than a pure 40-line struct extraction, landing in one commit specifically so the crate compiles with zero EXTERNAL raw-field access at any intermediate point. Reviewers should expect this commit's diff to touch four files, not three, and should re-verify by grepping for `.drag_entries` and `.drop_target` outside panel::state's own module after this step lands -- the only remaining hits should be inside workspace.rs's drop_dragged/take_drop_plan PRODUCTION bodies (deferred to the drop_glue step), not test code.
@@ -595,7 +610,7 @@ validates.
 
 ## Invariants and testing
 
-The pure core is covered by 415 GUI-free tests (416 `#[test]` functions, one
+The pure core is covered by 424 GUI-free tests (425 `#[test]` functions, one
 `#[ignore]`d manual profiling harness). The one area the tests do **not**
 exercise is egui-frame behaviour: the dialog focus edge-trigger driven by the
 flag bus is invisible to the test suite, which is why the Effect-bus migration

@@ -20,6 +20,18 @@ pub enum Action {
     /// One path renamed in place. Full paths keep the action independent from
     /// whichever panel is active when undo/redo is requested.
     Rename { from: PathBuf, to: PathBuf },
+    /// Move selected entries into a newly-created folder. Its inverse is an
+    /// [`Action::Ungather`], which removes that folder after moving entries out.
+    Gather {
+        folder: PathBuf,
+        pairs: Vec<(PathBuf, PathBuf)>,
+    },
+    /// Undo half of [`Action::Gather`]. Kept as a distinct variant so folder
+    /// cleanup cannot accidentally apply to an ordinary Move.
+    Ungather {
+        folder: PathBuf,
+        pairs: Vec<(PathBuf, PathBuf)>,
+    },
 }
 
 impl Action {
@@ -29,6 +41,7 @@ impl Action {
             Action::Move { pairs } => pairs.len(),
             Action::BatchRename { pairs, .. } => pairs.len(),
             Action::Rename { .. } => 1,
+            Action::Gather { pairs, .. } | Action::Ungather { pairs, .. } => pairs.len(),
         }
     }
 
@@ -37,6 +50,7 @@ impl Action {
         match self {
             Action::Move { .. } => "Moved",
             Action::BatchRename { .. } | Action::Rename { .. } => "Renamed",
+            Action::Gather { .. } | Action::Ungather { .. } => "Gathered",
         }
     }
 
@@ -50,6 +64,11 @@ impl Action {
                 .map(PathBuf::from),
             Action::BatchRename { dir, .. } => Some(dir.clone()),
             Action::Rename { to, .. } => to.parent().map(PathBuf::from),
+            Action::Gather { folder, .. } => Some(folder.clone()),
+            Action::Ungather { pairs, .. } => pairs
+                .first()
+                .and_then(|(_, to)| to.parent())
+                .map(PathBuf::from),
         }
     }
 }
@@ -68,6 +87,14 @@ pub fn invert(action: &Action) -> Option<Action> {
         Action::Rename { from, to } => Some(Action::Rename {
             from: to.clone(),
             to: from.clone(),
+        }),
+        Action::Gather { folder, pairs } => Some(Action::Ungather {
+            folder: folder.clone(),
+            pairs: pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect(),
+        }),
+        Action::Ungather { folder, pairs } => Some(Action::Gather {
+            folder: folder.clone(),
+            pairs: pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect(),
         }),
     }
 }
@@ -204,6 +231,27 @@ mod tests {
         assert_eq!(action.item_count(), 1);
         assert_eq!(action.verb(), "Renamed");
         assert_eq!(action.jump_to(), Some(PathBuf::from("/d")));
+    }
+
+    #[test]
+    fn invert_gather_swaps_paths_and_cleanup_semantics() {
+        let folder = PathBuf::from("/d/Photos");
+        let action = Action::Gather {
+            folder: folder.clone(),
+            pairs: vec![(PathBuf::from("/d/a.jpg"), PathBuf::from("/d/Photos/a.jpg"))],
+        };
+        let inverse = invert(&action).unwrap();
+        assert_eq!(
+            inverse,
+            Action::Ungather {
+                folder: folder.clone(),
+                pairs: vec![(PathBuf::from("/d/Photos/a.jpg"), PathBuf::from("/d/a.jpg"),)],
+            }
+        );
+        assert_eq!(invert(&inverse), Some(action));
+        assert_eq!(inverse.item_count(), 1);
+        assert_eq!(inverse.verb(), "Gathered");
+        assert_eq!(inverse.jump_to(), Some(PathBuf::from("/d")));
     }
 
     #[test]

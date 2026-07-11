@@ -122,7 +122,7 @@ extern "C" fn progress_callback(
 
     match (what, stage) {
         (COPYFILE_RECURSE_FILE, COPYFILE_START) => {
-            let mut s = ctx.state.lock().unwrap();
+            let mut s = crate::lock_util::recover(&ctx.state);
             if s.cancelled {
                 return COPYFILE_QUIT;
             }
@@ -137,11 +137,11 @@ extern "C" fn progress_callback(
             COPYFILE_CONTINUE
         }
         (COPYFILE_RECURSE_FILE, COPYFILE_FINISH) => {
-            let mut s = ctx.state.lock().unwrap();
+            let mut s = crate::lock_util::recover(&ctx.state);
             // Count the whole file as done: cloned files produce no DATA callbacks.
-            ctx.done_in_call += s.current_file_size;
+            ctx.done_in_call = ctx.done_in_call.saturating_add(s.current_file_size);
             s.current_file_copied = s.current_file_size;
-            s.copied_bytes = ctx.base_bytes + ctx.done_in_call;
+            s.copied_bytes = ctx.base_bytes.saturating_add(ctx.done_in_call);
             s.maybe_sample();
             COPYFILE_CONTINUE
         }
@@ -150,7 +150,7 @@ extern "C" fn progress_callback(
         | (COPYFILE_RECURSE_ERROR, _) => {
             // Record the failure and keep copying the rest; the caller
             // checks the error list before treating the op as successful.
-            let mut s = ctx.state.lock().unwrap();
+            let mut s = crate::lock_util::recover(&ctx.state);
             let name = cstr_to_string(src).unwrap_or_else(|| s.current_file.clone());
             s.errors.push(format!("Failed to copy: {}", name));
             COPYFILE_CONTINUE
@@ -164,14 +164,17 @@ extern "C" fn progress_callback(
                     &mut bytes_copied as *mut _ as *mut std::ffi::c_void,
                 );
 
-                let mut s = ctx.state.lock().unwrap();
+                let mut s = crate::lock_util::recover(&ctx.state);
                 if s.cancelled {
                     return COPYFILE_QUIT;
                 }
 
                 let current_copied = bytes_copied.max(0) as u64;
                 s.current_file_copied = current_copied;
-                s.copied_bytes = ctx.base_bytes + ctx.done_in_call + current_copied;
+                s.copied_bytes = ctx
+                    .base_bytes
+                    .saturating_add(ctx.done_in_call)
+                    .saturating_add(current_copied);
                 s.maybe_sample();
             }
             COPYFILE_CONTINUE
@@ -193,7 +196,7 @@ pub fn copy_file_native(
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
 
     {
-        let mut s = state.lock().unwrap();
+        let mut s = crate::lock_util::recover(state);
         s.current_file = src
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -237,7 +240,7 @@ pub fn copy_file_native(
         if result != 0 {
             let err = std::io::Error::last_os_error();
             // Check if cancelled
-            let s = state.lock().unwrap();
+            let s = crate::lock_util::recover(state);
             if s.cancelled {
                 // Clean up partial file
                 let _ = std::fs::remove_file(dst);
@@ -252,9 +255,9 @@ pub fn copy_file_native(
 
     // Finalize progress: a cloned file emits no DATA callbacks at all.
     {
-        let mut s = state.lock().unwrap();
+        let mut s = crate::lock_util::recover(state);
         s.current_file_copied = file_size;
-        s.copied_bytes = base_bytes + file_size;
+        s.copied_bytes = base_bytes.saturating_add(file_size);
     }
 
     Ok(file_size)
@@ -271,7 +274,7 @@ pub fn copy_dir_native(
     let dst_c = path_cstring(dst)?;
 
     {
-        let mut s = state.lock().unwrap();
+        let mut s = crate::lock_util::recover(state);
         s.current_file = src
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -308,7 +311,7 @@ pub fn copy_dir_native(
         copyfile_state_free(cstate);
 
         if result != 0 {
-            let s = state.lock().unwrap();
+            let s = crate::lock_util::recover(state);
             if s.cancelled {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
@@ -319,8 +322,8 @@ pub fn copy_dir_native(
         }
 
         let copied = ctx.done_in_call;
-        let mut s = state.lock().unwrap();
-        s.copied_bytes = base_bytes + copied;
+        let mut s = crate::lock_util::recover(state);
+        s.copied_bytes = base_bytes.saturating_add(copied);
         Ok(copied)
     }
 }

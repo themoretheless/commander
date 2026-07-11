@@ -22,7 +22,11 @@ impl App {
         let t = self.colors;
 
         // Snapshot the selection context before borrowing the bar state.
-        let sel = self.ws.active_panel_ref().selected_or_cursor();
+        let sel = self
+            .ws
+            .active_panel_ref()
+            .selected_or_cursor()
+            .unwrap_or_default();
         let dir = self.ws.active_panel_ref().current_path.clone();
         let sctx = SelectionCtx {
             paths: sel.iter().map(|e| e.path.clone()).collect(),

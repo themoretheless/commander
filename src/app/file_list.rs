@@ -116,8 +116,7 @@ impl App {
                                     "finder" => opener(&panel.current_path),
                                     "up" => panel.go_up(),
                                     "clear_filters" => {
-                                        panel.search_query.clear();
-                                        panel.facets = crate::panel::FacetSet::default();
+                                        panel.clear_filters();
                                     }
                                     _ => {}
                                 }

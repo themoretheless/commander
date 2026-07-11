@@ -4,7 +4,7 @@ use objc::{class, msg_send, sel, sel_impl};
 use std::cell::Cell;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::sync::OnceLock;
 
 /// NSPoint / NSSize — same layout {f64, f64}
 #[repr(C)]
@@ -20,7 +20,7 @@ thread_local! {
 }
 
 unsafe fn nsstring(s: &str) -> *mut Object {
-    let c = CString::new(s).unwrap_or_else(|_| CString::new("").unwrap());
+    let c = CString::new(s).unwrap_or_default();
     msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()]
 }
 
@@ -55,12 +55,19 @@ unsafe fn add_separator(menu: *mut Object) {
     let _: () = msg_send![menu, addItem: sep];
 }
 
-static REGISTER: Once = Once::new();
+static REGISTERED: OnceLock<bool> = OnceLock::new();
 
-fn ensure_class() {
-    REGISTER.call_once(|| {
-        let superclass = Class::get("NSObject").unwrap();
-        let mut decl = ClassDecl::new("CmdrMenuHandler", superclass).unwrap();
+fn ensure_class() -> bool {
+    *REGISTERED.get_or_init(|| {
+        if Class::get("CmdrMenuHandler").is_some() {
+            return true;
+        }
+        let Some(superclass) = Class::get("NSObject") else {
+            return false;
+        };
+        let Some(mut decl) = ClassDecl::new("CmdrMenuHandler", superclass) else {
+            return false;
+        };
 
         extern "C" fn action_open(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
@@ -264,7 +271,8 @@ fn ensure_class() {
         }
 
         decl.register();
-    });
+        true
+    })
 }
 
 /// Build "Open With" submenu by querying NSWorkspace.
@@ -464,13 +472,17 @@ unsafe fn build_share_submenu(handler: *mut Object, path: &Path) -> *mut Object 
 /// Show a native macOS NSMenu context menu for a file.
 /// Returns `true` if the panel should be refreshed.
 pub fn show(path: &Path) -> bool {
-    ensure_class();
+    if !ensure_class() {
+        return false;
+    }
+    let Some(handler_cls) = Class::get("CmdrMenuHandler") else {
+        return false;
+    };
     MENU_PATH.with(|p| *p.borrow_mut() = path.to_path_buf());
     NEEDS_REFRESH.with(|r| r.set(false));
 
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-        let handler_cls = Class::get("CmdrMenuHandler").unwrap();
         let handler: *mut Object = msg_send![handler_cls, new];
 
         let menu: *mut Object = msg_send![class!(NSMenu), new];

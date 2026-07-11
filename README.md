@@ -55,7 +55,8 @@ module is a thin egui layer over it.
   engine as the keyboard.
 - **Gather into a new subfolder** (`Cmd+Shift+N`): move the selection into a
   freshly-named folder in one undoable step (Finder's New Folder with
-  Selection).
+  Selection). Undo moves the files back and removes the empty folder; redo
+  recreates it before gathering again.
 - **Batch-rename studio** (`Cmd+Shift+R`): find/replace (plain or **regex**,
   with `$1`-style capture groups), case, prefix/suffix, numbering, with a live
   preview. Resolvable collisions (swaps, rotations, and the case-only
@@ -151,6 +152,9 @@ from the earlier pass also remains protected by AppleScript-literal escaping.
 The continuation pass adds undo/redo for F2 rename, fixes conflict policies
 that can reduce an over-budget transfer, and keeps treemap titles bound to the
 directory snapshot they visualize.
+The safety pass adds poison-tolerant worker/UI locks, checked thumbnail
+allocation, cursor/filter invariants, queue-aware toolbar gating, and complete
+Gather folder undo/redo.
 
 ## Keyboard shortcuts
 

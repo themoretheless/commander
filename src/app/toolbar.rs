@@ -63,8 +63,21 @@ impl App {
                     ui.add_space(14.0);
 
                     // Action buttons
-                    let btn = |ui: &mut egui::Ui, label: &str, shortcut: &str| -> bool {
-                        ui.add(
+                    let can_transfer = self.ws.can_request_transfer();
+                    let can_delete = self.ws.can_request_delete();
+                    let busy_reason = if self.ws.pending_op.is_some() {
+                        "Finish or cancel the current confirmation"
+                    } else {
+                        "Wait for the active transfer to finish"
+                    };
+                    let btn = |ui: &mut egui::Ui,
+                               label: &str,
+                               shortcut: &str,
+                               enabled: bool,
+                               disabled_reason: &str|
+                     -> bool {
+                        ui.add_enabled(
+                            enabled,
                             egui::Button::new(
                                 egui::RichText::new(label).size(12.0).color(t.text_primary),
                             )
@@ -72,22 +85,35 @@ impl App {
                             .corner_radius(crate::theme::ROUNDING_SM),
                         )
                         .on_hover_text(shortcut)
+                        .on_disabled_hover_text(disabled_reason)
                         .clicked()
                     };
 
-                    if btn(ui, "Copy", "F5  Copy selected to other panel") {
+                    if btn(
+                        ui,
+                        "Copy",
+                        "F5  Copy selected to other panel",
+                        can_transfer,
+                        busy_reason,
+                    ) {
                         self.ws.request_copy();
                     }
-                    if btn(ui, "Move", "F6  Move selected to other panel") {
+                    if btn(
+                        ui,
+                        "Move",
+                        "F6  Move selected to other panel",
+                        can_transfer,
+                        busy_reason,
+                    ) {
                         self.ws.request_move();
                     }
-                    if btn(ui, "New Folder", "F7  Create new directory") {
+                    if btn(ui, "New Folder", "F7  Create new directory", true, "") {
                         self.ws.create_dir();
                     }
-                    if btn(ui, "Delete", "F8  Move to Trash") {
+                    if btn(ui, "Delete", "F8  Move to Trash", can_delete, busy_reason) {
                         self.ws.request_delete();
                     }
-                    if btn(ui, "\u{2318}K", "Open command palette") {
+                    if btn(ui, "\u{2318}K", "Open command palette", true, "") {
                         self.ws.palette_request = true;
                     }
 

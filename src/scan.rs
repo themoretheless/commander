@@ -40,7 +40,7 @@ pub fn spawn_scan(entries: Vec<FileEntry>) -> FlatList {
     let flat_clone = flat.clone();
     std::thread::spawn(move || {
         let result = flatten_entries(&entries);
-        *flat_clone.lock().unwrap() = Some(result);
+        *crate::lock_util::recover(&flat_clone) = Some(result);
     });
     flat
 }

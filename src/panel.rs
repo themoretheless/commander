@@ -729,6 +729,16 @@ pub struct ViewSettings {
     pub density: crate::density::Density,
 }
 
+/// A non-parent cursor row no longer exists in the filtered view. This should
+/// be prevented by [`PanelState::ensure_cursor_valid`], but remains explicit at
+/// file-operation call sites so a future invariant regression cannot silently
+/// turn a command into an empty selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaleCursor {
+    pub cursor: usize,
+    pub visible_entries: usize,
+}
+
 pub struct PanelState {
     pub current_path: PathBuf,
     pub entries: Vec<FileEntry>,
@@ -1177,6 +1187,7 @@ impl PanelState {
         });
         // Content/order changed: filtered indices must be rebuilt.
         self.entries_gen = self.entries_gen.wrapping_add(1);
+        self.ensure_cursor_valid();
     }
 
     /// Toggle pinning folders to the top, then re-sort in place.
@@ -1512,6 +1523,23 @@ impl PanelState {
         self.filter_cache.borrow().indices.len()
     }
 
+    /// Clamp the cursor after any filter, facet, or ordering change. Cursor 0
+    /// is the synthetic parent row; real rows occupy 1..=filtered_count().
+    pub fn ensure_cursor_valid(&mut self) {
+        let clamped = self.cursor.min(self.filtered_count());
+        if self.cursor != clamped {
+            self.cursor = clamped;
+            self.scroll_to_cursor = true;
+        }
+    }
+
+    /// Clear both text and facet filters as one invariant-preserving action.
+    pub fn clear_filters(&mut self) {
+        self.search_query.clear();
+        self.facets = FacetSet::default();
+        self.ensure_cursor_valid();
+    }
+
     /// The i-th entry of the filtered view (no allocation).
     pub fn filtered_get(&self, i: usize) -> Option<&FileEntry> {
         self.ensure_filter_cache();
@@ -1523,13 +1551,23 @@ impl PanelState {
     /// Cheap (a `Vec<usize>` clone); used by the virtualized list renderer.
     pub fn filtered_indices(&self) -> Vec<usize> {
         self.ensure_filter_cache();
-        self.filter_cache.borrow().indices.clone()
+        self.filter_cache
+            .borrow()
+            .indices
+            .iter()
+            .copied()
+            .filter(|&i| i < self.entries.len())
+            .collect()
     }
 
     pub fn filtered_entries(&self) -> Vec<&FileEntry> {
         self.ensure_filter_cache();
         let cache = self.filter_cache.borrow();
-        cache.indices.iter().map(|&i| &self.entries[i]).collect()
+        cache
+            .indices
+            .iter()
+            .filter_map(|&i| self.entries.get(i))
+            .collect()
     }
 
     pub fn toggle_select(&mut self, path: PathBuf) {
@@ -1610,18 +1648,21 @@ impl PanelState {
             .collect()
     }
 
-    pub fn selected_or_cursor(&self) -> Vec<FileEntry> {
+    pub fn selected_or_cursor(&self) -> Result<Vec<FileEntry>, StaleCursor> {
         if self.selected.is_empty() {
             // cursor 0 = ".." row, real files start at cursor 1
             if self.cursor == 0 {
-                return vec![];
+                return Ok(vec![]);
             }
             match self.filtered_get(self.cursor - 1) {
-                Some(entry) => vec![entry.clone()],
-                None => vec![],
+                Some(entry) => Ok(vec![entry.clone()]),
+                None => Err(StaleCursor {
+                    cursor: self.cursor,
+                    visible_entries: self.filtered_entries().len(),
+                }),
             }
         } else {
-            self.selected_entries()
+            Ok(self.selected_entries())
         }
     }
 
@@ -2139,11 +2180,41 @@ mod tests {
     fn selected_or_cursor_falls_back_to_cursor_row() {
         let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
         p.cursor = 0; // ".." row
-        assert!(p.selected_or_cursor().is_empty());
+        assert!(p.selected_or_cursor().unwrap().is_empty());
         p.cursor = 2; // second file
-        let picked = p.selected_or_cursor();
+        let picked = p.selected_or_cursor().unwrap();
         assert_eq!(picked.len(), 1);
         assert_eq!(picked[0].name, "b");
+    }
+
+    #[test]
+    fn sorting_reclamps_a_cursor_after_the_filter_changes() {
+        let mut p = panel_with(vec![entry("alpha", false, 1), entry("beta", false, 1)]);
+        p.cursor = 2;
+        p.search_query = "alpha".to_string();
+
+        p.sort_entries();
+
+        assert_eq!(p.cursor, 1);
+        assert_eq!(p.filtered_get(0).unwrap().name, "alpha");
+    }
+
+    #[test]
+    fn stale_filter_indices_are_bounded_and_cursor_miss_is_explicit() {
+        let mut p = panel_with(vec![entry("alpha", false, 1), entry("beta", false, 1)]);
+        p.cursor = 2;
+        assert_eq!(p.filtered_count(), 2); // warm the index cache
+        p.entries.clear(); // simulate an invariant violation without a generation bump
+
+        assert!(p.filtered_entries().is_empty());
+        assert!(p.filtered_indices().is_empty());
+        assert_eq!(
+            p.selected_or_cursor().unwrap_err(),
+            StaleCursor {
+                cursor: 2,
+                visible_entries: 0,
+            }
+        );
     }
 
     #[test]

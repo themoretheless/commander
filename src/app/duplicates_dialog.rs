@@ -25,7 +25,9 @@ impl App {
 
         // Snapshot display data so the window body only mutates `keep`.
         let (view, delete_total) = {
-            let s = self.duplicates.as_ref().unwrap();
+            let Some(s) = self.duplicates.as_ref() else {
+                return;
+            };
             let view: Vec<(u64, Vec<String>)> = s
                 .groups
                 .iter()
@@ -51,7 +53,9 @@ impl App {
         let mut cancel = false;
 
         {
-            let s = self.duplicates.as_mut().unwrap();
+            let Some(s) = self.duplicates.as_mut() else {
+                return;
+            };
             egui::Window::new("Duplicates")
                 .collapsible(false)
                 .resizable(false)
@@ -126,7 +130,7 @@ impl App {
                         .max_height(320.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
-                            for (gi, (size, labels)) in view.iter().enumerate() {
+                            for ((size, labels), keep) in view.iter().zip(s.keep.iter_mut()) {
                                 ui.label(
                                     egui::RichText::new(format!(
                                         "{} copies \u{00b7} {} each",
@@ -137,7 +141,7 @@ impl App {
                                     .color(t.accent),
                                 );
                                 for (fi, label) in labels.iter().enumerate() {
-                                    ui.radio_value(&mut s.keep[gi], fi, label);
+                                    ui.radio_value(keep, fi, label);
                                 }
                                 ui.add_space(6.0);
                             }
@@ -205,12 +209,13 @@ impl App {
         if commit {
             // Every non-kept file across all groups goes to the Trash.
             let to_trash: Vec<std::path::PathBuf> = {
-                let s = self.duplicates.as_ref().unwrap();
+                let Some(s) = self.duplicates.as_ref() else {
+                    return;
+                };
                 s.groups
                     .iter()
-                    .enumerate()
-                    .flat_map(|(gi, g)| {
-                        let keep = s.keep[gi];
+                    .zip(&s.keep)
+                    .flat_map(|(g, &keep)| {
                         g.files
                             .iter()
                             .enumerate()
