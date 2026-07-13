@@ -7,6 +7,46 @@ use std::time::SystemTime;
 
 const AUTO_RUN_DELAY: f64 = 0.25;
 
+fn index_phase_label(phase: crate::content_index::IndexPhase) -> &'static str {
+    match phase {
+        crate::content_index::IndexPhase::Disabled => "Off",
+        crate::content_index::IndexPhase::Missing => "Not built",
+        crate::content_index::IndexPhase::WaitingForIdle => "Waiting for idle",
+        crate::content_index::IndexPhase::Building => "Building",
+        crate::content_index::IndexPhase::Ready => "Ready",
+        crate::content_index::IndexPhase::Error => "Error",
+    }
+}
+
+fn index_freshness(built_at_secs: Option<u64>) -> String {
+    let Some(built_at_secs) = built_at_secs else {
+        return "Never".to_string();
+    };
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let age = now.saturating_sub(built_at_secs);
+    match age {
+        0..=59 => "Just now".to_string(),
+        60..=3_599 => format!("{}m ago", age / 60),
+        3_600..=86_399 => format!("{}h ago", age / 3_600),
+        _ => format!("{}d ago", age / 86_400),
+    }
+}
+
+pub(super) fn format_index_exclusions(root: &std::path::Path, exclusions: &[PathBuf]) -> String {
+    exclusions
+        .iter()
+        .map(|path| {
+            path.strip_prefix(root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl App {
     fn poll_find_events(&mut self) {
         let mut events = Vec::new();
@@ -112,13 +152,42 @@ impl App {
         } else {
             Vec::new()
         };
+        let index_status = self.content_index.status(&root);
+        if index_status.enabled
+            && matches!(
+                index_status.phase,
+                crate::content_index::IndexPhase::Missing | crate::content_index::IndexPhase::Error
+            )
+        {
+            let repaint = ctx.clone();
+            if self.content_index.start_build(
+                root.clone(),
+                std::sync::Arc::new(move || repaint.request_repaint()),
+            ) && let Some(state) = self.find.as_mut()
+            {
+                state.index_rerun_after_build = true;
+            }
+        }
+        let index = self
+            .content_index
+            .is_enabled(&root)
+            .then(|| self.content_index.snapshot(&root))
+            .flatten();
         let repaint = ctx.clone();
-        let run = match self.search_engine.start(
-            root,
-            query,
-            crate::search::DEFAULT_RESULT_CAP,
-            std::sync::Arc::new(move || repaint.request_repaint()),
-        ) {
+        let notify = std::sync::Arc::new(move || repaint.request_repaint());
+        let run_result = match index {
+            Some(index) => self.search_engine.start_indexed(
+                index,
+                query,
+                crate::search::DEFAULT_RESULT_CAP,
+                notify,
+            ),
+            None => {
+                self.search_engine
+                    .start(root, query, crate::search::DEFAULT_RESULT_CAP, notify)
+            }
+        };
+        let run = match run_result {
             Ok(run) => run,
             Err(error) => {
                 if let Some(state) = self.find.as_mut() {
@@ -128,9 +197,11 @@ impl App {
                 return;
             }
         };
+        let search_source = run.provider.to_string();
         if let Some(state) = self.find.as_mut() {
             state.generation = run.generation;
             state.run = Some(run);
+            state.search_source = search_source;
             state.results.clear();
             state.stable_order = previous;
             state.last_query = Some(query_key);
@@ -162,8 +233,12 @@ impl App {
     pub(crate) fn show_find_dialog(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.ws.find_request) {
             self.search_engine.cancel();
+            let root = self.ws.active_panel_ref().current_path.clone();
+            let index_exclusions =
+                format_index_exclusions(&root, &self.content_index.exclusions(&root));
             self.find = Some(FindState {
-                root: self.ws.active_panel_ref().current_path.clone(),
+                root,
+                index_exclusions,
                 ..Default::default()
             });
         }
@@ -184,8 +259,28 @@ impl App {
 
         let t = self.colors;
         let history = self.search_history.entries.clone();
+        let index_root = self.find.as_ref().unwrap().root.clone();
+        let index_status = self.content_index.status(&index_root);
+        let rerun_on_fresh_index = self.find.as_ref().is_some_and(|state| {
+            state.index_rerun_after_build
+                && index_status.phase == crate::content_index::IndexPhase::Ready
+        });
+        let index_build_failed = self.find.as_ref().is_some_and(|state| {
+            state.index_rerun_after_build
+                && index_status.phase == crate::content_index::IndexPhase::Error
+        });
+        if rerun_on_fresh_index && let Some(state) = self.find.as_mut() {
+            state.index_rerun_after_build = false;
+        }
+        if index_build_failed && let Some(state) = self.find.as_mut() {
+            state.index_rerun_after_build = false;
+            state.error = index_status
+                .last_error
+                .clone()
+                .or_else(|| Some("Content index build failed".to_string()));
+        }
         let mut window_open = true;
-        let mut run_now = false;
+        let mut run_now = rerun_on_fresh_index;
         let mut edited = false;
         let mut save = false;
         let mut reveal = None;
@@ -193,6 +288,9 @@ impl App {
         let mut remove_predicate = None;
         let mut root_change = None;
         let mut explanation_change = None;
+        let mut index_enabled_change = None;
+        let mut index_rebuild = false;
+        let mut index_apply_exclusions = false;
 
         {
             let state = self.find.as_mut().unwrap();
@@ -279,6 +377,25 @@ impl App {
                         if ui.selectable_label(state.history_open, "History").clicked() {
                             state.history_open = !state.history_open;
                         }
+                        ui.separator();
+                        let mut index_enabled = index_status.enabled;
+                        if ui
+                            .checkbox(&mut index_enabled, "Index")
+                            .on_hover_text("Use the root content index when it is ready")
+                            .changed()
+                        {
+                            index_enabled_change = Some(index_enabled);
+                        }
+                        if ui
+                            .selectable_label(
+                                state.index_details_open,
+                                index_phase_label(index_status.phase),
+                            )
+                            .on_hover_text("Content index status")
+                            .clicked()
+                        {
+                            state.index_details_open = !state.index_details_open;
+                        }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
                                 .add(
@@ -360,17 +477,137 @@ impl App {
                         ui.separator();
                     }
 
+                    if state.index_details_open {
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let phase_color = match index_status.phase {
+                                crate::content_index::IndexPhase::Error => t.accent_red,
+                                crate::content_index::IndexPhase::Building
+                                | crate::content_index::IndexPhase::WaitingForIdle => {
+                                    t.accent_warning
+                                }
+                                crate::content_index::IndexPhase::Ready => t.accent,
+                                _ => t.text_muted,
+                            };
+                            ui.label(
+                                egui::RichText::new("Content index")
+                                    .size(11.0)
+                                    .strong()
+                                    .color(t.text_secondary),
+                            );
+                            ui.label(
+                                egui::RichText::new(index_phase_label(index_status.phase))
+                                    .size(11.0)
+                                    .color(phase_color),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .add_enabled(index_status.enabled, egui::Button::new("Rebuild"))
+                                    .clicked()
+                                {
+                                    index_rebuild = true;
+                                }
+                            });
+                        });
+
+                        if matches!(
+                            index_status.phase,
+                            crate::content_index::IndexPhase::Building
+                                | crate::content_index::IndexPhase::WaitingForIdle
+                        ) {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} scanned  |  {} indexed",
+                                        index_status.progress.scanned,
+                                        index_status.progress.indexed
+                                    ))
+                                    .size(11.0)
+                                    .color(t.text_muted),
+                                );
+                            });
+                        }
+
+                        let coverage = index_status.coverage_percent();
+                        ui.add(
+                            egui::ProgressBar::new((coverage / 100.0).clamp(0.0, 1.0)).text(
+                                format!(
+                                    "{coverage:.0}% text coverage  |  {} files  |  {}",
+                                    index_status.progress.files_seen,
+                                    format_size(index_status.progress.content_bytes as u64)
+                                ),
+                            ),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Freshness: {}",
+                                    index_freshness(index_status.built_at_secs)
+                                ))
+                                .size(10.0)
+                                .color(t.text_muted),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Skipped: {} binary, {} large, {} unreadable, {} quota",
+                                    index_status.skipped_binary,
+                                    index_status.skipped_large,
+                                    index_status.skipped_unreadable,
+                                    index_status.skipped_quota
+                                ))
+                                .size(10.0)
+                                .color(t.text_muted),
+                            );
+                            if index_status.truncated {
+                                ui.label(
+                                    egui::RichText::new("Document cap reached")
+                                        .size(10.0)
+                                        .color(t.accent_warning),
+                                );
+                            }
+                        });
+                        if let Some(error) = &index_status.last_error {
+                            ui.label(egui::RichText::new(error).size(10.0).color(t.accent_red));
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Excluded paths ({})",
+                                    index_status.excluded_roots.len()
+                                ))
+                                .size(10.0)
+                                .color(t.text_muted),
+                            );
+                            if ui.button("Apply").clicked() {
+                                index_apply_exclusions = true;
+                            }
+                        });
+                        ui.add(
+                            egui::TextEdit::multiline(&mut state.index_exclusions)
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("cache\nbuild"),
+                        );
+                        ui.add_space(4.0);
+                        ui.separator();
+                    }
+
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         let status = if state.searching {
                             format!(
-                                "Scanning {} items  |  {} matches",
+                                "{}  |  Scanning {} items  |  {} matches",
+                                state.search_source,
                                 state.scanned,
                                 state.results.len()
                             )
                         } else if state.ran {
                             format!(
-                                "{} results from {} items  |  {} ms{}",
+                                "{}  |  {} results from {} items  |  {} ms{}",
+                                state.search_source,
                                 state.results.len(),
                                 state.scanned,
                                 state.elapsed.as_millis(),
@@ -525,18 +762,102 @@ impl App {
             self.find = None;
             return;
         }
+        if let Some(enabled) = index_enabled_change {
+            if self.content_index.set_enabled(index_root.clone(), enabled) {
+                if enabled {
+                    let repaint = ctx.clone();
+                    let started = self.content_index.start_build(
+                        index_root.clone(),
+                        std::sync::Arc::new(move || repaint.request_repaint()),
+                    );
+                    if let Some(state) = self.find.as_mut() {
+                        state.index_rerun_after_build = started;
+                        state.error = None;
+                    }
+                } else if let Some(state) = self.find.as_mut() {
+                    state.index_rerun_after_build = false;
+                    state.error = None;
+                }
+                edited = true;
+            } else if let Some(state) = self.find.as_mut() {
+                state.error = Some("Could not save content index settings".to_string());
+            }
+        }
+        if index_apply_exclusions {
+            let values = self
+                .find
+                .as_ref()
+                .map(|state| {
+                    state
+                        .index_exclusions
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(PathBuf::from)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            match self.content_index.set_exclusions(&index_root, values) {
+                Ok(()) => {
+                    let formatted = format_index_exclusions(
+                        &index_root,
+                        &self.content_index.exclusions(&index_root),
+                    );
+                    let mut started = false;
+                    if self.content_index.is_enabled(&index_root) {
+                        let repaint = ctx.clone();
+                        started = self.content_index.start_build(
+                            index_root.clone(),
+                            std::sync::Arc::new(move || repaint.request_repaint()),
+                        );
+                    }
+                    if let Some(state) = self.find.as_mut() {
+                        state.index_exclusions = formatted;
+                        state.index_rerun_after_build = started;
+                        state.error = None;
+                    }
+                }
+                Err(error) => {
+                    if let Some(state) = self.find.as_mut() {
+                        state.error = Some(error);
+                    }
+                }
+            }
+        }
+        if index_rebuild {
+            let repaint = ctx.clone();
+            let started = self.content_index.start_build(
+                index_root.clone(),
+                std::sync::Arc::new(move || repaint.request_repaint()),
+            );
+            if let Some(state) = self.find.as_mut() {
+                state.index_rerun_after_build = started;
+                if !started {
+                    state.error = Some("Enable the content index before rebuilding".to_string());
+                } else {
+                    state.error = None;
+                }
+            }
+        }
         if let Some(entry) = replay {
+            let exclusions =
+                format_index_exclusions(&entry.root, &self.content_index.exclusions(&entry.root));
             if let Some(state) = self.find.as_mut() {
                 state.expression = entry.expression;
                 state.mode = entry.mode;
                 state.root = entry.root;
+                state.index_exclusions = exclusions;
+                state.index_rerun_after_build = false;
                 state.history_open = false;
             }
             edited = true;
         }
         if let Some(path) = root_change {
+            let exclusions = format_index_exclusions(&path, &self.content_index.exclusions(&path));
             if let Some(state) = self.find.as_mut() {
                 state.root = path;
+                state.index_exclusions = exclusions;
+                state.index_rerun_after_build = false;
             }
             edited = true;
         }

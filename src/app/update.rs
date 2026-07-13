@@ -70,6 +70,16 @@ impl App {
 
         self.update_focus_mode(ctx);
 
+        let index_idle = ctx.input(|input| {
+            input.events.is_empty()
+                && !input.pointer.any_down()
+                && input.smooth_scroll_delta == Vec2::ZERO
+        }) && self.ws.active_transfer.is_none()
+            && self.ws.pending_op.is_none()
+            && self.find.as_ref().is_none_or(|state| !state.searching);
+        self.content_index.set_idle(index_idle);
+        self.content_index.poll();
+
         // First frame: wire the repaint callback into both panels and do
         // the initial directory read.
         if !self.ws.left.has_notify() {

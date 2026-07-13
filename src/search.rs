@@ -41,6 +41,13 @@ impl FileIdentity {
         }
         Self::Path(path.to_path_buf())
     }
+
+    fn from_indexed(document: &crate::content_index::IndexedDocument) -> Self {
+        match (document.volume, document.file_id) {
+            (Some(volume), Some(file)) if file != 0 => Self::Native { volume, file },
+            _ => Self::Path(document.path.clone()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,12 +127,136 @@ pub enum SearchEvent {
 
 pub struct SearchRun {
     pub generation: u64,
+    pub provider: &'static str,
     receiver: Receiver<SearchEvent>,
 }
 
 impl SearchRun {
     pub fn try_recv(&self) -> Result<SearchEvent, TryRecvError> {
         self.receiver.try_recv()
+    }
+}
+
+struct ProviderRequest {
+    generation: u64,
+    active: Arc<AtomicU64>,
+}
+
+impl ProviderRequest {
+    fn cancelled(&self) -> bool {
+        self.active.load(Ordering::Acquire) != self.generation
+    }
+}
+
+enum CandidateContent {
+    OnDisk,
+    Indexed {
+        index: Arc<crate::content_index::RootIndex>,
+        document: usize,
+    },
+}
+
+struct SearchCandidate {
+    entry: FileEntry,
+    identity: FileIdentity,
+    accessed: Option<SystemTime>,
+    content: CandidateContent,
+}
+
+type ProviderRecord = Option<SearchCandidate>;
+
+trait SearchProvider: Send {
+    fn label(&self) -> &'static str;
+
+    fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool);
+}
+
+struct FilesystemProvider {
+    root: PathBuf,
+}
+
+impl FilesystemProvider {
+    fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+impl SearchProvider for FilesystemProvider {
+    fn label(&self) -> &'static str {
+        "Live"
+    }
+
+    fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
+        for item in jwalk::WalkDir::new(&self.root)
+            .skip_hidden(false)
+            .into_iter()
+            .flatten()
+        {
+            if request.cancelled() {
+                break;
+            }
+            let path = item.path();
+            if path == self.root {
+                continue;
+            }
+            let Ok(metadata) = item.metadata() else {
+                if !emit(None) {
+                    break;
+                }
+                continue;
+            };
+            let identity = FileIdentity::from_metadata(&path, &metadata);
+            let accessed = metadata.accessed().ok();
+            let Some(entry) = FileEntry::from_meta(path, &metadata) else {
+                if !emit(None) {
+                    break;
+                }
+                continue;
+            };
+            if !emit(Some(SearchCandidate {
+                entry,
+                identity,
+                accessed,
+                content: CandidateContent::OnDisk,
+            })) {
+                break;
+            }
+        }
+    }
+}
+
+struct IndexedProvider {
+    index: Arc<crate::content_index::RootIndex>,
+}
+
+impl SearchProvider for IndexedProvider {
+    fn label(&self) -> &'static str {
+        "Index"
+    }
+
+    fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
+        for (document, indexed) in self.index.documents.iter().enumerate() {
+            if request.cancelled() {
+                break;
+            }
+            let Some(entry) = indexed.entry() else {
+                if !emit(None) {
+                    break;
+                }
+                continue;
+            };
+            if !emit(Some(SearchCandidate {
+                entry,
+                identity: FileIdentity::from_indexed(indexed),
+                accessed: indexed.accessed(),
+                content: CandidateContent::Indexed {
+                    index: Arc::clone(&self.index),
+                    document,
+                },
+            })) {
+                break;
+            }
+        }
     }
 }
 
@@ -146,7 +277,28 @@ impl SearchEngine {
         cap: usize,
         notify: Notify,
     ) -> Result<SearchRun, QueryError> {
+        self.start_provider(query, cap, notify, Box::new(FilesystemProvider::new(root)))
+    }
+
+    pub fn start_indexed(
+        &self,
+        index: Arc<crate::content_index::RootIndex>,
+        query: Query,
+        cap: usize,
+        notify: Notify,
+    ) -> Result<SearchRun, QueryError> {
+        self.start_provider(query, cap, notify, Box::new(IndexedProvider { index }))
+    }
+
+    fn start_provider(
+        &self,
+        query: Query,
+        cap: usize,
+        notify: Notify,
+        provider: Box<dyn SearchProvider>,
+    ) -> Result<SearchRun, QueryError> {
         let compiled = CompiledQuery::new(query)?;
+        let provider_label = provider.label();
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.active_generation.store(generation, Ordering::Release);
         let active = Arc::clone(&self.active_generation);
@@ -155,15 +307,16 @@ impl SearchEngine {
             run_worker(
                 generation,
                 active,
-                root,
                 compiled,
                 cap.max(1),
                 sender,
                 notify,
+                provider,
             );
         });
         Ok(SearchRun {
             generation,
+            provider: provider_label,
             receiver,
         })
     }
@@ -352,6 +505,7 @@ impl CompiledQuery {
     fn evaluate_content(
         &self,
         entry: &FileEntry,
+        source: &CandidateContent,
         explanation: &mut MatchExplanation,
     ) -> ContentVerdict {
         if !self.requires_content {
@@ -360,30 +514,53 @@ impl CompiledQuery {
         if entry.is_dir {
             return ContentVerdict::NotMatched;
         }
-        let Ok(file) = std::fs::File::open(&entry.path) else {
-            return ContentVerdict::Skipped;
-        };
-        let mut bytes = Vec::with_capacity(entry.size.min(MAX_CONTENT_BYTES) as usize);
-        if file
-            .take(MAX_CONTENT_BYTES)
-            .read_to_end(&mut bytes)
-            .is_err()
-        {
-            return ContentVerdict::Skipped;
+        match source {
+            CandidateContent::OnDisk => {
+                let Ok(file) = std::fs::File::open(&entry.path) else {
+                    return ContentVerdict::Skipped;
+                };
+                let mut bytes = Vec::with_capacity(entry.size.min(MAX_CONTENT_BYTES) as usize);
+                if file
+                    .take(MAX_CONTENT_BYTES)
+                    .read_to_end(&mut bytes)
+                    .is_err()
+                {
+                    return ContentVerdict::Skipped;
+                }
+                if bytes.iter().take(8192).any(|byte| *byte == 0) {
+                    return ContentVerdict::Skipped;
+                }
+                let content = String::from_utf8_lossy(&bytes);
+                self.evaluate_content_text(&content, entry.size > MAX_CONTENT_BYTES, explanation)
+            }
+            CandidateContent::Indexed { index, document } => {
+                let Some(content) = index
+                    .documents
+                    .get(*document)
+                    .and_then(|document| document.content.as_deref())
+                else {
+                    return ContentVerdict::Skipped;
+                };
+                self.evaluate_content_text(content, false, explanation)
+            }
         }
-        if bytes.iter().take(8192).any(|byte| *byte == 0) {
-            return ContentVerdict::Skipped;
-        }
-        let content = String::from_utf8_lossy(&bytes);
+    }
+
+    fn evaluate_content_text(
+        &self,
+        content: &str,
+        partial: bool,
+        explanation: &mut MatchExplanation,
+    ) -> ContentVerdict {
         for predicate in &self.predicates {
             if let CompiledPredicate::Content(matcher) = predicate {
-                let Some(matched) = matcher.evaluate(&content) else {
+                let Some(matched) = matcher.evaluate(content) else {
                     return ContentVerdict::NotMatched;
                 };
                 explanation.total_score += matched.score;
                 explanation.components.push(MatchComponent {
                     field: "content",
-                    detail: if entry.size > MAX_CONTENT_BYTES {
+                    detail: if partial {
                         format!("{}, first 16MB", matched.detail)
                     } else {
                         matched.detail
@@ -406,62 +583,82 @@ enum ContentVerdict {
 fn run_worker(
     generation: u64,
     active: Arc<AtomicU64>,
-    root: PathBuf,
     query: CompiledQuery,
     cap: usize,
     sender: mpsc::Sender<SearchEvent>,
     notify: Notify,
+    mut provider: Box<dyn SearchProvider>,
 ) {
     let started = Instant::now();
     let now = SystemTime::now();
+    let request = ProviderRequest { generation, active };
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut scanned = 0usize;
     let mut matched = 0usize;
     let mut content_skipped = 0usize;
     let mut truncated = false;
     let mut cancelled = false;
+    let mut channel_open = true;
     let mut last_progress = Instant::now();
 
-    for item in jwalk::WalkDir::new(&root)
-        .skip_hidden(false)
-        .into_iter()
-        .flatten()
-    {
-        if active.load(Ordering::Acquire) != generation {
+    provider.visit(&request, &mut |record| {
+        if request.cancelled() {
             cancelled = true;
-            break;
-        }
-        let path = item.path();
-        if path == root {
-            continue;
+            return false;
         }
         scanned += 1;
-        let Ok(metadata) = item.metadata() else {
-            continue;
-        };
-        let identity = FileIdentity::from_metadata(&path, &metadata);
-        let accessed = metadata.accessed().ok();
-        let Some(entry) = FileEntry::from_meta(path, &metadata) else {
-            continue;
-        };
-        let Some(mut explanation) = query.evaluate_metadata(&entry, now) else {
-            if !maybe_send_progress(
+        let Some(candidate) = record else {
+            channel_open = maybe_send_progress(
                 generation,
                 scanned,
                 matched,
                 &mut last_progress,
                 &sender,
                 &notify,
-            ) {
-                return;
-            }
-            continue;
+            );
+            return channel_open;
         };
-        match query.evaluate_content(&entry, &mut explanation) {
-            ContentVerdict::NotMatched => continue,
+
+        let SearchCandidate {
+            entry,
+            identity,
+            accessed,
+            content,
+        } = candidate;
+        let Some(mut explanation) = query.evaluate_metadata(&entry, now) else {
+            channel_open = maybe_send_progress(
+                generation,
+                scanned,
+                matched,
+                &mut last_progress,
+                &sender,
+                &notify,
+            );
+            return channel_open;
+        };
+        match query.evaluate_content(&entry, &content, &mut explanation) {
+            ContentVerdict::NotMatched => {
+                channel_open = maybe_send_progress(
+                    generation,
+                    scanned,
+                    matched,
+                    &mut last_progress,
+                    &sender,
+                    &notify,
+                );
+                return channel_open;
+            }
             ContentVerdict::Skipped => {
                 content_skipped += 1;
-                continue;
+                channel_open = maybe_send_progress(
+                    generation,
+                    scanned,
+                    matched,
+                    &mut last_progress,
+                    &sender,
+                    &notify,
+                );
+                return channel_open;
             }
             ContentVerdict::Matched => {}
         }
@@ -483,24 +680,31 @@ fn run_worker(
                 })
                 .is_err()
             {
-                return;
+                channel_open = false;
+                return false;
             }
             notify();
         }
         if matched >= cap {
             truncated = true;
-            break;
+            return false;
         }
-        if !maybe_send_progress(
+        channel_open = maybe_send_progress(
             generation,
             scanned,
             matched,
             &mut last_progress,
             &sender,
             &notify,
-        ) {
-            return;
-        }
+        );
+        channel_open
+    });
+
+    if !channel_open {
+        return;
+    }
+    if request.cancelled() {
+        cancelled = true;
     }
 
     if !batch.is_empty() && !cancelled {
@@ -795,11 +999,11 @@ mod tests {
         run_worker(
             1,
             active,
-            tmp.path().to_path_buf(),
             CompiledQuery::new(Query::default()).unwrap(),
             100,
             sender,
             Arc::new(|| {}),
+            Box::new(FilesystemProvider::new(tmp.path().to_path_buf())),
         );
         let event = receiver
             .into_iter()
@@ -810,6 +1014,29 @@ mod tests {
         };
         assert!(summary.cancelled);
         assert_eq!(summary.scanned, 0);
+    }
+
+    #[test]
+    fn indexed_provider_searches_the_snapshot_without_disk_reads() {
+        let tmp = TempDir::new();
+        let source = tmp.file("notes.txt", "durable indexed needle");
+        let index = Arc::new(crate::content_index::build_test_index(tmp.path()));
+        std::fs::remove_file(source).unwrap();
+        let engine = SearchEngine::default();
+        let run = engine
+            .start_indexed(
+                index,
+                Query::parse("content:needle", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+
+        assert_eq!(run.provider, "Index");
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.name, "notes.txt");
+        assert_eq!(summary.content_skipped, 0);
     }
 
     #[test]

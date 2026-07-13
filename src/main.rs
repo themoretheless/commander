@@ -8,6 +8,7 @@ mod collections;
 mod command;
 mod compare;
 mod conflict;
+mod content_index;
 mod crumbs;
 mod dedup;
 mod density;

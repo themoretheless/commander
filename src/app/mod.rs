@@ -77,6 +77,7 @@ pub struct App {
     /// Generation-based background search engine and replayable query history.
     pub(crate) search_engine: crate::search::SearchEngine,
     pub(crate) search_history: crate::search::QueryHistory,
+    pub(crate) content_index: crate::content_index::ContentIndex,
     /// Transient operation toasts (move / rename confirmations with Undo).
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Searchable history of completed moves/deletes/batch-renames.
@@ -172,6 +173,10 @@ pub(crate) struct FindState {
     pub explanation_open: Option<crate::search::FileIdentity>,
     pub pending_rerun: bool,
     pub last_edit_at: f64,
+    pub search_source: String,
+    pub index_details_open: bool,
+    pub index_exclusions: String,
+    pub index_rerun_after_build: bool,
     /// Name to save this query under (smart folder).
     pub save_name: String,
 }
@@ -231,6 +236,10 @@ impl Default for FindState {
             explanation_open: None,
             pending_rerun: false,
             last_edit_at: 0.0,
+            search_source: "Live".to_string(),
+            index_details_open: false,
+            index_exclusions: String::new(),
+            index_rerun_after_build: false,
             save_name: String::new(),
         }
     }
@@ -423,6 +432,7 @@ impl App {
                 .as_ref()
                 .map(|s| s.search_history.clone())
                 .unwrap_or_default(),
+            content_index: crate::content_index::ContentIndex::load(),
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
             receipts_input: None,

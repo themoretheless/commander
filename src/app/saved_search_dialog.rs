@@ -126,7 +126,12 @@ impl App {
             }
         }
         if let Some(def) = open_def {
-            self.find = Some(FindState::from_definition(&def));
+            let mut state = FindState::from_definition(&def);
+            state.index_exclusions = super::find_dialog::format_index_exclusions(
+                &state.root,
+                &self.content_index.exclusions(&state.root),
+            );
+            self.find = Some(state);
             self.saved_search_open = false;
             return;
         }
