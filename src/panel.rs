@@ -16,6 +16,9 @@ struct CacheEntry {
 }
 
 fn cache_path() -> PathBuf {
+    #[cfg(test)]
+    let dir = std::env::temp_dir().join(format!("commander-test-cache-{}", std::process::id()));
+    #[cfg(not(test))]
     let dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("commander");
@@ -233,14 +236,14 @@ pub fn invalidate_size_cache(path: &Path) {
 }
 
 /// Save current cache to disk (best-effort, called from background threads).
-/// Prunes entries for paths that no longer exist and writes atomically
-/// (temp file + rename) so a crash can't corrupt the cache.
+/// Snapshot under the mutex, then serialize and write after releasing it.
+/// Stale paths are harmless because reuse always verifies mtime; probing them
+/// here could block every panel behind the mutex when a remote volume is down.
 pub fn flush_cache() {
     let entries: HashMap<PathBuf, CacheEntry> = {
-        let Ok(mut cache) = dir_size_cache().lock() else {
+        let Ok(cache) = dir_size_cache().lock() else {
             return;
         };
-        cache.retain(|p, _| p.exists());
         cache
             .iter()
             .filter_map(|(p, (mtime, size))| {
