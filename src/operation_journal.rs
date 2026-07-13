@@ -947,6 +947,7 @@ fn discover_orphan_staging_with(
 ) -> Vec<OrphanStaging> {
     let mut orphans = Vec::new();
     for root in roots {
+        crate::io_budget::background_checkpoint(|| false);
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };

@@ -18,6 +18,7 @@ mod focus_mode;
 mod fs_util;
 mod fuzzy;
 mod image_cache;
+mod io_budget;
 mod jumplist;
 mod listing_export;
 mod lock_util;
@@ -47,10 +48,12 @@ mod textdiff;
 mod theme;
 mod toasts;
 mod transfer;
+mod transfer_tuning;
 mod tree_overview;
 mod treemap;
 mod undo;
 mod version_store;
+mod volume_profile;
 mod workspace;
 
 #[cfg(test)]

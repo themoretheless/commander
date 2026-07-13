@@ -105,6 +105,7 @@ impl App {
                     self.method_tabs_row(ui, &t, title, count);
                 }
                 self.durability_row(ui, &t);
+                self.resource_policy_row(ui, &t);
                 ui.add_space(8.0);
 
                 if !flat_ready {
@@ -547,6 +548,90 @@ impl App {
         }
     }
 
+    fn resource_policy_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors) {
+        let Some(target) = self
+            .ws
+            .pending_op
+            .as_ref()
+            .and_then(|operation| match operation {
+                PendingOp::Transfer(transfer) => Some(transfer.target.clone()),
+                PendingOp::Delete { .. } => None,
+            })
+        else {
+            return;
+        };
+        let profile = crate::volume_profile::profile(&target);
+        let tuning = crate::transfer_tuning::snapshot(&profile);
+        let current = crate::transfer_tuning::rule_for(&profile);
+        let mut selected = current;
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(profile.backend.label())
+                    .size(10.0)
+                    .color(t.text_muted),
+            )
+            .on_hover_text(&profile.reason);
+            ui.label(
+                egui::RichText::new(format!(
+                    "p95 {:.0} ms  \u{00b7}  {} worker{}",
+                    tuning.p95_latency_ms,
+                    tuning.concurrency,
+                    if tuning.concurrency == 1 { "" } else { "s" }
+                ))
+                .size(10.0)
+                .color(t.text_secondary),
+            );
+
+            egui::ComboBox::from_id_salt(("volume_bandwidth", profile.volume_id))
+                .selected_text(bandwidth_label(selected.max_bytes_per_second))
+                .show_ui(ui, |ui| {
+                    for limit in crate::transfer_tuning::BANDWIDTH_CHOICES {
+                        ui.selectable_value(
+                            &mut selected.max_bytes_per_second,
+                            limit,
+                            bandwidth_label(limit),
+                        );
+                    }
+                });
+
+            egui::ComboBox::from_id_salt(("volume_quiet_hours", profile.volume_id))
+                .selected_text(quiet_hours_label(selected.quiet_hours))
+                .show_ui(ui, |ui| {
+                    for (hours, label) in [
+                        (None, "No quiet hours"),
+                        (
+                            Some(crate::transfer_tuning::QuietHours {
+                                start_hour: 22,
+                                end_hour: 7,
+                            }),
+                            "Quiet 22:00-07:00",
+                        ),
+                        (
+                            Some(crate::transfer_tuning::QuietHours {
+                                start_hour: 0,
+                                end_hour: 6,
+                            }),
+                            "Quiet 00:00-06:00",
+                        ),
+                    ] {
+                        ui.selectable_value(&mut selected.quiet_hours, hours, label);
+                    }
+                });
+        });
+
+        if selected != current
+            && let Err(error) = crate::transfer_tuning::set_rule(&profile, selected)
+        {
+            self.toasts.push(crate::toasts::Toast::new(
+                error,
+                crate::toasts::ToastKind::Error,
+                false,
+                ui.ctx().input(|input| input.time),
+            ));
+        }
+    }
+
     /// Draw a virtualized flat file list (only visible rows rendered).
     fn render_flat_list_virtual(
         ui: &mut egui::Ui,
@@ -821,5 +906,27 @@ impl App {
                         }
                     });
             });
+    }
+}
+
+fn bandwidth_label(limit: Option<u64>) -> String {
+    limit.map_or_else(
+        || "Unlimited".to_string(),
+        |bytes| format!("{}/s", format_size(bytes)),
+    )
+}
+
+fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) -> &'static str {
+    match hours {
+        None => "No quiet hours",
+        Some(crate::transfer_tuning::QuietHours {
+            start_hour: 22,
+            end_hour: 7,
+        }) => "Quiet 22:00-07:00",
+        Some(crate::transfer_tuning::QuietHours {
+            start_hour: 0,
+            end_hour: 6,
+        }) => "Quiet 00:00-06:00",
+        Some(_) => "Custom quiet hours",
     }
 }

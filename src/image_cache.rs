@@ -204,6 +204,11 @@ impl ImageCache {
                 if active_generation.load(Ordering::Acquire) != generation {
                     return;
                 }
+                if !crate::io_budget::background_checkpoint(|| {
+                    active_generation.load(Ordering::Acquire) != generation
+                }) {
+                    return;
+                }
                 let result = load_image_from_disk(&path_clone);
                 if let Ok((img, byte_size)) = result {
                     let mut pending = crate::lock_util::recover(&pending_clone);

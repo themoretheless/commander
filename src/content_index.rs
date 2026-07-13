@@ -448,6 +448,9 @@ fn scan_index(
 
     while let Some(entries) = stack.last_mut() {
         wait_for_idle(&idle, &cancelled)?;
+        if !crate::io_budget::background_checkpoint(|| cancelled.load(Ordering::Acquire)) {
+            return Err("Index build cancelled".to_string());
+        }
         let Some(next) = entries.next() else {
             stack.pop();
             continue;

@@ -795,6 +795,7 @@ dependencies = [
  "egui_extras",
  "image",
  "jwalk",
+ "libc",
  "notify",
  "objc",
  "open",

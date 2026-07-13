@@ -81,6 +81,9 @@ impl App {
         }) && self.ws.active_transfer.is_none()
             && self.ws.pending_op.is_none()
             && self.find.as_ref().is_none_or(|state| !state.searching);
+        if !index_idle {
+            crate::io_budget::note_foreground_activity();
+        }
         self.content_index.set_idle(index_idle);
         self.content_index.poll();
 

@@ -16,6 +16,7 @@ use crate::operation::{
 };
 use crate::panel::FileEntry;
 use crate::path_identity::PathIdentity;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
@@ -60,6 +61,15 @@ pub struct TransferProgress {
     pub files_done: usize,
     pub files_total: usize,
     pub requeued_files: usize,
+    pub backend_label: String,
+    pub backend_reason: String,
+    pub p95_latency_ms: f64,
+    pub adaptive_concurrency: usize,
+    pub bandwidth_limit: Option<u64>,
+    pub waiting_reason: Option<String>,
+    pub fast_paths: Vec<crate::transfer_tuning::FastPath>,
+    pub active_workers: usize,
+    pub peak_workers: usize,
     pub speed_samples: Vec<(f64, f64)>, // (timestamp_secs, bytes_at_that_time)
     pub started_at: std::time::Instant,
     pub finished: bool,
@@ -90,6 +100,15 @@ impl TransferProgress {
             files_done: 0,
             files_total,
             requeued_files: 0,
+            backend_label: String::new(),
+            backend_reason: String::new(),
+            p95_latency_ms: 0.0,
+            adaptive_concurrency: 1,
+            bandwidth_limit: None,
+            waiting_reason: None,
+            fast_paths: Vec::new(),
+            active_workers: 1,
+            peak_workers: 1,
             speed_samples: vec![(0.0, 0.0)],
             started_at: std::time::Instant::now(),
             finished: false,
@@ -170,26 +189,49 @@ impl CopyMethod {
         src: &Path,
         is_dir: bool,
         dest: &Path,
-        progress: &TransferState,
-        base_bytes: u64,
+        context: CopyContext<'_>,
     ) -> std::io::Result<u64> {
+        let force_buffered = context.rule.max_bytes_per_second.is_some();
         match self {
-            CopyMethod::Native => {
+            CopyMethod::Native if !force_buffered => {
                 if is_dir {
-                    crate::native_copy::copy_dir_native(src, dest, progress, base_bytes)
+                    crate::native_copy::copy_dir_native(
+                        src,
+                        dest,
+                        context.progress,
+                        context.base_bytes,
+                    )
                 } else {
-                    crate::native_copy::copy_file_native(src, dest, progress, base_bytes)
+                    crate::native_copy::copy_file_native(
+                        src,
+                        dest,
+                        context.progress,
+                        context.base_bytes,
+                    )
                 }
             }
-            CopyMethod::Buffered => {
+            CopyMethod::Native | CopyMethod::Buffered => {
+                let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(context.rule);
                 if is_dir {
-                    copy_dir_buffered(src, dest, progress)
+                    let workers = crate::transfer_tuning::snapshot(context.profile).concurrency;
+                    if workers > 1 && context.rule.max_bytes_per_second.is_none() {
+                        copy_dir_buffered_parallel(src, dest, context.progress, workers)
+                    } else {
+                        copy_dir_buffered_with_limiter(src, dest, context.progress, &mut limiter)
+                    }
                 } else {
-                    copy_file_buffered(src, dest, progress)
+                    copy_file_buffered_with_limiter(src, dest, context.progress, &mut limiter)
                 }
             }
         }
     }
+}
+
+struct CopyContext<'a> {
+    progress: &'a TransferState,
+    base_bytes: u64,
+    profile: &'a crate::volume_profile::VolumeProfile,
+    rule: crate::transfer_tuning::VolumeRule,
 }
 
 /// A copy/move request, fully described and detached from any UI state.
@@ -410,10 +452,18 @@ pub fn spawn_transfer(
 ) {
     std::thread::spawn(move || {
         let journal_enabled = journal_enabled(&spec);
+        let target_profile = crate::volume_profile::profile(&spec.target);
+        let resource_rule = crate::transfer_tuning::rule_for(&target_profile);
+        let tuning = crate::transfer_tuning::snapshot(&target_profile);
         {
             let mut state = crate::lock_util::recover(&progress);
             state.operation_id = Some(spec.operation_id.clone());
             state.group_id = spec.group_id.clone();
+            state.backend_label = target_profile.backend.label().to_string();
+            state.backend_reason = target_profile.reason.clone();
+            state.p95_latency_ms = tuning.p95_latency_ms;
+            state.adaptive_concurrency = tuning.concurrency;
+            state.bandwidth_limit = resource_rule.max_bytes_per_second;
         }
         if journal_enabled && let Err(error) = crate::operation_journal::begin(&spec) {
             record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
@@ -421,6 +471,19 @@ pub fn spawn_transfer(
             notify();
             return;
         }
+        while resource_rule.is_quiet_now() {
+            let should_stop = {
+                let mut state = crate::lock_util::recover(&progress);
+                state.waiting_reason = Some("Quiet hours are active for this volume".to_string());
+                state.cancelled || state.stop_requested
+            };
+            notify();
+            if should_stop {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        crate::lock_util::recover(&progress).waiting_reason = None;
         let is_move = spec.kind == TransferKind::Move;
         let mut base_bytes: u64 = 0;
         let total_bytes = spec.entries.iter().map(entry_size).sum();
@@ -736,6 +799,16 @@ pub fn spawn_transfer(
                     .is_some_and(|p| fs_util::same_volume(p, &spec.target));
 
             let attempt_base = base_bytes;
+            let attempt_fast_path = if renamed {
+                crate::transfer_tuning::FastPath::Rename
+            } else if spec.method == CopyMethod::Native
+                && resource_rule.max_bytes_per_second.is_none()
+            {
+                crate::transfer_tuning::FastPath::Native
+            } else {
+                crate::transfer_tuning::FastPath::Buffered
+            };
+            let attempt_started = std::time::Instant::now();
             let result = if renamed {
                 rename_entry(
                     &entry.path,
@@ -750,10 +823,28 @@ pub fn spawn_transfer(
                     &entry.path,
                     entry.is_dir,
                     &copy_target,
-                    &progress,
-                    base_bytes,
+                    CopyContext {
+                        progress: &progress,
+                        base_bytes,
+                        profile: &target_profile,
+                        rule: resource_rule,
+                    },
                 )
             };
+            crate::transfer_tuning::record(
+                &target_profile,
+                attempt_started.elapsed(),
+                result.is_ok(),
+            );
+            if result.is_err() {
+                crate::volume_profile::invalidate(target_profile.volume_id);
+            }
+            let tuning = crate::transfer_tuning::snapshot(&target_profile);
+            {
+                let mut state = crate::lock_util::recover(&progress);
+                state.p95_latency_ms = tuning.p95_latency_ms;
+                state.adaptive_concurrency = tuning.concurrency;
+            }
 
             match &result {
                 Ok(b) => base_bytes += b,
@@ -1030,6 +1121,11 @@ pub fn spawn_transfer(
                     .placements
                     .push((entry.path.clone(), landing.clone()));
             }
+            if placed {
+                crate::lock_util::recover(&progress)
+                    .fast_paths
+                    .push(attempt_fast_path);
+            }
 
             if journal_enabled {
                 let step_failure = {
@@ -1110,7 +1206,11 @@ fn run_post_success(action: Option<&PostTransferAction>, progress: &TransferStat
     };
     let ready = {
         let state = crate::lock_util::recover(progress);
-        state.files_done == state.files_total && state.errors.is_empty() && !state.cancelled
+        state.files_done == state.files_total
+            && state.errors.is_empty()
+            && !state.cancelled
+            && !state.stop_requested
+            && !state.stopped
     };
     if !ready {
         return;
@@ -1257,8 +1357,13 @@ fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<()> {
 /// Copy a single file with progress reporting (buffered strategy).
 /// Removes the partial destination file on any failure.
 /// Returns the file size on success.
-fn copy_file_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
-    let result = copy_file_buffered_inner(src, dst, state);
+fn copy_file_buffered_with_limiter(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+) -> std::io::Result<u64> {
+    let result = copy_file_buffered_inner(src, dst, state, limiter);
     if let Err(ref e) = result {
         // Clean up our own partial write, but never delete a destination that
         // was already there (AlreadyExists means create_new refused to clobber).
@@ -1269,7 +1374,12 @@ fn copy_file_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io:
     result
 }
 
-fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
+fn copy_file_buffered_inner(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+) -> std::io::Result<u64> {
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
 
     // Init per-file progress
@@ -1310,6 +1420,7 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
             break;
         }
         writer.write_all(&buf[..n])?;
+        limiter.consume(n, || crate::lock_util::recover(state).cancelled)?;
 
         {
             let mut s = crate::lock_util::recover(state);
@@ -1328,11 +1439,80 @@ fn copy_file_buffered_inner(src: &Path, dst: &Path, state: &TransferState) -> st
     Ok(file_size)
 }
 
+fn copy_dir_buffered_parallel(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    workers: usize,
+) -> std::io::Result<u64> {
+    let mut files = Vec::new();
+    let mut permissions = Vec::new();
+    prepare_buffered_tree(src, dst, &mut files, &mut permissions)?;
+    let workers = workers.max(1).min(files.len().max(1));
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .thread_name(|index| format!("commander-copy-{index}"))
+        .build()
+        .map_err(std::io::Error::other)?;
+    {
+        let mut progress = crate::lock_util::recover(state);
+        progress.active_workers = workers;
+        progress.peak_workers = progress.peak_workers.max(workers);
+    }
+    let results = pool.install(|| {
+        files
+            .par_iter()
+            .map(|(source, destination)| {
+                let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
+                copy_file_buffered_with_limiter(source, destination, state, &mut limiter)
+            })
+            .collect::<Vec<_>>()
+    });
+    crate::lock_util::recover(state).active_workers = 1;
+    let copied = results
+        .into_iter()
+        .try_fold(0_u64, |total, result| result.map(|bytes| total + bytes))?;
+    for (path, mode) in permissions.into_iter().rev() {
+        std::fs::set_permissions(path, mode)?;
+    }
+    Ok(copied)
+}
+
+fn prepare_buffered_tree(
+    src: &Path,
+    dst: &Path,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+    permissions: &mut Vec<(PathBuf, std::fs::Permissions)>,
+) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(src)?;
+    std::fs::create_dir_all(dst)?;
+    permissions.push((dst.to_path_buf(), metadata.permissions()));
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let source = entry.path();
+        let destination = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            copy_symlink(&source, &destination)?;
+        } else if file_type.is_dir() {
+            prepare_buffered_tree(&source, &destination, files, permissions)?;
+        } else {
+            files.push((source, destination));
+        }
+    }
+    Ok(())
+}
+
 /// Recursively copy a directory with progress (buffered strategy).
 /// Returns total bytes copied. Symlinks are recreated as links rather than
 /// followed, so a link pointing back into the tree cannot cause infinite
 /// recursion.
-fn copy_dir_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::Result<u64> {
+fn copy_dir_buffered_with_limiter(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+) -> std::io::Result<u64> {
     std::fs::create_dir_all(dst)?;
     let mut copied = 0u64;
     for entry in std::fs::read_dir(src)? {
@@ -1344,9 +1524,9 @@ fn copy_dir_buffered(src: &Path, dst: &Path, state: &TransferState) -> std::io::
         if ft.is_symlink() {
             copy_symlink(&src_path, &dst_path)?;
         } else if ft.is_dir() {
-            copied += copy_dir_buffered(&src_path, &dst_path, state)?;
+            copied += copy_dir_buffered_with_limiter(&src_path, &dst_path, state, limiter)?;
         } else {
-            copied += copy_file_buffered(&src_path, &dst_path, state)?;
+            copied += copy_file_buffered_with_limiter(&src_path, &dst_path, state, limiter)?;
         }
     }
     Ok(copied)
@@ -1597,6 +1777,25 @@ mod tests {
             "22"
         );
         assert!(s.errors.is_empty());
+    }
+
+    #[test]
+    fn adaptive_directory_copy_uses_the_requested_worker_cap() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let source = src.dir("folder");
+        for index in 0..8 {
+            src.file(&format!("folder/{index}.txt"), &format!("value {index}"));
+        }
+        let destination = dst.path().join("folder");
+        let progress = Arc::new(Mutex::new(TransferProgress::new(0, 1)));
+
+        copy_dir_buffered_parallel(&source, &destination, &progress, 2).unwrap();
+
+        assert_eq!(crate::lock_util::recover(&progress).peak_workers, 2);
+        assert_eq!(
+            std::fs::read_to_string(destination.join("7.txt")).unwrap(),
+            "value 7"
+        );
     }
 
     #[test]

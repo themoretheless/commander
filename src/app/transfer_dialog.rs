@@ -34,13 +34,23 @@ impl App {
         let stop_requested = s.stop_requested;
         let stopped = s.stopped;
         let requeued_files = s.requeued_files;
+        let backend_label = s.backend_label.clone();
+        let backend_reason = s.backend_reason.clone();
+        let p95_latency_ms = s.p95_latency_ms;
+        let adaptive_concurrency = s.adaptive_concurrency;
+        let bandwidth_limit = s.bandwidth_limit;
+        let waiting_reason = s.waiting_reason.clone();
+        let latest_fast_path = s.fast_paths.last().copied();
+        let active_workers = s.active_workers;
         let errors = s.errors.clone();
         let failures = s.failures.clone();
         drop(s);
         // Transfers waiting behind this one in the queue.
         let queued = self.ws.queued_count();
 
-        let title = if finished && stopped {
+        let title = if waiting_reason.is_some() && !finished {
+            "Waiting for Quiet Hours"
+        } else if finished && stopped {
             "Stopped Safely"
         } else if finished {
             if errors.is_empty() {
@@ -59,26 +69,67 @@ impl App {
             .default_width(450.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                // Current file name
-                ui.label(
-                    egui::RichText::new(format!("File: {}", current_file))
-                        .size(12.0)
-                        .color(t.text_primary),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  \u{00b7}  p95 {:.0} ms  \u{00b7}  {} worker{}",
+                            backend_label,
+                            p95_latency_ms,
+                            adaptive_concurrency,
+                            if adaptive_concurrency == 1 { "" } else { "s" }
+                        ))
+                        .size(10.0)
+                        .color(t.text_muted),
+                    )
+                    .on_hover_text(backend_reason);
+                    if let Some(limit) = bandwidth_limit {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("Limit {}/s", format_size(limit)))
+                                    .size(10.0)
+                                    .color(t.text_secondary),
+                            );
+                        });
+                    }
+                    if let Some(path) = latest_fast_path {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(egui::RichText::new(path.label()).size(10.0).color(t.accent));
+                        });
+                    }
+                });
+                if let Some(reason) = &waiting_reason {
+                    ui.label(
+                        egui::RichText::new(reason)
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                }
 
-                // Current file progress bar (no rounding)
-                ui.add_space(4.0);
-                Self::draw_progress_bar(
-                    ui,
-                    file_frac,
-                    &format!(
-                        "{} / {}",
-                        format_size(current_file_copied),
-                        format_size(current_file_size),
-                    ),
-                    t.accent,
-                    &t,
-                );
+                if active_workers > 1 {
+                    ui.label(
+                        egui::RichText::new(format!("{active_workers} files in parallel"))
+                            .size(12.0)
+                            .color(t.text_primary),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!("File: {}", current_file))
+                            .size(12.0)
+                            .color(t.text_primary),
+                    );
+                    ui.add_space(4.0);
+                    Self::draw_progress_bar(
+                        ui,
+                        file_frac,
+                        &format!(
+                            "{} / {}",
+                            format_size(current_file_copied),
+                            format_size(current_file_size),
+                        ),
+                        t.accent,
+                        &t,
+                    );
+                }
 
                 // Total progress bar (no rounding)
                 ui.add_space(6.0);
