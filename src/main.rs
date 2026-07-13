@@ -41,6 +41,7 @@ mod textdiff;
 mod theme;
 mod toasts;
 mod transfer;
+mod tree_overview;
 mod treemap;
 mod undo;
 mod workspace;

@@ -97,8 +97,8 @@ pub struct App {
     pub(crate) duplicates: Option<DupState>,
     /// Active read-only diff sheet state.
     pub(crate) diff: Option<DiffState>,
-    /// Active disk-usage treemap snapshot (opening directory + sorted rows).
-    pub(crate) treemap: Option<crate::workspace::TreemapSnapshot>,
+    /// Active disk-usage map and cancellable compressed-tree scan.
+    pub(crate) treemap: Option<DiskUsageState>,
     /// Active recursive-find sheet state.
     pub(crate) find: Option<FindState>,
     /// Saved searches, loaded lazily on first use.
@@ -128,6 +128,23 @@ pub struct App {
 pub(crate) struct RunCommandState {
     /// The editable command line (placeholders expand against the selection).
     pub line: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DiskUsageMode {
+    #[default]
+    Map,
+    Tree,
+}
+
+pub(crate) struct DiskUsageState {
+    pub initial: crate::workspace::TreemapSnapshot,
+    pub mode: DiskUsageMode,
+    pub run: Option<crate::tree_overview::OverviewRun>,
+    pub progress: crate::tree_overview::ScanProgress,
+    pub overview: Option<crate::tree_overview::OverviewSnapshot>,
+    pub stopping: bool,
+    pub error: Option<String>,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
