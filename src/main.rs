@@ -23,8 +23,10 @@ mod listing_export;
 mod lock_util;
 mod native_copy;
 mod native_menu;
+mod operation;
 mod opqueue;
 mod panel;
+mod path_identity;
 mod query;
 mod quick_actions;
 mod receipts;
@@ -39,6 +41,7 @@ mod session;
 mod shelf;
 mod smart_folder;
 mod sync;
+mod sync_guard;
 mod textdiff;
 mod theme;
 mod toasts;
@@ -46,6 +49,7 @@ mod transfer;
 mod tree_overview;
 mod treemap;
 mod undo;
+mod version_store;
 mod workspace;
 
 #[cfg(test)]

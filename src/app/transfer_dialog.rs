@@ -32,6 +32,7 @@ impl App {
         let samples: Vec<(f64, f64)> = s.speed_samples.clone();
         let finished = s.finished;
         let errors = s.errors.clone();
+        let failures = s.failures.clone();
         drop(s);
         // Transfers waiting behind this one in the queue.
         let queued = self.ws.queued_count();
@@ -144,8 +145,12 @@ impl App {
                         .id_salt("transfer_errors")
                         .max_height(120.0)
                         .show(ui, |ui| {
-                            for err in &errors {
-                                ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
+                            for (index, err) in errors.iter().enumerate() {
+                                let text = failures.get(index).map_or_else(
+                                    || err.clone(),
+                                    |failure| format!("{}: {err}", failure.class.label()),
+                                );
+                                ui.label(egui::RichText::new(text).size(11.0).color(t.accent_red));
                             }
                         });
                 }

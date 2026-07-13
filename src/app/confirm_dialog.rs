@@ -102,8 +102,9 @@ impl App {
                     ui.add_space(6.0);
                 } else {
                     self.method_tabs_row(ui, &t, title, count);
-                    ui.add_space(8.0);
                 }
+                self.durability_row(ui, &t);
+                ui.add_space(8.0);
 
                 if !flat_ready {
                     ui.horizontal(|ui| {
@@ -502,6 +503,42 @@ impl App {
             && let Some(PendingOp::Transfer(tr)) = &mut self.ws.pending_op
         {
             tr.method = method;
+        }
+    }
+
+    fn durability_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors) {
+        let current = match &self.ws.pending_op {
+            Some(PendingOp::Transfer(transfer)) => transfer.durability,
+            _ => self.ws.durability_profile,
+        };
+        let mut selected = current;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Durability")
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
+            for profile in crate::operation::DurabilityProfile::ALL {
+                let tooltip = match profile {
+                    crate::operation::DurabilityProfile::Fast => {
+                        "Copy without content verification"
+                    }
+                    crate::operation::DurabilityProfile::Verified => {
+                        "Verify staged content before final placement"
+                    }
+                    crate::operation::DurabilityProfile::Versioned => {
+                        "Verify and preserve replaced or deleted data"
+                    }
+                };
+                ui.selectable_value(&mut selected, profile, profile.label())
+                    .on_hover_text(tooltip);
+            }
+        });
+        if selected != current {
+            self.ws.durability_profile = selected;
+            if let Some(PendingOp::Transfer(transfer)) = &mut self.ws.pending_op {
+                transfer.durability = selected;
+            }
         }
     }
 

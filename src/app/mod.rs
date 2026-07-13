@@ -300,9 +300,19 @@ pub(crate) struct DupState {
 /// `crate::sync`; this holds the chosen policy and the editable action rows.
 pub(crate) struct SyncState {
     pub policy: crate::sync::SyncPolicy,
+    pub durability: crate::operation::DurabilityProfile,
     pub actions: Vec<crate::sync::SyncAction>,
     pub left_dir: PathBuf,
     pub right_dir: PathBuf,
+    pub left_show_hidden: bool,
+    pub right_show_hidden: bool,
+    pub guard: crate::sync_guard::GuardPolicy,
+    pub stamp: Option<crate::sync_guard::PlanStamp>,
+    pub settings_fingerprint: u64,
+    pub allow_large_plan: bool,
+    pub marker_enabled: bool,
+    pub marker_input: String,
+    pub error: Option<String>,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in
@@ -410,6 +420,8 @@ impl App {
             ws.right.folders_first = s.right_folders_first;
             ws.right.natural_name_sort = s.right_natural_sort;
             ws.right.density = s.right_density;
+            ws.durability_profile = s.durability_profile;
+            ws.sync_guard_policy = s.sync_guard_policy.clone();
         }
 
         App {
@@ -515,6 +527,8 @@ impl App {
             recent_stats,
             recent_order: self.recent_order,
             search_history: self.search_history.clone(),
+            durability_profile: self.ws.durability_profile,
+            sync_guard_policy: self.ws.sync_guard_policy.clone(),
         }
     }
 

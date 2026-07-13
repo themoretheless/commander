@@ -9,12 +9,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::fs_util;
+use crate::operation::{
+    ClassifiedFailure, DurabilityProfile, FailureClass, OperationGroupId, OperationId,
+};
 use crate::panel::FileEntry;
+use serde::{Deserialize, Serialize};
 
 const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
 
 /// What to do when destination file already exists.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverwritePolicy {
     Ask,
     OverwriteAll,
@@ -25,7 +29,7 @@ pub enum OverwritePolicy {
 }
 
 /// Copy strategy.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CopyMethod {
     /// Byte-by-byte with 1MB buffer, full progress tracking.
     Buffered,
@@ -33,7 +37,7 @@ pub enum CopyMethod {
     Native,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferKind {
     Copy,
     Move,
@@ -55,6 +59,7 @@ pub struct TransferProgress {
     pub cancelled: bool,
     /// Per-file failures collected during the transfer.
     pub errors: Vec<String>,
+    pub failures: Vec<ClassifiedFailure>,
     /// `(source, final landing)` for every entry a Move actually placed, so
     /// undo can target where files really landed: a KeepBoth conflict lands at
     /// "name copy.ext", not "name". Empty for copies.
@@ -78,6 +83,7 @@ impl TransferProgress {
             finished: false,
             cancelled: false,
             errors: Vec::new(),
+            failures: Vec::new(),
             placements: Vec::new(),
         }
     }
@@ -187,12 +193,23 @@ pub enum PostTransferAction {
 
 #[derive(Clone)]
 pub struct TransferSpec {
+    pub operation_id: OperationId,
+    pub group_id: Option<OperationGroupId>,
     pub kind: TransferKind,
     pub entries: Vec<FileEntry>,
     pub target: PathBuf,
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
+    pub durability: DurabilityProfile,
     pub post_success: Option<PostTransferAction>,
+}
+
+fn record_failure(progress: &TransferState, entry_name: &str, failure: ClassifiedFailure) {
+    let mut state = crate::lock_util::recover(progress);
+    state
+        .errors
+        .push(format!("{entry_name}: {}", failure.message));
+    state.failures.push(failure);
 }
 
 /// Size of one entry: its byte length, or the recursive size of a directory.
@@ -242,17 +259,18 @@ pub fn spawn_transfer(
             // Advance the progress bar past an entry we are about to skip
             // (self-reference, skip-on-conflict, refused overwrite) and record
             // it as processed. `err` is an optional message to surface.
-            let skip_entry = |progress: &TransferState, base: &mut u64, err: Option<String>| {
-                *base += this_size;
-                let mut s = crate::lock_util::recover(progress);
-                s.copied_bytes = *base;
-                if let Some(msg) = err {
-                    s.errors.push(format!("{}: {}", entry.name, msg));
-                }
-                s.files_done = i + 1;
-                drop(s);
-                notify();
-            };
+            let skip_entry =
+                |progress: &TransferState, base: &mut u64, failure: Option<ClassifiedFailure>| {
+                    *base += this_size;
+                    let mut s = crate::lock_util::recover(progress);
+                    s.copied_bytes = *base;
+                    s.files_done = i + 1;
+                    drop(s);
+                    if let Some(failure) = failure {
+                        record_failure(progress, &entry.name, failure);
+                    }
+                    notify();
+                };
 
             // Reject destructive self-referential transfers (a directory into
             // itself or its own subtree, a file onto itself) before touching
@@ -261,7 +279,11 @@ pub fn spawn_transfer(
                 skip_entry(
                     &progress,
                     &mut base_bytes,
-                    Some("cannot copy a path into itself".to_string()),
+                    Some(ClassifiedFailure::message(
+                        FailureClass::UserDecision,
+                        Some(entry.path.clone()),
+                        "cannot copy a path into itself",
+                    )),
                 );
                 continue;
             }
@@ -284,7 +306,11 @@ pub fn spawn_transfer(
                         skip_entry(
                             &progress,
                             &mut base_bytes,
-                            Some("destination already exists".to_string()),
+                            Some(ClassifiedFailure::message(
+                                FailureClass::UserDecision,
+                                Some(dest.clone()),
+                                "destination already exists",
+                            )),
                         );
                         continue;
                     }
@@ -343,36 +369,71 @@ pub fn spawn_transfer(
             match &result {
                 Ok(b) => base_bytes += b,
                 Err(e) => {
-                    let mut s = crate::lock_util::recover(&progress);
-                    if s.cancelled {
-                        drop(s);
+                    if crate::lock_util::recover(&progress).cancelled {
                         // For a rename this is a no-op (a failed rename never
                         // created `copy_target`); for a copy it drops the
                         // partial. Either way the source is left intact.
                         let _ = undo_placement(&copy_target, &entry.path, renamed);
                         break; // fall through to the finished-setter below
                     }
-                    s.errors.push(format!("{}: {}", entry.name, e));
+                    record_failure(
+                        &progress,
+                        &entry.name,
+                        ClassifiedFailure::io(Some(entry.path.clone()), "copy failed", e),
+                    );
                 }
             }
 
             // "Clean" = Ok return AND no per-file errors recorded by the
             // native callback during this entry.
-            let clean = result.is_ok()
+            let mut clean = result.is_ok()
                 && crate::lock_util::recover(&progress).errors.len() == errors_before;
+            if clean
+                && spec.durability.verifies()
+                && !renamed
+                && !crate::version_store::paths_equal(&entry.path, &copy_target)
+            {
+                record_failure(
+                    &progress,
+                    &entry.name,
+                    ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        Some(copy_target.clone()),
+                        "copy verification failed",
+                    ),
+                );
+                clean = false;
+            }
 
             let placed = if !clean {
                 // Undo our placement; a pre-existing dest is untouched. For a
                 // rename this restores the source rather than deleting its only
                 // copy.
                 if let Some(msg) = undo_placement(&copy_target, &entry.path, renamed) {
-                    crate::lock_util::recover(&progress)
-                        .errors
-                        .push(format!("{}: {}", entry.name, msg));
+                    record_failure(
+                        &progress,
+                        &entry.name,
+                        ClassifiedFailure::message(
+                            FailureClass::IntegrityUncertain,
+                            Some(copy_target.clone()),
+                            msg,
+                        ),
+                    );
                 }
                 false
             } else if overwrite {
-                match swap_into_place(&copy_target, &dest) {
+                let version_result = if spec.durability.keeps_versions() {
+                    crate::version_store::preserve(
+                        &dest,
+                        &spec.operation_id,
+                        spec.operation_id.step_key(i, &dest),
+                    )
+                    .map(|_| ())
+                    .map_err(std::io::Error::other)
+                } else {
+                    Ok(())
+                };
+                match version_result.and_then(|()| swap_into_place(&copy_target, &dest)) {
                     Ok(()) => true,
                     Err(e) => {
                         // The swap left the staged data at `copy_target`. For a
@@ -381,10 +442,21 @@ pub fn spawn_transfer(
                         // unconditional cleanup here lost the source on a failed
                         // same-volume overwrite move).
                         let extra = undo_placement(&copy_target, &entry.path, renamed);
-                        let mut s = crate::lock_util::recover(&progress);
-                        s.errors.push(format!("{}: {}", entry.name, e));
+                        record_failure(
+                            &progress,
+                            &entry.name,
+                            ClassifiedFailure::io(Some(dest.clone()), "final placement failed", &e),
+                        );
                         if let Some(msg) = extra {
-                            s.errors.push(format!("{}: {}", entry.name, msg));
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(copy_target.clone()),
+                                    msg,
+                                ),
+                            );
                         }
                         false
                     }
@@ -398,8 +470,20 @@ pub fn spawn_transfer(
             // Delete the source only once the destination is fully in place.
             // A same-volume rename already moved the source, so there is
             // nothing left to remove.
-            if is_move && placed && !renamed {
-                let _ = cleanup_path(&entry.path);
+            if is_move
+                && placed
+                && !renamed
+                && let Err(error) = cleanup_path(&entry.path)
+            {
+                record_failure(
+                    &progress,
+                    &entry.name,
+                    ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        Some(entry.path.clone()),
+                        format!("destination is complete but source cleanup failed: {error}"),
+                    ),
+                );
             }
 
             // Record where a successfully moved entry actually landed, so undo
@@ -454,11 +538,11 @@ fn run_post_success(action: Option<&PostTransferAction>, progress: &TransferStat
         }
     });
     if let Err(error) = result {
-        let mut state = crate::lock_util::recover(progress);
-        state.errors.push(format!(
-            "Post-transfer cleanup failed for {}: {error}",
-            path.display()
-        ));
+        record_failure(
+            progress,
+            &path.display().to_string(),
+            ClassifiedFailure::io(Some(path.clone()), "Post-transfer cleanup failed", &error),
+        );
     }
 }
 
@@ -752,11 +836,14 @@ mod tests {
         let folder = root.dir("Gathered");
         let file = root.file("Gathered/a.txt", "a");
         let state = run(TransferSpec {
+            operation_id: OperationId::new(),
+            group_id: None,
             kind: TransferKind::Move,
             entries: vec![entry_for(&file)],
             target: root.path().to_path_buf(),
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
         });
 
@@ -772,11 +859,14 @@ mod tests {
         let file = root.file("Gathered/a.txt", "a");
         root.file("Gathered/foreign.txt", "foreign");
         let state = run(TransferSpec {
+            operation_id: OperationId::new(),
+            group_id: None,
             kind: TransferKind::Move,
             entries: vec![entry_for(&file)],
             target: root.path().to_path_buf(),
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
         });
 
@@ -798,11 +888,14 @@ mod tests {
         policy: OverwritePolicy,
     ) -> TransferSpec {
         TransferSpec {
+            operation_id: OperationId::new(),
+            group_id: None,
             kind,
             entries,
             target: target.to_path_buf(),
             policy,
             method,
+            durability: DurabilityProfile::Fast,
             post_success: None,
         }
     }
@@ -1098,6 +1191,30 @@ mod tests {
             "new contents"
         );
         assert!(s.errors.is_empty());
+    }
+
+    #[test]
+    fn verified_overwrite_checks_the_staged_copy_before_replacement() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "new verified contents");
+        dst.file("a.txt", "old contents");
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::OverwriteAll,
+        );
+        request.durability = DurabilityProfile::Verified;
+
+        let state = run(request);
+
+        assert!(state.failures.is_empty(), "{:?}", state.failures);
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "new verified contents"
+        );
     }
 
     #[test]

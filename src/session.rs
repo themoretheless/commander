@@ -53,6 +53,10 @@ pub struct Session {
     pub recent_order: crate::panel::RecentOrder,
     #[serde(default)]
     pub search_history: crate::search::QueryHistory,
+    #[serde(default)]
+    pub durability_profile: crate::operation::DurabilityProfile,
+    #[serde(default)]
+    pub sync_guard_policy: crate::sync_guard::GuardPolicy,
 }
 
 /// Serde default for booleans that should restore as `true` (the live
@@ -129,6 +133,8 @@ mod tests {
             recent_stats: crate::panel::VisitStats::default(),
             recent_order: crate::panel::RecentOrder::Frecency,
             search_history: crate::search::QueryHistory::default(),
+            durability_profile: crate::operation::DurabilityProfile::default(),
+            sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
         }
     }
 

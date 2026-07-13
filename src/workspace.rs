@@ -47,6 +47,7 @@ pub struct PendingTransfer {
     pub conflicts: Vec<String>,
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
+    pub durability: crate::operation::DurabilityProfile,
     pub flat: FlatList,
     /// Bytes the operation needs (recursive total of the entries).
     pub need_bytes: u64,
@@ -128,10 +129,11 @@ pub enum PendingOp {
 
 /// How a delete-to-Trash turned out, so the UI can confirm it and flag any
 /// entries that could not be removed instead of failing silently.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct DeleteOutcome {
     pub trashed: usize,
     pub failed: usize,
+    pub failures: Vec<crate::operation::ClassifiedFailure>,
 }
 
 /// How a shelf drain turned out: how many copies started, and how many items
@@ -148,6 +150,8 @@ pub struct Workspace {
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
     pub active_transfer: Option<TransferState>,
+    pub durability_profile: crate::operation::DurabilityProfile,
+    pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     /// Set by [`Command::BeginRename`]; the UI picks this up to open the
     /// inline rename editor seeded with this path, then clears it.
     pub rename_target: Option<PathBuf>,
@@ -326,6 +330,8 @@ impl Workspace {
             active: ActivePanel::Left,
             pending_op: None,
             active_transfer: None,
+            durability_profile: crate::operation::DurabilityProfile::default(),
+            sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             rename_target: None,
             mask_request: false,
             run_command_request: false,
@@ -851,6 +857,7 @@ impl Workspace {
             conflicts,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             flat,
             need_bytes,
             free_bytes,
@@ -929,6 +936,7 @@ impl Workspace {
         let Some(PendingOp::Transfer(t)) = self.pending_op.take() else {
             return;
         };
+        self.durability_profile = t.durability;
         // A Move is undoable, promoted onto the history stack when it finishes
         // cleanly (see `poll_transfer`); a Copy records no history.
         let undo = if t.kind == TransferKind::Move {
@@ -939,11 +947,14 @@ impl Workspace {
             None
         };
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id: None,
             kind: t.kind,
             entries: t.entries,
             target: t.target,
             policy: t.policy,
             method: t.method,
+            durability: t.durability,
             post_success: None,
         };
         self.enqueue_only(spec, undo);
@@ -1326,11 +1337,14 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) {
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id: None,
             kind: TransferKind::Move,
             entries,
             target: dest_dir,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             post_success,
         };
         // Undo-driven: this move records no new history (undo=None).
@@ -1401,16 +1415,42 @@ impl Workspace {
         }
     }
 
-    /// Move every entry to the Trash, counting successes and failures so the
-    /// caller can confirm the outcome (and flag any that could not be removed)
-    /// rather than failing silently.
-    pub fn exec_delete(entries: &[FileEntry]) -> DeleteOutcome {
+    /// Move every entry to the Trash under the selected durability policy.
+    fn exec_delete_with_profile(
+        entries: &[FileEntry],
+        durability: crate::operation::DurabilityProfile,
+    ) -> DeleteOutcome {
         let mut outcome = DeleteOutcome::default();
-        for entry in entries {
+        let operation_id = crate::operation::OperationId::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if durability.keeps_versions()
+                && let Err(message) = crate::version_store::preserve(
+                    &entry.path,
+                    &operation_id,
+                    operation_id.step_key(index, &entry.path),
+                )
+            {
+                outcome.failed += 1;
+                outcome
+                    .failures
+                    .push(crate::operation::ClassifiedFailure::message(
+                        crate::operation::FailureClass::IntegrityUncertain,
+                        Some(entry.path.clone()),
+                        message,
+                    ));
+                continue;
+            }
             if trash::delete(&entry.path).is_ok() {
                 outcome.trashed += 1;
             } else {
                 outcome.failed += 1;
+                outcome
+                    .failures
+                    .push(crate::operation::ClassifiedFailure::message(
+                        crate::operation::FailureClass::Blocked,
+                        Some(entry.path.clone()),
+                        "could not move item to Trash",
+                    ));
             }
         }
         outcome
@@ -1426,7 +1466,7 @@ impl Workspace {
         match &self.pending_op {
             Some(PendingOp::Delete { .. }) => {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
-                    let outcome = Self::exec_delete(&entries);
+                    let outcome = Self::exec_delete_with_profile(&entries, self.durability_profile);
                     self.left.refresh();
                     self.right.refresh();
                     return Some(outcome);
@@ -1488,11 +1528,14 @@ impl Workspace {
             pairs: move_pairs(&entries, &folder),
         };
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id: None,
             kind: TransferKind::Move,
             entries,
             target: folder,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             post_success: None,
         };
         self.enqueue_only(spec, Some(undo));
@@ -1876,11 +1919,26 @@ impl Workspace {
     // ── Directory sync ──────────────────────────────────────────────────
 
     /// Compute the synchronisation plan between the two panels for `policy`.
+    #[cfg(test)]
     pub fn build_sync_actions(
         &self,
         policy: crate::sync::SyncPolicy,
     ) -> Vec<crate::sync::SyncAction> {
         crate::sync::sync_diff(&self.left.entries, &self.right.entries, policy)
+    }
+
+    /// Build a sync plan and baseline from the same fresh directory reads.
+    pub fn build_guarded_sync_plan(
+        &self,
+        policy: crate::sync::SyncPolicy,
+    ) -> Result<(Vec<crate::sync::SyncAction>, crate::sync_guard::PlanStamp), String> {
+        crate::sync_guard::build_plan(
+            &self.left.current_path,
+            &self.right.current_path,
+            self.left.show_hidden,
+            self.right.show_hidden,
+            policy,
+        )
     }
 
     /// Resolve and start a synchronisation plan: copy each `ToRight` row's left
@@ -1891,7 +1949,36 @@ impl Workspace {
     /// Apply a synchronization snapshot to the directories it was opened for.
     /// Sources are resolved by their captured paths, never by a lowercased
     /// display name or by whichever panels happen to be active now.
+    #[cfg(test)]
     pub fn apply_sync_between(
+        &mut self,
+        actions: &[crate::sync::SyncAction],
+        left_dir: &Path,
+        right_dir: &Path,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        self.enqueue_sync_between(actions, left_dir, right_dir, notify);
+    }
+
+    /// Revalidate every fail-closed sync guard before the first transfer is
+    /// queued. A rejected plan cannot leave a partially enqueued operation.
+    pub fn apply_sync_guarded(
+        &mut self,
+        plan: crate::sync_guard::GuardedPlan<'_>,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<crate::sync_guard::Assessment, String> {
+        let assessment = crate::sync_guard::validate(&plan)?;
+        self.sync_guard_policy = plan.guard.clone();
+        self.enqueue_sync_between(
+            plan.actions,
+            &plan.stamp.left_root,
+            &plan.stamp.right_root,
+            notify,
+        );
+        Ok(assessment)
+    }
+
+    fn enqueue_sync_between(
         &mut self,
         actions: &[crate::sync::SyncAction],
         left_dir: &Path,
@@ -1948,11 +2035,14 @@ impl Workspace {
             return;
         }
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id: None,
             kind: TransferKind::Copy,
             entries,
             target,
             policy,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             post_success: None,
         };
         self.enqueue_only(spec, None);
@@ -2076,6 +2166,7 @@ impl Workspace {
             conflicts,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             flat,
             need_bytes,
             free_bytes,
@@ -2684,6 +2775,118 @@ mod tests {
         assert!(r.path().join("left.txt").is_file(), "left -> right");
         assert!(l.path().join("right.txt").is_file(), "right -> left");
         assert_eq!(ws.queued_count(), 0, "queue fully drained");
+    }
+
+    #[test]
+    fn guarded_sync_rejects_a_stale_baseline_before_enqueue() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("report.txt", "first");
+        let mut ws = workspace(&l, &r);
+        let policy = crate::sync::SyncPolicy::MirrorLeftToRight;
+        let (actions, stamp) = ws.build_guarded_sync_plan(policy).unwrap();
+        l.file("report.txt", "changed after review");
+        let guard = crate::sync_guard::GuardPolicy::default();
+        let settings = crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key());
+
+        let error = ws
+            .apply_sync_guarded(
+                crate::sync_guard::GuardedPlan {
+                    actions: &actions,
+                    stamp: &stamp,
+                    policy,
+                    guard: &guard,
+                    expected_settings: settings,
+                    allow_large_plan: false,
+                },
+                || {},
+            )
+            .unwrap_err();
+
+        assert!(error.contains("stale"), "unexpected error: {error}");
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+        assert!(!r.path().join("report.txt").exists());
+    }
+
+    #[test]
+    fn guarded_sync_requires_the_marker_on_the_receiving_root() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("report.txt", "ready");
+        let mut ws = workspace(&l, &r);
+        let policy = crate::sync::SyncPolicy::MirrorLeftToRight;
+        let (actions, stamp) = ws.build_guarded_sync_plan(policy).unwrap();
+        let mut guard = crate::sync_guard::GuardPolicy::default();
+        guard.set_marker(".sync-root").unwrap();
+        let settings = crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key());
+
+        let error = ws
+            .apply_sync_guarded(
+                crate::sync_guard::GuardedPlan {
+                    actions: &actions,
+                    stamp: &stamp,
+                    policy,
+                    guard: &guard,
+                    expected_settings: settings,
+                    allow_large_plan: false,
+                },
+                || {},
+            )
+            .unwrap_err();
+
+        assert!(error.contains("Health marker"), "unexpected error: {error}");
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+    }
+
+    #[test]
+    fn guarded_sync_needs_explicit_review_for_an_excessive_plan() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("report.txt", "left version");
+        r.file("report.txt", "x");
+        let mut ws = workspace(&l, &r);
+        let policy = crate::sync::SyncPolicy::MirrorLeftToRight;
+        let (actions, stamp) = ws.build_guarded_sync_plan(policy).unwrap();
+        let guard = crate::sync_guard::GuardPolicy {
+            max_change_fraction: 0.0,
+            minimum_changed: 1,
+            ..Default::default()
+        };
+        let settings = crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key());
+
+        let error = ws
+            .apply_sync_guarded(
+                crate::sync_guard::GuardedPlan {
+                    actions: &actions,
+                    stamp: &stamp,
+                    policy,
+                    guard: &guard,
+                    expected_settings: settings,
+                    allow_large_plan: false,
+                },
+                || {},
+            )
+            .unwrap_err();
+        assert!(error.contains("changes"), "unexpected error: {error}");
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+
+        ws.apply_sync_guarded(
+            crate::sync_guard::GuardedPlan {
+                actions: &actions,
+                stamp: &stamp,
+                policy,
+                guard: &guard,
+                expected_settings: settings,
+                allow_large_plan: true,
+            },
+            || {},
+        )
+        .unwrap();
+        drain_transfers(&mut ws);
+        assert_eq!(
+            std::fs::read_to_string(r.path().join("report.txt")).unwrap(),
+            "left version"
+        );
     }
 
     #[test]
@@ -3338,6 +3541,7 @@ mod tests {
             conflicts: vec![],
             policy: OverwritePolicy::Ask,
             method,
+            durability: crate::operation::DurabilityProfile::Fast,
             flat: scan::spawn_scan(vec![]),
             need_bytes: need,
             free_bytes: free,
