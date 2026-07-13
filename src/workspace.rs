@@ -178,6 +178,8 @@ pub struct Workspace {
     pub treemap_request: bool,
     /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
     pub find_request: bool,
+    /// Set when activating a supported archive; the UI opens a read-only browser.
+    pub archive_request: Option<PathBuf>,
     /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
     pub saved_search_request: bool,
     /// Set by [`Command::OpenProjectCollections`]; the UI opens virtual projects.
@@ -338,6 +340,7 @@ impl Workspace {
             diff_request: false,
             treemap_request: false,
             find_request: false,
+            archive_request: None,
             saved_search_request: false,
             collections_request: false,
             queue_panel_request: false,
@@ -589,6 +592,8 @@ impl Workspace {
                 } {
                     if entry.is_dir {
                         self.active_panel().navigate_to(entry.path);
+                    } else if crate::archive::is_supported(&entry.path) {
+                        self.archive_request = Some(entry.path);
                     } else {
                         (self.opener)(&entry.path);
                     }
@@ -2320,6 +2325,28 @@ mod tests {
         ws.left.cursor = 1;
         ws.execute(Command::Activate);
         assert_eq!(opened.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn activate_zip_requests_the_read_only_archive_browser() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let archive = left.file("bundle.zip", "placeholder");
+        let opened = Arc::new(AtomicUsize::new(0));
+        let opened_copy = Arc::clone(&opened);
+        let mut workspace = Workspace::with_opener(
+            left.path().to_path_buf(),
+            right.path().to_path_buf(),
+            Box::new(move |_| {
+                opened_copy.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        workspace.left.refresh();
+
+        workspace.left.cursor = 1;
+        workspace.execute(Command::Activate);
+
+        assert_eq!(workspace.archive_request, Some(archive));
+        assert_eq!(opened.load(Ordering::Relaxed), 0);
     }
 
     #[test]

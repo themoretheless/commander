@@ -24,7 +24,15 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum FileIdentity {
-    Native { volume: u64, file: u64 },
+    Native {
+        volume: u64,
+        file: u64,
+    },
+    Archive {
+        archive: PathBuf,
+        member: PathBuf,
+        index: usize,
+    },
     Path(PathBuf),
 }
 
@@ -86,6 +94,17 @@ pub struct SearchHit {
     pub identity: FileIdentity,
     pub accessed: Option<SystemTime>,
     pub explanation: MatchExplanation,
+    pub location: SearchLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchLocation {
+    Native(PathBuf),
+    ArchiveMember {
+        archive: PathBuf,
+        member: PathBuf,
+        index: usize,
+    },
 }
 
 impl SearchHit {
@@ -94,6 +113,13 @@ impl SearchHit {
             .path
             .strip_prefix(root)
             .unwrap_or(&self.entry.path)
+    }
+
+    pub fn reveal_path(&self) -> &Path {
+        match &self.location {
+            SearchLocation::Native(path) => path,
+            SearchLocation::ArchiveMember { archive, .. } => archive,
+        }
     }
 }
 
@@ -140,6 +166,7 @@ impl SearchRun {
 struct ProviderRequest {
     generation: u64,
     active: Arc<AtomicU64>,
+    requires_content: bool,
 }
 
 impl ProviderRequest {
@@ -154,6 +181,7 @@ enum CandidateContent {
         index: Arc<crate::content_index::RootIndex>,
         document: usize,
     },
+    Inline(Option<Arc<str>>),
 }
 
 struct SearchCandidate {
@@ -161,6 +189,7 @@ struct SearchCandidate {
     identity: FileIdentity,
     accessed: Option<SystemTime>,
     content: CandidateContent,
+    location: SearchLocation,
 }
 
 type ProviderRecord = Option<SearchCandidate>;
@@ -183,10 +212,11 @@ impl FilesystemProvider {
 
 impl SearchProvider for FilesystemProvider {
     fn label(&self) -> &'static str {
-        "Live"
+        "Live + ZIP"
     }
 
     fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
+        let mut archive_budget = crate::archive::SearchBudget::default();
         for item in jwalk::WalkDir::new(&self.root)
             .skip_hidden(false)
             .into_iter()
@@ -213,7 +243,10 @@ impl SearchProvider for FilesystemProvider {
                 }
                 continue;
             };
+            let archive_path = (!entry.is_dir && crate::archive::is_supported(&entry.path))
+                .then(|| entry.path.clone());
             if !emit(Some(SearchCandidate {
+                location: SearchLocation::Native(entry.path.clone()),
                 entry,
                 identity,
                 accessed,
@@ -221,7 +254,111 @@ impl SearchProvider for FilesystemProvider {
             })) {
                 break;
             }
+            if let Some(archive_path) = archive_path
+                && !ArchiveProvider::visit_path(&archive_path, request, emit, &mut archive_budget)
+            {
+                break;
+            }
         }
+    }
+}
+
+struct ArchiveProvider {
+    archive: PathBuf,
+}
+
+impl ArchiveProvider {
+    fn visit_path(
+        archive_path: &Path,
+        request: &ProviderRequest,
+        emit: &mut dyn FnMut(ProviderRecord) -> bool,
+        budget: &mut crate::archive::SearchBudget,
+    ) -> bool {
+        let metadata = match std::fs::metadata(archive_path) {
+            Ok(metadata) => metadata,
+            Err(_) => return emit(None),
+        };
+        let modified = metadata.modified().ok();
+        let accessed = metadata.accessed().ok();
+        let mut keep_going = true;
+        let result = crate::archive::visit_members(
+            archive_path,
+            request.requires_content,
+            budget,
+            || request.cancelled(),
+            |member| {
+                let Some(name) = member.member.path.file_name() else {
+                    keep_going = emit(None);
+                    return keep_going;
+                };
+                let name = name.to_string_lossy().to_string();
+                let virtual_path =
+                    crate::archive::virtual_member_path(archive_path, &member.member.path);
+                let extension = member
+                    .member
+                    .path
+                    .extension()
+                    .map(|extension| extension.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let modified_str = modified.map_or_else(
+                    || "-".to_string(),
+                    |time| {
+                        let value: chrono::DateTime<chrono::Local> = time.into();
+                        value.format("%d %b %y  %H:%M").to_string()
+                    },
+                );
+                let entry = FileEntry {
+                    name_lower: name.to_lowercase(),
+                    name,
+                    path: virtual_path.clone(),
+                    is_dir: member.member.is_dir,
+                    size: if member.member.is_dir {
+                        0
+                    } else {
+                        member.member.size
+                    },
+                    extension,
+                    modified,
+                    modified_str,
+                    size_str: if member.member.is_dir {
+                        "...".to_string()
+                    } else {
+                        crate::panel::format_size(member.member.size)
+                    },
+                };
+                keep_going = emit(Some(SearchCandidate {
+                    entry,
+                    identity: FileIdentity::Archive {
+                        archive: archive_path.to_path_buf(),
+                        member: member.member.path.clone(),
+                        index: member.member.index,
+                    },
+                    accessed,
+                    content: CandidateContent::Inline(member.content),
+                    location: SearchLocation::ArchiveMember {
+                        archive: archive_path.to_path_buf(),
+                        member: member.member.path,
+                        index: member.member.index,
+                    },
+                }));
+                keep_going
+            },
+        );
+        if result.is_err() && keep_going {
+            keep_going = emit(None);
+        }
+        keep_going && !request.cancelled()
+    }
+}
+
+impl SearchProvider for ArchiveProvider {
+    fn label(&self) -> &'static str {
+        "ZIP"
+    }
+
+    fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
+        let mut budget = crate::archive::SearchBudget::default();
+        Self::visit_path(&self.archive, request, emit, &mut budget);
     }
 }
 
@@ -231,10 +368,11 @@ struct IndexedProvider {
 
 impl SearchProvider for IndexedProvider {
     fn label(&self) -> &'static str {
-        "Index"
+        "Index + ZIP"
     }
 
     fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
+        let mut archive_budget = crate::archive::SearchBudget::default();
         for (document, indexed) in self.index.documents.iter().enumerate() {
             if request.cancelled() {
                 break;
@@ -245,7 +383,10 @@ impl SearchProvider for IndexedProvider {
                 }
                 continue;
             };
+            let archive_path = (!entry.is_dir && crate::archive::is_supported(&entry.path))
+                .then(|| entry.path.clone());
             if !emit(Some(SearchCandidate {
+                location: SearchLocation::Native(entry.path.clone()),
                 entry,
                 identity: FileIdentity::from_indexed(indexed),
                 accessed: indexed.accessed(),
@@ -254,6 +395,11 @@ impl SearchProvider for IndexedProvider {
                     document,
                 },
             })) {
+                break;
+            }
+            if let Some(archive_path) = archive_path
+                && !ArchiveProvider::visit_path(&archive_path, request, emit, &mut archive_budget)
+            {
                 break;
             }
         }
@@ -543,6 +689,12 @@ impl CompiledQuery {
                 };
                 self.evaluate_content_text(content, false, explanation)
             }
+            CandidateContent::Inline(content) => {
+                let Some(content) = content.as_deref() else {
+                    return ContentVerdict::Skipped;
+                };
+                self.evaluate_content_text(content, false, explanation)
+            }
         }
     }
 
@@ -591,7 +743,11 @@ fn run_worker(
 ) {
     let started = Instant::now();
     let now = SystemTime::now();
-    let request = ProviderRequest { generation, active };
+    let request = ProviderRequest {
+        generation,
+        active,
+        requires_content: query.requires_content,
+    };
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut scanned = 0usize;
     let mut matched = 0usize;
@@ -624,6 +780,7 @@ fn run_worker(
             identity,
             accessed,
             content,
+            location,
         } = candidate;
         let Some(mut explanation) = query.evaluate_metadata(&entry, now) else {
             channel_open = maybe_send_progress(
@@ -667,6 +824,7 @@ fn run_worker(
             identity,
             accessed,
             explanation,
+            location,
         });
         matched += 1;
         if batch.len() >= BATCH_SIZE {
@@ -916,6 +1074,7 @@ impl QueryHistory {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use std::io::Write;
 
     fn file_entry(path: PathBuf, size: u64) -> FileEntry {
         FileEntry {
@@ -947,6 +1106,16 @@ mod tests {
                 Err(error) => panic!("search channel closed: {error}"),
             }
         }
+    }
+
+    fn write_zip(path: &Path, name: &str, content: &[u8]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file(name, options).unwrap();
+        writer.write_all(content).unwrap();
+        writer.finish().unwrap();
     }
 
     #[test]
@@ -1032,11 +1201,61 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(run.provider, "Index");
+        assert_eq!(run.provider, "Index + ZIP");
         let (hits, summary) = collect_run(&run);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].entry.name, "notes.txt");
         assert_eq!(summary.content_skipped, 0);
+    }
+
+    #[test]
+    fn live_provider_streams_archive_members_and_reveals_the_archive() {
+        let tmp = TempDir::new();
+        let archive = tmp.path().join("bundle.zip");
+        write_zip(&archive, "docs/inside.txt", b"archive provider needle");
+        let engine = SearchEngine::default();
+        let run = engine
+            .start(
+                tmp.path().to_path_buf(),
+                Query::parse("path:inside.txt content:needle", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+
+        assert_eq!(run.provider, "Live + ZIP");
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(summary.matched, 1);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].entry.path.to_string_lossy().contains("bundle.zip!"));
+        assert_eq!(hits[0].reveal_path(), archive);
+        assert!(matches!(
+            &hits[0].location,
+            SearchLocation::ArchiveMember { member, .. }
+                if member == Path::new("docs/inside.txt")
+        ));
+    }
+
+    #[test]
+    fn indexed_provider_delegates_zip_paths_to_the_archive_provider() {
+        let tmp = TempDir::new();
+        let archive = tmp.path().join("indexed-bundle.zip");
+        write_zip(&archive, "nested/report.txt", b"indexed archive phrase");
+        let index = Arc::new(crate::content_index::build_test_index(tmp.path()));
+        let engine = SearchEngine::default();
+        let run = engine
+            .start_indexed(
+                index,
+                Query::parse("path:report.txt content:phrase", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(summary.matched, 1);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].reveal_path(), archive);
     }
 
     #[test]
@@ -1076,6 +1295,7 @@ mod tests {
                 total_score: score,
                 components: Vec::new(),
             },
+            location: SearchLocation::Native(PathBuf::from(format!("/x/{name}"))),
         };
         let previous = vec![
             FileIdentity::Native { volume: 1, file: 2 },
@@ -1107,6 +1327,7 @@ mod tests {
                 identity: FileIdentity::Path(PathBuf::from(name)),
                 accessed: None,
                 explanation,
+                location: SearchLocation::Native(PathBuf::from(format!("/fixture/{name}"))),
             })
         })
         .collect();
@@ -1153,6 +1374,7 @@ mod tests {
             identity: FileIdentity::Path(PathBuf::from("/x/a.txt")),
             accessed: Some(now - Duration::from_secs(8 * 86_400)),
             explanation: MatchExplanation::default(),
+            location: SearchLocation::Native(PathBuf::from("/x/a.txt")),
         };
         hit.entry.modified = Some(now - Duration::from_secs(86_400));
         assert_eq!(

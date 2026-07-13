@@ -665,7 +665,7 @@ impl App {
                                 let index = indices[row];
                                 let hit = &state.results[index];
                                 let identity = hit.identity.clone();
-                                let path = hit.entry.path.clone();
+                                let path = hit.reveal_path().to_path_buf();
                                 let relative = hit.relative_to(&root).display().to_string();
                                 let size = if hit.entry.is_dir {
                                     String::new()

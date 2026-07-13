@@ -25,6 +25,7 @@ impl eframe::App for App {
         self.show_diff_dialog(&ctx);
         self.show_treemap_dialog(&ctx);
         self.show_find_dialog(&ctx);
+        self.show_archive_dialog(&ctx);
         self.show_saved_search_dialog(&ctx);
         self.show_collections_dialog(&ctx);
         self.show_mask_dialog(&ctx);
@@ -721,7 +722,6 @@ impl App {
         let dragging = drag_source.is_some();
         let window_width = ctx.input(|i| i.viewport_rect()).width();
         let panel_id = egui::Id::new("left_panel");
-
         // Build cross-panel comparison maps before borrowing panels mutably:
         // each panel is tinted against the OTHER panel's entries. Reuse the
         // cached maps while neither panel's entries changed, so compare mode does
@@ -789,6 +789,15 @@ impl App {
         self.prev_window_width = window_width;
 
         let mut tree_toggle = false;
+        let archive_open = std::cell::RefCell::new(None);
+        let external_opener = self.ws.opener.as_ref();
+        let opener = |path: &std::path::Path| {
+            if crate::archive::is_supported(path) {
+                archive_open.replace(Some(path.to_path_buf()));
+            } else {
+                external_opener(path);
+            }
+        };
 
         // Left panel
         let left_resp = egui::Panel::left(panel_id)
@@ -811,7 +820,7 @@ impl App {
                     self.show_tree,
                     self.show_size_bars,
                     left_compare.as_ref(),
-                    self.ws.opener.as_ref(),
+                    &opener,
                     dragging,
                     left_metrics,
                 );
@@ -875,11 +884,13 @@ impl App {
                     self.show_tree,
                     self.show_size_bars,
                     right_compare.as_ref(),
-                    self.ws.opener.as_ref(),
+                    &opener,
                     dragging,
                     right_metrics,
                 );
             });
+
+        let pending_archive = archive_open.into_inner();
 
         if dragging
             && drag_source != Some(ActivePanel::Right)
@@ -910,6 +921,10 @@ impl App {
         // unchanged.
         if let (Some(lmap), Some(rmap)) = (left_compare, right_compare) {
             self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
+        }
+        if let Some(path) = pending_archive {
+            self.ws.archive_request = Some(path);
+            ctx.request_repaint();
         }
     }
 

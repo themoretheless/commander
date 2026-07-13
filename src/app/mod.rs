@@ -2,6 +2,7 @@
 //! All file-manager behaviour lives in `crate::workspace`; this module
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
+mod archive_dialog;
 mod batch_rename_dialog;
 mod collections_dialog;
 mod confirm_dialog;
@@ -102,6 +103,8 @@ pub struct App {
     pub(crate) treemap: Option<DiskUsageState>,
     /// Active recursive-find sheet state.
     pub(crate) find: Option<FindState>,
+    /// Active read-only archive inspector.
+    pub(crate) archive: Option<ArchiveState>,
     /// Saved searches, loaded lazily on first use.
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
     /// Whether the saved-search picker is open.
@@ -146,6 +149,16 @@ pub(crate) struct DiskUsageState {
     pub overview: Option<crate::tree_overview::OverviewSnapshot>,
     pub stopping: bool,
     pub error: Option<String>,
+}
+
+pub(crate) struct ArchiveState {
+    pub path: PathBuf,
+    pub filter: String,
+    pub run: Option<crate::archive::ListingRun>,
+    pub listing: Option<crate::archive::ArchiveListing>,
+    pub selected: Option<usize>,
+    pub error: Option<String>,
+    pub focused: bool,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -448,6 +461,7 @@ impl App {
             diff: None,
             treemap: None,
             find: None,
+            archive: None,
             smart_folders: None,
             saved_search_open: false,
             project_collections: crate::collections::load(),
