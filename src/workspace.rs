@@ -43,6 +43,7 @@ pub struct TreemapSnapshot {
 pub struct PendingTransfer {
     pub kind: TransferKind,
     pub entries: Vec<FileEntry>,
+    pub expectations: Vec<crate::transfer::TransferExpectation>,
     pub target: PathBuf,
     pub conflicts: Vec<String>,
     pub policy: OverwritePolicy,
@@ -150,6 +151,8 @@ pub struct Workspace {
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
     pub active_transfer: Option<TransferState>,
+    pub safe_state: Option<crate::operation::SafeState>,
+    reviewed_safe_operation: Option<crate::operation::OperationId>,
     pub durability_profile: crate::operation::DurabilityProfile,
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     /// Set by [`Command::BeginRename`]; the UI picks this up to open the
@@ -330,6 +333,8 @@ impl Workspace {
             active: ActivePanel::Left,
             pending_op: None,
             active_transfer: None,
+            safe_state: None,
+            reviewed_safe_operation: None,
             durability_profile: crate::operation::DurabilityProfile::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             rename_target: None,
@@ -518,6 +523,9 @@ impl Workspace {
     // ── Command dispatch ────────────────────────────────────────────────
 
     pub fn execute(&mut self, cmd: Command) {
+        if self.mutations_blocked() && cmd.mutates_filesystem() {
+            return;
+        }
         match cmd {
             Command::SwitchPanel => {
                 self.active = match self.active {
@@ -827,13 +835,23 @@ impl Workspace {
     /// Copy/Move may queue behind an active transfer, but must never replace an
     /// operation that is already waiting for confirmation.
     pub fn can_request_transfer(&self) -> bool {
-        self.pending_op.is_none()
+        self.pending_op.is_none() && !self.mutations_blocked()
     }
 
     /// Delete is not queue-backed, so it is available only while no operation
     /// is pending or running.
     pub fn can_request_delete(&self) -> bool {
-        self.pending_op.is_none() && self.active_transfer.is_none()
+        self.pending_op.is_none() && self.active_transfer.is_none() && !self.mutations_blocked()
+    }
+
+    pub fn mutations_blocked(&self) -> bool {
+        self.safe_state.is_some()
+    }
+
+    pub fn acknowledge_safe_state(&mut self) {
+        if let Some(state) = self.safe_state.take() {
+            self.reviewed_safe_operation = Some(state.operation_id);
+        }
     }
 
     fn request_transfer(&mut self, kind: TransferKind) {
@@ -849,10 +867,12 @@ impl Workspace {
         }
         let flat = scan::spawn_scan(entries.clone());
         let conflicts = scan::find_conflicts(&entries, &target);
+        let expectations = transfer::capture_expectations(&entries, &target);
         let (need_bytes, free_bytes, same_volume) = fit_stats(&entries, &target, kind);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
+            expectations,
             target,
             conflicts,
             policy: OverwritePolicy::Ask,
@@ -904,7 +924,13 @@ impl Workspace {
         };
         let res = crate::conflict::resolve(&tr.entries, &conflicts, policy);
         let keep: std::collections::HashSet<PathBuf> = res.keep.into_iter().collect();
-        tr.entries.retain(|e| keep.contains(&e.path));
+        let retained = tr
+            .entries
+            .drain(..)
+            .zip(tr.expectations.drain(..))
+            .filter(|(entry, _)| keep.contains(&entry.path))
+            .collect::<Vec<_>>();
+        (tr.entries, tr.expectations) = retained.into_iter().unzip();
         tr.policy = match res.decision {
             crate::conflict::Decision::Overwrite => OverwritePolicy::OverwriteAll,
             crate::conflict::Decision::KeepBoth => OverwritePolicy::KeepBoth,
@@ -933,6 +959,9 @@ impl Workspace {
     /// `notify` is invoked when visible progress changes (UI passes a
     /// repaint request).
     pub fn start_transfer(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.mutations_blocked() {
+            return;
+        }
         let Some(PendingOp::Transfer(t)) = self.pending_op.take() else {
             return;
         };
@@ -951,11 +980,14 @@ impl Workspace {
             group_id: None,
             kind: t.kind,
             entries: t.entries,
+            expectations: t.expectations,
             target: t.target,
             policy: t.policy,
             method: t.method,
             durability: t.durability,
             post_success: None,
+            #[cfg(test)]
+            before_commit: None,
         };
         self.enqueue_only(spec, undo);
         self.pump_queue(notify);
@@ -974,7 +1006,7 @@ impl Workspace {
     /// The single place that spawns the worker, so the running job, its undo
     /// action and `active_transfer` always move together.
     fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
-        if self.active_transfer.is_some() {
+        if self.active_transfer.is_some() || self.mutations_blocked() {
             return;
         }
         let Some(id) = self.queue.dequeue_next() else {
@@ -987,6 +1019,7 @@ impl Workspace {
             return;
         };
         let spec = job.spec.spec.clone();
+        self.reviewed_safe_operation = None;
         self.pending_undo_action = job.spec.undo.clone();
         self.running_job = Some(id);
         // The worker sizes the entries once and fills in `total_bytes`; passing
@@ -1022,12 +1055,23 @@ impl Workspace {
         }
     }
 
+    /// Finish the current top-level entry, then checkpoint and stop before the
+    /// worker accepts another entry from this transfer.
+    pub fn stop_transfer_after_current(&mut self) {
+        if let Some(state) = &self.active_transfer {
+            let mut progress = crate::lock_util::recover(state);
+            if !progress.finished {
+                progress.stop_requested = true;
+            }
+        }
+    }
+
     /// Auto-close finished transfers. A transfer that finished with errors
     /// stays open so the user can read the error list (dismissed via OK).
     /// Returns `true` when a clean Move just finished, so the UI can raise the
     /// undo toast.
     pub fn poll_transfer(&mut self, notify: impl Fn() + Send + 'static) -> bool {
-        let (close, clean, had_errors, cancelled, placements) = self
+        let (close, clean, had_errors, cancelled, placements, safe_state) = self
             .active_transfer
             .as_ref()
             .map(|s| {
@@ -1037,7 +1081,7 @@ impl Workspace {
                 // even on cancel, after its cleanup), so we never tear the
                 // shared state out from under a still-running cleanup pass. A
                 // finished run with errors stays open so the user can read them.
-                let clean = s.finished && s.errors.is_empty() && !s.cancelled;
+                let clean = s.finished && s.errors.is_empty() && !s.cancelled && !s.stopped;
                 let errs = !s.errors.is_empty();
                 // Only a clean Move needs its placements (to record undo).
                 let placements = if clean {
@@ -1045,15 +1089,53 @@ impl Workspace {
                 } else {
                     Vec::new()
                 };
+                let failures = if s.finished {
+                    s.failures
+                        .iter()
+                        .filter(|failure| {
+                            failure.class == crate::operation::FailureClass::IntegrityUncertain
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let safe_state = if failures.is_empty() {
+                    None
+                } else {
+                    let mut paths = failures
+                        .iter()
+                        .filter_map(|failure| failure.path.clone())
+                        .collect::<Vec<_>>();
+                    paths.sort();
+                    paths.dedup();
+                    Some(crate::operation::SafeState {
+                        operation_id: s.operation_id.clone().unwrap_or_else(|| {
+                            crate::operation::OperationId("unknown-operation".to_string())
+                        }),
+                        reason: failures[0].message.clone(),
+                        paths,
+                        failures,
+                    })
+                };
                 (
-                    s.finished && (s.cancelled || s.errors.is_empty()),
+                    s.finished && (s.cancelled || s.stopped || s.errors.is_empty()),
                     clean,
                     errs,
-                    s.cancelled,
+                    s.cancelled || s.stopped,
                     placements,
+                    safe_state,
                 )
             })
-            .unwrap_or((false, false, false, false, Vec::new()));
+            .unwrap_or((false, false, false, false, Vec::new(), None));
+
+        if self.safe_state.is_none()
+            && let Some(safe_state) = safe_state
+            && self.reviewed_safe_operation.as_ref() != Some(&safe_state.operation_id)
+        {
+            self.safe_state = Some(safe_state);
+            self.cancel_pending_jobs();
+        }
 
         if !close {
             return false;
@@ -1230,6 +1312,9 @@ impl Workspace {
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
     /// move it onto the redo stack.
     pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before undo".to_string());
+        }
         match self.stack.undo() {
             Some(inverse) => self.execute_action(inverse, notify),
             None => Ok(()),
@@ -1240,6 +1325,9 @@ impl Workspace {
     /// it back onto the undo stack. Returns the same error surface as
     /// [`perform_undo`].
     pub fn perform_redo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before redo".to_string());
+        }
         match self.stack.redo() {
             Some(action) => self.execute_action(action, notify),
             None => Ok(()),
@@ -1336,16 +1424,20 @@ impl Workspace {
         post_success: Option<PostTransferAction>,
         notify: impl Fn() + Send + 'static,
     ) {
+        let expectations = transfer::capture_expectations(&entries, &dest_dir);
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
             group_id: None,
             kind: TransferKind::Move,
             entries,
+            expectations,
             target: dest_dir,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
             post_success,
+            #[cfg(test)]
+            before_commit: None,
         };
         // Undo-driven: this move records no new history (undo=None).
         self.enqueue_only(spec, None);
@@ -1463,6 +1555,9 @@ impl Workspace {
         &mut self,
         notify: impl Fn() + Send + 'static,
     ) -> Option<DeleteOutcome> {
+        if self.mutations_blocked() {
+            return None;
+        }
         match &self.pending_op {
             Some(PendingOp::Delete { .. }) => {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
@@ -1482,6 +1577,9 @@ impl Workspace {
     }
 
     pub fn create_dir(&mut self) {
+        if self.mutations_blocked() {
+            return;
+        }
         let base = self.active_panel_ref().current_path.clone();
         let path = crate::fs_util::first_available(|i| {
             if i == 0 {
@@ -1501,6 +1599,9 @@ impl Workspace {
     /// (queued through the transfer pipeline, so it takes the same-volume rename
     /// fast path). A no-op on an empty selection or if the folder can't be made.
     pub fn gather_into_folder(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.mutations_blocked() {
+            return;
+        }
         let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
             return;
         };
@@ -1527,16 +1628,20 @@ impl Workspace {
             folder: folder.clone(),
             pairs: move_pairs(&entries, &folder),
         };
+        let expectations = transfer::capture_expectations(&entries, &folder);
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
             group_id: None,
             kind: TransferKind::Move,
             entries,
+            expectations,
             target: folder,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
             post_success: None,
+            #[cfg(test)]
+            before_commit: None,
         };
         self.enqueue_only(spec, Some(undo));
         self.pump_queue(notify);
@@ -1595,6 +1700,9 @@ impl Workspace {
     /// Rename `old` to `new_name` in the same directory. A no-op (unchanged
     /// name) succeeds silently. Successful changes are recorded for undo/redo.
     pub fn commit_rename(&mut self, old: &Path, new_name: &str) -> Result<(), String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before rename".to_string());
+        }
         let new_name = new_name.trim();
         let old_name = old
             .file_name()
@@ -1654,6 +1762,9 @@ impl Workspace {
         context: &BatchRenameContext,
         rule: &crate::rename::RenameRule,
     ) -> Result<usize, String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before batch rename".to_string());
+        }
         if context.targets.is_empty() {
             return Err("Nothing selected to rename".into());
         }
@@ -1772,6 +1883,9 @@ impl Workspace {
     /// Move `paths` to the Trash and refresh both panels. Not yet undoable
     /// here (recoverable from the Trash). Returns how many were trashed.
     pub fn trash_paths(&mut self, paths: &[PathBuf]) -> usize {
+        if self.mutations_blocked() {
+            return 0;
+        }
         let mut n = 0;
         for p in paths {
             if trash::delete(p).is_ok() {
@@ -1874,7 +1988,7 @@ impl Workspace {
     /// longer be read are kept on the shelf (not silently discarded), and the
     /// outcome reports both how many copies started and how many were left.
     pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
-        if self.shelf.is_empty() || self.active_transfer.is_some() {
+        if self.shelf.is_empty() || self.active_transfer.is_some() || self.mutations_blocked() {
             return ShelfDrainOutcome::default();
         }
         let dest = self.active_panel_ref().current_path.clone();
@@ -1967,6 +2081,9 @@ impl Workspace {
         plan: crate::sync_guard::GuardedPlan<'_>,
         notify: impl Fn() + Send + 'static,
     ) -> Result<crate::sync_guard::Assessment, String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before synchronization".to_string());
+        }
         let assessment = crate::sync_guard::validate(&plan)?;
         self.sync_guard_policy = plan.guard.clone();
         self.enqueue_sync_between(
@@ -2034,16 +2151,20 @@ impl Workspace {
         if entries.is_empty() {
             return;
         }
+        let expectations = transfer::capture_expectations(&entries, &target);
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
             group_id: None,
             kind: TransferKind::Copy,
             entries,
+            expectations,
             target,
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
             post_success: None,
+            #[cfg(test)]
+            before_commit: None,
         };
         self.enqueue_only(spec, None);
     }
@@ -2137,7 +2258,7 @@ impl Workspace {
     pub fn drop_dragged(&mut self, notify: impl Fn() + Send + 'static) {
         // Ignore drops while a transfer or another dialog is in flight, so we
         // never stack a second operation over the first.
-        if self.active_transfer.is_some() || self.pending_op.is_some() {
+        if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
             self.clear_drag_state();
             return;
         }
@@ -2159,9 +2280,11 @@ impl Workspace {
         let has_conflicts = !conflicts.is_empty();
         let (need_bytes, free_bytes, same_volume) =
             fit_stats(&entries, &target, TransferKind::Move);
+        let expectations = transfer::capture_expectations(&entries, &target);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind: TransferKind::Move,
             entries,
+            expectations,
             target,
             conflicts,
             policy: OverwritePolicy::Ask,
@@ -3198,6 +3321,45 @@ mod tests {
     }
 
     #[test]
+    fn integrity_uncertain_failure_enters_safe_state_until_reviewed() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let affected = l.file("affected.txt", "data");
+        let mut ws = workspace(&l, &r);
+        let progress = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = progress.lock().unwrap();
+            state.operation_id = Some(crate::operation::OperationId("uncertain-op".to_string()));
+            state.finished = true;
+            state.errors.push("placement uncertain".to_string());
+            state
+                .failures
+                .push(crate::operation::ClassifiedFailure::message(
+                    crate::operation::FailureClass::IntegrityUncertain,
+                    Some(affected.clone()),
+                    "placement uncertain",
+                ));
+        }
+        ws.active_transfer = Some(progress);
+
+        assert!(!ws.poll_transfer(|| {}), "errored transfer stays visible");
+        let safe = ws.safe_state.as_ref().expect("safe state raised");
+        assert_eq!(safe.operation_id.0, "uncertain-op");
+        assert_eq!(safe.paths, vec![affected]);
+        ws.execute(Command::CreateDir);
+        assert!(!l.path().join("New Folder").exists());
+        assert!(ws.perform_undo(|| {}).is_err());
+
+        ws.acknowledge_safe_state();
+        assert!(
+            !ws.poll_transfer(|| {}),
+            "review token prevents a reopen loop"
+        );
+        assert!(ws.safe_state.is_none());
+        ws.execute(Command::CreateDir);
+        assert!(l.path().join("New Folder").is_dir());
+    }
+
+    #[test]
     fn faithfully_undoable_drops_keep_both_renames() {
         let pairs = vec![
             // A clean move kept its name and is reversible.
@@ -3537,6 +3699,7 @@ mod tests {
         let mk = |kind, method, need, free, same| PendingTransfer {
             kind,
             entries: vec![],
+            expectations: vec![],
             target: PathBuf::from("/t"),
             conflicts: vec![],
             policy: OverwritePolicy::Ask,

@@ -207,6 +207,9 @@ impl App {
             s.keep = s.groups.iter().map(|g| default_keep(g, p)).collect();
         }
         if commit {
+            if self.ws.mutations_blocked() {
+                return;
+            }
             // Every non-kept file across all groups goes to the Trash.
             let to_trash: Vec<std::path::PathBuf> = {
                 let Some(s) = self.duplicates.as_ref() else {

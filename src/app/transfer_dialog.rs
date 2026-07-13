@@ -31,18 +31,25 @@ impl App {
         let total = s.total_bytes;
         let samples: Vec<(f64, f64)> = s.speed_samples.clone();
         let finished = s.finished;
+        let stop_requested = s.stop_requested;
+        let stopped = s.stopped;
+        let requeued_files = s.requeued_files;
         let errors = s.errors.clone();
         let failures = s.failures.clone();
         drop(s);
         // Transfers waiting behind this one in the queue.
         let queued = self.ws.queued_count();
 
-        let title = if finished {
+        let title = if finished && stopped {
+            "Stopped Safely"
+        } else if finished {
             if errors.is_empty() {
                 "Transfer Complete"
             } else {
                 "Completed with Errors"
             }
+        } else if stop_requested {
+            "Finishing Current File..."
         } else {
             "Transferring..."
         };
@@ -129,6 +136,13 @@ impl App {
                             .color(t.accent),
                     );
                 }
+                if requeued_files > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("{requeued_files} changed file(s) requeued"))
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                }
 
                 Self::draw_speed_graph(ui, &samples, &t);
 
@@ -174,20 +188,41 @@ impl App {
                         self.ws.dismiss_transfer(move || c.request_repaint());
                     }
                 } else {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel")
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                !stop_requested,
+                                egui::Button::new(
+                                    egui::RichText::new(if stop_requested {
+                                        "Stopping after file"
+                                    } else {
+                                        "Stop after file"
+                                    })
                                     .size(13.0)
                                     .color(Color32::WHITE),
+                                )
+                                .fill(t.accent_warning)
+                                .corner_radius(CornerRadius::ZERO),
                             )
-                            .fill(t.accent_red)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
-                        .clicked()
-                    {
-                        self.ws.cancel_transfer();
-                    }
+                            .clicked()
+                        {
+                            self.ws.stop_transfer_after_current();
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Cancel now")
+                                        .size(13.0)
+                                        .color(Color32::WHITE),
+                                )
+                                .fill(t.accent_red)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
+                            self.ws.cancel_transfer();
+                        }
+                    });
                 }
             });
 

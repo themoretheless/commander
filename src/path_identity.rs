@@ -22,6 +22,7 @@ pub struct PathIdentity {
     pub file_id: Option<u64>,
     pub size: u64,
     pub modified_nanos: Option<u128>,
+    pub tree_fingerprint: Option<u64>,
 }
 
 impl PathIdentity {
@@ -33,6 +34,25 @@ impl PathIdentity {
         }
     }
 
+    /// Observe a path and, for a real directory, fingerprint every descendant's
+    /// relative name and metadata. Symlinks are leaves and are never followed.
+    pub fn observe_deep(path: &Path) -> std::io::Result<Self> {
+        let before = Self::observe(path)?;
+        if before.kind != Some(PathKind::Directory) {
+            return Ok(before);
+        }
+        let fingerprint = tree_fingerprint(path)?;
+        let mut after = Self::observe(path)?;
+        if !before.same_metadata(&after) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "path changed while its identity was captured",
+            ));
+        }
+        after.tree_fingerprint = Some(fingerprint);
+        Ok(after)
+    }
+
     pub fn missing(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
@@ -42,14 +62,15 @@ impl PathIdentity {
             file_id: None,
             size: 0,
             modified_nanos: None,
+            tree_fingerprint: None,
         }
     }
 
-    pub fn still_matches(&self) -> std::io::Result<bool> {
-        Self::observe(&self.path).map(|current| current.same_version(self))
+    pub fn same_version(&self, other: &Self) -> bool {
+        self.same_metadata(other) && self.tree_fingerprint == other.tree_fingerprint
     }
 
-    pub fn same_version(&self, other: &Self) -> bool {
+    fn same_metadata(&self, other: &Self) -> bool {
         self.exists == other.exists
             && self.kind == other.kind
             && self.volume == other.volume
@@ -82,8 +103,60 @@ impl PathIdentity {
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map(|duration| duration.as_nanos()),
+            tree_fingerprint: None,
         }
     }
+}
+
+fn tree_fingerprint(root: &Path) -> std::io::Result<u64> {
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut stack = vec![(PathBuf::new(), root.to_path_buf())];
+    while let Some((relative, path)) = stack.pop() {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        hash_bytes(&mut hash, relative.to_string_lossy().as_bytes());
+        let file_type = metadata.file_type();
+        hash_bytes(
+            &mut hash,
+            &[if file_type.is_symlink() {
+                3
+            } else if metadata.is_dir() {
+                2
+            } else if metadata.is_file() {
+                1
+            } else {
+                4
+            }],
+        );
+        hash_bytes(&mut hash, &metadata.len().to_le_bytes());
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |duration| duration.as_nanos());
+        hash_bytes(&mut hash, &modified.to_le_bytes());
+        let (volume, file_id) = native_identity(&metadata);
+        hash_bytes(&mut hash, &volume.unwrap_or_default().to_le_bytes());
+        hash_bytes(&mut hash, &file_id.unwrap_or_default().to_le_bytes());
+
+        if metadata.is_dir() && !file_type.is_symlink() {
+            let mut children = std::fs::read_dir(&path)?.collect::<Result<Vec<_>, _>>()?;
+            children.sort_by_key(|entry| entry.file_name());
+            for entry in children.into_iter().rev() {
+                let name = entry.file_name();
+                stack.push((relative.join(&name), entry.path()));
+            }
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
+    *hash ^= 0xff;
+    *hash = hash.wrapping_mul(0x100000001b3);
 }
 
 fn native_identity(metadata: &std::fs::Metadata) -> (Option<u64>, Option<u64>) {
@@ -109,7 +182,7 @@ mod tests {
         std::fs::write(&path, "one").unwrap();
         let existing = PathIdentity::observe(&path).unwrap();
         assert!(!missing.same_version(&existing));
-        assert!(existing.still_matches().unwrap());
+        assert!(existing.same_version(&PathIdentity::observe(&path).unwrap()));
     }
 
     #[test]
@@ -121,6 +194,17 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, "two").unwrap();
         let after = PathIdentity::observe(&path).unwrap();
+        assert!(!before.same_version(&after));
+    }
+
+    #[test]
+    fn deep_identity_detects_a_nested_file_change() {
+        let temp = TempDir::new();
+        let root = temp.dir("folder");
+        let nested = temp.file("folder/deep/file.txt", "one");
+        let before = PathIdentity::observe_deep(&root).unwrap();
+        std::fs::write(nested, "a longer value").unwrap();
+        let after = PathIdentity::observe_deep(&root).unwrap();
         assert!(!before.same_version(&after));
     }
 }

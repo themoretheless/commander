@@ -4,6 +4,7 @@
 //! and the caller supplies a `notify` callback (e.g. a repaint request), so
 //! the engine never depends on egui.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,9 +14,11 @@ use crate::operation::{
     ClassifiedFailure, DurabilityProfile, FailureClass, OperationGroupId, OperationId,
 };
 use crate::panel::FileEntry;
+use crate::path_identity::PathIdentity;
 use serde::{Deserialize, Serialize};
 
 const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
+const MAX_SOURCE_REQUEUES: usize = 2;
 
 /// What to do when destination file already exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +49,8 @@ pub enum TransferKind {
 /// Live transfer progress shared between background thread and UI.
 #[derive(Clone)]
 pub struct TransferProgress {
+    pub operation_id: Option<OperationId>,
+    pub group_id: Option<OperationGroupId>,
     pub total_bytes: u64,
     pub copied_bytes: u64,
     pub current_file: String,
@@ -53,10 +58,13 @@ pub struct TransferProgress {
     pub current_file_copied: u64,
     pub files_done: usize,
     pub files_total: usize,
+    pub requeued_files: usize,
     pub speed_samples: Vec<(f64, f64)>, // (timestamp_secs, bytes_at_that_time)
     pub started_at: std::time::Instant,
     pub finished: bool,
     pub cancelled: bool,
+    pub stop_requested: bool,
+    pub stopped: bool,
     /// Per-file failures collected during the transfer.
     pub errors: Vec<String>,
     pub failures: Vec<ClassifiedFailure>,
@@ -71,6 +79,8 @@ pub type TransferState = Arc<Mutex<TransferProgress>>;
 impl TransferProgress {
     pub fn new(total_bytes: u64, files_total: usize) -> Self {
         Self {
+            operation_id: None,
+            group_id: None,
             total_bytes,
             copied_bytes: 0,
             current_file: String::new(),
@@ -78,10 +88,13 @@ impl TransferProgress {
             current_file_copied: 0,
             files_done: 0,
             files_total,
+            requeued_files: 0,
             speed_samples: vec![(0.0, 0.0)],
             started_at: std::time::Instant::now(),
             finished: false,
             cancelled: false,
+            stop_requested: false,
+            stopped: false,
             errors: Vec::new(),
             failures: Vec::new(),
             placements: Vec::new(),
@@ -197,11 +210,79 @@ pub struct TransferSpec {
     pub group_id: Option<OperationGroupId>,
     pub kind: TransferKind,
     pub entries: Vec<FileEntry>,
+    pub expectations: Vec<TransferExpectation>,
     pub target: PathBuf,
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
     pub post_success: Option<PostTransferAction>,
+    #[cfg(test)]
+    pub before_commit: Option<BeforeCommitHook>,
+}
+
+#[cfg(test)]
+pub type BeforeCommitHook = Arc<dyn Fn(&Path, &Path) + Send + Sync>;
+
+#[derive(Clone, Debug)]
+pub struct TransferExpectation {
+    pub source: Result<PathIdentity, String>,
+    pub destination: Result<PathIdentity, String>,
+}
+
+pub fn capture_expectations(entries: &[FileEntry], target: &Path) -> Vec<TransferExpectation> {
+    entries
+        .iter()
+        .map(|entry| TransferExpectation {
+            source: capture_identity(&entry.path),
+            destination: capture_identity(&target.join(&entry.name)),
+        })
+        .collect()
+}
+
+fn capture_identity(path: &Path) -> Result<PathIdentity, String> {
+    PathIdentity::observe_deep(path)
+        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))
+}
+
+struct TransferWorkItem {
+    index: usize,
+    entry: FileEntry,
+    expectation: TransferExpectation,
+    requeues: usize,
+}
+
+fn prepare_source_retry(
+    item: &mut TransferWorkItem,
+    identity: PathIdentity,
+) -> Result<(u64, u64), String> {
+    if item.requeues >= MAX_SOURCE_REQUEUES {
+        return Err(format!(
+            "source changed repeatedly during transfer: {}",
+            item.entry.path.display()
+        ));
+    }
+    let old_size = entry_size(&item.entry);
+    let metadata = std::fs::symlink_metadata(&item.entry.path)
+        .map_err(|error| format!("Could not requeue {}: {error}", item.entry.path.display()))?;
+    let refreshed = FileEntry::from_meta(item.entry.path.clone(), &metadata)
+        .ok_or_else(|| format!("Could not requeue {}", item.entry.path.display()))?;
+    let new_size = entry_size(&refreshed);
+    item.entry = refreshed;
+    item.expectation.source = Ok(identity);
+    item.requeues += 1;
+    Ok((old_size, new_size))
+}
+
+fn reset_for_retry(progress: &TransferState, completed_bytes: u64, old_size: u64, new_size: u64) {
+    let mut state = crate::lock_util::recover(progress);
+    state.total_bytes = state
+        .total_bytes
+        .saturating_sub(old_size)
+        .saturating_add(new_size);
+    state.copied_bytes = completed_bytes;
+    state.current_file_copied = 0;
+    state.current_file_size = new_size;
+    state.requeued_files += 1;
 }
 
 fn record_failure(progress: &TransferState, entry_name: &str, failure: ClassifiedFailure) {
@@ -210,6 +291,25 @@ fn record_failure(progress: &TransferState, entry_name: &str, failure: Classifie
         .errors
         .push(format!("{entry_name}: {}", failure.message));
     state.failures.push(failure);
+}
+
+fn complete_without_copy(
+    progress: &TransferState,
+    completed_bytes: &mut u64,
+    size: u64,
+    entry_name: &str,
+    failure: Option<ClassifiedFailure>,
+    notify: &impl Fn(),
+) {
+    *completed_bytes += size;
+    let mut state = crate::lock_util::recover(progress);
+    state.copied_bytes = *completed_bytes;
+    state.files_done += 1;
+    drop(state);
+    if let Some(failure) = failure {
+        record_failure(progress, entry_name, failure);
+    }
+    notify();
 }
 
 /// Size of one entry: its byte length, or the recursive size of a directory.
@@ -236,16 +336,37 @@ pub fn spawn_transfer(
     notify: impl Fn() + Send + 'static,
 ) {
     std::thread::spawn(move || {
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.operation_id = Some(spec.operation_id.clone());
+            state.group_id = spec.group_id.clone();
+        }
         let is_move = spec.kind == TransferKind::Move;
         let mut base_bytes: u64 = 0;
-        // Size every entry once (a directory walk) and reuse the figures for the
-        // grand total and per-entry progress, so a same-volume move never walks
-        // the tree a second time just to advance the bar.
-        let sizes: Vec<u64> = spec.entries.iter().map(entry_size).collect();
-        crate::lock_util::recover(&progress).total_bytes = sizes.iter().sum();
+        let total_bytes = spec.entries.iter().map(entry_size).sum();
+        crate::lock_util::recover(&progress).total_bytes = total_bytes;
+        let expectations = if spec.expectations.len() == spec.entries.len() {
+            spec.expectations
+        } else {
+            capture_expectations(&spec.entries, &spec.target)
+        };
+        let mut work = spec
+            .entries
+            .into_iter()
+            .zip(expectations)
+            .enumerate()
+            .map(|(index, (entry, expectation))| TransferWorkItem {
+                index,
+                entry,
+                expectation,
+                requeues: 0,
+            })
+            .collect::<VecDeque<_>>();
 
-        for (i, entry) in spec.entries.iter().enumerate() {
-            let this_size = sizes[i];
+        'work: while let Some(mut work_item) = work.pop_front() {
+            let i = work_item.index;
+            let this_size = entry_size(&work_item.entry);
+            let entry = work_item.entry.clone();
             let dest = spec.target.join(&entry.name);
 
             {
@@ -254,36 +375,107 @@ pub fn spawn_transfer(
                 if s.cancelled {
                     break; // fall through to the finished-setter below
                 }
+                if s.stop_requested {
+                    s.stopped = true;
+                    break;
+                }
             }
 
-            // Advance the progress bar past an entry we are about to skip
-            // (self-reference, skip-on-conflict, refused overwrite) and record
-            // it as processed. `err` is an optional message to surface.
-            let skip_entry =
-                |progress: &TransferState, base: &mut u64, failure: Option<ClassifiedFailure>| {
-                    *base += this_size;
-                    let mut s = crate::lock_util::recover(progress);
-                    s.copied_bytes = *base;
-                    s.files_done = i + 1;
-                    drop(s);
-                    if let Some(failure) = failure {
-                        record_failure(progress, &entry.name, failure);
+            let expected_source = match work_item.expectation.source.clone() {
+                Ok(identity) => identity,
+                Err(message) => {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        Some(ClassifiedFailure::message(
+                            FailureClass::Blocked,
+                            Some(entry.path.clone()),
+                            message,
+                        )),
+                        &notify,
+                    );
+                    continue;
+                }
+            };
+            let source_before = match PathIdentity::observe_deep(&entry.path) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        Some(ClassifiedFailure::io(
+                            Some(entry.path.clone()),
+                            "source re-stat failed",
+                            &error,
+                        )),
+                        &notify,
+                    );
+                    continue;
+                }
+            };
+            if !expected_source.same_version(&source_before) {
+                let entry_name = entry.name.clone();
+                let entry_path = entry.path.clone();
+                match prepare_source_retry(&mut work_item, source_before) {
+                    Ok((old_size, new_size)) => {
+                        reset_for_retry(&progress, base_bytes, old_size, new_size);
+                        work.push_back(work_item);
+                        notify();
                     }
-                    notify();
-                };
+                    Err(message) => complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry_name,
+                        Some(ClassifiedFailure::message(
+                            FailureClass::Retryable,
+                            Some(entry_path),
+                            message,
+                        )),
+                        &notify,
+                    ),
+                }
+                continue;
+            }
+
+            let expected_destination = match work_item.expectation.destination.clone() {
+                Ok(identity) => identity,
+                Err(message) => {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        Some(ClassifiedFailure::message(
+                            FailureClass::Blocked,
+                            Some(dest.clone()),
+                            message,
+                        )),
+                        &notify,
+                    );
+                    continue;
+                }
+            };
 
             // Reject destructive self-referential transfers (a directory into
             // itself or its own subtree, a file onto itself) before touching
             // anything, so neither source nor destination is harmed.
             if fs_util::is_within_or_equal(&dest, &entry.path) {
-                skip_entry(
+                complete_without_copy(
                     &progress,
                     &mut base_bytes,
+                    this_size,
+                    &entry.name,
                     Some(ClassifiedFailure::message(
                         FailureClass::UserDecision,
                         Some(entry.path.clone()),
                         "cannot copy a path into itself",
                     )),
+                    &notify,
                 );
                 continue;
             }
@@ -296,21 +488,31 @@ pub fn spawn_transfer(
             if dest_present {
                 match spec.policy {
                     OverwritePolicy::SkipAll => {
-                        skip_entry(&progress, &mut base_bytes, None);
+                        complete_without_copy(
+                            &progress,
+                            &mut base_bytes,
+                            this_size,
+                            &entry.name,
+                            None,
+                            &notify,
+                        );
                         continue;
                     }
                     OverwritePolicy::Ask => {
                         // No overwrite was confirmed (no conflict was shown, or
                         // the destination appeared after the scan): refuse
                         // rather than silently clobber it.
-                        skip_entry(
+                        complete_without_copy(
                             &progress,
                             &mut base_bytes,
+                            this_size,
+                            &entry.name,
                             Some(ClassifiedFailure::message(
                                 FailureClass::UserDecision,
                                 Some(dest.clone()),
                                 "destination already exists",
                             )),
+                            &notify,
                         );
                         continue;
                     }
@@ -321,21 +523,21 @@ pub fn spawn_transfer(
 
             let errors_before = crate::lock_util::recover(&progress).errors.len();
 
-            // Pick the copy target and whether a swap is needed:
-            // - new destination: copy straight to `dest`.
-            // - OverwriteAll: copy to a staging sibling, then swap into place,
-            //   so the existing destination is never destroyed before the copy
-            //   is known good (and native CLONE|EXCL never collides with it).
-            // - KeepBoth: copy to a fresh "name copy" sibling, no swap, and the
-            //   existing destination is left intact.
-            let overwrite = dest_present && spec.policy == OverwritePolicy::OverwriteAll;
-            let copy_target = if !dest_present {
-                dest.clone()
-            } else if overwrite {
-                staging_path(&dest)
-            } else {
+            // Every entry is staged beside its final landing. This gives new
+            // directories the same no-merge guarantee as files and leaves one
+            // commit point where destination identity can be revalidated.
+            let landing = if dest_present && spec.policy == OverwritePolicy::KeepBoth {
                 fs_util::available_copy_name(&dest)
+            } else {
+                dest.clone()
             };
+            let expected_landing = if landing == dest {
+                expected_destination
+            } else {
+                PathIdentity::missing(&landing)
+            };
+            let replace_existing = expected_landing.exists;
+            let copy_target = staging_path(&landing);
 
             // Same-volume moves are an instant, atomic rename instead of a
             // copy-then-delete: no transient duplication, no walk-and-copy of
@@ -347,11 +549,12 @@ pub fn spawn_transfer(
                     .parent()
                     .is_some_and(|p| fs_util::same_volume(p, &spec.target));
 
+            let attempt_base = base_bytes;
             let result = if renamed {
                 rename_entry(
                     &entry.path,
                     &copy_target,
-                    entry,
+                    &entry,
                     this_size,
                     &progress,
                     base_bytes,
@@ -384,6 +587,98 @@ pub fn spawn_transfer(
                 }
             }
 
+            #[cfg(test)]
+            if result.is_ok()
+                && let Some(hook) = &spec.before_commit
+            {
+                hook(&entry.path, &landing);
+            }
+
+            if result.is_ok() && crate::lock_util::recover(&progress).errors.len() == errors_before
+            {
+                let observed_source = if renamed {
+                    copy_target.as_path()
+                } else {
+                    entry.path.as_path()
+                };
+                match PathIdentity::observe_deep(observed_source) {
+                    Ok(source_after) if source_before.same_version(&source_after) => {}
+                    Ok(_) => {
+                        let restore_error = undo_placement(&copy_target, &entry.path, renamed);
+                        if let Some(message) = restore_error {
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(copy_target.clone()),
+                                    message,
+                                ),
+                            );
+                        } else {
+                            match PathIdentity::observe_deep(&entry.path) {
+                                Ok(fresh_identity) => {
+                                    let entry_name = entry.name.clone();
+                                    let entry_path = entry.path.clone();
+                                    match prepare_source_retry(&mut work_item, fresh_identity) {
+                                        Ok((old_size, new_size)) => {
+                                            base_bytes = attempt_base;
+                                            reset_for_retry(
+                                                &progress, base_bytes, old_size, new_size,
+                                            );
+                                            work.push_back(work_item);
+                                            notify();
+                                            continue 'work;
+                                        }
+                                        Err(message) => record_failure(
+                                            &progress,
+                                            &entry_name,
+                                            ClassifiedFailure::message(
+                                                FailureClass::Retryable,
+                                                Some(entry_path),
+                                                message,
+                                            ),
+                                        ),
+                                    }
+                                }
+                                Err(error) => record_failure(
+                                    &progress,
+                                    &entry.name,
+                                    ClassifiedFailure::io(
+                                        Some(entry.path.clone()),
+                                        "source re-stat failed after copy",
+                                        &error,
+                                    ),
+                                ),
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let restore_error = undo_placement(&copy_target, &entry.path, renamed);
+                        record_failure(
+                            &progress,
+                            &entry.name,
+                            ClassifiedFailure::io(
+                                Some(entry.path.clone()),
+                                "source re-stat failed after copy",
+                                &error,
+                            ),
+                        );
+                        if let Some(message) = restore_error {
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(copy_target.clone()),
+                                    message,
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+
             // "Clean" = Ok return AND no per-file errors recorded by the
             // native callback during this entry.
             let mut clean = result.is_ok()
@@ -404,6 +699,35 @@ pub fn spawn_transfer(
                 );
                 clean = false;
             }
+            if clean {
+                match PathIdentity::observe_deep(&landing) {
+                    Ok(current) if expected_landing.same_version(&current) => {}
+                    Ok(_) => {
+                        record_failure(
+                            &progress,
+                            &entry.name,
+                            ClassifiedFailure::message(
+                                FailureClass::UserDecision,
+                                Some(landing.clone()),
+                                "destination changed after conflict review",
+                            ),
+                        );
+                        clean = false;
+                    }
+                    Err(error) => {
+                        record_failure(
+                            &progress,
+                            &entry.name,
+                            ClassifiedFailure::io(
+                                Some(landing.clone()),
+                                "destination identity check failed",
+                                &error,
+                            ),
+                        );
+                        clean = false;
+                    }
+                }
+            }
 
             let placed = if !clean {
                 // Undo our placement; a pre-existing dest is untouched. For a
@@ -421,19 +745,26 @@ pub fn spawn_transfer(
                     );
                 }
                 false
-            } else if overwrite {
-                let version_result = if spec.durability.keeps_versions() {
+            } else {
+                let version_result = if replace_existing && spec.durability.keeps_versions() {
                     crate::version_store::preserve(
-                        &dest,
+                        &landing,
                         &spec.operation_id,
-                        spec.operation_id.step_key(i, &dest),
+                        spec.operation_id.step_key(i, &landing),
                     )
                     .map(|_| ())
                     .map_err(std::io::Error::other)
                 } else {
                     Ok(())
                 };
-                match version_result.and_then(|()| swap_into_place(&copy_target, &dest)) {
+                let placement = version_result.and_then(|()| {
+                    if replace_existing {
+                        swap_into_place(&copy_target, &landing)
+                    } else {
+                        crate::native_copy::rename_noreplace(&copy_target, &landing)
+                    }
+                });
+                match placement {
                     Ok(()) => true,
                     Err(e) => {
                         // The swap left the staged data at `copy_target`. For a
@@ -445,7 +776,11 @@ pub fn spawn_transfer(
                         record_failure(
                             &progress,
                             &entry.name,
-                            ClassifiedFailure::io(Some(dest.clone()), "final placement failed", &e),
+                            ClassifiedFailure::io(
+                                Some(landing.clone()),
+                                "final placement failed",
+                                &e,
+                            ),
                         );
                         if let Some(msg) = extra {
                             record_failure(
@@ -461,10 +796,6 @@ pub fn spawn_transfer(
                         false
                     }
                 }
-            } else {
-                // New destination or KeepBoth: the copy already landed at its
-                // final path, nothing to swap.
-                true
             };
 
             // Delete the source only once the destination is fully in place.
@@ -490,19 +821,14 @@ pub fn spawn_transfer(
             // reverses the real placement (a KeepBoth conflict lands at a "copy"
             // name, not the original).
             if is_move && placed {
-                let landed = if overwrite {
-                    dest.clone()
-                } else {
-                    copy_target.clone()
-                };
                 crate::lock_util::recover(&progress)
                     .placements
-                    .push((entry.path.clone(), landed));
+                    .push((entry.path.clone(), landing.clone()));
             }
 
             {
                 let mut s = crate::lock_util::recover(&progress);
-                s.files_done = i + 1;
+                s.files_done += 1;
                 s.record_sample();
             }
             notify();
@@ -553,6 +879,10 @@ fn finish_progress(progress: &TransferState) {
     let mut s = crate::lock_util::recover(progress);
     if s.files_done == s.files_total {
         s.cancelled = false;
+        s.stop_requested = false;
+        s.stopped = false;
+    } else if s.stop_requested {
+        s.stopped = true;
     }
     s.finished = true;
     s.record_sample();
@@ -638,8 +968,8 @@ fn undo_placement(staged: &Path, source: &Path, was_renamed: bool) -> Option<Str
 /// to a backup, rename `staged` into place, then drop the backup. Restores
 /// the original on failure, so an interrupted overwrite never loses data.
 fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<()> {
-    if !dest.exists() {
-        return std::fs::rename(staged, dest);
+    if !fs_util::path_is_taken(dest) {
+        return crate::native_copy::rename_noreplace(staged, dest);
     }
     let backup = staging_path(dest);
     std::fs::rename(dest, &backup)?;
@@ -840,11 +1170,13 @@ mod tests {
             group_id: None,
             kind: TransferKind::Move,
             entries: vec![entry_for(&file)],
+            expectations: capture_expectations(&[entry_for(&file)], root.path()),
             target: root.path().to_path_buf(),
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
+            before_commit: None,
         });
 
         assert!(state.errors.is_empty(), "{:?}", state.errors);
@@ -863,11 +1195,13 @@ mod tests {
             group_id: None,
             kind: TransferKind::Move,
             entries: vec![entry_for(&file)],
+            expectations: capture_expectations(&[entry_for(&file)], root.path()),
             target: root.path().to_path_buf(),
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
+            before_commit: None,
         });
 
         assert!(root.path().join("a.txt").is_file());
@@ -891,12 +1225,14 @@ mod tests {
             operation_id: OperationId::new(),
             group_id: None,
             kind,
+            expectations: capture_expectations(&entries, target),
             entries,
             target: target.to_path_buf(),
             policy,
             method,
             durability: DurabilityProfile::Fast,
             post_success: None,
+            before_commit: None,
         }
     }
 
@@ -1215,6 +1551,116 @@ mod tests {
             std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
             "new verified contents"
         );
+    }
+
+    #[test]
+    fn source_modified_between_copy_and_commit_is_requeued() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "first version");
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired_for_hook = Arc::clone(&fired);
+        request.before_commit = Some(Arc::new(move |source, _| {
+            if !fired_for_hook.swap(true, Ordering::SeqCst) {
+                std::fs::write(source, "second version after copy").unwrap();
+            }
+        }));
+
+        let state = run(request);
+
+        assert!(state.failures.is_empty(), "{:?}", state.failures);
+        assert_eq!(state.requeued_files, 1);
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "second version after copy"
+        );
+    }
+
+    #[test]
+    fn destination_modified_between_review_and_commit_is_preserved() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("a.txt", "incoming");
+        dst.file("a.txt", "reviewed destination");
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::OverwriteAll,
+        );
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired_for_hook = Arc::clone(&fired);
+        request.before_commit = Some(Arc::new(move |_, landing| {
+            if !fired_for_hook.swap(true, Ordering::SeqCst) {
+                std::fs::write(landing, "changed by another process").unwrap();
+            }
+        }));
+
+        let state = run(request);
+
+        assert_eq!(state.failures.len(), 1, "{:?}", state.failures);
+        assert_eq!(state.failures[0].class, FailureClass::UserDecision);
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "changed by another process"
+        );
+        assert!(
+            std::fs::read_dir(dst.path()).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("cmdr-tmp")),
+            "staged copy was cleaned"
+        );
+    }
+
+    #[test]
+    fn graceful_stop_finishes_current_entry_and_accepts_no_next_entry() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let first = src.file("a.txt", "first");
+        let second = src.file("b.txt", "second");
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&first), entry_for(&second)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(0, 2)));
+        let progress_for_hook = Arc::clone(&progress);
+        request.before_commit = Some(Arc::new(move |_, _| {
+            crate::lock_util::recover(&progress_for_hook).stop_requested = true;
+        }));
+
+        spawn_transfer(request, Arc::clone(&progress), || {});
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if crate::lock_util::recover(&progress).finished {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "transfer timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let state = crate::lock_util::recover(&progress);
+
+        assert!(state.stopped);
+        assert!(!state.cancelled);
+        assert_eq!(state.files_done, 1);
+        assert!(dst.path().join("a.txt").is_file());
+        assert!(!dst.path().join("b.txt").exists());
     }
 
     #[test]

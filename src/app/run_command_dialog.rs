@@ -236,6 +236,15 @@ impl App {
                 return;
             }
             let now = ctx.input(|i| i.time);
+            if self.ws.mutations_blocked() {
+                self.toasts.push(crate::toasts::Toast::new(
+                    "Safe-state review required",
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
+                return;
+            }
             match std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&cmdline)

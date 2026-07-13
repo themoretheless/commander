@@ -6,6 +6,7 @@ use crate::scan::FlatFileEntry;
 impl App {
     pub(crate) fn show_confirm_dialog(&mut self, ctx: &egui::Context) {
         let t = self.colors;
+        let mutations_blocked = self.ws.mutations_blocked();
         let Some(op) = &self.ws.pending_op else {
             return;
         };
@@ -358,7 +359,7 @@ impl App {
                         ui.add_space(8.0);
                         if ui
                             .add_enabled(
-                                !overflow,
+                                !overflow && !mutations_blocked,
                                 egui::Button::new(
                                     egui::RichText::new(action_label)
                                         .size(13.0)
@@ -377,7 +378,11 @@ impl App {
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.dismiss_pending_op(ctx);
                 }
-                if !has_conflicts && !overflow && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if !has_conflicts
+                    && !overflow
+                    && !mutations_blocked
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
                     self.confirm_pending_op(ctx);
                 }
             });

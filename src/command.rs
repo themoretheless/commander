@@ -170,6 +170,26 @@ pub enum Command {
     CopyListingMarkdown,
 }
 
+impl Command {
+    pub fn mutates_filesystem(self) -> bool {
+        matches!(
+            self,
+            Self::RequestCopy
+                | Self::RequestMove
+                | Self::CreateDir
+                | Self::RequestDelete
+                | Self::BeginRename
+                | Self::BeginBatchRename
+                | Self::BeginSync
+                | Self::BeginRunBar
+                | Self::GatherIntoFolder
+                | Self::Undo
+                | Self::Redo
+                | Self::ShelfDrain
+        )
+    }
+}
+
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
 pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
     vec![

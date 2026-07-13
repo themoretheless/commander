@@ -104,6 +104,7 @@ pub struct SafeState {
     pub operation_id: OperationId,
     pub reason: String,
     pub paths: Vec<PathBuf>,
+    pub failures: Vec<ClassifiedFailure>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

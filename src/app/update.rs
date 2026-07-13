@@ -17,6 +17,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
         self.show_transfer_dialog(&ctx);
+        self.show_safe_state_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
         self.show_batch_rename_dialog(&ctx);

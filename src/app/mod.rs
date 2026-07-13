@@ -21,6 +21,7 @@ mod recent_dialog;
 mod rename_dialog;
 mod render;
 mod run_command_dialog;
+mod safe_state_dialog;
 mod saved_search_dialog;
 mod sync_dialog;
 mod toolbar;
