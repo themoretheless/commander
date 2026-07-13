@@ -1,9 +1,12 @@
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
+const MAX_PRELOAD_WORKERS: usize = 4;
+const FAILED_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct CacheEntry {
     texture: TextureHandle,
@@ -22,6 +25,8 @@ pub struct ImageCache {
     frame: u64,
     /// Images currently being loaded in background
     pending: PendingMap,
+    failed: Arc<Mutex<HashMap<PathBuf, std::time::Instant>>>,
+    generation: Arc<AtomicU64>,
     current_dir: Option<PathBuf>,
 }
 
@@ -32,6 +37,8 @@ impl ImageCache {
             total_bytes: 0,
             frame: 0,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            failed: Arc::new(Mutex::new(HashMap::new())),
+            generation: Arc::new(AtomicU64::new(0)),
             current_dir: None,
         }
     }
@@ -57,16 +64,36 @@ impl ImageCache {
         if self.entries.contains_key(path) {
             return self.get(path);
         }
+        {
+            let mut failed = crate::lock_util::recover(&self.failed);
+            if failed
+                .get(path)
+                .is_some_and(|when| when.elapsed() < FAILED_RETRY_AFTER)
+            {
+                return None;
+            }
+            failed.remove(path);
+        }
 
         // Check if pending load completed
         let from_pending = {
             let mut p = crate::lock_util::recover(&self.pending);
+            if p.get(path).is_some_and(Option::is_none) {
+                return None;
+            }
             p.remove(path).flatten()
         };
 
         let loaded = match from_pending {
             Some(ready) => Some(ready),
-            None => load_image_from_disk(path).ok(),
+            None => match load_image_from_disk(path) {
+                Ok(ready) => Some(ready),
+                Err(_) => {
+                    crate::lock_util::recover(&self.failed)
+                        .insert(path.to_path_buf(), std::time::Instant::now());
+                    None
+                }
+            },
         };
 
         if let Some((img, byte_size)) = loaded {
@@ -85,9 +112,7 @@ impl ImageCache {
         self.get(path)
     }
 
-    /// Request preloading of images around the cursor.
-    /// `paths` should be the list of image paths to keep cached (back 10 + forward 50).
-    /// `dir` is the current directory — if changed, old cache is flushed.
+    /// Request preloading in priority order, with fixed worker concurrency.
     pub fn preload(&mut self, ctx: &Context, paths: &[PathBuf], dir: &Path) {
         self.frame += 1;
 
@@ -98,66 +123,27 @@ impl ImageCache {
             self.current_dir = Some(dir.to_path_buf());
             self.entries.clear();
             self.total_bytes = 0;
+            self.generation.fetch_add(1, Ordering::AcqRel);
+            crate::lock_util::recover(&self.pending).clear();
+            crate::lock_util::recover(&self.failed).clear();
         }
 
-        // Start loading any paths not in cache and not already pending
-        let pending = Arc::clone(&self.pending);
-        for path in paths {
-            if self.entries.contains_key(path) {
-                // Already cached — update last_used
-                if let Some(entry) = self.entries.get_mut(path) {
-                    entry.last_used = self.frame;
-                }
-                continue;
-            }
-
-            let already_pending = {
-                let p = crate::lock_util::recover(&pending);
-                p.contains_key(path)
-            };
-            if already_pending {
-                continue;
-            }
-
-            // Mark as pending (None = loading)
-            {
-                let mut p = crate::lock_util::recover(&pending);
-                p.insert(path.clone(), None);
-            }
-
-            let path_clone = path.clone();
-            let pending_clone = Arc::clone(&self.pending);
-            let ctx_clone = ctx.clone();
-            std::thread::spawn(move || {
-                let result = load_image_from_disk(&path_clone);
-                if let Ok((img, byte_size)) = result {
-                    crate::lock_util::recover(&pending_clone)
-                        .insert(path_clone.clone(), Some((img, byte_size)));
-                    ctx_clone.request_repaint();
-                } else {
-                    // Remove from pending on error
-                    crate::lock_util::recover(&pending_clone).remove(&path_clone);
-                }
-            });
-        }
-
-        // Collect completed loads into the cache
+        // Publish finished decodes before calculating free worker slots.
         {
-            let mut p = crate::lock_util::recover(&self.pending);
-            let completed: Vec<_> = p
+            let mut pending = crate::lock_util::recover(&self.pending);
+            let completed: Vec<_> = pending
                 .iter()
-                .filter(|(_, v)| v.is_some())
-                .map(|(k, _)| k.clone())
+                .filter(|(_, value)| value.is_some())
+                .map(|(path, _)| path.clone())
                 .collect();
-
             for path in completed {
-                if let Some(Some((img, byte_size))) = p.remove(&path) {
+                if let Some(Some((image, byte_size))) = pending.remove(&path) {
                     let name = path
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_string();
-                    let texture = ctx.load_texture(&name, img, TextureOptions::LINEAR);
+                    let texture = ctx.load_texture(&name, image, TextureOptions::LINEAR);
                     self.total_bytes = self.total_bytes.saturating_add(byte_size);
                     self.entries.insert(
                         path,
@@ -169,6 +155,72 @@ impl ImageCache {
                     );
                 }
             }
+        }
+
+        fn image_pool() -> &'static rayon::ThreadPool {
+            static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+            POOL.get_or_init(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(MAX_PRELOAD_WORKERS)
+                    .thread_name(|index| format!("preview-worker-{index}"))
+                    .build()
+                    .expect("preview worker pool")
+            })
+        }
+
+        let failed = {
+            let mut failed = crate::lock_util::recover(&self.failed);
+            failed.retain(|_, when| when.elapsed() < FAILED_RETRY_AFTER);
+            failed.clone()
+        };
+        let mut available_slots =
+            MAX_PRELOAD_WORKERS.saturating_sub(crate::lock_util::recover(&self.pending).len());
+        for path in paths {
+            if self.entries.contains_key(path) {
+                if let Some(entry) = self.entries.get_mut(path) {
+                    entry.last_used = self.frame;
+                }
+                continue;
+            }
+            if available_slots == 0 || failed.contains_key(path) {
+                continue;
+            }
+            {
+                let mut pending = crate::lock_util::recover(&self.pending);
+                if pending.contains_key(path) {
+                    continue;
+                }
+                pending.insert(path.clone(), None);
+            }
+            available_slots -= 1;
+
+            let path_clone = path.clone();
+            let pending_clone = Arc::clone(&self.pending);
+            let failed_clone = Arc::clone(&self.failed);
+            let active_generation = Arc::clone(&self.generation);
+            let generation = active_generation.load(Ordering::Acquire);
+            let ctx_clone = ctx.clone();
+            image_pool().spawn_fifo(move || {
+                if active_generation.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                let result = load_image_from_disk(&path_clone);
+                if let Ok((img, byte_size)) = result {
+                    let mut pending = crate::lock_util::recover(&pending_clone);
+                    if active_generation.load(Ordering::Acquire) == generation {
+                        pending.insert(path_clone.clone(), Some((img, byte_size)));
+                        drop(pending);
+                        ctx_clone.request_repaint();
+                    }
+                } else {
+                    let mut pending = crate::lock_util::recover(&pending_clone);
+                    let mut failed = crate::lock_util::recover(&failed_clone);
+                    if active_generation.load(Ordering::Acquire) == generation {
+                        pending.remove(&path_clone);
+                        failed.insert(path_clone, std::time::Instant::now());
+                    }
+                }
+            });
         }
 
         // Evict entries not in the keep set and over budget

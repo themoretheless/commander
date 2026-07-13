@@ -68,6 +68,14 @@ fn walk_log() -> &'static Mutex<HashMap<PathBuf, (std::time::Instant, std::time:
 
 const WALK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
 const WALK_EXPENSIVE: std::time::Duration = std::time::Duration::from_secs(2);
+const DEFAULT_VISIBLE_ROWS: usize = 32;
+
+fn visible_window(total: usize, anchor: usize, page_rows: usize) -> std::ops::Range<usize> {
+    let rows = page_rows.max(DEFAULT_VISIBLE_ROWS).min(total);
+    let start = anchor.min(total.saturating_sub(rows));
+    let end = start.saturating_add(rows).min(total);
+    start..end
+}
 
 #[cfg(test)]
 pub(crate) fn reset_walk_log() {
@@ -1161,6 +1169,24 @@ impl PanelState {
             need_size.push((entry.path.clone(), dir_mtime));
         }
 
+        let filtered = self.filtered_indices();
+        let visible_paths: std::collections::HashSet<PathBuf> =
+            visible_window(filtered.len(), self.scroll_anchor, self.page_rows)
+                .filter_map(|index| {
+                    filtered
+                        .get(index)
+                        .and_then(|entry| self.entries.get(*entry))
+                })
+                .filter(|entry| entry.is_dir)
+                .map(|entry| entry.path.clone())
+                .collect();
+        let (visible_counts, background_counts): (Vec<_>, Vec<_>) = need_count
+            .into_iter()
+            .partition(|path| visible_paths.contains(path));
+        let (visible_sizes, background_sizes): (Vec<_>, Vec<_>) = need_size
+            .into_iter()
+            .partition(|(path, _)| visible_paths.contains(path));
+
         // Dedicated thread pool (max 10 threads) for filesystem work
         fn fs_pool() -> &'static rayon::ThreadPool {
             static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
@@ -1176,65 +1202,82 @@ impl PanelState {
         // Subdir counts
         let counts = Arc::clone(&self.dir_counts);
         let wake1 = self.notify.clone();
-        fs_pool().spawn(move || {
+        fs_pool().spawn_fifo(move || {
             use rayon::prelude::*;
-            let results: Vec<_> = fs_pool().install(|| {
-                need_count
-                    .par_iter()
-                    .map(|p| {
-                        let count = fs::read_dir(p)
-                            .map(|rd| rd.filter_map(|e| e.ok()).count())
-                            .unwrap_or(0);
-                        (p.clone(), count)
-                    })
-                    .collect()
-            });
-            if let Ok(mut map) = counts.lock() {
-                for (p, c) in results {
-                    map.insert(p, c);
+            let count = |path: &PathBuf| {
+                let count = fs::read_dir(path)
+                    .map(|entries| entries.filter_map(Result::ok).count())
+                    .unwrap_or(0);
+                (path.clone(), count)
+            };
+            for path in &visible_counts {
+                let (path, count) = count(path);
+                if let Ok(mut map) = counts.lock() {
+                    map.insert(path, count);
+                }
+                if let Some(wake) = &wake1 {
+                    wake();
                 }
             }
-            if let Some(wake) = wake1 {
+            let background_results: Vec<_> =
+                fs_pool().install(|| background_counts.par_iter().map(count).collect());
+            if let Ok(mut map) = counts.lock() {
+                map.extend(background_results);
+            }
+            if let Some(wake) = &wake1 {
                 wake();
             }
         });
 
         // Dir sizes
-        if !need_size.is_empty() {
+        if !visible_sizes.is_empty() || !background_sizes.is_empty() {
             let sizes = Arc::clone(&self.dir_sizes);
             let wake2 = self.notify.clone();
-            fs_pool().spawn(move || {
+            fs_pool().spawn_fifo(move || {
                 use rayon::prelude::*;
-                let results: Vec<_> = fs_pool().install(|| {
-                    need_size
-                        .par_iter()
-                        .map(|(p, mt)| {
-                            let started = std::time::Instant::now();
-                            let size = crate::fs_util::dir_size_recursive(p);
-                            if let Ok(mut log) = walk_log().lock() {
-                                log.insert(
-                                    p.clone(),
-                                    (std::time::Instant::now(), started.elapsed()),
-                                );
-                            }
-                            (p.clone(), *mt, size)
-                        })
-                        .collect()
-                });
-                if let Ok(mut map) = sizes.lock() {
-                    for (p, _, size) in &results {
-                        map.insert(p.clone(), *size);
+                fn measure(
+                    (path, modified): &(PathBuf, Option<SystemTime>),
+                ) -> (PathBuf, Option<SystemTime>, u64) {
+                    let started = std::time::Instant::now();
+                    let size = crate::fs_util::dir_size_recursive(path);
+                    if let Ok(mut log) = walk_log().lock() {
+                        log.insert(path.clone(), (std::time::Instant::now(), started.elapsed()));
                     }
+                    (path.clone(), *modified, size)
                 }
-                if let Ok(mut cache) = dir_size_cache().lock() {
-                    for (p, mt, size) in &results {
-                        if let Some(mt) = mt {
-                            cache.insert(p.clone(), (*mt, *size));
+
+                let publish = |results: &[(PathBuf, Option<SystemTime>, u64)]| {
+                    if let Ok(mut map) = sizes.lock() {
+                        for (path, _, size) in results {
+                            map.insert(path.clone(), *size);
                         }
                     }
+                    if let Ok(mut cache) = dir_size_cache().lock() {
+                        for (path, modified, size) in results {
+                            if let Some(modified) = modified {
+                                cache.insert(path.clone(), (*modified, *size));
+                            }
+                        }
+                    }
+                };
+
+                for item in &visible_sizes {
+                    let result = measure(item);
+                    publish(std::slice::from_ref(&result));
+                    if let Some(wake) = &wake2 {
+                        wake();
+                    }
                 }
-                flush_cache();
-                if let Some(wake) = wake2 {
+                if !visible_sizes.is_empty() {
+                    flush_cache();
+                }
+                let background_results: Vec<_> =
+                    fs_pool().install(|| background_sizes.par_iter().map(measure).collect());
+                if !background_results.is_empty() {
+                    publish(&background_results);
+                    flush_cache();
+                }
+                if let Some(wake) = &wake2 {
                     wake();
                 }
             });
@@ -1367,6 +1410,9 @@ impl PanelState {
         self.current_path = path;
         self.search_query.clear();
         let remembered = self.restore_view_settings();
+        if let Some((_, scroll_anchor)) = &remembered {
+            self.scroll_anchor = *scroll_anchor;
+        }
         self.refresh();
         if let Some((cursor_path, scroll_anchor)) = remembered {
             self.scroll_anchor = scroll_anchor.min(self.filtered_count().saturating_sub(1));
@@ -3031,5 +3077,12 @@ mod tests {
         let meta = std::fs::metadata(&dir).unwrap();
         let de = FileEntry::from_meta(dir, &meta).unwrap();
         assert!(make_preview(&de).is_none());
+    }
+
+    #[test]
+    fn visible_window_clamps_anchor_and_has_a_cold_start_default() {
+        assert_eq!(visible_window(100, 40, 10), 40..72);
+        assert_eq!(visible_window(8, 99, 20), 0..8);
+        assert_eq!(visible_window(20, 0, 0), 0..20);
     }
 }
