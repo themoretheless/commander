@@ -80,7 +80,55 @@ fn visited_log() -> &'static Mutex<Vec<PathBuf>> {
     V.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn visit_stats() -> &'static Mutex<VisitStats> {
+    static STATS: OnceLock<Mutex<VisitStats>> = OnceLock::new();
+    STATS.get_or_init(|| Mutex::new(VisitStats::default()))
+}
+
 pub const VISITED_CAP: usize = 200;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisitUsage {
+    pub count: u32,
+    pub last: u64,
+}
+
+/// Persisted frequency and recency information for the `Cmd+P` destination
+/// switcher. Paths remain in a separate ordered list so chronological mode is
+/// exact and old session files can default this field independently.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VisitStats {
+    pub uses: HashMap<PathBuf, VisitUsage>,
+    pub tick: u64,
+}
+
+impl VisitStats {
+    pub fn record(&mut self, path: &Path) {
+        self.tick = self.tick.saturating_add(1);
+        let usage = self.uses.entry(path.to_path_buf()).or_default();
+        usage.count = usage.count.saturating_add(1);
+        usage.last = self.tick;
+    }
+
+    fn usage(&self, path: &Path) -> VisitUsage {
+        self.uses.get(path).cloned().unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecentOrder {
+    #[default]
+    Frecency,
+    Chronological,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentMatch {
+    pub path: PathBuf,
+    pub count: u32,
+    pub last: u64,
+    pub score: i64,
+}
 
 /// Push `path` to the front of `list`, de-duplicating and capping. Pure, so
 /// the ordering logic is unit-testable without the global.
@@ -95,6 +143,9 @@ pub fn record_visit(path: &Path) {
     if let Ok(mut v) = visited_log().lock() {
         push_visit(&mut v, path, VISITED_CAP);
     }
+    if let Ok(mut stats) = visit_stats().lock() {
+        stats.record(path);
+    }
 }
 
 /// Snapshot of recently visited directories, most recent first.
@@ -102,17 +153,68 @@ pub fn visited_paths() -> Vec<PathBuf> {
     visited_log().lock().map(|v| v.clone()).unwrap_or_default()
 }
 
-/// Filter visited paths by a case-insensitive substring over the full path.
-pub fn filter_visited(paths: &[PathBuf], query: &str) -> Vec<PathBuf> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
-        return paths.to_vec();
+pub fn visit_snapshot() -> (Vec<PathBuf>, VisitStats) {
+    (
+        visited_paths(),
+        visit_stats().lock().map(|s| s.clone()).unwrap_or_default(),
+    )
+}
+
+pub fn restore_visit_snapshot(paths: &[PathBuf], stats: &VisitStats) {
+    if let Ok(mut log) = visited_log().lock() {
+        *log = paths.iter().take(VISITED_CAP).cloned().collect();
     }
-    paths
+    if let Ok(mut current) = visit_stats().lock() {
+        *current = stats.clone();
+        current.uses.retain(|path, _| paths.contains(path));
+    }
+}
+
+/// Rank recent destinations by a bounded frequency/recency score. The fuzzy
+/// component only affects a non-empty query; chronological mode preserves the
+/// exact most-recent-first ordering of `paths`.
+pub fn rank_visited(
+    paths: &[PathBuf],
+    query: &str,
+    order: RecentOrder,
+    stats: &VisitStats,
+) -> Vec<RecentMatch> {
+    let query = query.trim();
+    let mut matches: Vec<(usize, RecentMatch)> = paths
         .iter()
-        .filter(|p| p.to_string_lossy().to_lowercase().contains(&q))
-        .cloned()
-        .collect()
+        .enumerate()
+        .filter_map(|(index, path)| {
+            let label = path.to_string_lossy();
+            let fuzzy = if query.is_empty() {
+                0
+            } else {
+                crate::fuzzy::score(query, &label)?.score as i64
+            };
+            let usage = stats.usage(path);
+            let age = stats.tick.saturating_sub(usage.last).min(64) as i64;
+            let recency = 64 - age;
+            let frequency = i64::from(usage.count.min(32)) * 4;
+            Some((
+                index,
+                RecentMatch {
+                    path: path.clone(),
+                    count: usage.count,
+                    last: usage.last,
+                    score: fuzzy + recency + frequency,
+                },
+            ))
+        })
+        .collect();
+
+    if order == RecentOrder::Frecency {
+        matches.sort_by(|(index_a, a), (index_b, b)| {
+            b.score
+                .cmp(&a.score)
+                .then(b.last.cmp(&a.last))
+                .then(index_a.cmp(index_b))
+        });
+    }
+    matches.into_iter().map(|(_, item)| item).collect()
 }
 
 /// Mark cached sizes stale for every directory that contains `path`.
@@ -718,7 +820,7 @@ pub struct FolderOverview {
 /// returning to a directory restores how it was last left. In-memory only:
 /// scoped to the running session, not persisted across restarts (unlike the
 /// current directory's own settings, which the session file already saves).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ViewSettings {
     pub sort_col: SortColumn,
     pub sort_order: SortOrder,
@@ -727,6 +829,8 @@ pub struct ViewSettings {
     pub natural_name_sort: bool,
     pub facets: FacetSet,
     pub density: crate::density::Density,
+    pub cursor_path: Option<PathBuf>,
+    pub scroll_anchor: usize,
 }
 
 /// A non-parent cursor row no longer exists in the filtered view. This should
@@ -751,6 +855,9 @@ pub struct PanelState {
     pub marked: std::collections::HashSet<PathBuf>,
     pub cursor: usize,
     pub scroll_to_cursor: bool,
+    /// First row visible in the virtualized list. Stored with the focused path
+    /// so a directory can reopen in the same neighborhood.
+    pub scroll_anchor: usize,
     /// Why the current listing is empty/non-empty (for the empty-state UI).
     pub dir_status: DirStatus,
     /// Visible rows in the list viewport, set by the renderer each frame and
@@ -807,6 +914,7 @@ impl PanelState {
             marked: std::collections::HashSet::new(),
             cursor: 0,
             scroll_to_cursor: false,
+            scroll_anchor: 0,
             dir_status: DirStatus::Empty,
             page_rows: 0,
             preview: None,
@@ -1210,10 +1318,7 @@ impl PanelState {
         // the current directory, so every navigation entry point records here.
         self.history.push(path.clone());
         record_visit(&path);
-        self.current_path = path;
-        self.search_query.clear();
-        self.restore_view_settings();
-        self.refresh();
+        self.load_remembered_path(path);
     }
 
     fn snapshot_view_settings(&self) -> ViewSettings {
@@ -1225,6 +1330,12 @@ impl PanelState {
             natural_name_sort: self.natural_name_sort,
             facets: self.facets,
             density: self.density,
+            cursor_path: self
+                .cursor
+                .checked_sub(1)
+                .and_then(|index| self.filtered_get(index))
+                .map(|entry| entry.path.clone()),
+            scroll_anchor: self.scroll_anchor,
         }
     }
 
@@ -1237,10 +1348,8 @@ impl PanelState {
     /// Apply the current directory's remembered view settings, if any.
     /// Leaves everything unchanged (carrying over whatever was already
     /// active) when this directory has never been visited this session.
-    fn restore_view_settings(&mut self) {
-        let Some(s) = self.view_memory.get(&self.current_path).copied() else {
-            return;
-        };
+    fn restore_view_settings(&mut self) -> Option<(Option<PathBuf>, usize)> {
+        let s = self.view_memory.get(&self.current_path)?.clone();
         self.sort_col = s.sort_col;
         self.sort_order = s.sort_order;
         self.show_hidden = s.show_hidden;
@@ -1248,6 +1357,32 @@ impl PanelState {
         self.natural_name_sort = s.natural_name_sort;
         self.facets = s.facets;
         self.density = s.density;
+        Some((s.cursor_path, s.scroll_anchor))
+    }
+
+    fn load_remembered_path(&mut self, path: PathBuf) {
+        self.current_path = path;
+        self.search_query.clear();
+        let remembered = self.restore_view_settings();
+        self.refresh();
+        if let Some((cursor_path, scroll_anchor)) = remembered {
+            self.scroll_anchor = scroll_anchor.min(self.filtered_count().saturating_sub(1));
+            self.cursor = cursor_path
+                .and_then(|path| {
+                    self.filtered_entries()
+                        .iter()
+                        .position(|entry| entry.path == path)
+                        .map(|index| index + 1)
+                })
+                .unwrap_or_else(|| {
+                    self.scroll_anchor
+                        .saturating_add(1)
+                        .min(self.filtered_count())
+                });
+            self.scroll_to_cursor = self.cursor > 0;
+        } else {
+            self.scroll_anchor = 0;
+        }
     }
 
     pub fn go_up(&mut self) {
@@ -1469,18 +1604,18 @@ impl PanelState {
 
     pub fn go_back(&mut self) {
         // `back` walks the existing trail without recording a new jump.
+        self.stash_view_settings();
         if let Some(path) = self.history.back().map(|p| p.to_path_buf()) {
-            self.current_path = path;
-            self.search_query.clear();
-            self.refresh();
+            record_visit(&path);
+            self.load_remembered_path(path);
         }
     }
 
     pub fn go_forward(&mut self) {
+        self.stash_view_settings();
         if let Some(path) = self.history.forward().map(|p| p.to_path_buf()) {
-            self.current_path = path;
-            self.search_query.clear();
-            self.refresh();
+            record_visit(&path);
+            self.load_remembered_path(path);
         }
     }
 
@@ -2353,6 +2488,54 @@ mod tests {
     }
 
     #[test]
+    fn navigate_to_restores_cursor_path_and_scroll_anchor() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        let docs = tmp.dir("docs");
+        tmp.file("downloads/a.txt", "a");
+        let focused = tmp.file("downloads/b.txt", "b");
+        tmp.file("downloads/c.txt", "c");
+
+        let mut p = PanelState::new(downloads.clone());
+        p.refresh();
+        p.cursor = p
+            .filtered_entries()
+            .iter()
+            .position(|entry| entry.path == focused)
+            .unwrap()
+            + 1;
+        p.scroll_anchor = 1;
+
+        p.navigate_to(docs);
+        p.navigate_to(downloads);
+
+        assert_eq!(p.filtered_get(p.cursor - 1).unwrap().path, focused);
+        assert_eq!(p.scroll_anchor, 1);
+        assert!(p.scroll_to_cursor);
+    }
+
+    #[test]
+    fn missing_remembered_cursor_falls_back_to_scroll_anchor() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        let docs = tmp.dir("docs");
+        tmp.file("downloads/a.txt", "a");
+        let focused = tmp.file("downloads/b.txt", "b");
+        tmp.file("downloads/c.txt", "c");
+
+        let mut p = PanelState::new(downloads.clone());
+        p.refresh();
+        p.cursor = 2;
+        p.scroll_anchor = 1;
+        p.navigate_to(docs);
+        std::fs::remove_file(focused).unwrap();
+        p.navigate_to(downloads);
+
+        assert_eq!(p.cursor, 2.min(p.filtered_count()));
+        assert!(p.cursor <= p.filtered_count());
+    }
+
+    #[test]
     fn natural_cmp_orders_numbers_by_value() {
         assert_eq!(natural_cmp("file2", "file10"), Ordering::Less);
         assert_eq!(natural_cmp("file10", "file2"), Ordering::Greater);
@@ -2431,16 +2614,40 @@ mod tests {
     }
 
     #[test]
-    fn filter_visited_substring_case_insensitive() {
+    fn recent_destinations_can_switch_between_frecency_and_chronology() {
+        let a = PathBuf::from("/work/frequent");
+        let b = PathBuf::from("/work/middle");
+        let c = PathBuf::from("/work/latest");
+        let paths = vec![c.clone(), b.clone(), a.clone()];
+        let mut stats = VisitStats::default();
+        stats.record(&a);
+        stats.record(&a);
+        stats.record(&a);
+        stats.record(&b);
+        stats.record(&c);
+
+        let chronological = rank_visited(&paths, "", RecentOrder::Chronological, &stats);
+        assert_eq!(chronological[0].path, c);
+
+        let frecency = rank_visited(&paths, "", RecentOrder::Frecency, &stats);
+        assert_eq!(frecency[0].path, a);
+        assert_eq!(frecency[0].count, 3);
+    }
+
+    #[test]
+    fn recent_destination_query_uses_fuzzy_path_matching() {
         let paths = vec![
             PathBuf::from("/Users/me/Documents"),
             PathBuf::from("/Users/me/Downloads"),
-            PathBuf::from("/tmp/work"),
         ];
-        assert_eq!(filter_visited(&paths, "").len(), 3);
-        let dn = filter_visited(&paths, "down");
-        assert_eq!(dn, vec![PathBuf::from("/Users/me/Downloads")]);
-        assert_eq!(filter_visited(&paths, "USERS").len(), 2);
+        let matches = rank_visited(
+            &paths,
+            "dwn",
+            RecentOrder::Chronological,
+            &VisitStats::default(),
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path, PathBuf::from("/Users/me/Downloads"));
     }
 
     #[test]

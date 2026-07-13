@@ -70,6 +70,9 @@ pub struct App {
     pub(crate) path_input: Option<String>,
     /// Active recent-directories quick-switcher filter buffer.
     pub(crate) recent_input: Option<String>,
+    /// Ranking mode for recent destinations: habitual (frecency) or strictly
+    /// chronological. Persisted with the session.
+    pub(crate) recent_order: crate::panel::RecentOrder,
     /// Transient operation toasts (move / rename confirmations with Undo).
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Searchable history of completed moves/deletes/batch-renames.
@@ -268,6 +271,9 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session = crate::session::load();
+        if let Some(saved) = &session {
+            crate::panel::restore_visit_snapshot(&saved.recent_paths, &saved.recent_stats);
+        }
 
         // Theme: a saved session wins, otherwise follow the system appearance.
         let mode = match &session {
@@ -343,6 +349,9 @@ impl App {
             mask_input: None,
             path_input: None,
             recent_input: None,
+            recent_order: session
+                .as_ref()
+                .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
             receipts_input: None,
@@ -380,6 +389,7 @@ impl App {
 
     /// Snapshot the current state into a persistable [`Session`].
     fn to_session(&self) -> crate::session::Session {
+        let (recent_paths, recent_stats) = crate::panel::visit_snapshot();
         crate::session::Session {
             left_path: self.ws.left.current_path.clone(),
             right_path: self.ws.right.current_path.clone(),
@@ -404,6 +414,9 @@ impl App {
             right_density: self.ws.right.density,
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
+            recent_paths,
+            recent_stats,
+            recent_order: self.recent_order,
         }
     }
 

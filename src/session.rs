@@ -44,6 +44,13 @@ pub struct Session {
     /// Monotonic counter stamped onto each palette command run.
     #[serde(default)]
     pub palette_tick: u64,
+    /// Persisted `Cmd+P` destinations and their frecency metadata.
+    #[serde(default)]
+    pub recent_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub recent_stats: crate::panel::VisitStats,
+    #[serde(default)]
+    pub recent_order: crate::panel::RecentOrder,
 }
 
 /// Serde default for booleans that should restore as `true` (the live
@@ -116,6 +123,9 @@ mod tests {
             right_density: crate::density::Density::Spacious,
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 7,
+            recent_paths: Vec::new(),
+            recent_stats: crate::panel::VisitStats::default(),
+            recent_order: crate::panel::RecentOrder::Frecency,
         }
     }
 
@@ -147,6 +157,20 @@ mod tests {
         assert!(back.left_natural_sort);
         assert!(back.right_folders_first);
         assert!(back.right_natural_sort);
+    }
+
+    #[test]
+    fn recent_history_defaults_when_absent() {
+        let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut val = serde_json::to_value(&s).unwrap();
+        let obj = val.as_object_mut().unwrap();
+        obj.remove("recent_paths");
+        obj.remove("recent_stats");
+        obj.remove("recent_order");
+        let back: Session = serde_json::from_value(val).unwrap();
+        assert!(back.recent_paths.is_empty());
+        assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
+        assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);
     }
 
     #[test]
