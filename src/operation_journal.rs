@@ -7,7 +7,8 @@ use crate::operation::{
 use crate::panel::FileEntry;
 use crate::path_identity::PathIdentity;
 use crate::transfer::{
-    CopyMethod, OverwritePolicy, TransferExpectation, TransferKind, TransferSpec,
+    CopyMethod, OverwritePolicy, PostTransferAction, TransferExpectation, TransferKind,
+    TransferSpec,
 };
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -60,6 +61,24 @@ pub enum StepStatus {
     RolledBack,
 }
 
+impl StepStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Planned => "Planned",
+            Self::Running => "Interrupted",
+            Self::Requeued => "Requeued",
+            Self::Completed => "Completed",
+            Self::Skipped => "Skipped",
+            Self::Failed => "Failed",
+            Self::RolledBack => "Rolled back",
+        }
+    }
+
+    fn terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Skipped | Self::RolledBack)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OperationStep {
     pub key: IdempotencyKey,
@@ -88,6 +107,10 @@ pub struct OperationRecord {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
+    #[serde(default)]
+    pub post_success: Option<PostTransferAction>,
+    #[serde(default)]
+    pub rollback_cleanup: Option<PathBuf>,
     pub status: OperationStatus,
     pub created_at_secs: u64,
     pub updated_at_secs: u64,
@@ -143,6 +166,12 @@ pub struct RepairPlan {
 pub struct OrphanStaging {
     pub path: PathBuf,
     pub identity: PathIdentity,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecoveryInventory {
+    pub operations: Vec<OperationRecord>,
+    pub orphans: Vec<OrphanStaging>,
 }
 
 static JOURNAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -239,14 +268,34 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
             .iter_mut()
             .find(|operation| operation.id == spec.operation_id)
         {
+            if existing.status == OperationStatus::RolledBack {
+                return Err(format!(
+                    "Operation {} was already rolled back",
+                    spec.operation_id.0
+                ));
+            }
             if existing.kind != spec.kind
                 || existing.target != spec.target
+                || existing.group_id != spec.group_id
                 || existing.policy != spec.policy
                 || existing.method != spec.method
                 || existing.durability != spec.durability
+                || existing.post_success != spec.post_success
+                || existing.rollback_cleanup != spec.rollback_cleanup
             {
                 return Err(format!(
                     "Operation {} was reused with a different transfer contract",
+                    spec.operation_id.0
+                ));
+            }
+            let finalization_only = spec.entries.is_empty()
+                && existing
+                    .steps
+                    .iter()
+                    .all(|step| matches!(step.status, StepStatus::Completed | StepStatus::Skipped));
+            if !finalization_only && existing.steps.len() != spec.entries.len() {
+                return Err(format!(
+                    "Operation {} was reused with a different manifest length",
                     spec.operation_id.0
                 ));
             }
@@ -313,6 +362,8 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
             policy: spec.policy,
             method: spec.method,
             durability: spec.durability,
+            post_success: spec.post_success.clone(),
+            rollback_cleanup: spec.rollback_cleanup.clone(),
             status: OperationStatus::Running,
             created_at_secs: now,
             updated_at_secs: now,
@@ -352,7 +403,7 @@ pub fn mark_running(
     landing_before: PathIdentity,
 ) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        if step.status != StepStatus::Completed {
+        if !step.status.terminal() {
             step.status = StepStatus::Running;
             step.staging = Some(staging.to_path_buf());
             step.landing = Some(landing.to_path_buf());
@@ -369,11 +420,13 @@ pub fn mark_requeued(
     source_before: PathIdentity,
 ) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        step.status = StepStatus::Requeued;
-        step.source_before = Some(source_before);
-        step.staging = None;
-        step.landing = None;
-        step.landing_before = None;
+        if !step.status.terminal() {
+            step.status = StepStatus::Requeued;
+            step.source_before = Some(source_before);
+            step.staging = None;
+            step.landing = None;
+            step.landing_before = None;
+        }
     })
 }
 
@@ -385,18 +438,22 @@ pub fn mark_completed(
     let destination_after = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not capture completed effect: {error}"))?;
     update_step(operation_id, key, |step| {
-        step.status = StepStatus::Completed;
-        step.landing = Some(destination.to_path_buf());
-        step.destination_after = Some(destination_after);
-        step.staging = None;
-        step.failure = None;
+        if !step.status.terminal() {
+            step.status = StepStatus::Completed;
+            step.landing = Some(destination.to_path_buf());
+            step.destination_after = Some(destination_after);
+            step.staging = None;
+            step.failure = None;
+        }
     })
 }
 
 pub fn mark_skipped(operation_id: &OperationId, key: &IdempotencyKey) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        step.status = StepStatus::Skipped;
-        step.staging = None;
+        if !step.status.terminal() {
+            step.status = StepStatus::Skipped;
+            step.staging = None;
+        }
     })
 }
 
@@ -406,11 +463,13 @@ pub fn mark_failed(
     failure: ClassifiedFailure,
 ) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        step.status = StepStatus::Failed;
-        if failure.class != FailureClass::IntegrityUncertain {
-            step.staging = None;
+        if !step.status.terminal() {
+            step.status = StepStatus::Failed;
+            if failure.class != FailureClass::IntegrityUncertain {
+                step.staging = None;
+            }
+            step.failure = Some(failure);
         }
-        step.failure = Some(failure);
     })
 }
 
@@ -421,20 +480,17 @@ pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(),
             .iter_mut()
             .find(|operation| &operation.id == operation_id)
             .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        if operation.status == OperationStatus::RolledBack && status != OperationStatus::RolledBack
+        {
+            return Err(format!(
+                "Operation {} was already rolled back",
+                operation_id.0
+            ));
+        }
         operation.status = status;
         operation.updated_at_secs = now_secs();
         Ok(())
     })
-}
-
-pub fn recoverable() -> Result<Vec<OperationRecord>, String> {
-    let mut operations = load()?
-        .operations
-        .into_iter()
-        .filter(|operation| operation.status.recoverable())
-        .collect::<Vec<_>>();
-    operations.sort_by_key(|operation| std::cmp::Reverse(operation.updated_at_secs));
-    Ok(operations)
 }
 
 pub fn operation(operation_id: &OperationId) -> Result<OperationRecord, String> {
@@ -457,6 +513,26 @@ pub fn completed_effect_is_current(
         return Ok(false);
     }
     prove_completed_effect(step)
+}
+
+pub fn step_is_settled(operation_id: &OperationId, key: &IdempotencyKey) -> Result<bool, String> {
+    let operation = operation(operation_id)?;
+    let Some(step) = operation.steps.iter().find(|step| &step.key == key) else {
+        return Ok(false);
+    };
+    settled_step(step)
+}
+
+fn settled_step(step: &OperationStep) -> Result<bool, String> {
+    match step.status {
+        StepStatus::Completed => prove_completed_effect(step),
+        StepStatus::Skipped => Ok(true),
+        StepStatus::RolledBack => Err(format!(
+            "Operation step {} was already rolled back",
+            step.key.0
+        )),
+        _ => Ok(false),
+    }
 }
 
 fn prove_completed_effect(step: &OperationStep) -> Result<bool, String> {
@@ -486,6 +562,16 @@ pub fn build_resume_spec(operation_id: &OperationId) -> Result<TransferSpec, Str
 }
 
 fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, String> {
+    if record
+        .steps
+        .iter()
+        .any(|step| step.status == StepStatus::RolledBack)
+    {
+        return Err(
+            "Operation was partially rolled back; continue rollback or inspect it manually"
+                .to_string(),
+        );
+    }
     for step in record
         .steps
         .iter()
@@ -571,9 +657,6 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
             landing_before: step.landing_before.clone(),
         });
     }
-    if entries.is_empty() {
-        return Err("No failed or incomplete entries remain to resume".to_string());
-    }
     Ok(TransferSpec {
         operation_id: record.id,
         group_id: record.group_id,
@@ -584,7 +667,8 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         policy: record.policy,
         method: record.method,
         durability: record.durability,
-        post_success: None,
+        post_success: record.post_success,
+        rollback_cleanup: record.rollback_cleanup,
         #[cfg(test)]
         before_commit: None,
         #[cfg(test)]
@@ -653,7 +737,36 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
             StepStatus::Skipped | StepStatus::RolledBack => {}
         }
     }
+    if let Some(cleanup) = &record.rollback_cleanup
+        && crate::fs_util::path_is_taken(cleanup)
+    {
+        plan.remaining.push(RepairItem {
+            path: cleanup.clone(),
+            action: "Remove operation-created folder after restoring entries".to_string(),
+            automatic: cleanup_contains_only_operation_effects(&record, cleanup),
+        });
+    }
     Ok(plan)
+}
+
+fn cleanup_contains_only_operation_effects(record: &OperationRecord, cleanup: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(cleanup) else {
+        return true;
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    let expected = record
+        .steps
+        .iter()
+        .filter(|step| step.status == StepStatus::Completed)
+        .map(effect_path)
+        .collect::<std::collections::HashSet<_>>();
+    std::fs::read_dir(cleanup).is_ok_and(|entries| {
+        entries
+            .filter_map(Result::ok)
+            .all(|entry| expected.contains(entry.path().as_path()))
+    })
 }
 
 fn remove_path(path: &Path) -> Result<(), String> {
@@ -704,6 +817,25 @@ fn rollback_step(record: &OperationRecord, step: &OperationStep) -> Result<(), S
     }
 }
 
+fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
+    let Some(cleanup) = &record.rollback_cleanup else {
+        return;
+    };
+    match std::fs::remove_dir(cleanup) {
+        Ok(()) => plan.completed.push(RepairItem {
+            path: cleanup.clone(),
+            action: "Removed operation-created folder".to_string(),
+            automatic: true,
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => plan.remaining.push(RepairItem {
+            path: cleanup.clone(),
+            action: format!("Could not remove operation-created folder: {error}"),
+            automatic: false,
+        }),
+    }
+}
+
 pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
     let record = operation(operation_id)?;
     let mut plan = RepairPlan {
@@ -717,13 +849,24 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
         .filter(|step| step.status == StepStatus::Completed)
     {
         let effect = effect_path(step);
-        if completed_effect_is_current(operation_id, &step.key).is_err() {
-            plan.remaining.push(RepairItem {
-                path: effect.to_path_buf(),
-                action: "Completed effect changed; inspect manually".to_string(),
-                automatic: false,
-            });
-            continue;
+        match completed_effect_is_current(operation_id, &step.key) {
+            Ok(true) => {}
+            Ok(false) => {
+                plan.remaining.push(RepairItem {
+                    path: effect.to_path_buf(),
+                    action: "Journal step changed before rollback; inspect manually".to_string(),
+                    automatic: false,
+                });
+                continue;
+            }
+            Err(_) => {
+                plan.remaining.push(RepairItem {
+                    path: effect.to_path_buf(),
+                    action: "Completed effect changed; inspect manually".to_string(),
+                    automatic: false,
+                });
+                continue;
+            }
         }
         let result = rollback_step(&record, step);
         match result {
@@ -744,6 +887,7 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
             }),
         }
     }
+    rollback_created_container(&record, &mut plan);
     finish(
         operation_id,
         if plan.remaining.is_empty() {
@@ -755,17 +899,52 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
     Ok(plan)
 }
 
-pub fn discover_orphan_staging(roots: &[PathBuf]) -> Vec<OrphanStaging> {
-    let referenced = load()
-        .map(|journal| {
-            journal
-                .operations
-                .into_iter()
-                .flat_map(|operation| operation.steps)
-                .filter_map(|step| step.staging)
-                .collect::<std::collections::HashSet<_>>()
-        })
-        .unwrap_or_default();
+pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String> {
+    let journal = load()?;
+    let mut roots = extra
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let mut referenced = std::collections::HashSet::new();
+    for operation in &journal.operations {
+        roots.insert(operation.target.clone());
+        for step in &operation.steps {
+            if let Some(staging) = &step.staging {
+                referenced.insert(staging.clone());
+            }
+            for path in [
+                Some(&step.source),
+                Some(&step.destination),
+                step.landing.as_ref(),
+                step.staging.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(parent) = path.parent() {
+                    roots.insert(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    let mut roots = roots.into_iter().collect::<Vec<_>>();
+    roots.sort();
+    let mut operations = journal
+        .operations
+        .into_iter()
+        .filter(|operation| operation.status.recoverable())
+        .collect::<Vec<_>>();
+    operations.sort_by_key(|operation| std::cmp::Reverse(operation.updated_at_secs));
+    Ok(RecoveryInventory {
+        operations,
+        orphans: discover_orphan_staging_with(&roots, &referenced),
+    })
+}
+
+fn discover_orphan_staging_with(
+    roots: &[PathBuf],
+    referenced: &std::collections::HashSet<PathBuf>,
+) -> Vec<OrphanStaging> {
     let mut orphans = Vec::new();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -773,7 +952,9 @@ pub fn discover_orphan_staging(roots: &[PathBuf]) -> Vec<OrphanStaging> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let temporary = entry.file_name().to_string_lossy().contains(".cmdr-tmp.");
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let temporary = name.contains(".cmdr-tmp.") || name.contains(".cmdr-quarantine.");
             if temporary
                 && !referenced.contains(&path)
                 && let Ok(identity) = PathIdentity::observe_deep(&path)
@@ -810,6 +991,8 @@ mod tests {
             policy: OverwritePolicy::OverwriteAll,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Verified,
+            post_success: None,
+            rollback_cleanup: None,
             status: OperationStatus::Failed,
             created_at_secs: 1,
             updated_at_secs: 2,
@@ -839,6 +1022,41 @@ mod tests {
         save_at(&path, &journal).unwrap();
         assert_eq!(load_at(&path).unwrap().schema, JOURNAL_SCHEMA);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn journal_persists_transfer_lifecycle_actions() {
+        let temp = TempDir::new();
+        let path = temp.path().join("journal.json");
+        let source = temp.file("source.txt", "source");
+        let folder = temp.path().join("gathered");
+        std::fs::create_dir(&folder).unwrap();
+        let mut record =
+            incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
+        record.post_success = Some(PostTransferAction::RemoveEmptyDir(folder.clone()));
+        record.rollback_cleanup = Some(folder);
+        let journal = Journal {
+            operations: vec![record.clone()],
+            ..Journal::default()
+        };
+
+        save_at(&path, &journal).unwrap();
+
+        assert_eq!(load_at(&path).unwrap().operations, vec![record]);
+    }
+
+    #[test]
+    fn skipped_steps_are_settled_but_rolled_back_steps_fail_closed() {
+        let temp = TempDir::new();
+        let source = temp.file("source.txt", "source");
+        let destination = temp.path().join("destination.txt");
+        let mut step = incomplete_record(&source, &destination, StepStatus::Skipped)
+            .steps
+            .remove(0);
+
+        assert!(settled_step(&step).unwrap());
+        step.status = StepStatus::RolledBack;
+        assert!(settled_step(&step).unwrap_err().contains("rolled back"));
     }
 
     #[test]
@@ -879,6 +1097,40 @@ mod tests {
     }
 
     #[test]
+    fn resume_finalizes_post_success_after_every_manifest_step_settled() {
+        let temp = TempDir::new();
+        let folder = temp.dir("gathered");
+        let source = temp.file("gathered/source.txt", "source");
+        let destination = temp.path().join("source.txt");
+        let mut record = incomplete_record(&source, &destination, StepStatus::Completed);
+        record.kind = TransferKind::Move;
+        std::fs::rename(&source, &destination).unwrap();
+        record.steps[0].landing = Some(destination.clone());
+        record.steps[0].destination_after = Some(PathIdentity::observe_deep(&destination).unwrap());
+        record.post_success = Some(PostTransferAction::RemoveEmptyDir(folder.clone()));
+
+        let spec = build_resume_spec_from(record).unwrap();
+
+        assert!(spec.entries.is_empty());
+        assert_eq!(
+            spec.post_success,
+            Some(PostTransferAction::RemoveEmptyDir(folder))
+        );
+    }
+
+    #[test]
+    fn resume_rejects_a_partially_rolled_back_operation() {
+        let temp = TempDir::new();
+        let source = temp.file("source.txt", "source");
+        let destination = temp.path().join("destination.txt");
+        let record = incomplete_record(&source, &destination, StepStatus::RolledBack);
+
+        let error = build_resume_spec_from(record).err().unwrap();
+
+        assert!(error.contains("partially rolled back"), "{error}");
+    }
+
+    #[test]
     fn integrity_uncertain_step_requires_manual_review() {
         let temp = TempDir::new();
         let source = temp.file("source.txt", "source");
@@ -913,6 +1165,44 @@ mod tests {
     }
 
     #[test]
+    fn rollback_removes_only_an_empty_operation_created_container() {
+        let temp = TempDir::new();
+        let source = temp.file("source.txt", "source");
+        let folder = temp.path().join("gathered");
+        std::fs::create_dir(&folder).unwrap();
+        let mut record =
+            incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
+        record.rollback_cleanup = Some(folder.clone());
+        let mut plan = RepairPlan::default();
+
+        rollback_created_container(&record, &mut plan);
+
+        assert!(!folder.exists());
+        assert_eq!(plan.completed.len(), 1);
+        assert!(plan.remaining.is_empty());
+    }
+
+    #[test]
+    fn rollback_preserves_a_created_container_with_foreign_content() {
+        let temp = TempDir::new();
+        let source = temp.file("source.txt", "source");
+        let folder = temp.path().join("gathered");
+        std::fs::create_dir(&folder).unwrap();
+        temp.file("gathered/foreign.txt", "foreign");
+        let mut record =
+            incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
+        record.rollback_cleanup = Some(folder.clone());
+        let mut plan = RepairPlan::default();
+
+        assert!(!cleanup_contains_only_operation_effects(&record, &folder));
+        rollback_created_container(&record, &mut plan);
+
+        assert!(folder.join("foreign.txt").exists());
+        assert!(plan.completed.is_empty());
+        assert_eq!(plan.remaining.len(), 1);
+    }
+
+    #[test]
     fn orphan_cleanup_revalidates_identity() {
         let temp = TempDir::new();
         let path = temp.file(".file.cmdr-tmp.0", "staged");
@@ -923,5 +1213,20 @@ mod tests {
         std::fs::write(&path, "changed after scan").unwrap();
         assert!(clean_orphan(&orphan).is_err());
         assert!(path.exists());
+    }
+
+    #[test]
+    fn orphan_discovery_includes_staging_and_quarantine_but_not_referenced_paths() {
+        let temp = TempDir::new();
+        let staging = temp.file(".copy.cmdr-tmp.0", "staged");
+        let quarantine = temp.file(".copy.cmdr-quarantine.0", "quarantined");
+        temp.file("ordinary.txt", "ordinary");
+        let referenced = std::collections::HashSet::from([staging.clone()]);
+
+        let found = discover_orphan_staging_with(&[temp.path().to_path_buf()], &referenced)
+            .into_iter()
+            .map(|orphan| orphan.path)
+            .collect::<Vec<_>>();
+        assert_eq!(found, vec![quarantine]);
     }
 }

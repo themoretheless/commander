@@ -10,6 +10,7 @@ mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
 mod find_dialog;
+mod history_dialog;
 mod keys;
 mod mask_dialog;
 mod palette_dialog;
@@ -18,6 +19,7 @@ mod preload;
 mod queue_dialog;
 mod receipts_dialog;
 mod recent_dialog;
+mod recovery_dialog;
 mod rename_dialog;
 mod render;
 mod run_command_dialog;
@@ -86,6 +88,10 @@ pub struct App {
     pub(crate) receipts: crate::receipts::ReceiptLog,
     /// Active receipts-search buffer; `Some` while the dialog is open.
     pub(crate) receipts_input: Option<String>,
+    /// Filesystem-aware confirmation for the pending undo/redo replay.
+    pub(crate) history_preview: Option<HistoryPreviewState>,
+    /// Startup-scanned durable recovery and orphan-staging model.
+    pub(crate) recovery: RecoveryState,
     /// Active command-palette filter buffer.
     pub(crate) palette_input: Option<String>,
     /// Command-palette usage history (recency/frequency ranking).
@@ -366,6 +372,53 @@ pub(crate) struct RenameState {
     pub focused: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryReplayMode {
+    Undo,
+    Redo,
+}
+
+pub(crate) struct HistoryPreviewState {
+    pub mode: HistoryReplayMode,
+    pub preview: crate::undo::ReplayPreview,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RecoverySection {
+    #[default]
+    Operations,
+    Staging,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RecoveryDetail {
+    #[default]
+    Inspect,
+    Repair,
+}
+
+#[derive(Default)]
+pub(crate) struct RecoveryState {
+    pub open: bool,
+    pub section: RecoverySection,
+    pub detail: RecoveryDetail,
+    pub operations: Vec<crate::operation_journal::OperationRecord>,
+    pub orphans: Vec<crate::operation_journal::OrphanStaging>,
+    pub selected: Option<crate::operation::OperationId>,
+    pub repair_plan: Option<crate::operation_journal::RepairPlan>,
+    pub versions: Vec<crate::version_store::VersionRecord>,
+    pub error: Option<String>,
+    pub outcome: Option<String>,
+    pub scanning: bool,
+    pub repair_loaded: bool,
+    pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
+}
+
+pub(crate) struct RecoveryScanResult {
+    pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
+}
+
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -425,6 +478,7 @@ impl App {
             ws.sync_guard_policy = s.sync_guard_policy.clone();
         }
 
+        let recovery = RecoveryState::scan(&ws);
         App {
             ws,
             ui_scale,
@@ -462,6 +516,8 @@ impl App {
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
             receipts_input: None,
+            history_preview: None,
+            recovery,
             palette_input: None,
             palette_usage: session
                 .as_ref()

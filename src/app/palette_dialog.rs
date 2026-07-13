@@ -192,6 +192,11 @@ impl App {
             Command::FindDuplicates | Command::DiskTreemap | Command::BeginFind => active_path,
             Command::OpenSavedSearch => "saved smart folders".to_string(),
             Command::OpenProjectCollections => "multi-root project views".to_string(),
+            Command::OpenRecoveryCenter => format!(
+                "{} interrupted, {} staging",
+                self.recovery.operations.len(),
+                self.recovery.orphans.len()
+            ),
             Command::CopyPath
             | Command::CopyName
             | Command::CopyParentPath
@@ -267,7 +272,7 @@ impl App {
             | Command::CopyShellPath
             | Command::CopyRelativePath => "Clipboard",
             Command::ShelfAdd | Command::ShelfDrain => "Shelf",
-            Command::Undo | Command::Redo => "History",
+            Command::Undo | Command::Redo | Command::OpenRecoveryCenter => "History",
             _ => "Command",
         }
     }

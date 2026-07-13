@@ -143,6 +143,8 @@ pub enum Command {
     ToggleQueuePanel,
     /// Open the searchable history of completed moves/deletes/batch-renames.
     OpenReceipts,
+    /// Open interrupted-operation recovery, rollback, and staging cleanup.
+    OpenRecoveryCenter,
     ToggleHidden,
     /// Toggle whether folders are pinned to the top of the active listing.
     ToggleFoldersFirst,
@@ -280,6 +282,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ),
         ("Transfer queue", "", Command::ToggleQueuePanel),
         ("Operation history", "", Command::OpenReceipts),
+        ("Recovery center", "", Command::OpenRecoveryCenter),
         ("Select clutter files", "", Command::SelectJunk),
         ("Select 10 largest files", "", Command::SelectLargest),
         (

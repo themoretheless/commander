@@ -197,7 +197,7 @@ impl CopyMethod {
 /// Note there is no conflict list here: the engine checks the destination
 /// live at copy time (the confirmation dialog may sit open while the
 /// filesystem changes), driven only by [`OverwritePolicy`].
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PostTransferAction {
     /// Remove a directory only if it is empty after a successful transfer.
     /// Used by Undo for "New Folder with Selection"; `remove_dir` deliberately
@@ -217,6 +217,9 @@ pub struct TransferSpec {
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
     pub post_success: Option<PostTransferAction>,
+    /// A container created specifically for this operation and removable only
+    /// after every completed effect has been rolled back out of it.
+    pub rollback_cleanup: Option<PathBuf>,
     #[cfg(test)]
     pub before_commit: Option<BeforeCommitHook>,
     #[cfg(test)]
@@ -465,10 +468,8 @@ pub fn spawn_transfer(
             }
 
             if journal_enabled {
-                match crate::operation_journal::completed_effect_is_current(
-                    &spec.operation_id,
-                    &work_item.key,
-                ) {
+                match crate::operation_journal::step_is_settled(&spec.operation_id, &work_item.key)
+                {
                     Ok(true) => {
                         complete_without_copy(
                             &progress,
@@ -1436,12 +1437,37 @@ mod tests {
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
+            rollback_cleanup: None,
             before_commit: None,
             journal_enabled: false,
         });
 
         assert!(state.errors.is_empty(), "{:?}", state.errors);
         assert!(root.path().join("a.txt").is_file());
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn recovery_finalization_runs_post_action_without_manifest_entries() {
+        let root = TempDir::new();
+        let folder = root.dir("Gathered");
+        let state = run(TransferSpec {
+            operation_id: OperationId::new(),
+            group_id: None,
+            kind: TransferKind::Move,
+            entries: Vec::new(),
+            expectations: Vec::new(),
+            target: root.path().to_path_buf(),
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            durability: DurabilityProfile::Fast,
+            post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
+            rollback_cleanup: None,
+            before_commit: None,
+            journal_enabled: false,
+        });
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
         assert!(!folder.exists());
     }
 
@@ -1462,6 +1488,7 @@ mod tests {
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
+            rollback_cleanup: None,
             before_commit: None,
             journal_enabled: false,
         });
@@ -1494,6 +1521,7 @@ mod tests {
             method,
             durability: DurabilityProfile::Fast,
             post_success: None,
+            rollback_cleanup: None,
             before_commit: None,
             journal_enabled: false,
         }

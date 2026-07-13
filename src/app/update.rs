@@ -18,6 +18,8 @@ impl eframe::App for App {
         self.begin_frame(&ctx);
         self.show_transfer_dialog(&ctx);
         self.show_safe_state_dialog(&ctx);
+        self.show_recovery_dialog(&ctx);
+        self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
         self.show_batch_rename_dialog(&ctx);
@@ -139,31 +141,29 @@ impl App {
             }
         }
         self.toasts.prune(ctx.input(|i| i.time));
-        // Run a requested undo / redo with a repaint callback.
+        // Open a filesystem-aware undo/redo review. Execution happens only from
+        // the confirmation dialog and repeats the preflight at commit time.
         if std::mem::take(&mut self.ws.undo_request) {
-            let c = ctx.clone();
-            if let Err(e) = self.ws.perform_undo(move || c.request_repaint()) {
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!("Undo failed: {e}"),
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    now,
-                ));
+            self.history_preview = self.ws.preview_undo().map(|preview| HistoryPreviewState {
+                mode: HistoryReplayMode::Undo,
+                preview,
+                error: None,
+            });
+            if self.history_preview.is_none() {
+                self.push_history_notice(ctx, "Nothing to undo", false);
             }
-            // The offered Undo is spent; drop the undoable toast(s).
-            self.toasts.dismiss_undoable();
         }
         if std::mem::take(&mut self.ws.redo_request) {
-            let c = ctx.clone();
-            if let Err(e) = self.ws.perform_redo(move || c.request_repaint()) {
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!("Redo failed: {e}"),
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    now,
-                ));
+            self.history_preview = self.ws.preview_redo().map(|preview| HistoryPreviewState {
+                mode: HistoryReplayMode::Redo,
+                preview,
+                error: None,
+            });
+            if self.history_preview.is_none() {
+                let reason = self.ws.redo_unavailable_reason();
+                let is_error = reason.is_some();
+                let message = reason.unwrap_or_else(|| "Nothing to redo".to_string());
+                self.push_history_notice(ctx, &message, is_error);
             }
         }
         // Gather the selection into a new subfolder (queues an undoable Move).

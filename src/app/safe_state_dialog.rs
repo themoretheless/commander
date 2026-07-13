@@ -4,12 +4,16 @@ use super::*;
 
 impl App {
     pub(crate) fn show_safe_state_dialog(&mut self, ctx: &egui::Context) {
+        if self.recovery.open {
+            return;
+        }
         let Some(state) = self.ws.safe_state.clone() else {
             return;
         };
         let t = self.colors;
         let mut acknowledge = false;
         let mut inspect = false;
+        let mut recovery = false;
 
         egui::Window::new("Safe state")
             .collapsible(false)
@@ -78,6 +82,20 @@ impl App {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Recovery center")
+                                    .size(13.0)
+                                    .color(t.text_primary),
+                            )
+                            .fill(t.bg_card)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
+                        recovery = true;
+                    }
                     if !state.paths.is_empty()
                         && ui
                             .add(
@@ -120,6 +138,9 @@ impl App {
         }
         if acknowledge {
             self.ws.acknowledge_safe_state();
+        }
+        if recovery {
+            self.ws.recovery_request = true;
         }
     }
 }

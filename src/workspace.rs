@@ -145,6 +145,24 @@ pub struct ShelfDrainOutcome {
     pub unavailable: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryTransition {
+    Undo,
+    Redo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingHistoryTransition {
+    direction: HistoryTransition,
+    cleanup_on_failure: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActionExecution {
+    Completed,
+    Started { cleanup_on_failure: Option<PathBuf> },
+}
+
 pub struct Workspace {
     pub left: PanelState,
     pub right: PanelState,
@@ -196,6 +214,8 @@ pub struct Workspace {
     pub queue_panel_request: bool,
     /// Set by [`Command::OpenReceipts`]; the UI opens the operation history.
     pub receipts_request: bool,
+    /// Set by [`Command::OpenRecoveryCenter`]; the UI refreshes durable recovery.
+    pub recovery_request: bool,
     /// Set by the Copy* commands; the UI formats the selection and copies it.
     pub clipboard_request: Option<crate::clipboard::PathStyle>,
     /// Set by the Copy-listing commands: (text to copy, toast label). The UI
@@ -225,6 +245,9 @@ pub struct Workspace {
     /// Move). `None` for copies and for undo/redo-driven transfers, which must
     /// not record fresh history.
     pending_undo_action: Option<crate::undo::Action>,
+    /// A history replay owns the active transfer. The stack transition is
+    /// committed only after that worker reports a clean terminal state.
+    pending_history_transition: Option<PendingHistoryTransition>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
@@ -356,6 +379,7 @@ impl Workspace {
             collections_request: false,
             queue_panel_request: false,
             receipts_request: false,
+            recovery_request: false,
             clipboard_request: None,
             clipboard_text_request: None,
             redo_request: false,
@@ -367,6 +391,7 @@ impl Workspace {
             running_job: None,
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
+            pending_history_transition: None,
             opener,
         }
     }
@@ -746,14 +771,10 @@ impl Workspace {
             Command::BeginRecent => self.recent_request = true,
             Command::BeginPalette => self.palette_request = true,
             Command::Undo => {
-                if self.stack.can_undo() {
-                    self.undo_request = true;
-                }
+                self.undo_request = true;
             }
             Command::Redo => {
-                if self.stack.can_redo() {
-                    self.redo_request = true;
-                }
+                self.redo_request = true;
             }
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
@@ -775,6 +796,7 @@ impl Workspace {
             Command::MarkedSymmetricDiff => self.marked_symmetric_diff(),
             Command::ToggleQueuePanel => self.queue_panel_request = true,
             Command::OpenReceipts => self.receipts_request = true,
+            Command::OpenRecoveryCenter => self.recovery_request = true,
             Command::ToggleHidden => {
                 let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
@@ -852,6 +874,79 @@ impl Workspace {
         if let Some(state) = self.safe_state.take() {
             self.reviewed_safe_operation = Some(state.operation_id);
         }
+    }
+
+    fn ensure_matching_recovery_review(
+        &self,
+        operation_id: &crate::operation::OperationId,
+    ) -> Result<(), String> {
+        if let Some(state) = &self.safe_state
+            && &state.operation_id != operation_id
+        {
+            return Err(format!(
+                "Safe-state review belongs to operation {}",
+                state.operation_id.0
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn recovery_seed_roots(&self) -> Vec<PathBuf> {
+        vec![
+            self.left.current_path.clone(),
+            self.right.current_path.clone(),
+        ]
+    }
+
+    pub fn resume_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<usize, String> {
+        self.ensure_matching_recovery_review(operation_id)?;
+        if self.active_transfer.is_some() || self.queued_count() > 0 {
+            return Err("Wait for the transfer queue before resuming recovery".to_string());
+        }
+        let spec = crate::operation_journal::build_resume_spec(operation_id)?;
+        let count = spec.entries.len();
+        self.acknowledge_safe_state();
+        self.enqueue_only(spec, None);
+        self.pump_queue(notify);
+        Ok(count)
+    }
+
+    pub fn rollback_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+    ) -> Result<crate::operation_journal::RepairPlan, String> {
+        self.ensure_matching_recovery_review(operation_id)?;
+        if self.active_transfer.is_some() || self.queued_count() > 0 {
+            return Err("Wait for the transfer queue before rolling back recovery".to_string());
+        }
+        crate::operation_journal::repair_plan(operation_id)?;
+        self.acknowledge_safe_state();
+        let plan = crate::operation_journal::rollback(operation_id)?;
+        self.left.refresh();
+        self.right.refresh();
+        Ok(plan)
+    }
+
+    pub fn clean_recovery_orphan(
+        &mut self,
+        orphan: &crate::operation_journal::OrphanStaging,
+    ) -> Result<(), String> {
+        if self.mutations_blocked() {
+            return Err(
+                "Complete the current integrity review before cleaning staging".to_string(),
+            );
+        }
+        if self.active_transfer.is_some() {
+            return Err("Wait for the active transfer before cleaning staging".to_string());
+        }
+        crate::operation_journal::clean_orphan(orphan)?;
+        self.left.refresh();
+        self.right.refresh();
+        Ok(())
     }
 
     fn request_transfer(&mut self, kind: TransferKind) {
@@ -986,6 +1081,7 @@ impl Workspace {
             method: t.method,
             durability: t.durability,
             post_success: None,
+            rollback_cleanup: None,
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
@@ -1160,6 +1256,7 @@ impl Workspace {
         }
         self.left.refresh();
         self.right.refresh();
+        self.finish_history_transition(clean);
         // Record the move on the history stack on a clean run, built from where
         // the files ACTUALLY landed: a KeepBoth conflict renames to "name copy",
         // which is not faithfully reversible, so those entries are dropped (and
@@ -1233,9 +1330,26 @@ impl Workspace {
         }
         // An errored/aborted run records no undo history.
         self.pending_undo_action = None;
+        self.finish_history_transition(false);
         self.left.refresh();
         self.right.refresh();
         self.pump_queue(notify);
+    }
+
+    fn finish_history_transition(&mut self, clean: bool) {
+        let Some(transition) = self.pending_history_transition.take() else {
+            return;
+        };
+        if clean {
+            match transition.direction {
+                HistoryTransition::Undo => self.stack.commit_undo(),
+                HistoryTransition::Redo => self.stack.commit_redo(),
+            };
+        } else if let Some(folder) = transition.cleanup_on_failure {
+            // Never recursively remove replay output. An empty directory is the
+            // only container we can prove was not populated by foreign data.
+            let _ = std::fs::remove_dir(folder);
+        }
     }
 
     /// Snapshot of every job in the transfer queue, in priority order, for
@@ -1312,28 +1426,116 @@ impl Workspace {
     }
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
-    /// move it onto the redo stack.
-    pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
+    /// move it onto the redo stack only after the filesystem commit succeeds.
+    pub fn preview_undo(&self) -> Option<crate::undo::ReplayPreview> {
+        self.stack
+            .peek_undo_inverse()
+            .map(|action| crate::undo::preview(&action))
+    }
+
+    pub fn preview_redo(&self) -> Option<crate::undo::ReplayPreview> {
+        self.stack
+            .peek_redo_action()
+            .map(|action| crate::undo::preview(&action))
+    }
+
+    pub fn redo_unavailable_reason(&self) -> Option<String> {
+        self.stack.redo_invalidation().map(|invalidation| {
+            format!(
+                "Redo was invalidated by {} after {} undone action{}",
+                invalidation.caused_by,
+                invalidation.abandoned_actions,
+                if invalidation.abandoned_actions == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        })
+    }
+
+    pub(crate) fn history_replay_blocker(&self) -> Option<String> {
         if self.mutations_blocked() {
-            return Err("Safe-state review is required before undo".to_string());
+            return Some("Safe-state review is required before history replay".to_string());
         }
-        match self.stack.undo() {
-            Some(inverse) => self.execute_action(inverse, notify),
-            None => Ok(()),
+        if self.active_transfer.is_some() || self.queued_count() > 0 {
+            return Some("Wait for the transfer queue before replaying history".to_string());
         }
+        None
+    }
+
+    fn ensure_history_replay_ready(&self) -> Result<(), String> {
+        self.history_replay_blocker().map_or(Ok(()), Err)
+    }
+
+    fn replay_preflight(preview: &crate::undo::ReplayPreview) -> Result<(), String> {
+        if preview.can_execute() {
+            return Ok(());
+        }
+        let detail = preview
+            .paths
+            .iter()
+            .find_map(|path| match &path.eligibility {
+                crate::undo::ReplayEligibility::Ready => None,
+                crate::undo::ReplayEligibility::Blocked(reason) => Some(format!(
+                    "{} -> {}: {reason}",
+                    path.from.display(),
+                    path.to.display()
+                )),
+            })
+            .unwrap_or_else(|| "No replayable paths remain".to_string());
+        Err(format!(
+            "History replay is blocked for {} path{}; {detail}",
+            preview.blocked_count(),
+            if preview.blocked_count() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ))
+    }
+
+    pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
+        self.ensure_history_replay_ready()?;
+        let Some(inverse) = self.stack.peek_undo_inverse() else {
+            return Ok(());
+        };
+        Self::replay_preflight(&crate::undo::preview(&inverse))?;
+        match self.execute_action(inverse, notify)? {
+            ActionExecution::Completed => {
+                self.stack.commit_undo();
+            }
+            ActionExecution::Started { cleanup_on_failure } => {
+                self.pending_history_transition = Some(PendingHistoryTransition {
+                    direction: HistoryTransition::Undo,
+                    cleanup_on_failure,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Redo the most recently undone action (Cmd+Shift+Z): re-apply it and move
     /// it back onto the undo stack. Returns the same error surface as
     /// [`perform_undo`].
     pub fn perform_redo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
-        if self.mutations_blocked() {
-            return Err("Safe-state review is required before redo".to_string());
+        self.ensure_history_replay_ready()?;
+        let Some(action) = self.stack.peek_redo_action() else {
+            return self.redo_unavailable_reason().map_or(Ok(()), Err);
+        };
+        Self::replay_preflight(&crate::undo::preview(&action))?;
+        match self.execute_action(action, notify)? {
+            ActionExecution::Completed => {
+                self.stack.commit_redo();
+            }
+            ActionExecution::Started { cleanup_on_failure } => {
+                self.pending_history_transition = Some(PendingHistoryTransition {
+                    direction: HistoryTransition::Redo,
+                    cleanup_on_failure,
+                });
+            }
         }
-        match self.stack.redo() {
-            Some(action) => self.execute_action(action, notify),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
     /// Execute `action` forward against the filesystem. Used by undo (with an
@@ -1343,7 +1545,8 @@ impl Workspace {
         &mut self,
         action: crate::undo::Action,
         notify: impl Fn() + Send + 'static,
-    ) -> Result<(), String> {
+    ) -> Result<ActionExecution, String> {
+        Self::replay_preflight(&crate::undo::preview(&action))?;
         match action {
             crate::undo::Action::Move { pairs } => {
                 // Each pair is (from, to): move the file at `from` into dir(to).
@@ -1354,10 +1557,19 @@ impl Workspace {
                     .and_then(|(_, to)| to.parent())
                     .map(Path::to_path_buf)
                 else {
-                    return Ok(());
+                    return Ok(ActionExecution::Completed);
                 };
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
                 self.start_move_silent(sources, dest_dir, None, notify)
+                    .map(|started| {
+                        if started {
+                            ActionExecution::Started {
+                                cleanup_on_failure: None,
+                            }
+                        } else {
+                            ActionExecution::Completed
+                        }
+                    })
             }
             crate::undo::Action::BatchRename { dir, pairs } => {
                 // Undo/redo replays recorded pairs without re-planning, so order
@@ -1369,24 +1581,32 @@ impl Workspace {
                 self.right.refresh();
                 // A failed rename undo/redo leaves the filesystem out of step
                 // with the stack: surface it rather than swallowing the error.
-                result.map(|_| ())
+                result.map(|_| ActionExecution::Completed)
             }
             crate::undo::Action::Rename { from, to } => {
                 let result = Self::rename_path_no_clobber(&from, &to);
                 self.left.refresh();
                 self.right.refresh();
-                result
+                result.map(|_| ActionExecution::Completed)
             }
             crate::undo::Action::Gather { folder, pairs } => {
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
                 let entries = Self::entries_for_paths(&sources)?;
                 if entries.is_empty() {
-                    return Ok(());
+                    return Ok(ActionExecution::Completed);
                 }
                 std::fs::create_dir(&folder)
                     .map_err(|error| format!("Could not recreate {}: {error}", folder.display()))?;
-                self.enqueue_silent_move(entries, folder, None, notify);
-                Ok(())
+                self.enqueue_silent_move(
+                    entries,
+                    folder.clone(),
+                    None,
+                    Some(folder.clone()),
+                    notify,
+                );
+                Ok(ActionExecution::Started {
+                    cleanup_on_failure: Some(folder),
+                })
             }
             crate::undo::Action::Ungather { folder, pairs } => {
                 let Some(dest_dir) = pairs
@@ -1394,7 +1614,7 @@ impl Workspace {
                     .and_then(|(_, to)| to.parent())
                     .map(Path::to_path_buf)
                 else {
-                    return Ok(());
+                    return Ok(ActionExecution::Completed);
                 };
                 let sources = pairs.into_iter().map(|(from, _)| from).collect();
                 self.start_move_silent(
@@ -1403,6 +1623,15 @@ impl Workspace {
                     Some(PostTransferAction::RemoveEmptyDir(folder)),
                     notify,
                 )
+                .map(|started| {
+                    if started {
+                        ActionExecution::Started {
+                            cleanup_on_failure: None,
+                        }
+                    } else {
+                        ActionExecution::Completed
+                    }
+                })
             }
         }
     }
@@ -1424,6 +1653,7 @@ impl Workspace {
         entries: Vec<FileEntry>,
         dest_dir: PathBuf,
         post_success: Option<PostTransferAction>,
+        rollback_cleanup: Option<PathBuf>,
         notify: impl Fn() + Send + 'static,
     ) {
         let expectations = transfer::capture_expectations(&entries, &dest_dir);
@@ -1438,6 +1668,7 @@ impl Workspace {
             method: CopyMethod::Native,
             durability: self.durability_profile,
             post_success,
+            rollback_cleanup,
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
@@ -1457,13 +1688,13 @@ impl Workspace {
         dest_dir: PathBuf,
         post_success: Option<PostTransferAction>,
         notify: impl Fn() + Send + 'static,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let entries = Self::entries_for_paths(&sources)?;
         if entries.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
-        self.enqueue_silent_move(entries, dest_dir, post_success, notify);
-        Ok(())
+        self.enqueue_silent_move(entries, dest_dir, post_success, None, notify);
+        Ok(true)
     }
 
     /// Add `dir` to the bookmarks if it is not already present, naming it after
@@ -1639,11 +1870,12 @@ impl Workspace {
             kind: TransferKind::Move,
             entries,
             expectations,
-            target: folder,
+            target: folder.clone(),
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
             post_success: None,
+            rollback_cleanup: Some(folder),
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
@@ -2182,6 +2414,7 @@ impl Workspace {
             method: CopyMethod::Native,
             durability: self.durability_profile,
             post_success: None,
+            rollback_cleanup: None,
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
@@ -3961,6 +4194,86 @@ mod tests {
         // The refusal leaves both files untouched.
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "1");
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "2");
+    }
+
+    #[test]
+    fn blocked_undo_keeps_the_history_pointer_unchanged() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let original = l.path().join("old.txt");
+        let renamed = l.file("new.txt", "completed rename");
+        std::fs::write(&original, "foreign replacement").unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.stack.push(crate::undo::Action::Rename {
+            from: original,
+            to: renamed,
+        });
+
+        let error = ws.perform_undo(|| {}).unwrap_err();
+        assert!(error.contains("occupied"), "{error}");
+        assert!(ws.stack.can_undo());
+        assert!(!ws.stack.can_redo());
+    }
+
+    #[test]
+    fn async_history_transition_commits_only_for_a_clean_worker() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.stack.push(crate::undo::Action::Rename {
+            from: l.path().join("a.txt"),
+            to: l.path().join("b.txt"),
+        });
+        ws.pending_history_transition = Some(PendingHistoryTransition {
+            direction: HistoryTransition::Undo,
+            cleanup_on_failure: None,
+        });
+        let clean = Arc::new(Mutex::new(TransferProgress::new(0, 0)));
+        crate::lock_util::recover(&clean).finished = true;
+        ws.active_transfer = Some(clean);
+
+        ws.poll_transfer(|| {});
+        assert!(!ws.stack.can_undo());
+        assert!(ws.stack.can_redo());
+
+        let replay_folder = l.path().join("gathered");
+        std::fs::create_dir(&replay_folder).unwrap();
+        ws.pending_history_transition = Some(PendingHistoryTransition {
+            direction: HistoryTransition::Redo,
+            cleanup_on_failure: Some(replay_folder.clone()),
+        });
+        let failed = Arc::new(Mutex::new(TransferProgress::new(0, 0)));
+        {
+            let mut progress = crate::lock_util::recover(&failed);
+            progress.finished = true;
+            progress.errors.push("worker failed".to_string());
+        }
+        ws.active_transfer = Some(failed);
+        ws.poll_transfer(|| {});
+        ws.dismiss_transfer(|| {});
+        assert!(!ws.stack.can_undo(), "failed redo was not committed");
+        assert!(ws.stack.can_redo());
+        assert!(
+            !replay_folder.exists(),
+            "empty container created by failed replay was left behind"
+        );
+    }
+
+    #[test]
+    fn redo_invalidation_names_the_later_action() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.stack.push(crate::undo::Action::Rename {
+            from: l.path().join("old.txt"),
+            to: l.path().join("new.txt"),
+        });
+        ws.stack.undo();
+        ws.stack.push(crate::undo::Action::Move {
+            pairs: vec![(l.path().join("a.txt"), r.path().join("a.txt"))],
+        });
+
+        let reason = ws.redo_unavailable_reason().unwrap();
+        assert!(reason.contains("Moved (1 item)"), "{reason}");
+        assert!(reason.contains("1 undone action"), "{reason}");
+        assert_eq!(ws.perform_redo(|| {}).unwrap_err(), reason);
     }
 
     #[test]
