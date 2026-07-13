@@ -4,8 +4,6 @@
 
 use super::*;
 
-const FIND_CAP: usize = 1000;
-
 impl App {
     pub(crate) fn show_saved_search_dialog(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.ws.saved_search_request) {
@@ -128,11 +126,7 @@ impl App {
             }
         }
         if let Some(def) = open_def {
-            let mut state = FindState::from_definition(&def);
-            let query = state.build_query();
-            state.results = self.ws.run_find(&query, &def.root, FIND_CAP);
-            state.ran = true;
-            self.find = Some(state);
+            self.find = Some(FindState::from_definition(&def));
             self.saved_search_open = false;
             return;
         }

@@ -73,6 +73,9 @@ pub struct App {
     /// Ranking mode for recent destinations: habitual (frecency) or strictly
     /// chronological. Persisted with the session.
     pub(crate) recent_order: crate::panel::RecentOrder,
+    /// Generation-based background search engine and replayable query history.
+    pub(crate) search_engine: crate::search::SearchEngine,
+    pub(crate) search_history: crate::search::QueryHistory,
     /// Transient operation toasts (move / rename confirmations with Undo).
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Searchable history of completed moves/deletes/batch-renames.
@@ -125,67 +128,79 @@ pub(crate) struct RunCommandState {
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
 /// this holds the editable fields, the search root, and the results.
-#[derive(Default)]
 pub(crate) struct FindState {
-    pub name: String,
-    pub min_mb: String,
-    pub max_age_days: String,
-    pub min_age_days: String,
-    pub kind: Option<crate::selection_summary::Kind>,
+    pub expression: String,
+    pub mode: crate::query::MatchMode,
     pub root: PathBuf,
-    pub results: Vec<crate::panel::FileEntry>,
+    pub results: Vec<crate::search::SearchHit>,
+    pub run: Option<crate::search::SearchRun>,
+    pub generation: u64,
     pub ran: bool,
+    pub searching: bool,
     pub focused: bool,
+    pub scanned: usize,
+    pub matched: usize,
+    pub elapsed: std::time::Duration,
+    pub truncated: bool,
+    pub content_skipped: usize,
+    pub error: Option<String>,
+    pub stable_order: Vec<crate::search::FileIdentity>,
+    pub last_query: Option<(String, crate::query::MatchMode, PathBuf)>,
+    pub time_pivot: crate::search::TimePivot,
+    pub history_open: bool,
+    pub explanation_open: Option<crate::search::FileIdentity>,
+    pub pending_rerun: bool,
+    pub last_edit_at: f64,
     /// Name to save this query under (smart folder).
     pub save_name: String,
 }
 
+impl Default for FindState {
+    fn default() -> Self {
+        Self {
+            expression: String::new(),
+            mode: crate::query::MatchMode::Exact,
+            root: PathBuf::new(),
+            results: Vec::new(),
+            run: None,
+            generation: 0,
+            ran: false,
+            searching: false,
+            focused: false,
+            scanned: 0,
+            matched: 0,
+            elapsed: std::time::Duration::ZERO,
+            truncated: false,
+            content_skipped: 0,
+            error: None,
+            stable_order: Vec::new(),
+            last_query: None,
+            time_pivot: crate::search::TimePivot::None,
+            history_open: false,
+            explanation_open: None,
+            pending_rerun: false,
+            last_edit_at: 0.0,
+            save_name: String::new(),
+        }
+    }
+}
+
 impl FindState {
     /// Build the query the current fields describe.
-    pub(crate) fn build_query(&self) -> crate::query::Query {
-        use crate::query::Predicate;
-        let mut preds = Vec::new();
-        if !self.name.trim().is_empty() {
-            preds.push(Predicate::NameContains(self.name.trim().to_string()));
-        }
-        if let Some(k) = self.kind {
-            preds.push(Predicate::Kind(k));
-        }
-        if let Ok(mb) = self.min_mb.trim().parse::<u64>()
-            && mb > 0
-        {
-            preds.push(Predicate::MinSize(mb * 1024 * 1024));
-        }
-        if let Ok(d) = self.max_age_days.trim().parse::<u64>()
-            && d > 0
-        {
-            preds.push(Predicate::MaxAgeDays(d));
-        }
-        if let Ok(d) = self.min_age_days.trim().parse::<u64>()
-            && d > 0
-        {
-            preds.push(Predicate::MinAgeDays(d));
-        }
-        crate::query::Query { predicates: preds }
+    pub(crate) fn build_query(&self) -> Result<crate::query::Query, crate::query::QueryError> {
+        crate::query::Query::parse(&self.expression, self.mode)
     }
 
     /// Reconstruct the editable fields from a saved smart-folder definition.
     pub(crate) fn from_definition(def: &crate::smart_folder::Definition) -> Self {
-        use crate::query::Predicate;
-        let mut s = FindState {
+        FindState {
+            expression: def.query.to_expression(),
+            mode: def.query.mode,
             root: def.root.clone(),
+            pending_rerun: true,
+            last_edit_at: -1.0,
             ..Default::default()
-        };
-        for p in &def.query.predicates {
-            match p {
-                Predicate::NameContains(n) => s.name = n.clone(),
-                Predicate::Kind(k) => s.kind = Some(*k),
-                Predicate::MinSize(b) => s.min_mb = (b / (1024 * 1024)).to_string(),
-                Predicate::MaxAgeDays(d) => s.max_age_days = d.to_string(),
-                Predicate::MinAgeDays(d) => s.min_age_days = d.to_string(),
-            }
         }
-        s
     }
 }
 
@@ -352,6 +367,11 @@ impl App {
             recent_order: session
                 .as_ref()
                 .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
+            search_engine: crate::search::SearchEngine::default(),
+            search_history: session
+                .as_ref()
+                .map(|s| s.search_history.clone())
+                .unwrap_or_default(),
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
             receipts_input: None,
@@ -417,6 +437,7 @@ impl App {
             recent_paths,
             recent_stats,
             recent_order: self.recent_order,
+            search_history: self.search_history.clone(),
         }
     }
 

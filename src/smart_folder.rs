@@ -69,6 +69,7 @@ mod tests {
             root: PathBuf::from(root),
             query: Query {
                 predicates: vec![Predicate::NameContains("x".into())],
+                mode: crate::query::MatchMode::Exact,
             },
         }
     }
@@ -107,10 +108,25 @@ mod tests {
                     Predicate::MinSize(1024),
                     Predicate::MaxAgeDays(30),
                 ],
+                mode: crate::query::MatchMode::Exact,
             },
         };
         let json = serde_json::to_string(&d).unwrap();
         let back: Definition = serde_json::from_str(&json).unwrap();
         assert_eq!(d, back);
+    }
+
+    #[test]
+    fn old_saved_search_defaults_to_exact_mode() {
+        let definition = def("Legacy", "/root");
+        let mut value = serde_json::to_value(&definition).unwrap();
+        value
+            .get_mut("query")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("mode");
+        let back: Definition = serde_json::from_value(value).unwrap();
+        assert_eq!(back.query.mode, crate::query::MatchMode::Exact);
     }
 }

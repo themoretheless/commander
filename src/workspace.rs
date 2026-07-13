@@ -1761,38 +1761,6 @@ impl Workspace {
         }
     }
 
-    // ── Find ────────────────────────────────────────────────────────────
-
-    /// Recursively walk `root` and collect entries matching `query`, capped at
-    /// `cap`. Synchronous for now (a deep tree may pause briefly); walk errors
-    /// and unreadable entries are skipped.
-    pub fn run_find(&self, query: &crate::query::Query, root: &Path, cap: usize) -> Vec<FileEntry> {
-        let now = std::time::SystemTime::now();
-        let mut out = Vec::new();
-        for entry in jwalk::WalkDir::new(root)
-            .skip_hidden(false)
-            .into_iter()
-            .flatten()
-        {
-            if out.len() >= cap {
-                break;
-            }
-            let path = entry.path();
-            if path == root {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if let Some(fe) = FileEntry::from_meta(path, &meta)
-                && query.matches(&fe, now)
-            {
-                out.push(fe);
-            }
-        }
-        out
-    }
-
     /// Reveal `path` in the active panel: navigate to its parent folder and put
     /// the cursor on it (used by find results).
     pub fn reveal(&mut self, path: &Path) {
@@ -3182,27 +3150,6 @@ mod tests {
         let (x, y) = ws.diff_targets().unwrap();
         assert_eq!(y, a, "active file is the second target");
         assert_eq!(x, r.path().join("a.txt"), "other-panel same name is first");
-    }
-
-    #[test]
-    fn run_find_walks_recursively_and_filters() {
-        let (l, r) = (TempDir::new(), TempDir::new());
-        l.file("top.log", "x");
-        l.file("sub/deep.log", "yy");
-        l.file("sub/note.txt", "z");
-        let ws = workspace(&l, &r);
-
-        let query = crate::query::Query {
-            predicates: vec![crate::query::Predicate::NameContains(".log".into())],
-        };
-        let found = ws.run_find(&query, l.path(), 100);
-        let names: Vec<String> = found.iter().map(|e| e.name.clone()).collect();
-        assert!(names.contains(&"top.log".to_string()), "top-level match");
-        assert!(names.contains(&"deep.log".to_string()), "nested match");
-        assert!(
-            !names.contains(&"note.txt".to_string()),
-            "non-match excluded"
-        );
     }
 
     #[test]

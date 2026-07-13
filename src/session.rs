@@ -51,6 +51,8 @@ pub struct Session {
     pub recent_stats: crate::panel::VisitStats,
     #[serde(default)]
     pub recent_order: crate::panel::RecentOrder,
+    #[serde(default)]
+    pub search_history: crate::search::QueryHistory,
 }
 
 /// Serde default for booleans that should restore as `true` (the live
@@ -126,6 +128,7 @@ mod tests {
             recent_paths: Vec::new(),
             recent_stats: crate::panel::VisitStats::default(),
             recent_order: crate::panel::RecentOrder::Frecency,
+            search_history: crate::search::QueryHistory::default(),
         }
     }
 
@@ -167,10 +170,12 @@ mod tests {
         obj.remove("recent_paths");
         obj.remove("recent_stats");
         obj.remove("recent_order");
+        obj.remove("search_history");
         let back: Session = serde_json::from_value(val).unwrap();
         assert!(back.recent_paths.is_empty());
         assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
         assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);
+        assert_eq!(back.search_history, crate::search::QueryHistory::default());
     }
 
     #[test]

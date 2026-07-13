@@ -29,6 +29,7 @@ mod reldate;
 mod rename;
 mod rename_order;
 mod scan;
+mod search;
 mod selection_summary;
 mod selset;
 mod session;
