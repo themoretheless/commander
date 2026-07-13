@@ -7,7 +7,9 @@ The prioritised plan of what to do next, kept in sync with
 [backlog.md](backlog.md) (a wider, unverified single-pass inventory of 621
 smaller bugs/problems/improvements/suggestions from a file-by-file sweep of
 the whole codebase), and Track F below (the requested compact Top-500 digest
-with a 10-chunk SOLID/DRY reading plan).
+with a 10-chunk SOLID/DRY reading plan). External comparative evidence is kept
+in [research.md](research.md): its `G001-G100` identifiers do not alter Track
+F's exact count.
 
 ## Strategy
 
@@ -19,9 +21,9 @@ ahead, the spike ~13), so a wholesale merge would be conflict-heavy and is
 explicitly out of scope. Where a step below has a working reference on the
 spike, that is noted as "mine from spike".
 
-Two tracks run in parallel: **Track A** decomposes the two god objects
-(architecture work); **Track B** fills the gaps README still lists as unbuilt
-(feature work). They intersect at `ViewConfig` (A3 unblocks B2).
+**Track A** decomposes the two god objects, while the D-track closes verified
+correctness gaps in small passes. **Track B is now complete**; it remains below
+as a code-verified capability record rather than a list of work to schedule.
 
 ## Track A - architecture re-land sequence
 
@@ -46,7 +48,7 @@ references. When the two disagree, architecture.md wins.
 | --- | --- | --- | --- |
 | A1 | Extract `compare` module | done | Shipped on `master` (`ddab764`). |
 | A2 | Move `workspace.rs`'s test module to `workspace/tests.rs` (Step 0), then extract `pathname` (Step 1) | low | Pure file moves, compiler-verified. Detailed as architecture.md's Steps 0-1. |
-| A3 | Introduce `ViewConfig` value object (sort/filter/hidden + `sort_entries`) | low-med | Covered by existing sort tests. Unblocks B2. Now Steps 3-9 of the detailed plan (panel leaves extracted first, `ViewConfig` and its `filter_cache` sibling-fix land together at Steps 7-8 since they share one invariant). |
+| A3 | Introduce `ViewConfig` value object (sort/filter/hidden + `sort_entries`) | low-med | Covered by existing sort tests. Consolidates the already-shipped B2 view-memory settings. Now Steps 3-9 of the detailed plan (panel leaves extracted first, `ViewConfig` and its `filter_cache` sibling-fix land together at Steps 7-8 since they share one invariant). |
 | A4 | Replace the `*_request` flag bus with one typed `effects: Vec<Effect>` queue | **med** | Keystone. Mine from spike (`process_effects`, `Requests` removed). Preserve the dialog focus edge-trigger; verify manually in-app. Split into Steps 14-16 (a `DialogKind` leaf first, then an additive `effects` field, then the risky cutover alone) plus the UI-side drain in Step 29. |
 | A5 | Extract `UiState` (group the ~20 dialog buffers out of `App`) | med | Mine from spike. Shrinks the `App` god object. Split into Steps 16-17 (`dialog_state_types` then `dialog_buffers`); D19's dialog-retargeting fix lands in the same commit as Step 17 since both touch the same lines. |
 | A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | med | Delegation; behaviour-preserving. Steps 13, 18-21 - `TransferCenter` takes a narrow `Refreshable` trait rather than `&mut PanelState` (an ISP fix the critique required), and `workspace::transfer_requests` splits off as a peer module for pure plan computation. |
@@ -60,41 +62,34 @@ splits are in the detailed plan as **optional, beyond committed Track A**
 `app/confirm_dialog.rs`'s two list-rendering strategies into their own files -
 land only if reviewers want them after A1-A7 lands clean.
 
-## Track B - unbuilt features from the README roadmap
+## Track B - roadmap feature status
 
-Verified against the code (statuses are real, not the README's stale list):
+Re-verified against the code during the 2026-07-14 research pass:
 
 | # | Feature | Status today | Priority | Effort |
 | --- | --- | --- | --- | --- |
-| B1 | Regex find/replace in batch-rename | absent | **high** | small |
-| B2 | Per-folder view memory (sort/filter/hidden/density) | absent | high | medium |
-| B3 | Queue panel UI (pause/resume/reorder/concurrency) | partial (engine done) | medium | medium |
-| B4 | Marked-files set distinct from the cursor selection | partial (manual stash only) | medium | medium |
-| B5 | Operation receipts (searchable history + jump-back) | absent | low | large |
-| B6 | Vim-style key chords (`5j`, `gg`, `ss`) | absent | low | medium |
+| B1 | Regex find/replace in batch-rename | **done** | shipped | small |
+| B2 | Per-folder view memory (sort/filter/hidden/density) | **done** (session-lifetime) | shipped | medium |
+| B3 | Queue panel UI (pause/resume/reorder/cancel) | **done** (concurrency intentionally fixed at 1) | shipped | medium |
+| B4 | Marked-files set distinct from the cursor selection | **done** | shipped | medium |
+| B5 | Operation receipts (searchable history + jump-back) | **done** (session-lifetime) | shipped | large |
+| B6 | Vim-style key chords (`5j`, `gg`, `ss`) | **done** | shipped | medium |
 
-Sequencing rationale:
+Delivered shape:
 
-- **B1 (regex rename) first.** Pure core, no UI plumbing: add the `regex`
-  crate, a `use_regex` flag on `RenameRule`, regex replace in `rename.rs`, a
-  toggle in `batch_rename_dialog`. Fully unit-testable, high user value, no
-  dependency on Track A.
-- **B2 (per-folder view memory) rides on A3.** Once `ViewConfig` exists, add a
-  `HashMap<PathBuf, ViewConfig>`, look it up in `navigate_to`/`go_up`/
-  `go_back`/`go_forward`, capture changes, and persist via `session`. Do B2
-  immediately after A3.
-- **B3 (queue panel) pairs with A4/A6.** The engine (`opqueue`) already
-  supports pause/resume/reorder/`set_concurrency`; what is missing is the panel
-  UI, the queue commands, and relaxing the input-gate in `app/keys.rs` that
-  blocks queuing a second transfer. Cleaner to build once the Effect bus and
-  `TransferCenter` exist.
-- **B4 (marked set)** needs a new per-panel marked field (analogous to
-  `selected`), a mark/unmark toggle, visual rendering, preservation across
-  navigation, and integration with the existing stash algebra. Not on the spike.
-- **B5 (receipts)** is the largest: a persistent, searchable operation log with
-  jump-back, distinct from the in-memory undo stack. Defer.
-- **B6 (vim chords)** needs a multi-frame chord state machine (leader buffer +
-  count prefix + timeout) that does not exist today and is not on the spike.
+- **B1:** `RenameRule::regex`, one compiled pattern per batch, capture-group
+  replacement, validation, tests, and the Batch Rename toggle are live.
+- **B2:** `PanelState::view_memory` restores each directory's sort, filters,
+  hidden setting, and density for the current session. Persistence across app
+  restarts remains an explicit non-goal in README.
+- **B3:** `app/queue_dialog.rs` exposes pause/resume/reorder/cancel over
+  `opqueue`; single-transfer concurrency is an explicit product constraint.
+- **B4:** each panel owns a path-stable `marked` set with visual treatment and
+  union/intersect/subtract/symmetric-difference commands.
+- **B5:** `ReceiptLog` and `app/receipts_dialog.rs` provide session history,
+  search, jump-back, and live Undo eligibility.
+- **B6:** `app/keys.rs` owns count-aware `j`/`k`, timed `gg`, and `ss` without
+  stealing characters from an in-progress type-ahead query.
 
 ## Track C - documentation hygiene (do now, trivial)
 
@@ -816,7 +811,34 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 499. `улучшение` `src/app/update.rs:611-619` - show_selection_hud's `short()` truncation closure is defined inline inside the render function and only used twice; hoisting it to a shared string-truncation utility (there may already be one for filenames elsewhere) would avoid duplicating ellipsis logic
 500. `улучшение` `src/app/update.rs:737-750` - The '50/50 reset' logic in show_main_area recomputing prev_half via ctx temp data on every frame could instead be tracked as a struct field, avoiding an egui data_mut lookup+insert pair every single frame regardless of whether the window resized
 
+## Track G - external research (uncommitted hypotheses)
+
+The 2026-07-14 pass screened exactly 100 active GitHub repositories with at
+least 1,000 stars, read representative architecture/feature contracts, and
+cross-checked the recurring patterns against 30 research papers and standards.
+The evidence, repository-by-repository lessons, dedup boundary, and 100 new
+stable proposals (`G001-G100`) live in [research.md](research.md).
+
+Do not schedule all 100. The first low-risk promotion set is `G001`, `G004`,
+`G010`, `G012`, `G022-G025`, `G028`, `G035`, `G048`, `G062-G065`, `G068`,
+`G072-G073`, `G079`, `G096`, `G099`, and `G100`. The architecture-sized set
+`G044`, `G057`, and `G084-G089` waits for the relevant Track A owner. Existing
+Track E ideas supported by the research were explicitly excluded from the new
+count, so post-copy verification, crash journaling, dry-run, archive browsing,
+virtualization, logging, and remote-watcher work are not double-counted.
+
 ## Tracking
+
+**Round-10 external-research pass: done.** Screened 100 unique, active GitHub
+repositories above 1,000 stars across seven relevant strata; read 24
+representative feature/architecture contracts; cross-checked recurring
+patterns against 30 primary papers/standards and 12 engineering documents.
+`research.md` records one transferable lesson per repository plus exactly 100
+deduplicated proposals (`G001-G100`). The review also corrected a live docs
+error: code inspection confirmed every B1-B6 feature is shipped, so Track B no
+longer tells contributors to rebuild regex rename or per-folder view memory.
+Track F remains exactly 500 items; its item 33 is narrowed to custom density
+and direct-tier discoverability because the per-folder-memory half has shipped.
 
 **Round-9 safety/invariants pass: done.** Closed audit #9-#12, #14, #18,
 #19, #21, and #32 plus the below-cut stale-cursor and Gather-folder gaps.
@@ -884,9 +906,9 @@ Done: **C** (docs, round-1 and round-3 batches), and **D1 + D2 + D3**
 explicit-save dialogs toast on failure; undo/redo surface a refused rename
 instead of swallowing it; the image cache is flushed on directory change.
 
-Next suggested order: the safety/invariant cluster is now closed, so continue
-with **B1 (regex) + D4 (cheap perf) + D11 (id_salt) + D18/D24's small UI/data
-fixes**, then **A2 -> A3 -> B2 -> A4 ...**. Schedule **D9** (remaining
+Next suggested order: the safety/invariant cluster and Track B are now closed,
+so continue with **D4 (cheap perf) + D11 (id_salt) + D18/D24's small UI/data
+fixes**, then **A2 -> A3 -> A4 ...**. Schedule **D9** (remaining
 destructive-op partial-failure integrity, with
 on-disk undo tests), **D13** (directory-blind comparison), and **D23**
 (filesystem edge cases) as dedicated passes, **D16** (image pipeline) and

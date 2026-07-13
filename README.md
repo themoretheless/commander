@@ -130,7 +130,9 @@ The architecture and the prioritised plan for what's next live in
 The review material is split by trust level: [audit.md](audit.md) is the
 verified defect ranking, [recommendation.md](recommendation.md) now contains a
 compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
-full 621-item raw sweep.
+full 621-item raw sweep. [research.md](research.md) is the external evidence
+layer: 100 high-star repositories, 30 primary papers/standards, and 100 new
+deduplicated hypotheses kept separate from the code-grounded Top-500.
 
 ## Review backlog
 
@@ -155,6 +157,12 @@ directory snapshot they visualize.
 The safety pass adds poison-tolerant worker/UI locks, checked thumbnail
 allocation, cursor/filter invariants, queue-aware toolbar gating, and complete
 Gather folder undo/redo.
+The external-research pass samples exactly 100 active repositories across file
+managers, editors, search, transfer/backup, storage, Rust desktop foundations,
+and keyboard-first tools. Its design conclusion is deliberately conservative:
+keep paths and dual-pane browsing visible, enrich them with contextual search,
+protect the foreground loop with cancellation and budgets, and define file
+operations around recovery and end-to-end completion.
 
 ## Keyboard shortcuts
 

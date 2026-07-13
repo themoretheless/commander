@@ -21,6 +21,30 @@ tests (425 `#[test]` functions, one an `#[ignore]`d manual profiling harness)
 sit under a thin presentation layer. The debt is concentrated in two oversized
 core types and in how the core signals the UI.
 
+### External-research constraints (2026-07-14)
+
+The comparative pass in [research.md](research.md) adds five constraints to the
+target architecture without changing the current migration order:
+
+1. Paths remain the primary visible model. Search providers, facets, tags, and
+   virtual collections augment `PanelState`; they do not replace navigation.
+2. Every listing/search/preview/hash job has a generation, cancellation path,
+   priority, and resource budget. Results from an obsolete snapshot cannot
+   mutate current panel state.
+3. `TransferSpec` evolves toward a serializable operation state machine. A
+   low-level success is not a committed operation until final placement and
+   end-to-end policy checks succeed.
+4. Recovery is one bounded context spanning undo eligibility, checkpoints,
+   conflict versions, journal replay, and uncertain-failure lockout. Dialogs
+   render that policy; they do not invent it.
+5. The UI preserves stable geometry and separate active-pane, focus, cursor,
+   selection, and mark states. Pointer-only actions have keyboard equivalents.
+
+These constraints reinforce, rather than replace, the planned `ViewConfig`,
+typed Effect queue, `TransferCenter`/`UndoCenter`, and injected ports. The
+larger research proposals `G044`, `G057`, and `G084-G089` should only be
+promoted when their owning Track A boundary exists.
+
 ## Module map (current, on `master`)
 
 ### Core (UI-independent, unit-tested)
@@ -522,7 +546,7 @@ can be taken on faith until that port is read.
 
 7. Step 6: extract panel::sort (SortColumn, SortOrder, sort_entries, sort_indicator) and panel::filter_cache (FilterCache, ensure_filter_cache, filtered_count/get/indices/entries) as pure function-relocations still operating on &PanelState/&mut PanelState via inherent methods (no struct-field move yet). panel::sort now depends only on panel::natural_sort and crate::kind::kind_of (moved in Step 3) -- no dependency on selection_summary in either direction. Document explicitly, in this commit's message, that sort_entries is the ONLY place entries_gen is bumped today (panel.rs:1148 inside sort_entries) -- this fact drives Step 7. FIX vs round 2 (panel::filter_cache received no equivalent fix to the ViewConfig/entries_gen problem the plan already solved for sort_entries -- the critique's 'punted and never revisited' finding): panel::filter_cache's own methods (ensure_filter_cache, filtered_get, filtered_entries, filtered_count, filtered_indices -- panel.rs:1410-1465) read self.entries, self.entries_gen, self.search_query, and self.facets directly, none of which FilterCache itself owns even after this step. State explicitly, in this module's doc-comment, that this is a DELIBERATE, TIME-BOXED interim state identical in shape to Step 6(old)/7(new)'s ViewConfig problem but NOT yet fixed with explicit parameters -- the fix lands in Step 8 below (panel::view) at the same time entries_gen's ownership is finalized, because ensure_filter_cache's staleness check (entries_gen-based) and ViewConfig's entries_gen-bumping are two halves of one invariant that should be fixed in the same commit rather than twice. Do not let panel::filter_cache's extraction commit claim the coupling is resolved; it explicitly is not until Step 8.
 
-8. Step 7 (renumbered, was round 2's Step 6, now explicitly followed by Step 8's filter_cache fix in the same breath -- A3 keystone): introduce ViewConfig as its own module bundling sort_col/sort_order/folders_first/natural_name_sort/show_hidden plus sort_entries/toggle_folders_first/toggle_natural_sort/set_sort/reverse_sort/sort_indicator (building on panel::sort from Step 6). Make ViewConfig::sort_entries the sole place that bumps entries_gen, taking &mut u64 as an explicit parameter since ViewConfig does not own entries_gen itself (PanelState does). FIX (the signature-cascade gap): toggle_folders_first, toggle_natural_sort, reverse_sort, and set_sort all currently call self.sort_entries() with zero arguments (panel.rs:1152-1155, 1157-1160, 1299-1305, 1613-1622) because entries_gen lives on the same struct today. Once ViewConfig owns sort_entries but not entries_gen, ALL FOUR of these sibling methods must also take an explicit `gen: &mut u64` parameter and forward it, or they cannot call sort_entries. State this explicitly as an in-scope part of this commit; every call site of these four methods (not just sort_entries's own callers) is updated in the same commit. Move PanelState's five loose fields into one `view: ViewConfig` field and fix every direct call site (app/toolbar.rs, app/render.rs, session save/restore in app/mod.rs). This is the first PanelState struct-layout change in the plan -- run the full sort/filter test suite plus a manual smoke test of sort-column clicks and session round-trip before committing. Directly unblocks Track B2 (per-folder view memory).
+8. Step 7 (renumbered, was round 2's Step 6, now explicitly followed by Step 8's filter_cache fix in the same breath -- A3 keystone): introduce ViewConfig as its own module bundling sort_col/sort_order/folders_first/natural_name_sort/show_hidden plus sort_entries/toggle_folders_first/toggle_natural_sort/set_sort/reverse_sort/sort_indicator (building on panel::sort from Step 6). Make ViewConfig::sort_entries the sole place that bumps entries_gen, taking &mut u64 as an explicit parameter since ViewConfig does not own entries_gen itself (PanelState does). FIX (the signature-cascade gap): toggle_folders_first, toggle_natural_sort, reverse_sort, and set_sort all currently call self.sort_entries() with zero arguments (panel.rs:1152-1155, 1157-1160, 1299-1305, 1613-1622) because entries_gen lives on the same struct today. Once ViewConfig owns sort_entries but not entries_gen, ALL FOUR of these sibling methods must also take an explicit `gen: &mut u64` parameter and forward it, or they cannot call sort_entries. State this explicitly as an in-scope part of this commit; every call site of these four methods (not just sort_entries's own callers) is updated in the same commit. Move PanelState's five loose fields into one `view: ViewConfig` field and fix every direct call site (app/toolbar.rs, app/render.rs, session save/restore in app/mod.rs). This is the first PanelState struct-layout change in the plan -- run the full sort/filter test suite plus a manual smoke test of sort-column clicks and session round-trip before committing. B2's per-folder view memory has since shipped with loose `PanelState` fields; this step now consolidates that live behavior under one value object instead of blocking the feature.
 
 9. Step 8 (NEW, closes Step 6's deferred filter_cache fix -- do immediately after Step 7 since both touch entries_gen's ownership): apply the SAME explicit-parameter fix to panel::filter_cache that Step 7 applied to ViewConfig. ensure_filter_cache(&mut self, entries: &[FileEntry], gen: u64, query: &str, facets: &FacetSet) -> bool (or equivalent explicit-parameter shape) replaces the implicit self.entries/self.entries_gen/self.search_query/self.facets reads; filtered_get/filtered_entries/filtered_count/filtered_indices take &[FileEntry] (or an already-validated cache handle) rather than reaching into a PanelState that FilterCache doesn't yet compose. This closes the exact defect class Step 7 already fixed once, applied to the second instance of the same problem in the same subsystem. Verify filter_cache_tracks_query_and_entry_changes before and after; this is the commit that makes FilterCache a genuinely composable field rather than an inherent-impl fiction, and panel::state's later assembly (Step 12) can then treat it as a real owned field with a narrow update call, not a lingering implicit-self dependency.
 
