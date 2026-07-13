@@ -121,6 +121,13 @@ pub fn records_for(operation_id: &OperationId) -> Vec<VersionRecord> {
         .collect()
 }
 
+pub fn record_for_key(key: &IdempotencyKey) -> Option<VersionRecord> {
+    load_manifest(&versions_dir())
+        .records
+        .into_iter()
+        .find(|record| &record.key == key)
+}
+
 fn versions_dir() -> PathBuf {
     crate::fs_util::config_dir().join("versions")
 }

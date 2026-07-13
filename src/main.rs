@@ -24,6 +24,7 @@ mod lock_util;
 mod native_copy;
 mod native_menu;
 mod operation;
+mod operation_journal;
 mod opqueue;
 mod panel;
 mod path_identity;

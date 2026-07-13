@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::fs_util;
 use crate::operation::{
-    ClassifiedFailure, DurabilityProfile, FailureClass, OperationGroupId, OperationId,
+    ClassifiedFailure, DurabilityProfile, FailureClass, IdempotencyKey, OperationGroupId,
+    OperationId,
 };
 use crate::panel::FileEntry;
 use crate::path_identity::PathIdentity;
@@ -218,6 +219,8 @@ pub struct TransferSpec {
     pub post_success: Option<PostTransferAction>,
     #[cfg(test)]
     pub before_commit: Option<BeforeCommitHook>,
+    #[cfg(test)]
+    pub journal_enabled: bool,
 }
 
 #[cfg(test)]
@@ -225,16 +228,22 @@ pub type BeforeCommitHook = Arc<dyn Fn(&Path, &Path) + Send + Sync>;
 
 #[derive(Clone, Debug)]
 pub struct TransferExpectation {
+    pub key: Option<crate::operation::IdempotencyKey>,
     pub source: Result<PathIdentity, String>,
     pub destination: Result<PathIdentity, String>,
+    pub landing: Option<PathBuf>,
+    pub landing_before: Option<PathIdentity>,
 }
 
 pub fn capture_expectations(entries: &[FileEntry], target: &Path) -> Vec<TransferExpectation> {
     entries
         .iter()
         .map(|entry| TransferExpectation {
+            key: None,
             source: capture_identity(&entry.path),
             destination: capture_identity(&target.join(&entry.name)),
+            landing: None,
+            landing_before: None,
         })
         .collect()
 }
@@ -245,7 +254,7 @@ fn capture_identity(path: &Path) -> Result<PathIdentity, String> {
 }
 
 struct TransferWorkItem {
-    index: usize,
+    key: IdempotencyKey,
     entry: FileEntry,
     expectation: TransferExpectation,
     requeues: usize,
@@ -293,12 +302,55 @@ fn record_failure(progress: &TransferState, entry_name: &str, failure: Classifie
     state.failures.push(failure);
 }
 
+fn record_step_failure(
+    progress: &TransferState,
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    entry_name: &str,
+    failure: ClassifiedFailure,
+    journal_enabled: bool,
+) {
+    if journal_enabled
+        && let Err(error) =
+            crate::operation_journal::mark_failed(operation_id, key, failure.clone())
+    {
+        record_failure(
+            progress,
+            entry_name,
+            ClassifiedFailure::message(
+                FailureClass::IntegrityUncertain,
+                failure.path.clone(),
+                format!("operation journal update failed: {error}"),
+            ),
+        );
+    }
+    record_failure(progress, entry_name, failure);
+}
+
+fn record_journal_error(
+    progress: &TransferState,
+    entry_name: &str,
+    path: Option<PathBuf>,
+    error: impl std::fmt::Display,
+) {
+    record_failure(
+        progress,
+        entry_name,
+        ClassifiedFailure::message(
+            FailureClass::IntegrityUncertain,
+            path,
+            format!("operation journal update failed: {error}"),
+        ),
+    );
+}
+
 fn complete_without_copy(
     progress: &TransferState,
     completed_bytes: &mut u64,
     size: u64,
     entry_name: &str,
     failure: Option<ClassifiedFailure>,
+    journal: Option<(&OperationId, &IdempotencyKey, bool)>,
     notify: &impl Fn(),
 ) {
     *completed_bytes += size;
@@ -307,9 +359,27 @@ fn complete_without_copy(
     state.files_done += 1;
     drop(state);
     if let Some(failure) = failure {
-        record_failure(progress, entry_name, failure);
+        if let Some((operation_id, key, enabled)) = journal {
+            record_step_failure(progress, operation_id, key, entry_name, failure, enabled);
+        } else {
+            record_failure(progress, entry_name, failure);
+        }
+    } else if let Some((operation_id, key, true)) = journal
+        && let Err(error) = crate::operation_journal::mark_skipped(operation_id, key)
+    {
+        record_journal_error(progress, entry_name, None, error);
     }
     notify();
+}
+
+#[cfg(test)]
+fn journal_enabled(spec: &TransferSpec) -> bool {
+    spec.journal_enabled
+}
+
+#[cfg(not(test))]
+fn journal_enabled(_spec: &TransferSpec) -> bool {
+    true
 }
 
 /// Size of one entry: its byte length, or the recursive size of a directory.
@@ -336,10 +406,17 @@ pub fn spawn_transfer(
     notify: impl Fn() + Send + 'static,
 ) {
     std::thread::spawn(move || {
+        let journal_enabled = journal_enabled(&spec);
         {
             let mut state = crate::lock_util::recover(&progress);
             state.operation_id = Some(spec.operation_id.clone());
             state.group_id = spec.group_id.clone();
+        }
+        if journal_enabled && let Err(error) = crate::operation_journal::begin(&spec) {
+            record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
+            finish_progress(&progress);
+            notify();
+            return;
         }
         let is_move = spec.kind == TransferKind::Move;
         let mut base_bytes: u64 = 0;
@@ -355,16 +432,22 @@ pub fn spawn_transfer(
             .into_iter()
             .zip(expectations)
             .enumerate()
-            .map(|(index, (entry, expectation))| TransferWorkItem {
-                index,
-                entry,
-                expectation,
-                requeues: 0,
+            .map(|(index, (entry, expectation))| {
+                let destination = spec.target.join(&entry.name);
+                let key = expectation
+                    .key
+                    .clone()
+                    .unwrap_or_else(|| spec.operation_id.step_key(index, &destination));
+                TransferWorkItem {
+                    key,
+                    entry,
+                    expectation,
+                    requeues: 0,
+                }
             })
             .collect::<VecDeque<_>>();
 
         'work: while let Some(mut work_item) = work.pop_front() {
-            let i = work_item.index;
             let this_size = entry_size(&work_item.entry);
             let entry = work_item.entry.clone();
             let dest = spec.target.join(&entry.name);
@@ -381,6 +464,43 @@ pub fn spawn_transfer(
                 }
             }
 
+            if journal_enabled {
+                match crate::operation_journal::completed_effect_is_current(
+                    &spec.operation_id,
+                    &work_item.key,
+                ) {
+                    Ok(true) => {
+                        complete_without_copy(
+                            &progress,
+                            &mut base_bytes,
+                            this_size,
+                            &entry.name,
+                            None,
+                            None,
+                            &notify,
+                        );
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        complete_without_copy(
+                            &progress,
+                            &mut base_bytes,
+                            this_size,
+                            &entry.name,
+                            Some(ClassifiedFailure::message(
+                                FailureClass::IntegrityUncertain,
+                                Some(dest.clone()),
+                                error,
+                            )),
+                            None,
+                            &notify,
+                        );
+                        continue;
+                    }
+                }
+            }
+
             let expected_source = match work_item.expectation.source.clone() {
                 Ok(identity) => identity,
                 Err(message) => {
@@ -394,6 +514,7 @@ pub fn spawn_transfer(
                             Some(entry.path.clone()),
                             message,
                         )),
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
                         &notify,
                     );
                     continue;
@@ -412,6 +533,7 @@ pub fn spawn_transfer(
                             "source re-stat failed",
                             &error,
                         )),
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
                         &notify,
                     );
                     continue;
@@ -420,8 +542,30 @@ pub fn spawn_transfer(
             if !expected_source.same_version(&source_before) {
                 let entry_name = entry.name.clone();
                 let entry_path = entry.path.clone();
-                match prepare_source_retry(&mut work_item, source_before) {
+                match prepare_source_retry(&mut work_item, source_before.clone()) {
                     Ok((old_size, new_size)) => {
+                        if journal_enabled
+                            && let Err(error) = crate::operation_journal::mark_requeued(
+                                &spec.operation_id,
+                                &work_item.key,
+                                source_before,
+                            )
+                        {
+                            complete_without_copy(
+                                &progress,
+                                &mut base_bytes,
+                                this_size,
+                                &entry_name,
+                                Some(ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(entry_path),
+                                    format!("operation journal update failed: {error}"),
+                                )),
+                                None,
+                                &notify,
+                            );
+                            continue;
+                        }
                         reset_for_retry(&progress, base_bytes, old_size, new_size);
                         work.push_back(work_item);
                         notify();
@@ -436,6 +580,7 @@ pub fn spawn_transfer(
                             Some(entry_path),
                             message,
                         )),
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
                         &notify,
                     ),
                 }
@@ -455,6 +600,7 @@ pub fn spawn_transfer(
                             Some(dest.clone()),
                             message,
                         )),
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
                         &notify,
                     );
                     continue;
@@ -475,6 +621,7 @@ pub fn spawn_transfer(
                         Some(entry.path.clone()),
                         "cannot copy a path into itself",
                     )),
+                    Some((&spec.operation_id, &work_item.key, journal_enabled)),
                     &notify,
                 );
                 continue;
@@ -494,6 +641,7 @@ pub fn spawn_transfer(
                             this_size,
                             &entry.name,
                             None,
+                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
                             &notify,
                         );
                         continue;
@@ -512,6 +660,7 @@ pub fn spawn_transfer(
                                 Some(dest.clone()),
                                 "destination already exists",
                             )),
+                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
                             &notify,
                         );
                         continue;
@@ -521,23 +670,59 @@ pub fn spawn_transfer(
                 }
             }
 
-            let errors_before = crate::lock_util::recover(&progress).errors.len();
+            let (errors_before, failures_before) = {
+                let state = crate::lock_util::recover(&progress);
+                (state.errors.len(), state.failures.len())
+            };
 
             // Every entry is staged beside its final landing. This gives new
             // directories the same no-merge guarantee as files and leaves one
             // commit point where destination identity can be revalidated.
-            let landing = if dest_present && spec.policy == OverwritePolicy::KeepBoth {
-                fs_util::available_copy_name(&dest)
-            } else {
-                dest.clone()
-            };
-            let expected_landing = if landing == dest {
-                expected_destination
-            } else {
-                PathIdentity::missing(&landing)
-            };
+            let landing = work_item.expectation.landing.clone().unwrap_or_else(|| {
+                if dest_present && spec.policy == OverwritePolicy::KeepBoth {
+                    fs_util::available_copy_name(&dest)
+                } else {
+                    dest.clone()
+                }
+            });
+            let expected_landing =
+                work_item
+                    .expectation
+                    .landing_before
+                    .clone()
+                    .unwrap_or_else(|| {
+                        if landing == dest {
+                            expected_destination
+                        } else {
+                            PathIdentity::missing(&landing)
+                        }
+                    });
             let replace_existing = expected_landing.exists;
             let copy_target = staging_path(&landing);
+            if journal_enabled
+                && let Err(error) = crate::operation_journal::mark_running(
+                    &spec.operation_id,
+                    &work_item.key,
+                    &copy_target,
+                    &landing,
+                    expected_landing.clone(),
+                )
+            {
+                complete_without_copy(
+                    &progress,
+                    &mut base_bytes,
+                    this_size,
+                    &entry.name,
+                    Some(ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        Some(landing.clone()),
+                        format!("operation journal update failed: {error}"),
+                    )),
+                    None,
+                    &notify,
+                );
+                continue;
+            }
 
             // Same-volume moves are an instant, atomic rename instead of a
             // copy-then-delete: no transient duplication, no walk-and-copy of
@@ -622,6 +807,25 @@ pub fn spawn_transfer(
                                     let entry_path = entry.path.clone();
                                     match prepare_source_retry(&mut work_item, fresh_identity) {
                                         Ok((old_size, new_size)) => {
+                                            let refreshed_identity =
+                                                work_item.expectation.source.as_ref().ok().cloned();
+                                            if journal_enabled
+                                                && let Some(identity) = refreshed_identity
+                                                && let Err(error) =
+                                                    crate::operation_journal::mark_requeued(
+                                                        &spec.operation_id,
+                                                        &work_item.key,
+                                                        identity,
+                                                    )
+                                            {
+                                                record_journal_error(
+                                                    &progress,
+                                                    &entry_name,
+                                                    Some(entry_path),
+                                                    error,
+                                                );
+                                                continue 'work;
+                                            }
                                             base_bytes = attempt_base;
                                             reset_for_retry(
                                                 &progress, base_bytes, old_size, new_size,
@@ -750,7 +954,7 @@ pub fn spawn_transfer(
                     crate::version_store::preserve(
                         &landing,
                         &spec.operation_id,
-                        spec.operation_id.step_key(i, &landing),
+                        work_item.key.clone(),
                     )
                     .map(|_| ())
                     .map_err(std::io::Error::other)
@@ -826,6 +1030,41 @@ pub fn spawn_transfer(
                     .push((entry.path.clone(), landing.clone()));
             }
 
+            if journal_enabled {
+                let step_failure = {
+                    let state = crate::lock_util::recover(&progress);
+                    state
+                        .failures
+                        .iter()
+                        .skip(failures_before)
+                        .max_by_key(|failure| {
+                            if failure.class == FailureClass::IntegrityUncertain {
+                                1
+                            } else {
+                                0
+                            }
+                        })
+                        .cloned()
+                };
+                if let Some(failure) = step_failure {
+                    if let Err(error) = crate::operation_journal::mark_failed(
+                        &spec.operation_id,
+                        &work_item.key,
+                        failure,
+                    ) {
+                        record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
+                    }
+                } else if placed
+                    && let Err(error) = crate::operation_journal::mark_completed(
+                        &spec.operation_id,
+                        &work_item.key,
+                        &landing,
+                    )
+                {
+                    record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
+                }
+            }
+
             {
                 let mut s = crate::lock_util::recover(&progress);
                 s.files_done += 1;
@@ -836,6 +1075,27 @@ pub fn spawn_transfer(
 
         run_post_success(spec.post_success.as_ref(), &progress);
         finish_progress(&progress);
+        if journal_enabled {
+            let status = {
+                let state = crate::lock_util::recover(&progress);
+                if state
+                    .failures
+                    .iter()
+                    .any(|failure| failure.class == FailureClass::IntegrityUncertain)
+                {
+                    crate::operation_journal::OperationStatus::NeedsReview
+                } else if state.cancelled || state.stopped {
+                    crate::operation_journal::OperationStatus::Stopped
+                } else if !state.errors.is_empty() {
+                    crate::operation_journal::OperationStatus::Failed
+                } else {
+                    crate::operation_journal::OperationStatus::Completed
+                }
+            };
+            if let Err(error) = crate::operation_journal::finish(&spec.operation_id, status) {
+                record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
+            }
+        }
         notify();
     });
 }
@@ -1177,6 +1437,7 @@ mod tests {
             durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             before_commit: None,
+            journal_enabled: false,
         });
 
         assert!(state.errors.is_empty(), "{:?}", state.errors);
@@ -1202,6 +1463,7 @@ mod tests {
             durability: DurabilityProfile::Fast,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             before_commit: None,
+            journal_enabled: false,
         });
 
         assert!(root.path().join("a.txt").is_file());
@@ -1233,6 +1495,7 @@ mod tests {
             durability: DurabilityProfile::Fast,
             post_success: None,
             before_commit: None,
+            journal_enabled: false,
         }
     }
 

@@ -988,6 +988,8 @@ impl Workspace {
             post_success: None,
             #[cfg(test)]
             before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         self.enqueue_only(spec, undo);
         self.pump_queue(notify);
@@ -1438,6 +1440,8 @@ impl Workspace {
             post_success,
             #[cfg(test)]
             before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         // Undo-driven: this move records no new history (undo=None).
         self.enqueue_only(spec, None);
@@ -1642,6 +1646,8 @@ impl Workspace {
             post_success: None,
             #[cfg(test)]
             before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         self.enqueue_only(spec, Some(undo));
         self.pump_queue(notify);
@@ -2126,18 +2132,21 @@ impl Workspace {
         }
         // Enqueue both passes; the queue runs them in order (the second starts
         // when the first finishes), so a two-way sync needs no special casing.
+        let group_id = crate::operation::OperationGroupId::new();
         if !to_right.is_empty() {
-            self.enqueue_copy(
+            self.enqueue_copy_grouped(
                 to_right,
                 right_dir.to_path_buf(),
                 OverwritePolicy::OverwriteAll,
+                Some(group_id.clone()),
             );
         }
         if !to_left.is_empty() {
-            self.enqueue_copy(
+            self.enqueue_copy_grouped(
                 to_left,
                 left_dir.to_path_buf(),
                 OverwritePolicy::OverwriteAll,
+                Some(group_id),
             );
         }
         self.pump_queue(notify);
@@ -2148,13 +2157,23 @@ impl Workspace {
     /// served as the review step (no confirmation dialog). Copies record no
     /// undo history.
     fn enqueue_copy(&mut self, entries: Vec<FileEntry>, target: PathBuf, policy: OverwritePolicy) {
+        self.enqueue_copy_grouped(entries, target, policy, None);
+    }
+
+    fn enqueue_copy_grouped(
+        &mut self,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        policy: OverwritePolicy,
+        group_id: Option<crate::operation::OperationGroupId>,
+    ) {
         if entries.is_empty() {
             return;
         }
         let expectations = transfer::capture_expectations(&entries, &target);
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
-            group_id: None,
+            group_id,
             kind: TransferKind::Copy,
             entries,
             expectations,
@@ -2165,6 +2184,8 @@ impl Workspace {
             post_success: None,
             #[cfg(test)]
             before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         self.enqueue_only(spec, None);
     }
@@ -2892,6 +2913,14 @@ mod tests {
         // it on the queue (no more ad-hoc follow-up handling).
         assert!(ws.active_transfer.is_some(), "first pass running");
         assert_eq!(ws.queued_count(), 1, "second pass queued behind the first");
+        let groups = ws
+            .queue
+            .jobs()
+            .iter()
+            .filter_map(|job| job.spec.spec.group_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], groups[1], "both passes share one intent id");
 
         // Drive the queue to completion; poll_transfer drains the second pass.
         drain_transfers(&mut ws);
