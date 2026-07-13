@@ -87,6 +87,8 @@ pub enum Command {
     BeginFind,
     /// Open the saved-search (smart folder) picker.
     OpenSavedSearch,
+    /// Open named multi-root project collections.
+    OpenProjectCollections,
     /// Cmd+Shift+C: copy the selection's full path(s) to the clipboard.
     CopyPath,
     /// Copy the selection's file name(s).
@@ -188,6 +190,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
         ("Find files", "Cmd+F", Command::BeginFind),
         ("Open saved search", "", Command::OpenSavedSearch),
+        ("Project collections", "", Command::OpenProjectCollections),
         ("Copy path", "Cmd+Shift+C", Command::CopyPath),
         ("Copy name", "", Command::CopyName),
         ("Copy parent path", "", Command::CopyParentPath),
@@ -446,6 +449,7 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::DiskTreemap => &["view disk usage map treemap size"],
         Command::BeginFind => &["file find recursive search"],
         Command::OpenSavedSearch => &["file saved search smart folder"],
+        Command::OpenProjectCollections => &["project collection workspace roots virtual view"],
         Command::CopyPath => &["clipboard copy path"],
         Command::CopyName => &["clipboard copy name filename"],
         Command::CopyParentPath => &["clipboard copy parent folder path"],

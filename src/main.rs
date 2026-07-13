@@ -4,6 +4,7 @@ mod app;
 mod bookmarks;
 mod clipboard;
 mod cmdtemplate;
+mod collections;
 mod command;
 mod compare;
 mod conflict;

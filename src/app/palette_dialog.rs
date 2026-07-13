@@ -191,6 +191,7 @@ impl App {
             Command::BeginSync => format!("{active_path} <-> {inactive_path}"),
             Command::FindDuplicates | Command::DiskTreemap | Command::BeginFind => active_path,
             Command::OpenSavedSearch => "saved smart folders".to_string(),
+            Command::OpenProjectCollections => "multi-root project views".to_string(),
             Command::CopyPath
             | Command::CopyName
             | Command::CopyParentPath
@@ -245,7 +246,8 @@ impl App {
             | Command::BeginBatchRename
             | Command::FindDuplicates
             | Command::BeginFind
-            | Command::OpenSavedSearch => "File",
+            | Command::OpenSavedSearch
+            | Command::OpenProjectCollections => "File",
             Command::BeginGoToPath | Command::BeginRecent => "Navigation",
             Command::BeginSync | Command::EqualizePanels | Command::SwapPanels => "Panels",
             Command::SelectAll

@@ -3,6 +3,7 @@
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
 mod batch_rename_dialog;
+mod collections_dialog;
 mod confirm_dialog;
 mod diff_dialog;
 mod duplicates_dialog;
@@ -104,6 +105,9 @@ pub struct App {
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
     /// Whether the saved-search picker is open.
     pub(crate) saved_search_open: bool,
+    /// Persisted multi-root projects and active virtual-view UI state.
+    pub(crate) project_collections: crate::collections::ProjectCollections,
+    pub(crate) collections_dialog: Option<CollectionsDialogState>,
     /// Saved command templates, loaded lazily on first use.
     pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
     /// Active run-command bar state (the editable command line).
@@ -153,6 +157,36 @@ pub(crate) struct FindState {
     pub last_edit_at: f64,
     /// Name to save this query under (smart folder).
     pub save_name: String,
+}
+
+pub(crate) struct CollectionsDialogState {
+    pub name: String,
+    pub include_left: bool,
+    pub include_right: bool,
+    pub selected: Option<String>,
+    pub rows: Vec<crate::collections::VirtualEntry>,
+    pub run: Option<crate::collections::ViewRun>,
+    pub scanned: usize,
+    pub unavailable_roots: Vec<PathBuf>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+impl Default for CollectionsDialogState {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            include_left: true,
+            include_right: true,
+            selected: None,
+            rows: Vec::new(),
+            run: None,
+            scanned: 0,
+            unavailable_roots: Vec::new(),
+            truncated: false,
+            error: None,
+        }
+    }
 }
 
 impl Default for FindState {
@@ -389,6 +423,8 @@ impl App {
             find: None,
             smart_folders: None,
             saved_search_open: false,
+            project_collections: crate::collections::load(),
+            collections_dialog: None,
             command_templates: None,
             run_command: None,
             compare_cache: None,

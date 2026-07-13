@@ -180,6 +180,8 @@ pub struct Workspace {
     pub find_request: bool,
     /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
     pub saved_search_request: bool,
+    /// Set by [`Command::OpenProjectCollections`]; the UI opens virtual projects.
+    pub collections_request: bool,
     /// Set by [`Command::ToggleQueuePanel`]; the UI flips the transfer-queue
     /// panel's visibility.
     pub queue_panel_request: bool,
@@ -337,6 +339,7 @@ impl Workspace {
             treemap_request: false,
             find_request: false,
             saved_search_request: false,
+            collections_request: false,
             queue_panel_request: false,
             receipts_request: false,
             clipboard_request: None,
@@ -679,6 +682,7 @@ impl Workspace {
             Command::DiskTreemap => self.treemap_request = true,
             Command::BeginFind => self.find_request = true,
             Command::OpenSavedSearch => self.saved_search_request = true,
+            Command::OpenProjectCollections => self.collections_request = true,
             Command::CopyPath => {
                 self.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
             }
