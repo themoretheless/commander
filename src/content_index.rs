@@ -236,6 +236,21 @@ impl ContentIndex {
         if !self.is_enabled(&root) {
             return false;
         }
+        if !crate::provider_runtime::activate_builtin(
+            "content-index",
+            &crate::provider_runtime::ActivationRequest {
+                capability: crate::provider_runtime::ProviderCapability::IndexBuild,
+                root: &root,
+                extension: None,
+                bytes: None,
+            },
+        ) {
+            self.load_errors.insert(
+                root,
+                "Content index provider activation exceeded its startup budget".to_string(),
+            );
+            return false;
+        }
         let exclusions = self.exclusions(&root);
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);

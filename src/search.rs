@@ -3,6 +3,7 @@
 //! bounded content reads stay off the frame thread.
 
 use crate::panel::FileEntry;
+use crate::ports::SearchProvider;
 use crate::query::{MatchMode, Predicate, Query, QueryError};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -163,7 +164,7 @@ impl SearchRun {
     }
 }
 
-struct ProviderRequest {
+pub(crate) struct ProviderRequest {
     generation: u64,
     active: Arc<AtomicU64>,
     requires_content: bool,
@@ -184,7 +185,7 @@ enum CandidateContent {
     Inline(Option<Arc<str>>),
 }
 
-struct SearchCandidate {
+pub(crate) struct SearchCandidate {
     entry: FileEntry,
     identity: FileIdentity,
     accessed: Option<SystemTime>,
@@ -192,13 +193,7 @@ struct SearchCandidate {
     location: SearchLocation,
 }
 
-type ProviderRecord = Option<SearchCandidate>;
-
-trait SearchProvider: Send {
-    fn label(&self) -> &'static str;
-
-    fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool);
-}
+pub(crate) type ProviderRecord = Option<SearchCandidate>;
 
 struct FilesystemProvider {
     root: PathBuf,
@@ -211,8 +206,16 @@ impl FilesystemProvider {
 }
 
 impl SearchProvider for FilesystemProvider {
+    fn id(&self) -> &'static str {
+        "live-search"
+    }
+
     fn label(&self) -> &'static str {
         "Live + ZIP"
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
     }
 
     fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
@@ -352,8 +355,16 @@ impl ArchiveProvider {
 }
 
 impl SearchProvider for ArchiveProvider {
+    fn id(&self) -> &'static str {
+        "archive-search"
+    }
+
     fn label(&self) -> &'static str {
         "ZIP"
+    }
+
+    fn root(&self) -> &Path {
+        &self.archive
     }
 
     fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
@@ -367,8 +378,16 @@ struct IndexedProvider {
 }
 
 impl SearchProvider for IndexedProvider {
+    fn id(&self) -> &'static str {
+        "indexed-search"
+    }
+
     fn label(&self) -> &'static str {
         "Index + ZIP"
+    }
+
+    fn root(&self) -> &Path {
+        &self.index.root
     }
 
     fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
@@ -444,7 +463,29 @@ impl SearchEngine {
         provider: Box<dyn SearchProvider>,
     ) -> Result<SearchRun, QueryError> {
         let compiled = CompiledQuery::new(query)?;
+        let provider_id = provider.id();
         let provider_label = provider.label();
+        let provider_root = provider.root().to_path_buf();
+        let capability = if provider_id == "indexed-search" {
+            crate::provider_runtime::ProviderCapability::SearchIndex
+        } else {
+            crate::provider_runtime::ProviderCapability::SearchLive
+        };
+        if !crate::provider_runtime::activate_builtin(
+            provider_id,
+            &crate::provider_runtime::ActivationRequest {
+                capability,
+                root: &provider_root,
+                extension: None,
+                bytes: None,
+            },
+        ) {
+            return Err(QueryError {
+                token: provider_id.to_string(),
+                message: "provider startup budget or capability policy refused activation"
+                    .to_string(),
+            });
+        }
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.active_generation.store(generation, Ordering::Release);
         let active = Arc::clone(&self.active_generation);

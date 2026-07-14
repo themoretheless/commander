@@ -557,23 +557,42 @@ pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
     if entry.is_dir {
         return None;
     }
-    if entry.is_image() {
-        Some(PreviewContent::Image(entry.path.clone()))
+    let kind = if entry.is_image() {
+        crate::ports::PreviewKind::Image
     } else {
-        // Try to read as text (limit to 1MB)
-        let Ok(meta) = fs::metadata(&entry.path) else {
-            return None;
-        };
-        if meta.len() > 1024 * 1024 {
-            return None; // Too large
+        crate::ports::PreviewKind::Text
+    };
+    let capability = match kind {
+        crate::ports::PreviewKind::Image => {
+            crate::provider_runtime::ProviderCapability::PreviewImage
         }
-        let Ok(content) = fs::read_to_string(&entry.path) else {
-            return None;
-        };
-        Some(PreviewContent::Text {
+        crate::ports::PreviewKind::Text => crate::provider_runtime::ProviderCapability::PreviewText,
+    };
+    let root = entry.path.parent().unwrap_or(Path::new("/"));
+    if !crate::provider_runtime::activate_builtin(
+        "native-preview",
+        &crate::provider_runtime::ActivationRequest {
+            capability,
+            root,
+            extension: (!entry.extension.is_empty()).then_some(entry.extension.as_str()),
+            bytes: Some(entry.size),
+        },
+    ) {
+        return None;
+    }
+    let request = crate::ports::PreviewRequest {
+        path: &entry.path,
+        kind,
+        max_bytes: crate::ports::DEFAULT_TEXT_PREVIEW_BYTES,
+    };
+    match crate::ports::PreviewProvider::preview(&crate::ports::NativePreviewProvider, &request)
+        .ok()?
+    {
+        crate::ports::PreviewArtifact::Image => Some(PreviewContent::Image(entry.path.clone())),
+        crate::ports::PreviewArtifact::Text(content) => Some(PreviewContent::Text {
             path: entry.path.clone(),
             content,
-        })
+        }),
     }
 }
 

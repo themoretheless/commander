@@ -75,13 +75,17 @@ pub fn file(path: &Path) -> std::io::Result<VerifiedHash> {
 }
 
 pub fn files_equal(left: &Path, right: &Path) -> bool {
+    files_equal_with(crate::ports::default_hasher(), left, right)
+}
+
+pub fn files_equal_with(hasher: &dyn crate::ports::Hasher, left: &Path, right: &Path) -> bool {
     let (Ok(left_metadata), Ok(right_metadata)) = (left.metadata(), right.metadata()) else {
         return false;
     };
     if left_metadata.len() != right_metadata.len() {
         return false;
     }
-    match (file(left), file(right)) {
+    match (hasher.hash(left), hasher.hash(right)) {
         (Ok(left_hash), Ok(right_hash)) => left_hash == right_hash,
         _ => false,
     }
