@@ -73,6 +73,13 @@ unsafe extern "C" {
         flags: c_uint,
     ) -> c_int;
     fn renamex_np(from: *const c_char, to: *const c_char, flags: c_uint) -> c_int;
+    fn clonefile(from: *const c_char, to: *const c_char, flags: c_int) -> c_int;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeCopyOutcome {
+    pub bytes: u64,
+    pub cloned: bool,
 }
 
 /// Move `src` to `dst` with a single atomic rename that fails with `EEXIST`
@@ -189,7 +196,8 @@ pub fn copy_file_native(
     dst: &Path,
     state: &Arc<Mutex<TransferProgress>>,
     base_bytes: u64,
-) -> std::io::Result<u64> {
+    allow_clone: bool,
+) -> std::io::Result<NativeCopyOutcome> {
     let src_c = path_cstring(src)?;
     let dst_c = path_cstring(dst)?;
 
@@ -203,6 +211,18 @@ pub fn copy_file_native(
             .unwrap_or_default();
         s.current_file_size = file_size;
         s.current_file_copied = 0;
+    }
+
+    // Try the explicit clone primitive first so telemetry can distinguish a
+    // metadata-only APFS clone from copyfile's transparent byte-copy fallback.
+    if allow_clone && unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) } == 0 {
+        let mut progress = crate::lock_util::recover(state);
+        progress.current_file_copied = file_size;
+        progress.copied_bytes = base_bytes.saturating_add(file_size);
+        return Ok(NativeCopyOutcome {
+            bytes: file_size,
+            cloned: true,
+        });
     }
 
     unsafe {
@@ -260,7 +280,10 @@ pub fn copy_file_native(
         s.copied_bytes = base_bytes.saturating_add(file_size);
     }
 
-    Ok(file_size)
+    Ok(NativeCopyOutcome {
+        bytes: file_size,
+        cloned: false,
+    })
 }
 
 /// Copy a directory recursively using native copyfile() with COPYFILE_RECURSIVE.

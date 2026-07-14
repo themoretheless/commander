@@ -5,7 +5,7 @@
 //! the engine never depends on egui.
 
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +20,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
+const CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
 const MAX_SOURCE_REQUEUES: usize = 2;
 
 /// What to do when destination file already exists.
@@ -190,10 +191,23 @@ impl CopyMethod {
         is_dir: bool,
         dest: &Path,
         context: CopyContext<'_>,
-    ) -> std::io::Result<u64> {
+    ) -> std::io::Result<CopyOutcome> {
         let force_buffered = context.rule.max_bytes_per_second.is_some();
+        if !is_dir
+            && context.resume.is_none()
+            && context.profile.capabilities.sparse
+            && is_sparse_file(src)
+        {
+            let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(context.rule);
+            return copy_file_sparse(src, dest, context.progress, &mut limiter).map(|bytes| {
+                CopyOutcome {
+                    bytes,
+                    fast_path: crate::transfer_tuning::FastPath::Sparse,
+                }
+            });
+        }
         match self {
-            CopyMethod::Native if !force_buffered => {
+            CopyMethod::Native if !force_buffered && context.resume.is_none() => {
                 if is_dir {
                     crate::native_copy::copy_dir_native(
                         src,
@@ -201,13 +215,26 @@ impl CopyMethod {
                         context.progress,
                         context.base_bytes,
                     )
+                    .map(|bytes| CopyOutcome {
+                        bytes,
+                        fast_path: crate::transfer_tuning::FastPath::Native,
+                    })
                 } else {
                     crate::native_copy::copy_file_native(
                         src,
                         dest,
                         context.progress,
                         context.base_bytes,
+                        context.profile.capabilities.clone,
                     )
+                    .map(|outcome| CopyOutcome {
+                        bytes: outcome.bytes,
+                        fast_path: if outcome.cloned {
+                            crate::transfer_tuning::FastPath::Clone
+                        } else {
+                            crate::transfer_tuning::FastPath::Native
+                        },
+                    })
                 }
             }
             CopyMethod::Native | CopyMethod::Buffered => {
@@ -215,16 +242,61 @@ impl CopyMethod {
                 if is_dir {
                     let workers = crate::transfer_tuning::snapshot(context.profile).concurrency;
                     if workers > 1 && context.rule.max_bytes_per_second.is_none() {
-                        copy_dir_buffered_parallel(src, dest, context.progress, workers)
+                        copy_dir_buffered_parallel(
+                            src,
+                            dest,
+                            context.progress,
+                            workers,
+                            context.profile.capabilities.sparse,
+                        )
                     } else {
-                        copy_dir_buffered_with_limiter(src, dest, context.progress, &mut limiter)
+                        copy_dir_buffered_with_limiter(
+                            src,
+                            dest,
+                            context.progress,
+                            &mut limiter,
+                            context.profile.capabilities.sparse,
+                        )
                     }
+                    .map(|bytes| CopyOutcome {
+                        bytes,
+                        fast_path: crate::transfer_tuning::FastPath::Buffered,
+                    })
                 } else {
-                    copy_file_buffered_with_limiter(src, dest, context.progress, &mut limiter)
+                    copy_file_buffered_with_limiter(
+                        src,
+                        dest,
+                        context.progress,
+                        &mut limiter,
+                        context.resume,
+                        Some(context.journal),
+                        context.profile.capabilities.sparse,
+                    )
+                    .map(|bytes| CopyOutcome {
+                        bytes,
+                        fast_path: if context.resume.is_some() {
+                            crate::transfer_tuning::FastPath::Resumed
+                        } else {
+                            crate::transfer_tuning::FastPath::Buffered
+                        },
+                    })
                 }
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CopyOutcome {
+    bytes: u64,
+    fast_path: crate::transfer_tuning::FastPath,
+}
+
+#[derive(Clone, Copy)]
+struct JournalStep<'a> {
+    operation_id: &'a OperationId,
+    key: &'a IdempotencyKey,
+    enabled: bool,
 }
 
 struct CopyContext<'a> {
@@ -232,6 +304,8 @@ struct CopyContext<'a> {
     base_bytes: u64,
     profile: &'a crate::volume_profile::VolumeProfile,
     rule: crate::transfer_tuning::VolumeRule,
+    resume: Option<&'a ResumeCheckpoint>,
+    journal: JournalStep<'a>,
 }
 
 /// A copy/move request, fully described and detached from any UI state.
@@ -278,6 +352,15 @@ pub struct TransferExpectation {
     pub destination: Result<PathIdentity, String>,
     pub landing: Option<PathBuf>,
     pub landing_before: Option<PathIdentity>,
+    pub resume: Option<ResumeCheckpoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeCheckpoint {
+    pub staging: PathBuf,
+    pub offset: u64,
+    pub source: PathIdentity,
+    pub partial: PathIdentity,
 }
 
 pub fn capture_expectations(entries: &[FileEntry], target: &Path) -> Vec<TransferExpectation> {
@@ -289,6 +372,7 @@ pub fn capture_expectations(entries: &[FileEntry], target: &Path) -> Vec<Transfe
             destination: capture_identity(&target.join(&entry.name)),
             landing: None,
             landing_before: None,
+            resume: None,
         })
         .collect()
 }
@@ -323,6 +407,7 @@ fn prepare_source_retry(
     let new_size = entry_size(&refreshed);
     item.entry = refreshed;
     item.expectation.source = Ok(identity);
+    item.expectation.resume = None;
     item.requeues += 1;
     Ok((old_size, new_size))
 }
@@ -762,7 +847,10 @@ pub fn spawn_transfer(
                         }
                     });
             let replace_existing = expected_landing.exists;
-            let copy_target = staging_path(&landing);
+            let copy_target = work_item.expectation.resume.as_ref().map_or_else(
+                || staging_path(&landing),
+                |checkpoint| checkpoint.staging.clone(),
+            );
             if journal_enabled
                 && let Err(error) = crate::operation_journal::mark_running(
                     &spec.operation_id,
@@ -799,15 +887,6 @@ pub fn spawn_transfer(
                     .is_some_and(|p| fs_util::same_volume(p, &spec.target));
 
             let attempt_base = base_bytes;
-            let attempt_fast_path = if renamed {
-                crate::transfer_tuning::FastPath::Rename
-            } else if spec.method == CopyMethod::Native
-                && resource_rule.max_bytes_per_second.is_none()
-            {
-                crate::transfer_tuning::FastPath::Native
-            } else {
-                crate::transfer_tuning::FastPath::Buffered
-            };
             let attempt_started = std::time::Instant::now();
             let result = if renamed {
                 rename_entry(
@@ -818,6 +897,10 @@ pub fn spawn_transfer(
                     &progress,
                     base_bytes,
                 )
+                .map(|bytes| CopyOutcome {
+                    bytes,
+                    fast_path: crate::transfer_tuning::FastPath::Rename,
+                })
             } else {
                 spec.method.copy_entry(
                     &entry.path,
@@ -828,6 +911,12 @@ pub fn spawn_transfer(
                         base_bytes,
                         profile: &target_profile,
                         rule: resource_rule,
+                        resume: work_item.expectation.resume.as_ref(),
+                        journal: JournalStep {
+                            operation_id: &spec.operation_id,
+                            key: &work_item.key,
+                            enabled: journal_enabled,
+                        },
                     },
                 )
             };
@@ -847,13 +936,19 @@ pub fn spawn_transfer(
             }
 
             match &result {
-                Ok(b) => base_bytes += b,
+                Ok(outcome) => base_bytes += outcome.bytes,
                 Err(e) => {
+                    let resumable_partial = journal_enabled
+                        && !renamed
+                        && !entry.is_dir
+                        && crate::fs_util::path_is_taken(&copy_target);
                     if crate::lock_util::recover(&progress).cancelled {
                         // For a rename this is a no-op (a failed rename never
                         // created `copy_target`); for a copy it drops the
                         // partial. Either way the source is left intact.
-                        let _ = undo_placement(&copy_target, &entry.path, renamed);
+                        if !resumable_partial {
+                            let _ = undo_placement(&copy_target, &entry.path, renamed);
+                        }
                         break; // fall through to the finished-setter below
                     }
                     record_failure(
@@ -1025,11 +1120,18 @@ pub fn spawn_transfer(
                 }
             }
 
+            let resumable_partial = result.is_err()
+                && journal_enabled
+                && !renamed
+                && !entry.is_dir
+                && crate::fs_util::path_is_taken(&copy_target);
             let placed = if !clean {
                 // Undo our placement; a pre-existing dest is untouched. For a
                 // rename this restores the source rather than deleting its only
                 // copy.
-                if let Some(msg) = undo_placement(&copy_target, &entry.path, renamed) {
+                if !resumable_partial
+                    && let Some(msg) = undo_placement(&copy_target, &entry.path, renamed)
+                {
                     record_failure(
                         &progress,
                         &entry.name,
@@ -1122,9 +1224,12 @@ pub fn spawn_transfer(
                     .push((entry.path.clone(), landing.clone()));
             }
             if placed {
-                crate::lock_util::recover(&progress)
-                    .fast_paths
-                    .push(attempt_fast_path);
+                crate::lock_util::recover(&progress).fast_paths.push(
+                    result
+                        .as_ref()
+                        .expect("placed transfer has an outcome")
+                        .fast_path,
+                );
             }
 
             if journal_enabled {
@@ -1156,6 +1261,10 @@ pub fn spawn_transfer(
                         &spec.operation_id,
                         &work_item.key,
                         &landing,
+                        result
+                            .as_ref()
+                            .expect("placed transfer has an outcome")
+                            .fast_path,
                     )
                 {
                     record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
@@ -1362,16 +1471,143 @@ fn copy_file_buffered_with_limiter(
     dst: &Path,
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    resume: Option<&ResumeCheckpoint>,
+    journal: Option<JournalStep<'_>>,
+    preserve_sparse: bool,
 ) -> std::io::Result<u64> {
-    let result = copy_file_buffered_inner(src, dst, state, limiter);
+    if preserve_sparse && resume.is_none() && is_sparse_file(src) {
+        return copy_file_sparse(src, dst, state, limiter);
+    }
+    let result = copy_file_buffered_inner(src, dst, state, limiter, resume, journal);
     if let Err(ref e) = result {
         // Clean up our own partial write, but never delete a destination that
         // was already there (AlreadyExists means create_new refused to clobber).
-        if e.kind() != std::io::ErrorKind::AlreadyExists {
+        if journal.is_none() && e.kind() != std::io::ErrorKind::AlreadyExists {
             let _ = std::fs::remove_file(dst);
         }
     }
     result
+}
+
+#[cfg(unix)]
+fn is_sparse_file(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    path.metadata().is_ok_and(|metadata| {
+        metadata.is_file()
+            && metadata.len() > 0
+            && metadata.blocks().saturating_mul(512) < metadata.len()
+    })
+}
+
+#[cfg(not(unix))]
+fn is_sparse_file(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn copy_file_sparse(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+) -> std::io::Result<u64> {
+    use std::os::fd::AsRawFd;
+
+    let mut reader = std::fs::File::open(src)?;
+    let file_size = reader.metadata()?.len();
+    let mut writer = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
+    writer.set_len(file_size)?;
+    let base = {
+        let mut progress = crate::lock_util::recover(state);
+        progress.current_file = src
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        progress.current_file_size = file_size;
+        progress.current_file_copied = 0;
+        progress.copied_bytes
+    };
+    let mut cursor = 0_u64;
+    let mut buffer = vec![0_u8; COPY_BUF_SIZE];
+    while cursor < file_size {
+        if crate::lock_util::recover(state).cancelled {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        let data = unsafe {
+            libc::lseek(
+                reader.as_raw_fd(),
+                cursor.try_into().map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "file offset overflow")
+                })?,
+                libc::SEEK_DATA,
+            )
+        };
+        if data < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENXIO) {
+                break;
+            }
+            return Err(error);
+        }
+        let hole = unsafe { libc::lseek(reader.as_raw_fd(), data, libc::SEEK_HOLE) };
+        if hole < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let data = data as u64;
+        let hole = (hole as u64).min(file_size);
+        reader.seek(SeekFrom::Start(data))?;
+        writer.seek(SeekFrom::Start(data))?;
+        let mut extent_offset = data;
+        while extent_offset < hole {
+            let wanted = (hole - extent_offset).min(buffer.len() as u64) as usize;
+            let read = reader.read(&mut buffer[..wanted])?;
+            if read == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "sparse extent ended early",
+                ));
+            }
+            writer.write_all(&buffer[..read])?;
+            limiter.consume(read, || crate::lock_util::recover(state).cancelled)?;
+            extent_offset = extent_offset.saturating_add(read as u64);
+            let mut progress = crate::lock_util::recover(state);
+            progress.current_file_copied = extent_offset;
+            progress.copied_bytes = base.saturating_add(extent_offset);
+            progress.maybe_sample();
+        }
+        cursor = hole;
+    }
+    writer.sync_data()?;
+    if let Ok(metadata) = src.metadata() {
+        std::fs::set_permissions(dst, metadata.permissions())?;
+    }
+    let mut progress = crate::lock_util::recover(state);
+    progress.current_file_copied = file_size;
+    progress.copied_bytes = base.saturating_add(file_size);
+    progress
+        .fast_paths
+        .push(crate::transfer_tuning::FastPath::Sparse);
+    Ok(file_size)
+}
+
+#[cfg(not(unix))]
+fn copy_file_sparse(
+    _src: &Path,
+    _dst: &Path,
+    _state: &TransferState,
+    _limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+) -> std::io::Result<u64> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "sparse copy is unavailable",
+    ))
 }
 
 fn copy_file_buffered_inner(
@@ -1379,8 +1615,17 @@ fn copy_file_buffered_inner(
     dst: &Path,
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    resume: Option<&ResumeCheckpoint>,
+    journal: Option<JournalStep<'_>>,
 ) -> std::io::Result<u64> {
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
+    let offset = resume.map_or(0, |checkpoint| checkpoint.offset);
+    if offset > file_size || resume.is_some_and(|checkpoint| checkpoint.staging != dst) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid transfer checkpoint",
+        ));
+    }
 
     // Init per-file progress
     {
@@ -1390,24 +1635,41 @@ fn copy_file_buffered_inner(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         s.current_file_size = file_size;
-        s.current_file_copied = 0;
+        s.current_file_copied = offset;
+        s.copied_bytes = s.copied_bytes.saturating_add(offset);
     }
 
-    let mut reader = std::io::BufReader::with_capacity(COPY_BUF_SIZE, std::fs::File::open(src)?);
+    let mut source = std::fs::File::open(src)?;
+    source.seek(SeekFrom::Start(offset))?;
+    let mut reader = std::io::BufReader::with_capacity(COPY_BUF_SIZE, source);
     // create_new (O_EXCL): the caller always targets a path that should not
     // exist yet, so refuse to truncate a file that races into being.
-    let dst_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dst)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    let mut dst_file = if resume.is_some() {
+        options.open(dst)?
+    } else {
+        options.create_new(true).open(dst)?
+    };
+    if dst_file.metadata()?.len() != offset {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "checkpoint staging length changed",
+        ));
+    }
+    dst_file.seek(SeekFrom::Start(offset))?;
     let mut writer = std::io::BufWriter::with_capacity(COPY_BUF_SIZE, dst_file);
 
     let mut buf = vec![0u8; COPY_BUF_SIZE];
+    let mut copied = offset;
+    let mut next_checkpoint = offset.saturating_add(CHECKPOINT_INTERVAL);
 
     loop {
         {
             let s = crate::lock_util::recover(state);
             if s.cancelled {
+                drop(s);
+                persist_checkpoint(src, dst, copied, &mut writer, journal)?;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
                     "cancelled",
@@ -1420,7 +1682,11 @@ fn copy_file_buffered_inner(
             break;
         }
         writer.write_all(&buf[..n])?;
-        limiter.consume(n, || crate::lock_util::recover(state).cancelled)?;
+        copied = copied.saturating_add(n as u64);
+        if let Err(error) = limiter.consume(n, || crate::lock_util::recover(state).cancelled) {
+            persist_checkpoint(src, dst, copied, &mut writer, journal)?;
+            return Err(error);
+        }
 
         {
             let mut s = crate::lock_util::recover(state);
@@ -1428,8 +1694,12 @@ fn copy_file_buffered_inner(
             s.current_file_copied += n as u64;
             s.maybe_sample();
         }
+        if copied >= next_checkpoint {
+            persist_checkpoint(src, dst, copied, &mut writer, journal)?;
+            next_checkpoint = copied.saturating_add(CHECKPOINT_INTERVAL);
+        }
     }
-    writer.flush()?;
+    persist_checkpoint(src, dst, copied, &mut writer, journal)?;
     // Apply the source's permissions only after the contents are complete, so
     // a concurrent reader never sees a partial file already wearing its final
     // (possibly executable) mode.
@@ -1439,11 +1709,36 @@ fn copy_file_buffered_inner(
     Ok(file_size)
 }
 
+fn persist_checkpoint(
+    src: &Path,
+    dst: &Path,
+    offset: u64,
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    journal: Option<JournalStep<'_>>,
+) -> std::io::Result<()> {
+    writer.flush()?;
+    writer.get_ref().sync_data()?;
+    let Some(journal) = journal.filter(|journal| journal.enabled) else {
+        return Ok(());
+    };
+    let source = PathIdentity::observe_deep(src)?;
+    let partial = PathIdentity::observe_deep(dst)?;
+    let checkpoint = ResumeCheckpoint {
+        staging: dst.to_path_buf(),
+        offset,
+        source,
+        partial,
+    };
+    crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
+        .map_err(std::io::Error::other)
+}
+
 fn copy_dir_buffered_parallel(
     src: &Path,
     dst: &Path,
     state: &TransferState,
     workers: usize,
+    preserve_sparse: bool,
 ) -> std::io::Result<u64> {
     let mut files = Vec::new();
     let mut permissions = Vec::new();
@@ -1464,7 +1759,15 @@ fn copy_dir_buffered_parallel(
             .par_iter()
             .map(|(source, destination)| {
                 let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
-                copy_file_buffered_with_limiter(source, destination, state, &mut limiter)
+                copy_file_buffered_with_limiter(
+                    source,
+                    destination,
+                    state,
+                    &mut limiter,
+                    None,
+                    None,
+                    preserve_sparse,
+                )
             })
             .collect::<Vec<_>>()
     });
@@ -1512,6 +1815,7 @@ fn copy_dir_buffered_with_limiter(
     dst: &Path,
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    preserve_sparse: bool,
 ) -> std::io::Result<u64> {
     std::fs::create_dir_all(dst)?;
     let mut copied = 0u64;
@@ -1524,9 +1828,23 @@ fn copy_dir_buffered_with_limiter(
         if ft.is_symlink() {
             copy_symlink(&src_path, &dst_path)?;
         } else if ft.is_dir() {
-            copied += copy_dir_buffered_with_limiter(&src_path, &dst_path, state, limiter)?;
+            copied += copy_dir_buffered_with_limiter(
+                &src_path,
+                &dst_path,
+                state,
+                limiter,
+                preserve_sparse,
+            )?;
         } else {
-            copied += copy_file_buffered_with_limiter(&src_path, &dst_path, state, limiter)?;
+            copied += copy_file_buffered_with_limiter(
+                &src_path,
+                &dst_path,
+                state,
+                limiter,
+                None,
+                None,
+                preserve_sparse,
+            )?;
         }
     }
     Ok(copied)
@@ -1732,6 +2050,70 @@ mod tests {
     }
 
     #[test]
+    fn buffered_copy_resumes_from_a_verified_offset() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let source = src.path().join("large.bin");
+        let staging = dst.path().join(".large.bin.cmdr-tmp.0");
+        let bytes = (0..(3 * 1024 * 1024 + 17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        std::fs::write(&source, &bytes).unwrap();
+        let offset = 1024 * 1024 + 7;
+        std::fs::write(&staging, &bytes[..offset]).unwrap();
+        let checkpoint = ResumeCheckpoint {
+            staging: staging.clone(),
+            offset: offset as u64,
+            source: PathIdentity::observe_deep(&source).unwrap(),
+            partial: PathIdentity::observe_deep(&staging).unwrap(),
+        };
+        let state = Arc::new(Mutex::new(TransferProgress::new(bytes.len() as u64, 1)));
+        let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
+
+        let copied = copy_file_buffered_with_limiter(
+            &source,
+            &staging,
+            &state,
+            &mut limiter,
+            Some(&checkpoint),
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(copied, bytes.len() as u64);
+        assert_eq!(std::fs::read(staging).unwrap(), bytes);
+        assert_eq!(state.lock().unwrap().copied_bytes, bytes.len() as u64);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sparse_copy_preserves_holes_and_content() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let source = src.path().join("sparse.bin");
+        let destination = dst.path().join("sparse.bin");
+        let mut file = std::fs::File::create(&source).unwrap();
+        file.set_len(32 * 1024 * 1024).unwrap();
+        file.seek(SeekFrom::Start(1024 * 1024)).unwrap();
+        file.write_all(b"first extent").unwrap();
+        file.seek(SeekFrom::End(-16)).unwrap();
+        file.write_all(b"last extent").unwrap();
+        file.sync_all().unwrap();
+        assert!(is_sparse_file(&source));
+        let state = Arc::new(Mutex::new(TransferProgress::new(32 * 1024 * 1024, 1)));
+        let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
+
+        copy_file_sparse(&source, &destination, &state, &mut limiter).unwrap();
+
+        assert!(crate::version_store::paths_equal(&source, &destination));
+        let source_blocks = source.metadata().unwrap().blocks();
+        let destination_blocks = destination.metadata().unwrap().blocks();
+        assert!(destination_blocks <= source_blocks.saturating_add(16));
+        assert_eq!(destination.metadata().unwrap().len(), 32 * 1024 * 1024);
+    }
+
+    #[test]
     fn native_copy_file_works() {
         let (src, dst) = (TempDir::new(), TempDir::new());
         let file = src.file("a.txt", "native");
@@ -1789,7 +2171,7 @@ mod tests {
         let destination = dst.path().join("folder");
         let progress = Arc::new(Mutex::new(TransferProgress::new(0, 1)));
 
-        copy_dir_buffered_parallel(&source, &destination, &progress, 2).unwrap();
+        copy_dir_buffered_parallel(&source, &destination, &progress, 2, true).unwrap();
 
         assert_eq!(crate::lock_util::recover(&progress).peak_workers, 2);
         assert_eq!(

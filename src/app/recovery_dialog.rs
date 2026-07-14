@@ -251,6 +251,24 @@ fn show_inspect(
                                 .monospace()
                                 .color(t.text_secondary),
                         );
+                        if let Some(fast_path) = step.fast_path {
+                            ui.label(
+                                egui::RichText::new(format!("Fast path: {}", fast_path.label()))
+                                    .size(9.0)
+                                    .color(t.text_muted),
+                            );
+                        }
+                        if let Some(checkpoint) = &step.checkpoint {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Resumable at {}",
+                                    crate::panel::format_size(checkpoint.offset)
+                                ))
+                                .size(9.0)
+                                .color(t.accent_warning),
+                            )
+                            .on_hover_text(checkpoint.staging.display().to_string());
+                        }
                         if let Some(failure) = &step.failure {
                             ui.label(
                                 egui::RichText::new(format!(

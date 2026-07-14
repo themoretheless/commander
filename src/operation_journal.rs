@@ -7,15 +7,15 @@ use crate::operation::{
 use crate::panel::FileEntry;
 use crate::path_identity::PathIdentity;
 use crate::transfer::{
-    CopyMethod, OverwritePolicy, PostTransferAction, TransferExpectation, TransferKind,
-    TransferSpec,
+    CopyMethod, OverwritePolicy, PostTransferAction, ResumeCheckpoint, TransferExpectation,
+    TransferKind, TransferSpec,
 };
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const JOURNAL_SCHEMA: u32 = 2;
+const JOURNAL_SCHEMA: u32 = 3;
 const MAX_OPERATIONS: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +92,10 @@ pub struct OperationStep {
     pub landing_before: Option<PathIdentity>,
     pub destination_after: Option<PathIdentity>,
     pub staging: Option<PathBuf>,
+    #[serde(default)]
+    pub checkpoint: Option<ResumeCheckpoint>,
+    #[serde(default)]
+    pub fast_path: Option<crate::transfer_tuning::FastPath>,
     pub status: StepStatus,
     pub attempts: u32,
     pub failure: Option<ClassifiedFailure>,
@@ -347,6 +351,8 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                     landing_before: None,
                     destination_after: None,
                     staging: None,
+                    checkpoint: None,
+                    fast_path: None,
                     status: StepStatus::Planned,
                     attempts: 0,
                     failure: None,
@@ -410,6 +416,28 @@ pub fn mark_running(
             step.landing_before = Some(landing_before);
             step.attempts = step.attempts.saturating_add(1);
             step.failure = None;
+            if step
+                .checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.staging != staging)
+            {
+                step.checkpoint = None;
+            }
+        }
+    })
+}
+
+pub fn mark_checkpoint(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    checkpoint: ResumeCheckpoint,
+) -> Result<(), String> {
+    update_step(operation_id, key, |step| {
+        if !step.status.terminal() {
+            step.status = StepStatus::Running;
+            step.staging = Some(checkpoint.staging.clone());
+            step.checkpoint = Some(checkpoint);
+            step.failure = None;
         }
     })
 }
@@ -426,6 +454,8 @@ pub fn mark_requeued(
             step.staging = None;
             step.landing = None;
             step.landing_before = None;
+            step.checkpoint = None;
+            step.fast_path = None;
         }
     })
 }
@@ -434,6 +464,7 @@ pub fn mark_completed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
     destination: &Path,
+    fast_path: crate::transfer_tuning::FastPath,
 ) -> Result<(), String> {
     let destination_after = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not capture completed effect: {error}"))?;
@@ -443,6 +474,8 @@ pub fn mark_completed(
             step.landing = Some(destination.to_path_buf());
             step.destination_after = Some(destination_after);
             step.staging = None;
+            step.checkpoint = None;
+            step.fast_path = Some(fast_path);
             step.failure = None;
         }
     })
@@ -453,6 +486,7 @@ pub fn mark_skipped(operation_id: &OperationId, key: &IdempotencyKey) -> Result<
         if !step.status.terminal() {
             step.status = StepStatus::Skipped;
             step.staging = None;
+            step.checkpoint = None;
         }
     })
 }
@@ -465,7 +499,7 @@ pub fn mark_failed(
     update_step(operation_id, key, |step| {
         if !step.status.terminal() {
             step.status = StepStatus::Failed;
-            if failure.class != FailureClass::IntegrityUncertain {
+            if failure.class != FailureClass::IntegrityUncertain && step.checkpoint.is_none() {
                 step.staging = None;
             }
             step.failure = Some(failure);
@@ -598,14 +632,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
                 step.source.display()
             ));
         }
-        if let Some(staging) = &step.staging
-            && crate::fs_util::path_is_taken(staging)
-        {
-            return Err(format!(
-                "Recovery staging still exists and requires review: {}",
-                staging.display()
-            ));
-        }
+        let resume = validated_checkpoint(step)?;
         let metadata = std::fs::symlink_metadata(&step.source)
             .map_err(|error| format!("Could not inspect {}: {error}", step.source.display()))?;
         let entry = FileEntry::from_meta(step.source.clone(), &metadata)
@@ -655,6 +682,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
             destination: Ok(destination_before.clone()),
             landing: step.landing.clone(),
             landing_before: step.landing_before.clone(),
+            resume,
         });
     }
     Ok(TransferSpec {
@@ -674,6 +702,44 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         #[cfg(test)]
         journal_enabled: false,
     })
+}
+
+fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>, String> {
+    let Some(staging) = &step.staging else {
+        return Ok(None);
+    };
+    if !crate::fs_util::path_is_taken(staging) {
+        return Ok(None);
+    }
+    let checkpoint = step.checkpoint.as_ref().ok_or_else(|| {
+        format!(
+            "Recovery staging has no verified checkpoint: {}",
+            staging.display()
+        )
+    })?;
+    if checkpoint.staging != *staging {
+        return Err(format!(
+            "Recovery checkpoint points at different staging: {}",
+            staging.display()
+        ));
+    }
+    let source = PathIdentity::observe_deep(&step.source)
+        .map_err(|error| format!("Could not verify checkpoint source: {error}"))?;
+    if !checkpoint.source.same_version(&source) {
+        return Err(format!(
+            "Recovery source changed after checkpoint: {}",
+            step.source.display()
+        ));
+    }
+    let partial = PathIdentity::observe_deep(staging)
+        .map_err(|error| format!("Could not verify checkpoint staging: {error}"))?;
+    if !checkpoint.partial.same_version(&partial) || partial.size != checkpoint.offset {
+        return Err(format!(
+            "Recovery staging changed after checkpoint: {}",
+            staging.display()
+        ));
+    }
+    Ok(Some(checkpoint.clone()))
 }
 
 pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
@@ -1007,6 +1073,8 @@ mod tests {
                 landing_before: None,
                 destination_after: None,
                 staging: None,
+                checkpoint: None,
+                fast_path: None,
                 status,
                 attempts: 1,
                 failure: None,
@@ -1095,6 +1163,53 @@ mod tests {
         assert_eq!(spec.expectations[0].key.as_ref().unwrap().0, "step-1");
         assert_eq!(spec.expectations[0].landing.as_ref(), Some(&landing));
         assert!(!spec.expectations[0].landing_before.as_ref().unwrap().exists);
+    }
+
+    #[test]
+    fn resume_accepts_only_an_unchanged_verified_partial() {
+        let temp = TempDir::new();
+        let source = temp.file("source.txt", "source contents");
+        let destination = temp.path().join("destination.txt");
+        let staging = temp.file(".destination.cmdr-tmp.0", "source");
+        let mut record = incomplete_record(&source, &destination, StepStatus::Running);
+        record.steps[0].staging = Some(staging.clone());
+        record.steps[0].checkpoint = Some(ResumeCheckpoint {
+            staging: staging.clone(),
+            offset: staging.metadata().unwrap().len(),
+            source: PathIdentity::observe_deep(&source).unwrap(),
+            partial: PathIdentity::observe_deep(&staging).unwrap(),
+        });
+
+        let spec = build_resume_spec_from(record.clone()).unwrap();
+        assert_eq!(
+            spec.expectations[0]
+                .resume
+                .as_ref()
+                .map(|checkpoint| checkpoint.offset),
+            Some(6)
+        );
+
+        std::fs::write(&staging, "changed partial").unwrap();
+        let error = build_resume_spec_from(record).err().unwrap();
+        assert!(error.contains("staging changed"), "{error}");
+    }
+
+    #[test]
+    fn operation_record_round_trips_the_selected_fast_path() {
+        let temp = TempDir::new();
+        let path = temp.path().join("journal.json");
+        let source = temp.file("source.txt", "source");
+        let destination = temp.path().join("destination.txt");
+        let mut record = incomplete_record(&source, &destination, StepStatus::Completed);
+        record.steps[0].fast_path = Some(crate::transfer_tuning::FastPath::Clone);
+        let journal = Journal {
+            operations: vec![record.clone()],
+            ..Journal::default()
+        };
+
+        save_at(&path, &journal).unwrap();
+
+        assert_eq!(load_at(&path).unwrap().operations, vec![record]);
     }
 
     #[test]
