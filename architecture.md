@@ -68,8 +68,9 @@ Grouped by the bounded context each module really belongs to:
   `dedup`, `textdiff`.
 - **Operation contract / recovery**: `operation` owns IDs, durability, and
   failure classes; `operation_journal` owns durable transitions and recovery;
-  `path_identity`, `version_store`, `undo`, and `sync_guard` supply proof,
-  versions, reversible history, and circuit breakers.
+  `path_identity`, `filesystem_policy`, `mount_guard`, `version_store`, `undo`,
+  and `sync_guard` supply identity proof, filesystem capability policy,
+  remount safety, versions, reversible history, and circuit breakers.
 - **Transfer execution**: `transfer` coordinates staging and commit;
   `native_copy`, `delta_copy`, and `verified_hash` own specialized data paths;
   `volume_profile` and `transfer_tuning` own capability/telemetry policy;
@@ -90,7 +91,9 @@ lives in `app/update.rs`; input translation in `app/keys.rs`; one file per
 dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
 `find_dialog`, `recovery_dialog`, `safe_state_dialog`, `collections_dialog`,
 ...); row rendering in `app/file_list.rs` and `app/render.rs`; native macOS
-menu in `native_menu`.
+menu in `native_menu`. Toolkit-independent accessibility and responsive-layout
+contracts live in `accessibility`; operation presentation vocabulary lives in
+`operation_view` rather than individual dialogs.
 
 ### Size hot-spots
 
@@ -123,6 +126,28 @@ make the effect visible. Checkpoints refer to the same staging inode and a
 logical boundary. Buffered recovery truncates an uncheckpointed tail; seeded
 delta recovery rewrites from its last fixed/FastCDC boundary. Both still pass
 whole-file verification before final placement.
+
+### Research milestone 2 (G051-G080 complete so far)
+
+The second milestone is landing in ten-item slices with policy kept outside
+the egui adapter:
+
+| Slice | Primary owners | Contract |
+| --- | --- | --- |
+| G051-G060 | `filesystem_policy`, `mount_guard`, `path_identity`, `operation` | Model filesystem identity/capabilities and fail closed across remount or policy changes |
+| G061-G070 | `operation_view`, `opqueue`, Operations Center, transfer UI | Use one phase/progress/failure vocabulary across queue, history, errors, and recovery |
+| G071-G080 | `accessibility`, `theme`, file rows, toolbar, Operations Center | Preserve distinct focus/state channels, non-color cues, assistive semantics, reduced motion, high contrast, 200% layout, and non-drag alternatives |
+
+`accessibility::Preferences` reads system high-contrast/reduced-motion settings
+once (with explicit environment overrides for tests). `FocusLayout`, the
+control catalog, semantic-channel snapshot, row semantics, overlay placement,
+and responsive geometry are pure contracts with unit tests. The egui layer
+consumes those decisions: modal surfaces disable background interaction,
+toasts avoid the current focus/error rectangles, narrow toolbars use an
+overflow menu, and the Operations Center changes from a right panel to a
+bottom panel before pane geometry becomes constrained. File-pane widths are
+always calculated from the `Ui` area remaining after utility panels carve
+their space, never from the raw viewport.
 
 ## The core <-> UI boundary today
 

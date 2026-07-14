@@ -42,6 +42,8 @@ pub enum Command {
     ToggleSelect,
     /// Cmd+Enter: move the selection into the directory under the cursor.
     MoveIntoCursorFolder,
+    /// Cmd+Shift+Enter: copy the selection into the directory under the cursor.
+    CopyIntoCursorFolder,
     /// F3: open/close preview in the other panel.
     TogglePreview,
     RequestCopy,
@@ -188,6 +190,7 @@ impl Command {
                 | Self::BeginRunBar
                 | Self::GatherIntoFolder
                 | Self::MoveIntoCursorFolder
+                | Self::CopyIntoCursorFolder
                 | Self::Undo
                 | Self::Redo
                 | Self::ShelfDrain
@@ -204,6 +207,11 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             "Move selection into highlighted folder",
             "Cmd+Enter",
             Command::MoveIntoCursorFolder,
+        ),
+        (
+            "Copy selection into highlighted folder",
+            "Cmd+Shift+Enter",
+            Command::CopyIntoCursorFolder,
         ),
         ("New folder", "F7", Command::CreateDir),
         (
@@ -470,6 +478,9 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::MoveIntoCursorFolder => {
             &["file move selection drop highlighted cursor folder keyboard"]
         }
+        Command::CopyIntoCursorFolder => {
+            &["file copy selection drop highlighted cursor folder keyboard"]
+        }
         Command::CreateDir => &["file new folder directory mkdir create"],
         Command::GatherIntoFolder => {
             &["file new folder with selection gather group move into subfolder"]
@@ -612,6 +623,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         End => Some(Command::CursorEnd),
         PageUp => Some(Command::CursorPageUp),
         PageDown => Some(Command::CursorPageDown),
+        Enter if press.command && press.shift => Some(Command::CopyIntoCursorFolder),
         Enter if press.command => Some(Command::MoveIntoCursorFolder),
         Enter => Some(Command::Activate),
         Backspace => Some(Command::GoUp),
@@ -777,6 +789,14 @@ mod tests {
             Some(Command::MoveIntoCursorFolder)
         );
         assert_eq!(map_key(press(KeyCode::Enter)), Some(Command::Activate));
+        assert_eq!(
+            map_key(KeyPress {
+                code: KeyCode::Enter,
+                command: true,
+                shift: true,
+            }),
+            Some(Command::CopyIntoCursorFolder)
+        );
     }
 
     #[test]

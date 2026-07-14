@@ -17,7 +17,7 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
-            .animated(true)
+            .animated(!crate::accessibility::Preferences::system().reduced_motion)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
@@ -251,8 +251,9 @@ impl App {
                         Color32::TRANSPARENT
                     };
 
-                    let bg = if is_cursor && is_active {
-                        t.bg_selected.linear_multiply(0.25)
+                    let bg = if is_cursor {
+                        t.bg_selected
+                            .linear_multiply(if is_active { 0.22 } else { 0.08 })
                     } else if is_selected {
                         t.accent_purple.linear_multiply(0.15)
                     } else {
@@ -272,6 +273,40 @@ impl App {
                     } else {
                         row_resp
                     };
+                    let modified_label = match entry.modified {
+                        Some(modified) => crate::reldate::relative_date(modified, now),
+                        None => entry.modified_display().to_string(),
+                    };
+                    let size_text = if let Some(ref sizes) = dir_sizes {
+                        entry.size_display_with_dir_size(sizes)
+                    } else {
+                        entry.size_display().to_string()
+                    };
+                    let semantics = crate::accessibility::file_row_semantics(
+                        &entry.name,
+                        crate::selection_summary::kind_of(entry).label(),
+                        &size_text,
+                        &modified_label,
+                        is_selected,
+                        is_marked,
+                        is_cursor,
+                        entry.is_dir,
+                    );
+                    row_resp.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            ui.is_enabled(),
+                            semantics.selected,
+                            &semantics.label,
+                        )
+                    });
+                    ui.ctx().accesskit_node_builder(row_resp.id, |node| {
+                        node.set_role(egui::accesskit::Role::Row);
+                        node.set_selected(semantics.selected);
+                        if let Some(expanded) = semantics.expanded {
+                            node.set_expanded(expanded);
+                        }
+                    });
 
                     // Scroll to cursor row when navigating with keyboard
                     if is_cursor && scroll_pending {
@@ -282,6 +317,11 @@ impl App {
                     // Paint background
                     let full_rect =
                         egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), row_rect.y_range());
+                    if is_cursor && is_active && ui.is_enabled() {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(egui::Id::new("current_focus_indicator"), full_rect);
+                        });
+                    }
                     if bg != Color32::TRANSPARENT {
                         ui.painter().rect_filled(full_rect, CornerRadius::ZERO, bg);
                     }
@@ -290,6 +330,35 @@ impl App {
                             full_rect,
                             CornerRadius::ZERO,
                             t.bg_hover.linear_multiply(0.3),
+                        );
+                    }
+                    if is_cursor {
+                        ui.painter().rect_stroke(
+                            full_rect.shrink(1.0),
+                            CornerRadius::ZERO,
+                            Stroke::new(1.0, t.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().text(
+                            egui::pos2(full_rect.left() + 7.0, full_rect.center().y),
+                            egui::Align2::CENTER_CENTER,
+                            "\u{203a}",
+                            egui::FontId::proportional(13.0),
+                            t.accent,
+                        );
+                    }
+                    if row_resp.has_focus() {
+                        ui.painter().rect_stroke(
+                            full_rect.shrink(2.0),
+                            CornerRadius::ZERO,
+                            Stroke::new(2.0, t.text_primary),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().rect_stroke(
+                            full_rect.shrink(4.0),
+                            CornerRadius::ZERO,
+                            Stroke::new(1.0, t.bg_panel),
+                            egui::StrokeKind::Inside,
                         );
                     }
 
@@ -369,6 +438,13 @@ impl App {
                         );
                         ui.painter()
                             .rect_filled(edge, CornerRadius::ZERO, t.accent_warning);
+                        ui.painter().text(
+                            egui::pos2(full_rect.right() - 10.0, full_rect.center().y),
+                            egui::Align2::CENTER_CENTER,
+                            "\u{25c6}",
+                            egui::FontId::proportional(metrics.meta_pt),
+                            t.accent_warning,
+                        );
                     }
 
                     // Content
@@ -378,6 +454,17 @@ impl App {
                     child_ui.style_mut().interaction.selectable_labels = false;
                     child_ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
+
+                        if is_selected {
+                            ui.label(
+                                egui::RichText::new("\u{2713}")
+                                    .size(metrics.meta_pt)
+                                    .strong()
+                                    .color(t.accent_purple),
+                            );
+                        } else {
+                            ui.add_space(9.0);
+                        }
 
                         if entry.is_dir {
                             let count = dir_counts
@@ -397,51 +484,72 @@ impl App {
                         } else {
                             t.text_secondary
                         };
+                        let responsive = crate::accessibility::file_row_layout(
+                            ui.available_width() - if is_marked { 16.0 } else { 0.0 },
+                        );
                         if query.is_empty() {
-                            ui.label(
-                                egui::RichText::new(&entry.name)
-                                    .size(metrics.name_pt)
-                                    .color(name_color),
+                            ui.add_sized(
+                                [responsive.name_width, row_content],
+                                egui::Label::new(
+                                    egui::RichText::new(&entry.name)
+                                        .size(metrics.name_pt)
+                                        .color(name_color),
+                                )
+                                .truncate(),
                             );
                         } else {
-                            ui.label(highlight_name_job(
-                                &entry.name,
-                                &query,
-                                name_color,
-                                t.accent,
-                                metrics.name_pt,
-                            ));
+                            ui.add_sized(
+                                [responsive.name_width, row_content],
+                                egui::Label::new(highlight_name_job(
+                                    &entry.name,
+                                    &query,
+                                    name_color,
+                                    t.accent,
+                                    metrics.name_pt,
+                                ))
+                                .truncate(),
+                            );
                         }
 
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(4.0);
-                            // Relative date ("3h", "Yesterday", "Jun 5") from
-                            // the live clock; the precise local timestamp stays
-                            // one hover away. Unknown mtime keeps the "–" stub.
-                            let modified_label = match entry.modified {
-                                Some(m) => crate::reldate::relative_date(m, now),
-                                None => entry.modified_display().to_string(),
-                            };
-                            let modified_resp = ui.label(
-                                egui::RichText::new(&modified_label)
-                                    .size(metrics.meta_pt)
-                                    .color(t.text_muted),
+                        if responsive.show_metadata {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(responsive.metadata_width, row_content),
+                                Layout::right_to_left(Align::Center),
+                                |ui| {
+                                    ui.add_space(4.0);
+                                    let modified_resp = ui.label(
+                                        egui::RichText::new(&modified_label)
+                                            .size(metrics.meta_pt)
+                                            .color(t.text_muted),
+                                    );
+                                    if entry.modified.is_some() {
+                                        modified_resp.on_hover_text(&entry.modified_str);
+                                    }
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        egui::RichText::new(size_text)
+                                            .size(metrics.meta_pt)
+                                            .color(t.text_muted),
+                                    );
+                                    if let Some(map) = compare {
+                                        use crate::compare::CompareStatus;
+                                        let (symbol, hint) =
+                                            match crate::compare::classify_entry(entry, map) {
+                                                CompareStatus::Unique => ("+", "Only in this pane"),
+                                                CompareStatus::Differs => ("\u{2260}", "Differs"),
+                                                CompareStatus::Identical => ("=", "Identical"),
+                                            };
+                                        ui.label(
+                                            egui::RichText::new(symbol)
+                                                .size(metrics.meta_pt)
+                                                .strong()
+                                                .color(t.text_secondary),
+                                        )
+                                        .on_hover_text(hint);
+                                    }
+                                },
                             );
-                            if entry.modified.is_some() {
-                                modified_resp.on_hover_text(&entry.modified_str);
-                            }
-                            ui.add_space(16.0);
-                            let size_text = if let Some(ref sizes) = dir_sizes {
-                                entry.size_display_with_dir_size(sizes)
-                            } else {
-                                entry.size_display().to_string()
-                            };
-                            ui.label(
-                                egui::RichText::new(size_text)
-                                    .size(metrics.meta_pt)
-                                    .color(t.text_muted),
-                            );
-                        });
+                        }
                     });
 
                     if row_resp.secondary_clicked() && crate::native_menu::show(&entry.path) {
@@ -456,6 +564,7 @@ impl App {
                             open_path = Some(entry.path.clone());
                         }
                     } else if row_resp.clicked() {
+                        row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
                     }
 

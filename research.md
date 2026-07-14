@@ -415,7 +415,10 @@ medium, and `L` large relative effort.
 | G021-G030 | Implemented and tested | Operation profiles, typed failures, revalidation, safe staging/commit, sync guard, and uncertain-failure safe state |
 | G031-G040 | Implemented and tested | Durable idempotent journal, recovery center, versions, selective undo, repair, orphan cleanup, and manifest retry |
 | G041-G050 | Implemented, tested, and reviewed in three passes | Resumable buffered/delta copy, adaptive volume policy, I/O budgets, sparse preservation, fast-path telemetry, and verified hash cache |
-| G051-G100 | Next sequential milestone | Filesystem reality, operation UX, accessibility, ports/scheduler verification, and maintainability |
+| G051-G060 | Implemented and tested | Filesystem identity/capability policy, remount checks, normalization boundaries, and safe refusal reasons |
+| G061-G070 | Implemented and tested | Unified Operations Center, phase-aware progress/ETA, typed pause/cancel consequences, failure inbox, keyboard and drag transfer UX |
+| G071-G080 | Implemented and tested | Separate visual channels, compact-control audit, assistive row semantics, focus tests, reduced motion, high contrast, 200% responsive geometry, protected overlays, and drag alternatives |
+| G081-G100 | Next sequential slices | Ports/scheduler verification, maintainability diagnostics, benchmarks, support tooling, workflow fixtures, and architecture decisions |
 
 ## Original promotion candidates
 

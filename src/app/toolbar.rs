@@ -26,6 +26,13 @@ impl App {
         };
         let active_path = compact_path(&self.ws.active_panel_ref().current_path, 54);
 
+        if crate::accessibility::toolbar_mode(ui.available_width())
+            == crate::accessibility::ToolbarMode::Compact
+        {
+            self.compact_toolbar(ui, ctx, t, active_side, &active_path);
+            return;
+        }
+
         Frame::NONE
             .fill(t.bg_toolbar)
             .inner_margin(Margin::symmetric(12, 4))
@@ -107,6 +114,37 @@ impl App {
                     ) {
                         self.ws.request_move();
                     }
+                    let can_move_in = self.ws.can_transfer_into_cursor_folder();
+                    if btn(
+                        ui,
+                        "Move In",
+                        &format!(
+                            "{}  Move selection into highlighted folder",
+                            crate::accessibility::drag_alternative(
+                                crate::accessibility::DragWorkflow::MoveToHighlightedFolder
+                            )
+                            .keyboard
+                        ),
+                        can_move_in,
+                        "Select items and highlight a destination folder",
+                    ) {
+                        self.ws.keyboard_drop_request = Some(TransferKind::Move);
+                    }
+                    if btn(
+                        ui,
+                        "Copy In",
+                        &format!(
+                            "{}  Copy selection into highlighted folder",
+                            crate::accessibility::drag_alternative(
+                                crate::accessibility::DragWorkflow::CopyToHighlightedFolder
+                            )
+                            .keyboard
+                        ),
+                        can_move_in,
+                        "Select items and highlight a destination folder",
+                    ) {
+                        self.ws.keyboard_drop_request = Some(TransferKind::Copy);
+                    }
                     if btn(ui, "New Folder", "F7  Create new directory", true, "") {
                         self.ws.create_dir();
                     }
@@ -134,15 +172,7 @@ impl App {
                             .on_hover_text("Switch theme")
                             .clicked()
                         {
-                            self.theme_mode = match self.theme_mode {
-                                ThemeMode::Light => ThemeMode::Dark,
-                                ThemeMode::Dark => ThemeMode::Light,
-                            };
-                            self.colors = match self.theme_mode {
-                                ThemeMode::Light => ThemeColors::light(),
-                                ThemeMode::Dark => ThemeColors::dark(),
-                            };
-                            apply_theme(ctx, self.theme_mode);
+                            self.switch_theme(ctx);
                         }
 
                         // Hidden files toggle
@@ -166,9 +196,7 @@ impl App {
                             .on_hover_text("Toggle hidden files (\u{2318}H)")
                             .clicked()
                         {
-                            let panel = self.ws.active_panel();
-                            panel.show_hidden = !panel.show_hidden;
-                            panel.refresh();
+                            self.toggle_active_hidden();
                         }
 
                         // Density cycle (active panel)
@@ -249,5 +277,188 @@ impl App {
                     });
                 });
             });
+    }
+
+    fn compact_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        t: ThemeColors,
+        active_side: &str,
+        active_path: &str,
+    ) {
+        Frame::NONE
+            .fill(t.bg_toolbar)
+            .inner_margin(Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(52.0);
+                    ui.label(
+                        egui::RichText::new("Commander")
+                            .size(12.0)
+                            .strong()
+                            .color(t.text_primary),
+                    );
+                    ui.label(
+                        egui::RichText::new(if active_side == "LEFT" { "L" } else { "R" })
+                            .size(10.0)
+                            .strong()
+                            .color(t.accent),
+                    );
+
+                    let path_width = (ui.available_width() - 190.0).clamp(0.0, 180.0);
+                    if path_width >= 40.0 {
+                        ui.add_sized(
+                            Vec2::new(path_width, crate::accessibility::MIN_CONTROL_POINTS),
+                            egui::Label::new(
+                                egui::RichText::new(active_path)
+                                    .size(10.0)
+                                    .color(t.text_muted),
+                            )
+                            .truncate(),
+                        );
+                    }
+
+                    let can_transfer = self.ws.can_request_transfer();
+                    let can_delete = self.ws.can_request_delete();
+                    let busy_reason = if self.ws.pending_op.is_some() {
+                        "Finish or cancel the current confirmation"
+                    } else {
+                        "Wait for the active transfer to finish"
+                    };
+                    let command = |ui: &mut egui::Ui,
+                                   label: &str,
+                                   tooltip: &str,
+                                   enabled: bool,
+                                   disabled_reason: &str| {
+                        ui.add_enabled(
+                            enabled,
+                            egui::Button::new(
+                                egui::RichText::new(label).size(11.0).color(t.text_primary),
+                            )
+                            .fill(t.bg_card)
+                            .corner_radius(crate::theme::ROUNDING_SM)
+                            .min_size(Vec2::new(32.0, crate::accessibility::MIN_CONTROL_POINTS)),
+                        )
+                        .on_hover_text(tooltip)
+                        .on_disabled_hover_text(disabled_reason)
+                        .clicked()
+                    };
+                    if command(ui, "F5", "Copy to other panel", can_transfer, busy_reason) {
+                        self.ws.request_copy();
+                    }
+                    if command(ui, "F6", "Move to other panel", can_transfer, busy_reason) {
+                        self.ws.request_move();
+                    }
+                    if command(ui, "F8", "Move to Trash", can_delete, busy_reason) {
+                        self.ws.request_delete();
+                    }
+                    if command(ui, "⌘K", "Open command palette", true, "") {
+                        self.ws.palette_request = true;
+                    }
+
+                    ui.menu_button(egui::RichText::new("…").size(18.0), |ui| {
+                        if ui.button("New Folder").clicked() {
+                            self.ws.create_dir();
+                            ui.close();
+                        }
+
+                        let can_move_in = self.ws.can_transfer_into_cursor_folder();
+                        if ui
+                            .add_enabled(
+                                can_move_in,
+                                egui::Button::new("Move into highlighted folder"),
+                            )
+                            .on_disabled_hover_text(
+                                "Select items and highlight a destination folder",
+                            )
+                            .clicked()
+                        {
+                            self.ws.keyboard_drop_request = Some(TransferKind::Move);
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                can_move_in,
+                                egui::Button::new("Copy into highlighted folder"),
+                            )
+                            .on_disabled_hover_text(
+                                "Select items and highlight a destination folder",
+                            )
+                            .clicked()
+                        {
+                            self.ws.keyboard_drop_request = Some(TransferKind::Copy);
+                            ui.close();
+                        }
+
+                        ui.separator();
+                        let mut show_hidden = self.ws.active_panel_ref().show_hidden;
+                        if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
+                            self.toggle_active_hidden();
+                        }
+                        if ui
+                            .button(format!(
+                                "Row density: {}",
+                                crate::density::label(self.ws.active_panel_ref().density)
+                            ))
+                            .clicked()
+                        {
+                            let density = self.ws.active_panel_ref().density;
+                            self.ws.active_panel().density = crate::density::cycle(density, 1);
+                        }
+                        ui.checkbox(&mut self.show_size_bars, "Show size bars");
+                        ui.checkbox(&mut self.show_compare, "Compare panels");
+
+                        ui.separator();
+                        let theme_label = match self.theme_mode {
+                            ThemeMode::Light => "Use dark theme",
+                            ThemeMode::Dark => "Use light theme",
+                        };
+                        if ui.button(theme_label).clicked() {
+                            self.switch_theme(ctx);
+                        }
+                        ui.label("Text size");
+                        let mut scale = self.ui_scale;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut scale, 0.8..=2.0)
+                                    .step_by(0.05)
+                                    .show_value(true),
+                            )
+                            .changed()
+                        {
+                            self.set_ui_scale(ctx, scale);
+                        }
+                        if ui.button("Refresh both panels").clicked() {
+                            self.ws.left.refresh();
+                            self.ws.right.refresh();
+                            ui.close();
+                        }
+                    });
+                });
+            });
+    }
+
+    fn switch_theme(&mut self, ctx: &egui::Context) {
+        self.theme_mode = match self.theme_mode {
+            ThemeMode::Light => ThemeMode::Dark,
+            ThemeMode::Dark => ThemeMode::Light,
+        };
+        self.colors = ThemeColors::for_preferences(self.theme_mode, self.accessibility_preferences);
+        apply_theme(ctx, self.theme_mode, self.accessibility_preferences);
+    }
+
+    fn toggle_active_hidden(&mut self) {
+        let panel = self.ws.active_panel();
+        panel.show_hidden = !panel.show_hidden;
+        panel.refresh();
+    }
+
+    fn set_ui_scale(&mut self, ctx: &egui::Context, scale: f32) {
+        self.ui_scale = crate::accessibility::sanitize_text_scale(scale);
+        if (self.ui_scale - 1.0).abs() < 0.03 {
+            self.ui_scale = 1.0;
+        }
+        ctx.set_zoom_factor(self.ui_scale);
     }
 }

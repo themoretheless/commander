@@ -66,7 +66,9 @@ module is a thin egui layer over it.
   into itself is rejected, and a **free-space preflight** warns before a copy
   that will not fit (a clone or same-volume move needs ~0 extra space).
 - **Drag and drop** between panels and onto subfolders, routed through the same
-  engine as the keyboard.
+  engine as the keyboard. `Cmd+Enter` moves into the highlighted folder and
+  `Cmd+Shift+Enter` copies into it; both actions are also available from the
+  toolbar overflow menu for single-pointer use.
 - **Gather into a new subfolder** (`Cmd+Shift+N`): move the selection into a
   freshly-named folder in one undoable step (Finder's New Folder with
   Selection). Undo moves the files back and removes the empty folder; redo
@@ -109,6 +111,12 @@ module is a thin egui layer over it.
   largest, oldest).
 - **Density tiers** (`Cmd+Shift+D`), a one-shot **focus mode**, rich
   **path-to-clipboard** (`Cmd+Shift+C` and palette variants).
+- **Accessible adaptive UI**: active pane, keyboard focus, cursor, selection,
+  marks, differences, errors, and disabled state use separate color plus
+  shape/text cues. File rows expose named columns and state to assistive
+  technology. System high-contrast and reduced-motion preferences are
+  honored; text scales from 80% to 200%, with compact toolbars and a bottom
+  Operations Center on constrained widths.
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,
   Compress, Copy Path, Show in Finder, Tags, Share, Move to Trash.
 - **Session persistence** (panel paths, layout, view toggles) and a **light /
@@ -147,7 +155,8 @@ compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
 full 621-item raw sweep. [research.md](research.md) is the external evidence
 layer: 100 high-star repositories, 30 primary papers/standards, and 100
 deduplicated proposals. Its implementation ledger records G001-G050 as the
-first shipped research milestone and G051-G100 as the next sequential one.
+first shipped research milestone, G051-G080 as implemented slices of the
+second, and G081-G100 as the remaining sequential work.
 
 ## Review backlog
 
@@ -205,6 +214,8 @@ operations around recovery and end-to-end completion.
 | `Cmd+Shift+R` | Batch rename |
 | `F5` | Copy to the other panel |
 | `F6` | Move to the other panel |
+| `Cmd+Enter` | Move selection into the highlighted folder |
+| `Cmd+Shift+Enter` | Copy selection into the highlighted folder |
 | `F7` | New folder |
 | `Cmd+Shift+N` | New folder with selection |
 | `F8` / `Delete` | Move to Trash |

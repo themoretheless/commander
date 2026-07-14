@@ -181,10 +181,20 @@ impl App {
         match command {
             Command::RequestCopy => format!("{picked} item(s) -> {inactive_path}"),
             Command::RequestMove => format!("{picked} item(s) -> {inactive_path}"),
-            Command::MoveIntoCursorFolder => active
+            Command::MoveIntoCursorFolder | Command::CopyIntoCursorFolder => active
                 .filtered_get(active.cursor.saturating_sub(1))
                 .filter(|entry| entry.is_dir)
-                .map(|entry| format!("{picked} selected item(s) -> {}", entry.name))
+                .map(|entry| {
+                    format!(
+                        "{} {picked} selected item(s) -> {}",
+                        if command == Command::CopyIntoCursorFolder {
+                            "Copy"
+                        } else {
+                            "Move"
+                        },
+                        entry.name
+                    )
+                })
                 .unwrap_or_else(|| "highlight a destination folder".to_string()),
             Command::RequestDelete => format!("{picked} item(s) to Trash"),
             Command::CreateDir => format!("in {active_path}"),
@@ -251,6 +261,7 @@ impl App {
             Command::RequestCopy
             | Command::RequestMove
             | Command::MoveIntoCursorFolder
+            | Command::CopyIntoCursorFolder
             | Command::CreateDir
             | Command::RequestDelete
             | Command::BeginRename

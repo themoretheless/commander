@@ -29,6 +29,18 @@ pub struct ThemeColors {
 }
 
 impl ThemeColors {
+    pub fn for_preferences(
+        mode: ThemeMode,
+        preferences: crate::accessibility::Preferences,
+    ) -> Self {
+        match (mode, preferences.high_contrast) {
+            (ThemeMode::Light, false) => Self::light(),
+            (ThemeMode::Dark, false) => Self::dark(),
+            (ThemeMode::Light, true) => Self::high_contrast_light(),
+            (ThemeMode::Dark, true) => Self::high_contrast_dark(),
+        }
+    }
+
     pub fn light() -> Self {
         ThemeColors {
             bg_deep: Color32::from_rgb(245, 245, 248),
@@ -72,16 +84,57 @@ impl ThemeColors {
             border: Color32::from_rgb(50, 50, 60),
         }
     }
+
+    pub fn high_contrast_light() -> Self {
+        ThemeColors {
+            bg_deep: Color32::from_rgb(255, 255, 255),
+            bg_panel: Color32::from_rgb(255, 255, 255),
+            bg_card: Color32::from_rgb(230, 230, 230),
+            bg_hover: Color32::from_rgb(210, 225, 245),
+            bg_selected: Color32::from_rgb(0, 70, 170),
+            bg_toolbar: Color32::from_rgb(242, 242, 242),
+            text_primary: Color32::from_rgb(0, 0, 0),
+            text_secondary: Color32::from_rgb(40, 40, 40),
+            text_muted: Color32::from_rgb(80, 80, 80),
+            accent: Color32::from_rgb(0, 70, 170),
+            accent_red: Color32::from_rgb(170, 0, 25),
+            accent_purple: Color32::from_rgb(100, 20, 145),
+            accent_warning: Color32::from_rgb(105, 65, 0),
+            border: Color32::from_rgb(0, 0, 0),
+        }
+    }
+
+    pub fn high_contrast_dark() -> Self {
+        ThemeColors {
+            bg_deep: Color32::from_rgb(0, 0, 0),
+            bg_panel: Color32::from_rgb(5, 5, 5),
+            bg_card: Color32::from_rgb(30, 30, 30),
+            bg_hover: Color32::from_rgb(48, 55, 64),
+            bg_selected: Color32::from_rgb(55, 145, 255),
+            bg_toolbar: Color32::from_rgb(10, 10, 10),
+            text_primary: Color32::from_rgb(255, 255, 255),
+            text_secondary: Color32::from_rgb(225, 225, 225),
+            text_muted: Color32::from_rgb(185, 185, 185),
+            // These semantic colors sit in the narrow luminance band that is
+            // legible both as text on black and under white button text.
+            accent: Color32::from_rgb(0, 116, 232),
+            accent_red: Color32::from_rgb(220, 55, 55),
+            accent_purple: Color32::from_rgb(162, 86, 194),
+            accent_warning: Color32::from_rgb(154, 111, 0),
+            border: Color32::from_rgb(235, 235, 235),
+        }
+    }
 }
 
 pub const ROUNDING_SM: CornerRadius = CornerRadius::same(4);
 pub const ROUNDING_MD: CornerRadius = CornerRadius::same(8);
 
-pub fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
-    let c = match mode {
-        ThemeMode::Light => ThemeColors::light(),
-        ThemeMode::Dark => ThemeColors::dark(),
-    };
+pub fn apply_theme(
+    ctx: &egui::Context,
+    mode: ThemeMode,
+    preferences: crate::accessibility::Preferences,
+) {
+    let c = ThemeColors::for_preferences(mode, preferences);
 
     let mut style = Style::default();
     let mut visuals = match mode {
@@ -120,12 +173,16 @@ pub fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
     style.spacing.item_spacing = egui::vec2(6.0, 4.0);
     style.spacing.window_margin = egui::Margin::same(0);
     style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    style.spacing.interact_size.y = crate::accessibility::MIN_CONTROL_POINTS;
     style.spacing.scroll.bar_width = 6.0;
     style.spacing.scroll.floating = true;
     style.spacing.scroll.foreground_color = true;
 
-    // Enable smooth animated scrolling
-    style.animation_time = 0.15;
+    style.animation_time = if preferences.reduced_motion {
+        0.0
+    } else {
+        0.15
+    };
 
     let theme = match mode {
         ThemeMode::Light => egui::Theme::Light,
@@ -138,4 +195,81 @@ pub fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
     fonts.families.entry(FontFamily::Proportional).or_default();
     fonts.families.entry(FontFamily::Monospace).or_default();
     ctx.set_fonts(fonts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex(color: Color32) -> String {
+        format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b())
+    }
+
+    fn semantic_snapshot(colors: ThemeColors) -> String {
+        format!(
+            "focus={} selection={} diff={} disabled={}",
+            hex(colors.text_primary),
+            hex(colors.accent_purple),
+            hex(colors.accent_warning),
+            hex(colors.text_muted)
+        )
+    }
+
+    fn luminance(color: Color32) -> f64 {
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+    }
+
+    fn contrast(left: Color32, right: Color32) -> f64 {
+        let (bright, dark) = {
+            let left = luminance(left);
+            let right = luminance(right);
+            if left > right {
+                (left, right)
+            } else {
+                (right, left)
+            }
+        };
+        (bright + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn high_contrast_semantic_snapshots_cover_required_states() {
+        assert_eq!(
+            semantic_snapshot(ThemeColors::high_contrast_light()),
+            "focus=#000000 selection=#641491 diff=#694100 disabled=#505050"
+        );
+        assert_eq!(
+            semantic_snapshot(ThemeColors::high_contrast_dark()),
+            "focus=#FFFFFF selection=#A256C2 diff=#9A6F00 disabled=#B9B9B9"
+        );
+    }
+
+    #[test]
+    fn high_contrast_text_roles_clear_wcag_normal_text_ratio() {
+        for colors in [
+            ThemeColors::high_contrast_light(),
+            ThemeColors::high_contrast_dark(),
+        ] {
+            assert!(contrast(colors.text_primary, colors.bg_panel) >= 7.0);
+            assert!(contrast(colors.text_secondary, colors.bg_panel) >= 4.5);
+            assert!(contrast(colors.text_muted, colors.bg_panel) >= 4.5);
+            for semantic in [
+                colors.accent,
+                colors.accent_red,
+                colors.accent_purple,
+                colors.accent_warning,
+            ] {
+                assert!(contrast(semantic, colors.bg_panel) >= 4.5);
+                assert!(contrast(Color32::WHITE, semantic) >= 4.5);
+            }
+        }
+    }
 }

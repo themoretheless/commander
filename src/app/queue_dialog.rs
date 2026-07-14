@@ -54,10 +54,20 @@ impl App {
         }
         let t = self.colors;
         let mut close = false;
-        egui::Panel::right("operations_center")
+        let panel = match crate::accessibility::operations_placement(ui.available_width()) {
+            crate::accessibility::OperationsPlacement::Right => {
+                egui::Panel::right(crate::accessibility::FocusRegion::Operations.id())
+                    .default_size(410.0)
+                    .size_range(340.0..=560.0)
+            }
+            crate::accessibility::OperationsPlacement::Bottom => {
+                egui::Panel::bottom(crate::accessibility::FocusRegion::Operations.id())
+                    .default_size(140.0)
+                    .size_range(100.0..=220.0)
+            }
+        };
+        panel
             .resizable(true)
-            .default_size(410.0)
-            .size_range(340.0..=560.0)
             .frame(Frame::NONE.fill(t.bg_panel).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {

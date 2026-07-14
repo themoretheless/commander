@@ -17,6 +17,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
         self.capture_operations_requests(&ctx);
+        let modal_was_open = self.has_modal_surface();
         self.show_transfer_dialog(&ctx);
         self.show_safe_state_dialog(&ctx);
         self.show_recovery_dialog(&ctx);
@@ -37,14 +38,41 @@ impl eframe::App for App {
         self.show_recent_dialog(&ctx);
         self.show_run_command_dialog(&ctx);
         self.show_palette_dialog(&ctx);
-        self.show_operations_center(ui);
-        if !self.focus_mode {
-            self.show_toolbar_panel(ui);
-            self.show_shortcut_bar(ui);
-            self.show_shelf_tray(ui);
-            self.show_selection_hud(ui);
-        }
-        self.show_main_area(ui);
+        // Keep the background disabled on the close frame too, so the pointer
+        // release that dismissed a modal cannot click through into a file row.
+        let modal_open =
+            crate::accessibility::modal_trap_active(modal_was_open, self.has_modal_surface());
+        let trapped = crate::accessibility::focus_order(crate::accessibility::FocusLayout {
+            toolbar_visible: !self.focus_mode,
+            operations_open: self.show_operations_center,
+            dialog_open: modal_open,
+        }) == [crate::accessibility::FocusRegion::Dialog];
+        let background_order =
+            crate::accessibility::focus_order(crate::accessibility::FocusLayout {
+                toolbar_visible: !self.focus_mode,
+                operations_open: self.show_operations_center,
+                dialog_open: false,
+            });
+        ui.add_enabled_ui(!trapped, |ui| {
+            for region in background_order {
+                match region {
+                    crate::accessibility::FocusRegion::Toolbar => self.show_toolbar_panel(ui),
+                    crate::accessibility::FocusRegion::Operations => {
+                        self.show_operations_center(ui);
+                    }
+                    crate::accessibility::FocusRegion::LeftPanel => {
+                        if !self.focus_mode {
+                            self.show_shortcut_bar(ui);
+                            self.show_shelf_tray(ui);
+                            self.show_selection_hud(ui);
+                        }
+                        self.show_main_area(ui);
+                    }
+                    crate::accessibility::FocusRegion::RightPanel
+                    | crate::accessibility::FocusRegion::Dialog => {}
+                }
+            }
+        });
         self.show_drag_overlay(&ctx);
         self.show_type_ahead_overlay(&ctx);
         self.show_toasts(&ctx);
@@ -59,9 +87,36 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn has_modal_surface(&self) -> bool {
+        self.ws.pending_op.is_some()
+            || self.ws.active_transfer.is_some()
+            || self.ws.safe_state.is_some()
+            || self.recovery.open
+            || self.history_preview.is_some()
+            || self.renaming.is_some()
+            || self.mask_input.is_some()
+            || self.path_input.is_some()
+            || self.recent_input.is_some()
+            || self.run_command.is_some()
+            || self.palette_input.is_some()
+            || self.batch_rename.is_some()
+            || self.sync.is_some()
+            || self.duplicates.is_some()
+            || self.diff.is_some()
+            || self.treemap.is_some()
+            || self.find.is_some()
+            || self.archive.is_some()
+            || self.saved_search_open
+            || self.collections_dialog.is_some()
+    }
+
     /// Frame bookkeeping: repaint heuristics, notify wiring, fs polling,
     /// input handling and background-task polling.
     fn begin_frame(&mut self, ctx: &egui::Context) {
+        ctx.data_mut(|data| {
+            data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));
+            data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
+        });
         // Repaint only when there's activity (scroll animation, background loads)
         // egui will auto-repaint on user input (mouse, keyboard)
         let has_animation = ctx.egui_is_using_pointer()
@@ -174,10 +229,10 @@ impl App {
             let c = ctx.clone();
             self.ws.gather_into_folder(move || c.request_repaint());
         }
-        if std::mem::take(&mut self.ws.keyboard_drop_request) {
+        if let Some(kind) = self.ws.keyboard_drop_request.take() {
             let c = ctx.clone();
             self.ws
-                .move_selection_into_cursor_folder(move || c.request_repaint());
+                .transfer_selection_into_cursor_folder(kind, move || c.request_repaint());
         }
         // Drain the shelf (copy staged items into the active pane).
         if std::mem::take(&mut self.ws.drain_request) {
@@ -241,7 +296,7 @@ impl App {
     fn show_toolbar_panel(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
         let ctx = ui.ctx().clone();
-        egui::Panel::top("toolbar")
+        egui::Panel::top(crate::accessibility::FocusRegion::Toolbar.id())
             .frame(Frame::NONE.fill(t.bg_toolbar))
             .show(ui, |ui| {
                 self.toolbar(ui, &ctx);
@@ -259,6 +314,8 @@ impl App {
         // `>= 1280.0` check below, deep inside nested layout closures where
         // `ui.available_width()` would only see the narrow nested region.
         let panel_width = ui.available_width();
+        let compact = crate::accessibility::toolbar_mode(panel_width)
+            == crate::accessibility::ToolbarMode::Compact;
         let max_quick_actions = if panel_width < 1120.0 { 2 } else { 4 };
         let mut quick_action: Option<crate::quick_actions::QuickAction> = None;
         egui::Panel::bottom("shortcuts")
@@ -268,7 +325,7 @@ impl App {
                     .inner_margin(Margin::symmetric(12, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let keys = [
+                            const FULL_KEYS: [(&str, &str); 8] = [
                                 ("Tab", "Switch"),
                                 ("Enter", "Open"),
                                 ("Space", "Select"),
@@ -278,7 +335,18 @@ impl App {
                                 ("F8", "Delete"),
                                 ("\u{2318}H", "Hidden"),
                             ];
-                            for (key, action) in keys {
+                            const COMPACT_KEYS: [(&str, &str); 4] = [
+                                ("Tab", "Switch"),
+                                ("Enter", "Open"),
+                                ("F5", "Copy"),
+                                ("F6", "Move"),
+                            ];
+                            let keys = if compact {
+                                &COMPACT_KEYS[..if panel_width < 600.0 { 2 } else { 4 }]
+                            } else {
+                                &FULL_KEYS[..]
+                            };
+                            for &(key, action) in keys {
                                 ui.label(
                                     egui::RichText::new(key).size(11.0).strong().color(t.accent),
                                 );
@@ -316,13 +384,16 @@ impl App {
                                     .size(11.0)
                                     .color(t.text_muted),
                                 );
+                                if compact {
+                                    return;
+                                }
                                 let mut preview = self.ui_scale;
-                                let slider = egui::Slider::new(&mut preview, 0.8..=1.2)
+                                let slider = egui::Slider::new(&mut preview, 0.8..=2.0)
                                     .step_by(0.05)
                                     .show_value(false)
                                     .trailing_fill(true);
                                 let resp = ui.add_sized(egui::vec2(120.0, 16.0), slider);
-                                self.ui_scale = preview;
+                                self.ui_scale = crate::accessibility::sanitize_text_scale(preview);
                                 // Apply only when released
                                 if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
                                     if (self.ui_scale - 1.0).abs() < 0.03 {
@@ -729,8 +800,10 @@ impl App {
             None
         };
         let dragging = drag_source.is_some();
-        let window_width = ctx.input(|i| i.viewport_rect()).width();
-        let panel_id = egui::Id::new("left_panel");
+        // Side surfaces have already carved their space from this Ui. Base
+        // pane geometry on the remaining width so panels never overlap them.
+        let window_width = ui.available_width();
+        let panel_id = egui::Id::new(crate::accessibility::FocusRegion::LeftPanel.id());
         // Build cross-panel comparison maps before borrowing panels mutably:
         // each panel is tinted against the OTHER panel's entries. Reuse the
         // cached maps while neither panel's entries changed, so compare mode does
@@ -755,11 +828,12 @@ impl App {
         // Global tree sidebar
         let mut tree_actual_width: f32 = 0.0;
         if self.show_tree {
+            let tree_max = (window_width * 0.3).clamp(100.0, 400.0);
             let tree_resp = egui::Panel::left("global_tree")
                 .resizable(true)
-                .default_size(self.tree_width)
+                .default_size(self.tree_width.min(tree_max))
                 .min_size(100.0)
-                .max_size(400.0)
+                .max_size(tree_max)
                 .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
                 .show(ui, |ui| {
                     egui::ScrollArea::both()
@@ -809,10 +883,11 @@ impl App {
         };
 
         // Left panel
+        let pane_min = crate::accessibility::pane_min_width(remaining);
         let left_resp = egui::Panel::left(panel_id)
             .resizable(true)
             .default_size(half)
-            .min_size(300.0)
+            .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
                 if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
@@ -879,24 +954,27 @@ impl App {
         let right_resp = egui::CentralPanel::default()
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
-                if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
-                {
-                    self.ws.active = ActivePanel::Right;
-                }
-                tree_toggle |= Self::render_panel(
-                    &mut self.ws.right,
-                    ui,
-                    self.ws.active == ActivePanel::Right,
-                    &t,
-                    &mut self.image_cache,
-                    "right",
-                    self.show_tree,
-                    self.show_size_bars,
-                    right_compare.as_ref(),
-                    &opener,
-                    dragging,
-                    right_metrics,
-                );
+                ui.push_id(crate::accessibility::FocusRegion::RightPanel.id(), |ui| {
+                    if ui.rect_contains_pointer(ui.max_rect())
+                        && ctx.input(|i| i.pointer.any_pressed())
+                    {
+                        self.ws.active = ActivePanel::Right;
+                    }
+                    tree_toggle |= Self::render_panel(
+                        &mut self.ws.right,
+                        ui,
+                        self.ws.active == ActivePanel::Right,
+                        &t,
+                        &mut self.image_cache,
+                        "right",
+                        self.show_tree,
+                        self.show_size_bars,
+                        right_compare.as_ref(),
+                        &opener,
+                        dragging,
+                        right_metrics,
+                    );
+                });
             });
 
         let pending_archive = archive_open.into_inner();
@@ -1063,19 +1141,49 @@ impl App {
         let t = self.colors;
         let now = ctx.input(|i| i.time);
         let screen = ctx.input(|i| i.viewport_rect());
+        let active = self.toasts.active();
         let mut undo = false;
+        let mut avoid = Vec::with_capacity(2);
+        for id in ["current_focus_indicator", "active_error_surface"] {
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(id))) {
+                avoid.push(crate::accessibility::Rect {
+                    x: rect.left(),
+                    y: rect.top(),
+                    width: rect.width(),
+                    height: rect.height(),
+                });
+            }
+        }
+        let Some(stack) = crate::accessibility::place_overlay(
+            crate::accessibility::Rect {
+                x: screen.left(),
+                y: screen.top(),
+                width: screen.width(),
+                height: screen.height(),
+            },
+            268.0,
+            active.len() as f32 * 44.0,
+            &avoid,
+        ) else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return;
+        };
 
-        // Newest on top: stack upward from the bottom-right corner.
-        for (i, toast) in self.toasts.active().iter().enumerate().rev() {
-            let y = screen.bottom() - 70.0 - (i as f32) * 44.0;
+        // Newest on top, in the nearest corner that preserves focus and errors.
+        for (row, toast) in active.iter().rev().enumerate() {
+            let y = stack.y + row as f32 * 44.0;
             let accent = match toast.kind {
                 crate::toasts::ToastKind::Success => t.accent,
                 crate::toasts::ToastKind::Error => t.accent_red,
                 crate::toasts::ToastKind::Info => t.text_muted,
             };
-            let frac = crate::toasts::remaining_fraction(toast, now);
-            egui::Area::new(egui::Id::new(("toast", i)))
-                .fixed_pos(egui::pos2(screen.right() - 280.0, y))
+            let frac = if self.accessibility_preferences.reduced_motion {
+                1.0
+            } else {
+                crate::toasts::remaining_fraction(toast, now)
+            };
+            egui::Area::new(egui::Id::new(("toast", row)))
+                .fixed_pos(egui::pos2(stack.x, y))
                 .order(egui::Order::Tooltip)
                 .show(ctx, |ui| {
                     egui::Frame::popup(ui.style())
@@ -1128,8 +1236,12 @@ impl App {
         if undo {
             self.ws.undo_request = true;
         }
-        // Keep animating the countdown.
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        let repaint_ms = if self.accessibility_preferences.reduced_motion {
+            1_000
+        } else {
+            100
+        };
+        ctx.request_repaint_after(std::time::Duration::from_millis(repaint_ms));
     }
 
     /// On mouse release, move dragged files into the hovered directory.
@@ -1143,7 +1255,11 @@ impl App {
         } else {
             TransferKind::Move
         };
-        self.ws
-            .drop_dragged_as(kind, move || ctx2.request_repaint());
+        if kind == TransferKind::Move {
+            self.ws.drop_dragged(move || ctx2.request_repaint());
+        } else {
+            self.ws
+                .drop_dragged_as(kind, move || ctx2.request_repaint());
+        }
     }
 }

@@ -64,7 +64,7 @@ impl App {
         } else {
             "Transferring..."
         };
-        egui::Window::new(title)
+        let window_response = egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .default_width(450.0)
@@ -270,7 +270,9 @@ impl App {
                     );
                 }
 
-                Self::draw_speed_graph(ui, &samples, &t);
+                if !self.accessibility_preferences.reduced_motion {
+                    Self::draw_speed_graph(ui, &samples, &t);
+                }
 
                 // Errors collected during the transfer
                 if !errors.is_empty() {
@@ -378,6 +380,14 @@ impl App {
                     });
                 }
             });
+
+        if !errors.is_empty()
+            && let Some(window) = window_response
+        {
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new("active_error_surface"), window.response.rect);
+            });
+        }
 
         // Keep repainting during transfer
         if !finished {

@@ -189,8 +189,8 @@ pub struct Workspace {
     pub run_command_request: bool,
     /// Set by [`Command::GatherIntoFolder`]; the UI runs it with a notify.
     pub gather_request: bool,
-    /// Set by [`Command::MoveIntoCursorFolder`]; the UI supplies worker notify.
-    pub keyboard_drop_request: bool,
+    /// Set by keyboard/toolbar drop alternatives; the UI supplies worker notify.
+    pub keyboard_drop_request: Option<TransferKind>,
     /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
     pub path_request: bool,
     /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
@@ -399,7 +399,7 @@ impl Workspace {
             mask_request: false,
             run_command_request: false,
             gather_request: false,
-            keyboard_drop_request: false,
+            keyboard_drop_request: None,
             path_request: false,
             recent_request: false,
             undo_request: false,
@@ -720,7 +720,8 @@ impl Workspace {
                     panel.cursor += 1;
                 }
             }
-            Command::MoveIntoCursorFolder => self.keyboard_drop_request = true,
+            Command::MoveIntoCursorFolder => self.keyboard_drop_request = Some(TransferKind::Move),
+            Command::CopyIntoCursorFolder => self.keyboard_drop_request = Some(TransferKind::Copy),
             Command::TogglePreview => {
                 if self.inactive_panel().preview.is_some() {
                     self.inactive_panel_mut().preview = None;
@@ -2642,7 +2643,11 @@ impl Workspace {
     /// Keyboard equivalent of dropping the active selection onto the folder
     /// under the cursor. The synthesized drag plan deliberately enters the
     /// normal drop pipeline, preserving every safety check and confirmation.
-    pub fn move_selection_into_cursor_folder(&mut self, notify: impl Fn() + Send + 'static) {
+    pub fn transfer_selection_into_cursor_folder(
+        &mut self,
+        kind: TransferKind,
+        notify: impl Fn() + Send + 'static,
+    ) {
         if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
             return;
         }
@@ -2652,7 +2657,14 @@ impl Workspace {
         let panel = self.active_panel();
         panel.drag_entries = paths;
         panel.drop_target = Some(target);
-        self.drop_dragged(notify);
+        self.drop_dragged_as(kind, notify);
+    }
+
+    pub fn can_transfer_into_cursor_folder(&self) -> bool {
+        self.active_transfer.is_none()
+            && self.pending_op.is_none()
+            && !self.mutations_blocked()
+            && self.keyboard_drop_plan().is_some()
     }
 
     fn keyboard_drop_plan(&self) -> Option<(Vec<PathBuf>, PathBuf)> {
@@ -4607,13 +4619,38 @@ mod tests {
             + 1;
 
         ws.execute(Command::MoveIntoCursorFolder);
-        assert!(ws.keyboard_drop_request);
-        ws.keyboard_drop_request = false;
-        ws.move_selection_into_cursor_folder(|| {});
+        assert_eq!(ws.keyboard_drop_request, Some(TransferKind::Move));
+        ws.keyboard_drop_request = None;
+        ws.transfer_selection_into_cursor_folder(TransferKind::Move, || {});
         wait_transfer(&mut ws);
 
         assert!(sub.join("a.txt").is_file());
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn keyboard_copy_into_cursor_folder_keeps_the_source() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let file = l.file("a.txt", "x");
+        let sub = l.dir("sub");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(file.clone());
+        ws.left.cursor = ws
+            .left
+            .filtered_entries()
+            .iter()
+            .position(|entry| entry.path == sub)
+            .expect("subfolder is visible")
+            + 1;
+
+        ws.execute(Command::CopyIntoCursorFolder);
+        assert_eq!(ws.keyboard_drop_request, Some(TransferKind::Copy));
+        ws.keyboard_drop_request = None;
+        ws.transfer_selection_into_cursor_folder(TransferKind::Copy, || {});
+        wait_transfer(&mut ws);
+
+        assert!(sub.join("a.txt").is_file());
+        assert!(file.exists());
     }
 
     #[test]

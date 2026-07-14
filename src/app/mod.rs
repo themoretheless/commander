@@ -45,6 +45,7 @@ pub struct App {
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
+    pub(crate) accessibility_preferences: crate::accessibility::Preferences,
     pub(crate) prev_window_width: f32,
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
@@ -468,7 +469,18 @@ impl App {
                 }
             }
         };
-        apply_theme(&cc.egui_ctx, mode);
+        let accessibility_preferences = crate::accessibility::Preferences::system();
+        debug_assert!(
+            crate::accessibility::control_audit_failures(&crate::accessibility::CONTROL_CATALOG)
+                .is_empty()
+        );
+        debug_assert_eq!(
+            crate::accessibility::visual_channel_snapshot()
+                .lines()
+                .count(),
+            crate::accessibility::VisualChannel::ALL.len()
+        );
+        apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
 
         let (left, right) = session
             .as_ref()
@@ -476,7 +488,8 @@ impl App {
             .unwrap_or_else(|| (home.clone(), home.clone()));
         let mut ws = Workspace::new(left, right);
 
-        let ui_scale = session.as_ref().map_or(1.0, |s| s.ui_scale);
+        let ui_scale =
+            crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
         cc.egui_ctx.set_zoom_factor(ui_scale);
 
         if let Some(s) = &session {
@@ -508,10 +521,8 @@ impl App {
             ws,
             ui_scale,
             theme_mode: mode,
-            colors: match mode {
-                ThemeMode::Light => ThemeColors::light(),
-                ThemeMode::Dark => ThemeColors::dark(),
-            },
+            colors: ThemeColors::for_preferences(mode, accessibility_preferences),
+            accessibility_preferences,
             prev_window_width: 0.0,
             image_cache: crate::image_cache::ImageCache::new(),
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
