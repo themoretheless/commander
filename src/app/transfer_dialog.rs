@@ -71,7 +71,7 @@ impl App {
             .default_width(450.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
                             "{}  \u{00b7}  p95 {:.0} ms  \u{00b7}  {} worker{}",
@@ -85,18 +85,14 @@ impl App {
                     )
                     .on_hover_text(backend_reason);
                     if let Some(limit) = bandwidth_limit {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("Limit {}/s", format_size(limit)))
-                                    .size(10.0)
-                                    .color(t.text_secondary),
-                            );
-                        });
+                        ui.label(
+                            egui::RichText::new(format!("Limit {}/s", format_size(limit)))
+                                .size(10.0)
+                                .color(t.text_secondary),
+                        );
                     }
                     if let Some(path) = latest_fast_path {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(egui::RichText::new(path.label()).size(10.0).color(t.accent));
-                        });
+                        ui.label(egui::RichText::new(path.label()).size(10.0).color(t.accent));
                     }
                 });
                 if let Some(reason) = &waiting_reason {

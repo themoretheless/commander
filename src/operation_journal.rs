@@ -733,7 +733,27 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
     }
     let partial = PathIdentity::observe_deep(staging)
         .map_err(|error| format!("Could not verify checkpoint staging: {error}"))?;
-    if !checkpoint.partial.same_version(&partial) || partial.size != checkpoint.offset {
+    let same_object = match (
+        checkpoint.partial.volume.zip(checkpoint.partial.file_id),
+        partial.volume.zip(partial.file_id),
+    ) {
+        (Some(expected), Some(current)) => {
+            checkpoint.partial.exists
+                && partial.exists
+                && checkpoint.partial.kind == partial.kind
+                && expected == current
+        }
+        _ => checkpoint.partial.same_version(&partial),
+    };
+    let layout_matches = match checkpoint.layout {
+        crate::transfer::CheckpointLayout::Prefix => partial.size >= checkpoint.offset,
+        crate::transfer::CheckpointLayout::DeltaFixed
+        | crate::transfer::CheckpointLayout::DeltaCdc => {
+            partial.size == checkpoint.partial.size && partial.size >= checkpoint.offset
+        }
+    };
+    if !same_object || partial.kind != Some(crate::path_identity::PathKind::File) || !layout_matches
+    {
         return Err(format!(
             "Recovery staging changed after checkpoint: {}",
             staging.display()
@@ -1166,7 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_accepts_only_an_unchanged_verified_partial() {
+    fn resume_accepts_an_appended_tail_but_rejects_a_replaced_staging_inode() {
         let temp = TempDir::new();
         let source = temp.file("source.txt", "source contents");
         let destination = temp.path().join("destination.txt");
@@ -1178,6 +1198,7 @@ mod tests {
             offset: staging.metadata().unwrap().len(),
             source: PathIdentity::observe_deep(&source).unwrap(),
             partial: PathIdentity::observe_deep(&staging).unwrap(),
+            layout: crate::transfer::CheckpointLayout::Prefix,
         });
 
         let spec = build_resume_spec_from(record.clone()).unwrap();
@@ -1189,9 +1210,46 @@ mod tests {
             Some(6)
         );
 
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&staging)
+            .unwrap()
+            .write_all(b"uncheckpointed tail")
+            .unwrap();
+        assert!(build_resume_spec_from(record.clone()).is_ok());
+
+        let displaced = temp.path().join("displaced-partial");
+        std::fs::rename(&staging, displaced).unwrap();
         std::fs::write(&staging, "changed partial").unwrap();
         let error = build_resume_spec_from(record).err().unwrap();
         assert!(error.contains("staging changed"), "{error}");
+    }
+
+    #[test]
+    fn delta_checkpoint_accepts_a_seeded_file_larger_than_its_offset() {
+        let temp = TempDir::new();
+        let source = temp.file("source-delta.txt", "source contents");
+        let destination = temp.path().join("destination-delta.txt");
+        let staging = temp.file(".destination-delta.cmdr-tmp.0", "basis contents!");
+        let mut record = incomplete_record(&source, &destination, StepStatus::Running);
+        record.steps[0].staging = Some(staging.clone());
+        record.steps[0].checkpoint = Some(ResumeCheckpoint {
+            staging: staging.clone(),
+            offset: 0,
+            source: PathIdentity::observe_deep(&source).unwrap(),
+            partial: PathIdentity::observe_deep(&staging).unwrap(),
+            layout: crate::transfer::CheckpointLayout::DeltaFixed,
+        });
+
+        let spec = build_resume_spec_from(record).unwrap();
+
+        let checkpoint = spec.expectations[0].resume.as_ref().unwrap();
+        assert_eq!(checkpoint.offset, 0);
+        assert_eq!(
+            checkpoint.layout,
+            crate::transfer::CheckpointLayout::DeltaFixed
+        );
     }
 
     #[test]

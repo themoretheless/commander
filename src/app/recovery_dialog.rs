@@ -261,8 +261,9 @@ fn show_inspect(
                         if let Some(checkpoint) = &step.checkpoint {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "Resumable at {}",
-                                    crate::panel::format_size(checkpoint.offset)
+                                    "Resumable at {}  \u{00b7}  {}",
+                                    crate::panel::format_size(checkpoint.offset),
+                                    checkpoint.layout.label()
                                 ))
                                 .size(9.0)
                                 .color(t.accent_warning),

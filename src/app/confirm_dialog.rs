@@ -518,7 +518,7 @@ impl App {
             _ => self.ws.durability_profile,
         };
         let mut selected = current;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new("Durability")
                     .size(10.0)
@@ -565,7 +565,7 @@ impl App {
         let current = crate::transfer_tuning::rule_for(&profile);
         let mut selected = current;
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(profile.backend.label())
                     .size(10.0)
@@ -583,14 +583,15 @@ impl App {
                 .color(t.text_secondary),
             );
             if profile.capabilities.delta {
+                let delta_enabled = current.max_bytes_per_second.is_none();
                 ui.label(
-                    egui::RichText::new(if current.max_bytes_per_second.is_none() {
+                    egui::RichText::new(if delta_enabled {
                         "Delta auto"
                     } else {
-                        "Delta limited"
+                        "Delta off"
                     })
                     .size(10.0)
-                    .color(t.accent),
+                    .color(if delta_enabled { t.accent } else { t.text_muted }),
                 )
                 .on_hover_text(
                     "Large similar replacements use fixed blocks; measured high-latency jobs may use FastCDC",

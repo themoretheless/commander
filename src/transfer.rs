@@ -196,34 +196,47 @@ impl CopyMethod {
         dest: &Path,
         context: CopyContext<'_>,
     ) -> std::io::Result<CopyOutcome> {
-        let force_buffered = context.rule.max_bytes_per_second.is_some();
+        let bandwidth_limited = context.rule.max_bytes_per_second.is_some();
+        let source_size = (!is_dir)
+            .then(|| src.metadata().map(|metadata| metadata.len()))
+            .transpose()?;
+        let resume_delta = context
+            .resume
+            .and_then(|checkpoint| checkpoint.layout.delta_mode());
+        if resume_delta.is_some() && context.basis.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delta checkpoint lost its basis",
+            ));
+        }
         if !is_dir
-            && !force_buffered
-            && context.resume.is_none()
+            && !bandwidth_limited
             && let Some(basis) = context.basis
             && let Ok(basis_metadata) = basis.metadata()
             && basis_metadata.is_file()
-            && let Some(mode) = crate::delta_copy::select(
-                context.profile.capabilities.delta,
-                src.metadata()?.len(),
-                basis_metadata.len(),
-                context.tuning,
-            )
         {
-            return crate::delta_copy::copy_file(
-                src,
-                basis,
-                dest,
-                mode,
-                context.progress,
-                context.base_bytes,
-                context.profile.capabilities.clone,
-            )
-            .map(|stats| CopyOutcome {
-                bytes: stats.logical_bytes,
-                fast_path: mode.fast_path(),
+            let mode = resume_delta.or_else(|| {
+                if context.resume.is_none() {
+                    crate::delta_copy::select(
+                        context.profile.capabilities.delta,
+                        source_size.unwrap_or_default(),
+                        basis_metadata.len(),
+                        context.tuning,
+                    )
+                } else {
+                    None
+                }
             });
+            if let Some(mode) = mode {
+                return copy_file_delta(src, basis, dest, mode, context).map(|stats| CopyOutcome {
+                    bytes: stats.logical_bytes,
+                    fast_path: mode.fast_path(),
+                });
+            }
         }
+        let force_resumable =
+            source_size.is_some_and(|size| requires_resumable_buffer(context.profile, size));
+        let force_buffered = bandwidth_limited || force_resumable;
         if !is_dir
             && context.resume.is_none()
             && context.profile.capabilities.sparse
@@ -317,6 +330,15 @@ impl CopyMethod {
     }
 }
 
+fn requires_resumable_buffer(
+    profile: &crate::volume_profile::VolumeProfile,
+    source_size: u64,
+) -> bool {
+    profile.capabilities.resumable
+        && profile.backend.is_slow_link()
+        && source_size >= crate::delta_copy::DELTA_MIN_BYTES
+}
+
 #[derive(Clone, Copy, Debug)]
 struct CopyOutcome {
     bytes: u64,
@@ -339,6 +361,57 @@ struct CopyContext<'a> {
     basis: Option<&'a Path>,
     resume: Option<&'a ResumeCheckpoint>,
     journal: JournalStep<'a>,
+}
+
+fn copy_file_delta(
+    source: &Path,
+    basis: &Path,
+    destination: &Path,
+    mode: crate::delta_copy::DeltaMode,
+    context: CopyContext<'_>,
+) -> std::io::Result<crate::delta_copy::DeltaStats> {
+    let layout = match mode {
+        crate::delta_copy::DeltaMode::Fixed => CheckpointLayout::DeltaFixed,
+        crate::delta_copy::DeltaMode::ContentDefined => CheckpointLayout::DeltaCdc,
+    };
+    let resume_offset = context.resume.map(|checkpoint| checkpoint.offset);
+    let journal = context.journal;
+    let mut checkpoint =
+        |offset| persist_delta_checkpoint(source, destination, offset, layout, journal);
+    crate::delta_copy::copy_file(
+        crate::delta_copy::DeltaRequest {
+            source,
+            basis,
+            destination,
+            mode,
+            state: context.progress,
+            base_bytes: context.base_bytes,
+            allow_clone_seed: context.profile.capabilities.clone,
+            resume_offset,
+        },
+        &mut checkpoint,
+    )
+}
+
+fn persist_delta_checkpoint(
+    source: &Path,
+    destination: &Path,
+    offset: u64,
+    layout: CheckpointLayout,
+    journal: JournalStep<'_>,
+) -> std::io::Result<()> {
+    if !journal.enabled {
+        return Ok(());
+    }
+    let checkpoint = ResumeCheckpoint {
+        staging: destination.to_path_buf(),
+        offset,
+        source: PathIdentity::observe_deep(source)?,
+        partial: PathIdentity::observe_deep(destination)?,
+        layout,
+    };
+    crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
+        .map_err(std::io::Error::other)
 }
 
 /// A copy/move request, fully described and detached from any UI state.
@@ -394,6 +467,34 @@ pub struct ResumeCheckpoint {
     pub offset: u64,
     pub source: PathIdentity,
     pub partial: PathIdentity,
+    #[serde(default)]
+    pub layout: CheckpointLayout,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckpointLayout {
+    #[default]
+    Prefix,
+    DeltaFixed,
+    DeltaCdc,
+}
+
+impl CheckpointLayout {
+    fn delta_mode(self) -> Option<crate::delta_copy::DeltaMode> {
+        match self {
+            Self::Prefix => None,
+            Self::DeltaFixed => Some(crate::delta_copy::DeltaMode::Fixed),
+            Self::DeltaCdc => Some(crate::delta_copy::DeltaMode::ContentDefined),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Prefix => "buffered",
+            Self::DeltaFixed => "delta",
+            Self::DeltaCdc => "delta CDC",
+        }
+    }
 }
 
 pub fn capture_expectations(entries: &[FileEntry], target: &Path) -> Vec<TransferExpectation> {
@@ -1656,7 +1757,11 @@ fn copy_file_buffered_inner(
 ) -> std::io::Result<u64> {
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
     let offset = resume.map_or(0, |checkpoint| checkpoint.offset);
-    if offset > file_size || resume.is_some_and(|checkpoint| checkpoint.staging != dst) {
+    if offset > file_size
+        || resume.is_some_and(|checkpoint| {
+            checkpoint.staging != dst || checkpoint.layout != CheckpointLayout::Prefix
+        })
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid transfer checkpoint",
@@ -1687,11 +1792,15 @@ fn copy_file_buffered_inner(
     } else {
         options.create_new(true).open(dst)?
     };
-    if dst_file.metadata()?.len() != offset {
+    let staging_len = dst_file.metadata()?.len();
+    if staging_len < offset {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "checkpoint staging length changed",
+            "checkpoint staging is shorter than its verified offset",
         ));
+    }
+    if resume.is_some() && staging_len > offset {
+        dst_file.set_len(offset)?;
     }
     dst_file.seek(SeekFrom::Start(offset))?;
     let mut writer = std::io::BufWriter::with_capacity(COPY_BUF_SIZE, dst_file);
@@ -1764,6 +1873,7 @@ fn persist_checkpoint(
         offset,
         source,
         partial,
+        layout: CheckpointLayout::Prefix,
     };
     crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
         .map_err(std::io::Error::other)
@@ -2086,6 +2196,28 @@ mod tests {
     }
 
     #[test]
+    fn large_slow_link_files_force_the_checkpointed_buffered_path() {
+        let temp = TempDir::new();
+        let mut profile = crate::volume_profile::profile(temp.path());
+        profile.backend = crate::volume_profile::BackendKind::Remote;
+        profile.capabilities.resumable = true;
+
+        assert!(requires_resumable_buffer(
+            &profile,
+            crate::delta_copy::DELTA_MIN_BYTES
+        ));
+        assert!(!requires_resumable_buffer(
+            &profile,
+            crate::delta_copy::DELTA_MIN_BYTES - 1
+        ));
+        profile.capabilities.resumable = false;
+        assert!(!requires_resumable_buffer(
+            &profile,
+            crate::delta_copy::DELTA_MIN_BYTES
+        ));
+    }
+
+    #[test]
     fn buffered_copy_resumes_from_a_verified_offset() {
         let (src, dst) = (TempDir::new(), TempDir::new());
         let source = src.path().join("large.bin");
@@ -2101,7 +2233,14 @@ mod tests {
             offset: offset as u64,
             source: PathIdentity::observe_deep(&source).unwrap(),
             partial: PathIdentity::observe_deep(&staging).unwrap(),
+            layout: CheckpointLayout::Prefix,
         };
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&staging)
+            .unwrap()
+            .write_all(b"uncheckpointed crash tail")
+            .unwrap();
         let state = Arc::new(Mutex::new(TransferProgress::new(bytes.len() as u64, 1)));
         let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
 
