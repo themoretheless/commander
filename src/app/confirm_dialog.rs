@@ -582,6 +582,20 @@ impl App {
                 .size(10.0)
                 .color(t.text_secondary),
             );
+            if profile.capabilities.delta {
+                ui.label(
+                    egui::RichText::new(if current.max_bytes_per_second.is_none() {
+                        "Delta auto"
+                    } else {
+                        "Delta limited"
+                    })
+                    .size(10.0)
+                    .color(t.accent),
+                )
+                .on_hover_text(
+                    "Large similar replacements use fixed blocks; measured high-latency jobs may use FastCDC",
+                );
+            }
 
             egui::ComboBox::from_id_salt(("volume_bandwidth", profile.volume_id))
                 .selected_text(bandwidth_label(selected.max_bytes_per_second))

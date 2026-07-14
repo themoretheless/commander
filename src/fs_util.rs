@@ -303,49 +303,11 @@ pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
-/// Whether two files have byte-identical contents. Streams both in lockstep
-/// so large files are not loaded whole. Returns `false` on any read error or
-/// length mismatch (so a failed compare never declares two files equal). Used
-/// to confirm duplicates before deletion, since a size + 64-bit hash match is
-/// not proof of byte-identity.
+/// Whether two regular files have the same verified BLAKE3 content hash.
+/// Hashes are cached only after identity and filesystem-generation revalidation;
+/// any read or validation error fails closed.
 pub fn files_equal(a: &Path, b: &Path) -> bool {
-    use std::io::Read;
-    let (Ok(mut fa), Ok(mut fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else {
-        return false;
-    };
-    let mut ba = [0u8; 64 * 1024];
-    let mut bb = [0u8; 64 * 1024];
-    loop {
-        let na = match fa.read(&mut ba) {
-            Ok(n) => n,
-            Err(_) => return false,
-        };
-        let nb = match read_full(&mut fb, &mut bb[..na]) {
-            Some(n) => n,
-            None => return false,
-        };
-        if na != nb || ba[..na] != bb[..nb] {
-            return false;
-        }
-        if na == 0 {
-            return true;
-        }
-    }
-}
-
-/// Read exactly `buf.len()` bytes (or until EOF), returning how many were read,
-/// or `None` on error. Needed because the two files may chunk differently.
-fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> Option<usize> {
-    use std::io::Read;
-    let mut filled = 0;
-    while filled < buf.len() {
-        match f.read(&mut buf[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(_) => return None,
-        }
-    }
-    Some(filled)
+    crate::verified_hash::files_equal(a, b)
 }
 
 /// Content hash of a file, streamed in chunks so large files are not loaded

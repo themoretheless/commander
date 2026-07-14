@@ -69,6 +69,8 @@ pub struct TransferProgress {
     pub bandwidth_limit: Option<u64>,
     pub waiting_reason: Option<String>,
     pub fast_paths: Vec<crate::transfer_tuning::FastPath>,
+    pub delta_reused_bytes: u64,
+    pub delta_source_bytes: u64,
     pub active_workers: usize,
     pub peak_workers: usize,
     pub speed_samples: Vec<(f64, f64)>, // (timestamp_secs, bytes_at_that_time)
@@ -108,6 +110,8 @@ impl TransferProgress {
             bandwidth_limit: None,
             waiting_reason: None,
             fast_paths: Vec::new(),
+            delta_reused_bytes: 0,
+            delta_source_bytes: 0,
             active_workers: 1,
             peak_workers: 1,
             speed_samples: vec![(0.0, 0.0)],
@@ -193,6 +197,33 @@ impl CopyMethod {
         context: CopyContext<'_>,
     ) -> std::io::Result<CopyOutcome> {
         let force_buffered = context.rule.max_bytes_per_second.is_some();
+        if !is_dir
+            && !force_buffered
+            && context.resume.is_none()
+            && let Some(basis) = context.basis
+            && let Ok(basis_metadata) = basis.metadata()
+            && basis_metadata.is_file()
+            && let Some(mode) = crate::delta_copy::select(
+                context.profile.capabilities.delta,
+                src.metadata()?.len(),
+                basis_metadata.len(),
+                context.tuning,
+            )
+        {
+            return crate::delta_copy::copy_file(
+                src,
+                basis,
+                dest,
+                mode,
+                context.progress,
+                context.base_bytes,
+                context.profile.capabilities.clone,
+            )
+            .map(|stats| CopyOutcome {
+                bytes: stats.logical_bytes,
+                fast_path: mode.fast_path(),
+            });
+        }
         if !is_dir
             && context.resume.is_none()
             && context.profile.capabilities.sparse
@@ -304,6 +335,8 @@ struct CopyContext<'a> {
     base_bytes: u64,
     profile: &'a crate::volume_profile::VolumeProfile,
     rule: crate::transfer_tuning::VolumeRule,
+    tuning: crate::transfer_tuning::TuningSnapshot,
+    basis: Option<&'a Path>,
     resume: Option<&'a ResumeCheckpoint>,
     journal: JournalStep<'a>,
 }
@@ -888,6 +921,7 @@ pub fn spawn_transfer(
 
             let attempt_base = base_bytes;
             let attempt_started = std::time::Instant::now();
+            let attempt_tuning = crate::transfer_tuning::snapshot(&target_profile);
             let result = if renamed {
                 rename_entry(
                     &entry.path,
@@ -911,6 +945,8 @@ pub fn spawn_transfer(
                         base_bytes,
                         profile: &target_profile,
                         rule: resource_rule,
+                        tuning: attempt_tuning,
+                        basis: dest_present.then_some(dest.as_path()),
                         resume: work_item.expectation.resume.as_ref(),
                         journal: JournalStep {
                             operation_id: &spec.operation_id,

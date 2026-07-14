@@ -104,6 +104,7 @@ struct CallbackCtx {
     base_bytes: u64,
     /// Bytes of files fully completed within this call (recursive copies).
     done_in_call: u64,
+    report_progress: bool,
 }
 
 fn cstr_to_string(ptr: *const c_char) -> Option<String> {
@@ -133,6 +134,9 @@ extern "C" fn progress_callback(
             if s.cancelled {
                 return COPYFILE_QUIT;
             }
+            if !ctx.report_progress {
+                return COPYFILE_CONTINUE;
+            }
             if let Some(path) = cstr_to_string(src) {
                 s.current_file = Path::new(&path)
                     .file_name()
@@ -144,6 +148,9 @@ extern "C" fn progress_callback(
             COPYFILE_CONTINUE
         }
         (COPYFILE_RECURSE_FILE, COPYFILE_FINISH) => {
+            if !ctx.report_progress {
+                return COPYFILE_CONTINUE;
+            }
             let mut s = crate::lock_util::recover(&ctx.state);
             // Count the whole file as done: cloned files produce no DATA callbacks.
             ctx.done_in_call = ctx.done_in_call.saturating_add(s.current_file_size);
@@ -164,6 +171,13 @@ extern "C" fn progress_callback(
         }
         (COPYFILE_COPY_DATA, COPYFILE_PROGRESS) => {
             unsafe {
+                if !ctx.report_progress {
+                    return if crate::lock_util::recover(&ctx.state).cancelled {
+                        COPYFILE_QUIT
+                    } else {
+                        COPYFILE_CONTINUE
+                    };
+                }
                 let mut bytes_copied: i64 = 0;
                 copyfile_state_get(
                     cstate,
@@ -198,12 +212,32 @@ pub fn copy_file_native(
     base_bytes: u64,
     allow_clone: bool,
 ) -> std::io::Result<NativeCopyOutcome> {
+    copy_file_native_inner(src, dst, state, base_bytes, allow_clone, true)
+}
+
+pub fn seed_file_native(
+    src: &Path,
+    dst: &Path,
+    state: &Arc<Mutex<TransferProgress>>,
+    allow_clone: bool,
+) -> std::io::Result<NativeCopyOutcome> {
+    copy_file_native_inner(src, dst, state, 0, allow_clone, false)
+}
+
+fn copy_file_native_inner(
+    src: &Path,
+    dst: &Path,
+    state: &Arc<Mutex<TransferProgress>>,
+    base_bytes: u64,
+    allow_clone: bool,
+    report_progress: bool,
+) -> std::io::Result<NativeCopyOutcome> {
     let src_c = path_cstring(src)?;
     let dst_c = path_cstring(dst)?;
 
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
 
-    {
+    if report_progress {
         let mut s = crate::lock_util::recover(state);
         s.current_file = src
             .file_name()
@@ -215,10 +249,18 @@ pub fn copy_file_native(
 
     // Try the explicit clone primitive first so telemetry can distinguish a
     // metadata-only APFS clone from copyfile's transparent byte-copy fallback.
+    if crate::lock_util::recover(state).cancelled {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "cancelled",
+        ));
+    }
     if allow_clone && unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) } == 0 {
-        let mut progress = crate::lock_util::recover(state);
-        progress.current_file_copied = file_size;
-        progress.copied_bytes = base_bytes.saturating_add(file_size);
+        if report_progress {
+            let mut progress = crate::lock_util::recover(state);
+            progress.current_file_copied = file_size;
+            progress.copied_bytes = base_bytes.saturating_add(file_size);
+        }
         return Ok(NativeCopyOutcome {
             bytes: file_size,
             cloned: true,
@@ -235,6 +277,7 @@ pub fn copy_file_native(
             state: state.clone(),
             base_bytes,
             done_in_call: 0,
+            report_progress,
         };
 
         let cb: copyfile_callback_t = progress_callback;
@@ -252,7 +295,7 @@ pub fn copy_file_native(
         // EXCL: the caller always hands us a destination that should not yet
         // exist (a fresh staging path, or a dest believed absent), so refuse
         // to clobber rather than overwrite if one races into being.
-        let flags = COPYFILE_ALL | COPYFILE_CLONE | COPYFILE_EXCL;
+        let flags = COPYFILE_ALL | COPYFILE_EXCL;
         let result = copyfile(src_c.as_ptr(), dst_c.as_ptr(), cstate, flags);
 
         copyfile_state_free(cstate);
@@ -274,7 +317,7 @@ pub fn copy_file_native(
     }
 
     // Finalize progress: a cloned file emits no DATA callbacks at all.
-    {
+    if report_progress {
         let mut s = crate::lock_util::recover(state);
         s.current_file_copied = file_size;
         s.copied_bytes = base_bytes.saturating_add(file_size);
@@ -314,6 +357,7 @@ pub fn copy_dir_native(
             state: state.clone(),
             base_bytes,
             done_in_call: 0,
+            report_progress: true,
         };
 
         let cb: copyfile_callback_t = progress_callback;

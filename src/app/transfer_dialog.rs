@@ -41,6 +41,8 @@ impl App {
         let bandwidth_limit = s.bandwidth_limit;
         let waiting_reason = s.waiting_reason.clone();
         let latest_fast_path = s.fast_paths.last().copied();
+        let delta_reused_bytes = s.delta_reused_bytes;
+        let delta_source_bytes = s.delta_source_bytes;
         let active_workers = s.active_workers;
         let errors = s.errors.clone();
         let failures = s.failures.clone();
@@ -128,6 +130,17 @@ impl App {
                         ),
                         t.accent,
                         &t,
+                    );
+                }
+                if delta_reused_bytes > 0 {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Delta reused {}  \u{00b7}  source {}",
+                            format_size(delta_reused_bytes),
+                            format_size(delta_source_bytes)
+                        ))
+                        .size(10.0)
+                        .color(t.text_secondary),
                     );
                 }
 
