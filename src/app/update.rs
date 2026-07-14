@@ -14,6 +14,8 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let _frame_latency =
+            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FrameTime);
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
         self.capture_operations_requests(&ctx);
@@ -76,6 +78,7 @@ impl eframe::App for App {
         self.show_drag_overlay(&ctx);
         self.show_type_ahead_overlay(&ctx);
         self.show_toasts(&ctx);
+        self.show_developer_panel(&ctx);
         self.handle_drop(&ctx);
     }
 

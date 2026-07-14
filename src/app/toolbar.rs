@@ -158,6 +158,23 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(12.0);
 
+                        let diagnostics_fill = if self.show_developer_panel {
+                            t.accent.linear_multiply(0.3)
+                        } else {
+                            t.bg_card
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new("⚙").size(14.0))
+                                    .fill(diagnostics_fill)
+                                    .corner_radius(crate::theme::ROUNDING_SM),
+                            )
+                            .on_hover_text("Developer diagnostics")
+                            .clicked()
+                        {
+                            self.show_developer_panel = !self.show_developer_panel;
+                        }
+
                         // Theme toggle
                         let theme_icon = match self.theme_mode {
                             ThemeMode::Light => "\u{1f319}",
@@ -408,6 +425,7 @@ impl App {
                         }
                         ui.checkbox(&mut self.show_size_bars, "Show size bars");
                         ui.checkbox(&mut self.show_compare, "Compare panels");
+                        ui.checkbox(&mut self.show_developer_panel, "Developer diagnostics");
 
                         ui.separator();
                         let theme_label = match self.theme_mode {

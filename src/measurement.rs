@@ -14,6 +14,7 @@ pub enum MetricName {
     FirstListing,
     FilterResponse,
     OperationDialog,
+    FrameTime,
 }
 
 impl MetricName {
@@ -23,6 +24,13 @@ impl MetricName {
         Self::FilterResponse,
         Self::OperationDialog,
     ];
+    pub const ALL: [Self; 5] = [
+        Self::StartupTotal,
+        Self::FirstListing,
+        Self::FilterResponse,
+        Self::OperationDialog,
+        Self::FrameTime,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -30,6 +38,7 @@ impl MetricName {
             Self::FirstListing => "First listing",
             Self::FilterResponse => "Filter response",
             Self::OperationDialog => "Operation dialog",
+            Self::FrameTime => "Frame time",
         }
     }
 }
@@ -106,7 +115,7 @@ pub fn snapshot(metric: MetricName) -> LatencyPercentiles {
 }
 
 pub fn snapshots() -> Vec<(MetricName, LatencyPercentiles)> {
-    MetricName::CI
+    MetricName::ALL
         .into_iter()
         .map(|metric| (metric, snapshot(metric)))
         .collect()

@@ -6,6 +6,7 @@ mod archive_dialog;
 mod batch_rename_dialog;
 mod collections_dialog;
 mod confirm_dialog;
+mod developer_panel;
 mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
@@ -137,6 +138,32 @@ pub struct App {
     )>,
     /// Startup instrumentation remains live through the first directory read.
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
+    pub(crate) show_developer_panel: bool,
+    pub(crate) developer_notice: Option<DeveloperNotice>,
+}
+
+pub(crate) struct DeveloperNotice {
+    pub message: String,
+    pub path: Option<PathBuf>,
+    pub error: bool,
+}
+
+impl DeveloperNotice {
+    fn success(message: impl Into<String>, path: PathBuf) -> Self {
+        Self {
+            message: message.into(),
+            path: Some(path),
+            error: false,
+        }
+    }
+
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            path: None,
+            error: true,
+        }
+    }
 }
 
 /// UI state for the run-command / open-with bar.
@@ -589,6 +616,8 @@ impl App {
             run_command: None,
             compare_cache: None,
             startup_trace: Some(startup),
+            show_developer_panel: false,
+            developer_notice: None,
         };
         if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
