@@ -305,6 +305,7 @@ mod tests {
             filesystem: "test".to_string(),
             mount_point: PathBuf::from("/test"),
             read_only: false,
+            case_sensitive: Some(true),
             capabilities: VolumeCapabilities {
                 atomic_rename: true,
                 clone: false,

@@ -7,12 +7,37 @@ use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-/// On-disk entry: mtime as seconds+nanos since UNIX epoch, and size.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct VolumePathKey {
+    path: PathBuf,
+    volume_id: u64,
+    generation: u64,
+}
+
+impl VolumePathKey {
+    fn observe(path: &Path) -> Self {
+        let profile = crate::volume_profile::profile(path);
+        Self {
+            path: path.to_path_buf(),
+            volume_id: profile.volume_id,
+            generation: profile.generation,
+        }
+    }
+}
+
+/// On-disk entry: mount identity plus mtime and measured size.
 #[derive(Serialize, Deserialize)]
-struct CacheEntry {
+struct PersistedCacheEntry {
+    key: VolumePathKey,
     mtime_secs: u64,
     mtime_nanos: u32,
     size: u64,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PersistedCache {
+    schema: u32,
+    entries: Vec<PersistedCacheEntry>,
 }
 
 fn cache_path() -> PathBuf {
@@ -26,30 +51,34 @@ fn cache_path() -> PathBuf {
     dir.join("dir_sizes.json")
 }
 
-/// Global cache: path → (mtime, size).
+/// Global cache: volume generation + path -> (mtime, size).
 /// Loaded from disk on first access, saved on every update.
-fn dir_size_cache() -> &'static Mutex<HashMap<PathBuf, (SystemTime, u64)>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, u64)>>> = OnceLock::new();
+fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemTime, u64)>> {
+    static CACHE: OnceLock<Mutex<HashMap<VolumePathKey, (SystemTime, u64)>>> = OnceLock::new();
     CACHE.get_or_init(|| {
         let map = load_cache_from_disk();
         Mutex::new(map)
     })
 }
 
-fn load_cache_from_disk() -> HashMap<PathBuf, (SystemTime, u64)> {
+fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
     let path = cache_path();
     let Ok(data) = fs::read_to_string(&path) else {
         return HashMap::new();
     };
-    let Ok(entries): Result<HashMap<PathBuf, CacheEntry>, _> = serde_json::from_str(&data) else {
+    let Ok(cache): Result<PersistedCache, _> = serde_json::from_str(&data) else {
         return HashMap::new();
     };
-    entries
+    if cache.schema != 1 {
+        return HashMap::new();
+    }
+    cache
+        .entries
         .into_iter()
-        .map(|(p, e)| {
-            let mtime =
-                std::time::UNIX_EPOCH + std::time::Duration::new(e.mtime_secs, e.mtime_nanos);
-            (p, (mtime, e.size))
+        .map(|entry| {
+            let mtime = std::time::UNIX_EPOCH
+                + std::time::Duration::new(entry.mtime_secs, entry.mtime_nanos);
+            (entry.key, (mtime, entry.size))
         })
         .collect()
 }
@@ -60,8 +89,8 @@ fn load_cache_from_disk() -> HashMap<PathBuf, (SystemTime, u64)> {
 /// their cached size, and re-walking them on every event burns CPU/disk
 /// forever. Recently-walked dirs wait out a cooldown; dirs whose walk is
 /// expensive are only re-walked on an explicit refresh.
-fn walk_log() -> &'static Mutex<HashMap<PathBuf, (std::time::Instant, std::time::Duration)>> {
-    static LOG: OnceLock<Mutex<HashMap<PathBuf, (std::time::Instant, std::time::Duration)>>> =
+fn walk_log() -> &'static Mutex<HashMap<VolumePathKey, (std::time::Instant, std::time::Duration)>> {
+    static LOG: OnceLock<Mutex<HashMap<VolumePathKey, (std::time::Instant, std::time::Duration)>>> =
         OnceLock::new();
     LOG.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -235,12 +264,20 @@ pub fn rank_visited(
 /// reset to the epoch so the next mtime comparison can never match.
 pub fn invalidate_size_cache(path: &Path) {
     if let Ok(mut cache) = dir_size_cache().lock() {
-        for (dir, entry) in cache.iter_mut() {
-            if path.starts_with(dir) {
+        for (key, entry) in cache.iter_mut() {
+            if path.starts_with(&key.path) {
                 entry.0 = std::time::UNIX_EPOCH;
             }
         }
     }
+}
+
+fn flag_watcher_gap(
+    generation: &std::sync::atomic::AtomicU64,
+    reload: &std::sync::atomic::AtomicBool,
+) {
+    generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    reload.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Save current cache to disk (best-effort, called from background threads).
@@ -248,7 +285,7 @@ pub fn invalidate_size_cache(path: &Path) {
 /// Stale paths are harmless because reuse always verifies mtime; probing them
 /// here could block every panel behind the mutex when a remote volume is down.
 pub fn flush_cache() {
-    let entries: HashMap<PathBuf, CacheEntry> = {
+    let entries = {
         let Ok(cache) = dir_size_cache().lock() else {
             return;
         };
@@ -256,19 +293,18 @@ pub fn flush_cache() {
             .iter()
             .filter_map(|(p, (mtime, size))| {
                 let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-                Some((
-                    p.clone(),
-                    CacheEntry {
-                        mtime_secs: dur.as_secs(),
-                        mtime_nanos: dur.subsec_nanos(),
-                        size: *size,
-                    },
-                ))
+                Some(PersistedCacheEntry {
+                    key: p.clone(),
+                    mtime_secs: dur.as_secs(),
+                    mtime_nanos: dur.subsec_nanos(),
+                    size: *size,
+                })
             })
-            .collect()
+            .collect::<Vec<_>>()
         // Lock dropped here: serialization and IO happen outside it.
     };
-    if let Ok(json) = serde_json::to_string(&entries) {
+    let persisted = PersistedCache { schema: 1, entries };
+    if let Ok(json) = serde_json::to_string(&persisted) {
         crate::fs_util::write_atomic(&cache_path(), &json);
     }
 }
@@ -902,6 +938,10 @@ pub struct PanelState {
     pub drag_entries: Vec<PathBuf>,
     pub drop_target: Option<PathBuf>,
     pub needs_refresh: Arc<std::sync::atomic::AtomicBool>,
+    /// Incremented when the backend reports an overflow/rescan flag or an
+    /// event-stream error. The next poll replaces the whole listing snapshot.
+    watcher_rescan_generation: Arc<std::sync::atomic::AtomicU64>,
+    applied_rescan_generation: u64,
     /// Set by deep watcher events: directory sizes need recomputing,
     /// but the listing itself is unchanged.
     sizes_dirty: Arc<std::sync::atomic::AtomicBool>,
@@ -949,6 +989,8 @@ impl PanelState {
             drag_entries: Vec::new(),
             drop_target: None,
             needs_refresh: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            watcher_rescan_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            applied_rescan_generation: 0,
             sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_sizes_recompute: None,
             entries_gen: 0,
@@ -1020,6 +1062,13 @@ impl PanelState {
             .needs_refresh
             .swap(false, std::sync::atomic::Ordering::Relaxed);
         if reload {
+            let rescan_generation = self
+                .watcher_rescan_generation
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if rescan_generation != self.applied_rescan_generation {
+                invalidate_size_cache(&self.current_path);
+                self.applied_rescan_generation = rescan_generation;
+            }
             self.reload_entries();
             let retry = self.compute_dir_sizes(true);
             self.sizes_dirty
@@ -1061,11 +1110,20 @@ impl PanelState {
 
         let flag = Arc::clone(&self.needs_refresh);
         let sizes_flag = Arc::clone(&self.sizes_dirty);
+        let rescan_generation = Arc::clone(&self.watcher_rescan_generation);
         let wake = self.notify.clone();
         let watched = self.current_path.clone();
 
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
+                if event.need_rescan() {
+                    invalidate_size_cache(&watched);
+                    flag_watcher_gap(&rescan_generation, &flag);
+                    if let Some(wake) = &wake {
+                        wake();
+                    }
+                    return;
+                }
                 // A change anywhere under a cached directory makes its
                 // size stale, even though its own mtime doesn't move.
                 let mut direct = event.paths.is_empty();
@@ -1080,6 +1138,12 @@ impl PanelState {
                 } else {
                     sizes_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                if let Some(wake) = &wake {
+                    wake();
+                }
+            } else {
+                invalidate_size_cache(&watched);
+                flag_watcher_gap(&rescan_generation, &flag);
                 if let Some(wake) = &wake {
                     wake();
                 }
@@ -1111,7 +1175,7 @@ impl PanelState {
 
         // Collect dirs that need background work
         let mut need_count: Vec<PathBuf> = Vec::new();
-        let mut need_size: Vec<(PathBuf, Option<SystemTime>)> = Vec::new();
+        let mut need_size: Vec<(PathBuf, Option<SystemTime>, VolumePathKey)> = Vec::new();
         let mut retry = false;
 
         for entry in &self.entries {
@@ -1122,11 +1186,12 @@ impl PanelState {
             need_count.push(entry.path.clone());
 
             let dir_mtime = fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
+            let cache_key = VolumePathKey::observe(&entry.path);
 
             // Check global cache: if mtime matches, reuse cached size
             if let Some(mtime) = dir_mtime
                 && let Ok(cache) = dir_size_cache().lock()
-                && let Some(&(cached_mtime, cached_size)) = cache.get(&entry.path)
+                && let Some(&(cached_mtime, cached_size)) = cache.get(&cache_key)
                 && cached_mtime == mtime
             {
                 if let Ok(mut sizes) = self.dir_sizes.lock() {
@@ -1146,7 +1211,7 @@ impl PanelState {
             let mut skip = false;
             if guards_enabled
                 && let Ok(log) = walk_log().lock()
-                && let Some(&(when, cost)) = log.get(&entry.path)
+                && let Some(&(when, cost)) = log.get(&cache_key)
             {
                 if when.elapsed() < WALK_COOLDOWN {
                     skip = true;
@@ -1158,7 +1223,7 @@ impl PanelState {
             if skip {
                 // Keep showing the last known size instead of "…".
                 if let Ok(cache) = dir_size_cache().lock()
-                    && let Some(&(_, cached_size)) = cache.get(&entry.path)
+                    && let Some(&(_, cached_size)) = cache.get(&cache_key)
                     && let Ok(mut sizes) = self.dir_sizes.lock()
                 {
                     sizes.insert(entry.path.clone(), cached_size);
@@ -1166,7 +1231,7 @@ impl PanelState {
                 continue;
             }
 
-            need_size.push((entry.path.clone(), dir_mtime));
+            need_size.push((entry.path.clone(), dir_mtime, cache_key));
         }
 
         let filtered = self.filtered_indices();
@@ -1185,7 +1250,7 @@ impl PanelState {
             .partition(|path| visible_paths.contains(path));
         let (visible_sizes, background_sizes): (Vec<_>, Vec<_>) = need_size
             .into_iter()
-            .partition(|(path, _)| visible_paths.contains(path));
+            .partition(|(path, _, _)| visible_paths.contains(path));
 
         // Dedicated thread pool (max 10 threads) for filesystem work
         fn fs_pool() -> &'static rayon::ThreadPool {
@@ -1236,26 +1301,31 @@ impl PanelState {
             fs_pool().spawn_fifo(move || {
                 use rayon::prelude::*;
                 fn measure(
-                    (path, modified): &(PathBuf, Option<SystemTime>),
-                ) -> (PathBuf, Option<SystemTime>, u64) {
+                    (path, modified, cache_key): &(PathBuf, Option<SystemTime>, VolumePathKey),
+                ) -> (PathBuf, Option<SystemTime>, VolumePathKey, u64) {
                     let started = std::time::Instant::now();
                     let size = crate::fs_util::dir_size_recursive(path);
                     if let Ok(mut log) = walk_log().lock() {
-                        log.insert(path.clone(), (std::time::Instant::now(), started.elapsed()));
+                        log.retain(|key, _| key.path != *path || key == cache_key);
+                        log.insert(
+                            cache_key.clone(),
+                            (std::time::Instant::now(), started.elapsed()),
+                        );
                     }
-                    (path.clone(), *modified, size)
+                    (path.clone(), *modified, cache_key.clone(), size)
                 }
 
-                let publish = |results: &[(PathBuf, Option<SystemTime>, u64)]| {
+                let publish = |results: &[(PathBuf, Option<SystemTime>, VolumePathKey, u64)]| {
                     if let Ok(mut map) = sizes.lock() {
-                        for (path, _, size) in results {
+                        for (path, _, _, size) in results {
                             map.insert(path.clone(), *size);
                         }
                     }
                     if let Ok(mut cache) = dir_size_cache().lock() {
-                        for (path, modified, size) in results {
+                        for (path, modified, key, size) in results {
                             if let Some(modified) = modified {
-                                cache.insert(path.clone(), (*modified, *size));
+                                cache.retain(|old, _| old.path != *path || old == key);
+                                cache.insert(key.clone(), (*modified, *size));
                             }
                         }
                     }
@@ -2977,20 +3047,38 @@ mod tests {
         let tmp = TempDir::new();
         let a = tmp.dir("a");
         let other = tmp.dir("other");
+        let a_key = VolumePathKey::observe(&a);
+        let other_key = VolumePathKey::observe(&other);
         let now = SystemTime::now();
         {
             let mut cache = dir_size_cache().lock().unwrap();
-            cache.insert(a.clone(), (now, 100));
-            cache.insert(other.clone(), (now, 5));
+            cache.insert(a_key.clone(), (now, 100));
+            cache.insert(other_key.clone(), (now, 5));
         }
 
         invalidate_size_cache(&a.join("b/c/file.txt"));
 
         let cache = dir_size_cache().lock().unwrap();
-        let (a_mtime, a_size) = cache[&a];
+        let (a_mtime, a_size) = cache[&a_key];
         assert_eq!(a_mtime, std::time::UNIX_EPOCH, "ancestor mtime is reset");
         assert_eq!(a_size, 100, "stale size is kept for display");
-        assert_eq!(cache[&other].0, now, "unrelated dirs stay valid");
+        assert_eq!(cache[&other_key].0, now, "unrelated dirs stay valid");
+    }
+
+    #[test]
+    fn directory_cache_key_rejects_an_old_mount_generation() {
+        let path = PathBuf::from("/fixture/folder");
+        let first = VolumePathKey {
+            path: path.clone(),
+            volume_id: 7,
+            generation: 1,
+        };
+        let remounted = VolumePathKey {
+            path,
+            volume_id: 7,
+            generation: 2,
+        };
+        assert_ne!(first, remounted);
     }
 
     #[test]
@@ -3032,6 +3120,29 @@ mod tests {
         let reloaded = p.poll_fs_changes();
         assert!(!reloaded, "sizes-only events must not reload the listing");
         wait_for_size(&p, &sub, 12);
+    }
+
+    #[test]
+    fn watcher_gap_replaces_the_listing_and_applies_its_generation() {
+        let tmp = TempDir::new();
+        tmp.file("before.txt", "before");
+        let mut panel = PanelState::new(tmp.path().to_path_buf());
+        panel.refresh();
+        assert!(panel.entries.iter().any(|entry| entry.name == "before.txt"));
+
+        std::fs::remove_file(tmp.path().join("before.txt")).unwrap();
+        tmp.file("after.txt", "after");
+        flag_watcher_gap(&panel.watcher_rescan_generation, &panel.needs_refresh);
+
+        assert!(panel.poll_fs_changes());
+        assert!(panel.entries.iter().any(|entry| entry.name == "after.txt"));
+        assert!(!panel.entries.iter().any(|entry| entry.name == "before.txt"));
+        assert_eq!(
+            panel.applied_rescan_generation,
+            panel
+                .watcher_rescan_generation
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
     }
 
     /// Profiling harness, not a test: drives a real watcher + poll loop

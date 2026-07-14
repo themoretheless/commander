@@ -476,6 +476,8 @@ impl App {
             ws.right.density = s.right_density;
             ws.durability_profile = s.durability_profile;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
+            ws.name_policy = s.name_policy;
+            ws.symlink_policy = s.symlink_policy;
         }
 
         let recovery = RecoveryState::scan(&ws);
@@ -586,6 +588,8 @@ impl App {
             search_history: self.search_history.clone(),
             durability_profile: self.ws.durability_profile,
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
+            name_policy: self.ws.name_policy,
+            symlink_policy: self.ws.symlink_policy,
         }
     }
 

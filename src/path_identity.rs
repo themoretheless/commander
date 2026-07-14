@@ -23,6 +23,10 @@ pub struct PathIdentity {
     pub size: u64,
     pub modified_nanos: Option<u128>,
     pub tree_fingerprint: Option<u64>,
+    /// Hash of the complete observation. Older journals default this to zero
+    /// and fall back to field-by-field comparison during migration.
+    #[serde(default)]
+    pub observed_version: u64,
 }
 
 impl PathIdentity {
@@ -50,11 +54,12 @@ impl PathIdentity {
             ));
         }
         after.tree_fingerprint = Some(fingerprint);
+        after.refresh_observed_version();
         Ok(after)
     }
 
     pub fn missing(path: &Path) -> Self {
-        Self {
+        let mut identity = Self {
             path: path.to_path_buf(),
             exists: false,
             kind: None,
@@ -63,11 +68,18 @@ impl PathIdentity {
             size: 0,
             modified_nanos: None,
             tree_fingerprint: None,
-        }
+            observed_version: 0,
+        };
+        identity.refresh_observed_version();
+        identity
     }
 
     pub fn same_version(&self, other: &Self) -> bool {
-        self.same_metadata(other) && self.tree_fingerprint == other.tree_fingerprint
+        if self.observed_version != 0 && other.observed_version != 0 {
+            self.observed_version == other.observed_version
+        } else {
+            self.same_metadata(other) && self.tree_fingerprint == other.tree_fingerprint
+        }
     }
 
     fn same_metadata(&self, other: &Self) -> bool {
@@ -91,7 +103,7 @@ impl PathIdentity {
             PathKind::Other
         };
         let (volume, file_id) = native_identity(metadata);
-        Self {
+        let mut identity = Self {
             path,
             exists: true,
             kind: Some(kind),
@@ -104,7 +116,37 @@ impl PathIdentity {
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map(|duration| duration.as_nanos()),
             tree_fingerprint: None,
-        }
+            observed_version: 0,
+        };
+        identity.refresh_observed_version();
+        identity
+    }
+
+    fn refresh_observed_version(&mut self) {
+        let mut hash = 0xcbf29ce484222325_u64;
+        hash_bytes(&mut hash, &[u8::from(self.exists)]);
+        hash_bytes(
+            &mut hash,
+            &[match self.kind {
+                None => 0,
+                Some(PathKind::File) => 1,
+                Some(PathKind::Directory) => 2,
+                Some(PathKind::Symlink) => 3,
+                Some(PathKind::Other) => 4,
+            }],
+        );
+        hash_bytes(&mut hash, &self.volume.unwrap_or_default().to_le_bytes());
+        hash_bytes(&mut hash, &self.file_id.unwrap_or_default().to_le_bytes());
+        hash_bytes(&mut hash, &self.size.to_le_bytes());
+        hash_bytes(
+            &mut hash,
+            &self.modified_nanos.unwrap_or_default().to_le_bytes(),
+        );
+        hash_bytes(
+            &mut hash,
+            &self.tree_fingerprint.unwrap_or_default().to_le_bytes(),
+        );
+        self.observed_version = hash.max(1);
     }
 }
 
@@ -181,6 +223,7 @@ mod tests {
         let missing = PathIdentity::observe(&path).unwrap();
         std::fs::write(&path, "one").unwrap();
         let existing = PathIdentity::observe(&path).unwrap();
+        assert_ne!(existing.observed_version, 0);
         assert!(!missing.same_version(&existing));
         assert!(existing.same_version(&PathIdentity::observe(&path).unwrap()));
     }

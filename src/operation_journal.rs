@@ -112,6 +112,10 @@ pub struct OperationRecord {
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
     #[serde(default)]
+    pub name_policy: crate::filesystem_policy::NamePolicy,
+    #[serde(default)]
+    pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    #[serde(default)]
     pub post_success: Option<PostTransferAction>,
     #[serde(default)]
     pub rollback_cleanup: Option<PathBuf>,
@@ -284,6 +288,8 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                 || existing.policy != spec.policy
                 || existing.method != spec.method
                 || existing.durability != spec.durability
+                || existing.name_policy != spec.name_policy
+                || existing.symlink_policy != spec.symlink_policy
                 || existing.post_success != spec.post_success
                 || existing.rollback_cleanup != spec.rollback_cleanup
             {
@@ -368,6 +374,8 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
             policy: spec.policy,
             method: spec.method,
             durability: spec.durability,
+            name_policy: spec.name_policy,
+            symlink_policy: spec.symlink_policy,
             post_success: spec.post_success.clone(),
             rollback_cleanup: spec.rollback_cleanup.clone(),
             status: OperationStatus::Running,
@@ -557,6 +565,18 @@ pub fn step_is_settled(operation_id: &OperationId, key: &IdempotencyKey) -> Resu
     settled_step(step)
 }
 
+pub fn step_checkpoint(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+) -> Result<Option<ResumeCheckpoint>, String> {
+    let operation = operation(operation_id)?;
+    Ok(operation
+        .steps
+        .iter()
+        .find(|step| &step.key == key)
+        .and_then(|step| step.checkpoint.clone()))
+}
+
 fn settled_step(step: &OperationStep) -> Result<bool, String> {
     match step.status {
         StepStatus::Completed => prove_completed_effect(step),
@@ -695,6 +715,8 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         policy: record.policy,
         method: record.method,
         durability: record.durability,
+        name_policy: record.name_policy,
+        symlink_policy: record.symlink_policy,
         post_success: record.post_success,
         rollback_cleanup: record.rollback_cleanup,
         #[cfg(test)]
@@ -1078,6 +1100,8 @@ mod tests {
             policy: OverwritePolicy::OverwriteAll,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Verified,
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: None,
             status: OperationStatus::Failed,

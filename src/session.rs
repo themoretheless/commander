@@ -57,6 +57,10 @@ pub struct Session {
     pub durability_profile: crate::operation::DurabilityProfile,
     #[serde(default)]
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
+    #[serde(default)]
+    pub name_policy: crate::filesystem_policy::NamePolicy,
+    #[serde(default)]
+    pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 }
 
 /// Serde default for booleans that should restore as `true` (the live
@@ -135,6 +139,8 @@ mod tests {
             search_history: crate::search::QueryHistory::default(),
             durability_profile: crate::operation::DurabilityProfile::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
         }
     }
 
@@ -177,11 +183,21 @@ mod tests {
         obj.remove("recent_stats");
         obj.remove("recent_order");
         obj.remove("search_history");
+        obj.remove("name_policy");
+        obj.remove("symlink_policy");
         let back: Session = serde_json::from_value(val).unwrap();
         assert!(back.recent_paths.is_empty());
         assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
         assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);
         assert_eq!(back.search_history, crate::search::QueryHistory::default());
+        assert_eq!(
+            back.name_policy,
+            crate::filesystem_policy::NamePolicy::default()
+        );
+        assert_eq!(
+            back.symlink_policy,
+            crate::filesystem_policy::SymlinkPolicy::Preserve
+        );
     }
 
     #[test]

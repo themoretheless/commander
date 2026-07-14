@@ -49,6 +49,9 @@ pub struct PendingTransfer {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: crate::operation::DurabilityProfile,
+    pub name_policy: crate::filesystem_policy::NamePolicy,
+    pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    pub filesystem: Box<crate::filesystem_policy::OperationPreflight>,
     pub flat: FlatList,
     /// Bytes the operation needs (recursive total of the entries).
     pub need_bytes: u64,
@@ -173,6 +176,8 @@ pub struct Workspace {
     reviewed_safe_operation: Option<crate::operation::OperationId>,
     pub durability_profile: crate::operation::DurabilityProfile,
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
+    pub name_policy: crate::filesystem_policy::NamePolicy,
+    pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     /// Set by [`Command::BeginRename`]; the UI picks this up to open the
     /// inline rename editor seeded with this path, then clears it.
     pub rename_target: Option<PathBuf>,
@@ -295,6 +300,30 @@ fn fit_stats(
     (need, free, same)
 }
 
+fn filesystem_preflight(
+    entries: &[FileEntry],
+    target: &Path,
+    name_policy: crate::filesystem_policy::NamePolicy,
+) -> Box<crate::filesystem_policy::OperationPreflight> {
+    let profile = crate::volume_profile::profile(target);
+    let names = entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<Vec<_>>();
+    Box::new(crate::filesystem_policy::OperationPreflight {
+        normalization: crate::filesystem_policy::preview_normalization(
+            names.iter().copied(),
+            name_policy.normalization,
+            profile.case_sensitive.unwrap_or(false),
+        ),
+        portability: crate::filesystem_policy::audit_names(names.iter().copied()),
+        capabilities: crate::filesystem_policy::matrix_for_profile(
+            &profile,
+            std::fs::metadata(target).is_ok(),
+        ),
+    })
+}
+
 /// Resolve a typed path for go-to-path (Cmd+L): trim, expand a leading `~`
 /// to `home`, and require the result to be an existing directory.
 pub fn resolve_dir_input(input: &str, home: &Path) -> Result<PathBuf, String> {
@@ -360,6 +389,8 @@ impl Workspace {
             reviewed_safe_operation: None,
             durability_profile: crate::operation::DurabilityProfile::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             rename_target: None,
             mask_request: false,
             run_command_request: false,
@@ -964,15 +995,24 @@ impl Workspace {
         let conflicts = scan::find_conflicts(&entries, &target);
         let expectations = transfer::capture_expectations(&entries, &target);
         let (need_bytes, free_bytes, same_volume) = fit_stats(&entries, &target, kind);
+        let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
+        let policy = match self.name_policy.collision {
+            crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
+            crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
+            crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
+        };
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
             expectations,
             target,
             conflicts,
-            policy: OverwritePolicy::Ask,
+            policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
+            filesystem,
             flat,
             need_bytes,
             free_bytes,
@@ -1061,6 +1101,8 @@ impl Workspace {
             return;
         };
         self.durability_profile = t.durability;
+        self.name_policy = t.name_policy;
+        self.symlink_policy = t.symlink_policy;
         // A Move is undoable, promoted onto the history stack when it finishes
         // cleanly (see `poll_transfer`); a Copy records no history.
         let undo = if t.kind == TransferKind::Move {
@@ -1080,6 +1122,8 @@ impl Workspace {
             policy: t.policy,
             method: t.method,
             durability: t.durability,
+            name_policy: t.name_policy,
+            symlink_policy: t.symlink_policy,
             post_success: None,
             rollback_cleanup: None,
             #[cfg(test)]
@@ -1667,6 +1711,8 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
             post_success,
             rollback_cleanup,
             #[cfg(test)]
@@ -1874,6 +1920,8 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
             post_success: None,
             rollback_cleanup: Some(folder),
             #[cfg(test)]
@@ -2413,6 +2461,8 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
             post_success: None,
             rollback_cleanup: None,
             #[cfg(test)]
@@ -2531,19 +2581,28 @@ impl Workspace {
         }
         let conflicts = scan::find_conflicts(&entries, &target);
         let flat = scan::spawn_scan(entries.clone());
-        let has_conflicts = !conflicts.is_empty();
+        let policy = match self.name_policy.collision {
+            crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
+            crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
+            crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
+        };
+        let has_conflicts = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
         let (need_bytes, free_bytes, same_volume) =
             fit_stats(&entries, &target, TransferKind::Move);
         let expectations = transfer::capture_expectations(&entries, &target);
+        let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind: TransferKind::Move,
             entries,
             expectations,
             target,
             conflicts,
-            policy: OverwritePolicy::Ask,
+            policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
+            filesystem,
             flat,
             need_bytes,
             free_bytes,
@@ -3967,6 +4026,9 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method,
             durability: crate::operation::DurabilityProfile::Fast,
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            filesystem: filesystem_preflight(&[], Path::new("/"), Default::default()),
             flat: scan::spawn_scan(vec![]),
             need_bytes: need,
             free_bytes: free,

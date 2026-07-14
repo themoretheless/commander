@@ -49,12 +49,41 @@ impl GuardPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeStamp {
+    pub volume_id: u64,
+    pub generation: u64,
+    pub mount_point: PathBuf,
+}
+
+impl VolumeStamp {
+    fn capture(path: &Path) -> Self {
+        let profile = crate::volume_profile::profile(path);
+        Self {
+            volume_id: profile.volume_id,
+            generation: profile.generation,
+            mount_point: profile.mount_point,
+        }
+    }
+
+    fn still_current(&self, path: &Path) -> bool {
+        let profile = crate::volume_profile::refresh(path);
+        self.volume_id == profile.volume_id
+            && self.generation == profile.generation
+            && self.mount_point == profile.mount_point
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanStamp {
     pub left_root: PathBuf,
     pub right_root: PathBuf,
     pub left_show_hidden: bool,
     pub right_show_hidden: bool,
     pub source_fingerprint: u64,
+    #[serde(default)]
+    pub left_volume: Option<VolumeStamp>,
+    #[serde(default)]
+    pub right_volume: Option<VolumeStamp>,
 }
 
 impl PlanStamp {
@@ -102,6 +131,8 @@ pub fn capture(
         left_show_hidden,
         right_show_hidden,
         source_fingerprint: source_fingerprint(left_root, right_root, left, right),
+        left_volume: Some(VolumeStamp::capture(left_root)),
+        right_volume: Some(VolumeStamp::capture(right_root)),
     }
 }
 
@@ -197,6 +228,19 @@ pub fn validate(plan: &GuardedPlan<'_>) -> Result<Assessment, String> {
         != plan.expected_settings
     {
         return Err("Synchronization settings changed after plan capture".to_string());
+    }
+    if plan
+        .stamp
+        .left_volume
+        .as_ref()
+        .is_some_and(|stamp| !stamp.still_current(&plan.stamp.left_root))
+        || plan
+            .stamp
+            .right_volume
+            .as_ref()
+            .is_some_and(|stamp| !stamp.still_current(&plan.stamp.right_root))
+    {
+        return Err("Synchronization volume changed or remounted; rebuild the plan".to_string());
     }
     let left = read_entries(&plan.stamp.left_root, plan.stamp.left_show_hidden)?;
     let right = read_entries(&plan.stamp.right_root, plan.stamp.right_show_hidden)?;
