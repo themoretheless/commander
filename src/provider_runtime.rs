@@ -227,6 +227,18 @@ fn builtin_registry() -> &'static Mutex<ProviderRegistry> {
 }
 
 pub fn activate_builtin(id: &str, request: &ActivationRequest<'_>) -> bool {
+    let enabled = match request.capability {
+        ProviderCapability::PreviewImage | ProviderCapability::PreviewText => {
+            crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview)
+        }
+        ProviderCapability::SearchIndex | ProviderCapability::IndexBuild => {
+            crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ContentIndex)
+        }
+        ProviderCapability::SearchLive => true,
+    };
+    if !enabled {
+        return false;
+    }
     crate::lock_util::recover(builtin_registry())
         .activate(id, request)
         .is_ok()
@@ -265,6 +277,9 @@ impl ExternalProviderClient {
         timeout: Duration,
         max_response_bytes: usize,
     ) -> Result<ProviderRpcResponse, String> {
+        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ExternalProviders) {
+            return Err("external providers disabled by runtime control".to_string());
+        }
         let mut child = Command::new(&self.executable)
             .args(&self.args)
             .stdin(Stdio::piped())

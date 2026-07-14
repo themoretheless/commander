@@ -237,6 +237,13 @@ impl ContentIndex {
     }
 
     pub fn start_build(&mut self, root: PathBuf, notify: Notify) -> bool {
+        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ContentIndex) {
+            self.load_errors.insert(
+                root,
+                "Content index disabled by runtime control".to_string(),
+            );
+            return false;
+        }
         if !self.is_enabled(&root) {
             return false;
         }
@@ -323,6 +330,10 @@ impl ContentIndex {
     }
 
     pub fn poll(&mut self) {
+        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ContentIndex) {
+            self.active = None;
+            return;
+        }
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(run) = &self.active {
@@ -388,7 +399,9 @@ impl ContentIndex {
     }
 
     pub fn status(&mut self, root: &Path) -> IndexStatus {
-        let enabled = self.is_enabled(root);
+        let runtime_enabled =
+            crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ContentIndex);
+        let enabled = self.is_enabled(root) && runtime_enabled;
         let excluded_roots = self.exclusions(root);
         let settings_error = self
             .settings
@@ -396,7 +409,7 @@ impl ContentIndex {
             .iter()
             .find(|settings| settings.root == root)
             .and_then(|settings| settings.last_error.clone());
-        let snapshot = self.snapshot(root);
+        let snapshot = enabled.then(|| self.snapshot(root)).flatten();
         let active = self.active.as_ref().filter(|run| run.root == root);
         let last_error = self.load_errors.get(root).cloned().or(settings_error);
         let phase = if !enabled {

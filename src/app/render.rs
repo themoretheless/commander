@@ -528,6 +528,16 @@ impl App {
                                         close_preview = true;
                                     }
                                 });
+                            } else if !crate::feature_flags::enabled(
+                                crate::feature_flags::RiskyFeature::ImagePreview,
+                            ) {
+                                ui.centered_and_justified(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Image preview disabled")
+                                            .size(12.0)
+                                            .color(t.text_muted),
+                                    );
+                                });
                             } else {
                                 ui.centered_and_justified(|ui| {
                                     ui.spinner();

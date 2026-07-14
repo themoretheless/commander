@@ -45,6 +45,9 @@ impl ImageCache {
 
     /// Get cached texture for a path, or None if not loaded yet.
     pub fn get(&mut self, path: &Path) -> Option<&TextureHandle> {
+        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview) {
+            return None;
+        }
         if let Some(entry) = self.entries.get_mut(path) {
             entry.last_used = self.frame;
             Some(&entry.texture)
@@ -55,6 +58,9 @@ impl ImageCache {
 
     /// Get texture, loading synchronously if not cached. For the active preview image.
     pub fn get_or_load_sync(&mut self, ctx: &Context, path: &Path) -> Option<&TextureHandle> {
+        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview) {
+            return None;
+        }
         let fname = path
             .file_name()
             .unwrap_or_default()
@@ -114,6 +120,14 @@ impl ImageCache {
 
     /// Request preloading in priority order, with fixed worker concurrency.
     pub fn preload(&mut self, ctx: &Context, paths: &[PathBuf], dir: &Path) {
+        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview) {
+            let mut pending = crate::lock_util::recover(&self.pending);
+            if !pending.is_empty() {
+                pending.clear();
+                self.generation.fetch_add(1, Ordering::AcqRel);
+            }
+            return;
+        }
         self.frame += 1;
 
         // Track directory change: flush the cache so a stale preview from the

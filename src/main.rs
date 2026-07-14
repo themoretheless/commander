@@ -16,6 +16,7 @@ mod crumbs;
 mod dedup;
 mod delta_copy;
 mod density;
+pub mod feature_flags;
 mod file_color;
 mod filesystem_policy;
 mod focus_mode;
