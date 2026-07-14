@@ -53,6 +53,7 @@ mod selset;
 mod session;
 mod shelf;
 mod smart_folder;
+pub mod support_bundle;
 mod sync;
 mod sync_guard;
 mod textdiff;

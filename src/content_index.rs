@@ -17,6 +17,10 @@ pub const MAX_DOCUMENTS: usize = 200_000;
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_CONTENT_BYTES: usize = 32 * 1024 * 1024;
 
+pub const fn schema_version() -> u32 {
+    SCHEMA_VERSION
+}
+
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

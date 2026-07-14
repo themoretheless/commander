@@ -121,6 +121,10 @@ pub fn records_for(operation_id: &OperationId) -> Vec<VersionRecord> {
         .collect()
 }
 
+pub fn records() -> Vec<VersionRecord> {
+    load_manifest(&versions_dir()).records
+}
+
 pub fn record_for_key(key: &IdempotencyKey) -> Option<VersionRecord> {
     load_manifest(&versions_dir())
         .records

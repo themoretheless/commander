@@ -18,6 +18,10 @@ use std::sync::{Mutex, OnceLock};
 const JOURNAL_SCHEMA: u32 = 3;
 const MAX_OPERATIONS: usize = 500;
 
+pub const fn schema_version() -> u32 {
+    JOURNAL_SCHEMA
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationStatus {
     Planned,

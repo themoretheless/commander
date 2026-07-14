@@ -207,7 +207,7 @@ pub enum CompletionDisposition {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchedulerStats {
     pub queued: usize,
     pub running: usize,
