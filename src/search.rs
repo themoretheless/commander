@@ -153,9 +153,10 @@ pub enum SearchEvent {
 }
 
 pub struct SearchRun {
-    pub generation: u64,
     pub provider: &'static str,
+    pub snapshot: crate::workload::TaskSnapshot,
     receiver: Receiver<SearchEvent>,
+    task: crate::workload::TaskHandle,
 }
 
 impl SearchRun {
@@ -164,15 +165,23 @@ impl SearchRun {
     }
 }
 
+impl Drop for SearchRun {
+    fn drop(&mut self) {
+        self.task.cancel();
+    }
+}
+
 pub(crate) struct ProviderRequest {
     generation: u64,
     active: Arc<AtomicU64>,
+    scheduler_cancel: crate::workload::CancellationToken,
     requires_content: bool,
 }
 
 impl ProviderRequest {
     fn cancelled(&self) -> bool {
-        self.active.load(Ordering::Acquire) != self.generation
+        self.scheduler_cancel.is_cancelled()
+            || self.active.load(Ordering::Acquire) != self.generation
     }
 }
 
@@ -490,21 +499,40 @@ impl SearchEngine {
         self.active_generation.store(generation, Ordering::Release);
         let active = Arc::clone(&self.active_generation);
         let (sender, receiver) = mpsc::channel();
-        std::thread::spawn(move || {
-            run_worker(
+        let task = crate::workload::submit(
+            crate::workload::TaskSpec::new(
+                crate::workload::TaskKind::Search,
+                provider_root,
                 generation,
-                active,
-                compiled,
-                cap.max(1),
-                sender,
-                notify,
-                provider,
-            );
-        });
+            )
+            .priority(crate::workload::Priority::Interactive)
+            .estimated_bytes(MAX_CONTENT_BYTES)
+            .replace_older_generation(),
+            move |scheduler_cancel| {
+                run_worker(
+                    ProviderRequest {
+                        generation,
+                        active,
+                        scheduler_cancel,
+                        requires_content: compiled.requires_content,
+                    },
+                    compiled,
+                    cap.max(1),
+                    sender,
+                    notify,
+                    provider,
+                );
+            },
+        )
+        .map_err(|error| QueryError {
+            token: provider_id.to_string(),
+            message: error.to_string(),
+        })?;
         Ok(SearchRun {
-            generation,
             provider: provider_label,
+            snapshot: task.snapshot().clone(),
             receiver,
+            task,
         })
     }
 
@@ -774,21 +802,16 @@ enum ContentVerdict {
 }
 
 fn run_worker(
-    generation: u64,
-    active: Arc<AtomicU64>,
+    request: ProviderRequest,
     query: CompiledQuery,
     cap: usize,
     sender: mpsc::Sender<SearchEvent>,
     notify: Notify,
     mut provider: Box<dyn SearchProvider>,
 ) {
+    let generation = request.generation;
     let started = Instant::now();
     let now = SystemTime::now();
-    let request = ProviderRequest {
-        generation,
-        active,
-        requires_content: query.requires_content,
-    };
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut scanned = 0usize;
     let mut matched = 0usize;
@@ -1207,8 +1230,12 @@ mod tests {
         let active = Arc::new(AtomicU64::new(2));
         let (sender, receiver) = mpsc::channel();
         run_worker(
-            1,
-            active,
+            ProviderRequest {
+                generation: 1,
+                active,
+                scheduler_cancel: crate::workload::CancellationToken::new(),
+                requires_content: false,
+            },
             CompiledQuery::new(Query::default()).unwrap(),
             100,
             sender,
@@ -1319,8 +1346,8 @@ mod tests {
                 Arc::new(|| {}),
             )
             .unwrap();
-        assert!(second.generation > first.generation);
-        assert_eq!(engine.active_generation(), second.generation);
+        assert!(second.snapshot.generation > first.snapshot.generation);
+        assert_eq!(engine.active_generation(), second.snapshot.generation);
     }
 
     #[test]

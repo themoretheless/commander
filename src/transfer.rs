@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::fs_util;
@@ -91,6 +92,7 @@ pub struct TransferProgress {
     /// undo can target where files really landed: a KeepBoth conflict lands at
     /// "name copy.ext", not "name". Empty for copies.
     pub placements: Vec<(PathBuf, PathBuf)>,
+    scheduler_task: Option<crate::workload::TaskHandle>,
 }
 
 pub type TransferState = Arc<Mutex<TransferProgress>>;
@@ -132,6 +134,23 @@ impl TransferProgress {
             errors: Vec::new(),
             failures: Vec::new(),
             placements: Vec::new(),
+            scheduler_task: None,
+        }
+    }
+
+    pub fn request_cancel(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.cancelled = true;
+        if let Some(task) = &self.scheduler_task {
+            task.cancel();
+        }
+    }
+
+    pub fn request_stop(&mut self) {
+        if !self.finished {
+            self.stop_requested = true;
         }
     }
 
@@ -798,7 +817,28 @@ pub fn spawn_transfer(
     progress: TransferState,
     notify: impl Fn() + Send + 'static,
 ) {
-    std::thread::spawn(move || {
+    static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let task_root = spec.target.clone();
+    let worker_progress = Arc::clone(&progress);
+    let notify = Arc::new(Mutex::new(notify));
+    let worker_notify = Arc::clone(&notify);
+    let task_spec = crate::workload::TaskSpec::new(
+        crate::workload::TaskKind::Transfer,
+        task_root.clone(),
+        generation,
+    )
+    .priority(crate::workload::Priority::Critical)
+    .estimated_bytes(64 * 1024 * 1024);
+    let worker = move |scheduler_cancel: crate::workload::CancellationToken| {
+        let progress = worker_progress;
+        let notify = || (crate::lock_util::recover(&worker_notify))();
+        if scheduler_cancel.is_cancelled() {
+            crate::lock_util::recover(&progress).cancelled = true;
+            finish_progress(&progress);
+            notify();
+            return;
+        }
         let journal_enabled = journal_enabled(&spec);
         {
             let mut state = crate::lock_util::recover(&progress);
@@ -859,6 +899,9 @@ pub fn spawn_transfer(
                 let reason = crate::operation_view::PauseReason::QuietHours { resume_at: None };
                 state.waiting_reason = Some(reason.label());
                 state.pause_reason = Some(reason);
+                if scheduler_cancel.is_cancelled() {
+                    state.cancelled = true;
+                }
                 state.cancelled || state.stop_requested
             };
             notify();
@@ -912,6 +955,9 @@ pub fn spawn_transfer(
             {
                 let mut s = crate::lock_util::recover(&progress);
                 s.current_file = entry.name.clone();
+                if scheduler_cancel.is_cancelled() {
+                    s.cancelled = true;
+                }
                 if s.cancelled {
                     break; // fall through to the finished-setter below
                 }
@@ -1706,7 +1752,26 @@ pub fn spawn_transfer(
             }
         }
         notify();
-    });
+    };
+    let task = crate::workload::submit(task_spec, worker);
+    match task {
+        Ok(task) => {
+            crate::lock_util::recover(&progress).scheduler_task = Some(task);
+        }
+        Err(error) => {
+            record_failure(
+                &progress,
+                "Operation",
+                ClassifiedFailure::message(
+                    FailureClass::Blocked,
+                    Some(task_root),
+                    format!("workload scheduler refused transfer: {error}"),
+                ),
+            );
+            finish_progress(&progress);
+            (crate::lock_util::recover(&notify))();
+        }
+    }
 }
 
 /// Run a transfer-owned follow-up only after every entry completed without an
@@ -1759,6 +1824,7 @@ fn finish_progress(progress: &TransferState) {
     }
     s.set_phase(crate::operation_view::OperationPhase::Finalize);
     s.finished = true;
+    s.scheduler_task = None;
     s.record_sample();
 }
 

@@ -158,11 +158,13 @@ struct BuildRun {
     receiver: Receiver<BuildEvent>,
     cancelled: Arc<AtomicBool>,
     progress: BuildProgress,
+    task: crate::workload::TaskHandle,
 }
 
 impl Drop for BuildRun {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
+        self.task.cancel();
     }
 }
 
@@ -172,6 +174,7 @@ pub struct ContentIndex {
     load_errors: HashMap<PathBuf, String>,
     active: Option<BuildRun>,
     idle: Arc<AtomicBool>,
+    next_generation: u64,
 }
 
 impl ContentIndex {
@@ -182,6 +185,7 @@ impl ContentIndex {
             load_errors: HashMap::new(),
             active: None,
             idle: Arc::new(AtomicBool::new(false)),
+            next_generation: 0,
         }
     }
 
@@ -257,32 +261,53 @@ impl ContentIndex {
         let idle = Arc::clone(&self.idle);
         let (sender, receiver) = mpsc::channel();
         let worker_root = root.clone();
-        std::thread::spawn(move || {
-            let result = scan_index(
-                worker_root.clone(),
-                exclusions,
-                idle,
-                worker_cancelled,
-                |progress| {
-                    if sender.send(BuildEvent::Progress(progress.clone())).is_err() {
-                        return false;
-                    }
-                    notify();
-                    true
-                },
+        self.next_generation = self.next_generation.saturating_add(1);
+        let generation = self.next_generation;
+        let task = match crate::workload::submit(
+            crate::workload::TaskSpec::new(
+                crate::workload::TaskKind::Index,
+                root.clone(),
+                generation,
             )
-            .and_then(|index| {
-                save_index_to(&index_path(&worker_root), &index)?;
-                Ok(index)
-            });
-            let _ = sender.send(BuildEvent::Complete(result));
-            notify();
-        });
+            .priority(crate::workload::Priority::Background)
+            .estimated_bytes(MAX_CONTENT_BYTES as u64)
+            .replace_older_generation(),
+            move |scheduler_cancel| {
+                let result = scan_index(
+                    worker_root.clone(),
+                    exclusions,
+                    idle,
+                    worker_cancelled,
+                    Some(scheduler_cancel),
+                    |progress| {
+                        if sender.send(BuildEvent::Progress(progress.clone())).is_err() {
+                            return false;
+                        }
+                        notify();
+                        true
+                    },
+                )
+                .and_then(|index| {
+                    save_index_to(&index_path(&worker_root), &index)?;
+                    Ok(index)
+                });
+                let _ = sender.send(BuildEvent::Complete(result));
+                notify();
+            },
+        ) {
+            Ok(task) => task,
+            Err(error) => {
+                self.load_errors
+                    .insert(root, format!("Content index queue refused build: {error}"));
+                return false;
+            }
+        };
         self.active = Some(BuildRun {
             root: root.clone(),
             receiver,
             cancelled,
             progress: BuildProgress::default(),
+            task,
         });
         self.load_errors.remove(&root);
         if let Some(settings) = self
@@ -446,9 +471,10 @@ fn scan_index(
     excluded_roots: Vec<PathBuf>,
     idle: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    scheduler_cancel: Option<crate::workload::CancellationToken>,
     mut report: impl FnMut(&BuildProgress) -> bool,
 ) -> Result<RootIndex, String> {
-    wait_for_idle(&idle, &cancelled)?;
+    wait_for_idle(&idle, &cancelled, scheduler_cancel.as_ref())?;
     let root_entries = fs::read_dir(&root)
         .map_err(|error| format!("Could not read index root {}: {error}", root.display()))?;
     let mut stack: Vec<ReadDir> = vec![root_entries];
@@ -462,8 +488,10 @@ fn scan_index(
     let mut last_progress = Instant::now();
 
     while let Some(entries) = stack.last_mut() {
-        wait_for_idle(&idle, &cancelled)?;
-        if !crate::io_budget::background_checkpoint(|| cancelled.load(Ordering::Acquire)) {
+        wait_for_idle(&idle, &cancelled, scheduler_cancel.as_ref())?;
+        if !crate::io_budget::background_checkpoint(|| {
+            build_cancelled(&cancelled, scheduler_cancel.as_ref())
+        }) {
             return Err("Index build cancelled".to_string());
         }
         let Some(next) = entries.next() else {
@@ -582,19 +610,32 @@ pub(crate) fn build_test_index(root: &Path) -> RootIndex {
         Vec::new(),
         Arc::new(AtomicBool::new(true)),
         Arc::new(AtomicBool::new(false)),
+        None,
         |_| true,
     )
     .expect("test content index should build")
 }
 
-fn wait_for_idle(idle: &AtomicBool, cancelled: &AtomicBool) -> Result<(), String> {
+fn build_cancelled(
+    cancelled: &AtomicBool,
+    scheduler_cancel: Option<&crate::workload::CancellationToken>,
+) -> bool {
+    cancelled.load(Ordering::Acquire)
+        || scheduler_cancel.is_some_and(crate::workload::CancellationToken::is_cancelled)
+}
+
+fn wait_for_idle(
+    idle: &AtomicBool,
+    cancelled: &AtomicBool,
+    scheduler_cancel: Option<&crate::workload::CancellationToken>,
+) -> Result<(), String> {
     while !idle.load(Ordering::Acquire) {
-        if cancelled.load(Ordering::Acquire) {
+        if build_cancelled(cancelled, scheduler_cancel) {
             return Err("Index build cancelled".to_string());
         }
         std::thread::sleep(Duration::from_millis(40));
     }
-    if cancelled.load(Ordering::Acquire) {
+    if build_cancelled(cancelled, scheduler_cancel) {
         Err("Index build cancelled".to_string())
     } else {
         Ok(())
@@ -747,6 +788,7 @@ mod tests {
             exclusions,
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicBool::new(false)),
+            None,
             |_| true,
         )
         .unwrap()
@@ -788,7 +830,14 @@ mod tests {
         let worker_cancelled = Arc::clone(&cancelled);
         let root = temp.path().to_path_buf();
         let handle = std::thread::spawn(move || {
-            scan_index(root, Vec::new(), worker_idle, worker_cancelled, |_| true)
+            scan_index(
+                root,
+                Vec::new(),
+                worker_idle,
+                worker_cancelled,
+                None,
+                |_| true,
+            )
         });
 
         std::thread::sleep(Duration::from_millis(80));

@@ -62,6 +62,7 @@ mod undo;
 mod verified_hash;
 mod version_store;
 mod volume_profile;
+pub mod workload;
 mod workspace;
 
 #[cfg(test)]

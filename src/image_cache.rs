@@ -2,7 +2,7 @@ use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 pub(crate) const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
 const MAX_PRELOAD_WORKERS: usize = 4;
@@ -157,17 +157,6 @@ impl ImageCache {
             }
         }
 
-        fn image_pool() -> &'static rayon::ThreadPool {
-            static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-            POOL.get_or_init(|| {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(MAX_PRELOAD_WORKERS)
-                    .thread_name(|index| format!("preview-worker-{index}"))
-                    .build()
-                    .expect("preview worker pool")
-            })
-        }
-
         let failed = {
             let mut failed = crate::lock_util::recover(&self.failed);
             failed.retain(|_, when| when.elapsed() < FAILED_RETRY_AFTER);
@@ -192,40 +181,55 @@ impl ImageCache {
                 }
                 pending.insert(path.clone(), None);
             }
-            available_slots -= 1;
-
             let path_clone = path.clone();
             let pending_clone = Arc::clone(&self.pending);
             let failed_clone = Arc::clone(&self.failed);
             let active_generation = Arc::clone(&self.generation);
             let generation = active_generation.load(Ordering::Acquire);
             let ctx_clone = ctx.clone();
-            image_pool().spawn_fifo(move || {
-                if active_generation.load(Ordering::Acquire) != generation {
-                    return;
-                }
-                if !crate::io_budget::background_checkpoint(|| {
-                    active_generation.load(Ordering::Acquire) != generation
-                }) {
-                    return;
-                }
-                let result = load_image_from_disk(&path_clone);
-                if let Ok((img, byte_size)) = result {
-                    let mut pending = crate::lock_util::recover(&pending_clone);
-                    if active_generation.load(Ordering::Acquire) == generation {
-                        pending.insert(path_clone.clone(), Some((img, byte_size)));
-                        drop(pending);
-                        ctx_clone.request_repaint();
+            let task = crate::workload::submit(
+                crate::workload::TaskSpec::new(
+                    crate::workload::TaskKind::Preview,
+                    dir.to_path_buf(),
+                    generation,
+                )
+                .priority(crate::workload::Priority::Interactive)
+                .estimated_bytes(64 * 1024 * 1024)
+                .replace_older_generation(),
+                move |scheduler_cancel| {
+                    let cancelled = || {
+                        scheduler_cancel.is_cancelled()
+                            || active_generation.load(Ordering::Acquire) != generation
+                    };
+                    if cancelled() || !crate::io_budget::background_checkpoint(cancelled) {
+                        crate::lock_util::recover(&pending_clone).remove(&path_clone);
+                        return;
                     }
-                } else {
-                    let mut pending = crate::lock_util::recover(&pending_clone);
-                    let mut failed = crate::lock_util::recover(&failed_clone);
-                    if active_generation.load(Ordering::Acquire) == generation {
-                        pending.remove(&path_clone);
-                        failed.insert(path_clone, std::time::Instant::now());
+                    let result = load_image_from_disk(&path_clone);
+                    if let Ok((img, byte_size)) = result {
+                        let mut pending = crate::lock_util::recover(&pending_clone);
+                        if !cancelled() {
+                            pending.insert(path_clone.clone(), Some((img, byte_size)));
+                            drop(pending);
+                            ctx_clone.request_repaint();
+                        } else {
+                            pending.remove(&path_clone);
+                        }
+                    } else {
+                        let mut pending = crate::lock_util::recover(&pending_clone);
+                        let mut failed = crate::lock_util::recover(&failed_clone);
+                        if !cancelled() {
+                            pending.remove(&path_clone);
+                            failed.insert(path_clone, std::time::Instant::now());
+                        }
                     }
-                }
-            });
+                },
+            );
+            if task.is_ok() {
+                available_slots -= 1;
+            } else {
+                crate::lock_util::recover(&self.pending).remove(path);
+            }
         }
 
         // Evict entries not in the keep set and over budget

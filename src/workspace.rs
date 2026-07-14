@@ -1215,9 +1215,7 @@ impl Workspace {
             // Ignore a cancel that races in after the worker already finished
             // cleanly: flagging it would demote a completed Move to "not clean"
             // in poll_transfer and silently drop its undo entry.
-            if !s.finished {
-                s.cancelled = true;
-            }
+            s.request_cancel();
         }
     }
 
@@ -1226,9 +1224,7 @@ impl Workspace {
     pub fn stop_transfer_after_current(&mut self) {
         if let Some(state) = &self.active_transfer {
             let mut progress = crate::lock_util::recover(state);
-            if !progress.finished {
-                progress.stop_requested = true;
-            }
+            progress.request_stop();
         }
     }
 
