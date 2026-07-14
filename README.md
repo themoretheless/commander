@@ -155,8 +155,8 @@ compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
 full 621-item raw sweep. [research.md](research.md) is the external evidence
 layer: 100 high-star repositories, 30 primary papers/standards, and 100
 deduplicated proposals. Its implementation ledger records G001-G050 as the
-first shipped research milestone, G051-G080 as implemented slices of the
-second, and G081-G100 as the remaining sequential work.
+first shipped research milestone, G051-G090 as implemented slices of the
+second, and G091-G100 as the remaining sequential work.
 
 ## Review backlog
 

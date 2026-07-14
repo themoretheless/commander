@@ -16,7 +16,7 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: more than 60 focused modules and 534
+That split is real and worth protecting: more than 60 focused modules and 586
 `#[test]` functions (two ignored profiling harnesses) sit under a thin
 presentation layer. The debt is concentrated in three oversized core files and
 in how the core signals the UI.
@@ -42,9 +42,9 @@ target architecture without changing the current migration order:
 
 These constraints reinforce, rather than replace, the planned `ViewConfig`,
 typed Effect queue, `TransferCenter`/`UndoCenter`, and injected ports. The
-`G044` now has an owner in `volume_profile`; `path_identity` supplies the core
-of `G057`. The scheduler/state-machine work in `G084-G089` still waits for its
-own Track A boundary instead of being folded into `Workspace` or `App`.
+`G044` has an owner in `volume_profile`; `path_identity` supplies the core of
+`G057`. `ports`/`provider_runtime`, `workload`, and the journal transition
+machines now own `G081-G090` outside `Workspace` and `App`.
 
 ## Module map (current)
 
@@ -67,7 +67,7 @@ Grouped by the bounded context each module really belongs to:
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
 - **Operation contract / recovery**: `operation` owns IDs, durability, and
-  failure classes; `operation_journal` owns durable transitions and recovery;
+  failure classes; `operation_journal` owns serializable event transitions and recovery;
   `path_identity`, `filesystem_policy`, `mount_guard`, `version_store`, `undo`,
   and `sync_guard` supply identity proof, filesystem capability policy,
   remount safety, versions, reversible history, and circuit breakers.
@@ -77,6 +77,11 @@ Grouped by the bounded context each module really belongs to:
   `opqueue` is surfaced through the queue panel. `conflict`, `fs_util`,
   `rename`, `rename_order`, `sync`, and `shelf` remain adjacent operation
   helpers.
+- **Capability / workload boundaries**: `ports` defines narrow preview,
+  search, filesystem, and hashing contracts; `provider_runtime` enforces lazy
+  capability activation, startup budgets, and out-of-process optional
+  providers; `workload` owns priority, quotas, cancellation, backpressure,
+  immutable snapshots, generation rejection, and scheduler telemetry.
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
   `session`, `density`, `focus_mode`, `quick_actions`, `treemap`, `toasts`
@@ -99,11 +104,11 @@ contracts live in `accessibility`; operation presentation vocabulary lives in
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 4,512 | God object plus a large colocated test module |
-| `src/transfer.rs` | 3,104 | Coordinator still contains buffered/sparse tree mechanics |
-| `src/panel.rs` | 3,088 | God object; `PanelState` mixes 4 concerns |
-| `src/search.rs` | 1,428 | Provider composition and a large fixture suite |
-| `src/operation_journal.rs` | 1,406 | Durable state, recovery, rollback, and tests |
+| `src/workspace.rs` | 4,705 | God object plus a large colocated test module |
+| `src/transfer.rs` | 3,623 | Coordinator still contains buffered/sparse tree mechanics |
+| `src/panel.rs` | 3,218 | God object; `PanelState` mixes 4 concerns |
+| `src/operation_journal.rs` | 1,710 | Durable state, transition machines, recovery, rollback, and tests |
+| `src/search.rs` | 1,496 | Provider composition and a large fixture suite |
 | `src/app/update.rs` | 1,113 | Per-frame hub; drains the flag bus |
 
 ### Research milestone 1 (G001-G050)
@@ -127,7 +132,7 @@ logical boundary. Buffered recovery truncates an uncheckpointed tail; seeded
 delta recovery rewrites from its last fixed/FastCDC boundary. Both still pass
 whole-file verification before final placement.
 
-### Research milestone 2 (G051-G080 complete so far)
+### Research milestone 2 (G051-G090 complete so far)
 
 The second milestone is landing in ten-item slices with policy kept outside
 the egui adapter:
@@ -137,6 +142,9 @@ the egui adapter:
 | G051-G060 | `filesystem_policy`, `mount_guard`, `path_identity`, `operation` | Model filesystem identity/capabilities and fail closed across remount or policy changes |
 | G061-G070 | `operation_view`, `opqueue`, Operations Center, transfer UI | Use one phase/progress/failure vocabulary across queue, history, errors, and recovery |
 | G071-G080 | `accessibility`, `theme`, file rows, toolbar, Operations Center | Preserve distinct focus/state channels, non-color cues, assistive semantics, reduced motion, high contrast, 200% layout, and non-drag alternatives |
+| G081-G083 | `ports`, `provider_runtime`, `search`, `content_index` | Keep optional providers narrow, capability-scoped, startup-budgeted, and outside the UI process |
+| G084-G087 | `workload`, `search`, `content_index`, `image_cache`, `transfer` | Admit heavy work through one priority/quota scheduler and reject stale generations deterministically |
+| G088-G090 | `operation_journal`, `operation_verification` | Validate every transition and preserve data across injected side-effect failures, crash restarts, and small conflict state spaces |
 
 `accessibility::Preferences` reads system high-contrast/reduced-motion settings
 once (with explicit environment overrides for tests). `FocusLayout`, the
@@ -148,6 +156,16 @@ overflow menu, and the Operations Center changes from a right panel to a
 bottom panel before pane geometry becomes constrained. File-pane widths are
 always calculated from the `Ui` area remaining after utility panels carve
 their space, never from the raw viewport.
+
+The workload runtime admits search, index, preview, and transfer work against
+global and per-kind limits. Every task receives an immutable serializable
+snapshot plus a cancellation token; root disconnect and newer generations
+cancel obsolete work, and stale completion is counted rather than published.
+Journal operation/step status changes now pass through typed event matrices.
+The test-only `operation_verification` harness performs real typed filesystem
+effects, injects faults immediately before and after each one, restarts from
+JSON after every durable transition, and exhausts the small
+copy/move/sync-conflict space against no-loss invariants.
 
 ## The core <-> UI boundary today
 

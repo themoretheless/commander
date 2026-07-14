@@ -822,22 +822,33 @@ stable proposals (`G001-G100`) live in [research.md](research.md).
 `G001-G050` are implemented and reviewed as the first sequential milestone in
 16 small tested commits. The work is split across navigation, discovery,
 operation integrity, recovery, and adaptive transfer owners rather than being
-added to `Workspace`. `G051-G080` are implemented as the first three slices of
-the second milestone; `G081-G100` remain. Existing Track E
+added to `Workspace`. `G051-G090` are implemented as the first four slices of
+the second milestone; `G091-G100` remain. Existing Track E
 ideas supported by the research were explicitly excluded from the new count,
 so post-copy verification, crash journaling, dry-run, archive browsing,
 virtualization, logging, and remote-watcher work are not double-counted.
 
 ## Tracking
 
-**Round-12 G051-G080 implementation pass: in progress.** Filesystem/remount
+**Round-13 G081-G090 architecture/verification pass: done.** Narrow provider
+ports, out-of-process optional-provider policy, lazy startup budgets, and one
+quota scheduler now own heavy work outside the UI. Search/index/preview/
+transfer jobs carry immutable generations and cooperative cancellation.
+Operation and step status changes use serializable event matrices; deterministic
+tests inject failures before/after every typed filesystem effect, restart at
+every journal transition, and model-check copy/move/sync conflict combinations
+against no-loss invariants. Full verification: 584 passed, 2 ignored, strict
+all-target clippy clean. The remaining sequential slice is `G091-G100`.
+
+**Round-12 G051-G080 implementation pass: done.** Filesystem/remount
 policy (`G051-G060`), unified operation progress/recovery UX (`G061-G070`),
 and the accessibility/responsive-design contract (`G071-G080`) are
 implemented in separate owners. The current UI distinguishes active pane,
 focus, cursor, selection, and marks; exposes row semantics; honors system
 contrast/motion preferences; keeps 200% layouts bounded; protects focus/error
 surfaces from toasts; and provides keyboard plus single-pointer alternatives
-for drag workflows. The remaining sequential slices are `G081-G100`.
+for drag workflows. The next sequential slices were `G081-G100`; Round 13
+closed `G081-G090`.
 
 **Round-11 G001-G050 implementation pass: done.** Implemented the first five
 research slices in 16 focused commits, added 110 tests over the prior baseline,

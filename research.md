@@ -418,7 +418,8 @@ medium, and `L` large relative effort.
 | G051-G060 | Implemented and tested | Filesystem identity/capability policy, remount checks, normalization boundaries, and safe refusal reasons |
 | G061-G070 | Implemented and tested | Unified Operations Center, phase-aware progress/ETA, typed pause/cancel consequences, failure inbox, keyboard and drag transfer UX |
 | G071-G080 | Implemented and tested | Separate visual channels, compact-control audit, assistive row semantics, focus tests, reduced motion, high contrast, 200% responsive geometry, protected overlays, and drag alternatives |
-| G081-G100 | Next sequential slices | Ports/scheduler verification, maintainability diagnostics, benchmarks, support tooling, workflow fixtures, and architecture decisions |
+| G081-G090 | Implemented and tested | Narrow provider/filesystem/hash ports, process isolation and lazy activation, one quota scheduler, immutable task generations, serializable transition machines, deterministic fault/crash verification, and no-loss model checks |
+| G091-G100 | Next sequential slice | CI budgets, percentile telemetry, empirical fixtures, startup phases, developer diagnostics, support bundles, kill switches, KLM workflows, and architecture decisions |
 
 ## Original promotion candidates
 
