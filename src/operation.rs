@@ -195,4 +195,22 @@ mod tests {
         assert_eq!(retry.class, FailureClass::Retryable);
         assert_eq!(decision.class, FailureClass::UserDecision);
     }
+
+    #[test]
+    fn colocated_adrs_record_invariants_ownership_and_failure_policy() {
+        let invariants = include_str!("operation/ADR-0001-durable-operation-invariants.md");
+        let ownership = include_str!("operation/ADR-0002-operation-state-ownership.md");
+        let failures = include_str!("operation/ADR-0003-failure-and-recovery-policy.md");
+        for decision in [invariants, ownership, failures] {
+            assert!(decision.contains("Status: Accepted"));
+            assert!(decision.contains("## Decision"));
+            assert!(decision.contains("## Consequences"));
+        }
+        assert!(invariants.contains("hidden sibling staging"));
+        assert!(invariants.contains("idempotency key"));
+        assert!(ownership.contains("operation_journal.rs"));
+        assert!(ownership.contains("Presentation cannot weaken policy"));
+        assert!(failures.contains("IntegrityUncertain"));
+        assert!(failures.contains("kill switches"));
+    }
 }
