@@ -31,8 +31,11 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
-      - name: Performance budgets
-        run: cargo test measurement::tests::ci_performance_report_passes_budgets -- --exact
+      - name: Performance budget contract
+        run: cargo test measurement::tests::ci_performance_budget_contract_is_complete -- --exact
+
+      - name: Performance smoke probes
+        run: cargo test measurement::tests::ci_runtime_smoke_probes_stay_within_budgets -- --exact --nocapture
 
       - name: Workflow ergonomics
         run: cargo test klm::tests::ci_core_workflows_stay_within_operator_budgets -- --exact

@@ -6,6 +6,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const SCHEMA: u32 = 1;
+const MAX_OPERATION_SPANS: usize = 500;
+const MAX_VERSION_SUMMARIES: usize = 500;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedactedPath {
@@ -79,7 +81,9 @@ pub struct SupportBundle {
     pub generated_at_secs: u64,
     pub versions: BuildVersions,
     pub runtime: RuntimeSupport,
+    pub operation_spans_truncated: bool,
     pub operation_spans: Vec<OperationSpan>,
+    pub preserved_versions_truncated: bool,
     pub preserved_versions: Vec<VersionSummary>,
     pub volumes: Vec<VolumeSupport>,
     pub collection_warnings: Vec<String>,
@@ -134,7 +138,7 @@ pub fn collect(paths: &[PathBuf]) -> SupportBundle {
     build(paths, &operations, &versions, warnings)
 }
 
-pub fn build(
+pub(crate) fn build(
     paths: &[PathBuf],
     operations: &[crate::operation_journal::OperationRecord],
     versions: &[crate::version_store::VersionRecord],
@@ -142,11 +146,15 @@ pub fn build(
 ) -> SupportBundle {
     let generated_at_secs = now_secs();
     let redactor = Redactor::new();
-    let operation_spans = operations
+    let operation_spans_truncated = operations.len() > MAX_OPERATION_SPANS;
+    let operation_start = operations.len().saturating_sub(MAX_OPERATION_SPANS);
+    let operation_spans = operations[operation_start..]
         .iter()
         .map(|operation| operation_span(&redactor, operation))
         .collect();
-    let preserved_versions = versions
+    let preserved_versions_truncated = versions.len() > MAX_VERSION_SUMMARIES;
+    let version_start = versions.len().saturating_sub(MAX_VERSION_SUMMARIES);
+    let preserved_versions = versions[version_start..]
         .iter()
         .map(|version| VersionSummary {
             operation_ref: redactor.token("operation", &version.operation_id.0),
@@ -190,7 +198,9 @@ pub fn build(
             startup: crate::measurement::latest_startup(),
             feature_controls: crate::feature_flags::snapshots(),
         },
+        operation_spans_truncated,
         operation_spans,
+        preserved_versions_truncated,
         preserved_versions,
         volumes,
         collection_warnings,
@@ -356,6 +366,8 @@ mod tests {
         assert_eq!(span.attempts, 2);
         assert_eq!(span.failure_classes.get("Blocked"), Some(&1));
         assert_eq!(span.target, bundle.volumes[0].requested);
+        assert!(!bundle.operation_spans_truncated);
+        assert!(!bundle.preserved_versions_truncated);
     }
 
     #[test]

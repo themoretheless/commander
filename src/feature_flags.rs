@@ -179,7 +179,10 @@ fn rollout_bucket(cohort: u64, feature: RiskyFeature) -> u8 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&cohort.to_le_bytes());
     hasher.update(feature.key().as_bytes());
-    hasher.finalize().as_bytes()[0] % 100
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest.as_bytes()[..8]);
+    (u64::from_le_bytes(bytes) % 100) as u8
 }
 
 pub fn snapshot(feature: RiskyFeature) -> FeatureSnapshot {

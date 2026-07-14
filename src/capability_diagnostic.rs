@@ -62,10 +62,18 @@ pub fn collect(paths: &[PathBuf]) -> CapabilityDiagnostic {
             .iter()
             .map(|path| {
                 let profile = crate::volume_profile::profile(path);
-                let readable = std::fs::symlink_metadata(path).is_ok();
+                let readable = path_is_readable(path);
                 for_profile(path.clone(), profile, readable)
             })
             .collect(),
+    }
+}
+
+fn path_is_readable(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::read_dir(path).is_ok(),
+        Ok(_) => std::fs::File::open(path).is_ok(),
+        Err(_) => false,
     }
 }
 

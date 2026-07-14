@@ -126,6 +126,11 @@ impl ImageCache {
                 pending.clear();
                 self.generation.fetch_add(1, Ordering::AcqRel);
             }
+            drop(pending);
+            self.entries.clear();
+            self.total_bytes = 0;
+            self.current_dir = None;
+            crate::lock_util::recover(&self.failed).clear();
             return;
         }
         self.frame += 1;

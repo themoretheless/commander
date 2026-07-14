@@ -97,6 +97,16 @@ impl App {
                                     t.accent_warning
                                 },
                             );
+                            text_row(
+                                ui,
+                                "Cancel latency p95",
+                                &format!(
+                                    "{:.2} ms / {} samples",
+                                    workload.cancellation_latency_p95_micros as f64 / 1_000.0,
+                                    workload.cancellation_latency_samples
+                                ),
+                                t.text_primary,
+                            );
                         });
 
                     ui.add_space(12.0);
@@ -206,7 +216,9 @@ impl App {
                                     .suffix("%")
                                     .show_value(true),
                             );
-                            if rollout_response.changed()
+                            let commit_rollout = rollout_response.drag_stopped()
+                                || (rollout_response.changed() && !rollout_response.dragged());
+                            if commit_rollout
                                 && !crate::feature_flags::set_rollout_percent(
                                     state.feature,
                                     rollout,

@@ -274,7 +274,7 @@ impl RegressionExplanation {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BenchmarkReport {
     pub schema: u32,
     pub fixture_profile: String,
@@ -283,7 +283,7 @@ pub struct BenchmarkReport {
     pub stale_results: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BenchmarkMetric {
     pub metric: MetricName,
     pub latency: LatencyPercentiles,
@@ -331,6 +331,32 @@ pub fn evaluate_performance_gate(
             metric: None,
             kind: GateViolationKind::InvalidContract,
             detail: "benchmark report must name its fixture profile".to_string(),
+        });
+    }
+
+    let mut report_metrics = HashSet::new();
+    for measurement in &report.metrics {
+        if !report_metrics.insert(measurement.metric) {
+            violations.push(GateViolation {
+                metric: Some(measurement.metric),
+                kind: GateViolationKind::InvalidContract,
+                detail: "duplicate benchmark measurement".to_string(),
+            });
+        }
+    }
+    let cancellation = report.cancellation_latency;
+    if cancellation.samples > 0
+        && (!cancellation.p50_ms.is_finite()
+            || !cancellation.p95_ms.is_finite()
+            || !cancellation.p99_ms.is_finite()
+            || cancellation.p50_ms < 0.0
+            || cancellation.p50_ms > cancellation.p95_ms
+            || cancellation.p95_ms > cancellation.p99_ms)
+    {
+        violations.push(GateViolation {
+            metric: None,
+            kind: GateViolationKind::InvalidPercentiles,
+            detail: "cancellation percentiles must be finite and ordered".to_string(),
         });
     }
 
@@ -407,13 +433,45 @@ pub fn ci_budgets() -> Result<PerformanceBudgets, serde_json::Error> {
     serde_json::from_str(include_str!("../ci/performance-budgets.json"))
 }
 
-pub fn ci_benchmark_report() -> Result<BenchmarkReport, serde_json::Error> {
-    serde_json::from_str(include_str!("../ci/performance-current.json"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempDir;
+
+    fn compliant_report(budgets: &PerformanceBudgets) -> BenchmarkReport {
+        BenchmarkReport {
+            schema: 1,
+            fixture_profile: "unit-contract".to_string(),
+            metrics: budgets
+                .metrics
+                .iter()
+                .map(|budget| BenchmarkMetric {
+                    metric: budget.metric,
+                    latency: LatencyPercentiles {
+                        p50_ms: budget.baseline_p95_ms * 0.8,
+                        p95_ms: budget.baseline_p95_ms,
+                        p99_ms: budget.baseline_p95_ms * 1.05,
+                        samples: 30,
+                    },
+                })
+                .collect(),
+            cancellation_latency: LatencyPercentiles {
+                samples: 1,
+                ..LatencyPercentiles::default()
+            },
+            stale_results: 0,
+        }
+    }
+
+    fn probe(samples: usize, mut operation: impl FnMut()) -> LatencyPercentiles {
+        let mut measurements = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            let started = Instant::now();
+            operation();
+            measurements.push(started.elapsed().as_secs_f64() * 1_000.0);
+        }
+        latency_percentiles(&measurements)
+    }
 
     #[test]
     fn percentiles_are_nearest_rank_and_ignore_invalid_samples() {
@@ -429,7 +487,7 @@ mod tests {
     #[test]
     fn unexplained_regressions_fail_but_actionable_explanations_can_waive_them() {
         let mut budgets = ci_budgets().unwrap();
-        let mut report = ci_benchmark_report().unwrap();
+        let mut report = compliant_report(&budgets);
         let metric = MetricName::FilterResponse;
         let budget = budgets
             .metrics
@@ -463,7 +521,7 @@ mod tests {
     #[test]
     fn hard_budget_cannot_be_waived() {
         let mut budgets = ci_budgets().unwrap();
-        let mut report = ci_benchmark_report().unwrap();
+        let mut report = compliant_report(&budgets);
         let metric = MetricName::StartupTotal;
         let hard = budgets
             .metrics
@@ -493,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_performance_report_passes_budgets() {
+    fn ci_performance_budget_contract_is_complete() {
         let budgets = ci_budgets().unwrap();
         assert_eq!(
             budgets
@@ -503,8 +561,85 @@ mod tests {
                 .collect::<HashSet<_>>(),
             MetricName::CI.into_iter().collect()
         );
-        let report = ci_benchmark_report().unwrap();
-        let violations = evaluate_performance_gate(&budgets, &report);
+        for budget in budgets.metrics {
+            assert!(budget.hard_p95_ms.is_finite() && budget.hard_p95_ms > 0.0);
+            assert!(budget.baseline_p95_ms.is_finite() && budget.baseline_p95_ms > 0.0);
+            assert!(budget.baseline_p95_ms <= budget.hard_p95_ms);
+            assert!((0.0..=100.0).contains(&budget.allowed_regression_percent));
+        }
+    }
+
+    #[test]
+    fn ci_runtime_smoke_probes_stay_within_budgets() {
+        let temp = TempDir::new();
+        for index in 0..512 {
+            temp.file(&format!("file-{index:04}.txt"), "fixture");
+        }
+        let root = temp.path().to_path_buf();
+
+        let startup = probe(9, || {
+            let workspace = crate::workspace::Workspace::with_opener(
+                root.clone(),
+                root.clone(),
+                Box::new(|_| {}),
+            );
+            std::hint::black_box(workspace.active);
+        });
+        let first_listing = probe(9, || {
+            let mut panel = crate::panel::PanelState::new(root.clone());
+            panel.refresh();
+            std::hint::black_box(panel.entries.len());
+        });
+        let mut panel = crate::panel::PanelState::new(root.clone());
+        panel.refresh();
+        let mut filter_generation = 0_u64;
+        let filter_response = probe(31, || {
+            filter_generation = filter_generation.saturating_add(1);
+            panel.search_query = if filter_generation.is_multiple_of(2) {
+                "file-1".to_string()
+            } else {
+                "missing".to_string()
+            };
+            std::hint::black_box(panel.filtered_count());
+        });
+        let profile = crate::volume_profile::profile(&root);
+        let operation_dialog = probe(31, || {
+            let diagnostic =
+                crate::capability_diagnostic::for_profile(root.clone(), profile.clone(), true);
+            std::hint::black_box(serde_json::to_vec(&diagnostic).unwrap());
+        });
+        let workload = crate::workload::stats();
+        let report = BenchmarkReport {
+            schema: 1,
+            fixture_profile: "ci-runtime-smoke-v1".to_string(),
+            metrics: vec![
+                BenchmarkMetric {
+                    metric: MetricName::StartupTotal,
+                    latency: startup,
+                },
+                BenchmarkMetric {
+                    metric: MetricName::FirstListing,
+                    latency: first_listing,
+                },
+                BenchmarkMetric {
+                    metric: MetricName::FilterResponse,
+                    latency: filter_response,
+                },
+                BenchmarkMetric {
+                    metric: MetricName::OperationDialog,
+                    latency: operation_dialog,
+                },
+            ],
+            cancellation_latency: LatencyPercentiles {
+                p50_ms: workload.cancellation_latency_p50_micros as f64 / 1_000.0,
+                p95_ms: workload.cancellation_latency_p95_micros as f64 / 1_000.0,
+                p99_ms: workload.cancellation_latency_p99_micros as f64 / 1_000.0,
+                samples: workload.cancellation_latency_samples,
+            },
+            stale_results: workload.stale_results,
+        };
+        let violations = evaluate_performance_gate(&ci_budgets().unwrap(), &report);
+        eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
         assert!(
             violations.is_empty(),
             "{}",
@@ -514,9 +649,5 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        assert!(report.cancellation_latency.samples > 0);
-        assert!(report.cancellation_latency.p50_ms <= report.cancellation_latency.p95_ms);
-        assert!(report.cancellation_latency.p95_ms <= report.cancellation_latency.p99_ms);
-        assert_eq!(report.stale_results, 0);
     }
 }

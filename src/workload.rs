@@ -107,22 +107,41 @@ impl TaskSpec {
 
 #[derive(Clone, Debug)]
 pub struct CancellationToken {
-    cancelled: Arc<AtomicBool>,
+    state: Arc<CancellationState>,
+}
+
+#[derive(Debug)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    requested_at: Mutex<Option<std::time::Instant>>,
 }
 
 impl CancellationToken {
     pub fn new() -> Self {
         Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(CancellationState {
+                cancelled: AtomicBool::new(false),
+                requested_at: Mutex::new(None),
+            }),
         }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.state.cancelled.load(Ordering::Acquire)
     }
 
     fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        let mut requested_at = crate::lock_util::recover(&self.state.requested_at);
+        if !self.state.cancelled.load(Ordering::Acquire) {
+            *requested_at = Some(std::time::Instant::now());
+            self.state.cancelled.store(true, Ordering::Release);
+        }
+    }
+
+    fn cancellation_elapsed(&self) -> Option<std::time::Duration> {
+        crate::lock_util::recover(&self.state.requested_at)
+            .as_ref()
+            .map(std::time::Instant::elapsed)
     }
 }
 
@@ -218,6 +237,10 @@ pub struct SchedulerStats {
     pub cancellation_latency_p50_ticks: u64,
     pub cancellation_latency_p95_ticks: u64,
     pub cancellation_latency_p99_ticks: u64,
+    pub cancellation_latency_samples: usize,
+    pub cancellation_latency_p50_micros: u64,
+    pub cancellation_latency_p95_micros: u64,
+    pub cancellation_latency_p99_micros: u64,
     pub max_cancellation_latency_ticks: u64,
 }
 
@@ -235,6 +258,7 @@ pub struct Scheduler {
     disconnected_roots: HashSet<PathBuf>,
     counters: SchedulerStats,
     cancellation_latencies: VecDeque<u64>,
+    cancellation_latencies_micros: VecDeque<u64>,
 }
 
 impl Scheduler {
@@ -247,6 +271,7 @@ impl Scheduler {
             disconnected_roots: HashSet::new(),
             counters: SchedulerStats::default(),
             cancellation_latencies: VecDeque::new(),
+            cancellation_latencies_micros: VecDeque::new(),
         }
     }
 
@@ -365,9 +390,14 @@ impl Scheduler {
         }
         record.token.cancel();
         record.cancel_requested_tick.get_or_insert(tick);
-        if record.state == TaskState::Queued {
+        let was_queued = record.state == TaskState::Queued;
+        if was_queued {
             record.state = TaskState::Cancelled;
             self.counters.cancelled = self.counters.cancelled.saturating_add(1);
+        }
+        if was_queued {
+            self.cancellation_latencies_micros.push_back(0);
+            trim_samples(&mut self.cancellation_latencies_micros);
         }
         true
     }
@@ -388,9 +418,11 @@ impl Scheduler {
                 .active_generations
                 .get(&(record.snapshot.kind, record.snapshot.root.clone()))
                 .is_some_and(|generation| *generation != record.snapshot.generation);
-        if stale {
+        let mut cancellation_micros = None;
+        let disposition = if stale {
             record.state = TaskState::Stale;
             self.counters.stale_results = self.counters.stale_results.saturating_add(1);
+            cancellation_micros = record.token.cancellation_elapsed().map(duration_micros);
             CompletionDisposition::Stale
         } else if record.token.is_cancelled() {
             record.state = TaskState::Cancelled;
@@ -400,10 +432,9 @@ impl Scheduler {
                 self.counters.max_cancellation_latency_ticks =
                     self.counters.max_cancellation_latency_ticks.max(latency);
                 self.cancellation_latencies.push_back(latency);
-                while self.cancellation_latencies.len() > MAX_LATENCY_SAMPLES {
-                    self.cancellation_latencies.pop_front();
-                }
+                trim_samples(&mut self.cancellation_latencies);
             }
+            cancellation_micros = record.token.cancellation_elapsed().map(duration_micros);
             CompletionDisposition::Cancelled
         } else if succeeded {
             record.state = TaskState::Completed;
@@ -411,7 +442,12 @@ impl Scheduler {
         } else {
             record.state = TaskState::Failed;
             CompletionDisposition::Failed
+        };
+        if let Some(micros) = cancellation_micros {
+            self.cancellation_latencies_micros.push_back(micros);
+            trim_samples(&mut self.cancellation_latencies_micros);
         }
+        disposition
     }
 
     pub fn disconnect_at(&mut self, root: &Path, tick: u64) -> Vec<TaskId> {
@@ -452,6 +488,19 @@ impl Scheduler {
                 &self.cancellation_latencies,
                 0.99,
             ),
+            cancellation_latency_samples: self.cancellation_latencies_micros.len(),
+            cancellation_latency_p50_micros: crate::measurement::percentile_u64(
+                &self.cancellation_latencies_micros,
+                0.50,
+            ),
+            cancellation_latency_p95_micros: crate::measurement::percentile_u64(
+                &self.cancellation_latencies_micros,
+                0.95,
+            ),
+            cancellation_latency_p99_micros: crate::measurement::percentile_u64(
+                &self.cancellation_latencies_micros,
+                0.99,
+            ),
             ..self.counters
         }
     }
@@ -483,6 +532,16 @@ impl Scheduler {
             .filter(|record| record.state == TaskState::Running)
             .map(|record| record.snapshot.estimated_bytes)
             .sum()
+    }
+}
+
+fn duration_micros(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn trim_samples(samples: &mut VecDeque<u64>) {
+    while samples.len() > MAX_LATENCY_SAMPLES {
+        samples.pop_front();
     }
 }
 
@@ -755,6 +814,9 @@ mod tests {
         assert_eq!(stats.cancellation_latency_p50_ticks, 4);
         assert_eq!(stats.cancellation_latency_p95_ticks, 4);
         assert_eq!(stats.cancellation_latency_p99_ticks, 4);
+        assert_eq!(stats.cancellation_latency_samples, 2);
+        assert!(stats.cancellation_latency_p50_micros <= stats.cancellation_latency_p95_micros);
+        assert!(stats.cancellation_latency_p95_micros <= stats.cancellation_latency_p99_micros);
         assert!(stats.cancelled >= 2);
         scheduler.reconnect(Path::new("/project"));
         assert!(
