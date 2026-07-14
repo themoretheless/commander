@@ -16,10 +16,10 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: ~42 small modules and 424 GUI-free
-tests (425 `#[test]` functions, one an `#[ignore]`d manual profiling harness)
-sit under a thin presentation layer. The debt is concentrated in two oversized
-core types and in how the core signals the UI.
+That split is real and worth protecting: more than 60 focused modules and 534
+`#[test]` functions (two ignored profiling harnesses) sit under a thin
+presentation layer. The debt is concentrated in three oversized core files and
+in how the core signals the UI.
 
 ### External-research constraints (2026-07-14)
 
@@ -42,10 +42,11 @@ target architecture without changing the current migration order:
 
 These constraints reinforce, rather than replace, the planned `ViewConfig`,
 typed Effect queue, `TransferCenter`/`UndoCenter`, and injected ports. The
-larger research proposals `G044`, `G057`, and `G084-G089` should only be
-promoted when their owning Track A boundary exists.
+`G044` now has an owner in `volume_profile`; `path_identity` supplies the core
+of `G057`. The scheduler/state-machine work in `G084-G089` still waits for its
+own Track A boundary instead of being folded into `Workspace` or `App`.
 
-## Module map (current, on `master`)
+## Module map (current)
 
 ### Core (UI-independent, unit-tested)
 
@@ -53,20 +54,31 @@ Grouped by the bounded context each module really belongs to:
 
 - **Navigation / panel state**: `panel` (the `PanelState` god object: entries,
   cursor, selection, sort, filter, history, watcher, dir-size index),
-  `jumplist`, `crumbs`, `scan`.
+  `jumplist`, `crumbs`, `scan`, `collections`, `tree_overview`.
+- **Discovery / search**: `query` is the canonical grammar, `search` owns
+  cancellable generations and provider composition, `content_index` owns the
+  optional root-scoped snapshot, and `archive` provides bounded ZIP browsing
+  and member search. `fuzzy`, `image_cache`, and `io_budget` are shared
+  mechanisms, not UI policies.
 - **Workspace / coordination**: `workspace` (the second god object: two panels,
   transfer queue, undo, pending ops, the dialog-intent flag bus, compare/sync
   glue, drop handling), `command` (the `Command` enum + key mapping).
 - **Selection / comparison**: `compare` (cross-pane classification + selection
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
-  `query`, `fuzzy`.
-- **File operations**: `transfer`, `opqueue` (a pause/resume/reorder/concurrency
-  queue engine, wired but not yet surfaced in the UI), `native_copy`,
-  `conflict`, `rename`, `rename_order`, `fs_util`, `undo`, `dedup`, `sync`,
-  `shelf`, `treemap`.
+  `dedup`, `textdiff`.
+- **Operation contract / recovery**: `operation` owns IDs, durability, and
+  failure classes; `operation_journal` owns durable transitions and recovery;
+  `path_identity`, `version_store`, `undo`, and `sync_guard` supply proof,
+  versions, reversible history, and circuit breakers.
+- **Transfer execution**: `transfer` coordinates staging and commit;
+  `native_copy`, `delta_copy`, and `verified_hash` own specialized data paths;
+  `volume_profile` and `transfer_tuning` own capability/telemetry policy;
+  `opqueue` is surfaced through the queue panel. `conflict`, `fs_util`,
+  `rename`, `rename_order`, `sync`, and `shelf` remain adjacent operation
+  helpers.
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
-  `session`, `density`, `focus_mode`, `quick_actions`, `textdiff`, `toasts`
+  `session`, `density`, `focus_mode`, `quick_actions`, `treemap`, `toasts`
   (a pure, time-driven toast queue with an injected clock; no egui types),
   `lock_util` (the single poison-recovery policy at worker/UI mutex borders).
 
@@ -76,18 +88,41 @@ Grouped by the bounded context each module really belongs to:
 cache, tree widget, and ~20 transient dialog buffers). Per-frame orchestration
 lives in `app/update.rs`; input translation in `app/keys.rs`; one file per
 dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
-`find_dialog`, `palette_dialog`, ...); row rendering in `app/file_list.rs` and
-`app/render.rs`; native macOS menu in `native_menu`.
+`find_dialog`, `recovery_dialog`, `safe_state_dialog`, `collections_dialog`,
+...); row rendering in `app/file_list.rs` and `app/render.rs`; native macOS
+menu in `native_menu`.
 
 ### Size hot-spots
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 3,825 | God object; ~1,679 lines are its test module |
-| `src/panel.rs` | 2,825 | God object; `PanelState` mixes 4 concerns |
-| `src/transfer.rs` | 1,496 | Cohesive; large but single-purpose |
-| `src/app/update.rs` | 1,083 | Per-frame hub; drains the flag bus |
-| `src/app/confirm_dialog.rs` | 783 | One dialog |
+| `src/workspace.rs` | 4,512 | God object plus a large colocated test module |
+| `src/transfer.rs` | 3,104 | Coordinator still contains buffered/sparse tree mechanics |
+| `src/panel.rs` | 3,088 | God object; `PanelState` mixes 4 concerns |
+| `src/search.rs` | 1,428 | Provider composition and a large fixture suite |
+| `src/operation_journal.rs` | 1,406 | Durable state, recovery, rollback, and tests |
+| `src/app/update.rs` | 1,113 | Per-frame hub; drains the flag bus |
+
+### Research milestone 1 (G001-G050)
+
+The first 50 research proposals were implemented as five bounded slices rather
+than folded into `Workspace`:
+
+| Slice | Primary owners | Contract |
+| --- | --- | --- |
+| G001-G010 | `panel`, `command`, `collections`, `tree_overview` | Re-find paths and preserve navigation context |
+| G011-G020 | `query`, `search`, `content_index`, `archive` | Stream, cancel, rank, and inspect discovery work |
+| G021-G030 | `operation`, `sync_guard`, `transfer` | Fail closed before and around filesystem mutation |
+| G031-G040 | `operation_journal`, `version_store`, `undo`, recovery UI | Prove, resume, roll back, and repair durable operations |
+| G041-G050 | `volume_profile`, `transfer_tuning`, `delta_copy`, `verified_hash`, `io_budget` | Choose and explain bounded transfer/resource paths |
+
+The placement invariant is now explicit: a data path writes only to a hidden
+sibling staging path; source and destination identities are revalidated; the
+requested durability check runs; only then may a no-replace rename or swap
+make the effect visible. Checkpoints refer to the same staging inode and a
+logical boundary. Buffered recovery truncates an uncheckpointed tail; seeded
+delta recovery rewrites from its last fixed/FastCDC boundary. Both still pass
+whole-file verification before final placement.
 
 ## The core <-> UI boundary today
 
@@ -123,6 +158,12 @@ coupling they create:
   `natural_name_sort`/`show_hidden`), view state (`cursor`/`selected`/
   `search_query`), and async plumbing (`Arc<Mutex<HashMap>>` dir indices,
   `AtomicBool` refresh flag, fs watcher).
+- **One oversized operation coordinator.** `transfer` still owns manifest
+  iteration, staging/commit, buffered and sparse traversal, progress mutation,
+  journal calls, and cleanup policy. `delta_copy`, `operation_journal`,
+  `transfer_tuning`, and `verified_hash` are now separate, but the next split
+  should extract a `TransferExecutor` state machine and a `CopyBackend` port
+  rather than add another branch to `CopyMethod::copy_entry`.
 - **The flag bus** (mechanism #2 above) is a hand-rolled, untyped event queue
   smeared across ~20 fields with no single drain point.
 - **Leaky ports.** The only injected capability is `opener: Box<dyn Fn(&Path)>`.

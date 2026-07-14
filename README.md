@@ -19,11 +19,17 @@ module is a thin egui layer over it.
 - **Per-pane history**: `Cmd+[` / `Cmd+]` walk back and forward through the
   directories you visited (a vim-style jump trail).
 - **Go to path** (`Cmd+L`), **recent folders** (`Cmd+P`, last 200 visited
-  folders), type-ahead jump, and a per-panel filter box with quick-filter
+  folders ranked by frecency or chronology), type-ahead jump, and a per-panel
+  filter box with quick-filter
   facets (kind, size, and date buckets: Today / Week / Month, plus an
   Older-than-a-month bucket).
 - **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
   and frequency.
+- **Streaming search** with cancellable generations, stable result identity,
+  one fielded query grammar, Exact/Fuzzy/Regex modes, replayable history,
+  optional inspectable content indexes, and bounded ZIP-member search.
+- **Project collections** combine multiple roots into non-owning virtual views;
+  the compressed disk tree stays cancellable and bounded on large roots.
 - **Per-folder view memory**: sort, filters, hidden, and density are
   remembered per directory for the running session (not persisted across
   restarts) and restored when you navigate back.
@@ -37,6 +43,14 @@ module is a thin egui layer over it.
   (speed graph, ETA, per-file error list). Copies use native `copyfile` with
   APFS cloning and fall back to a buffered copy; a same-volume move is an
   instant atomic rename.
+- **Durable operations**: Fast/Verified/Versioned profiles, typed failures,
+  source/destination revalidation, an idempotent operation journal, safe-state
+  lockout, and a Recovery Center with Resume, Roll back, Inspect, and repair
+  plans.
+- **Adaptive transfers**: resumable buffered and delta checkpoints, fixed or
+  measured-threshold FastCDC delta copy, sparse-file preservation, explicit
+  clone/rename/delta/buffered telemetry, per-volume concurrency, bandwidth and
+  quiet-hour rules, and a generation-aware verified BLAKE3 cache.
 - **Transfer queue**: firing a second operation while one runs queues it
   instead of dropping it (F5/F6 stay live during an active transfer just for
   this). The **queue panel** (palette: "Transfer queue") lists every waiting
@@ -131,8 +145,9 @@ The review material is split by trust level: [audit.md](audit.md) is the
 verified defect ranking, [recommendation.md](recommendation.md) now contains a
 compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
 full 621-item raw sweep. [research.md](research.md) is the external evidence
-layer: 100 high-star repositories, 30 primary papers/standards, and 100 new
-deduplicated hypotheses kept separate from the code-grounded Top-500.
+layer: 100 high-star repositories, 30 primary papers/standards, and 100
+deduplicated proposals. Its implementation ledger records G001-G050 as the
+first shipped research milestone and G051-G100 as the next sequential one.
 
 ## Review backlog
 

@@ -252,9 +252,9 @@ indicator, shallow/opt-out remote watchers, and generative `PanelState` tests.
 
 ## 100 new research-backed proposals
 
-These are hypotheses, not commitments. `S` means small, `M` medium, and `L`
-large relative effort. The identifier is stable so an item can be promoted into
-Track A/B/D without renumbering this list.
+These entries began as hypotheses. Their wording and identifiers remain stable
+while the implementation ledger below records delivery. `S` means small, `M`
+medium, and `L` large relative effort.
 
 ### G001-G010: finding and re-finding
 
@@ -406,11 +406,23 @@ Track A/B/D without renumbering this list.
 | G099 | Add Keystroke-Level Model fixtures for ten core workflows and reject avoidable operator growth. | S10 | S |
 | G100 | Record architecture decisions for operation invariants, ownership, and failure policy beside code. | S15-S16, S24 | S |
 
-## First promotion candidates
+## Implementation ledger
 
-The best near-term value/risk ratio is **G001, G004, G010, G012, G022-G025,
+| Range | Status | Primary evidence |
+| --- | --- | --- |
+| G001-G010 | Implemented and tested | Frecency/history navigation, canonical filters, collections, compressed tree, and per-directory focus restoration |
+| G011-G020 | Implemented and tested | Streaming cancellable search, stable identities/ranking, providers, inspectable content index, and bounded ZIP search |
+| G021-G030 | Implemented and tested | Operation profiles, typed failures, revalidation, safe staging/commit, sync guard, and uncertain-failure safe state |
+| G031-G040 | Implemented and tested | Durable idempotent journal, recovery center, versions, selective undo, repair, orphan cleanup, and manifest retry |
+| G041-G050 | Implemented, tested, and reviewed in three passes | Resumable buffered/delta copy, adaptive volume policy, I/O budgets, sparse preservation, fast-path telemetry, and verified hash cache |
+| G051-G100 | Next sequential milestone | Filesystem reality, operation UX, accessibility, ports/scheduler verification, and maintainability |
+
+## Original promotion candidates
+
+Before implementation began, the best near-term value/risk ratio was **G001,
+G004, G010, G012, G022-G025,
 G028, G035, G048, G062-G065, G068, G072-G073, G079, G096, G099, and G100**.
-They are small, sharpen existing behavior, and do not require committing to a
-global index, plugin runtime, or resumable-transfer protocol. The next
-foundation-sized candidates are **G044, G057, G084-G086, G087-G089**; those
-should be designed together with the existing Track A operation/state splits.
+This historical shortlist is retained to explain the initial sequencing. The
+first milestone ultimately implemented all of `G001-G050`; the second keeps
+the architecture-sized `G057` and `G084-G089` work aligned with their Track A
+owners.
