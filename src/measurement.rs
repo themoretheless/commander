@@ -74,12 +74,20 @@ fn percentile_f64(sorted: &[f64], quantile: f64) -> f64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
-pub fn percentile_u64(samples: &VecDeque<u64>, quantile: f64) -> u64 {
+pub fn percentiles_u64(samples: &VecDeque<u64>) -> (u64, u64, u64) {
     let mut sorted = samples.iter().copied().collect::<Vec<_>>();
     sorted.sort_unstable();
     if sorted.is_empty() {
-        return 0;
+        return (0, 0, 0);
     }
+    (
+        percentile_sorted_u64(&sorted, 0.50),
+        percentile_sorted_u64(&sorted, 0.95),
+        percentile_sorted_u64(&sorted, 0.99),
+    )
+}
+
+fn percentile_sorted_u64(sorted: &[u64], quantile: f64) -> u64 {
     let rank = (quantile.clamp(0.0, 1.0) * sorted.len() as f64).ceil() as usize;
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
@@ -115,9 +123,19 @@ pub fn snapshot(metric: MetricName) -> LatencyPercentiles {
 }
 
 pub fn snapshots() -> Vec<(MetricName, LatencyPercentiles)> {
+    let telemetry = crate::lock_util::recover(telemetry());
     MetricName::ALL
         .into_iter()
-        .map(|metric| (metric, snapshot(metric)))
+        .map(|metric| {
+            let latency =
+                telemetry
+                    .get(&metric)
+                    .map_or_else(LatencyPercentiles::default, |samples| {
+                        let samples = samples.iter().copied().collect::<Vec<_>>();
+                        latency_percentiles(&samples)
+                    });
+            (metric, latency)
+        })
         .collect()
 }
 

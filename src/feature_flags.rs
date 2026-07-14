@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 const SCHEMA: u32 = 1;
@@ -43,6 +44,14 @@ impl RiskyFeature {
             Self::ContentIndex => "COMMANDER_DISABLE_CONTENT_INDEX",
             Self::ImagePreview => "COMMANDER_DISABLE_IMAGE_PREVIEW",
             Self::ExternalProviders => "COMMANDER_DISABLE_EXTERNAL_PROVIDERS",
+        }
+    }
+
+    fn bit(self) -> u8 {
+        match self {
+            Self::ContentIndex => 1 << 0,
+            Self::ImagePreview => 1 << 1,
+            Self::ExternalProviders => 1 << 2,
         }
     }
 }
@@ -158,13 +167,27 @@ fn save_at(path: &Path, store: &FeatureStore) -> bool {
         .is_some_and(|json| crate::fs_util::write_atomic(path, &json))
 }
 
-fn runtime_store() -> &'static Mutex<FeatureStore> {
-    static STORE: OnceLock<Mutex<FeatureStore>> = OnceLock::new();
-    STORE.get_or_init(|| {
+struct RuntimeControls {
+    store: Mutex<FeatureStore>,
+    environment_killed_mask: u8,
+    enabled_mask: AtomicU8,
+}
+
+fn runtime_controls() -> &'static RuntimeControls {
+    static CONTROLS: OnceLock<RuntimeControls> = OnceLock::new();
+    CONTROLS.get_or_init(|| {
         let path = feature_path();
         let store = load_at(&path);
         let _ = save_at(&path, &store);
-        Mutex::new(store)
+        let environment_killed_mask = RiskyFeature::ALL
+            .into_iter()
+            .filter(|feature| environment_killed(*feature))
+            .fold(0_u8, |mask, feature| mask | feature.bit());
+        RuntimeControls {
+            enabled_mask: AtomicU8::new(effective_mask(&store, environment_killed_mask)),
+            store: Mutex::new(store),
+            environment_killed_mask,
+        }
     })
 }
 
@@ -185,24 +208,54 @@ fn rollout_bucket(cohort: u64, feature: RiskyFeature) -> u8 {
     (u64::from_le_bytes(bytes) % 100) as u8
 }
 
+fn effective_mask(store: &FeatureStore, environment_killed_mask: u8) -> u8 {
+    RiskyFeature::ALL.into_iter().fold(0_u8, |mask, feature| {
+        let environment_killed = environment_killed_mask & feature.bit() != 0;
+        if store.snapshot(feature, environment_killed).enabled {
+            mask | feature.bit()
+        } else {
+            mask
+        }
+    })
+}
+
 pub fn snapshot(feature: RiskyFeature) -> FeatureSnapshot {
-    crate::lock_util::recover(runtime_store()).snapshot(feature, environment_killed(feature))
+    let controls = runtime_controls();
+    crate::lock_util::recover(&controls.store).snapshot(
+        feature,
+        controls.environment_killed_mask & feature.bit() != 0,
+    )
 }
 
 pub fn snapshots() -> Vec<FeatureSnapshot> {
-    RiskyFeature::ALL.into_iter().map(snapshot).collect()
+    let controls = runtime_controls();
+    let store = crate::lock_util::recover(&controls.store);
+    RiskyFeature::ALL
+        .into_iter()
+        .map(|feature| {
+            store.snapshot(
+                feature,
+                controls.environment_killed_mask & feature.bit() != 0,
+            )
+        })
+        .collect()
 }
 
 pub fn enabled(feature: RiskyFeature) -> bool {
-    snapshot(feature).enabled
+    runtime_controls().enabled_mask.load(Ordering::Acquire) & feature.bit() != 0
 }
 
 fn update(feature: RiskyFeature, change: impl FnOnce(&mut FeaturePolicy)) -> bool {
-    let mut store = crate::lock_util::recover(runtime_store());
+    let controls = runtime_controls();
+    let mut store = crate::lock_util::recover(&controls.store);
     let previous = store.clone();
     change(store.policies.entry(feature).or_default());
     store.normalize();
     if save_at(&feature_path(), &store) {
+        controls.enabled_mask.store(
+            effective_mask(&store, controls.environment_killed_mask),
+            Ordering::Release,
+        );
         true
     } else {
         *store = previous;
@@ -269,5 +322,25 @@ mod tests {
         assert!(policy.killed);
         assert_eq!(policy.rollout_percent, 100);
         assert_eq!(loaded.cohort, 99);
+    }
+
+    #[test]
+    fn effective_mask_matches_snapshots_for_every_feature() {
+        let mut store = FeatureStore::new(31);
+        store
+            .policies
+            .get_mut(&RiskyFeature::ImagePreview)
+            .unwrap()
+            .killed = true;
+        let environment = RiskyFeature::ExternalProviders.bit();
+        let mask = effective_mask(&store, environment);
+        for feature in RiskyFeature::ALL {
+            assert_eq!(
+                mask & feature.bit() != 0,
+                store
+                    .snapshot(feature, environment & feature.bit() != 0)
+                    .enabled
+            );
+        }
     }
 }

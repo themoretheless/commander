@@ -472,35 +472,21 @@ impl Scheduler {
     }
 
     pub fn stats(&self) -> SchedulerStats {
+        let (tick_p50, tick_p95, tick_p99) =
+            crate::measurement::percentiles_u64(&self.cancellation_latencies);
+        let (micros_p50, micros_p95, micros_p99) =
+            crate::measurement::percentiles_u64(&self.cancellation_latencies_micros);
         SchedulerStats {
             queued: self.queued_count(),
             running: self.running_count(),
             inflight_bytes: self.inflight_bytes(),
-            cancellation_latency_p50_ticks: crate::measurement::percentile_u64(
-                &self.cancellation_latencies,
-                0.50,
-            ),
-            cancellation_latency_p95_ticks: crate::measurement::percentile_u64(
-                &self.cancellation_latencies,
-                0.95,
-            ),
-            cancellation_latency_p99_ticks: crate::measurement::percentile_u64(
-                &self.cancellation_latencies,
-                0.99,
-            ),
+            cancellation_latency_p50_ticks: tick_p50,
+            cancellation_latency_p95_ticks: tick_p95,
+            cancellation_latency_p99_ticks: tick_p99,
             cancellation_latency_samples: self.cancellation_latencies_micros.len(),
-            cancellation_latency_p50_micros: crate::measurement::percentile_u64(
-                &self.cancellation_latencies_micros,
-                0.50,
-            ),
-            cancellation_latency_p95_micros: crate::measurement::percentile_u64(
-                &self.cancellation_latencies_micros,
-                0.95,
-            ),
-            cancellation_latency_p99_micros: crate::measurement::percentile_u64(
-                &self.cancellation_latencies_micros,
-                0.99,
-            ),
+            cancellation_latency_p50_micros: micros_p50,
+            cancellation_latency_p95_micros: micros_p95,
+            cancellation_latency_p99_micros: micros_p99,
             ..self.counters
         }
     }

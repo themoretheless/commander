@@ -29,7 +29,17 @@ impl App {
         let (image_entries, image_bytes) = self.image_cache.stats();
         let active_root = self.ws.active_panel_ref().current_path.clone();
         let index = self.content_index.status(&active_root);
-        let frame_latency = crate::measurement::snapshot(crate::measurement::MetricName::FrameTime);
+        let runtime_metrics = crate::measurement::snapshots();
+        let metric = |name| {
+            runtime_metrics
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map_or_else(
+                    crate::measurement::LatencyPercentiles::default,
+                    |(_, value)| *value,
+                )
+        };
+        let frame_latency = metric(crate::measurement::MetricName::FrameTime);
         let budgets = crate::measurement::ci_budgets().ok();
         let startup = crate::measurement::latest_startup();
         let screen = ctx.input(|input| input.viewport_rect());
@@ -130,7 +140,7 @@ impl App {
                                 );
                                 ui.end_row();
                                 for budget in &budgets.metrics {
-                                    let latency = crate::measurement::snapshot(budget.metric);
+                                    let latency = metric(budget.metric);
                                     let state = budget_state(latency, budget.hard_p95_ms);
                                     let color = match state {
                                         BudgetState::NoSamples => t.text_muted,
@@ -188,6 +198,8 @@ impl App {
                     ui.add_space(12.0);
                     section_label(ui, "Runtime controls", t.text_primary);
                     for state in crate::feature_flags::snapshots() {
+                        let mut enabled = !state.runtime_killed;
+                        let mut rollout = state.rollout_percent;
                         ui.horizontal(|ui| {
                             ui.set_min_height(crate::accessibility::MIN_CONTROL_POINTS);
                             ui.add_sized(
@@ -198,7 +210,6 @@ impl App {
                                         .color(t.text_primary),
                                 ),
                             );
-                            let mut enabled = !state.runtime_killed;
                             let enabled_response = ui.add_enabled(
                                 !state.environment_killed,
                                 egui::Checkbox::new(&mut enabled, "Enabled"),
@@ -209,13 +220,48 @@ impl App {
                                 self.developer_notice =
                                     Some(DeveloperNotice::error("Could not save runtime control"));
                             }
-                            let mut rollout = state.rollout_percent;
-                            let rollout_response = ui.add_enabled(
-                                enabled && !state.environment_killed,
-                                egui::Slider::new(&mut rollout, 0..=100)
-                                    .suffix("%")
-                                    .show_value(true),
+                            let effective_enabled =
+                                enabled && !state.environment_killed && state.bucket < rollout;
+                            let effective = if state.environment_killed {
+                                "ENV OFF"
+                            } else if effective_enabled {
+                                "ON"
+                            } else {
+                                "OFF"
+                            };
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(egui::RichText::new(effective).size(9.0).strong().color(
+                                    if effective_enabled {
+                                        t.accent
+                                    } else {
+                                        t.accent_warning
+                                    },
+                                ))
+                                .on_hover_text(format!("Rollout bucket {}", state.bucket));
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [60.0, crate::accessibility::MIN_CONTROL_POINTS],
+                                egui::Label::new(
+                                    egui::RichText::new("Rollout")
+                                        .size(10.0)
+                                        .color(t.text_muted),
+                                ),
                             );
+                            let rollout_response = ui
+                                .add_enabled_ui(enabled && !state.environment_killed, |ui| {
+                                    ui.add_sized(
+                                        [
+                                            ui.available_width(),
+                                            crate::accessibility::MIN_CONTROL_POINTS,
+                                        ],
+                                        egui::Slider::new(&mut rollout, 0..=100)
+                                            .suffix("%")
+                                            .show_value(true),
+                                    )
+                                })
+                                .inner;
                             let commit_rollout = rollout_response.drag_stopped()
                                 || (rollout_response.changed() && !rollout_response.dragged());
                             if commit_rollout
@@ -228,22 +274,8 @@ impl App {
                                     "Could not save rollout percentage",
                                 ));
                             }
-                            let effective = if state.environment_killed {
-                                "ENV OFF"
-                            } else if state.enabled {
-                                "ON"
-                            } else {
-                                "OFF"
-                            };
-                            ui.label(egui::RichText::new(effective).size(9.0).strong().color(
-                                if state.enabled {
-                                    t.accent
-                                } else {
-                                    t.accent_warning
-                                },
-                            ))
-                            .on_hover_text(format!("Rollout bucket {}", state.bucket));
                         });
+                        ui.separator();
                     }
 
                     ui.add_space(12.0);
