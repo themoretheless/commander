@@ -31,17 +31,37 @@ impl App {
         let total = s.total_bytes;
         let samples: Vec<(f64, f64)> = s.speed_samples.clone();
         let finished = s.finished;
+        let stop_requested = s.stop_requested;
+        let stopped = s.stopped;
+        let requeued_files = s.requeued_files;
+        let backend_label = s.backend_label.clone();
+        let backend_reason = s.backend_reason.clone();
+        let p95_latency_ms = s.p95_latency_ms;
+        let adaptive_concurrency = s.adaptive_concurrency;
+        let bandwidth_limit = s.bandwidth_limit;
+        let waiting_reason = s.waiting_reason.clone();
+        let latest_fast_path = s.fast_paths.last().copied();
+        let delta_reused_bytes = s.delta_reused_bytes;
+        let delta_source_bytes = s.delta_source_bytes;
+        let active_workers = s.active_workers;
         let errors = s.errors.clone();
+        let failures = s.failures.clone();
         drop(s);
         // Transfers waiting behind this one in the queue.
         let queued = self.ws.queued_count();
 
-        let title = if finished {
+        let title = if waiting_reason.is_some() && !finished {
+            "Waiting for Quiet Hours"
+        } else if finished && stopped {
+            "Stopped Safely"
+        } else if finished {
             if errors.is_empty() {
                 "Transfer Complete"
             } else {
                 "Completed with Errors"
             }
+        } else if stop_requested {
+            "Finishing Current File..."
         } else {
             "Transferring..."
         };
@@ -51,26 +71,74 @@ impl App {
             .default_width(450.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                // Current file name
-                ui.label(
-                    egui::RichText::new(format!("File: {}", current_file))
-                        .size(12.0)
-                        .color(t.text_primary),
-                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  \u{00b7}  p95 {:.0} ms  \u{00b7}  {} worker{}",
+                            backend_label,
+                            p95_latency_ms,
+                            adaptive_concurrency,
+                            if adaptive_concurrency == 1 { "" } else { "s" }
+                        ))
+                        .size(10.0)
+                        .color(t.text_muted),
+                    )
+                    .on_hover_text(backend_reason);
+                    if let Some(limit) = bandwidth_limit {
+                        ui.label(
+                            egui::RichText::new(format!("Limit {}/s", format_size(limit)))
+                                .size(10.0)
+                                .color(t.text_secondary),
+                        );
+                    }
+                    if let Some(path) = latest_fast_path {
+                        ui.label(egui::RichText::new(path.label()).size(10.0).color(t.accent));
+                    }
+                });
+                if let Some(reason) = &waiting_reason {
+                    ui.label(
+                        egui::RichText::new(reason)
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                }
 
-                // Current file progress bar (no rounding)
-                ui.add_space(4.0);
-                Self::draw_progress_bar(
-                    ui,
-                    file_frac,
-                    &format!(
-                        "{} / {}",
-                        format_size(current_file_copied),
-                        format_size(current_file_size),
-                    ),
-                    t.accent,
-                    &t,
-                );
+                if active_workers > 1 {
+                    ui.label(
+                        egui::RichText::new(format!("{active_workers} files in parallel"))
+                            .size(12.0)
+                            .color(t.text_primary),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!("File: {}", current_file))
+                            .size(12.0)
+                            .color(t.text_primary),
+                    );
+                    ui.add_space(4.0);
+                    Self::draw_progress_bar(
+                        ui,
+                        file_frac,
+                        &format!(
+                            "{} / {}",
+                            format_size(current_file_copied),
+                            format_size(current_file_size),
+                        ),
+                        t.accent,
+                        &t,
+                    );
+                }
+                if delta_reused_bytes > 0 {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Delta reused {}  \u{00b7}  source {}",
+                            format_size(delta_reused_bytes),
+                            format_size(delta_source_bytes)
+                        ))
+                        .size(10.0)
+                        .color(t.text_secondary),
+                    );
+                }
 
                 // Total progress bar (no rounding)
                 ui.add_space(6.0);
@@ -128,6 +196,13 @@ impl App {
                             .color(t.accent),
                     );
                 }
+                if requeued_files > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("{requeued_files} changed file(s) requeued"))
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                }
 
                 Self::draw_speed_graph(ui, &samples, &t);
 
@@ -144,8 +219,12 @@ impl App {
                         .id_salt("transfer_errors")
                         .max_height(120.0)
                         .show(ui, |ui| {
-                            for err in &errors {
-                                ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
+                            for (index, err) in errors.iter().enumerate() {
+                                let text = failures.get(index).map_or_else(
+                                    || err.clone(),
+                                    |failure| format!("{}: {err}", failure.class.label()),
+                                );
+                                ui.label(egui::RichText::new(text).size(11.0).color(t.accent_red));
                             }
                         });
                 }
@@ -169,20 +248,41 @@ impl App {
                         self.ws.dismiss_transfer(move || c.request_repaint());
                     }
                 } else {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel")
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                !stop_requested,
+                                egui::Button::new(
+                                    egui::RichText::new(if stop_requested {
+                                        "Stopping after file"
+                                    } else {
+                                        "Stop after file"
+                                    })
                                     .size(13.0)
                                     .color(Color32::WHITE),
+                                )
+                                .fill(t.accent_warning)
+                                .corner_radius(CornerRadius::ZERO),
                             )
-                            .fill(t.accent_red)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
-                        .clicked()
-                    {
-                        self.ws.cancel_transfer();
-                    }
+                            .clicked()
+                        {
+                            self.ws.stop_transfer_after_current();
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Cancel now")
+                                        .size(13.0)
+                                        .color(Color32::WHITE),
+                                )
+                                .fill(t.accent_red)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
+                            self.ws.cancel_transfer();
+                        }
+                    });
                 }
             });
 

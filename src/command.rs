@@ -87,6 +87,8 @@ pub enum Command {
     BeginFind,
     /// Open the saved-search (smart folder) picker.
     OpenSavedSearch,
+    /// Open named multi-root project collections.
+    OpenProjectCollections,
     /// Cmd+Shift+C: copy the selection's full path(s) to the clipboard.
     CopyPath,
     /// Copy the selection's file name(s).
@@ -141,6 +143,8 @@ pub enum Command {
     ToggleQueuePanel,
     /// Open the searchable history of completed moves/deletes/batch-renames.
     OpenReceipts,
+    /// Open interrupted-operation recovery, rollback, and staging cleanup.
+    OpenRecoveryCenter,
     ToggleHidden,
     /// Toggle whether folders are pinned to the top of the active listing.
     ToggleFoldersFirst,
@@ -168,6 +172,26 @@ pub enum Command {
     CopyListingMarkdown,
 }
 
+impl Command {
+    pub fn mutates_filesystem(self) -> bool {
+        matches!(
+            self,
+            Self::RequestCopy
+                | Self::RequestMove
+                | Self::CreateDir
+                | Self::RequestDelete
+                | Self::BeginRename
+                | Self::BeginBatchRename
+                | Self::BeginSync
+                | Self::BeginRunBar
+                | Self::GatherIntoFolder
+                | Self::Undo
+                | Self::Redo
+                | Self::ShelfDrain
+        )
+    }
+}
+
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
 pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
     vec![
@@ -188,6 +212,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
         ("Find files", "Cmd+F", Command::BeginFind),
         ("Open saved search", "", Command::OpenSavedSearch),
+        ("Project collections", "", Command::OpenProjectCollections),
         ("Copy path", "Cmd+Shift+C", Command::CopyPath),
         ("Copy name", "", Command::CopyName),
         ("Copy parent path", "", Command::CopyParentPath),
@@ -257,6 +282,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ),
         ("Transfer queue", "", Command::ToggleQueuePanel),
         ("Operation history", "", Command::OpenReceipts),
+        ("Recovery center", "", Command::OpenRecoveryCenter),
         ("Select clutter files", "", Command::SelectJunk),
         ("Select 10 largest files", "", Command::SelectLargest),
         (
@@ -446,6 +472,7 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::DiskTreemap => &["view disk usage map treemap size"],
         Command::BeginFind => &["file find recursive search"],
         Command::OpenSavedSearch => &["file saved search smart folder"],
+        Command::OpenProjectCollections => &["project collection workspace roots virtual view"],
         Command::CopyPath => &["clipboard copy path"],
         Command::CopyName => &["clipboard copy name filename"],
         Command::CopyParentPath => &["clipboard copy parent folder path"],

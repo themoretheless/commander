@@ -14,8 +14,9 @@ impl App {
         };
         let t = self.colors;
 
-        let visited = crate::panel::visited_paths();
-        let matches = crate::panel::filter_visited(&visited, buffer);
+        let (visited, stats) = crate::panel::visit_snapshot();
+        let mut order = self.recent_order;
+        let matches = crate::panel::rank_visited(&visited, buffer, order, &stats);
 
         let mut go: Option<std::path::PathBuf> = None;
         let mut cancel = false;
@@ -43,6 +44,19 @@ impl App {
                     resp.request_focus();
                 }
                 ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut order,
+                        crate::panel::RecentOrder::Frecency,
+                        "Frecency",
+                    );
+                    ui.selectable_value(
+                        &mut order,
+                        crate::panel::RecentOrder::Chronological,
+                        "Recent",
+                    );
+                });
+                ui.add_space(4.0);
 
                 if matches.is_empty() {
                     ui.label(
@@ -54,9 +68,10 @@ impl App {
                     egui::ScrollArea::vertical()
                         .max_height(300.0)
                         .show(ui, |ui| {
-                            for (i, path) in
+                            for (i, item) in
                                 matches.iter().enumerate().take(crate::panel::VISITED_CAP)
                             {
+                                let path = &item.path;
                                 let name = path
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string())
@@ -84,14 +99,16 @@ impl App {
                 }
 
                 if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && let Some(p) = matches.first()
+                    && let Some(item) = matches.first()
                 {
-                    go = Some(p.clone());
+                    go = Some(item.path.clone());
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     cancel = true;
                 }
             });
+
+        self.recent_order = order;
 
         if cancel {
             self.recent_input = None;

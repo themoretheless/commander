@@ -203,6 +203,7 @@ impl App {
                         first_visible = last_visible.saturating_sub(visible_count);
                     }
                 }
+                panel.scroll_anchor = first_visible;
 
                 // Space before visible rows
                 if first_visible > 0 {

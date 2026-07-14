@@ -1,9 +1,10 @@
-//! Pure undo/redo history. An [`Action`] records a completed, reversible
-//! operation; [`invert`] turns it into the action that reverses it; and
-//! [`UndoStack`] sequences them. No I/O and no UI here, so the stack logic and
-//! every inversion are unit-tested directly.
+//! Undo/redo history plus filesystem-aware replay preflight. An [`Action`]
+//! records a completed reversible operation, [`preview`] proves whether its
+//! paths can still be replayed, and [`UndoStack`] advances only after the caller
+//! reports a successful filesystem commit.
 
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// A completed operation that can be reversed.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -71,6 +72,169 @@ impl Action {
                 .map(PathBuf::from),
         }
     }
+
+    pub fn description(&self) -> String {
+        let count = self.item_count();
+        format!(
+            "{} ({} item{})",
+            self.verb(),
+            count,
+            if count == 1 { "" } else { "s" }
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayEligibility {
+    Ready,
+    Blocked(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayPath {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub eligibility: ReplayEligibility,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayPreview {
+    pub action: Action,
+    pub paths: Vec<ReplayPath>,
+    pub warnings: Vec<String>,
+}
+
+impl ReplayPreview {
+    pub fn can_execute(&self) -> bool {
+        !self.paths.is_empty()
+            && self
+                .paths
+                .iter()
+                .all(|path| path.eligibility == ReplayEligibility::Ready)
+    }
+
+    pub fn blocked_count(&self) -> usize {
+        self.paths
+            .iter()
+            .filter(|path| matches!(path.eligibility, ReplayEligibility::Blocked(_)))
+            .count()
+    }
+}
+
+fn action_pairs(action: &Action) -> Vec<(PathBuf, PathBuf)> {
+    match action {
+        Action::Move { pairs } | Action::Gather { pairs, .. } | Action::Ungather { pairs, .. } => {
+            pairs.clone()
+        }
+        Action::BatchRename { dir, pairs } => pairs
+            .iter()
+            .map(|(from, to)| (dir.join(from), dir.join(to)))
+            .collect(),
+        Action::Rename { from, to } => vec![(from.clone(), to.clone())],
+    }
+}
+
+fn path_is_taken(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn same_entry(left: &Path, right: &Path) -> bool {
+    let (Ok(left), Ok(right)) = (
+        crate::path_identity::PathIdentity::observe(left),
+        crate::path_identity::PathIdentity::observe(right),
+    ) else {
+        return false;
+    };
+    left.exists
+        && right.exists
+        && left.volume == right.volume
+        && left.file_id.is_some()
+        && left.file_id == right.file_id
+}
+
+/// Inspect every replay path against the live filesystem. Occupied targets are
+/// allowed only when another source in the same atomic rename set vacates them.
+pub fn preview(action: &Action) -> ReplayPreview {
+    let pairs = action_pairs(action);
+    let sources = pairs
+        .iter()
+        .map(|(from, _)| from.clone())
+        .collect::<HashSet<_>>();
+    let mut target_counts = HashMap::<PathBuf, usize>::new();
+    for (_, to) in &pairs {
+        *target_counts.entry(to.clone()).or_default() += 1;
+    }
+    let created_parent = match action {
+        Action::Gather { folder, .. } => Some(folder.as_path()),
+        _ => None,
+    };
+    let gather_folder_conflict = created_parent.is_some_and(path_is_taken);
+    let move_parent = match action {
+        Action::Move { pairs } => pairs
+            .first()
+            .and_then(|(_, to)| to.parent())
+            .map(Path::to_path_buf),
+        _ => None,
+    };
+
+    let paths = pairs
+        .into_iter()
+        .map(|(from, to)| {
+            let blocked = if !path_is_taken(&from) {
+                Some("Source no longer exists".to_string())
+            } else if target_counts.get(&to).copied().unwrap_or_default() > 1 {
+                Some("Multiple entries target the same path".to_string())
+            } else if gather_folder_conflict {
+                Some("Gather folder already exists".to_string())
+            } else if matches!(action, Action::Move { .. })
+                && (to.parent() != move_parent.as_deref() || from.file_name() != to.file_name())
+            {
+                Some("Move replay no longer has one faithful destination".to_string())
+            } else if to
+                .parent()
+                .is_some_and(|parent| !parent.is_dir() && Some(parent) != created_parent)
+            {
+                Some("Destination folder no longer exists".to_string())
+            } else if path_is_taken(&to)
+                && !sources.contains(&to)
+                && !sources.iter().any(|source| same_entry(source, &to))
+            {
+                Some("Destination is occupied by another entry".to_string())
+            } else {
+                None
+            };
+            ReplayPath {
+                from,
+                to,
+                eligibility: blocked.map_or(ReplayEligibility::Ready, ReplayEligibility::Blocked),
+            }
+        })
+        .collect();
+
+    let mut warnings = Vec::new();
+    if let Action::Ungather { folder, pairs } = action
+        && let Ok(entries) = std::fs::read_dir(folder)
+    {
+        let moved = pairs
+            .iter()
+            .map(|(from, _)| from.clone())
+            .collect::<HashSet<_>>();
+        let foreign = entries
+            .filter_map(Result::ok)
+            .filter(|entry| !moved.contains(&entry.path()))
+            .count();
+        if foreign > 0 {
+            warnings.push(format!(
+                "Folder contains {foreign} unrelated entries and will be kept"
+            ));
+        }
+    }
+
+    ReplayPreview {
+        action: action.clone(),
+        paths,
+        warnings,
+    }
 }
 
 /// The action that reverses `action`, or `None` if it cannot be inverted.
@@ -101,13 +265,21 @@ pub fn invert(action: &Action) -> Option<Action> {
 
 /// A two-stack undo/redo history. Pushing a new action clears the redo stack,
 /// so a fresh operation after some undos abandons the redo branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedoInvalidation {
+    pub abandoned_actions: usize,
+    pub caused_by: String,
+}
+
 #[derive(Default)]
 pub struct UndoStack {
     undo: Vec<Action>,
     redo: Vec<Action>,
+    redo_invalidation: Option<RedoInvalidation>,
 }
 
 impl UndoStack {
+    #[cfg(test)]
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -117,32 +289,68 @@ impl UndoStack {
         self.undo.last()
     }
 
+    #[cfg(test)]
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
 
     /// Record a freshly performed action; abandons any redo branch.
     pub fn push(&mut self, action: Action) {
+        if !self.redo.is_empty() {
+            self.redo_invalidation = Some(RedoInvalidation {
+                abandoned_actions: self.redo.len(),
+                caused_by: action.description(),
+            });
+        }
         self.undo.push(action);
         self.redo.clear();
+    }
+
+    pub fn redo_invalidation(&self) -> Option<&RedoInvalidation> {
+        self.redo_invalidation.as_ref()
+    }
+
+    pub fn peek_undo_inverse(&self) -> Option<Action> {
+        invert(self.undo.last()?)
+    }
+
+    pub fn peek_redo_action(&self) -> Option<Action> {
+        self.redo.last().cloned()
+    }
+
+    pub fn commit_undo(&mut self) -> bool {
+        let Some(action) = self.undo.pop() else {
+            return false;
+        };
+        self.redo.push(action);
+        self.redo_invalidation = None;
+        true
+    }
+
+    pub fn commit_redo(&mut self) -> bool {
+        let Some(action) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(action);
+        true
     }
 
     /// Pop the most recent action onto the redo stack and return the action to
     /// execute to reverse it. Returns `None` if there is nothing to undo or the
     /// top action cannot be inverted (in which case it is left in place).
+    #[cfg(test)]
     pub fn undo(&mut self) -> Option<Action> {
-        let top = self.undo.last()?;
-        let inverse = invert(top)?;
-        let action = self.undo.pop().unwrap();
-        self.redo.push(action);
+        let inverse = self.peek_undo_inverse()?;
+        self.commit_undo();
         Some(inverse)
     }
 
     /// Pop the most recently undone action back onto the undo stack and return
     /// it to execute (re-applying the original operation).
+    #[cfg(test)]
     pub fn redo(&mut self) -> Option<Action> {
-        let action = self.redo.pop()?;
-        self.undo.push(action.clone());
+        let action = self.peek_redo_action()?;
+        self.commit_redo();
         Some(action)
     }
 }
@@ -150,6 +358,7 @@ impl UndoStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempDir;
 
     fn mv(from: &str, to: &str) -> Action {
         Action::Move {
@@ -280,6 +489,8 @@ mod tests {
         s.push(mv("/a/3", "/b/3")); // a fresh op abandons the redo branch
         assert!(!s.can_redo());
         assert!(s.can_undo());
+        assert_eq!(s.redo_invalidation().unwrap().abandoned_actions, 1);
+        assert_eq!(s.redo_invalidation().unwrap().caused_by, "Moved (1 item)");
     }
 
     #[test]
@@ -298,5 +509,69 @@ mod tests {
         // Redo walks forward in the original order.
         assert_eq!(s.redo().unwrap(), mv("/a/1", "/b/1"));
         assert_eq!(s.redo().unwrap(), mv("/a/2", "/b/2"));
+    }
+
+    #[test]
+    fn two_phase_history_does_not_advance_before_commit() {
+        let mut stack = UndoStack::default();
+        stack.push(mv("/a/f", "/b/f"));
+        assert_eq!(stack.peek_undo_inverse(), Some(mv("/b/f", "/a/f")));
+        assert!(stack.can_undo());
+        assert!(!stack.can_redo());
+
+        assert!(stack.commit_undo());
+        assert!(!stack.can_undo());
+        assert!(stack.can_redo());
+    }
+
+    #[test]
+    fn preview_blocks_a_missing_source_and_occupied_destination() {
+        let temp = TempDir::new();
+        let missing = temp.path().join("missing.txt");
+        let occupied = temp.file("occupied.txt", "foreign");
+        let action = Action::Rename {
+            from: missing,
+            to: occupied,
+        };
+        let preview = preview(&action);
+        assert!(!preview.can_execute());
+        assert_eq!(preview.blocked_count(), 1);
+        assert_eq!(
+            preview.paths[0].eligibility,
+            ReplayEligibility::Blocked("Source no longer exists".to_string())
+        );
+    }
+
+    #[test]
+    fn preview_allows_targets_vacated_by_the_same_batch() {
+        let temp = TempDir::new();
+        temp.file("a.txt", "a");
+        temp.file("b.txt", "b");
+        let action = Action::BatchRename {
+            dir: temp.path().to_path_buf(),
+            pairs: vec![
+                ("a.txt".into(), "b.txt".into()),
+                ("b.txt".into(), "a.txt".into()),
+            ],
+        };
+        let preview = preview(&action);
+        assert!(preview.can_execute(), "{preview:?}");
+    }
+
+    #[test]
+    fn ungather_preview_reports_the_folder_cleanup_gap() {
+        let temp = TempDir::new();
+        let folder = temp.dir("Gathered");
+        let source = temp.file("Gathered/a.txt", "a");
+        temp.file("Gathered/foreign.txt", "foreign");
+        let destination = temp.path().join("a.txt");
+        let action = Action::Ungather {
+            folder,
+            pairs: vec![(source, destination)],
+        };
+        let preview = preview(&action);
+        assert!(preview.can_execute());
+        assert_eq!(preview.warnings.len(), 1);
+        assert!(preview.warnings[0].contains("unrelated"));
     }
 }

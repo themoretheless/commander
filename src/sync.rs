@@ -4,11 +4,12 @@
 //! Names are matched case-insensitively, matching the default macOS FS.
 
 use crate::panel::FileEntry;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// How to reconcile the two panels.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum SyncPolicy {
     /// Make the right side match the left: copy left's new/changed files over,
     /// leave right-only files alone (copy-only, never deletes).
@@ -77,6 +78,17 @@ impl SyncAction {
             SyncDirection::ToRight => self.left_path.as_deref(),
             SyncDirection::Skip => None,
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_action(name: &str, status: SyncStatus, direction: SyncDirection) -> SyncAction {
+    SyncAction {
+        name: name.to_string(),
+        status,
+        direction,
+        left_path: Some(PathBuf::from(format!("/left/{name}"))),
+        right_path: Some(PathBuf::from(format!("/right/{name}"))),
     }
 }
 
@@ -199,14 +211,6 @@ pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) ->
     }
 
     actions
-}
-
-/// Reapply a policy to an existing snapshot without rebuilding it from panels
-/// that may have changed while the synchronization sheet was open.
-pub fn apply_policy(actions: &mut [SyncAction], policy: SyncPolicy) {
-    for action in actions {
-        action.direction = default_direction(action.status, policy);
-    }
 }
 
 /// How the active panel's entries relate to the other panel, as index sets

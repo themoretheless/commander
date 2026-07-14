@@ -811,7 +811,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 499. `улучшение` `src/app/update.rs:611-619` - show_selection_hud's `short()` truncation closure is defined inline inside the render function and only used twice; hoisting it to a shared string-truncation utility (there may already be one for filenames elsewhere) would avoid duplicating ellipsis logic
 500. `улучшение` `src/app/update.rs:737-750` - The '50/50 reset' logic in show_main_area recomputing prev_half via ctx temp data on every frame could instead be tracked as a struct field, avoiding an egui data_mut lookup+insert pair every single frame regardless of whether the window resized
 
-## Track G - external research (uncommitted hypotheses)
+## Track G - external research implementation program
 
 The 2026-07-14 pass screened exactly 100 active GitHub repositories with at
 least 1,000 stars, read representative architecture/feature contracts, and
@@ -819,15 +819,22 @@ cross-checked the recurring patterns against 30 research papers and standards.
 The evidence, repository-by-repository lessons, dedup boundary, and 100 new
 stable proposals (`G001-G100`) live in [research.md](research.md).
 
-Do not schedule all 100. The first low-risk promotion set is `G001`, `G004`,
-`G010`, `G012`, `G022-G025`, `G028`, `G035`, `G048`, `G062-G065`, `G068`,
-`G072-G073`, `G079`, `G096`, `G099`, and `G100`. The architecture-sized set
-`G044`, `G057`, and `G084-G089` waits for the relevant Track A owner. Existing
-Track E ideas supported by the research were explicitly excluded from the new
-count, so post-copy verification, crash journaling, dry-run, archive browsing,
+`G001-G050` are implemented and reviewed as the first sequential milestone in
+16 small tested commits. The work is split across navigation, discovery,
+operation integrity, recovery, and adaptive transfer owners rather than being
+added to `Workspace`. `G051-G100` form the next milestone. Existing Track E
+ideas supported by the research were explicitly excluded from the new count,
+so post-copy verification, crash journaling, dry-run, archive browsing,
 virtualization, logging, and remote-watcher work are not double-counted.
 
 ## Tracking
+
+**Round-11 G001-G050 implementation pass: done.** Implemented the first five
+research slices in 16 focused commits, added 110 tests over the prior baseline,
+and completed separate correctness, performance/architecture, and UI/docs
+reviews. The resulting owners and durability invariants are recorded in
+`architecture.md`; `research.md` is the stable item ledger. The next sequential
+pass is `G051-G100`.
 
 **Round-10 external-research pass: done.** Screened 100 unique, active GitHub
 repositories above 1,000 stars across seven relevant strata; read 24

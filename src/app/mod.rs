@@ -2,12 +2,15 @@
 //! All file-manager behaviour lives in `crate::workspace`; this module
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
+mod archive_dialog;
 mod batch_rename_dialog;
+mod collections_dialog;
 mod confirm_dialog;
 mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
 mod find_dialog;
+mod history_dialog;
 mod keys;
 mod mask_dialog;
 mod palette_dialog;
@@ -16,9 +19,11 @@ mod preload;
 mod queue_dialog;
 mod receipts_dialog;
 mod recent_dialog;
+mod recovery_dialog;
 mod rename_dialog;
 mod render;
 mod run_command_dialog;
+mod safe_state_dialog;
 mod saved_search_dialog;
 mod sync_dialog;
 mod toolbar;
@@ -70,12 +75,23 @@ pub struct App {
     pub(crate) path_input: Option<String>,
     /// Active recent-directories quick-switcher filter buffer.
     pub(crate) recent_input: Option<String>,
+    /// Ranking mode for recent destinations: habitual (frecency) or strictly
+    /// chronological. Persisted with the session.
+    pub(crate) recent_order: crate::panel::RecentOrder,
+    /// Generation-based background search engine and replayable query history.
+    pub(crate) search_engine: crate::search::SearchEngine,
+    pub(crate) search_history: crate::search::QueryHistory,
+    pub(crate) content_index: crate::content_index::ContentIndex,
     /// Transient operation toasts (move / rename confirmations with Undo).
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Searchable history of completed moves/deletes/batch-renames.
     pub(crate) receipts: crate::receipts::ReceiptLog,
     /// Active receipts-search buffer; `Some` while the dialog is open.
     pub(crate) receipts_input: Option<String>,
+    /// Filesystem-aware confirmation for the pending undo/redo replay.
+    pub(crate) history_preview: Option<HistoryPreviewState>,
+    /// Startup-scanned durable recovery and orphan-staging model.
+    pub(crate) recovery: RecoveryState,
     /// Active command-palette filter buffer.
     pub(crate) palette_input: Option<String>,
     /// Command-palette usage history (recency/frequency ranking).
@@ -90,14 +106,19 @@ pub struct App {
     pub(crate) duplicates: Option<DupState>,
     /// Active read-only diff sheet state.
     pub(crate) diff: Option<DiffState>,
-    /// Active disk-usage treemap snapshot (opening directory + sorted rows).
-    pub(crate) treemap: Option<crate::workspace::TreemapSnapshot>,
+    /// Active disk-usage map and cancellable compressed-tree scan.
+    pub(crate) treemap: Option<DiskUsageState>,
     /// Active recursive-find sheet state.
     pub(crate) find: Option<FindState>,
+    /// Active read-only archive inspector.
+    pub(crate) archive: Option<ArchiveState>,
     /// Saved searches, loaded lazily on first use.
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
     /// Whether the saved-search picker is open.
     pub(crate) saved_search_open: bool,
+    /// Persisted multi-root projects and active virtual-view UI state.
+    pub(crate) project_collections: crate::collections::ProjectCollections,
+    pub(crate) collections_dialog: Option<CollectionsDialogState>,
     /// Saved command templates, loaded lazily on first use.
     pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
     /// Active run-command bar state (the editable command line).
@@ -120,69 +141,146 @@ pub(crate) struct RunCommandState {
     pub line: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DiskUsageMode {
+    #[default]
+    Map,
+    Tree,
+}
+
+pub(crate) struct DiskUsageState {
+    pub initial: crate::workspace::TreemapSnapshot,
+    pub mode: DiskUsageMode,
+    pub run: Option<crate::tree_overview::OverviewRun>,
+    pub progress: crate::tree_overview::ScanProgress,
+    pub overview: Option<crate::tree_overview::OverviewSnapshot>,
+    pub stopping: bool,
+    pub error: Option<String>,
+}
+
+pub(crate) struct ArchiveState {
+    pub path: PathBuf,
+    pub filter: String,
+    pub run: Option<crate::archive::ListingRun>,
+    pub listing: Option<crate::archive::ArchiveListing>,
+    pub selected: Option<usize>,
+    pub error: Option<String>,
+    pub focused: bool,
+}
+
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
 /// this holds the editable fields, the search root, and the results.
-#[derive(Default)]
 pub(crate) struct FindState {
-    pub name: String,
-    pub min_mb: String,
-    pub max_age_days: String,
-    pub min_age_days: String,
-    pub kind: Option<crate::selection_summary::Kind>,
+    pub expression: String,
+    pub mode: crate::query::MatchMode,
     pub root: PathBuf,
-    pub results: Vec<crate::panel::FileEntry>,
+    pub results: Vec<crate::search::SearchHit>,
+    pub run: Option<crate::search::SearchRun>,
+    pub generation: u64,
     pub ran: bool,
+    pub searching: bool,
     pub focused: bool,
+    pub scanned: usize,
+    pub matched: usize,
+    pub elapsed: std::time::Duration,
+    pub truncated: bool,
+    pub content_skipped: usize,
+    pub error: Option<String>,
+    pub stable_order: Vec<crate::search::FileIdentity>,
+    pub last_query: Option<(String, crate::query::MatchMode, PathBuf)>,
+    pub time_pivot: crate::search::TimePivot,
+    pub history_open: bool,
+    pub explanation_open: Option<crate::search::FileIdentity>,
+    pub pending_rerun: bool,
+    pub last_edit_at: f64,
+    pub search_source: String,
+    pub index_details_open: bool,
+    pub index_exclusions: String,
+    pub index_rerun_after_build: bool,
     /// Name to save this query under (smart folder).
     pub save_name: String,
 }
 
+pub(crate) struct CollectionsDialogState {
+    pub name: String,
+    pub include_left: bool,
+    pub include_right: bool,
+    pub selected: Option<String>,
+    pub rows: Vec<crate::collections::VirtualEntry>,
+    pub run: Option<crate::collections::ViewRun>,
+    pub scanned: usize,
+    pub unavailable_roots: Vec<PathBuf>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+impl Default for CollectionsDialogState {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            include_left: true,
+            include_right: true,
+            selected: None,
+            rows: Vec::new(),
+            run: None,
+            scanned: 0,
+            unavailable_roots: Vec::new(),
+            truncated: false,
+            error: None,
+        }
+    }
+}
+
+impl Default for FindState {
+    fn default() -> Self {
+        Self {
+            expression: String::new(),
+            mode: crate::query::MatchMode::Exact,
+            root: PathBuf::new(),
+            results: Vec::new(),
+            run: None,
+            generation: 0,
+            ran: false,
+            searching: false,
+            focused: false,
+            scanned: 0,
+            matched: 0,
+            elapsed: std::time::Duration::ZERO,
+            truncated: false,
+            content_skipped: 0,
+            error: None,
+            stable_order: Vec::new(),
+            last_query: None,
+            time_pivot: crate::search::TimePivot::None,
+            history_open: false,
+            explanation_open: None,
+            pending_rerun: false,
+            last_edit_at: 0.0,
+            search_source: "Live".to_string(),
+            index_details_open: false,
+            index_exclusions: String::new(),
+            index_rerun_after_build: false,
+            save_name: String::new(),
+        }
+    }
+}
+
 impl FindState {
     /// Build the query the current fields describe.
-    pub(crate) fn build_query(&self) -> crate::query::Query {
-        use crate::query::Predicate;
-        let mut preds = Vec::new();
-        if !self.name.trim().is_empty() {
-            preds.push(Predicate::NameContains(self.name.trim().to_string()));
-        }
-        if let Some(k) = self.kind {
-            preds.push(Predicate::Kind(k));
-        }
-        if let Ok(mb) = self.min_mb.trim().parse::<u64>()
-            && mb > 0
-        {
-            preds.push(Predicate::MinSize(mb * 1024 * 1024));
-        }
-        if let Ok(d) = self.max_age_days.trim().parse::<u64>()
-            && d > 0
-        {
-            preds.push(Predicate::MaxAgeDays(d));
-        }
-        if let Ok(d) = self.min_age_days.trim().parse::<u64>()
-            && d > 0
-        {
-            preds.push(Predicate::MinAgeDays(d));
-        }
-        crate::query::Query { predicates: preds }
+    pub(crate) fn build_query(&self) -> Result<crate::query::Query, crate::query::QueryError> {
+        crate::query::Query::parse(&self.expression, self.mode)
     }
 
     /// Reconstruct the editable fields from a saved smart-folder definition.
     pub(crate) fn from_definition(def: &crate::smart_folder::Definition) -> Self {
-        use crate::query::Predicate;
-        let mut s = FindState {
+        FindState {
+            expression: def.query.to_expression(),
+            mode: def.query.mode,
             root: def.root.clone(),
+            pending_rerun: true,
+            last_edit_at: -1.0,
             ..Default::default()
-        };
-        for p in &def.query.predicates {
-            match p {
-                Predicate::NameContains(n) => s.name = n.clone(),
-                Predicate::Kind(k) => s.kind = Some(*k),
-                Predicate::MinSize(b) => s.min_mb = (b / (1024 * 1024)).to_string(),
-                Predicate::MaxAgeDays(d) => s.max_age_days = d.to_string(),
-                Predicate::MinAgeDays(d) => s.min_age_days = d.to_string(),
-            }
         }
-        s
     }
 }
 
@@ -209,9 +307,19 @@ pub(crate) struct DupState {
 /// `crate::sync`; this holds the chosen policy and the editable action rows.
 pub(crate) struct SyncState {
     pub policy: crate::sync::SyncPolicy,
+    pub durability: crate::operation::DurabilityProfile,
     pub actions: Vec<crate::sync::SyncAction>,
     pub left_dir: PathBuf,
     pub right_dir: PathBuf,
+    pub left_show_hidden: bool,
+    pub right_show_hidden: bool,
+    pub guard: crate::sync_guard::GuardPolicy,
+    pub stamp: Option<crate::sync_guard::PlanStamp>,
+    pub settings_fingerprint: u64,
+    pub allow_large_plan: bool,
+    pub marker_enabled: bool,
+    pub marker_input: String,
+    pub error: Option<String>,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in
@@ -264,10 +372,60 @@ pub(crate) struct RenameState {
     pub focused: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryReplayMode {
+    Undo,
+    Redo,
+}
+
+pub(crate) struct HistoryPreviewState {
+    pub mode: HistoryReplayMode,
+    pub preview: crate::undo::ReplayPreview,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RecoverySection {
+    #[default]
+    Operations,
+    Staging,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RecoveryDetail {
+    #[default]
+    Inspect,
+    Repair,
+}
+
+#[derive(Default)]
+pub(crate) struct RecoveryState {
+    pub open: bool,
+    pub section: RecoverySection,
+    pub detail: RecoveryDetail,
+    pub operations: Vec<crate::operation_journal::OperationRecord>,
+    pub orphans: Vec<crate::operation_journal::OrphanStaging>,
+    pub selected: Option<crate::operation::OperationId>,
+    pub repair_plan: Option<crate::operation_journal::RepairPlan>,
+    pub versions: Vec<crate::version_store::VersionRecord>,
+    pub error: Option<String>,
+    pub outcome: Option<String>,
+    pub scanning: bool,
+    pub repair_loaded: bool,
+    pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
+}
+
+pub(crate) struct RecoveryScanResult {
+    pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
+}
+
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session = crate::session::load();
+        if let Some(saved) = &session {
+            crate::panel::restore_visit_snapshot(&saved.recent_paths, &saved.recent_stats);
+        }
 
         // Theme: a saved session wins, otherwise follow the system appearance.
         let mode = match &session {
@@ -316,8 +474,11 @@ impl App {
             ws.right.folders_first = s.right_folders_first;
             ws.right.natural_name_sort = s.right_natural_sort;
             ws.right.density = s.right_density;
+            ws.durability_profile = s.durability_profile;
+            ws.sync_guard_policy = s.sync_guard_policy.clone();
         }
 
+        let recovery = RecoveryState::scan(&ws);
         App {
             ws,
             ui_scale,
@@ -343,9 +504,20 @@ impl App {
             mask_input: None,
             path_input: None,
             recent_input: None,
+            recent_order: session
+                .as_ref()
+                .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
+            search_engine: crate::search::SearchEngine::default(),
+            search_history: session
+                .as_ref()
+                .map(|s| s.search_history.clone())
+                .unwrap_or_default(),
+            content_index: crate::content_index::ContentIndex::load(),
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
             receipts_input: None,
+            history_preview: None,
+            recovery,
             palette_input: None,
             palette_usage: session
                 .as_ref()
@@ -358,8 +530,11 @@ impl App {
             diff: None,
             treemap: None,
             find: None,
+            archive: None,
             smart_folders: None,
             saved_search_open: false,
+            project_collections: crate::collections::load(),
+            collections_dialog: None,
             command_templates: None,
             run_command: None,
             compare_cache: None,
@@ -380,6 +555,7 @@ impl App {
 
     /// Snapshot the current state into a persistable [`Session`].
     fn to_session(&self) -> crate::session::Session {
+        let (recent_paths, recent_stats) = crate::panel::visit_snapshot();
         crate::session::Session {
             left_path: self.ws.left.current_path.clone(),
             right_path: self.ws.right.current_path.clone(),
@@ -404,6 +580,12 @@ impl App {
             right_density: self.ws.right.density,
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
+            recent_paths,
+            recent_stats,
+            recent_order: self.recent_order,
+            search_history: self.search_history.clone(),
+            durability_profile: self.ws.durability_profile,
+            sync_guard_policy: self.ws.sync_guard_policy.clone(),
         }
     }
 

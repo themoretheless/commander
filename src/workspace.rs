@@ -43,10 +43,12 @@ pub struct TreemapSnapshot {
 pub struct PendingTransfer {
     pub kind: TransferKind,
     pub entries: Vec<FileEntry>,
+    pub expectations: Vec<crate::transfer::TransferExpectation>,
     pub target: PathBuf,
     pub conflicts: Vec<String>,
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
+    pub durability: crate::operation::DurabilityProfile,
     pub flat: FlatList,
     /// Bytes the operation needs (recursive total of the entries).
     pub need_bytes: u64,
@@ -128,10 +130,11 @@ pub enum PendingOp {
 
 /// How a delete-to-Trash turned out, so the UI can confirm it and flag any
 /// entries that could not be removed instead of failing silently.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct DeleteOutcome {
     pub trashed: usize,
     pub failed: usize,
+    pub failures: Vec<crate::operation::ClassifiedFailure>,
 }
 
 /// How a shelf drain turned out: how many copies started, and how many items
@@ -142,12 +145,34 @@ pub struct ShelfDrainOutcome {
     pub unavailable: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryTransition {
+    Undo,
+    Redo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingHistoryTransition {
+    direction: HistoryTransition,
+    cleanup_on_failure: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActionExecution {
+    Completed,
+    Started { cleanup_on_failure: Option<PathBuf> },
+}
+
 pub struct Workspace {
     pub left: PanelState,
     pub right: PanelState,
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
     pub active_transfer: Option<TransferState>,
+    pub safe_state: Option<crate::operation::SafeState>,
+    reviewed_safe_operation: Option<crate::operation::OperationId>,
+    pub durability_profile: crate::operation::DurabilityProfile,
+    pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     /// Set by [`Command::BeginRename`]; the UI picks this up to open the
     /// inline rename editor seeded with this path, then clears it.
     pub rename_target: Option<PathBuf>,
@@ -178,13 +203,19 @@ pub struct Workspace {
     pub treemap_request: bool,
     /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
     pub find_request: bool,
+    /// Set when activating a supported archive; the UI opens a read-only browser.
+    pub archive_request: Option<PathBuf>,
     /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
     pub saved_search_request: bool,
+    /// Set by [`Command::OpenProjectCollections`]; the UI opens virtual projects.
+    pub collections_request: bool,
     /// Set by [`Command::ToggleQueuePanel`]; the UI flips the transfer-queue
     /// panel's visibility.
     pub queue_panel_request: bool,
     /// Set by [`Command::OpenReceipts`]; the UI opens the operation history.
     pub receipts_request: bool,
+    /// Set by [`Command::OpenRecoveryCenter`]; the UI refreshes durable recovery.
+    pub recovery_request: bool,
     /// Set by the Copy* commands; the UI formats the selection and copies it.
     pub clipboard_request: Option<crate::clipboard::PathStyle>,
     /// Set by the Copy-listing commands: (text to copy, toast label). The UI
@@ -214,6 +245,9 @@ pub struct Workspace {
     /// Move). `None` for copies and for undo/redo-driven transfers, which must
     /// not record fresh history.
     pending_undo_action: Option<crate::undo::Action>,
+    /// A history replay owns the active transfer. The stack transition is
+    /// committed only after that worker reports a clean terminal state.
+    pending_history_transition: Option<PendingHistoryTransition>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
@@ -322,6 +356,10 @@ impl Workspace {
             active: ActivePanel::Left,
             pending_op: None,
             active_transfer: None,
+            safe_state: None,
+            reviewed_safe_operation: None,
+            durability_profile: crate::operation::DurabilityProfile::default(),
+            sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             rename_target: None,
             mask_request: false,
             run_command_request: false,
@@ -336,9 +374,12 @@ impl Workspace {
             diff_request: false,
             treemap_request: false,
             find_request: false,
+            archive_request: None,
             saved_search_request: false,
+            collections_request: false,
             queue_panel_request: false,
             receipts_request: false,
+            recovery_request: false,
             clipboard_request: None,
             clipboard_text_request: None,
             redo_request: false,
@@ -350,6 +391,7 @@ impl Workspace {
             running_job: None,
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
+            pending_history_transition: None,
             opener,
         }
     }
@@ -506,6 +548,9 @@ impl Workspace {
     // ── Command dispatch ────────────────────────────────────────────────
 
     pub fn execute(&mut self, cmd: Command) {
+        if self.mutations_blocked() && cmd.mutates_filesystem() {
+            return;
+        }
         match cmd {
             Command::SwitchPanel => {
                 self.active = match self.active {
@@ -586,6 +631,8 @@ impl Workspace {
                 } {
                     if entry.is_dir {
                         self.active_panel().navigate_to(entry.path);
+                    } else if crate::archive::is_supported(&entry.path) {
+                        self.archive_request = Some(entry.path);
                     } else {
                         (self.opener)(&entry.path);
                     }
@@ -679,6 +726,7 @@ impl Workspace {
             Command::DiskTreemap => self.treemap_request = true,
             Command::BeginFind => self.find_request = true,
             Command::OpenSavedSearch => self.saved_search_request = true,
+            Command::OpenProjectCollections => self.collections_request = true,
             Command::CopyPath => {
                 self.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
             }
@@ -723,14 +771,10 @@ impl Workspace {
             Command::BeginRecent => self.recent_request = true,
             Command::BeginPalette => self.palette_request = true,
             Command::Undo => {
-                if self.stack.can_undo() {
-                    self.undo_request = true;
-                }
+                self.undo_request = true;
             }
             Command::Redo => {
-                if self.stack.can_redo() {
-                    self.redo_request = true;
-                }
+                self.redo_request = true;
             }
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
@@ -752,6 +796,7 @@ impl Workspace {
             Command::MarkedSymmetricDiff => self.marked_symmetric_diff(),
             Command::ToggleQueuePanel => self.queue_panel_request = true,
             Command::OpenReceipts => self.receipts_request = true,
+            Command::OpenRecoveryCenter => self.recovery_request = true,
             Command::ToggleHidden => {
                 let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
@@ -812,13 +857,96 @@ impl Workspace {
     /// Copy/Move may queue behind an active transfer, but must never replace an
     /// operation that is already waiting for confirmation.
     pub fn can_request_transfer(&self) -> bool {
-        self.pending_op.is_none()
+        self.pending_op.is_none() && !self.mutations_blocked()
     }
 
     /// Delete is not queue-backed, so it is available only while no operation
     /// is pending or running.
     pub fn can_request_delete(&self) -> bool {
-        self.pending_op.is_none() && self.active_transfer.is_none()
+        self.pending_op.is_none() && self.active_transfer.is_none() && !self.mutations_blocked()
+    }
+
+    pub fn mutations_blocked(&self) -> bool {
+        self.safe_state.is_some()
+    }
+
+    pub fn acknowledge_safe_state(&mut self) {
+        if let Some(state) = self.safe_state.take() {
+            self.reviewed_safe_operation = Some(state.operation_id);
+        }
+    }
+
+    fn ensure_matching_recovery_review(
+        &self,
+        operation_id: &crate::operation::OperationId,
+    ) -> Result<(), String> {
+        if let Some(state) = &self.safe_state
+            && &state.operation_id != operation_id
+        {
+            return Err(format!(
+                "Safe-state review belongs to operation {}",
+                state.operation_id.0
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn recovery_seed_roots(&self) -> Vec<PathBuf> {
+        vec![
+            self.left.current_path.clone(),
+            self.right.current_path.clone(),
+        ]
+    }
+
+    pub fn resume_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<usize, String> {
+        self.ensure_matching_recovery_review(operation_id)?;
+        if self.active_transfer.is_some() || self.queued_count() > 0 {
+            return Err("Wait for the transfer queue before resuming recovery".to_string());
+        }
+        let spec = crate::operation_journal::build_resume_spec(operation_id)?;
+        let count = spec.entries.len();
+        self.acknowledge_safe_state();
+        self.enqueue_only(spec, None);
+        self.pump_queue(notify);
+        Ok(count)
+    }
+
+    pub fn rollback_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+    ) -> Result<crate::operation_journal::RepairPlan, String> {
+        self.ensure_matching_recovery_review(operation_id)?;
+        if self.active_transfer.is_some() || self.queued_count() > 0 {
+            return Err("Wait for the transfer queue before rolling back recovery".to_string());
+        }
+        crate::operation_journal::repair_plan(operation_id)?;
+        self.acknowledge_safe_state();
+        let plan = crate::operation_journal::rollback(operation_id)?;
+        self.left.refresh();
+        self.right.refresh();
+        Ok(plan)
+    }
+
+    pub fn clean_recovery_orphan(
+        &mut self,
+        orphan: &crate::operation_journal::OrphanStaging,
+    ) -> Result<(), String> {
+        if self.mutations_blocked() {
+            return Err(
+                "Complete the current integrity review before cleaning staging".to_string(),
+            );
+        }
+        if self.active_transfer.is_some() {
+            return Err("Wait for the active transfer before cleaning staging".to_string());
+        }
+        crate::operation_journal::clean_orphan(orphan)?;
+        self.left.refresh();
+        self.right.refresh();
+        Ok(())
     }
 
     fn request_transfer(&mut self, kind: TransferKind) {
@@ -834,14 +962,17 @@ impl Workspace {
         }
         let flat = scan::spawn_scan(entries.clone());
         let conflicts = scan::find_conflicts(&entries, &target);
+        let expectations = transfer::capture_expectations(&entries, &target);
         let (need_bytes, free_bytes, same_volume) = fit_stats(&entries, &target, kind);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
+            expectations,
             target,
             conflicts,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             flat,
             need_bytes,
             free_bytes,
@@ -888,7 +1019,13 @@ impl Workspace {
         };
         let res = crate::conflict::resolve(&tr.entries, &conflicts, policy);
         let keep: std::collections::HashSet<PathBuf> = res.keep.into_iter().collect();
-        tr.entries.retain(|e| keep.contains(&e.path));
+        let retained = tr
+            .entries
+            .drain(..)
+            .zip(tr.expectations.drain(..))
+            .filter(|(entry, _)| keep.contains(&entry.path))
+            .collect::<Vec<_>>();
+        (tr.entries, tr.expectations) = retained.into_iter().unzip();
         tr.policy = match res.decision {
             crate::conflict::Decision::Overwrite => OverwritePolicy::OverwriteAll,
             crate::conflict::Decision::KeepBoth => OverwritePolicy::KeepBoth,
@@ -917,9 +1054,13 @@ impl Workspace {
     /// `notify` is invoked when visible progress changes (UI passes a
     /// repaint request).
     pub fn start_transfer(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.mutations_blocked() {
+            return;
+        }
         let Some(PendingOp::Transfer(t)) = self.pending_op.take() else {
             return;
         };
+        self.durability_profile = t.durability;
         // A Move is undoable, promoted onto the history stack when it finishes
         // cleanly (see `poll_transfer`); a Copy records no history.
         let undo = if t.kind == TransferKind::Move {
@@ -930,12 +1071,21 @@ impl Workspace {
             None
         };
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id: None,
             kind: t.kind,
             entries: t.entries,
+            expectations: t.expectations,
             target: t.target,
             policy: t.policy,
             method: t.method,
+            durability: t.durability,
             post_success: None,
+            rollback_cleanup: None,
+            #[cfg(test)]
+            before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         self.enqueue_only(spec, undo);
         self.pump_queue(notify);
@@ -954,7 +1104,7 @@ impl Workspace {
     /// The single place that spawns the worker, so the running job, its undo
     /// action and `active_transfer` always move together.
     fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
-        if self.active_transfer.is_some() {
+        if self.active_transfer.is_some() || self.mutations_blocked() {
             return;
         }
         let Some(id) = self.queue.dequeue_next() else {
@@ -967,6 +1117,7 @@ impl Workspace {
             return;
         };
         let spec = job.spec.spec.clone();
+        self.reviewed_safe_operation = None;
         self.pending_undo_action = job.spec.undo.clone();
         self.running_job = Some(id);
         // The worker sizes the entries once and fills in `total_bytes`; passing
@@ -1002,12 +1153,23 @@ impl Workspace {
         }
     }
 
+    /// Finish the current top-level entry, then checkpoint and stop before the
+    /// worker accepts another entry from this transfer.
+    pub fn stop_transfer_after_current(&mut self) {
+        if let Some(state) = &self.active_transfer {
+            let mut progress = crate::lock_util::recover(state);
+            if !progress.finished {
+                progress.stop_requested = true;
+            }
+        }
+    }
+
     /// Auto-close finished transfers. A transfer that finished with errors
     /// stays open so the user can read the error list (dismissed via OK).
     /// Returns `true` when a clean Move just finished, so the UI can raise the
     /// undo toast.
     pub fn poll_transfer(&mut self, notify: impl Fn() + Send + 'static) -> bool {
-        let (close, clean, had_errors, cancelled, placements) = self
+        let (close, clean, had_errors, cancelled, placements, safe_state) = self
             .active_transfer
             .as_ref()
             .map(|s| {
@@ -1017,7 +1179,7 @@ impl Workspace {
                 // even on cancel, after its cleanup), so we never tear the
                 // shared state out from under a still-running cleanup pass. A
                 // finished run with errors stays open so the user can read them.
-                let clean = s.finished && s.errors.is_empty() && !s.cancelled;
+                let clean = s.finished && s.errors.is_empty() && !s.cancelled && !s.stopped;
                 let errs = !s.errors.is_empty();
                 // Only a clean Move needs its placements (to record undo).
                 let placements = if clean {
@@ -1025,15 +1187,53 @@ impl Workspace {
                 } else {
                     Vec::new()
                 };
+                let failures = if s.finished {
+                    s.failures
+                        .iter()
+                        .filter(|failure| {
+                            failure.class == crate::operation::FailureClass::IntegrityUncertain
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let safe_state = if failures.is_empty() {
+                    None
+                } else {
+                    let mut paths = failures
+                        .iter()
+                        .filter_map(|failure| failure.path.clone())
+                        .collect::<Vec<_>>();
+                    paths.sort();
+                    paths.dedup();
+                    Some(crate::operation::SafeState {
+                        operation_id: s.operation_id.clone().unwrap_or_else(|| {
+                            crate::operation::OperationId("unknown-operation".to_string())
+                        }),
+                        reason: failures[0].message.clone(),
+                        paths,
+                        failures,
+                    })
+                };
                 (
-                    s.finished && (s.cancelled || s.errors.is_empty()),
+                    s.finished && (s.cancelled || s.stopped || s.errors.is_empty()),
                     clean,
                     errs,
-                    s.cancelled,
+                    s.cancelled || s.stopped,
                     placements,
+                    safe_state,
                 )
             })
-            .unwrap_or((false, false, false, false, Vec::new()));
+            .unwrap_or((false, false, false, false, Vec::new(), None));
+
+        if self.safe_state.is_none()
+            && let Some(safe_state) = safe_state
+            && self.reviewed_safe_operation.as_ref() != Some(&safe_state.operation_id)
+        {
+            self.safe_state = Some(safe_state);
+            self.cancel_pending_jobs();
+        }
 
         if !close {
             return false;
@@ -1056,6 +1256,7 @@ impl Workspace {
         }
         self.left.refresh();
         self.right.refresh();
+        self.finish_history_transition(clean);
         // Record the move on the history stack on a clean run, built from where
         // the files ACTUALLY landed: a KeepBoth conflict renames to "name copy",
         // which is not faithfully reversible, so those entries are dropped (and
@@ -1129,9 +1330,26 @@ impl Workspace {
         }
         // An errored/aborted run records no undo history.
         self.pending_undo_action = None;
+        self.finish_history_transition(false);
         self.left.refresh();
         self.right.refresh();
         self.pump_queue(notify);
+    }
+
+    fn finish_history_transition(&mut self, clean: bool) {
+        let Some(transition) = self.pending_history_transition.take() else {
+            return;
+        };
+        if clean {
+            match transition.direction {
+                HistoryTransition::Undo => self.stack.commit_undo(),
+                HistoryTransition::Redo => self.stack.commit_redo(),
+            };
+        } else if let Some(folder) = transition.cleanup_on_failure {
+            // Never recursively remove replay output. An empty directory is the
+            // only container we can prove was not populated by foreign data.
+            let _ = std::fs::remove_dir(folder);
+        }
     }
 
     /// Snapshot of every job in the transfer queue, in priority order, for
@@ -1208,22 +1426,116 @@ impl Workspace {
     }
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
-    /// move it onto the redo stack.
-    pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
-        match self.stack.undo() {
-            Some(inverse) => self.execute_action(inverse, notify),
-            None => Ok(()),
+    /// move it onto the redo stack only after the filesystem commit succeeds.
+    pub fn preview_undo(&self) -> Option<crate::undo::ReplayPreview> {
+        self.stack
+            .peek_undo_inverse()
+            .map(|action| crate::undo::preview(&action))
+    }
+
+    pub fn preview_redo(&self) -> Option<crate::undo::ReplayPreview> {
+        self.stack
+            .peek_redo_action()
+            .map(|action| crate::undo::preview(&action))
+    }
+
+    pub fn redo_unavailable_reason(&self) -> Option<String> {
+        self.stack.redo_invalidation().map(|invalidation| {
+            format!(
+                "Redo was invalidated by {} after {} undone action{}",
+                invalidation.caused_by,
+                invalidation.abandoned_actions,
+                if invalidation.abandoned_actions == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        })
+    }
+
+    pub(crate) fn history_replay_blocker(&self) -> Option<String> {
+        if self.mutations_blocked() {
+            return Some("Safe-state review is required before history replay".to_string());
         }
+        if self.active_transfer.is_some() || self.queued_count() > 0 {
+            return Some("Wait for the transfer queue before replaying history".to_string());
+        }
+        None
+    }
+
+    fn ensure_history_replay_ready(&self) -> Result<(), String> {
+        self.history_replay_blocker().map_or(Ok(()), Err)
+    }
+
+    fn replay_preflight(preview: &crate::undo::ReplayPreview) -> Result<(), String> {
+        if preview.can_execute() {
+            return Ok(());
+        }
+        let detail = preview
+            .paths
+            .iter()
+            .find_map(|path| match &path.eligibility {
+                crate::undo::ReplayEligibility::Ready => None,
+                crate::undo::ReplayEligibility::Blocked(reason) => Some(format!(
+                    "{} -> {}: {reason}",
+                    path.from.display(),
+                    path.to.display()
+                )),
+            })
+            .unwrap_or_else(|| "No replayable paths remain".to_string());
+        Err(format!(
+            "History replay is blocked for {} path{}; {detail}",
+            preview.blocked_count(),
+            if preview.blocked_count() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ))
+    }
+
+    pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
+        self.ensure_history_replay_ready()?;
+        let Some(inverse) = self.stack.peek_undo_inverse() else {
+            return Ok(());
+        };
+        Self::replay_preflight(&crate::undo::preview(&inverse))?;
+        match self.execute_action(inverse, notify)? {
+            ActionExecution::Completed => {
+                self.stack.commit_undo();
+            }
+            ActionExecution::Started { cleanup_on_failure } => {
+                self.pending_history_transition = Some(PendingHistoryTransition {
+                    direction: HistoryTransition::Undo,
+                    cleanup_on_failure,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Redo the most recently undone action (Cmd+Shift+Z): re-apply it and move
     /// it back onto the undo stack. Returns the same error surface as
     /// [`perform_undo`].
     pub fn perform_redo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
-        match self.stack.redo() {
-            Some(action) => self.execute_action(action, notify),
-            None => Ok(()),
+        self.ensure_history_replay_ready()?;
+        let Some(action) = self.stack.peek_redo_action() else {
+            return self.redo_unavailable_reason().map_or(Ok(()), Err);
+        };
+        Self::replay_preflight(&crate::undo::preview(&action))?;
+        match self.execute_action(action, notify)? {
+            ActionExecution::Completed => {
+                self.stack.commit_redo();
+            }
+            ActionExecution::Started { cleanup_on_failure } => {
+                self.pending_history_transition = Some(PendingHistoryTransition {
+                    direction: HistoryTransition::Redo,
+                    cleanup_on_failure,
+                });
+            }
         }
+        Ok(())
     }
 
     /// Execute `action` forward against the filesystem. Used by undo (with an
@@ -1233,7 +1545,8 @@ impl Workspace {
         &mut self,
         action: crate::undo::Action,
         notify: impl Fn() + Send + 'static,
-    ) -> Result<(), String> {
+    ) -> Result<ActionExecution, String> {
+        Self::replay_preflight(&crate::undo::preview(&action))?;
         match action {
             crate::undo::Action::Move { pairs } => {
                 // Each pair is (from, to): move the file at `from` into dir(to).
@@ -1244,10 +1557,19 @@ impl Workspace {
                     .and_then(|(_, to)| to.parent())
                     .map(Path::to_path_buf)
                 else {
-                    return Ok(());
+                    return Ok(ActionExecution::Completed);
                 };
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
                 self.start_move_silent(sources, dest_dir, None, notify)
+                    .map(|started| {
+                        if started {
+                            ActionExecution::Started {
+                                cleanup_on_failure: None,
+                            }
+                        } else {
+                            ActionExecution::Completed
+                        }
+                    })
             }
             crate::undo::Action::BatchRename { dir, pairs } => {
                 // Undo/redo replays recorded pairs without re-planning, so order
@@ -1259,24 +1581,32 @@ impl Workspace {
                 self.right.refresh();
                 // A failed rename undo/redo leaves the filesystem out of step
                 // with the stack: surface it rather than swallowing the error.
-                result.map(|_| ())
+                result.map(|_| ActionExecution::Completed)
             }
             crate::undo::Action::Rename { from, to } => {
                 let result = Self::rename_path_no_clobber(&from, &to);
                 self.left.refresh();
                 self.right.refresh();
-                result
+                result.map(|_| ActionExecution::Completed)
             }
             crate::undo::Action::Gather { folder, pairs } => {
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
                 let entries = Self::entries_for_paths(&sources)?;
                 if entries.is_empty() {
-                    return Ok(());
+                    return Ok(ActionExecution::Completed);
                 }
                 std::fs::create_dir(&folder)
                     .map_err(|error| format!("Could not recreate {}: {error}", folder.display()))?;
-                self.enqueue_silent_move(entries, folder, None, notify);
-                Ok(())
+                self.enqueue_silent_move(
+                    entries,
+                    folder.clone(),
+                    None,
+                    Some(folder.clone()),
+                    notify,
+                );
+                Ok(ActionExecution::Started {
+                    cleanup_on_failure: Some(folder),
+                })
             }
             crate::undo::Action::Ungather { folder, pairs } => {
                 let Some(dest_dir) = pairs
@@ -1284,7 +1614,7 @@ impl Workspace {
                     .and_then(|(_, to)| to.parent())
                     .map(Path::to_path_buf)
                 else {
-                    return Ok(());
+                    return Ok(ActionExecution::Completed);
                 };
                 let sources = pairs.into_iter().map(|(from, _)| from).collect();
                 self.start_move_silent(
@@ -1293,6 +1623,15 @@ impl Workspace {
                     Some(PostTransferAction::RemoveEmptyDir(folder)),
                     notify,
                 )
+                .map(|started| {
+                    if started {
+                        ActionExecution::Started {
+                            cleanup_on_failure: None,
+                        }
+                    } else {
+                        ActionExecution::Completed
+                    }
+                })
             }
         }
     }
@@ -1314,15 +1653,26 @@ impl Workspace {
         entries: Vec<FileEntry>,
         dest_dir: PathBuf,
         post_success: Option<PostTransferAction>,
+        rollback_cleanup: Option<PathBuf>,
         notify: impl Fn() + Send + 'static,
     ) {
+        let expectations = transfer::capture_expectations(&entries, &dest_dir);
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id: None,
             kind: TransferKind::Move,
             entries,
+            expectations,
             target: dest_dir,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             post_success,
+            rollback_cleanup,
+            #[cfg(test)]
+            before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         // Undo-driven: this move records no new history (undo=None).
         self.enqueue_only(spec, None);
@@ -1338,13 +1688,13 @@ impl Workspace {
         dest_dir: PathBuf,
         post_success: Option<PostTransferAction>,
         notify: impl Fn() + Send + 'static,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let entries = Self::entries_for_paths(&sources)?;
         if entries.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
-        self.enqueue_silent_move(entries, dest_dir, post_success, notify);
-        Ok(())
+        self.enqueue_silent_move(entries, dest_dir, post_success, None, notify);
+        Ok(true)
     }
 
     /// Add `dir` to the bookmarks if it is not already present, naming it after
@@ -1392,16 +1742,42 @@ impl Workspace {
         }
     }
 
-    /// Move every entry to the Trash, counting successes and failures so the
-    /// caller can confirm the outcome (and flag any that could not be removed)
-    /// rather than failing silently.
-    pub fn exec_delete(entries: &[FileEntry]) -> DeleteOutcome {
+    /// Move every entry to the Trash under the selected durability policy.
+    fn exec_delete_with_profile(
+        entries: &[FileEntry],
+        durability: crate::operation::DurabilityProfile,
+    ) -> DeleteOutcome {
         let mut outcome = DeleteOutcome::default();
-        for entry in entries {
+        let operation_id = crate::operation::OperationId::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if durability.keeps_versions()
+                && let Err(message) = crate::version_store::preserve(
+                    &entry.path,
+                    &operation_id,
+                    operation_id.step_key(index, &entry.path),
+                )
+            {
+                outcome.failed += 1;
+                outcome
+                    .failures
+                    .push(crate::operation::ClassifiedFailure::message(
+                        crate::operation::FailureClass::IntegrityUncertain,
+                        Some(entry.path.clone()),
+                        message,
+                    ));
+                continue;
+            }
             if trash::delete(&entry.path).is_ok() {
                 outcome.trashed += 1;
             } else {
                 outcome.failed += 1;
+                outcome
+                    .failures
+                    .push(crate::operation::ClassifiedFailure::message(
+                        crate::operation::FailureClass::Blocked,
+                        Some(entry.path.clone()),
+                        "could not move item to Trash",
+                    ));
             }
         }
         outcome
@@ -1414,10 +1790,13 @@ impl Workspace {
         &mut self,
         notify: impl Fn() + Send + 'static,
     ) -> Option<DeleteOutcome> {
+        if self.mutations_blocked() {
+            return None;
+        }
         match &self.pending_op {
             Some(PendingOp::Delete { .. }) => {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
-                    let outcome = Self::exec_delete(&entries);
+                    let outcome = Self::exec_delete_with_profile(&entries, self.durability_profile);
                     self.left.refresh();
                     self.right.refresh();
                     return Some(outcome);
@@ -1433,6 +1812,9 @@ impl Workspace {
     }
 
     pub fn create_dir(&mut self) {
+        if self.mutations_blocked() {
+            return;
+        }
         let base = self.active_panel_ref().current_path.clone();
         let path = crate::fs_util::first_available(|i| {
             if i == 0 {
@@ -1452,6 +1834,9 @@ impl Workspace {
     /// (queued through the transfer pipeline, so it takes the same-volume rename
     /// fast path). A no-op on an empty selection or if the folder can't be made.
     pub fn gather_into_folder(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.mutations_blocked() {
+            return;
+        }
         let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
             return;
         };
@@ -1478,13 +1863,23 @@ impl Workspace {
             folder: folder.clone(),
             pairs: move_pairs(&entries, &folder),
         };
+        let expectations = transfer::capture_expectations(&entries, &folder);
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id: None,
             kind: TransferKind::Move,
             entries,
-            target: folder,
+            expectations,
+            target: folder.clone(),
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             post_success: None,
+            rollback_cleanup: Some(folder),
+            #[cfg(test)]
+            before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         self.enqueue_only(spec, Some(undo));
         self.pump_queue(notify);
@@ -1543,6 +1938,9 @@ impl Workspace {
     /// Rename `old` to `new_name` in the same directory. A no-op (unchanged
     /// name) succeeds silently. Successful changes are recorded for undo/redo.
     pub fn commit_rename(&mut self, old: &Path, new_name: &str) -> Result<(), String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before rename".to_string());
+        }
         let new_name = new_name.trim();
         let old_name = old
             .file_name()
@@ -1602,6 +2000,9 @@ impl Workspace {
         context: &BatchRenameContext,
         rule: &crate::rename::RenameRule,
     ) -> Result<usize, String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before batch rename".to_string());
+        }
         if context.targets.is_empty() {
             return Err("Nothing selected to rename".into());
         }
@@ -1720,6 +2121,9 @@ impl Workspace {
     /// Move `paths` to the Trash and refresh both panels. Not yet undoable
     /// here (recoverable from the Trash). Returns how many were trashed.
     pub fn trash_paths(&mut self, paths: &[PathBuf]) -> usize {
+        if self.mutations_blocked() {
+            return 0;
+        }
         let mut n = 0;
         for p in paths {
             if trash::delete(p).is_ok() {
@@ -1759,38 +2163,6 @@ impl Workspace {
             dir: active.current_path.clone(),
             items,
         }
-    }
-
-    // ── Find ────────────────────────────────────────────────────────────
-
-    /// Recursively walk `root` and collect entries matching `query`, capped at
-    /// `cap`. Synchronous for now (a deep tree may pause briefly); walk errors
-    /// and unreadable entries are skipped.
-    pub fn run_find(&self, query: &crate::query::Query, root: &Path, cap: usize) -> Vec<FileEntry> {
-        let now = std::time::SystemTime::now();
-        let mut out = Vec::new();
-        for entry in jwalk::WalkDir::new(root)
-            .skip_hidden(false)
-            .into_iter()
-            .flatten()
-        {
-            if out.len() >= cap {
-                break;
-            }
-            let path = entry.path();
-            if path == root {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if let Some(fe) = FileEntry::from_meta(path, &meta)
-                && query.matches(&fe, now)
-            {
-                out.push(fe);
-            }
-        }
-        out
     }
 
     /// Reveal `path` in the active panel: navigate to its parent folder and put
@@ -1854,7 +2226,7 @@ impl Workspace {
     /// longer be read are kept on the shelf (not silently discarded), and the
     /// outcome reports both how many copies started and how many were left.
     pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
-        if self.shelf.is_empty() || self.active_transfer.is_some() {
+        if self.shelf.is_empty() || self.active_transfer.is_some() || self.mutations_blocked() {
             return ShelfDrainOutcome::default();
         }
         let dest = self.active_panel_ref().current_path.clone();
@@ -1899,11 +2271,26 @@ impl Workspace {
     // ── Directory sync ──────────────────────────────────────────────────
 
     /// Compute the synchronisation plan between the two panels for `policy`.
+    #[cfg(test)]
     pub fn build_sync_actions(
         &self,
         policy: crate::sync::SyncPolicy,
     ) -> Vec<crate::sync::SyncAction> {
         crate::sync::sync_diff(&self.left.entries, &self.right.entries, policy)
+    }
+
+    /// Build a sync plan and baseline from the same fresh directory reads.
+    pub fn build_guarded_sync_plan(
+        &self,
+        policy: crate::sync::SyncPolicy,
+    ) -> Result<(Vec<crate::sync::SyncAction>, crate::sync_guard::PlanStamp), String> {
+        crate::sync_guard::build_plan(
+            &self.left.current_path,
+            &self.right.current_path,
+            self.left.show_hidden,
+            self.right.show_hidden,
+            policy,
+        )
     }
 
     /// Resolve and start a synchronisation plan: copy each `ToRight` row's left
@@ -1914,7 +2301,39 @@ impl Workspace {
     /// Apply a synchronization snapshot to the directories it was opened for.
     /// Sources are resolved by their captured paths, never by a lowercased
     /// display name or by whichever panels happen to be active now.
+    #[cfg(test)]
     pub fn apply_sync_between(
+        &mut self,
+        actions: &[crate::sync::SyncAction],
+        left_dir: &Path,
+        right_dir: &Path,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        self.enqueue_sync_between(actions, left_dir, right_dir, notify);
+    }
+
+    /// Revalidate every fail-closed sync guard before the first transfer is
+    /// queued. A rejected plan cannot leave a partially enqueued operation.
+    pub fn apply_sync_guarded(
+        &mut self,
+        plan: crate::sync_guard::GuardedPlan<'_>,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<crate::sync_guard::Assessment, String> {
+        if self.mutations_blocked() {
+            return Err("Safe-state review is required before synchronization".to_string());
+        }
+        let assessment = crate::sync_guard::validate(&plan)?;
+        self.sync_guard_policy = plan.guard.clone();
+        self.enqueue_sync_between(
+            plan.actions,
+            &plan.stamp.left_root,
+            &plan.stamp.right_root,
+            notify,
+        );
+        Ok(assessment)
+    }
+
+    fn enqueue_sync_between(
         &mut self,
         actions: &[crate::sync::SyncAction],
         left_dir: &Path,
@@ -1945,18 +2364,21 @@ impl Workspace {
         }
         // Enqueue both passes; the queue runs them in order (the second starts
         // when the first finishes), so a two-way sync needs no special casing.
+        let group_id = crate::operation::OperationGroupId::new();
         if !to_right.is_empty() {
-            self.enqueue_copy(
+            self.enqueue_copy_grouped(
                 to_right,
                 right_dir.to_path_buf(),
                 OverwritePolicy::OverwriteAll,
+                Some(group_id.clone()),
             );
         }
         if !to_left.is_empty() {
-            self.enqueue_copy(
+            self.enqueue_copy_grouped(
                 to_left,
                 left_dir.to_path_buf(),
                 OverwritePolicy::OverwriteAll,
+                Some(group_id),
             );
         }
         self.pump_queue(notify);
@@ -1967,16 +2389,36 @@ impl Workspace {
     /// served as the review step (no confirmation dialog). Copies record no
     /// undo history.
     fn enqueue_copy(&mut self, entries: Vec<FileEntry>, target: PathBuf, policy: OverwritePolicy) {
+        self.enqueue_copy_grouped(entries, target, policy, None);
+    }
+
+    fn enqueue_copy_grouped(
+        &mut self,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        policy: OverwritePolicy,
+        group_id: Option<crate::operation::OperationGroupId>,
+    ) {
         if entries.is_empty() {
             return;
         }
+        let expectations = transfer::capture_expectations(&entries, &target);
         let spec = TransferSpec {
+            operation_id: crate::operation::OperationId::new(),
+            group_id,
             kind: TransferKind::Copy,
             entries,
+            expectations,
             target,
             policy,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             post_success: None,
+            rollback_cleanup: None,
+            #[cfg(test)]
+            before_commit: None,
+            #[cfg(test)]
+            journal_enabled: false,
         };
         self.enqueue_only(spec, None);
     }
@@ -2070,7 +2512,7 @@ impl Workspace {
     pub fn drop_dragged(&mut self, notify: impl Fn() + Send + 'static) {
         // Ignore drops while a transfer or another dialog is in flight, so we
         // never stack a second operation over the first.
-        if self.active_transfer.is_some() || self.pending_op.is_some() {
+        if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
             self.clear_drag_state();
             return;
         }
@@ -2092,13 +2534,16 @@ impl Workspace {
         let has_conflicts = !conflicts.is_empty();
         let (need_bytes, free_bytes, same_volume) =
             fit_stats(&entries, &target, TransferKind::Move);
+        let expectations = transfer::capture_expectations(&entries, &target);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind: TransferKind::Move,
             entries,
+            expectations,
             target,
             conflicts,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
+            durability: self.durability_profile,
             flat,
             need_bytes,
             free_bytes,
@@ -2348,6 +2793,28 @@ mod tests {
         ws.left.cursor = 1;
         ws.execute(Command::Activate);
         assert_eq!(opened.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn activate_zip_requests_the_read_only_archive_browser() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let archive = left.file("bundle.zip", "placeholder");
+        let opened = Arc::new(AtomicUsize::new(0));
+        let opened_copy = Arc::clone(&opened);
+        let mut workspace = Workspace::with_opener(
+            left.path().to_path_buf(),
+            right.path().to_path_buf(),
+            Box::new(move |_| {
+                opened_copy.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        workspace.left.refresh();
+
+        workspace.left.cursor = 1;
+        workspace.execute(Command::Activate);
+
+        assert_eq!(workspace.archive_request, Some(archive));
+        assert_eq!(opened.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -2679,12 +3146,132 @@ mod tests {
         // it on the queue (no more ad-hoc follow-up handling).
         assert!(ws.active_transfer.is_some(), "first pass running");
         assert_eq!(ws.queued_count(), 1, "second pass queued behind the first");
+        let groups = ws
+            .queue
+            .jobs()
+            .iter()
+            .filter_map(|job| job.spec.spec.group_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], groups[1], "both passes share one intent id");
 
         // Drive the queue to completion; poll_transfer drains the second pass.
         drain_transfers(&mut ws);
         assert!(r.path().join("left.txt").is_file(), "left -> right");
         assert!(l.path().join("right.txt").is_file(), "right -> left");
         assert_eq!(ws.queued_count(), 0, "queue fully drained");
+    }
+
+    #[test]
+    fn guarded_sync_rejects_a_stale_baseline_before_enqueue() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("report.txt", "first");
+        let mut ws = workspace(&l, &r);
+        let policy = crate::sync::SyncPolicy::MirrorLeftToRight;
+        let (actions, stamp) = ws.build_guarded_sync_plan(policy).unwrap();
+        l.file("report.txt", "changed after review");
+        let guard = crate::sync_guard::GuardPolicy::default();
+        let settings = crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key());
+
+        let error = ws
+            .apply_sync_guarded(
+                crate::sync_guard::GuardedPlan {
+                    actions: &actions,
+                    stamp: &stamp,
+                    policy,
+                    guard: &guard,
+                    expected_settings: settings,
+                    allow_large_plan: false,
+                },
+                || {},
+            )
+            .unwrap_err();
+
+        assert!(error.contains("stale"), "unexpected error: {error}");
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+        assert!(!r.path().join("report.txt").exists());
+    }
+
+    #[test]
+    fn guarded_sync_requires_the_marker_on_the_receiving_root() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("report.txt", "ready");
+        let mut ws = workspace(&l, &r);
+        let policy = crate::sync::SyncPolicy::MirrorLeftToRight;
+        let (actions, stamp) = ws.build_guarded_sync_plan(policy).unwrap();
+        let mut guard = crate::sync_guard::GuardPolicy::default();
+        guard.set_marker(".sync-root").unwrap();
+        let settings = crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key());
+
+        let error = ws
+            .apply_sync_guarded(
+                crate::sync_guard::GuardedPlan {
+                    actions: &actions,
+                    stamp: &stamp,
+                    policy,
+                    guard: &guard,
+                    expected_settings: settings,
+                    allow_large_plan: false,
+                },
+                || {},
+            )
+            .unwrap_err();
+
+        assert!(error.contains("Health marker"), "unexpected error: {error}");
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+    }
+
+    #[test]
+    fn guarded_sync_needs_explicit_review_for_an_excessive_plan() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        l.file("report.txt", "left version");
+        r.file("report.txt", "x");
+        let mut ws = workspace(&l, &r);
+        let policy = crate::sync::SyncPolicy::MirrorLeftToRight;
+        let (actions, stamp) = ws.build_guarded_sync_plan(policy).unwrap();
+        let guard = crate::sync_guard::GuardPolicy {
+            max_change_fraction: 0.0,
+            minimum_changed: 1,
+            ..Default::default()
+        };
+        let settings = crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key());
+
+        let error = ws
+            .apply_sync_guarded(
+                crate::sync_guard::GuardedPlan {
+                    actions: &actions,
+                    stamp: &stamp,
+                    policy,
+                    guard: &guard,
+                    expected_settings: settings,
+                    allow_large_plan: false,
+                },
+                || {},
+            )
+            .unwrap_err();
+        assert!(error.contains("changes"), "unexpected error: {error}");
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+
+        ws.apply_sync_guarded(
+            crate::sync_guard::GuardedPlan {
+                actions: &actions,
+                stamp: &stamp,
+                policy,
+                guard: &guard,
+                expected_settings: settings,
+                allow_large_plan: true,
+            },
+            || {},
+        )
+        .unwrap();
+        drain_transfers(&mut ws);
+        assert_eq!(
+            std::fs::read_to_string(r.path().join("report.txt")).unwrap(),
+            "left version"
+        );
     }
 
     #[test]
@@ -2996,6 +3583,45 @@ mod tests {
     }
 
     #[test]
+    fn integrity_uncertain_failure_enters_safe_state_until_reviewed() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let affected = l.file("affected.txt", "data");
+        let mut ws = workspace(&l, &r);
+        let progress = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = progress.lock().unwrap();
+            state.operation_id = Some(crate::operation::OperationId("uncertain-op".to_string()));
+            state.finished = true;
+            state.errors.push("placement uncertain".to_string());
+            state
+                .failures
+                .push(crate::operation::ClassifiedFailure::message(
+                    crate::operation::FailureClass::IntegrityUncertain,
+                    Some(affected.clone()),
+                    "placement uncertain",
+                ));
+        }
+        ws.active_transfer = Some(progress);
+
+        assert!(!ws.poll_transfer(|| {}), "errored transfer stays visible");
+        let safe = ws.safe_state.as_ref().expect("safe state raised");
+        assert_eq!(safe.operation_id.0, "uncertain-op");
+        assert_eq!(safe.paths, vec![affected]);
+        ws.execute(Command::CreateDir);
+        assert!(!l.path().join("New Folder").exists());
+        assert!(ws.perform_undo(|| {}).is_err());
+
+        ws.acknowledge_safe_state();
+        assert!(
+            !ws.poll_transfer(|| {}),
+            "review token prevents a reopen loop"
+        );
+        assert!(ws.safe_state.is_none());
+        ws.execute(Command::CreateDir);
+        assert!(l.path().join("New Folder").is_dir());
+    }
+
+    #[test]
     fn faithfully_undoable_drops_keep_both_renames() {
         let pairs = vec![
             // A clean move kept its name and is reversible.
@@ -3185,27 +3811,6 @@ mod tests {
     }
 
     #[test]
-    fn run_find_walks_recursively_and_filters() {
-        let (l, r) = (TempDir::new(), TempDir::new());
-        l.file("top.log", "x");
-        l.file("sub/deep.log", "yy");
-        l.file("sub/note.txt", "z");
-        let ws = workspace(&l, &r);
-
-        let query = crate::query::Query {
-            predicates: vec![crate::query::Predicate::NameContains(".log".into())],
-        };
-        let found = ws.run_find(&query, l.path(), 100);
-        let names: Vec<String> = found.iter().map(|e| e.name.clone()).collect();
-        assert!(names.contains(&"top.log".to_string()), "top-level match");
-        assert!(names.contains(&"deep.log".to_string()), "nested match");
-        assert!(
-            !names.contains(&"note.txt".to_string()),
-            "non-match excluded"
-        );
-    }
-
-    #[test]
     fn select_by_relation_picks_only_here_and_differing() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("only.txt", "x"); // only in the active (left) panel
@@ -3356,10 +3961,12 @@ mod tests {
         let mk = |kind, method, need, free, same| PendingTransfer {
             kind,
             entries: vec![],
+            expectations: vec![],
             target: PathBuf::from("/t"),
             conflicts: vec![],
             policy: OverwritePolicy::Ask,
             method,
+            durability: crate::operation::DurabilityProfile::Fast,
             flat: scan::spawn_scan(vec![]),
             need_bytes: need,
             free_bytes: free,
@@ -3587,6 +4194,86 @@ mod tests {
         // The refusal leaves both files untouched.
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "1");
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "2");
+    }
+
+    #[test]
+    fn blocked_undo_keeps_the_history_pointer_unchanged() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let original = l.path().join("old.txt");
+        let renamed = l.file("new.txt", "completed rename");
+        std::fs::write(&original, "foreign replacement").unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.stack.push(crate::undo::Action::Rename {
+            from: original,
+            to: renamed,
+        });
+
+        let error = ws.perform_undo(|| {}).unwrap_err();
+        assert!(error.contains("occupied"), "{error}");
+        assert!(ws.stack.can_undo());
+        assert!(!ws.stack.can_redo());
+    }
+
+    #[test]
+    fn async_history_transition_commits_only_for_a_clean_worker() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.stack.push(crate::undo::Action::Rename {
+            from: l.path().join("a.txt"),
+            to: l.path().join("b.txt"),
+        });
+        ws.pending_history_transition = Some(PendingHistoryTransition {
+            direction: HistoryTransition::Undo,
+            cleanup_on_failure: None,
+        });
+        let clean = Arc::new(Mutex::new(TransferProgress::new(0, 0)));
+        crate::lock_util::recover(&clean).finished = true;
+        ws.active_transfer = Some(clean);
+
+        ws.poll_transfer(|| {});
+        assert!(!ws.stack.can_undo());
+        assert!(ws.stack.can_redo());
+
+        let replay_folder = l.path().join("gathered");
+        std::fs::create_dir(&replay_folder).unwrap();
+        ws.pending_history_transition = Some(PendingHistoryTransition {
+            direction: HistoryTransition::Redo,
+            cleanup_on_failure: Some(replay_folder.clone()),
+        });
+        let failed = Arc::new(Mutex::new(TransferProgress::new(0, 0)));
+        {
+            let mut progress = crate::lock_util::recover(&failed);
+            progress.finished = true;
+            progress.errors.push("worker failed".to_string());
+        }
+        ws.active_transfer = Some(failed);
+        ws.poll_transfer(|| {});
+        ws.dismiss_transfer(|| {});
+        assert!(!ws.stack.can_undo(), "failed redo was not committed");
+        assert!(ws.stack.can_redo());
+        assert!(
+            !replay_folder.exists(),
+            "empty container created by failed replay was left behind"
+        );
+    }
+
+    #[test]
+    fn redo_invalidation_names_the_later_action() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.stack.push(crate::undo::Action::Rename {
+            from: l.path().join("old.txt"),
+            to: l.path().join("new.txt"),
+        });
+        ws.stack.undo();
+        ws.stack.push(crate::undo::Action::Move {
+            pairs: vec![(l.path().join("a.txt"), r.path().join("a.txt"))],
+        });
+
+        let reason = ws.redo_unavailable_reason().unwrap();
+        assert!(reason.contains("Moved (1 item)"), "{reason}");
+        assert!(reason.contains("1 undone action"), "{reason}");
+        assert_eq!(ws.perform_redo(|| {}).unwrap_err(), reason);
     }
 
     #[test]

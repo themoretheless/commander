@@ -17,6 +17,9 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
         self.show_transfer_dialog(&ctx);
+        self.show_safe_state_dialog(&ctx);
+        self.show_recovery_dialog(&ctx);
+        self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
         self.show_batch_rename_dialog(&ctx);
@@ -25,7 +28,9 @@ impl eframe::App for App {
         self.show_diff_dialog(&ctx);
         self.show_treemap_dialog(&ctx);
         self.show_find_dialog(&ctx);
+        self.show_archive_dialog(&ctx);
         self.show_saved_search_dialog(&ctx);
+        self.show_collections_dialog(&ctx);
         self.show_mask_dialog(&ctx);
         self.show_path_dialog(&ctx);
         self.show_recent_dialog(&ctx);
@@ -68,6 +73,19 @@ impl App {
         }
 
         self.update_focus_mode(ctx);
+
+        let index_idle = ctx.input(|input| {
+            input.events.is_empty()
+                && !input.pointer.any_down()
+                && input.smooth_scroll_delta == Vec2::ZERO
+        }) && self.ws.active_transfer.is_none()
+            && self.ws.pending_op.is_none()
+            && self.find.as_ref().is_none_or(|state| !state.searching);
+        if !index_idle {
+            crate::io_budget::note_foreground_activity();
+        }
+        self.content_index.set_idle(index_idle);
+        self.content_index.poll();
 
         // First frame: wire the repaint callback into both panels and do
         // the initial directory read.
@@ -126,31 +144,29 @@ impl App {
             }
         }
         self.toasts.prune(ctx.input(|i| i.time));
-        // Run a requested undo / redo with a repaint callback.
+        // Open a filesystem-aware undo/redo review. Execution happens only from
+        // the confirmation dialog and repeats the preflight at commit time.
         if std::mem::take(&mut self.ws.undo_request) {
-            let c = ctx.clone();
-            if let Err(e) = self.ws.perform_undo(move || c.request_repaint()) {
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!("Undo failed: {e}"),
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    now,
-                ));
+            self.history_preview = self.ws.preview_undo().map(|preview| HistoryPreviewState {
+                mode: HistoryReplayMode::Undo,
+                preview,
+                error: None,
+            });
+            if self.history_preview.is_none() {
+                self.push_history_notice(ctx, "Nothing to undo", false);
             }
-            // The offered Undo is spent; drop the undoable toast(s).
-            self.toasts.dismiss_undoable();
         }
         if std::mem::take(&mut self.ws.redo_request) {
-            let c = ctx.clone();
-            if let Err(e) = self.ws.perform_redo(move || c.request_repaint()) {
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!("Redo failed: {e}"),
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    now,
-                ));
+            self.history_preview = self.ws.preview_redo().map(|preview| HistoryPreviewState {
+                mode: HistoryReplayMode::Redo,
+                preview,
+                error: None,
+            });
+            if self.history_preview.is_none() {
+                let reason = self.ws.redo_unavailable_reason();
+                let is_error = reason.is_some();
+                let message = reason.unwrap_or_else(|| "Nothing to redo".to_string());
+                self.push_history_notice(ctx, &message, is_error);
             }
         }
         // Gather the selection into a new subfolder (queues an undoable Move).
@@ -710,7 +726,6 @@ impl App {
         let dragging = drag_source.is_some();
         let window_width = ctx.input(|i| i.viewport_rect()).width();
         let panel_id = egui::Id::new("left_panel");
-
         // Build cross-panel comparison maps before borrowing panels mutably:
         // each panel is tinted against the OTHER panel's entries. Reuse the
         // cached maps while neither panel's entries changed, so compare mode does
@@ -778,6 +793,15 @@ impl App {
         self.prev_window_width = window_width;
 
         let mut tree_toggle = false;
+        let archive_open = std::cell::RefCell::new(None);
+        let external_opener = self.ws.opener.as_ref();
+        let opener = |path: &std::path::Path| {
+            if crate::archive::is_supported(path) {
+                archive_open.replace(Some(path.to_path_buf()));
+            } else {
+                external_opener(path);
+            }
+        };
 
         // Left panel
         let left_resp = egui::Panel::left(panel_id)
@@ -800,7 +824,7 @@ impl App {
                     self.show_tree,
                     self.show_size_bars,
                     left_compare.as_ref(),
-                    self.ws.opener.as_ref(),
+                    &opener,
                     dragging,
                     left_metrics,
                 );
@@ -864,11 +888,13 @@ impl App {
                     self.show_tree,
                     self.show_size_bars,
                     right_compare.as_ref(),
-                    self.ws.opener.as_ref(),
+                    &opener,
                     dragging,
                     right_metrics,
                 );
             });
+
+        let pending_archive = archive_open.into_inner();
 
         if dragging
             && drag_source != Some(ActivePanel::Right)
@@ -899,6 +925,10 @@ impl App {
         // unchanged.
         if let (Some(lmap), Some(rmap)) = (left_compare, right_compare) {
             self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
+        }
+        if let Some(path) = pending_archive {
+            self.ws.archive_request = Some(path);
+            ctx.request_repaint();
         }
     }
 
