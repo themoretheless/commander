@@ -33,3 +33,6 @@ jobs:
 
       - name: Performance budgets
         run: cargo test measurement::tests::ci_performance_report_passes_budgets -- --exact
+
+      - name: Workflow ergonomics
+        run: cargo test klm::tests::ci_core_workflows_stay_within_operator_budgets -- --exact

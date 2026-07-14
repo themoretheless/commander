@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "model": {
+    "mental_ms": 1350,
+    "keystroke_ms": 280,
+    "pointing_ms": 1100,
+    "homing_ms": 400,
+    "shortcut_chord_policy": "A familiar command chord counts as one K; entered text counts one K per character."
+  },
+  "workflows": [
+    {
+      "id": "switch-pane",
+      "title": "Switch active pane",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 2,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "intend to change active pane" },
+        { "operator": "K", "repetitions": 1, "action": "press Tab" }
+      ]
+    },
+    {
+      "id": "open-directory",
+      "title": "Open highlighted directory",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 2,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "confirm highlighted destination" },
+        { "operator": "K", "repetitions": 1, "action": "press Enter" },
+        { "operator": "R", "repetitions": 1, "response_ms": 250, "action": "render directory listing" }
+      ]
+    },
+    {
+      "id": "copy-selection",
+      "title": "Select and copy to the other pane",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 4,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "review source and destination" },
+        { "operator": "K", "repetitions": 1, "action": "press Space to select" },
+        { "operator": "K", "repetitions": 1, "action": "press F5" },
+        { "operator": "K", "repetitions": 1, "action": "confirm reviewed operation" },
+        { "operator": "R", "repetitions": 1, "response_ms": 100, "action": "open operation progress" }
+      ]
+    },
+    {
+      "id": "move-selection",
+      "title": "Select and move to the other pane",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 4,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "review source and destination" },
+        { "operator": "K", "repetitions": 1, "action": "press Space to select" },
+        { "operator": "K", "repetitions": 1, "action": "press F6" },
+        { "operator": "K", "repetitions": 1, "action": "confirm reviewed operation" },
+        { "operator": "R", "repetitions": 1, "response_ms": 100, "action": "open operation progress" }
+      ]
+    },
+    {
+      "id": "rename-entry",
+      "title": "Rename highlighted entry",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 11,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "form an eight-character replacement name" },
+        { "operator": "K", "repetitions": 1, "action": "press F2" },
+        { "operator": "K", "repetitions": 8, "action": "enter replacement name" },
+        { "operator": "K", "repetitions": 1, "action": "commit rename" },
+        { "operator": "R", "repetitions": 1, "response_ms": 100, "action": "refresh listing" }
+      ]
+    },
+    {
+      "id": "delete-selection",
+      "title": "Move selection to Trash",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 4,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "review destructive intent" },
+        { "operator": "K", "repetitions": 1, "action": "press Space to select" },
+        { "operator": "K", "repetitions": 1, "action": "press F8" },
+        { "operator": "K", "repetitions": 1, "action": "confirm Trash operation" },
+        { "operator": "R", "repetitions": 1, "response_ms": 100, "action": "refresh listing" }
+      ]
+    },
+    {
+      "id": "go-to-path",
+      "title": "Navigate to a typed path",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 23,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "recall destination path" },
+        { "operator": "K", "repetitions": 1, "action": "press Command-L" },
+        { "operator": "K", "repetitions": 20, "action": "enter representative path" },
+        { "operator": "K", "repetitions": 1, "action": "navigate" },
+        { "operator": "R", "repetitions": 1, "response_ms": 250, "action": "render directory listing" }
+      ]
+    },
+    {
+      "id": "find-files",
+      "title": "Find files recursively",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 11,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "form an eight-character query" },
+        { "operator": "K", "repetitions": 1, "action": "press Command-F" },
+        { "operator": "K", "repetitions": 8, "action": "enter query" },
+        { "operator": "K", "repetitions": 1, "action": "start search" },
+        { "operator": "R", "repetitions": 1, "response_ms": 100, "action": "show first result batch" }
+      ]
+    },
+    {
+      "id": "toggle-preview",
+      "title": "Preview highlighted entry",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 2,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "choose highlighted entry for inspection" },
+        { "operator": "K", "repetitions": 1, "action": "press F3" },
+        { "operator": "R", "repetitions": 1, "response_ms": 100, "action": "render preview" }
+      ]
+    },
+    {
+      "id": "undo-operation",
+      "title": "Review and undo the last operation",
+      "input_mode": "keyboard",
+      "minimum_user_operators": 3,
+      "allowed_avoidable_growth": 0,
+      "steps": [
+        { "operator": "M", "repetitions": 1, "action": "decide to reverse last operation" },
+        { "operator": "K", "repetitions": 1, "action": "press Command-Z" },
+        { "operator": "K", "repetitions": 1, "action": "confirm filesystem-aware review" },
+        { "operator": "R", "repetitions": 1, "response_ms": 100, "action": "open operation progress" }
+      ]
+    }
+  ]
+}

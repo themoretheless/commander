@@ -26,6 +26,7 @@ mod fuzzy;
 mod image_cache;
 mod io_budget;
 mod jumplist;
+pub mod klm;
 mod listing_export;
 mod lock_util;
 pub mod measurement;
