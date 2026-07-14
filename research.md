@@ -419,7 +419,10 @@ medium, and `L` large relative effort.
 | G061-G070 | Implemented and tested | Unified Operations Center, phase-aware progress/ETA, typed pause/cancel consequences, failure inbox, keyboard and drag transfer UX |
 | G071-G080 | Implemented and tested | Separate visual channels, compact-control audit, assistive row semantics, focus tests, reduced motion, high contrast, 200% responsive geometry, protected overlays, and drag alternatives |
 | G081-G090 | Implemented and tested | Narrow provider/filesystem/hash ports, process isolation and lazy activation, one quota scheduler, immutable task generations, serializable transition machines, deterministic fault/crash verification, and no-loss model checks |
-| G091-G100 | Next sequential slice | CI budgets, percentile telemetry, empirical fixtures, startup phases, developer diagnostics, support bundles, kill switches, KLM workflows, and architecture decisions |
+| G091-G100 | Implemented, tested, and reviewed in three passes | Live CI budgets, bounded percentile telemetry, empirical fixtures, startup phases, developer diagnostics, capability/support exports, atomic kill switches, KLM workflow guards, and colocated architecture decisions |
+
+All 100 proposals are now implemented. The ledger describes shipped ownership
+and verification evidence rather than a future roadmap.
 
 ## Original promotion candidates
 
@@ -427,6 +430,6 @@ Before implementation began, the best near-term value/risk ratio was **G001,
 G004, G010, G012, G022-G025,
 G028, G035, G048, G062-G065, G068, G072-G073, G079, G096, G099, and G100**.
 This historical shortlist is retained to explain the initial sequencing. The
-first milestone ultimately implemented all of `G001-G050`; the second keeps
-the architecture-sized `G057` and `G084-G089` work aligned with their Track A
-owners.
+first milestone ultimately implemented all of `G001-G050`; the second
+implemented all of `G051-G100`, keeping the architecture-sized `G057` and
+`G084-G089` work aligned with their Track A owners.

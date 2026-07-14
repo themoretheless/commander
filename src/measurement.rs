@@ -588,6 +588,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "timing gate runs in the isolated single-threaded CI step"]
     fn ci_runtime_smoke_probes_stay_within_budgets() {
         let temp = TempDir::new();
         for index in 0..512 {

@@ -117,6 +117,11 @@ module is a thin egui layer over it.
   technology. System high-contrast and reduced-motion preferences are
   honored; text scales from 80% to 200%, with compact toolbars and a bottom
   Operations Center on constrained widths.
+- **Developer diagnostics**: the gear panel shows workers, queued I/O, cache
+  bytes, frame and cancellation percentiles, startup phases, and CI budgets.
+  It can export a capability report or a salted, redacted support bundle and
+  exposes bounded rollout/kill controls for optional index, preview, and
+  external-provider paths.
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,
   Compress, Copy Path, Show in Finder, Tags, Share, Move to Trash.
 - **Session persistence** (panel paths, layout, view toggles) and a **light /
@@ -155,8 +160,8 @@ compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
 full 621-item raw sweep. [research.md](research.md) is the external evidence
 layer: 100 high-star repositories, 30 primary papers/standards, and 100
 deduplicated proposals. Its implementation ledger records G001-G050 as the
-first shipped research milestone, G051-G090 as implemented slices of the
-second, and G091-G100 as the remaining sequential work.
+first shipped research milestone and G051-G100 as the second; all 100 items
+are implemented and tested.
 
 ## Review backlog
 
@@ -187,6 +192,10 @@ and keyboard-first tools. Its design conclusion is deliberately conservative:
 keep paths and dual-pane browsing visible, enrich them with contextual search,
 protect the foreground loop with cancellation and budgets, and define file
 operations around recovery and end-to-end completion.
+The two implementation milestones now cover all `G001-G100`: the final slice
+adds live CI performance probes, percentile telemetry, empirical benchmark
+trees, startup phases, developer diagnostics, redacted support exports,
+runtime provider controls, KLM workflow budgets, and colocated operation ADRs.
 
 ## Keyboard shortcuts
 
