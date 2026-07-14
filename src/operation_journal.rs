@@ -29,7 +29,81 @@ pub enum OperationStatus {
     RolledBack,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OperationEvent {
+    Start,
+    Stop,
+    Fail,
+    RequireReview,
+    Complete,
+    RollBack,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransitionError {
+    pub machine: &'static str,
+    pub from: String,
+    pub event: String,
+}
+
+impl std::fmt::Display for TransitionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid {} transition from {} on {}",
+            self.machine, self.from, self.event
+        )
+    }
+}
+
 impl OperationStatus {
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Planned | Self::Running)
+    }
+
+    pub fn transition(self, event: OperationEvent) -> Result<Self, TransitionError> {
+        let target = match event {
+            OperationEvent::Start => Self::Running,
+            OperationEvent::Stop => Self::Stopped,
+            OperationEvent::Fail => Self::Failed,
+            OperationEvent::RequireReview => Self::NeedsReview,
+            OperationEvent::Complete => Self::Completed,
+            OperationEvent::RollBack => Self::RolledBack,
+        };
+        if self == target {
+            return Ok(self);
+        }
+        let valid = matches!(
+            (self, event),
+            (
+                Self::Planned | Self::Stopped | Self::Failed | Self::NeedsReview,
+                OperationEvent::Start
+            ) | (
+                Self::Running,
+                OperationEvent::Stop
+                    | OperationEvent::Fail
+                    | OperationEvent::RequireReview
+                    | OperationEvent::Complete
+            ) | (
+                Self::Planned
+                    | Self::Running
+                    | Self::Stopped
+                    | Self::Failed
+                    | Self::NeedsReview
+                    | Self::Completed,
+                OperationEvent::RollBack
+            ) | (
+                Self::Stopped | Self::Failed | Self::Completed,
+                OperationEvent::RequireReview
+            )
+        );
+        valid.then_some(target).ok_or_else(|| TransitionError {
+            machine: "operation",
+            from: format!("{self:?}"),
+            event: format!("{event:?}"),
+        })
+    }
+
     pub fn recoverable(self) -> bool {
         matches!(
             self,
@@ -61,6 +135,17 @@ pub enum StepStatus {
     RolledBack,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StepEvent {
+    Start,
+    Checkpoint,
+    Requeue,
+    Complete,
+    Skip,
+    Fail,
+    RollBack,
+}
+
 impl StepStatus {
     pub fn label(self) -> &'static str {
         match self {
@@ -74,8 +159,39 @@ impl StepStatus {
         }
     }
 
-    fn terminal(self) -> bool {
+    pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Skipped | Self::RolledBack)
+    }
+
+    pub fn transition(self, event: StepEvent) -> Result<Self, TransitionError> {
+        let target = match event {
+            StepEvent::Start | StepEvent::Checkpoint => Self::Running,
+            StepEvent::Requeue => Self::Requeued,
+            StepEvent::Complete => Self::Completed,
+            StepEvent::Skip => Self::Skipped,
+            StepEvent::Fail => Self::Failed,
+            StepEvent::RollBack => Self::RolledBack,
+        };
+        if self == target {
+            return Ok(self);
+        }
+        let valid = matches!(
+            (self, event),
+            (
+                Self::Planned | Self::Requeued | Self::Failed,
+                StepEvent::Start
+            ) | (Self::Running, StepEvent::Checkpoint | StepEvent::Requeue)
+                | (
+                    Self::Planned | Self::Running | Self::Requeued | Self::Failed,
+                    StepEvent::Complete | StepEvent::Skip | StepEvent::Fail
+                )
+                | (Self::Completed, StepEvent::RollBack)
+        );
+        valid.then_some(target).ok_or_else(|| TransitionError {
+            machine: "operation step",
+            from: format!("{self:?}"),
+            event: format!("{event:?}"),
+        })
     }
 }
 
@@ -276,10 +392,11 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
             .iter_mut()
             .find(|operation| operation.id == spec.operation_id)
         {
-            if existing.status == OperationStatus::RolledBack {
+            if existing.status.is_terminal() && !existing.status.recoverable() {
                 return Err(format!(
-                    "Operation {} was already rolled back",
-                    spec.operation_id.0
+                    "Operation {} is already finalized as {}",
+                    spec.operation_id.0,
+                    existing.status.label()
                 ));
             }
             if existing.kind != spec.kind
@@ -322,7 +439,10 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                     ));
                 }
             }
-            existing.status = OperationStatus::Running;
+            existing.status = existing
+                .status
+                .transition(OperationEvent::Start)
+                .map_err(|error| error.to_string())?;
             existing.updated_at_secs = now;
             return Ok(());
         }
@@ -378,7 +498,9 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
             symlink_policy: spec.symlink_policy,
             post_success: spec.post_success.clone(),
             rollback_cleanup: spec.rollback_cleanup.clone(),
-            status: OperationStatus::Running,
+            status: OperationStatus::Planned
+                .transition(OperationEvent::Start)
+                .map_err(|error| error.to_string())?,
             created_at_secs: now,
             updated_at_secs: now,
             steps,
@@ -390,7 +512,7 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
 fn update_step(
     operation_id: &OperationId,
     key: &IdempotencyKey,
-    update: impl FnOnce(&mut OperationStep),
+    update: impl FnOnce(&mut OperationStep) -> Result<(), String>,
 ) -> Result<(), String> {
     mutate(|journal| {
         let operation = journal
@@ -403,7 +525,7 @@ fn update_step(
             .iter_mut()
             .find(|step| &step.key == key)
             .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
-        update(step);
+        update(step)?;
         operation.updated_at_secs = now_secs();
         Ok(())
     })
@@ -417,21 +539,23 @@ pub fn mark_running(
     landing_before: PathIdentity,
 ) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        if !step.status.terminal() {
-            step.status = StepStatus::Running;
-            step.staging = Some(staging.to_path_buf());
-            step.landing = Some(landing.to_path_buf());
-            step.landing_before = Some(landing_before);
-            step.attempts = step.attempts.saturating_add(1);
-            step.failure = None;
-            if step
-                .checkpoint
-                .as_ref()
-                .is_some_and(|checkpoint| checkpoint.staging != staging)
-            {
-                step.checkpoint = None;
-            }
+        step.status = step
+            .status
+            .transition(StepEvent::Start)
+            .map_err(|error| error.to_string())?;
+        step.staging = Some(staging.to_path_buf());
+        step.landing = Some(landing.to_path_buf());
+        step.landing_before = Some(landing_before);
+        step.attempts = step.attempts.saturating_add(1);
+        step.failure = None;
+        if step
+            .checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.staging != staging)
+        {
+            step.checkpoint = None;
         }
+        Ok(())
     })
 }
 
@@ -441,12 +565,14 @@ pub fn mark_checkpoint(
     checkpoint: ResumeCheckpoint,
 ) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        if !step.status.terminal() {
-            step.status = StepStatus::Running;
-            step.staging = Some(checkpoint.staging.clone());
-            step.checkpoint = Some(checkpoint);
-            step.failure = None;
-        }
+        step.status = step
+            .status
+            .transition(StepEvent::Checkpoint)
+            .map_err(|error| error.to_string())?;
+        step.staging = Some(checkpoint.staging.clone());
+        step.checkpoint = Some(checkpoint);
+        step.failure = None;
+        Ok(())
     })
 }
 
@@ -456,15 +582,17 @@ pub fn mark_requeued(
     source_before: PathIdentity,
 ) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        if !step.status.terminal() {
-            step.status = StepStatus::Requeued;
-            step.source_before = Some(source_before);
-            step.staging = None;
-            step.landing = None;
-            step.landing_before = None;
-            step.checkpoint = None;
-            step.fast_path = None;
-        }
+        step.status = step
+            .status
+            .transition(StepEvent::Requeue)
+            .map_err(|error| error.to_string())?;
+        step.source_before = Some(source_before);
+        step.staging = None;
+        step.landing = None;
+        step.landing_before = None;
+        step.checkpoint = None;
+        step.fast_path = None;
+        Ok(())
     })
 }
 
@@ -477,25 +605,29 @@ pub fn mark_completed(
     let destination_after = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not capture completed effect: {error}"))?;
     update_step(operation_id, key, |step| {
-        if !step.status.terminal() {
-            step.status = StepStatus::Completed;
-            step.landing = Some(destination.to_path_buf());
-            step.destination_after = Some(destination_after);
-            step.staging = None;
-            step.checkpoint = None;
-            step.fast_path = Some(fast_path);
-            step.failure = None;
-        }
+        step.status = step
+            .status
+            .transition(StepEvent::Complete)
+            .map_err(|error| error.to_string())?;
+        step.landing = Some(destination.to_path_buf());
+        step.destination_after = Some(destination_after);
+        step.staging = None;
+        step.checkpoint = None;
+        step.fast_path = Some(fast_path);
+        step.failure = None;
+        Ok(())
     })
 }
 
 pub fn mark_skipped(operation_id: &OperationId, key: &IdempotencyKey) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        if !step.status.terminal() {
-            step.status = StepStatus::Skipped;
-            step.staging = None;
-            step.checkpoint = None;
-        }
+        step.status = step
+            .status
+            .transition(StepEvent::Skip)
+            .map_err(|error| error.to_string())?;
+        step.staging = None;
+        step.checkpoint = None;
+        Ok(())
     })
 }
 
@@ -505,13 +637,15 @@ pub fn mark_failed(
     failure: ClassifiedFailure,
 ) -> Result<(), String> {
     update_step(operation_id, key, |step| {
-        if !step.status.terminal() {
-            step.status = StepStatus::Failed;
-            if failure.class != FailureClass::IntegrityUncertain && step.checkpoint.is_none() {
-                step.staging = None;
-            }
-            step.failure = Some(failure);
+        step.status = step
+            .status
+            .transition(StepEvent::Fail)
+            .map_err(|error| error.to_string())?;
+        if failure.class != FailureClass::IntegrityUncertain && step.checkpoint.is_none() {
+            step.staging = None;
         }
+        step.failure = Some(failure);
+        Ok(())
     })
 }
 
@@ -522,14 +656,21 @@ pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(),
             .iter_mut()
             .find(|operation| &operation.id == operation_id)
             .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        if operation.status == OperationStatus::RolledBack && status != OperationStatus::RolledBack
-        {
-            return Err(format!(
-                "Operation {} was already rolled back",
-                operation_id.0
-            ));
-        }
-        operation.status = status;
+        let event = match status {
+            OperationStatus::Planned => {
+                return Err("cannot finish an operation as planned".to_string());
+            }
+            OperationStatus::Running => OperationEvent::Start,
+            OperationStatus::Stopped => OperationEvent::Stop,
+            OperationStatus::Failed => OperationEvent::Fail,
+            OperationStatus::NeedsReview => OperationEvent::RequireReview,
+            OperationStatus::Completed => OperationEvent::Complete,
+            OperationStatus::RolledBack => OperationEvent::RollBack,
+        };
+        operation.status = operation
+            .status
+            .transition(event)
+            .map_err(|error| error.to_string())?;
         operation.updated_at_secs = now_secs();
         Ok(())
     })
@@ -578,6 +719,9 @@ pub fn step_checkpoint(
 }
 
 fn settled_step(step: &OperationStep) -> Result<bool, String> {
+    if !step.status.is_terminal() {
+        return Ok(false);
+    }
     match step.status {
         StepStatus::Completed => prove_completed_effect(step),
         StepStatus::Skipped => Ok(true),
@@ -585,7 +729,7 @@ fn settled_step(step: &OperationStep) -> Result<bool, String> {
             "Operation step {} was already rolled back",
             step.key.0
         )),
-        _ => Ok(false),
+        _ => unreachable!("all non-terminal step states returned above"),
     }
 }
 
@@ -980,7 +1124,11 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
         match result {
             Ok(()) => {
                 update_step(operation_id, &step.key, |journal_step| {
-                    journal_step.status = StepStatus::RolledBack;
+                    journal_step.status = journal_step
+                        .status
+                        .transition(StepEvent::RollBack)
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
                 })?;
                 plan.completed.push(RepairItem {
                     path: effect.to_path_buf(),
@@ -1089,6 +1237,138 @@ pub fn clean_orphan(orphan: &OrphanStaging) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn serializable_state_machines_exhaust_every_transition_and_terminal_state() {
+        let operation_statuses = [
+            OperationStatus::Planned,
+            OperationStatus::Running,
+            OperationStatus::Stopped,
+            OperationStatus::Failed,
+            OperationStatus::NeedsReview,
+            OperationStatus::Completed,
+            OperationStatus::RolledBack,
+        ];
+        let operation_events = [
+            OperationEvent::Start,
+            OperationEvent::Stop,
+            OperationEvent::Fail,
+            OperationEvent::RequireReview,
+            OperationEvent::Complete,
+            OperationEvent::RollBack,
+        ];
+        for status in operation_statuses {
+            for event in operation_events {
+                let target = match event {
+                    OperationEvent::Start => OperationStatus::Running,
+                    OperationEvent::Stop => OperationStatus::Stopped,
+                    OperationEvent::Fail => OperationStatus::Failed,
+                    OperationEvent::RequireReview => OperationStatus::NeedsReview,
+                    OperationEvent::Complete => OperationStatus::Completed,
+                    OperationEvent::RollBack => OperationStatus::RolledBack,
+                };
+                let expected = status == target
+                    || matches!(
+                        (status, event),
+                        (
+                            OperationStatus::Planned
+                                | OperationStatus::Stopped
+                                | OperationStatus::Failed
+                                | OperationStatus::NeedsReview,
+                            OperationEvent::Start
+                        ) | (
+                            OperationStatus::Running,
+                            OperationEvent::Stop
+                                | OperationEvent::Fail
+                                | OperationEvent::RequireReview
+                                | OperationEvent::Complete
+                        ) | (
+                            OperationStatus::Planned
+                                | OperationStatus::Running
+                                | OperationStatus::Stopped
+                                | OperationStatus::Failed
+                                | OperationStatus::NeedsReview
+                                | OperationStatus::Completed,
+                            OperationEvent::RollBack
+                        ) | (
+                            OperationStatus::Stopped
+                                | OperationStatus::Failed
+                                | OperationStatus::Completed,
+                            OperationEvent::RequireReview
+                        )
+                    );
+                assert_eq!(
+                    status.transition(event).ok(),
+                    expected.then_some(target),
+                    "operation {status:?} + {event:?}"
+                );
+            }
+        }
+        assert!(!OperationStatus::Planned.is_terminal());
+        assert!(!OperationStatus::Running.is_terminal());
+        assert!(OperationStatus::Stopped.is_terminal());
+        assert!(OperationStatus::RolledBack.is_terminal());
+
+        let step_statuses = [
+            StepStatus::Planned,
+            StepStatus::Running,
+            StepStatus::Requeued,
+            StepStatus::Completed,
+            StepStatus::Skipped,
+            StepStatus::Failed,
+            StepStatus::RolledBack,
+        ];
+        let step_events = [
+            StepEvent::Start,
+            StepEvent::Checkpoint,
+            StepEvent::Requeue,
+            StepEvent::Complete,
+            StepEvent::Skip,
+            StepEvent::Fail,
+            StepEvent::RollBack,
+        ];
+        for status in step_statuses {
+            for event in step_events {
+                let encoded = serde_json::to_string(&(status, event)).unwrap();
+                let decoded: (StepStatus, StepEvent) = serde_json::from_str(&encoded).unwrap();
+                assert_eq!(decoded, (status, event));
+                let target = match event {
+                    StepEvent::Start | StepEvent::Checkpoint => StepStatus::Running,
+                    StepEvent::Requeue => StepStatus::Requeued,
+                    StepEvent::Complete => StepStatus::Completed,
+                    StepEvent::Skip => StepStatus::Skipped,
+                    StepEvent::Fail => StepStatus::Failed,
+                    StepEvent::RollBack => StepStatus::RolledBack,
+                };
+                let expected = status == target
+                    || matches!(
+                        (status, event),
+                        (
+                            StepStatus::Planned | StepStatus::Requeued | StepStatus::Failed,
+                            StepEvent::Start
+                        ) | (
+                            StepStatus::Running,
+                            StepEvent::Checkpoint | StepEvent::Requeue
+                        ) | (
+                            StepStatus::Planned
+                                | StepStatus::Running
+                                | StepStatus::Requeued
+                                | StepStatus::Failed,
+                            StepEvent::Complete | StepEvent::Skip | StepEvent::Fail
+                        ) | (StepStatus::Completed, StepEvent::RollBack)
+                    );
+                assert_eq!(
+                    status.transition(event).ok(),
+                    expected.then_some(target),
+                    "step {status:?} + {event:?}"
+                );
+            }
+        }
+        assert!(StepStatus::Completed.is_terminal());
+        assert!(StepStatus::Skipped.is_terminal());
+        assert!(StepStatus::RolledBack.is_terminal());
+        assert!(!StepStatus::Failed.is_terminal());
+    }
 
     fn incomplete_record(source: &Path, destination: &Path, status: StepStatus) -> OperationRecord {
         let key = IdempotencyKey("step-1".to_string());

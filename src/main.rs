@@ -66,6 +66,8 @@ pub mod workload;
 mod workspace;
 
 #[cfg(test)]
+mod operation_verification;
+#[cfg(test)]
 mod testutil;
 
 use eframe::NativeOptions;
