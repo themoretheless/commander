@@ -54,6 +54,8 @@ pub struct VolumeProfile {
     pub filesystem: String,
     pub mount_point: PathBuf,
     pub read_only: bool,
+    #[serde(default)]
+    pub case_sensitive: Option<bool>,
     pub capabilities: VolumeCapabilities,
     pub reason: String,
 }
@@ -67,13 +69,25 @@ static PROFILES: OnceLock<Mutex<HashMap<u64, CachedProfile>>> = OnceLock::new();
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub fn profile(path: &Path) -> VolumeProfile {
+    profile_with_refresh(path, false)
+}
+
+/// Re-probe the mount contract even when its short-lived cache entry is still
+/// fresh. Used by disconnect guards; generation remains stable when the
+/// observed contract is unchanged.
+pub fn refresh(path: &Path) -> VolumeProfile {
+    profile_with_refresh(path, true)
+}
+
+fn profile_with_refresh(path: &Path, force: bool) -> VolumeProfile {
     let probe_path = nearest_existing(path);
     let volume_id =
         native_volume_id(&probe_path).unwrap_or_else(|| fallback_volume_id(&probe_path));
     let cache = PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
     {
         let profiles = crate::lock_util::recover(cache);
-        if let Some(cached) = profiles.get(&volume_id)
+        if !force
+            && let Some(cached) = profiles.get(&volume_id)
             && cached.expires_at > Instant::now()
         {
             return cached.profile.clone();
@@ -103,8 +117,14 @@ pub fn profile(path: &Path) -> VolumeProfile {
 }
 
 pub fn invalidate(volume_id: u64) {
-    if let Some(cache) = PROFILES.get() {
-        crate::lock_util::recover(cache).remove(&volume_id);
+    if let Some(cache) = PROFILES.get()
+        && let Some(cached) = crate::lock_util::recover(cache).get_mut(&volume_id)
+    {
+        // Force the next normal lookup to probe again, but retain the last
+        // contract so an unchanged mount keeps its generation. Dropping
+        // the entry here made unrelated concurrent transfers interpret a
+        // transient I/O error as a remount.
+        cached.expires_at = Instant::now();
     }
 }
 
@@ -114,6 +134,7 @@ fn same_contract(left: &VolumeProfile, right: &VolumeProfile) -> bool {
         && left.filesystem == right.filesystem
         && left.mount_point == right.mount_point
         && left.read_only == right.read_only
+        && left.case_sensitive == right.case_sensitive
         && left.capabilities == right.capabilities
 }
 
@@ -195,6 +216,7 @@ fn probe(path: &Path, volume_id: u64) -> VolumeProfile {
         .as_ref()
         .map_or_else(|| nearest_existing(path), |mount| mount.mount_point.clone());
     let read_only = native.as_ref().is_some_and(|mount| mount.read_only);
+    let case_sensitive = native.as_ref().and_then(|mount| mount.case_sensitive);
     let backend = classify(
         native.as_ref().map(|mount| mount.local),
         &filesystem,
@@ -207,6 +229,7 @@ fn probe(path: &Path, volume_id: u64) -> VolumeProfile {
         filesystem: filesystem.clone(),
         mount_point: mount_point.clone(),
         read_only,
+        case_sensitive,
         capabilities: capabilities(backend, &filesystem, read_only),
         reason: format!(
             "{} filesystem at {}{}",
@@ -222,6 +245,7 @@ struct NativeMount {
     mount_point: PathBuf,
     local: bool,
     read_only: bool,
+    case_sensitive: Option<bool>,
 }
 
 #[cfg(target_os = "macos")]
@@ -248,6 +272,10 @@ fn native_mount(path: &Path) -> Option<NativeMount> {
         mount_point,
         local: stats.f_flags & libc::MNT_LOCAL as u32 != 0,
         read_only: stats.f_flags & libc::MNT_RDONLY as u32 != 0,
+        case_sensitive: {
+            let value = unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) };
+            (value >= 0).then_some(value != 0)
+        },
     })
 }
 
@@ -289,6 +317,16 @@ mod tests {
         assert_eq!(first.volume_id, second.volume_id);
         assert_eq!(first.generation, second.generation);
         assert!(!first.reason.is_empty());
+    }
+
+    #[test]
+    fn forced_invalidation_keeps_generation_when_the_mount_is_unchanged() {
+        let temp = TempDir::new();
+        let first = profile(temp.path());
+        invalidate(first.volume_id);
+        let second = profile(temp.path());
+        assert_eq!(first.volume_id, second.volume_id);
+        assert_eq!(first.generation, second.generation);
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod archive_dialog;
 mod batch_rename_dialog;
 mod collections_dialog;
 mod confirm_dialog;
+mod developer_panel;
 mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
@@ -17,7 +18,6 @@ mod palette_dialog;
 mod path_dialog;
 mod preload;
 mod queue_dialog;
-mod receipts_dialog;
 mod recent_dialog;
 mod recovery_dialog;
 mod rename_dialog;
@@ -46,6 +46,7 @@ pub struct App {
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
+    pub(crate) accessibility_preferences: crate::accessibility::Preferences,
     pub(crate) prev_window_width: f32,
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
@@ -64,8 +65,12 @@ pub struct App {
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
     pub(crate) show_compare: bool,
-    /// Whether the transfer-queue panel is visible.
-    pub(crate) show_queue_panel: bool,
+    /// Whether the unified queue/history/errors/recovery surface is visible.
+    pub(crate) show_operations_center: bool,
+    pub(crate) operations_tab: OperationsTab,
+    pub(crate) operations_search: String,
+    pub(crate) operation_failures: crate::operation_view::FailureInbox,
+    pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::OperationId>,
     /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
     pub(crate) focus_mode: bool,
     pub(crate) focus_started_at: f64,
@@ -86,8 +91,6 @@ pub struct App {
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Searchable history of completed moves/deletes/batch-renames.
     pub(crate) receipts: crate::receipts::ReceiptLog,
-    /// Active receipts-search buffer; `Some` while the dialog is open.
-    pub(crate) receipts_input: Option<String>,
     /// Filesystem-aware confirmation for the pending undo/redo replay.
     pub(crate) history_preview: Option<HistoryPreviewState>,
     /// Startup-scanned durable recovery and orphan-staging model.
@@ -133,6 +136,34 @@ pub struct App {
         crate::compare::CompareMap,
         crate::compare::CompareMap,
     )>,
+    /// Startup instrumentation remains live through the first directory read.
+    pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
+    pub(crate) show_developer_panel: bool,
+    pub(crate) developer_notice: Option<DeveloperNotice>,
+}
+
+pub(crate) struct DeveloperNotice {
+    pub message: String,
+    pub path: Option<PathBuf>,
+    pub error: bool,
+}
+
+impl DeveloperNotice {
+    fn success(message: impl Into<String>, path: PathBuf) -> Self {
+        Self {
+            message: message.into(),
+            path: Some(path),
+            error: false,
+        }
+    }
+
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            path: None,
+            error: true,
+        }
+    }
 }
 
 /// UI state for the run-command / open-with bar.
@@ -398,6 +429,28 @@ pub(crate) enum RecoveryDetail {
     Repair,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum OperationsTab {
+    #[default]
+    Queue,
+    History,
+    Errors,
+    Recovery,
+}
+
+impl OperationsTab {
+    pub(crate) const ALL: [Self; 4] = [Self::Queue, Self::History, Self::Errors, Self::Recovery];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Queue => "Queue",
+            Self::History => "History",
+            Self::Errors => "Errors",
+            Self::Recovery => "Recovery",
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct RecoveryState {
     pub open: bool,
@@ -421,11 +474,13 @@ pub(crate) struct RecoveryScanResult {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut startup = crate::measurement::StartupTrace::start();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session = crate::session::load();
         if let Some(saved) = &session {
             crate::panel::restore_visit_snapshot(&saved.recent_paths, &saved.recent_stats);
         }
+        startup.checkpoint(crate::measurement::StartupPhase::SessionRestore);
 
         // Theme: a saved session wins, otherwise follow the system appearance.
         let mode = match &session {
@@ -445,7 +500,19 @@ impl App {
                 }
             }
         };
-        apply_theme(&cc.egui_ctx, mode);
+        let accessibility_preferences = crate::accessibility::Preferences::system();
+        debug_assert!(
+            crate::accessibility::control_audit_failures(&crate::accessibility::CONTROL_CATALOG)
+                .is_empty()
+        );
+        debug_assert_eq!(
+            crate::accessibility::visual_channel_snapshot()
+                .lines()
+                .count(),
+            crate::accessibility::VisualChannel::ALL.len()
+        );
+        apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
+        startup.checkpoint(crate::measurement::StartupPhase::Appearance);
 
         let (left, right) = session
             .as_ref()
@@ -453,7 +520,8 @@ impl App {
             .unwrap_or_else(|| (home.clone(), home.clone()));
         let mut ws = Workspace::new(left, right);
 
-        let ui_scale = session.as_ref().map_or(1.0, |s| s.ui_scale);
+        let ui_scale =
+            crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
         cc.egui_ctx.set_zoom_factor(ui_scale);
 
         if let Some(s) = &session {
@@ -476,19 +544,25 @@ impl App {
             ws.right.density = s.right_density;
             ws.durability_profile = s.durability_profile;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
+            ws.name_policy = s.name_policy;
+            ws.symlink_policy = s.symlink_policy;
         }
+        startup.checkpoint(crate::measurement::StartupPhase::WorkspaceRestore);
 
         let recovery = RecoveryState::scan(&ws);
-        App {
+        startup.checkpoint(crate::measurement::StartupPhase::RecoveryScan);
+        let image_cache = crate::image_cache::ImageCache::new();
+        let content_index = crate::content_index::ContentIndex::load();
+        let project_collections = crate::collections::load();
+        startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
+        let mut app = App {
             ws,
             ui_scale,
             theme_mode: mode,
-            colors: match mode {
-                ThemeMode::Light => ThemeColors::light(),
-                ThemeMode::Dark => ThemeColors::dark(),
-            },
+            colors: ThemeColors::for_preferences(mode, accessibility_preferences),
+            accessibility_preferences,
             prev_window_width: 0.0,
-            image_cache: crate::image_cache::ImageCache::new(),
+            image_cache,
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
@@ -498,7 +572,11 @@ impl App {
             chord: None,
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
-            show_queue_panel: false,
+            show_operations_center: false,
+            operations_tab: OperationsTab::default(),
+            operations_search: String::new(),
+            operation_failures: crate::operation_view::FailureInbox::default(),
+            failure_notice_seen: std::collections::HashSet::new(),
             focus_mode: false,
             focus_started_at: 0.0,
             mask_input: None,
@@ -512,10 +590,9 @@ impl App {
                 .as_ref()
                 .map(|s| s.search_history.clone())
                 .unwrap_or_default(),
-            content_index: crate::content_index::ContentIndex::load(),
+            content_index,
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
-            receipts_input: None,
             history_preview: None,
             recovery,
             palette_input: None,
@@ -533,12 +610,19 @@ impl App {
             archive: None,
             smart_folders: None,
             saved_search_open: false,
-            project_collections: crate::collections::load(),
+            project_collections,
             collections_dialog: None,
             command_templates: None,
             run_command: None,
             compare_cache: None,
+            startup_trace: Some(startup),
+            show_developer_panel: false,
+            developer_notice: None,
+        };
+        if let Some(trace) = &mut app.startup_trace {
+            trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
         }
+        app
     }
 
     /// The command-template store, loaded from disk on first access.
@@ -586,6 +670,8 @@ impl App {
             search_history: self.search_history.clone(),
             durability_profile: self.ws.durability_profile,
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
+            name_policy: self.ws.name_policy,
+            symlink_policy: self.ws.symlink_policy,
         }
     }
 

@@ -16,10 +16,11 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: more than 60 focused modules and 534
-`#[test]` functions (two ignored profiling harnesses) sit under a thin
-presentation layer. The debt is concentrated in three oversized core files and
-in how the core signals the UI.
+That split is real and worth protecting: more than 60 focused modules and 606
+`#[test]` functions sit under a thin presentation layer. The broad suite runs
+603; two profiling harnesses and the separately executed single-threaded
+performance timing gate are ignored there. The debt is concentrated in three
+oversized core files and in how the core signals the UI.
 
 ### External-research constraints (2026-07-14)
 
@@ -42,9 +43,11 @@ target architecture without changing the current migration order:
 
 These constraints reinforce, rather than replace, the planned `ViewConfig`,
 typed Effect queue, `TransferCenter`/`UndoCenter`, and injected ports. The
-`G044` now has an owner in `volume_profile`; `path_identity` supplies the core
-of `G057`. The scheduler/state-machine work in `G084-G089` still waits for its
-own Track A boundary instead of being folded into `Workspace` or `App`.
+`G044` has an owner in `volume_profile`; `path_identity` supplies the core of
+`G057`. `ports`/`provider_runtime`, `workload`, and the journal transition
+machines own `G081-G090`. `measurement`, `benchmark_fixture`,
+`capability_diagnostic`, `support_bundle`, `feature_flags`, and `klm` own
+`G091-G100` without adding policy to `Workspace`.
 
 ## Module map (current)
 
@@ -67,15 +70,28 @@ Grouped by the bounded context each module really belongs to:
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
 - **Operation contract / recovery**: `operation` owns IDs, durability, and
-  failure classes; `operation_journal` owns durable transitions and recovery;
-  `path_identity`, `version_store`, `undo`, and `sync_guard` supply proof,
-  versions, reversible history, and circuit breakers.
+  failure classes; `operation_journal` owns serializable event transitions and recovery;
+  `path_identity`, `filesystem_policy`, `mount_guard`, `version_store`, `undo`,
+  and `sync_guard` supply identity proof, filesystem capability policy,
+  remount safety, versions, reversible history, and circuit breakers.
 - **Transfer execution**: `transfer` coordinates staging and commit;
   `native_copy`, `delta_copy`, and `verified_hash` own specialized data paths;
   `volume_profile` and `transfer_tuning` own capability/telemetry policy;
   `opqueue` is surfaced through the queue panel. `conflict`, `fs_util`,
   `rename`, `rename_order`, `sync`, and `shelf` remain adjacent operation
   helpers.
+- **Capability / workload boundaries**: `ports` defines narrow preview,
+  search, filesystem, and hashing contracts; `provider_runtime` enforces lazy
+  capability activation, startup budgets, and out-of-process optional
+  providers; `workload` owns priority, quotas, cancellation, backpressure,
+  immutable snapshots, generation rejection, and scheduler telemetry;
+  `feature_flags` owns persisted rollout cohorts and atomic runtime kill
+  switches for optional providers.
+- **Measurement / diagnostics**: `measurement` owns latency distributions,
+  startup phases, and versioned CI budgets; `benchmark_fixture` generates
+  deterministic empirical trees; `capability_diagnostic` explains per-volume
+  fast paths and fallbacks; `support_bundle` exports capped, salted-redacted
+  evidence; `klm` checks the ten core operator workflows.
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
   `session`, `density`, `focus_mode`, `quick_actions`, `treemap`, `toasts`
@@ -90,18 +106,22 @@ lives in `app/update.rs`; input translation in `app/keys.rs`; one file per
 dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
 `find_dialog`, `recovery_dialog`, `safe_state_dialog`, `collections_dialog`,
 ...); row rendering in `app/file_list.rs` and `app/render.rs`; native macOS
-menu in `native_menu`.
+menu in `native_menu`. Toolkit-independent accessibility and responsive-layout
+contracts live in `accessibility`; operation presentation vocabulary lives in
+`operation_view` rather than individual dialogs. `app/developer_panel.rs`
+renders immutable diagnostics snapshots and sends explicit feature-control or
+export commands; it does not own measurement or rollout policy.
 
 ### Size hot-spots
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 4,512 | God object plus a large colocated test module |
-| `src/transfer.rs` | 3,104 | Coordinator still contains buffered/sparse tree mechanics |
-| `src/panel.rs` | 3,088 | God object; `PanelState` mixes 4 concerns |
-| `src/search.rs` | 1,428 | Provider composition and a large fixture suite |
-| `src/operation_journal.rs` | 1,406 | Durable state, recovery, rollback, and tests |
-| `src/app/update.rs` | 1,113 | Per-frame hub; drains the flag bus |
+| `src/workspace.rs` | 4,705 | God object plus a large colocated test module |
+| `src/transfer.rs` | 3,623 | Coordinator still contains buffered/sparse tree mechanics |
+| `src/panel.rs` | 3,220 | God object; `PanelState` mixes 4 concerns |
+| `src/operation_journal.rs` | 1,714 | Durable state, transition machines, recovery, rollback, and tests |
+| `src/search.rs` | 1,496 | Provider composition and a large fixture suite |
+| `src/app/update.rs` | 1,277 | Per-frame hub; drains the flag bus |
 
 ### Research milestone 1 (G001-G050)
 
@@ -123,6 +143,54 @@ make the effect visible. Checkpoints refer to the same staging inode and a
 logical boundary. Buffered recovery truncates an uncheckpointed tail; seeded
 delta recovery rewrites from its last fixed/FastCDC boundary. Both still pass
 whole-file verification before final placement.
+
+### Research milestone 2 (G051-G100 complete)
+
+The second milestone landed in ten-item slices with policy kept outside
+the egui adapter:
+
+| Slice | Primary owners | Contract |
+| --- | --- | --- |
+| G051-G060 | `filesystem_policy`, `mount_guard`, `path_identity`, `operation` | Model filesystem identity/capabilities and fail closed across remount or policy changes |
+| G061-G070 | `operation_view`, `opqueue`, Operations Center, transfer UI | Use one phase/progress/failure vocabulary across queue, history, errors, and recovery |
+| G071-G080 | `accessibility`, `theme`, file rows, toolbar, Operations Center | Preserve distinct focus/state channels, non-color cues, assistive semantics, reduced motion, high contrast, 200% layout, and non-drag alternatives |
+| G081-G083 | `ports`, `provider_runtime`, `search`, `content_index` | Keep optional providers narrow, capability-scoped, startup-budgeted, and outside the UI process |
+| G084-G087 | `workload`, `search`, `content_index`, `image_cache`, `transfer` | Admit heavy work through one priority/quota scheduler and reject stale generations deterministically |
+| G088-G090 | `operation_journal`, `operation_verification` | Validate every transition and preserve data across injected side-effect failures, crash restarts, and small conflict state spaces |
+| G091-G094 | `measurement`, `benchmark_fixture`, CI manifests | Measure real startup/listing/filter/dialog paths, preserve percentile telemetry, and fail versioned budgets on regression |
+| G095-G098 | `developer_panel`, `capability_diagnostic`, `support_bundle`, `feature_flags` | Explain runtime costs and capability routes, export bounded redacted evidence, and disable risky providers without redeploying |
+| G099-G100 | `klm`, `operation/README.md`, colocated ADRs | Bound operator growth in ten core workflows and keep operation invariants, ownership, and failure policy beside code |
+
+`accessibility::Preferences` reads system high-contrast/reduced-motion settings
+once (with explicit environment overrides for tests). `FocusLayout`, the
+control catalog, semantic-channel snapshot, row semantics, overlay placement,
+and responsive geometry are pure contracts with unit tests. The egui layer
+consumes those decisions: modal surfaces disable background interaction,
+toasts avoid the current focus/error rectangles, narrow toolbars use an
+overflow menu, and the Operations Center changes from a right panel to a
+bottom panel before pane geometry becomes constrained. File-pane widths are
+always calculated from the `Ui` area remaining after utility panels carve
+their space, never from the raw viewport.
+
+The workload runtime admits search, index, preview, and transfer work against
+global and per-kind limits. Every task receives an immutable serializable
+snapshot plus a cancellation token; root disconnect and newer generations
+cancel obsolete work, and stale completion is counted rather than published.
+Journal operation/step status changes now pass through typed event matrices.
+The test-only `operation_verification` harness performs real typed filesystem
+effects, injects faults immediately before and after each one, restarts from
+JSON after every durable transition, and exhausts the small
+copy/move/sync-conflict space against no-loss invariants.
+
+Performance CI executes the same probes used by the application instead of
+checking a checked-in "current" result. The probes cover startup construction,
+a 512-entry first listing, filter response, and operation-dialog model/export
+work against `ci/performance-budgets.json`; telemetry retains bounded
+p50/p95/p99 distributions and real monotonic cancellation samples. Optional
+provider reads use an atomic flag mask on hot paths, while configuration and
+support exports take one coherent snapshot. Operation decisions are indexed in
+[`src/operation/README.md`](src/operation/README.md) with three accepted ADRs
+for durable invariants, state ownership, and failure/recovery policy.
 
 ## The core <-> UI boundary today
 
@@ -166,9 +234,11 @@ coupling they create:
   rather than add another branch to `CopyMethod::copy_entry`.
 - **The flag bus** (mechanism #2 above) is a hand-rolled, untyped event queue
   smeared across ~20 fields with no single drain point.
-- **Leaky ports.** The only injected capability is `opener: Box<dyn Fn(&Path)>`.
-  Clipboard, Trash, persistence and free-space probing are called inline from
-  the core, so the domain is not testable without real side-effects. The same
+- **Leaky OS ports.** Narrow provider/filesystem/hash ports now protect optional
+  background work, but `Workspace` still injects only
+  `opener: Box<dyn Fn(&Path)>` for native shell behavior. Clipboard, Trash,
+  persistence and free-space probing are called inline from the core, so those
+  paths are not testable without real side-effects. The same
   gap is security-relevant, not just a testability one: `native_menu`'s
   "Get Info" action hand-builds an AppleScript string and shells out to
   `osascript`. The audit's #1/D12 AppleScript-injection finding is now

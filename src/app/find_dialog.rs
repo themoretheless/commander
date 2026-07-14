@@ -199,7 +199,7 @@ impl App {
         };
         let search_source = run.provider.to_string();
         if let Some(state) = self.find.as_mut() {
-            state.generation = run.generation;
+            state.generation = run.snapshot.generation;
             state.run = Some(run);
             state.search_source = search_source;
             state.results.clear();

@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod accessibility;
 mod app;
 mod archive;
+pub mod benchmark_fixture;
 mod bookmarks;
+pub mod capability_diagnostic;
 mod clipboard;
 mod cmdtemplate;
 mod collections;
@@ -14,22 +17,30 @@ mod crumbs;
 mod dedup;
 mod delta_copy;
 mod density;
+pub mod feature_flags;
 mod file_color;
+mod filesystem_policy;
 mod focus_mode;
 mod fs_util;
 mod fuzzy;
 mod image_cache;
 mod io_budget;
 mod jumplist;
+pub mod klm;
 mod listing_export;
 mod lock_util;
+pub mod measurement;
+mod mount_guard;
 mod native_copy;
 mod native_menu;
 mod operation;
 mod operation_journal;
+mod operation_view;
 mod opqueue;
 mod panel;
 mod path_identity;
+pub mod ports;
+pub mod provider_runtime;
 mod query;
 mod quick_actions;
 mod receipts;
@@ -43,6 +54,7 @@ mod selset;
 mod session;
 mod shelf;
 mod smart_folder;
+pub mod support_bundle;
 mod sync;
 mod sync_guard;
 mod textdiff;
@@ -56,8 +68,11 @@ mod undo;
 mod verified_hash;
 mod version_store;
 mod volume_profile;
+pub mod workload;
 mod workspace;
 
+#[cfg(test)]
+mod operation_verification;
 #[cfg(test)]
 mod testutil;
 

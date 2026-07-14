@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "metrics": [
+    {
+      "metric": "startup_total",
+      "hard_p95_ms": 1200.0,
+      "baseline_p95_ms": 700.0,
+      "allowed_regression_percent": 15.0
+    },
+    {
+      "metric": "first_listing",
+      "hard_p95_ms": 350.0,
+      "baseline_p95_ms": 220.0,
+      "allowed_regression_percent": 15.0
+    },
+    {
+      "metric": "filter_response",
+      "hard_p95_ms": 16.7,
+      "baseline_p95_ms": 8.0,
+      "allowed_regression_percent": 10.0
+    },
+    {
+      "metric": "operation_dialog",
+      "hard_p95_ms": 100.0,
+      "baseline_p95_ms": 30.0,
+      "allowed_regression_percent": 10.0
+    }
+  ],
+  "regression_explanations": []
+}

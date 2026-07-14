@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::scan::FlatFileEntry;
+use crate::transfer::OverwritePolicy;
 
 impl App {
     pub(crate) fn show_confirm_dialog(&mut self, ctx: &egui::Context) {
@@ -10,6 +11,8 @@ impl App {
         let Some(op) = &self.ws.pending_op else {
             return;
         };
+        let _latency =
+            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::OperationDialog);
 
         // Snapshot display data so `self` stays free for the button handlers.
         let (title, action_label, action_color, count, target, source_dir, conflicts, flat_arc) =
@@ -61,6 +64,12 @@ impl App {
             _ => None,
         };
         let overflow = fit.map(|f| f.0).unwrap_or(false);
+        let preflight_blocked = matches!(
+            &self.ws.pending_op,
+            Some(PendingOp::Transfer(transfer))
+                if transfer.filesystem.capabilities.state(crate::filesystem_policy::Capability::Write)
+                    == crate::filesystem_policy::CapabilityState::Unavailable
+        );
 
         let flat_opt = crate::lock_util::recover(&flat_arc).clone();
         let flat_ready = flat_opt.is_some();
@@ -69,7 +78,11 @@ impl App {
         // Rich per-conflict detail (size/mtime each side) for the resolver.
         let rich_conflicts = self.ws.pending_conflicts();
 
-        let has_conflicts = !conflicts.is_empty();
+        let has_conflicts = !conflicts.is_empty()
+            && matches!(
+                &self.ws.pending_op,
+                Some(PendingOp::Transfer(transfer)) if transfer.policy == OverwritePolicy::Ask
+            );
         let is_delete = target.is_none();
         let win_title = format!("{} — {} item(s)", title, count);
         let screen = ctx.input(|i| i.viewport_rect());
@@ -105,6 +118,7 @@ impl App {
                     self.method_tabs_row(ui, &t, title, count);
                 }
                 self.durability_row(ui, &t);
+                self.filesystem_policy_row(ui, &t);
                 self.resource_policy_row(ui, &t);
                 ui.add_space(8.0);
 
@@ -360,7 +374,7 @@ impl App {
                         ui.add_space(8.0);
                         if ui
                             .add_enabled(
-                                !overflow && !mutations_blocked,
+                                !overflow && !preflight_blocked && !mutations_blocked,
                                 egui::Button::new(
                                     egui::RichText::new(action_label)
                                         .size(13.0)
@@ -381,6 +395,7 @@ impl App {
                 }
                 if !has_conflicts
                     && !overflow
+                    && !preflight_blocked
                     && !mutations_blocked
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
@@ -546,6 +561,140 @@ impl App {
                 transfer.durability = selected;
             }
         }
+    }
+
+    fn filesystem_policy_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors) {
+        let Some(PendingOp::Transfer(transfer)) = &mut self.ws.pending_op else {
+            return;
+        };
+        let previous_form = transfer.name_policy.normalization;
+        let mut collision = transfer.name_policy.collision;
+        let mut symlinks = transfer.symlink_policy;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new("Filesystem")
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
+            egui::ComboBox::from_id_salt("normalization_policy")
+                .selected_text(transfer.name_policy.normalization.label())
+                .show_ui(ui, |ui| {
+                    for form in [
+                        crate::filesystem_policy::NormalizationForm::Preserve,
+                        crate::filesystem_policy::NormalizationForm::Nfc,
+                        crate::filesystem_policy::NormalizationForm::Nfd,
+                    ] {
+                        ui.selectable_value(
+                            &mut transfer.name_policy.normalization,
+                            form,
+                            form.label(),
+                        );
+                    }
+                });
+            egui::ComboBox::from_id_salt("collision_policy")
+                .selected_text(collision.label())
+                .show_ui(ui, |ui| {
+                    for policy in [
+                        crate::filesystem_policy::CollisionPolicy::Ask,
+                        crate::filesystem_policy::CollisionPolicy::KeepBoth,
+                        crate::filesystem_policy::CollisionPolicy::Skip,
+                    ] {
+                        ui.selectable_value(&mut collision, policy, policy.label());
+                    }
+                });
+            egui::ComboBox::from_id_salt("symlink_policy")
+                .selected_text(symlinks.label())
+                .show_ui(ui, |ui| {
+                    for policy in [
+                        crate::filesystem_policy::SymlinkPolicy::Preserve,
+                        crate::filesystem_policy::SymlinkPolicy::Follow,
+                        crate::filesystem_policy::SymlinkPolicy::Skip,
+                    ] {
+                        ui.selectable_value(&mut symlinks, policy, policy.label())
+                            .on_hover_text(policy.consequence());
+                    }
+                });
+
+            let change_count = transfer.filesystem.normalization.changes.len();
+            let collision_count = transfer.filesystem.normalization.collisions.len();
+            if change_count > 0 || collision_count > 0 {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{change_count} rename preview  \u{00b7}  {collision_count} collision{}",
+                        if collision_count == 1 { "" } else { "s" }
+                    ))
+                    .size(10.0)
+                    .color(t.accent_warning),
+                );
+            }
+            if !transfer.filesystem.portability.is_empty() {
+                let details = transfer
+                    .filesystem
+                    .portability
+                    .iter()
+                    .take(8)
+                    .map(|issue| {
+                        let targets = issue
+                            .targets
+                            .iter()
+                            .map(|target| target.label())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{} ({targets}): {}", issue.name, issue.reason)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} portability warning{}",
+                        transfer.filesystem.portability.len(),
+                        if transfer.filesystem.portability.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ))
+                    .size(10.0)
+                    .color(t.accent_warning),
+                )
+                .on_hover_text(details);
+            }
+            let unavailable = transfer.filesystem.capabilities.unavailable_labels();
+            if !unavailable.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("Unavailable: {}", unavailable.join(", ")))
+                        .size(10.0)
+                        .color(t.text_muted),
+                );
+            }
+        });
+
+        if transfer.name_policy.normalization != previous_form {
+            let names = transfer
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>();
+            transfer.filesystem.normalization = crate::filesystem_policy::preview_normalization(
+                names,
+                transfer.name_policy.normalization,
+                transfer
+                    .filesystem
+                    .capabilities
+                    .case_sensitive
+                    .unwrap_or(false),
+            );
+        }
+        if collision != transfer.name_policy.collision {
+            transfer.name_policy.collision = collision;
+            transfer.policy = match collision {
+                crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
+                crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
+                crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
+            };
+        }
+        transfer.symlink_policy = symlinks;
     }
 
     fn resource_policy_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors) {

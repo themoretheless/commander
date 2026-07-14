@@ -421,11 +421,20 @@ impl App {
                 } else {
                     t.text_muted
                 };
-                Frame::NONE
+                let header = Frame::NONE
                     .fill(header_bg)
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            if is_active {
+                                ui.label(
+                                    egui::RichText::new("ACTIVE")
+                                        .size(9.0)
+                                        .strong()
+                                        .color(t.accent),
+                                );
+                                ui.add_space(4.0);
+                            }
                             let name_label =
                                 format!("Name{}", panel.sort_indicator(SortColumn::Name));
                             if ui
@@ -480,6 +489,15 @@ impl App {
                             });
                         });
                     });
+                if is_active {
+                    ui.painter().line_segment(
+                        [
+                            header.response.rect.left_top(),
+                            header.response.rect.right_top(),
+                        ],
+                        Stroke::new(2.0, t.accent),
+                    );
+                }
 
                 ui.add(egui::Separator::default().spacing(0.0));
 
@@ -509,6 +527,16 @@ impl App {
                                     {
                                         close_preview = true;
                                     }
+                                });
+                            } else if !crate::feature_flags::enabled(
+                                crate::feature_flags::RiskyFeature::ImagePreview,
+                            ) {
+                                ui.centered_and_justified(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Image preview disabled")
+                                            .size(12.0)
+                                            .color(t.text_muted),
+                                    );
                                 });
                             } else {
                                 ui.centered_and_justified(|ui| {

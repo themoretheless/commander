@@ -7,21 +7,21 @@ impl App {
         let Some(state) = self.ws.active_transfer.clone() else {
             return;
         };
+        let _latency =
+            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::OperationDialog);
         let t = self.colors;
 
         let s = crate::lock_util::recover(&state);
-        let progress_frac = if s.total_bytes > 0 {
-            s.copied_bytes as f32 / s.total_bytes as f32
-        } else {
-            0.0
-        };
+        let progress_frac = s.progress_fraction();
         let file_frac = if s.current_file_size > 0 {
             s.current_file_copied as f32 / s.current_file_size as f32
         } else {
             0.0
         };
         let speed = s.speed_bps();
-        let eta = s.eta_secs();
+        let eta = s.phase_eta_secs();
+        let phase = s.phase;
+        let submitted = s.submitted.clone();
         let current_file = s.current_file.clone();
         let current_file_copied = s.current_file_copied;
         let current_file_size = s.current_file_size;
@@ -40,6 +40,7 @@ impl App {
         let adaptive_concurrency = s.adaptive_concurrency;
         let bandwidth_limit = s.bandwidth_limit;
         let waiting_reason = s.waiting_reason.clone();
+        let pause_reason = s.pause_reason.clone();
         let latest_fast_path = s.fast_paths.last().copied();
         let delta_reused_bytes = s.delta_reused_bytes;
         let delta_source_bytes = s.delta_source_bytes;
@@ -50,8 +51,8 @@ impl App {
         // Transfers waiting behind this one in the queue.
         let queued = self.ws.queued_count();
 
-        let title = if waiting_reason.is_some() && !finished {
-            "Waiting for Quiet Hours"
+        let title = if pause_reason.is_some() && !finished {
+            "Transfer Paused"
         } else if finished && stopped {
             "Stopped Safely"
         } else if finished {
@@ -65,12 +66,58 @@ impl App {
         } else {
             "Transferring..."
         };
-        egui::Window::new(title)
+        let window_response = egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .default_width(450.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                if let Some(summary) = &submitted {
+                    ui.label(
+                        egui::RichText::new(summary.label())
+                            .size(12.0)
+                            .strong()
+                            .color(t.text_primary),
+                    );
+                    ui.label(
+                        egui::RichText::new(summary.detail())
+                            .size(10.0)
+                            .color(t.text_muted),
+                    );
+                    ui.add_space(6.0);
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let width = ((ui.available_width() - 8.0) / 5.0).max(58.0);
+                    for candidate in crate::operation_view::OperationPhase::ALL {
+                        let active = candidate == phase;
+                        let complete = candidate.ordinal() < phase.ordinal();
+                        let color = if active {
+                            Color32::WHITE
+                        } else if complete {
+                            t.accent
+                        } else {
+                            t.text_muted
+                        };
+                        let fill = if active {
+                            t.accent
+                        } else {
+                            t.bg_card.linear_multiply(0.45)
+                        };
+                        ui.add_sized(
+                            [width, 22.0],
+                            egui::Button::new(
+                                egui::RichText::new(candidate.label())
+                                    .size(10.0)
+                                    .color(color),
+                            )
+                            .fill(fill)
+                            .corner_radius(CornerRadius::ZERO)
+                            .sense(Sense::hover()),
+                        );
+                    }
+                });
+                ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
@@ -95,7 +142,18 @@ impl App {
                         ui.label(egui::RichText::new(path.label()).size(10.0).color(t.accent));
                     }
                 });
-                if let Some(reason) = &waiting_reason {
+                if let Some(reason) = &pause_reason {
+                    ui.label(
+                        egui::RichText::new(reason.label())
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                    ui.label(
+                        egui::RichText::new(reason.resume_condition())
+                            .size(10.0)
+                            .color(t.text_muted),
+                    );
+                } else if let Some(reason) = &waiting_reason {
                     ui.label(
                         egui::RichText::new(reason)
                             .size(11.0)
@@ -146,12 +204,17 @@ impl App {
                 ui.add_space(2.0);
                 Self::draw_progress_bar(
                     ui,
-                    progress_frac,
-                    &format!(
-                        "{} / {} ({:.0}%)",
-                        format_size(copied),
-                        format_size(total),
-                        progress_frac * 100.0,
+                    progress_frac.unwrap_or(0.0),
+                    &progress_frac.map_or_else(
+                        || "Estimating total...".to_string(),
+                        |fraction| {
+                            format!(
+                                "{} / {} ({:.0}%)",
+                                format_size(copied),
+                                format_size(total),
+                                fraction * 100.0,
+                            )
+                        },
                     ),
                     t.accent.linear_multiply(0.7),
                     &t,
@@ -167,13 +230,18 @@ impl App {
                     );
 
                     ui.add_space(16.0);
-                    if eta > 0.0 && !finished {
+                    if let Some(eta) = eta.filter(|eta| *eta > 0.0 && !finished) {
                         let mins = (eta / 60.0) as u64;
                         let secs = (eta % 60.0) as u64;
                         ui.label(
-                            egui::RichText::new(format!("ETA: {}:{:02}", mins, secs))
-                                .size(11.0)
-                                .color(t.text_muted),
+                            egui::RichText::new(format!(
+                                "{} ETA: {}:{:02}",
+                                phase.label(),
+                                mins,
+                                secs
+                            ))
+                            .size(11.0)
+                            .color(t.text_muted),
                         );
                     }
 
@@ -204,7 +272,9 @@ impl App {
                     );
                 }
 
-                Self::draw_speed_graph(ui, &samples, &t);
+                if !self.accessibility_preferences.reduced_motion {
+                    Self::draw_speed_graph(ui, &samples, &t);
+                }
 
                 // Errors collected during the transfer
                 if !errors.is_empty() {
@@ -249,6 +319,7 @@ impl App {
                     }
                 } else {
                     ui.horizontal(|ui| {
+                        let stop = crate::operation_view::CancellationAction::StopAfterCurrentFile;
                         if ui
                             .add_enabled(
                                 !stop_requested,
@@ -256,7 +327,7 @@ impl App {
                                     egui::RichText::new(if stop_requested {
                                         "Stopping after file"
                                     } else {
-                                        "Stop after file"
+                                        stop.label()
                                     })
                                     .size(13.0)
                                     .color(Color32::WHITE),
@@ -264,20 +335,46 @@ impl App {
                                 .fill(t.accent_warning)
                                 .corner_radius(CornerRadius::ZERO),
                             )
+                            .on_hover_text(stop.consequence())
                             .clicked()
                         {
                             self.ws.stop_transfer_after_current();
                         }
+                        if queued > 0 {
+                            let cancel_pending =
+                                crate::operation_view::CancellationAction::CancelPending;
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(format!(
+                                            "{} ({queued})",
+                                            cancel_pending.label()
+                                        ))
+                                        .size(13.0)
+                                        .color(t.text_primary),
+                                    )
+                                    .fill(t.bg_card)
+                                    .corner_radius(CornerRadius::ZERO),
+                                )
+                                .on_hover_text(cancel_pending.consequence())
+                                .clicked()
+                            {
+                                self.ws.cancel_pending_transfers();
+                            }
+                        }
+                        let cancel_current =
+                            crate::operation_view::CancellationAction::CancelCurrent;
                         if ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new("Cancel now")
+                                    egui::RichText::new(cancel_current.label())
                                         .size(13.0)
                                         .color(Color32::WHITE),
                                 )
                                 .fill(t.accent_red)
                                 .corner_radius(CornerRadius::ZERO),
                             )
+                            .on_hover_text(cancel_current.consequence())
                             .clicked()
                         {
                             self.ws.cancel_transfer();
@@ -285,6 +382,14 @@ impl App {
                     });
                 }
             });
+
+        if !errors.is_empty()
+            && let Some(window) = window_response
+        {
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new("active_error_surface"), window.response.rect);
+            });
+        }
 
         // Keep repainting during transfer
         if !finished {

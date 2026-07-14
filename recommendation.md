@@ -822,19 +822,53 @@ stable proposals (`G001-G100`) live in [research.md](research.md).
 `G001-G050` are implemented and reviewed as the first sequential milestone in
 16 small tested commits. The work is split across navigation, discovery,
 operation integrity, recovery, and adaptive transfer owners rather than being
-added to `Workspace`. `G051-G100` form the next milestone. Existing Track E
+added to `Workspace`. `G051-G100` complete the second milestone in independently
+tested filesystem-policy, operation-UX, accessibility, provider/runtime,
+verification, and measurement/maintainability slices. Existing Track E
 ideas supported by the research were explicitly excluded from the new count,
 so post-copy verification, crash journaling, dry-run, archive browsing,
 virtualization, logging, and remote-watcher work are not double-counted.
 
 ## Tracking
 
+**Round-14 G091-G100 measurement/maintainability pass: done.** CI now measures
+real startup, first-listing, filter, and operation-dialog probes against a
+versioned budget contract; runtime telemetry retains bounded p50/p95/p99 and
+monotonic cancellation samples. An empirical benchmark-tree generator, live
+developer panel, per-volume capability explanation, capped salted-redacted
+support bundle, atomic provider kill/rollout controls, ten KLM workflow guards,
+and three colocated operation ADRs complete the research ledger. Three review
+passes removed the static performance-result surrogate, bounded support data,
+cleared disabled preview state, made hot feature reads lock-free, reduced
+snapshot/sort overhead, and tightened compact panel controls. Full verification:
+603 passed, 3 explicitly isolated/ignored, the single-threaded performance
+gate passed separately, and strict all-target clippy is clean.
+
+**Round-13 G081-G090 architecture/verification pass: done.** Narrow provider
+ports, out-of-process optional-provider policy, lazy startup budgets, and one
+quota scheduler now own heavy work outside the UI. Search/index/preview/
+transfer jobs carry immutable generations and cooperative cancellation.
+Operation and step status changes use serializable event matrices; deterministic
+tests inject failures before/after every typed filesystem effect, restart at
+every journal transition, and model-check copy/move/sync conflict combinations
+against no-loss invariants. Full verification: 584 passed, 2 ignored, strict
+all-target clippy clean. Round 14 subsequently closed `G091-G100`.
+
+**Round-12 G051-G080 implementation pass: done.** Filesystem/remount
+policy (`G051-G060`), unified operation progress/recovery UX (`G061-G070`),
+and the accessibility/responsive-design contract (`G071-G080`) are
+implemented in separate owners. The current UI distinguishes active pane,
+focus, cursor, selection, and marks; exposes row semantics; honors system
+contrast/motion preferences; keeps 200% layouts bounded; protects focus/error
+surfaces from toasts; and provides keyboard plus single-pointer alternatives
+for drag workflows. Rounds 13 and 14 subsequently closed `G081-G100`.
+
 **Round-11 G001-G050 implementation pass: done.** Implemented the first five
 research slices in 16 focused commits, added 110 tests over the prior baseline,
 and completed separate correctness, performance/architecture, and UI/docs
 reviews. The resulting owners and durability invariants are recorded in
-`architecture.md`; `research.md` is the stable item ledger. The next sequential
-pass is `G051-G100`.
+`architecture.md`; `research.md` is the stable item ledger. The second
+milestone subsequently implemented `G051-G100`.
 
 **Round-10 external-research pass: done.** Screened 100 unique, active GitHub
 repositories above 1,000 stars across seven relevant strata; read 24

@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::fs_util;
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
 const CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
 const MAX_SOURCE_REQUEUES: usize = 2;
+const MAX_MOUNT_RETRIES: usize = 2;
 
 /// What to do when destination file already exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +56,9 @@ pub enum TransferKind {
 pub struct TransferProgress {
     pub operation_id: Option<OperationId>,
     pub group_id: Option<OperationGroupId>,
+    pub submitted: Option<crate::operation_view::SubmittedSummary>,
+    pub phase: crate::operation_view::OperationPhase,
+    pub total_known: bool,
     pub total_bytes: u64,
     pub copied_bytes: u64,
     pub current_file: String,
@@ -68,6 +73,7 @@ pub struct TransferProgress {
     pub adaptive_concurrency: usize,
     pub bandwidth_limit: Option<u64>,
     pub waiting_reason: Option<String>,
+    pub pause_reason: Option<crate::operation_view::PauseReason>,
     pub fast_paths: Vec<crate::transfer_tuning::FastPath>,
     pub delta_reused_bytes: u64,
     pub delta_source_bytes: u64,
@@ -86,6 +92,7 @@ pub struct TransferProgress {
     /// undo can target where files really landed: a KeepBoth conflict lands at
     /// "name copy.ext", not "name". Empty for copies.
     pub placements: Vec<(PathBuf, PathBuf)>,
+    scheduler_task: Option<crate::workload::TaskHandle>,
 }
 
 pub type TransferState = Arc<Mutex<TransferProgress>>;
@@ -95,6 +102,9 @@ impl TransferProgress {
         Self {
             operation_id: None,
             group_id: None,
+            submitted: None,
+            phase: crate::operation_view::OperationPhase::Scan,
+            total_known: true,
             total_bytes,
             copied_bytes: 0,
             current_file: String::new(),
@@ -109,6 +119,7 @@ impl TransferProgress {
             adaptive_concurrency: 1,
             bandwidth_limit: None,
             waiting_reason: None,
+            pause_reason: None,
             fast_paths: Vec::new(),
             delta_reused_bytes: 0,
             delta_source_bytes: 0,
@@ -123,6 +134,23 @@ impl TransferProgress {
             errors: Vec::new(),
             failures: Vec::new(),
             placements: Vec::new(),
+            scheduler_task: None,
+        }
+    }
+
+    pub fn request_cancel(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.cancelled = true;
+        if let Some(task) = &self.scheduler_task {
+            task.cancel();
+        }
+    }
+
+    pub fn request_stop(&mut self) {
+        if !self.finished {
+            self.stop_requested = true;
         }
     }
 
@@ -163,6 +191,46 @@ impl TransferProgress {
         remaining / speed
     }
 
+    pub fn set_phase(&mut self, phase: crate::operation_view::OperationPhase) {
+        self.phase = phase;
+    }
+
+    pub fn unknown(files_total: usize) -> Self {
+        let mut progress = Self::new(0, files_total);
+        progress.total_known = false;
+        progress
+    }
+
+    /// Overall byte progress is unknown while the scan/plan has not produced a
+    /// denominator. Returning `None` lets every UI keep the same bar geometry
+    /// while changing only its contents.
+    pub fn progress_fraction(&self) -> Option<f32> {
+        if !self.total_known {
+            return None;
+        }
+        if self.total_bytes > 0 {
+            return Some((self.copied_bytes as f32 / self.total_bytes as f32).clamp(0.0, 1.0));
+        }
+        Some(if self.files_total == 0 {
+            1.0
+        } else {
+            (self.files_done as f32 / self.files_total as f32).clamp(0.0, 1.0)
+        })
+    }
+
+    /// Estimate the remainder of the current phase. Transfer uses its rolling
+    /// byte-rate; verification/finalization use completed-file throughput.
+    pub fn phase_eta_secs(&self) -> Option<f64> {
+        use crate::operation_view::OperationPhase;
+        match self.phase {
+            OperationPhase::Transfer => (self.eta_secs() > 0.0).then(|| self.eta_secs()),
+            OperationPhase::Scan
+            | OperationPhase::Plan
+            | OperationPhase::Verify
+            | OperationPhase::Finalize => None,
+        }
+    }
+
     /// Record a sample if at least 500ms passed since the last one.
     pub fn maybe_sample(&mut self) {
         let now = self.started_at.elapsed().as_secs_f64();
@@ -196,6 +264,25 @@ impl CopyMethod {
         dest: &Path,
         context: CopyContext<'_>,
     ) -> std::io::Result<CopyOutcome> {
+        if std::fs::symlink_metadata(src)?.file_type().is_symlink() {
+            return match context.symlink_policy {
+                crate::filesystem_policy::SymlinkPolicy::Preserve => {
+                    copy_symlink(src, dest).map(|()| CopyOutcome {
+                        bytes: 0,
+                        fast_path: crate::transfer_tuning::FastPath::Buffered,
+                    })
+                }
+                crate::filesystem_policy::SymlinkPolicy::Follow => {
+                    let followed = std::fs::canonicalize(src)?;
+                    let metadata = std::fs::symlink_metadata(&followed)?;
+                    self.copy_entry(&followed, metadata.is_dir(), dest, context)
+                }
+                crate::filesystem_policy::SymlinkPolicy::Skip => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "skipped symlink reached the copy backend",
+                )),
+            };
+        }
         let bandwidth_limited = context.rule.max_bytes_per_second.is_some();
         let source_size = (!is_dir)
             .then(|| src.metadata().map(|metadata| metadata.len()))
@@ -236,7 +323,9 @@ impl CopyMethod {
         }
         let force_resumable =
             source_size.is_some_and(|size| requires_resumable_buffer(context.profile, size));
-        let force_buffered = bandwidth_limited || force_resumable;
+        let force_buffered = bandwidth_limited
+            || force_resumable
+            || context.symlink_policy != crate::filesystem_policy::SymlinkPolicy::Preserve;
         if !is_dir
             && context.resume.is_none()
             && context.profile.capabilities.sparse
@@ -285,7 +374,11 @@ impl CopyMethod {
                 let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(context.rule);
                 if is_dir {
                     let workers = crate::transfer_tuning::snapshot(context.profile).concurrency;
-                    if workers > 1 && context.rule.max_bytes_per_second.is_none() {
+                    if workers > 1
+                        && context.rule.max_bytes_per_second.is_none()
+                        && context.symlink_policy
+                            == crate::filesystem_policy::SymlinkPolicy::Preserve
+                    {
                         copy_dir_buffered_parallel(
                             src,
                             dest,
@@ -300,6 +393,7 @@ impl CopyMethod {
                             context.progress,
                             &mut limiter,
                             context.profile.capabilities.sparse,
+                            context.symlink_policy,
                         )
                     }
                     .map(|bytes| CopyOutcome {
@@ -360,6 +454,7 @@ struct CopyContext<'a> {
     tuning: crate::transfer_tuning::TuningSnapshot,
     basis: Option<&'a Path>,
     resume: Option<&'a ResumeCheckpoint>,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     journal: JournalStep<'a>,
 }
 
@@ -438,6 +533,8 @@ pub struct TransferSpec {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
+    pub name_policy: crate::filesystem_policy::NamePolicy,
+    pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     pub post_success: Option<PostTransferAction>,
     /// A container created specifically for this operation and removable only
     /// after every completed effect has been rolled back out of it.
@@ -521,6 +618,7 @@ struct TransferWorkItem {
     entry: FileEntry,
     expectation: TransferExpectation,
     requeues: usize,
+    mount_retries: usize,
 }
 
 fn prepare_source_retry(
@@ -556,6 +654,56 @@ fn reset_for_retry(progress: &TransferState, completed_bytes: u64, old_size: u64
     state.current_file_copied = 0;
     state.current_file_size = new_size;
     state.requeued_files += 1;
+}
+
+fn wait_for_mount(
+    guard: &crate::mount_guard::MountGuard,
+    label: &str,
+    progress: &TransferState,
+    notify: &impl Fn(),
+) -> std::io::Result<()> {
+    if guard.check() == crate::mount_guard::MountAvailability::Available {
+        return Ok(());
+    }
+    {
+        let mut state = crate::lock_util::recover(progress);
+        let reason = crate::operation_view::PauseReason::MountDisconnected {
+            label: label.to_string(),
+            timeout_secs: guard.policy.timeout_ms / 1_000,
+        };
+        state.waiting_reason = Some(reason.label());
+        state.pause_reason = Some(reason);
+    }
+    notify();
+    let result = guard.wait_until_available(|| {
+        notify();
+        let state = crate::lock_util::recover(progress);
+        !state.cancelled && !state.stop_requested
+    });
+    {
+        let mut state = crate::lock_util::recover(progress);
+        state.waiting_reason = None;
+        state.pause_reason = None;
+    }
+    notify();
+    result
+}
+
+fn is_disconnect_error(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        error.kind(),
+        ErrorKind::NotFound
+            | ErrorKind::TimedOut
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::BrokenPipe
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::NetworkDown
+            | ErrorKind::NotConnected
+            | ErrorKind::HostUnreachable
+            | ErrorKind::StaleNetworkFileHandle
+    )
 }
 
 fn record_failure(progress: &TransferState, entry_name: &str, failure: ClassifiedFailure) {
@@ -669,15 +817,53 @@ pub fn spawn_transfer(
     progress: TransferState,
     notify: impl Fn() + Send + 'static,
 ) {
-    std::thread::spawn(move || {
+    static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let task_root = spec.target.clone();
+    let worker_progress = Arc::clone(&progress);
+    let notify = Arc::new(Mutex::new(notify));
+    let worker_notify = Arc::clone(&notify);
+    let task_spec = crate::workload::TaskSpec::new(
+        crate::workload::TaskKind::Transfer,
+        task_root.clone(),
+        generation,
+    )
+    .priority(crate::workload::Priority::Critical)
+    .estimated_bytes(64 * 1024 * 1024);
+    let worker = move |scheduler_cancel: crate::workload::CancellationToken| {
+        let progress = worker_progress;
+        let notify = || (crate::lock_util::recover(&worker_notify))();
+        if scheduler_cancel.is_cancelled() {
+            crate::lock_util::recover(&progress).cancelled = true;
+            finish_progress(&progress);
+            notify();
+            return;
+        }
         let journal_enabled = journal_enabled(&spec);
-        let target_profile = crate::volume_profile::profile(&spec.target);
-        let resource_rule = crate::transfer_tuning::rule_for(&target_profile);
-        let tuning = crate::transfer_tuning::snapshot(&target_profile);
         {
             let mut state = crate::lock_util::recover(&progress);
             state.operation_id = Some(spec.operation_id.clone());
             state.group_id = spec.group_id.clone();
+            state.set_phase(crate::operation_view::OperationPhase::Scan);
+        }
+        notify();
+        let total_bytes = spec.entries.iter().map(entry_size).sum();
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.total_bytes = total_bytes;
+            state.total_known = true;
+            state.set_phase(crate::operation_view::OperationPhase::Plan);
+        }
+        notify();
+        let target_profile = crate::volume_profile::profile(&spec.target);
+        let target_mount = crate::mount_guard::MountGuard::capture(
+            &spec.target,
+            crate::mount_guard::ReconnectPolicy::default(),
+        );
+        let resource_rule = crate::transfer_tuning::rule_for(&target_profile);
+        let tuning = crate::transfer_tuning::snapshot(&target_profile);
+        {
+            let mut state = crate::lock_util::recover(&progress);
             state.backend_label = target_profile.backend.label().to_string();
             state.backend_reason = target_profile.reason.clone();
             state.p95_latency_ms = tuning.p95_latency_ms;
@@ -690,10 +876,32 @@ pub fn spawn_transfer(
             notify();
             return;
         }
+        if let Err(error) = wait_for_mount(&target_mount, "Destination volume", &progress, &notify)
+        {
+            record_failure(
+                &progress,
+                "Operation",
+                ClassifiedFailure::io(Some(spec.target.clone()), "mount unavailable", &error),
+            );
+            finish_progress(&progress);
+            if journal_enabled {
+                let _ = crate::operation_journal::finish(
+                    &spec.operation_id,
+                    crate::operation_journal::OperationStatus::Failed,
+                );
+            }
+            notify();
+            return;
+        }
         while resource_rule.is_quiet_now() {
             let should_stop = {
                 let mut state = crate::lock_util::recover(&progress);
-                state.waiting_reason = Some("Quiet hours are active for this volume".to_string());
+                let reason = crate::operation_view::PauseReason::QuietHours { resume_at: None };
+                state.waiting_reason = Some(reason.label());
+                state.pause_reason = Some(reason);
+                if scheduler_cancel.is_cancelled() {
+                    state.cancelled = true;
+                }
                 state.cancelled || state.stop_requested
             };
             notify();
@@ -702,11 +910,13 @@ pub fn spawn_transfer(
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        crate::lock_util::recover(&progress).waiting_reason = None;
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.waiting_reason = None;
+            state.pause_reason = None;
+        }
         let is_move = spec.kind == TransferKind::Move;
         let mut base_bytes: u64 = 0;
-        let total_bytes = spec.entries.iter().map(entry_size).sum();
-        crate::lock_util::recover(&progress).total_bytes = total_bytes;
         let expectations = if spec.expectations.len() == spec.entries.len() {
             spec.expectations
         } else {
@@ -728,9 +938,14 @@ pub fn spawn_transfer(
                     entry,
                     expectation,
                     requeues: 0,
+                    mount_retries: 0,
                 }
             })
             .collect::<VecDeque<_>>();
+
+        crate::lock_util::recover(&progress)
+            .set_phase(crate::operation_view::OperationPhase::Transfer);
+        notify();
 
         'work: while let Some(mut work_item) = work.pop_front() {
             let this_size = entry_size(&work_item.entry);
@@ -740,6 +955,9 @@ pub fn spawn_transfer(
             {
                 let mut s = crate::lock_util::recover(&progress);
                 s.current_file = entry.name.clone();
+                if scheduler_cancel.is_cancelled() {
+                    s.cancelled = true;
+                }
                 if s.cancelled {
                     break; // fall through to the finished-setter below
                 }
@@ -747,6 +965,25 @@ pub fn spawn_transfer(
                     s.stopped = true;
                     break;
                 }
+            }
+
+            if let Err(error) =
+                wait_for_mount(&target_mount, "Destination volume", &progress, &notify)
+            {
+                complete_without_copy(
+                    &progress,
+                    &mut base_bytes,
+                    this_size,
+                    &entry.name,
+                    Some(ClassifiedFailure::io(
+                        Some(spec.target.clone()),
+                        "mount unavailable",
+                        &error,
+                    )),
+                    Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                    &notify,
+                );
+                continue;
             }
 
             if journal_enabled {
@@ -867,6 +1104,21 @@ pub fn spawn_transfer(
                         &notify,
                     ),
                 }
+                continue;
+            }
+
+            if spec.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Skip
+                && source_before.kind == Some(crate::path_identity::PathKind::Symlink)
+            {
+                complete_without_copy(
+                    &progress,
+                    &mut base_bytes,
+                    this_size,
+                    &entry.name,
+                    None,
+                    Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                    &notify,
+                );
                 continue;
             }
 
@@ -1015,6 +1267,8 @@ pub fn spawn_transfer(
             // every byte, and no second pass to remove the source. The copy
             // path is reserved for cross-volume moves and all copies.
             let renamed = is_move
+                && !(source_before.kind == Some(crate::path_identity::PathKind::Symlink)
+                    && spec.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Follow)
                 && entry
                     .path
                     .parent()
@@ -1049,6 +1303,7 @@ pub fn spawn_transfer(
                         tuning: attempt_tuning,
                         basis: dest_present.then_some(dest.as_path()),
                         resume: work_item.expectation.resume.as_ref(),
+                        symlink_policy: spec.symlink_policy,
                         journal: JournalStep {
                             operation_id: &spec.operation_id,
                             key: &work_item.key,
@@ -1062,9 +1317,6 @@ pub fn spawn_transfer(
                 attempt_started.elapsed(),
                 result.is_ok(),
             );
-            if result.is_err() {
-                crate::volume_profile::invalidate(target_profile.volume_id);
-            }
             let tuning = crate::transfer_tuning::snapshot(&target_profile);
             {
                 let mut state = crate::lock_util::recover(&progress);
@@ -1088,11 +1340,57 @@ pub fn spawn_transfer(
                         }
                         break; // fall through to the finished-setter below
                     }
-                    record_failure(
-                        &progress,
-                        &entry.name,
-                        ClassifiedFailure::io(Some(entry.path.clone()), "copy failed", e),
-                    );
+                    if is_disconnect_error(e) && work_item.mount_retries < MAX_MOUNT_RETRIES {
+                        match wait_for_mount(
+                            &target_mount,
+                            "Destination volume",
+                            &progress,
+                            &notify,
+                        ) {
+                            Ok(()) => {
+                                let checkpoint = if journal_enabled {
+                                    crate::operation_journal::step_checkpoint(
+                                        &spec.operation_id,
+                                        &work_item.key,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                } else {
+                                    None
+                                };
+                                if checkpoint.is_none() {
+                                    let _ = undo_placement(&copy_target, &entry.path, renamed);
+                                }
+                                work_item.expectation.resume = checkpoint;
+                                work_item.mount_retries += 1;
+                                base_bytes = attempt_base;
+                                {
+                                    let mut state = crate::lock_util::recover(&progress);
+                                    state.copied_bytes = attempt_base;
+                                    state.current_file_copied = 0;
+                                }
+                                work.push_front(work_item);
+                                notify();
+                                continue 'work;
+                            }
+                            Err(wait_error) => record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::io(
+                                    Some(entry.path.clone()),
+                                    "mount reconnect failed",
+                                    &wait_error,
+                                ),
+                            ),
+                        }
+                    } else {
+                        record_failure(
+                            &progress,
+                            &entry.name,
+                            ClassifiedFailure::io(Some(entry.path.clone()), "copy failed", e),
+                        );
+                    }
+                    crate::volume_profile::invalidate(target_profile.volume_id);
                 }
             }
 
@@ -1211,10 +1509,18 @@ pub fn spawn_transfer(
             // native callback during this entry.
             let mut clean = result.is_ok()
                 && crate::lock_util::recover(&progress).errors.len() == errors_before;
+            let verification_source = if spec.symlink_policy
+                == crate::filesystem_policy::SymlinkPolicy::Follow
+                && source_before.kind == Some(crate::path_identity::PathKind::Symlink)
+            {
+                std::fs::canonicalize(&entry.path).unwrap_or_else(|_| entry.path.clone())
+            } else {
+                entry.path.clone()
+            };
             if clean
                 && spec.durability.verifies()
                 && !renamed
-                && !crate::version_store::paths_equal(&entry.path, &copy_target)
+                && !crate::version_store::paths_equal(&verification_source, &copy_target)
             {
                 record_failure(
                     &progress,
@@ -1416,6 +1722,12 @@ pub fn spawn_transfer(
             notify();
         }
 
+        crate::lock_util::recover(&progress)
+            .set_phase(crate::operation_view::OperationPhase::Verify);
+        notify();
+        crate::lock_util::recover(&progress)
+            .set_phase(crate::operation_view::OperationPhase::Finalize);
+        notify();
         run_post_success(spec.post_success.as_ref(), &progress);
         finish_progress(&progress);
         if journal_enabled {
@@ -1440,7 +1752,26 @@ pub fn spawn_transfer(
             }
         }
         notify();
-    });
+    };
+    let task = crate::workload::submit(task_spec, worker);
+    match task {
+        Ok(task) => {
+            crate::lock_util::recover(&progress).scheduler_task = Some(task);
+        }
+        Err(error) => {
+            record_failure(
+                &progress,
+                "Operation",
+                ClassifiedFailure::message(
+                    FailureClass::Blocked,
+                    Some(task_root),
+                    format!("workload scheduler refused transfer: {error}"),
+                ),
+            );
+            finish_progress(&progress);
+            (crate::lock_util::recover(&notify))();
+        }
+    }
 }
 
 /// Run a transfer-owned follow-up only after every entry completed without an
@@ -1491,7 +1822,9 @@ fn finish_progress(progress: &TransferState) {
     } else if s.stop_requested {
         s.stopped = true;
     }
+    s.set_phase(crate::operation_view::OperationPhase::Finalize);
     s.finished = true;
+    s.scheduler_task = None;
     s.record_sample();
 }
 
@@ -1962,7 +2295,36 @@ fn copy_dir_buffered_with_limiter(
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
     preserve_sparse: bool,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 ) -> std::io::Result<u64> {
+    let mut ancestors = std::collections::HashSet::new();
+    copy_dir_buffered_inner(
+        src,
+        dst,
+        state,
+        limiter,
+        preserve_sparse,
+        symlink_policy,
+        &mut ancestors,
+    )
+}
+
+fn copy_dir_buffered_inner(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    preserve_sparse: bool,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    ancestors: &mut std::collections::HashSet<PathBuf>,
+) -> std::io::Result<u64> {
+    let canonical = std::fs::canonicalize(src)?;
+    if !ancestors.insert(canonical.clone()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("symlink cycle detected at {}", src.display()),
+        ));
+    }
     std::fs::create_dir_all(dst)?;
     let mut copied = 0u64;
     for entry in std::fs::read_dir(src)? {
@@ -1972,14 +2334,46 @@ fn copy_dir_buffered_with_limiter(
         // file_type() does NOT follow symlinks (unlike Path::is_dir).
         let ft = entry.file_type()?;
         if ft.is_symlink() {
-            copy_symlink(&src_path, &dst_path)?;
+            match symlink_policy {
+                crate::filesystem_policy::SymlinkPolicy::Preserve => {
+                    copy_symlink(&src_path, &dst_path)?;
+                }
+                crate::filesystem_policy::SymlinkPolicy::Skip => {}
+                crate::filesystem_policy::SymlinkPolicy::Follow => {
+                    let followed = std::fs::canonicalize(&src_path)?;
+                    let followed_metadata = std::fs::symlink_metadata(&followed)?;
+                    if followed_metadata.is_dir() {
+                        copied += copy_dir_buffered_inner(
+                            &followed,
+                            &dst_path,
+                            state,
+                            limiter,
+                            preserve_sparse,
+                            symlink_policy,
+                            ancestors,
+                        )?;
+                    } else {
+                        copied += copy_file_buffered_with_limiter(
+                            &followed,
+                            &dst_path,
+                            state,
+                            limiter,
+                            None,
+                            None,
+                            preserve_sparse,
+                        )?;
+                    }
+                }
+            }
         } else if ft.is_dir() {
-            copied += copy_dir_buffered_with_limiter(
+            copied += copy_dir_buffered_inner(
                 &src_path,
                 &dst_path,
                 state,
                 limiter,
                 preserve_sparse,
+                symlink_policy,
+                ancestors,
             )?;
         } else {
             copied += copy_file_buffered_with_limiter(
@@ -1993,6 +2387,7 @@ fn copy_dir_buffered_with_limiter(
             )?;
         }
     }
+    ancestors.remove(&canonical);
     Ok(copied)
 }
 
@@ -2080,6 +2475,8 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
@@ -2105,6 +2502,8 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
@@ -2131,6 +2530,8 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
@@ -2164,6 +2565,8 @@ mod tests {
             policy,
             method,
             durability: DurabilityProfile::Fast,
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: None,
             before_commit: None,
@@ -2190,7 +2593,7 @@ mod tests {
             "hello world"
         );
         assert!(file.exists(), "copy keeps the source");
-        assert!(s.errors.is_empty());
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
         assert_eq!(s.files_done, 1);
         assert_eq!(s.copied_bytes, 11);
     }
@@ -2419,7 +2822,7 @@ mod tests {
             OverwritePolicy::Ask,
         ));
 
-        assert!(s.errors.is_empty());
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
         assert!(!dir.exists(), "source is gone after a move");
         assert_eq!(
             std::fs::read_to_string(dst.path().join("folder/a.txt")).unwrap(),
@@ -2748,6 +3151,33 @@ mod tests {
     }
 
     #[test]
+    fn unknown_progress_becomes_known_without_changing_its_model() {
+        let mut progress = TransferProgress::unknown(2);
+        assert_eq!(progress.phase, crate::operation_view::OperationPhase::Scan);
+        assert_eq!(progress.progress_fraction(), None);
+
+        progress.total_known = true;
+        progress.set_phase(crate::operation_view::OperationPhase::Plan);
+        assert_eq!(progress.progress_fraction(), Some(0.0));
+        progress.files_done = 1;
+        assert_eq!(progress.progress_fraction(), Some(0.5));
+        progress.files_done = 2;
+        assert_eq!(progress.progress_fraction(), Some(1.0));
+    }
+
+    #[test]
+    fn phase_eta_is_only_published_for_measured_transfer_work() {
+        let mut progress = TransferProgress::new(1_000, 1);
+        progress.started_at = std::time::Instant::now() - std::time::Duration::from_secs(6);
+        progress.speed_samples = vec![(0.0, 0.0), (4.0, 400.0)];
+        progress.copied_bytes = 600;
+        progress.set_phase(crate::operation_view::OperationPhase::Plan);
+        assert_eq!(progress.phase_eta_secs(), None);
+        progress.set_phase(crate::operation_view::OperationPhase::Transfer);
+        assert!(progress.phase_eta_secs().is_some_and(|eta| eta > 0.0));
+    }
+
+    #[test]
     fn speed_is_averaged_over_recent_samples() {
         let mut p = TransferProgress::new(1000, 1);
         // 100 bytes/sec: sample at t=0 (0 bytes) and t=4 (400 bytes).
@@ -3003,6 +3433,93 @@ mod tests {
             link_meta.file_type().is_symlink(),
             "the link must be recreated, not followed"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_follow_copies_a_symlink_target_as_regular_data() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let target = src.file("target.txt", "followed contents");
+        let link = src.path().join("alias.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Native,
+            vec![entry_for(&link)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        request.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Follow;
+        request.durability = DurabilityProfile::Verified;
+
+        let state = run(request);
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        let copied = dst.path().join("alias.txt");
+        assert_eq!(
+            std::fs::read_to_string(&copied).unwrap(),
+            "followed contents"
+        );
+        assert!(
+            !std::fs::symlink_metadata(copied)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_skip_omits_a_top_level_symlink_without_an_error() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let target = src.file("target.txt", "contents");
+        let link = src.path().join("alias.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&link)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        request.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Skip;
+
+        let state = run(request);
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(state.files_done, 1);
+        assert!(!dst.path().join("alias.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn followed_directory_symlink_cycles_fail_without_publishing_a_tree() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let tree = src.dir("tree");
+        src.file("tree/file.txt", "contents");
+        std::os::unix::fs::symlink(&tree, tree.join("loop")).unwrap();
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Native,
+            vec![entry_for(&tree)],
+            dst.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        request.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Follow;
+
+        let state = run(request);
+
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("symlink cycle"))
+        );
+        assert!(!dst.path().join("tree").exists());
+        assert!(src.path().join("tree/file.txt").is_file());
     }
 
     #[test]
