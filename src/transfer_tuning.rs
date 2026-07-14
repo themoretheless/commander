@@ -46,7 +46,9 @@ impl FastPath {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TuningSnapshot {
+    pub p50_latency_ms: f64,
     pub p95_latency_ms: f64,
+    pub p99_latency_ms: f64,
     pub error_rate: f64,
     pub samples: usize,
     pub concurrency: usize,
@@ -87,31 +89,37 @@ pub fn snapshot(profile: &VolumeProfile) -> TuningSnapshot {
 }
 
 fn snapshot_from(profile: &VolumeProfile, samples: Vec<Sample>) -> TuningSnapshot {
-    let mut latencies = samples
+    let latencies = samples
         .iter()
         .map(|sample| sample.latency_ms)
         .collect::<Vec<_>>();
-    latencies.sort_by(f64::total_cmp);
-    let p95_latency_ms = if latencies.is_empty() {
-        assumed_latency(profile.backend)
+    let latency = if latencies.is_empty() {
+        let assumed = assumed_latency(profile.backend);
+        crate::measurement::LatencyPercentiles {
+            p50_ms: assumed,
+            p95_ms: assumed,
+            p99_ms: assumed,
+            samples: 0,
+        }
     } else {
-        let index = ((latencies.len() - 1) as f64 * 0.95).ceil() as usize;
-        latencies[index]
+        crate::measurement::latency_percentiles(&latencies)
     };
     let error_rate = if samples.is_empty() {
         0.0
     } else {
         samples.iter().filter(|sample| !sample.success).count() as f64 / samples.len() as f64
     };
-    let desired = if error_rate >= 0.10 || p95_latency_ms >= 80.0 {
+    let desired = if error_rate >= 0.10 || latency.p95_ms >= 80.0 {
         1
-    } else if p95_latency_ms >= 15.0 {
+    } else if latency.p95_ms >= 15.0 {
         2
     } else {
         4
     };
     TuningSnapshot {
-        p95_latency_ms,
+        p50_latency_ms: latency.p50_ms,
+        p95_latency_ms: latency.p95_ms,
+        p99_latency_ms: latency.p99_ms,
         error_rate,
         samples: samples.len(),
         concurrency: desired.min(profile.capabilities.max_concurrency).max(1),
@@ -331,6 +339,9 @@ mod tests {
                 .collect(),
         );
         assert_eq!(fast.concurrency, 4);
+        assert_eq!(fast.p50_latency_ms, 2.0);
+        assert_eq!(fast.p95_latency_ms, 2.0);
+        assert_eq!(fast.p99_latency_ms, 2.0);
 
         let unstable = snapshot_from(
             &profile,

@@ -144,6 +144,10 @@ impl App {
 
         // First frame: wire the repaint callback into both panels and do
         // the initial directory read.
+        let first_listing = !self.ws.left.has_notify() || !self.ws.right.has_notify();
+        let listing_latency = first_listing.then(|| {
+            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FirstListing)
+        });
         if !self.ws.left.has_notify() {
             let c = ctx.clone();
             self.ws
@@ -157,6 +161,11 @@ impl App {
                 .right
                 .set_notify(std::sync::Arc::new(move || c.request_repaint()));
             self.ws.right.refresh();
+        }
+        drop(listing_latency);
+        if first_listing && let Some(mut trace) = self.startup_trace.take() {
+            trace.checkpoint(crate::measurement::StartupPhase::FirstListing);
+            trace.finish();
         }
 
         let fs_changed = self.ws.left.poll_fs_changes() | self.ws.right.poll_fs_changes();

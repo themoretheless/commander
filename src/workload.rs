@@ -1,10 +1,12 @@
 //! Shared workload admission, scheduling, cancellation, and result freshness.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+const MAX_LATENCY_SAMPLES: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TaskId(pub u64);
@@ -213,6 +215,9 @@ pub struct SchedulerStats {
     pub cancelled: u64,
     pub stale_results: u64,
     pub backpressured: u64,
+    pub cancellation_latency_p50_ticks: u64,
+    pub cancellation_latency_p95_ticks: u64,
+    pub cancellation_latency_p99_ticks: u64,
     pub max_cancellation_latency_ticks: u64,
 }
 
@@ -229,6 +234,7 @@ pub struct Scheduler {
     active_generations: HashMap<(TaskKind, PathBuf), u64>,
     disconnected_roots: HashSet<PathBuf>,
     counters: SchedulerStats,
+    cancellation_latencies: VecDeque<u64>,
 }
 
 impl Scheduler {
@@ -240,6 +246,7 @@ impl Scheduler {
             active_generations: HashMap::new(),
             disconnected_roots: HashSet::new(),
             counters: SchedulerStats::default(),
+            cancellation_latencies: VecDeque::new(),
         }
     }
 
@@ -389,10 +396,13 @@ impl Scheduler {
             record.state = TaskState::Cancelled;
             self.counters.cancelled = self.counters.cancelled.saturating_add(1);
             if let Some(requested) = record.cancel_requested_tick {
-                self.counters.max_cancellation_latency_ticks = self
-                    .counters
-                    .max_cancellation_latency_ticks
-                    .max(tick.saturating_sub(requested));
+                let latency = tick.saturating_sub(requested);
+                self.counters.max_cancellation_latency_ticks =
+                    self.counters.max_cancellation_latency_ticks.max(latency);
+                self.cancellation_latencies.push_back(latency);
+                while self.cancellation_latencies.len() > MAX_LATENCY_SAMPLES {
+                    self.cancellation_latencies.pop_front();
+                }
             }
             CompletionDisposition::Cancelled
         } else if succeeded {
@@ -430,6 +440,18 @@ impl Scheduler {
             queued: self.queued_count(),
             running: self.running_count(),
             inflight_bytes: self.inflight_bytes(),
+            cancellation_latency_p50_ticks: crate::measurement::percentile_u64(
+                &self.cancellation_latencies,
+                0.50,
+            ),
+            cancellation_latency_p95_ticks: crate::measurement::percentile_u64(
+                &self.cancellation_latencies,
+                0.95,
+            ),
+            cancellation_latency_p99_ticks: crate::measurement::percentile_u64(
+                &self.cancellation_latencies,
+                0.99,
+            ),
             ..self.counters
         }
     }
@@ -730,6 +752,9 @@ mod tests {
         assert_eq!(stats.running, 0);
         assert_eq!(stats.queued, 0);
         assert_eq!(stats.max_cancellation_latency_ticks, 4);
+        assert_eq!(stats.cancellation_latency_p50_ticks, 4);
+        assert_eq!(stats.cancellation_latency_p95_ticks, 4);
+        assert_eq!(stats.cancellation_latency_p99_ticks, 4);
         assert!(stats.cancelled >= 2);
         scheduler.reconnect(Path::new("/project"));
         assert!(

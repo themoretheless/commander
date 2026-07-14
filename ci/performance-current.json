@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "fixture_profile": "commander-mixed-corpus-v1",
+  "metrics": [
+    {
+      "metric": "startup_total",
+      "latency": { "p50_ms": 604.0, "p95_ms": 684.0, "p99_ms": 731.0, "samples": 30 }
+    },
+    {
+      "metric": "first_listing",
+      "latency": { "p50_ms": 154.0, "p95_ms": 208.0, "p99_ms": 244.0, "samples": 30 }
+    },
+    {
+      "metric": "filter_response",
+      "latency": { "p50_ms": 3.6, "p95_ms": 7.8, "p99_ms": 10.4, "samples": 100 }
+    },
+    {
+      "metric": "operation_dialog",
+      "latency": { "p50_ms": 11.0, "p95_ms": 27.0, "p99_ms": 39.0, "samples": 100 }
+    }
+  ],
+  "cancellation_latency": { "p50_ms": 2.0, "p95_ms": 8.0, "p99_ms": 12.0, "samples": 100 },
+  "stale_results": 0
+}

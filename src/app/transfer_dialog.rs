@@ -7,6 +7,8 @@ impl App {
         let Some(state) = self.ws.active_transfer.clone() else {
             return;
         };
+        let _latency =
+            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::OperationDialog);
         let t = self.colors;
 
         let s = crate::lock_util::recover(&state);

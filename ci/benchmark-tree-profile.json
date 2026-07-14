@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "name": "commander-mixed-corpus-v1",
+  "source_note": "Rounded depth, fanout, size, and type proportions from mixed local development corpora; kept stable for comparable runs.",
+  "seed": 7640891576956012809,
+  "entries": 10000,
+  "max_total_bytes": 2147483648,
+  "depths": [
+    { "value": 1, "weight": 46 },
+    { "value": 2, "weight": 28 },
+    { "value": 3, "weight": 15 },
+    { "value": 4, "weight": 7 },
+    { "value": 5, "weight": 3 },
+    { "value": 6, "weight": 1 }
+  ],
+  "fanouts": [
+    { "value": 2, "weight": 10 },
+    { "value": 4, "weight": 20 },
+    { "value": 8, "weight": 35 },
+    { "value": 16, "weight": 22 },
+    { "value": 32, "weight": 10 },
+    { "value": 64, "weight": 3 }
+  ],
+  "sizes": [
+    { "min_bytes": 0, "max_bytes": 4095, "weight": 52 },
+    { "min_bytes": 4096, "max_bytes": 65535, "weight": 25 },
+    { "min_bytes": 65536, "max_bytes": 1048575, "weight": 16 },
+    { "min_bytes": 1048576, "max_bytes": 16777215, "weight": 6 },
+    { "min_bytes": 16777216, "max_bytes": 134217727, "weight": 1 }
+  ],
+  "file_types": [
+    { "extension": "txt", "weight": 14 },
+    { "extension": "md", "weight": 9 },
+    { "extension": "json", "weight": 9 },
+    { "extension": "rs", "weight": 8 },
+    { "extension": "log", "weight": 8 },
+    { "extension": "jpg", "weight": 10 },
+    { "extension": "png", "weight": 8 },
+    { "extension": "pdf", "weight": 5 },
+    { "extension": "zip", "weight": 4 },
+    { "extension": "mp4", "weight": 4 },
+    { "extension": "bin", "weight": 9 },
+    { "extension": "", "weight": 12 }
+  ]
+}

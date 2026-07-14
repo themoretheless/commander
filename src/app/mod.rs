@@ -135,6 +135,8 @@ pub struct App {
         crate::compare::CompareMap,
         crate::compare::CompareMap,
     )>,
+    /// Startup instrumentation remains live through the first directory read.
+    pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
 }
 
 /// UI state for the run-command / open-with bar.
@@ -445,11 +447,13 @@ pub(crate) struct RecoveryScanResult {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut startup = crate::measurement::StartupTrace::start();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session = crate::session::load();
         if let Some(saved) = &session {
             crate::panel::restore_visit_snapshot(&saved.recent_paths, &saved.recent_stats);
         }
+        startup.checkpoint(crate::measurement::StartupPhase::SessionRestore);
 
         // Theme: a saved session wins, otherwise follow the system appearance.
         let mode = match &session {
@@ -481,6 +485,7 @@ impl App {
             crate::accessibility::VisualChannel::ALL.len()
         );
         apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
+        startup.checkpoint(crate::measurement::StartupPhase::Appearance);
 
         let (left, right) = session
             .as_ref()
@@ -515,16 +520,22 @@ impl App {
             ws.name_policy = s.name_policy;
             ws.symlink_policy = s.symlink_policy;
         }
+        startup.checkpoint(crate::measurement::StartupPhase::WorkspaceRestore);
 
         let recovery = RecoveryState::scan(&ws);
-        App {
+        startup.checkpoint(crate::measurement::StartupPhase::RecoveryScan);
+        let image_cache = crate::image_cache::ImageCache::new();
+        let content_index = crate::content_index::ContentIndex::load();
+        let project_collections = crate::collections::load();
+        startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
+        let mut app = App {
             ws,
             ui_scale,
             theme_mode: mode,
             colors: ThemeColors::for_preferences(mode, accessibility_preferences),
             accessibility_preferences,
             prev_window_width: 0.0,
-            image_cache: crate::image_cache::ImageCache::new(),
+            image_cache,
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
@@ -552,7 +563,7 @@ impl App {
                 .as_ref()
                 .map(|s| s.search_history.clone())
                 .unwrap_or_default(),
-            content_index: crate::content_index::ContentIndex::load(),
+            content_index,
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
             history_preview: None,
@@ -572,12 +583,17 @@ impl App {
             archive: None,
             smart_folders: None,
             saved_search_open: false,
-            project_collections: crate::collections::load(),
+            project_collections,
             collections_dialog: None,
             command_templates: None,
             run_command: None,
             compare_cache: None,
+            startup_trace: Some(startup),
+        };
+        if let Some(trace) = &mut app.startup_trace {
+            trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
         }
+        app
     }
 
     /// The command-template store, loaded from disk on first access.

@@ -11,6 +11,8 @@ impl App {
         let Some(op) = &self.ws.pending_op else {
             return;
         };
+        let _latency =
+            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::OperationDialog);
 
         // Snapshot display data so `self` stays free for the button handlers.
         let (title, action_label, action_color, count, target, source_dir, conflicts, flat_arc) =

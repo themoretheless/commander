@@ -1769,6 +1769,8 @@ impl PanelState {
         {
             return;
         }
+        let _latency =
+            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FilterResponse);
         cache.generation = self.entries_gen;
         cache.query = query.to_string();
         cache.facets = self.facets;

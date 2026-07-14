@@ -3,6 +3,7 @@
 mod accessibility;
 mod app;
 mod archive;
+pub mod benchmark_fixture;
 mod bookmarks;
 mod clipboard;
 mod cmdtemplate;
@@ -25,6 +26,7 @@ mod io_budget;
 mod jumplist;
 mod listing_export;
 mod lock_util;
+pub mod measurement;
 mod mount_guard;
 mod native_copy;
 mod native_menu;
