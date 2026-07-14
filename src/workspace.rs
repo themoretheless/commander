@@ -112,6 +112,7 @@ impl PendingTransfer {
 pub struct QueuedJob {
     spec: TransferSpec,
     undo: Option<crate::undo::Action>,
+    submitted: crate::operation_view::SubmittedSummary,
 }
 
 /// One row for the queue panel: enough to label and act on a job without
@@ -119,6 +120,7 @@ pub struct QueuedJob {
 pub struct QueueRow {
     pub id: crate::opqueue::JobId,
     pub label: String,
+    pub summary: crate::operation_view::SubmittedSummary,
     pub state: crate::opqueue::JobState,
 }
 
@@ -187,6 +189,8 @@ pub struct Workspace {
     pub run_command_request: bool,
     /// Set by [`Command::GatherIntoFolder`]; the UI runs it with a notify.
     pub gather_request: bool,
+    /// Set by [`Command::MoveIntoCursorFolder`]; the UI supplies worker notify.
+    pub keyboard_drop_request: bool,
     /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
     pub path_request: bool,
     /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
@@ -395,6 +399,7 @@ impl Workspace {
             mask_request: false,
             run_command_request: false,
             gather_request: false,
+            keyboard_drop_request: false,
             path_request: false,
             recent_request: false,
             undo_request: false,
@@ -715,6 +720,7 @@ impl Workspace {
                     panel.cursor += 1;
                 }
             }
+            Command::MoveIntoCursorFolder => self.keyboard_drop_request = true,
             Command::TogglePreview => {
                 if self.inactive_panel().preview.is_some() {
                     self.inactive_panel_mut().preview = None;
@@ -1137,11 +1143,25 @@ impl Workspace {
 
     /// Append a transfer to the queue without starting it.
     fn enqueue_only(&mut self, spec: TransferSpec, undo: Option<crate::undo::Action>) {
-        let kind = match spec.kind {
-            TransferKind::Copy => crate::opqueue::JobKind::Copy,
-            TransferKind::Move => crate::opqueue::JobKind::Move,
+        let (kind, verb) = match spec.kind {
+            TransferKind::Copy => (crate::opqueue::JobKind::Copy, "Copy"),
+            TransferKind::Move => (crate::opqueue::JobKind::Move, "Move"),
         };
-        self.queue.enqueue(kind, QueuedJob { spec, undo });
+        let paths = spec
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        let submitted =
+            crate::operation_view::SubmittedSummary::capture(verb, &paths, spec.target.clone());
+        self.queue.enqueue(
+            kind,
+            QueuedJob {
+                spec,
+                undo,
+                submitted,
+            },
+        );
     }
 
     /// Start the next queued job if no transfer is active (concurrency cap 1).
@@ -1161,13 +1181,16 @@ impl Workspace {
             return;
         };
         let spec = job.spec.spec.clone();
+        let submitted = job.spec.submitted.clone();
         self.reviewed_safe_operation = None;
         self.pending_undo_action = job.spec.undo.clone();
         self.running_job = Some(id);
         // The worker sizes the entries once and fills in `total_bytes`; passing
         // 0 here keeps a same-volume move from walking the tree twice (once for
         // the denominator, once for the rename's progress).
-        let progress = Arc::new(Mutex::new(TransferProgress::new(0, spec.entries.len())));
+        let mut initial_progress = TransferProgress::unknown(spec.entries.len());
+        initial_progress.submitted = Some(submitted);
+        let progress = Arc::new(Mutex::new(initial_progress));
         self.active_transfer = Some(progress.clone());
         transfer::spawn_transfer(spec, progress, notify);
     }
@@ -1359,6 +1382,13 @@ impl Workspace {
         }
     }
 
+    /// Cancel only work that has not started. The active worker keeps running,
+    /// matching the Operations Center's consequence-specific action label.
+    pub fn cancel_pending_transfers(&mut self) {
+        self.cancel_pending_jobs();
+        self.queue.clear_finished();
+    }
+
     /// Dismiss a finished transfer the user is acknowledging via the OK button.
     /// `poll_transfer` deliberately leaves a finished-with-errors transfer open
     /// (so the error list can be read) and does NOT retire its queue job; this
@@ -1403,22 +1433,11 @@ impl Workspace {
             .jobs()
             .iter()
             .map(|j| {
-                let verb = match j.kind {
-                    crate::opqueue::JobKind::Copy => "Copy",
-                    crate::opqueue::JobKind::Move => "Move",
-                };
-                let dest = j
-                    .spec
-                    .spec
-                    .target
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| j.spec.spec.target.display().to_string());
-                let n = j.spec.spec.entries.len();
-                let item = if n == 1 { "item" } else { "items" };
+                let summary = j.spec.submitted.clone();
                 QueueRow {
                     id: j.id,
-                    label: format!("{verb} {n} {item} \u{2192} {dest}"),
+                    label: summary.label(),
+                    summary,
                     state: j.state,
                 }
             })
@@ -2560,6 +2579,12 @@ impl Workspace {
     /// are rejected and errors surface. A clean, conflict-free drop runs
     /// immediately; a conflicting one opens the confirmation dialog.
     pub fn drop_dragged(&mut self, notify: impl Fn() + Send + 'static) {
+        self.drop_dragged_as(TransferKind::Move, notify);
+    }
+
+    /// Complete a drag using its announced effect. Option-drag copies; the
+    /// default and keyboard equivalent move. Both share identical preflight.
+    pub fn drop_dragged_as(&mut self, kind: TransferKind, notify: impl Fn() + Send + 'static) {
         // Ignore drops while a transfer or another dialog is in flight, so we
         // never stack a second operation over the first.
         if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
@@ -2587,12 +2612,11 @@ impl Workspace {
             crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
         };
         let has_conflicts = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
-        let (need_bytes, free_bytes, same_volume) =
-            fit_stats(&entries, &target, TransferKind::Move);
+        let (need_bytes, free_bytes, same_volume) = fit_stats(&entries, &target, kind);
         let expectations = transfer::capture_expectations(&entries, &target);
         let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
-            kind: TransferKind::Move,
+            kind,
             entries,
             expectations,
             target,
@@ -2613,6 +2637,40 @@ impl Workspace {
         if !has_conflicts {
             self.start_transfer(notify);
         }
+    }
+
+    /// Keyboard equivalent of dropping the active selection onto the folder
+    /// under the cursor. The synthesized drag plan deliberately enters the
+    /// normal drop pipeline, preserving every safety check and confirmation.
+    pub fn move_selection_into_cursor_folder(&mut self, notify: impl Fn() + Send + 'static) {
+        if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
+            return;
+        }
+        let Some((paths, target)) = self.keyboard_drop_plan() else {
+            return;
+        };
+        let panel = self.active_panel();
+        panel.drag_entries = paths;
+        panel.drop_target = Some(target);
+        self.drop_dragged(notify);
+    }
+
+    fn keyboard_drop_plan(&self) -> Option<(Vec<PathBuf>, PathBuf)> {
+        let panel = self.active_panel_ref();
+        if panel.cursor == 0 {
+            return None;
+        }
+        let target = panel.filtered_get(panel.cursor - 1)?;
+        if !target.is_dir || panel.selected.is_empty() {
+            return None;
+        }
+        let paths = panel
+            .selected_entries()
+            .into_iter()
+            .map(|entry| entry.path)
+            .filter(|path| path != &target.path)
+            .collect::<Vec<_>>();
+        (!paths.is_empty()).then(|| (paths, target.path.clone()))
     }
 
     /// Resolve which panel is the drag source and where the drop lands,
@@ -4516,6 +4574,46 @@ mod tests {
 
         assert!(r.path().join("a.txt").exists());
         assert!(!l.path().join("a.txt").exists(), "drop is a move");
+    }
+
+    #[test]
+    fn option_drop_copy_effect_keeps_the_source() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let file = l.file("a.txt", "x");
+        let mut ws = workspace(&l, &r);
+
+        ws.left.drag_entries = vec![file.clone()];
+        ws.right.drop_target = Some(r.path().to_path_buf());
+        ws.drop_dragged_as(TransferKind::Copy, || {});
+        wait_transfer(&mut ws);
+
+        assert!(r.path().join("a.txt").exists());
+        assert!(file.exists(), "copy effect keeps the source");
+    }
+
+    #[test]
+    fn keyboard_drop_moves_selection_into_cursor_folder() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let file = l.file("a.txt", "x");
+        let sub = l.dir("sub");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(file.clone());
+        ws.left.cursor = ws
+            .left
+            .filtered_entries()
+            .iter()
+            .position(|entry| entry.path == sub)
+            .expect("subfolder is visible")
+            + 1;
+
+        ws.execute(Command::MoveIntoCursorFolder);
+        assert!(ws.keyboard_drop_request);
+        ws.keyboard_drop_request = false;
+        ws.move_selection_into_cursor_folder(|| {});
+        wait_transfer(&mut ws);
+
+        assert!(sub.join("a.txt").is_file());
+        assert!(!file.exists());
     }
 
     #[test]

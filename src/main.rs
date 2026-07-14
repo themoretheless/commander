@@ -29,6 +29,7 @@ mod native_copy;
 mod native_menu;
 mod operation;
 mod operation_journal;
+mod operation_view;
 mod opqueue;
 mod panel;
 mod path_identity;

@@ -16,6 +16,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
+        self.capture_operations_requests(&ctx);
         self.show_transfer_dialog(&ctx);
         self.show_safe_state_dialog(&ctx);
         self.show_recovery_dialog(&ctx);
@@ -36,8 +37,7 @@ impl eframe::App for App {
         self.show_recent_dialog(&ctx);
         self.show_run_command_dialog(&ctx);
         self.show_palette_dialog(&ctx);
-        self.show_queue_panel(&ctx);
-        self.show_receipts_dialog(&ctx);
+        self.show_operations_center(ui);
         if !self.focus_mode {
             self.show_toolbar_panel(ui);
             self.show_shortcut_bar(ui);
@@ -173,6 +173,11 @@ impl App {
         if std::mem::take(&mut self.ws.gather_request) {
             let c = ctx.clone();
             self.ws.gather_into_folder(move || c.request_repaint());
+        }
+        if std::mem::take(&mut self.ws.keyboard_drop_request) {
+            let c = ctx.clone();
+            self.ws
+                .move_selection_into_cursor_folder(move || c.request_repaint());
         }
         // Drain the shelf (copy staged items into the active pane).
         if std::mem::take(&mut self.ws.drain_request) {
@@ -958,14 +963,39 @@ impl App {
                 format!("{} items", count)
             };
             let explicit_target = source.drop_target.as_ref().or(other.drop_target.as_ref());
-            let target_label = if let Some(target) = explicit_target {
-                let target_name = target
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| target.display().to_string());
-                format!("Move to {target_name}")
+            let announcement = if let Some(target) = explicit_target {
+                if !target.is_dir() {
+                    crate::operation_view::DragAnnouncement::rejected("destination is not a folder")
+                } else if crate::volume_profile::profile(target).read_only {
+                    crate::operation_view::DragAnnouncement::rejected(
+                        "destination volume is read-only",
+                    )
+                } else if drag_entries
+                    .iter()
+                    .any(|source| crate::fs_util::is_within_or_equal(target, source))
+                {
+                    crate::operation_view::DragAnnouncement::rejected(
+                        "a folder cannot be moved into itself",
+                    )
+                } else {
+                    let effect = if ctx.input(|input| input.modifiers.alt) {
+                        crate::operation_view::DragEffect::Copy
+                    } else {
+                        crate::operation_view::DragEffect::Move
+                    };
+                    crate::operation_view::DragAnnouncement::valid(target.clone(), effect)
+                }
             } else {
-                "No drop target".to_string()
+                crate::operation_view::DragAnnouncement::rejected("highlight a destination folder")
+            };
+            let target_label = announcement.text();
+            let target_color = if matches!(
+                announcement,
+                crate::operation_view::DragAnnouncement::Valid { .. }
+            ) {
+                t.accent
+            } else {
+                t.accent_red
             };
             egui::Area::new(egui::Id::new("drag_overlay"))
                 .fixed_pos(pos + egui::vec2(12.0, 12.0))
@@ -983,7 +1013,7 @@ impl App {
                             ui.label(
                                 egui::RichText::new(target_label)
                                     .size(10.0)
-                                    .color(t.text_muted),
+                                    .color(target_color),
                             );
                         });
                 });
@@ -1108,6 +1138,12 @@ impl App {
             return;
         }
         let ctx2 = ctx.clone();
-        self.ws.drop_dragged(move || ctx2.request_repaint());
+        let kind = if ctx.input(|input| input.modifiers.alt) {
+            TransferKind::Copy
+        } else {
+            TransferKind::Move
+        };
+        self.ws
+            .drop_dragged_as(kind, move || ctx2.request_repaint());
     }
 }

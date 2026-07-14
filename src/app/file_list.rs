@@ -157,6 +157,28 @@ impl App {
                 let viewport = ui.clip_rect();
                 let scroll_top = viewport.top() - ui.min_rect().top();
 
+                if dragging
+                    && panel.current_path.is_dir()
+                    && !crate::volume_profile::profile(&panel.current_path).read_only
+                    && let Some(pointer) = ui.ctx().input(|input| input.pointer.hover_pos())
+                {
+                    let velocity = crate::operation_view::edge_autoscroll_velocity(
+                        pointer.y,
+                        viewport.top(),
+                        viewport.bottom(),
+                        44.0,
+                        640.0,
+                    );
+                    if velocity != 0.0 {
+                        let dt = ui
+                            .ctx()
+                            .input(|input| input.stable_dt)
+                            .clamp(1.0 / 120.0, 1.0 / 20.0);
+                        ui.scroll_with_delta(egui::vec2(0.0, velocity * dt));
+                        ui.ctx().request_repaint();
+                    }
+                }
+
                 // One "now" for the whole frame, so every visible row's
                 // relative Modified date is measured from the same instant.
                 let now = std::time::SystemTime::now();

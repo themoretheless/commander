@@ -17,7 +17,6 @@ mod palette_dialog;
 mod path_dialog;
 mod preload;
 mod queue_dialog;
-mod receipts_dialog;
 mod recent_dialog;
 mod recovery_dialog;
 mod rename_dialog;
@@ -64,8 +63,12 @@ pub struct App {
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
     pub(crate) show_compare: bool,
-    /// Whether the transfer-queue panel is visible.
-    pub(crate) show_queue_panel: bool,
+    /// Whether the unified queue/history/errors/recovery surface is visible.
+    pub(crate) show_operations_center: bool,
+    pub(crate) operations_tab: OperationsTab,
+    pub(crate) operations_search: String,
+    pub(crate) operation_failures: crate::operation_view::FailureInbox,
+    pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::OperationId>,
     /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
     pub(crate) focus_mode: bool,
     pub(crate) focus_started_at: f64,
@@ -86,8 +89,6 @@ pub struct App {
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Searchable history of completed moves/deletes/batch-renames.
     pub(crate) receipts: crate::receipts::ReceiptLog,
-    /// Active receipts-search buffer; `Some` while the dialog is open.
-    pub(crate) receipts_input: Option<String>,
     /// Filesystem-aware confirmation for the pending undo/redo replay.
     pub(crate) history_preview: Option<HistoryPreviewState>,
     /// Startup-scanned durable recovery and orphan-staging model.
@@ -398,6 +399,28 @@ pub(crate) enum RecoveryDetail {
     Repair,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum OperationsTab {
+    #[default]
+    Queue,
+    History,
+    Errors,
+    Recovery,
+}
+
+impl OperationsTab {
+    pub(crate) const ALL: [Self; 4] = [Self::Queue, Self::History, Self::Errors, Self::Recovery];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Queue => "Queue",
+            Self::History => "History",
+            Self::Errors => "Errors",
+            Self::Recovery => "Recovery",
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct RecoveryState {
     pub open: bool,
@@ -500,7 +523,11 @@ impl App {
             chord: None,
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
-            show_queue_panel: false,
+            show_operations_center: false,
+            operations_tab: OperationsTab::default(),
+            operations_search: String::new(),
+            operation_failures: crate::operation_view::FailureInbox::default(),
+            failure_notice_seen: std::collections::HashSet::new(),
             focus_mode: false,
             focus_started_at: 0.0,
             mask_input: None,
@@ -517,7 +544,6 @@ impl App {
             content_index: crate::content_index::ContentIndex::load(),
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
-            receipts_input: None,
             history_preview: None,
             recovery,
             palette_input: None,

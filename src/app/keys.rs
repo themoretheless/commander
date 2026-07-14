@@ -20,7 +20,6 @@ impl App {
             || self.run_command.is_some()
             || self.path_input.is_some()
             || self.recent_input.is_some()
-            || self.receipts_input.is_some()
             || self.palette_input.is_some()
             || self.batch_rename.is_some()
             || self.sync.is_some()

@@ -55,6 +55,9 @@ pub enum TransferKind {
 pub struct TransferProgress {
     pub operation_id: Option<OperationId>,
     pub group_id: Option<OperationGroupId>,
+    pub submitted: Option<crate::operation_view::SubmittedSummary>,
+    pub phase: crate::operation_view::OperationPhase,
+    pub total_known: bool,
     pub total_bytes: u64,
     pub copied_bytes: u64,
     pub current_file: String,
@@ -69,6 +72,7 @@ pub struct TransferProgress {
     pub adaptive_concurrency: usize,
     pub bandwidth_limit: Option<u64>,
     pub waiting_reason: Option<String>,
+    pub pause_reason: Option<crate::operation_view::PauseReason>,
     pub fast_paths: Vec<crate::transfer_tuning::FastPath>,
     pub delta_reused_bytes: u64,
     pub delta_source_bytes: u64,
@@ -96,6 +100,9 @@ impl TransferProgress {
         Self {
             operation_id: None,
             group_id: None,
+            submitted: None,
+            phase: crate::operation_view::OperationPhase::Scan,
+            total_known: true,
             total_bytes,
             copied_bytes: 0,
             current_file: String::new(),
@@ -110,6 +117,7 @@ impl TransferProgress {
             adaptive_concurrency: 1,
             bandwidth_limit: None,
             waiting_reason: None,
+            pause_reason: None,
             fast_paths: Vec::new(),
             delta_reused_bytes: 0,
             delta_source_bytes: 0,
@@ -162,6 +170,46 @@ impl TransferProgress {
         }
         let remaining = self.total_bytes.saturating_sub(self.copied_bytes) as f64;
         remaining / speed
+    }
+
+    pub fn set_phase(&mut self, phase: crate::operation_view::OperationPhase) {
+        self.phase = phase;
+    }
+
+    pub fn unknown(files_total: usize) -> Self {
+        let mut progress = Self::new(0, files_total);
+        progress.total_known = false;
+        progress
+    }
+
+    /// Overall byte progress is unknown while the scan/plan has not produced a
+    /// denominator. Returning `None` lets every UI keep the same bar geometry
+    /// while changing only its contents.
+    pub fn progress_fraction(&self) -> Option<f32> {
+        if !self.total_known {
+            return None;
+        }
+        if self.total_bytes > 0 {
+            return Some((self.copied_bytes as f32 / self.total_bytes as f32).clamp(0.0, 1.0));
+        }
+        Some(if self.files_total == 0 {
+            1.0
+        } else {
+            (self.files_done as f32 / self.files_total as f32).clamp(0.0, 1.0)
+        })
+    }
+
+    /// Estimate the remainder of the current phase. Transfer uses its rolling
+    /// byte-rate; verification/finalization use completed-file throughput.
+    pub fn phase_eta_secs(&self) -> Option<f64> {
+        use crate::operation_view::OperationPhase;
+        match self.phase {
+            OperationPhase::Transfer => (self.eta_secs() > 0.0).then(|| self.eta_secs()),
+            OperationPhase::Scan
+            | OperationPhase::Plan
+            | OperationPhase::Verify
+            | OperationPhase::Finalize => None,
+        }
     }
 
     /// Record a sample if at least 500ms passed since the last one.
@@ -600,10 +648,12 @@ fn wait_for_mount(
     }
     {
         let mut state = crate::lock_util::recover(progress);
-        state.waiting_reason = Some(format!(
-            "{label} disconnected; waiting up to {} seconds",
-            guard.policy.timeout_ms / 1_000
-        ));
+        let reason = crate::operation_view::PauseReason::MountDisconnected {
+            label: label.to_string(),
+            timeout_secs: guard.policy.timeout_ms / 1_000,
+        };
+        state.waiting_reason = Some(reason.label());
+        state.pause_reason = Some(reason);
     }
     notify();
     let result = guard.wait_until_available(|| {
@@ -611,7 +661,11 @@ fn wait_for_mount(
         let state = crate::lock_util::recover(progress);
         !state.cancelled && !state.stop_requested
     });
-    crate::lock_util::recover(progress).waiting_reason = None;
+    {
+        let mut state = crate::lock_util::recover(progress);
+        state.waiting_reason = None;
+        state.pause_reason = None;
+    }
     notify();
     result
 }
@@ -746,6 +800,21 @@ pub fn spawn_transfer(
 ) {
     std::thread::spawn(move || {
         let journal_enabled = journal_enabled(&spec);
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.operation_id = Some(spec.operation_id.clone());
+            state.group_id = spec.group_id.clone();
+            state.set_phase(crate::operation_view::OperationPhase::Scan);
+        }
+        notify();
+        let total_bytes = spec.entries.iter().map(entry_size).sum();
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.total_bytes = total_bytes;
+            state.total_known = true;
+            state.set_phase(crate::operation_view::OperationPhase::Plan);
+        }
+        notify();
         let target_profile = crate::volume_profile::profile(&spec.target);
         let target_mount = crate::mount_guard::MountGuard::capture(
             &spec.target,
@@ -755,8 +824,6 @@ pub fn spawn_transfer(
         let tuning = crate::transfer_tuning::snapshot(&target_profile);
         {
             let mut state = crate::lock_util::recover(&progress);
-            state.operation_id = Some(spec.operation_id.clone());
-            state.group_id = spec.group_id.clone();
             state.backend_label = target_profile.backend.label().to_string();
             state.backend_reason = target_profile.reason.clone();
             state.p95_latency_ms = tuning.p95_latency_ms;
@@ -789,7 +856,9 @@ pub fn spawn_transfer(
         while resource_rule.is_quiet_now() {
             let should_stop = {
                 let mut state = crate::lock_util::recover(&progress);
-                state.waiting_reason = Some("Quiet hours are active for this volume".to_string());
+                let reason = crate::operation_view::PauseReason::QuietHours { resume_at: None };
+                state.waiting_reason = Some(reason.label());
+                state.pause_reason = Some(reason);
                 state.cancelled || state.stop_requested
             };
             notify();
@@ -798,11 +867,13 @@ pub fn spawn_transfer(
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        crate::lock_util::recover(&progress).waiting_reason = None;
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.waiting_reason = None;
+            state.pause_reason = None;
+        }
         let is_move = spec.kind == TransferKind::Move;
         let mut base_bytes: u64 = 0;
-        let total_bytes = spec.entries.iter().map(entry_size).sum();
-        crate::lock_util::recover(&progress).total_bytes = total_bytes;
         let expectations = if spec.expectations.len() == spec.entries.len() {
             spec.expectations
         } else {
@@ -828,6 +899,10 @@ pub fn spawn_transfer(
                 }
             })
             .collect::<VecDeque<_>>();
+
+        crate::lock_util::recover(&progress)
+            .set_phase(crate::operation_view::OperationPhase::Transfer);
+        notify();
 
         'work: while let Some(mut work_item) = work.pop_front() {
             let this_size = entry_size(&work_item.entry);
@@ -1601,6 +1676,12 @@ pub fn spawn_transfer(
             notify();
         }
 
+        crate::lock_util::recover(&progress)
+            .set_phase(crate::operation_view::OperationPhase::Verify);
+        notify();
+        crate::lock_util::recover(&progress)
+            .set_phase(crate::operation_view::OperationPhase::Finalize);
+        notify();
         run_post_success(spec.post_success.as_ref(), &progress);
         finish_progress(&progress);
         if journal_enabled {
@@ -1676,6 +1757,7 @@ fn finish_progress(progress: &TransferState) {
     } else if s.stop_requested {
         s.stopped = true;
     }
+    s.set_phase(crate::operation_view::OperationPhase::Finalize);
     s.finished = true;
     s.record_sample();
 }
@@ -3000,6 +3082,33 @@ mod tests {
 
         let entries = vec![entry_for(&f), entry_for(&d)];
         assert_eq!(total_bytes(&entries), 8);
+    }
+
+    #[test]
+    fn unknown_progress_becomes_known_without_changing_its_model() {
+        let mut progress = TransferProgress::unknown(2);
+        assert_eq!(progress.phase, crate::operation_view::OperationPhase::Scan);
+        assert_eq!(progress.progress_fraction(), None);
+
+        progress.total_known = true;
+        progress.set_phase(crate::operation_view::OperationPhase::Plan);
+        assert_eq!(progress.progress_fraction(), Some(0.0));
+        progress.files_done = 1;
+        assert_eq!(progress.progress_fraction(), Some(0.5));
+        progress.files_done = 2;
+        assert_eq!(progress.progress_fraction(), Some(1.0));
+    }
+
+    #[test]
+    fn phase_eta_is_only_published_for_measured_transfer_work() {
+        let mut progress = TransferProgress::new(1_000, 1);
+        progress.started_at = std::time::Instant::now() - std::time::Duration::from_secs(6);
+        progress.speed_samples = vec![(0.0, 0.0), (4.0, 400.0)];
+        progress.copied_bytes = 600;
+        progress.set_phase(crate::operation_view::OperationPhase::Plan);
+        assert_eq!(progress.phase_eta_secs(), None);
+        progress.set_phase(crate::operation_view::OperationPhase::Transfer);
+        assert!(progress.phase_eta_secs().is_some_and(|eta| eta > 0.0));
     }
 
     #[test]

@@ -9,7 +9,7 @@ impl RecoveryState {
         state
     }
 
-    fn start_scan(&mut self, workspace: &Workspace) {
+    pub(crate) fn start_scan(&mut self, workspace: &Workspace) {
         self.error = None;
         self.scanning = true;
         let roots = workspace.recovery_seed_roots();
@@ -22,7 +22,7 @@ impl RecoveryState {
         self.scan_rx = Some(receiver);
     }
 
-    fn poll_scan(&mut self) {
+    pub(crate) fn poll_scan(&mut self) {
         let Some(receiver) = &self.scan_rx else {
             return;
         };
@@ -60,7 +60,7 @@ impl RecoveryState {
         self.refresh_selected();
     }
 
-    fn select(&mut self, operation_id: crate::operation::OperationId) {
+    pub(crate) fn select(&mut self, operation_id: crate::operation::OperationId) {
         self.selected = Some(operation_id);
         self.detail = RecoveryDetail::Inspect;
         self.outcome = None;
