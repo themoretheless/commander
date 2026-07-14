@@ -5,6 +5,7 @@ mod app;
 mod archive;
 pub mod benchmark_fixture;
 mod bookmarks;
+pub mod capability_diagnostic;
 mod clipboard;
 mod cmdtemplate;
 mod collections;
