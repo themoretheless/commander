@@ -1,12 +1,13 @@
-use egui::{ColorImage, Context, TextureHandle, TextureOptions};
+use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
+const MAX_DECODED_IMAGE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_PRELOAD_WORKERS: usize = 4;
-const FAILED_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct CacheEntry {
     texture: TextureHandle,
@@ -18,6 +19,42 @@ struct CacheEntry {
 type PendingLoad = Option<(ColorImage, usize)>;
 /// Background-load slots shared with the worker threads, keyed by path.
 type PendingMap = Arc<Mutex<HashMap<PathBuf, PendingLoad>>>;
+type FailedMap = Arc<Mutex<HashMap<PathBuf, PreviewFailure>>>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreviewFailure {
+    TooLarge,
+    Unreadable,
+    Unsupported,
+    Decode,
+}
+
+impl PreviewFailure {
+    pub(crate) const fn message(self) -> &'static str {
+        match self {
+            Self::TooLarge => "This image exceeds the preview memory limit.",
+            Self::Unreadable => "Commander cannot read this file.",
+            Self::Unsupported => "This image format is not supported.",
+            Self::Decode => "The image is incomplete or damaged.",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreviewLoadState {
+    Disabled,
+    Loading,
+    Failed(PreviewFailure),
+    Idle,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ImageCacheStats {
+    pub entries: usize,
+    pub bytes: usize,
+    pub pending: usize,
+    pub failed: usize,
+}
 
 pub struct ImageCache {
     entries: HashMap<PathBuf, CacheEntry>,
@@ -25,7 +62,7 @@ pub struct ImageCache {
     frame: u64,
     /// Images currently being loaded in background
     pending: PendingMap,
-    failed: Arc<Mutex<HashMap<PathBuf, std::time::Instant>>>,
+    failed: FailedMap,
     generation: Arc<AtomicU64>,
     current_dir: Option<PathBuf>,
 }
@@ -54,68 +91,6 @@ impl ImageCache {
         } else {
             None
         }
-    }
-
-    /// Get texture, loading synchronously if not cached. For the active preview image.
-    pub fn get_or_load_sync(&mut self, ctx: &Context, path: &Path) -> Option<&TextureHandle> {
-        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview) {
-            return None;
-        }
-        let fname = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        if self.entries.contains_key(path) {
-            return self.get(path);
-        }
-        {
-            let mut failed = crate::lock_util::recover(&self.failed);
-            if failed
-                .get(path)
-                .is_some_and(|when| when.elapsed() < FAILED_RETRY_AFTER)
-            {
-                return None;
-            }
-            failed.remove(path);
-        }
-
-        // Check if pending load completed
-        let from_pending = {
-            let mut p = crate::lock_util::recover(&self.pending);
-            if p.get(path).is_some_and(Option::is_none) {
-                return None;
-            }
-            p.remove(path).flatten()
-        };
-
-        let loaded = match from_pending {
-            Some(ready) => Some(ready),
-            None => match load_image_from_disk(path) {
-                Ok(ready) => Some(ready),
-                Err(_) => {
-                    crate::lock_util::recover(&self.failed)
-                        .insert(path.to_path_buf(), std::time::Instant::now());
-                    None
-                }
-            },
-        };
-
-        if let Some((img, byte_size)) = loaded {
-            let texture = ctx.load_texture(&fname, img, TextureOptions::LINEAR);
-            self.total_bytes = self.total_bytes.saturating_add(byte_size);
-            self.entries.insert(
-                path.to_path_buf(),
-                CacheEntry {
-                    texture,
-                    byte_size,
-                    last_used: self.frame,
-                },
-            );
-        }
-
-        self.get(path)
     }
 
     /// Request preloading in priority order, with fixed worker concurrency.
@@ -176,11 +151,7 @@ impl ImageCache {
             }
         }
 
-        let failed = {
-            let mut failed = crate::lock_util::recover(&self.failed);
-            failed.retain(|_, when| when.elapsed() < FAILED_RETRY_AFTER);
-            failed.clone()
-        };
+        let failed = crate::lock_util::recover(&self.failed).clone();
         let mut available_slots =
             MAX_PRELOAD_WORKERS.saturating_sub(crate::lock_util::recover(&self.pending).len());
         for path in paths {
@@ -225,21 +196,26 @@ impl ImageCache {
                         return;
                     }
                     let result = load_image_from_disk(&path_clone);
-                    if let Ok((img, byte_size)) = result {
-                        let mut pending = crate::lock_util::recover(&pending_clone);
-                        if !cancelled() {
-                            pending.insert(path_clone.clone(), Some((img, byte_size)));
-                            drop(pending);
-                            ctx_clone.request_repaint();
-                        } else {
-                            pending.remove(&path_clone);
+                    match result {
+                        Ok((img, byte_size)) => {
+                            let mut pending = crate::lock_util::recover(&pending_clone);
+                            if !cancelled() {
+                                pending.insert(path_clone.clone(), Some((img, byte_size)));
+                                drop(pending);
+                                ctx_clone.request_repaint();
+                            } else {
+                                pending.remove(&path_clone);
+                            }
                         }
-                    } else {
-                        let mut pending = crate::lock_util::recover(&pending_clone);
-                        let mut failed = crate::lock_util::recover(&failed_clone);
-                        if !cancelled() {
-                            pending.remove(&path_clone);
-                            failed.insert(path_clone, std::time::Instant::now());
+                        Err(error) => {
+                            let mut pending = crate::lock_util::recover(&pending_clone);
+                            if !cancelled() {
+                                pending.remove(&path_clone);
+                                drop(pending);
+                                crate::lock_util::recover(&failed_clone)
+                                    .insert(path_clone, classify_failure(&error));
+                                ctx_clone.request_repaint();
+                            }
                         }
                     }
                 },
@@ -289,8 +265,62 @@ impl ImageCache {
         }
     }
 
-    pub fn stats(&self) -> (usize, usize) {
-        (self.entries.len(), self.total_bytes)
+    pub fn load_state(&self, path: &Path) -> PreviewLoadState {
+        if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview) {
+            return PreviewLoadState::Disabled;
+        }
+        if let Some(failure) = crate::lock_util::recover(&self.failed).get(path).copied() {
+            return PreviewLoadState::Failed(failure);
+        }
+        if crate::lock_util::recover(&self.pending).contains_key(path) {
+            PreviewLoadState::Loading
+        } else {
+            PreviewLoadState::Idle
+        }
+    }
+
+    /// Clear a negative cache entry so the next preload pass can try again.
+    pub fn retry(&mut self, path: &Path) {
+        crate::lock_util::recover(&self.failed).remove(path);
+        crate::lock_util::recover(&self.pending).remove(path);
+        if let Some(entry) = self.entries.remove(path) {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
+        }
+    }
+
+    pub fn stats(&self) -> ImageCacheStats {
+        ImageCacheStats {
+            entries: self.entries.len(),
+            bytes: self.total_bytes,
+            pending: crate::lock_util::recover(&self.pending).len(),
+            failed: crate::lock_util::recover(&self.failed).len(),
+        }
+    }
+}
+
+fn classify_failure(error: &str) -> PreviewFailure {
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("too large")
+        || normalized.contains("allocation")
+        || normalized.contains("memory")
+        || normalized.contains("limit")
+        || normalized.contains("dimension")
+    {
+        PreviewFailure::TooLarge
+    } else if normalized.contains("permission")
+        || normalized.contains("denied")
+        || normalized.contains("not found")
+        || normalized.contains("no such file")
+        || normalized.contains("cannot open")
+    {
+        PreviewFailure::Unreadable
+    } else if normalized.contains("unsupported")
+        || normalized.contains("could not be determined")
+        || normalized.contains("image source")
+    {
+        PreviewFailure::Unsupported
+    } else {
+        PreviewFailure::Decode
     }
 }
 
@@ -313,12 +343,42 @@ fn allocate_rgba_pixels(width: usize, height: usize) -> Result<(usize, Vec<u8>),
     let byte_len = height
         .checked_mul(bytes_per_row)
         .ok_or_else(|| "image pixel buffer is too large".to_string())?;
+    if byte_len > MAX_DECODED_IMAGE_BYTES {
+        return Err("image pixel buffer exceeds the preview memory limit".to_string());
+    }
     let mut pixels = Vec::new();
     pixels
         .try_reserve_exact(byte_len)
         .map_err(|_| "image pixel buffer allocation failed".to_string())?;
     pixels.resize(byte_len, 0);
     Ok((bytes_per_row, pixels))
+}
+
+/// Convert a checked RGBA allocation into egui pixels without letting the
+/// second allocation panic on an oversized or malformed buffer.
+fn color_image_from_rgba(size: [usize; 2], rgba: Vec<u8>) -> Result<(ColorImage, usize), String> {
+    let pixel_count = size[0]
+        .checked_mul(size[1])
+        .ok_or_else(|| "image dimensions are too large".to_string())?;
+    let byte_size = pixel_count
+        .checked_mul(4)
+        .ok_or_else(|| "image pixel buffer is too large".to_string())?;
+    if byte_size > MAX_DECODED_IMAGE_BYTES {
+        return Err("image pixel buffer exceeds the preview memory limit".to_string());
+    }
+    if rgba.len() != byte_size {
+        return Err("decoder returned an incomplete RGBA buffer".to_string());
+    }
+
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(pixel_count)
+        .map_err(|_| "image color buffer allocation failed".to_string())?;
+    pixels.extend(
+        rgba.chunks_exact(4)
+            .map(|p| Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])),
+    );
+    Ok((ColorImage::new(size, pixels), byte_size))
 }
 
 fn load_image_from_disk(path: &Path) -> Result<(ColorImage, usize), String> {
@@ -334,15 +394,26 @@ fn load_image_from_disk(path: &Path) -> Result<(ColorImage, usize), String> {
         return Ok(result);
     }
 
-    // Fallback to image crate (PNG, JPEG, GIF, BMP, WebP)
-    let data = std::fs::read(path).map_err(|e| e.to_string())?;
-    let img = image::load_from_memory(&data).map_err(|e| e.to_string())?;
-    let rgba = img.to_rgba8();
+    load_via_image_crate(path)
+}
+
+/// Stream a standard image decoder from the file instead of retaining a second
+/// full compressed copy beside the decoded pixels.
+fn load_via_image_crate(path: &Path) -> Result<(ColorImage, usize), String> {
+    let mut reader = image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODED_IMAGE_BYTES as u64);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|e| e.to_string())?;
+    let rgba = img.into_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
-    let gpu_size = pixels.len();
-    let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-    Ok((color_image, gpu_size.max(data.len())))
+    color_image_from_rgba(size, pixels)
 }
 
 /// Load image via macOS CoreGraphics/ImageIO.
@@ -493,9 +564,7 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         CFRelease(source);
         let _: () = msg_send![pool, drain];
 
-        let gpu_size = pixels.len();
-        let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
-        Ok((color_image, gpu_size))
+        color_image_from_rgba([w, h], pixels)
     }
 }
 
@@ -676,15 +745,17 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
         CGImageRelease(cg_image);
         let _: () = msg_send![pool, drain];
 
-        let gpu_size = pixels.len();
-        let color_image = ColorImage::from_rgba_unmultiplied([w, h], &pixels);
-        Ok((color_image, gpu_size))
+        color_image_from_rgba([w, h], pixels)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::allocate_rgba_pixels;
+    use super::{
+        ImageCache, MAX_DECODED_IMAGE_BYTES, PreviewFailure, allocate_rgba_pixels,
+        classify_failure, color_image_from_rgba, load_via_image_crate,
+    };
+    use crate::testutil::TempDir;
 
     #[test]
     fn rgba_allocation_checks_both_dimension_products() {
@@ -693,5 +764,60 @@ mod tests {
         assert_eq!(pixels.len(), 24);
         assert!(allocate_rgba_pixels(usize::MAX, 1).is_err());
         assert!(allocate_rgba_pixels(usize::MAX / 4, 5).is_err());
+        assert!(allocate_rgba_pixels(MAX_DECODED_IMAGE_BYTES / 4 + 1, 1).is_err());
+    }
+
+    #[test]
+    fn rgba_conversion_rejects_incomplete_and_wrapping_buffers() {
+        assert!(color_image_from_rgba([2, 1], vec![0; 7]).is_err());
+        assert!(color_image_from_rgba([usize::MAX, 2], Vec::new()).is_err());
+
+        let (image, bytes) = color_image_from_rgba([1, 1], vec![10, 20, 30, 255]).unwrap();
+        assert_eq!(image.size, [1, 1]);
+        assert_eq!(bytes, 4);
+    }
+
+    #[test]
+    fn standard_decoder_streams_a_small_png() {
+        let dir = TempDir::new();
+        let path = dir.path().join("preview.png");
+        let pixels = image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 255]));
+        pixels.save(&path).unwrap();
+
+        let (decoded, bytes) = load_via_image_crate(&path).unwrap();
+        assert_eq!(decoded.size, [3, 2]);
+        assert_eq!(bytes, 3 * 2 * 4);
+    }
+
+    #[test]
+    fn decoder_errors_are_classified_for_stable_ui_copy() {
+        assert_eq!(
+            classify_failure("image pixel buffer allocation failed"),
+            PreviewFailure::TooLarge
+        );
+        assert_eq!(
+            classify_failure("Permission denied"),
+            PreviewFailure::Unreadable
+        );
+        assert_eq!(
+            classify_failure("unsupported image format"),
+            PreviewFailure::Unsupported
+        );
+        assert_eq!(classify_failure("invalid checksum"), PreviewFailure::Decode);
+    }
+
+    #[test]
+    fn retry_clears_negative_and_pending_cache_entries() {
+        let mut cache = ImageCache::new();
+        let path = std::path::PathBuf::from("broken.png");
+        crate::lock_util::recover(&cache.failed).insert(path.clone(), PreviewFailure::Decode);
+        crate::lock_util::recover(&cache.pending).insert(path.clone(), None);
+        assert_eq!(cache.stats().failed, 1);
+        assert_eq!(cache.stats().pending, 1);
+
+        cache.retry(&path);
+
+        assert_eq!(cache.stats().failed, 0);
+        assert_eq!(cache.stats().pending, 0);
     }
 }

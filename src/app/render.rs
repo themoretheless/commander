@@ -511,7 +511,7 @@ impl App {
                     match preview {
                         PreviewContent::Image(path) => {
                             let path = path.clone();
-                            if let Some(texture) = image_cache.get_or_load_sync(ui.ctx(), &path) {
+                            if let Some(texture) = image_cache.get(&path) {
                                 let tex_size = texture.size_vec2();
                                 ui.centered_and_justified(|ui| {
                                     let avail = ui.available_size();
@@ -528,20 +528,59 @@ impl App {
                                         close_preview = true;
                                     }
                                 });
-                            } else if !crate::feature_flags::enabled(
-                                crate::feature_flags::RiskyFeature::ImagePreview,
-                            ) {
-                                ui.centered_and_justified(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Image preview disabled")
-                                            .size(12.0)
-                                            .color(t.text_muted),
-                                    );
-                                });
                             } else {
-                                ui.centered_and_justified(|ui| {
-                                    ui.spinner();
-                                });
+                                match image_cache.load_state(&path) {
+                                    crate::image_cache::PreviewLoadState::Disabled => {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("Image preview disabled")
+                                                    .size(12.0)
+                                                    .color(t.text_muted),
+                                            );
+                                        });
+                                    }
+                                    crate::image_cache::PreviewLoadState::Failed(failure) => {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.vertical_centered(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("Preview unavailable")
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(t.text_primary),
+                                                );
+                                                ui.add_space(4.0);
+                                                ui.label(
+                                                    egui::RichText::new(failure.message())
+                                                        .size(11.0)
+                                                        .color(t.text_secondary),
+                                                );
+                                                ui.add_space(10.0);
+                                                ui.horizontal_centered(|ui| {
+                                                    if ui.button("\u{21bb} Retry").clicked() {
+                                                        image_cache.retry(&path);
+                                                        ui.ctx().request_repaint();
+                                                    }
+                                                    if ui
+                                                        .small_button("\u{2715}")
+                                                        .on_hover_text("Close preview")
+                                                        .clicked()
+                                                    {
+                                                        close_preview = true;
+                                                    }
+                                                });
+                                            });
+                                        });
+                                    }
+                                    crate::image_cache::PreviewLoadState::Loading
+                                    | crate::image_cache::PreviewLoadState::Idle => {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.spinner();
+                                        });
+                                    }
+                                }
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                close_preview = true;
                             }
                         }
                         PreviewContent::Text { path, content } => {

@@ -87,8 +87,8 @@ impl App {
         }
 
         let cursor = source.cursor.saturating_sub(1);
-        let (_, current_bytes) = self.image_cache.stats();
-        let forward = forward_preload_window(current_bytes);
+        let image_stats = self.image_cache.stats();
+        let forward = forward_preload_window(image_stats.bytes);
         let slots = PRELOAD_BACK_WINDOW.saturating_add(forward);
         let paths: Vec<PathBuf> = prioritized_indices(
             source.filtered_count(),

@@ -27,7 +27,7 @@ impl App {
         let t = self.colors;
         let workload = crate::workload::stats();
         let persistence = crate::persistence::health_snapshot();
-        let (image_entries, image_bytes) = self.image_cache.stats();
+        let image_cache = self.image_cache.stats();
         let active_root = self.ws.active_panel_ref().current_path.clone();
         let index = self.content_index.status(&active_root);
         let runtime_metrics = crate::measurement::snapshots();
@@ -75,10 +75,25 @@ impl App {
                                 "Image cache",
                                 &format!(
                                     "{} / {} entries",
-                                    format_size(u64::try_from(image_bytes).unwrap_or(u64::MAX)),
-                                    image_entries
+                                    format_size(
+                                        u64::try_from(image_cache.bytes).unwrap_or(u64::MAX)
+                                    ),
+                                    image_cache.entries
                                 ),
                                 t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Preview jobs",
+                                &format!(
+                                    "{} loading / {} failed",
+                                    image_cache.pending, image_cache.failed
+                                ),
+                                if image_cache.failed == 0 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
                             );
                             text_row(
                                 ui,
