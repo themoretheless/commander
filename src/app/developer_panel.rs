@@ -26,6 +26,7 @@ impl App {
         }
         let t = self.colors;
         let workload = crate::workload::stats();
+        let persistence = crate::persistence::health_snapshot();
         let (image_entries, image_bytes) = self.image_cache.stats();
         let active_root = self.ws.active_panel_ref().current_path.clone();
         let index = self.content_index.status(&active_root);
@@ -116,6 +117,24 @@ impl App {
                                     workload.cancellation_latency_samples
                                 ),
                                 t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Settings recovery",
+                                &format!(
+                                    "{} stores / {} kept / {} rejected / {} unreadable",
+                                    persistence.recovered_stores,
+                                    persistence.recovered_items,
+                                    persistence.rejected_items,
+                                    persistence.unreadable_stores
+                                ),
+                                if persistence.rejected_items == 0
+                                    && persistence.unreadable_stores == 0
+                                {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
                             );
                         });
 

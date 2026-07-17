@@ -140,6 +140,7 @@ pub struct App {
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
     pub(crate) show_developer_panel: bool,
     pub(crate) developer_notice: Option<DeveloperNotice>,
+    pub(crate) persistence_issue_seen: u64,
 }
 
 pub(crate) struct DeveloperNotice {
@@ -618,6 +619,7 @@ impl App {
             startup_trace: Some(startup),
             show_developer_panel: false,
             developer_notice: None,
+            persistence_issue_seen: 0,
         };
         if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);

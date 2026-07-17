@@ -120,6 +120,18 @@ impl App {
             data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
         });
+        let persistence = crate::persistence::health_snapshot();
+        if persistence.issue_generation > self.persistence_issue_seen {
+            self.persistence_issue_seen = persistence.issue_generation;
+            if let Some(message) = persistence.last_issue {
+                self.toasts.push(crate::toasts::Toast::new(
+                    message,
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    ctx.input(|input| input.time),
+                ));
+            }
+        }
         // Repaint only when there's activity (scroll animation, background loads)
         // egui will auto-repaint on user input (mouse, keyboard)
         let has_animation = ctx.egui_is_using_pointer()

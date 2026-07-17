@@ -89,8 +89,7 @@ fn session_path() -> PathBuf {
 
 /// Load the saved session, or None if absent/corrupt.
 pub fn load() -> Option<Session> {
-    let data = std::fs::read_to_string(session_path()).ok()?;
-    serde_json::from_str(&data).ok()
+    crate::persistence::load_json(&session_path(), "Session")
 }
 
 /// Save the session atomically (temp file + rename). Returns `false` if

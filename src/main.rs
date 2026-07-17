@@ -39,6 +39,7 @@ mod operation_view;
 mod opqueue;
 mod panel;
 mod path_identity;
+mod persistence;
 pub mod ports;
 pub mod provider_runtime;
 mod query;

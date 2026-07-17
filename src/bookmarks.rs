@@ -168,10 +168,9 @@ fn store_path() -> PathBuf {
 
 /// Load the saved bookmarks, or an empty set if absent/corrupt.
 pub fn load() -> Bookmarks {
-    std::fs::read_to_string(store_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    Bookmarks {
+        items: crate::persistence::load_item_store(&store_path(), "Bookmarks"),
+    }
 }
 
 /// Save the bookmarks atomically (temp file + rename). Returns `false` if

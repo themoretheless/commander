@@ -79,10 +79,9 @@ pub fn load() -> ProjectCollections {
 }
 
 fn load_from(path: &Path) -> ProjectCollections {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
+    ProjectCollections {
+        items: crate::persistence::load_item_store(path, "Project collections"),
+    }
 }
 
 pub fn save(collections: &ProjectCollections) -> bool {
