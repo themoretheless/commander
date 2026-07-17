@@ -187,6 +187,9 @@ impl App {
         if fs_changed {
             self.tree_children_cache.clear();
         }
+        if !self.ws.left.watcher_active() || !self.ws.right.watcher_active() {
+            ctx.request_repaint_after(crate::panel::WATCHER_RETRY_BACKOFF);
+        }
 
         // Drop targets are only valid for the frame that set them
         // (rows re-assert them while hovered during render).

@@ -27,6 +27,13 @@ impl App {
         let t = self.colors;
         let workload = crate::workload::stats();
         let persistence = crate::persistence::health_snapshot();
+        let watcher = crate::watcher_health::snapshot();
+        let active_watchers = usize::from(self.ws.left.watcher_active())
+            + usize::from(self.ws.right.watcher_active());
+        let watcher_errors = watcher
+            .backend_errors
+            .saturating_add(watcher.start_failures)
+            .saturating_add(watcher.watch_failures);
         let image_cache = self.image_cache.stats();
         let active_root = self.ws.active_panel_ref().current_path.clone();
         let index = self.content_index.status(&active_root);
@@ -90,6 +97,32 @@ impl App {
                                     image_cache.pending, image_cache.failed
                                 ),
                                 if image_cache.failed == 0 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
+                                "Filesystem watchers",
+                                &format!("{active_watchers}/2 active / {} events", watcher.events),
+                                if active_watchers == 2 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
+                                "Watcher recovery",
+                                &format!(
+                                    "{} rescans / {} errors / {} reconnects / {} reconciled",
+                                    watcher.rescan_signals,
+                                    watcher_errors,
+                                    watcher.reconnects,
+                                    watcher.gap_reconciliations
+                                ),
+                                if active_watchers == 2 {
                                     t.text_primary
                                 } else {
                                     t.accent_warning

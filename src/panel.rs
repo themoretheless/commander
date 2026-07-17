@@ -98,6 +98,7 @@ fn walk_log() -> &'static Mutex<HashMap<VolumePathKey, (std::time::Instant, std:
 const WALK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
 const WALK_EXPENSIVE: std::time::Duration = std::time::Duration::from_secs(2);
 const DEFAULT_VISIBLE_ROWS: usize = 32;
+pub(crate) const WATCHER_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn visible_window(total: usize, anchor: usize, page_rows: usize) -> std::ops::Range<usize> {
     let rows = page_rows.max(DEFAULT_VISIBLE_ROWS).min(total);
@@ -960,6 +961,9 @@ pub struct PanelState {
     /// Incremented when the backend reports an overflow/rescan flag or an
     /// event-stream error. The next poll replaces the whole listing snapshot.
     watcher_rescan_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Backend errors may invalidate the event stream itself; the UI thread
+    /// owns the watcher and performs the restart on its next poll.
+    watcher_restart_requested: Arc<std::sync::atomic::AtomicBool>,
     applied_rescan_generation: u64,
     /// Set by deep watcher events: directory sizes need recomputing,
     /// but the listing itself is unchanged.
@@ -970,6 +974,7 @@ pub struct PanelState {
     filter_cache: std::cell::RefCell<FilterCache>,
     watcher: Option<notify::RecommendedWatcher>,
     watched_path: Option<PathBuf>,
+    watcher_retry: Option<(PathBuf, std::time::Instant)>,
 }
 
 impl PanelState {
@@ -1009,6 +1014,7 @@ impl PanelState {
             drop_target: None,
             needs_refresh: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             watcher_rescan_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            watcher_restart_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             applied_rescan_generation: 0,
             sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_sizes_recompute: None,
@@ -1016,6 +1022,7 @@ impl PanelState {
             filter_cache: std::cell::RefCell::new(FilterCache::stale()),
             watcher: None,
             watched_path: None,
+            watcher_retry: None,
         }
     }
 
@@ -1025,11 +1032,18 @@ impl PanelState {
         self.notify = Some(notify);
         self.watcher = None;
         self.watched_path = None;
+        self.watcher_retry = None;
+        self.watcher_restart_requested
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         self.start_watcher();
     }
 
     pub fn has_notify(&self) -> bool {
         self.notify.is_some()
+    }
+
+    pub fn watcher_active(&self) -> bool {
+        self.watcher.is_some()
     }
 
     pub fn refresh(&mut self) {
@@ -1077,6 +1091,17 @@ impl PanelState {
     pub fn poll_fs_changes(&mut self) -> bool {
         const SIZES_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
 
+        if self
+            .watcher_restart_requested
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.watcher = None;
+            self.watched_path = None;
+            self.watcher_retry = Some((self.current_path.clone(), std::time::Instant::now()));
+        }
+        if self.notify.is_some() && self.watcher.is_none() {
+            self.start_watcher();
+        }
         let reload = self
             .needs_refresh
             .swap(false, std::sync::atomic::Ordering::Relaxed);
@@ -1084,7 +1109,8 @@ impl PanelState {
             let rescan_generation = self
                 .watcher_rescan_generation
                 .load(std::sync::atomic::Ordering::Relaxed);
-            if rescan_generation != self.applied_rescan_generation {
+            let recovered_gap = rescan_generation != self.applied_rescan_generation;
+            if recovered_gap {
                 invalidate_size_cache(&self.current_path);
                 self.applied_rescan_generation = rescan_generation;
             }
@@ -1093,6 +1119,7 @@ impl PanelState {
             self.sizes_dirty
                 .store(retry, std::sync::atomic::Ordering::Relaxed);
             self.last_sizes_recompute = Some(std::time::Instant::now());
+            crate::watcher_health::record_listing_reconciliation(recovered_gap);
             return true;
         }
 
@@ -1107,6 +1134,7 @@ impl PanelState {
                 let retry = self.compute_dir_sizes(false);
                 self.sizes_dirty
                     .store(retry, std::sync::atomic::Ordering::Relaxed);
+                crate::watcher_health::record_size_reconciliation();
             } else if let Some(wake) = &self.notify {
                 // Poll again on a later frame once the debounce expires.
                 wake();
@@ -1122,6 +1150,15 @@ impl PanelState {
         if self.watched_path.as_ref() == Some(&self.current_path) {
             return;
         }
+        if self.watcher_retry.as_ref().is_some_and(|(path, retry_at)| {
+            path == &self.current_path && std::time::Instant::now() < *retry_at
+        }) {
+            return;
+        }
+        let recovering = self
+            .watcher_retry
+            .take()
+            .is_some_and(|(path, _)| path == self.current_path);
 
         // Drop old watcher
         self.watcher = None;
@@ -1130,12 +1167,15 @@ impl PanelState {
         let flag = Arc::clone(&self.needs_refresh);
         let sizes_flag = Arc::clone(&self.sizes_dirty);
         let rescan_generation = Arc::clone(&self.watcher_rescan_generation);
+        let restart_requested = Arc::clone(&self.watcher_restart_requested);
         let wake = self.notify.clone();
         let watched = self.current_path.clone();
 
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
+                crate::watcher_health::record_event();
                 if event.need_rescan() {
+                    crate::watcher_health::record_rescan_signal();
                     invalidate_size_cache(&watched);
                     flag_watcher_gap(&rescan_generation, &flag);
                     if let Some(wake) = &wake {
@@ -1153,14 +1193,18 @@ impl PanelState {
                     }
                 }
                 if direct {
+                    crate::watcher_health::record_direct_event();
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 } else {
+                    crate::watcher_health::record_deep_event();
                     sizes_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 if let Some(wake) = &wake {
                     wake();
                 }
             } else {
+                crate::watcher_health::record_backend_error();
+                restart_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                 invalidate_size_cache(&watched);
                 flag_watcher_gap(&rescan_generation, &flag);
                 if let Some(wake) = &wake {
@@ -1169,12 +1213,48 @@ impl PanelState {
             }
         });
 
-        if let Ok(mut w) = watcher {
-            // Recursive: deep events never reload the listing, but they
-            // must invalidate cached sizes (see the callback above).
-            let _ = w.watch(&self.current_path, RecursiveMode::Recursive);
-            self.watched_path = Some(self.current_path.clone());
-            self.watcher = Some(w);
+        match watcher {
+            Ok(mut watcher) => {
+                // Recursive: deep events never reload the listing, but they
+                // must invalidate cached sizes (see the callback above).
+                if watcher
+                    .watch(&self.current_path, RecursiveMode::Recursive)
+                    .is_ok()
+                {
+                    self.watched_path = Some(self.current_path.clone());
+                    self.watcher = Some(watcher);
+                    self.watcher_retry = None;
+                    if recovering {
+                        crate::watcher_health::record_reconnect();
+                        invalidate_size_cache(&self.current_path);
+                        flag_watcher_gap(&self.watcher_rescan_generation, &self.needs_refresh);
+                        if let Some(wake) = &self.notify {
+                            wake();
+                        }
+                    }
+                } else {
+                    crate::watcher_health::record_watch_failure();
+                    self.mark_watcher_unavailable();
+                }
+            }
+            Err(_) => {
+                crate::watcher_health::record_start_failure();
+                self.mark_watcher_unavailable();
+            }
+        }
+    }
+
+    fn mark_watcher_unavailable(&mut self) {
+        invalidate_size_cache(&self.current_path);
+        flag_watcher_gap(&self.watcher_rescan_generation, &self.needs_refresh);
+        self.watcher = None;
+        self.watched_path = None;
+        self.watcher_retry = Some((
+            self.current_path.clone(),
+            std::time::Instant::now() + WATCHER_RETRY_BACKOFF,
+        ));
+        if let Some(wake) = &self.notify {
+            wake();
         }
     }
 
@@ -3145,6 +3225,7 @@ mod tests {
 
     #[test]
     fn watcher_gap_replaces_the_listing_and_applies_its_generation() {
+        let health_before = crate::watcher_health::snapshot();
         let tmp = TempDir::new();
         tmp.file("before.txt", "before");
         let mut panel = PanelState::new(tmp.path().to_path_buf());
@@ -3164,6 +3245,9 @@ mod tests {
                 .watcher_rescan_generation
                 .load(std::sync::atomic::Ordering::Relaxed)
         );
+        let health_after = crate::watcher_health::snapshot();
+        assert!(health_after.listing_reconciliations > health_before.listing_reconciliations);
+        assert!(health_after.gap_reconciliations > health_before.gap_reconciliations);
     }
 
     /// Profiling harness, not a test: drives a real watcher + poll loop
