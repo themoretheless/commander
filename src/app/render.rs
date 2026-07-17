@@ -529,14 +529,23 @@ impl App {
                                     }
                                 });
                             } else {
+                                let close_button = |ui: &mut egui::Ui| {
+                                    ui.small_button("\u{2715}")
+                                        .on_hover_text("Close preview")
+                                        .clicked()
+                                };
                                 match image_cache.load_state(&path) {
                                     crate::image_cache::PreviewLoadState::Disabled => {
                                         ui.centered_and_justified(|ui| {
-                                            ui.label(
-                                                egui::RichText::new("Image preview disabled")
-                                                    .size(12.0)
-                                                    .color(t.text_muted),
-                                            );
+                                            ui.vertical_centered(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("Image preview disabled")
+                                                        .size(12.0)
+                                                        .color(t.text_muted),
+                                                );
+                                                ui.add_space(10.0);
+                                                close_preview |= close_button(ui);
+                                            });
                                         });
                                     }
                                     crate::image_cache::PreviewLoadState::Failed(failure) => {
@@ -560,13 +569,7 @@ impl App {
                                                         image_cache.retry(&path);
                                                         ui.ctx().request_repaint();
                                                     }
-                                                    if ui
-                                                        .small_button("\u{2715}")
-                                                        .on_hover_text("Close preview")
-                                                        .clicked()
-                                                    {
-                                                        close_preview = true;
-                                                    }
+                                                    close_preview |= close_button(ui);
                                                 });
                                             });
                                         });
@@ -574,7 +577,11 @@ impl App {
                                     crate::image_cache::PreviewLoadState::Loading
                                     | crate::image_cache::PreviewLoadState::Idle => {
                                         ui.centered_and_justified(|ui| {
-                                            ui.spinner();
+                                            ui.vertical_centered(|ui| {
+                                                ui.spinner();
+                                                ui.add_space(10.0);
+                                                close_preview |= close_button(ui);
+                                            });
                                         });
                                     }
                                 }

@@ -16,13 +16,13 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: more than 60 focused modules and 606
-`#[test]` functions sit under a thin presentation layer. The broad suite runs
-603; two profiling harnesses and the separately executed single-threaded
+That split is real and worth protecting: more than 60 focused modules and 623
+unit tests sit under a thin presentation layer. The broad suite runs 620; two
+manual profiling harnesses and the separately executed single-threaded
 performance timing gate are ignored there. The debt is concentrated in three
 oversized core files and in how the core signals the UI.
 
-### External-research constraints (2026-07-14)
+### External-research constraints (2026-07-14, revalidated 2026-07-18)
 
 The comparative pass in [research.md](research.md) adds five constraints to the
 target architecture without changing the current migration order:
@@ -49,6 +49,11 @@ machines own `G081-G090`. `measurement`, `benchmark_fixture`,
 `capability_diagnostic`, `support_bundle`, `feature_flags`, and `klm` own
 `G091-G100` without adding policy to `Workspace`.
 
+The fixed 100-repository cohort was refreshed in full on 2026-07-18: every
+entry remained reachable and non-archived. That pass produced the smaller
+`H001-H012` hardening ledger in `research.md`; it closes current gaps without
+changing the longer-term module migration order below.
+
 ## Module map (current)
 
 ### Core (UI-independent, unit-tested)
@@ -57,7 +62,8 @@ Grouped by the bounded context each module really belongs to:
 
 - **Navigation / panel state**: `panel` (the `PanelState` god object: entries,
   cursor, selection, sort, filter, history, watcher, dir-size index),
-  `jumplist`, `crumbs`, `scan`, `collections`, `tree_overview`.
+  `watcher_health` (path-free backend/recovery counters), `jumplist`, `crumbs`,
+  `scan`, `collections`, `tree_overview`.
 - **Discovery / search**: `query` is the canonical grammar, `search` owns
   cancellable generations and provider composition, `content_index` owns the
   optional root-scoped snapshot, and `archive` provides bounded ZIP browsing
@@ -65,7 +71,9 @@ Grouped by the bounded context each module really belongs to:
   mechanisms, not UI policies.
 - **Workspace / coordination**: `workspace` (the second god object: two panels,
   transfer queue, undo, pending ops, the dialog-intent flag bus, compare/sync
-  glue, drop handling), `command` (the `Command` enum + key mapping).
+  glue, drop handling), `command` (the `Command` enum + key mapping and the
+  pure `CommandContext`/`CommandAvailability` policy used by every action
+  surface).
 - **Selection / comparison**: `compare` (cross-pane classification + selection
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
@@ -91,11 +99,13 @@ Grouped by the bounded context each module really belongs to:
   startup phases, and versioned CI budgets; `benchmark_fixture` generates
   deterministic empirical trees; `capability_diagnostic` explains per-volume
   fast paths and fallbacks; `support_bundle` exports capped, salted-redacted
-  evidence; `klm` checks the ten core operator workflows.
+  evidence including watcher health; `klm` checks the ten core operator
+  workflows.
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
-  `session`, `density`, `focus_mode`, `quick_actions`, `treemap`, `toasts`
-  (a pure, time-driven toast queue with an injected clock; no egui types),
+  `session`, `persistence` (shared item-level recovery and path-free health),
+  `density`, `focus_mode`, `quick_actions`, `treemap`, `toasts` (a pure,
+  time-driven toast queue with an injected clock; no egui types),
   `lock_util` (the single poison-recovery policy at worker/UI mutex borders).
 
 ### UI adapter (`app/`, egui)
@@ -110,18 +120,19 @@ menu in `native_menu`. Toolkit-independent accessibility and responsive-layout
 contracts live in `accessibility`; operation presentation vocabulary lives in
 `operation_view` rather than individual dialogs. `app/developer_panel.rs`
 renders immutable diagnostics snapshots and sends explicit feature-control or
-export commands; it does not own measurement or rollout policy.
+export commands; it does not own measurement, persistence, watcher, or rollout
+policy.
 
 ### Size hot-spots
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 4,705 | God object plus a large colocated test module |
+| `src/workspace.rs` | 4,892 | God object plus a large colocated test module |
 | `src/transfer.rs` | 3,623 | Coordinator still contains buffered/sparse tree mechanics |
-| `src/panel.rs` | 3,220 | God object; `PanelState` mixes 4 concerns |
+| `src/panel.rs` | 3,339 | God object; `PanelState` mixes 4 concerns |
 | `src/operation_journal.rs` | 1,714 | Durable state, transition machines, recovery, rollback, and tests |
 | `src/search.rs` | 1,496 | Provider composition and a large fixture suite |
-| `src/app/update.rs` | 1,277 | Per-frame hub; drains the flag bus |
+| `src/app/update.rs` | 1,293 | Per-frame hub; drains the flag bus |
 
 ### Research milestone 1 (G001-G050)
 
@@ -191,6 +202,62 @@ provider reads use an atomic flag mask on hot paths, while configuration and
 support exports take one coherent snapshot. Operation decisions are indexed in
 [`src/operation/README.md`](src/operation/README.md) with three accepted ADRs
 for durable invariants, state ownership, and failure/recovery policy.
+
+## Comparative hardening slice (2026-07-18)
+
+The `H001-H012` pass follows one rule: policy is computed in a pure core owner,
+mutable runtime state stays with the subsystem that observes it, and egui only
+renders the resulting state or sends an explicit command.
+
+| Concern | Policy owner | Runtime owner | Presentation boundary |
+| --- | --- | --- | --- |
+| Cross-pane comparison | `compare`, `conflict`, `sync` | panel/workspace snapshots | compare labels, colors, conflict sheet |
+| Action availability | `command::CommandContext` and `CommandAvailability` | immutable `Workspace` context snapshots | palette plus wide/compact toolbar |
+| Config recovery | `persistence` | each typed store | one toast plus developer counters |
+| Image preview | `image_cache` decode/admission state | cache workers and result map | loading, failed, retry, close states |
+| Directory watching | `watcher_health` recovery facts | `PanelState` watcher lifecycle | developer panel and support bundle |
+
+The important flows are intentionally short:
+
+1. An action surface requests one immutable context snapshot (complete for the
+   palette, minimal for the action bar), asks each `Command` for availability,
+   and renders or invokes that answer.
+2. A config store parses its top-level JSON, recovers each valid item through
+   `persistence`, and reports aggregate counts without recording values/paths.
+3. Preview requests enter `Loading`; a worker streams and bounds the decode,
+   then publishes either a texture payload or a stable classified failure.
+   Retry explicitly invalidates that failure before scheduling fresh work.
+4. Watcher overflow, backend error, or subscription failure invalidates the
+   incremental view. The panel backs off, reconnects, and performs a full
+   reconciliation before trusting incremental events again.
+
+### Hard invariants
+
+1. A directory pair is never classified content-identical from byte size and
+   modification time alone.
+2. File/folder type conflicts never inherit a conditional overwrite policy.
+3. One malformed persisted item cannot erase valid sibling records.
+4. Every visible unavailable palette/toolbar action has one core reason and
+   cannot execute through that surface.
+5. The egui frame never opens or decodes an image.
+6. No accepted decoded pixel/color buffer exceeds 256 MiB or a 32,768-pixel
+   dimension; allocation failure is data, not a panic.
+7. A failed preview remains failed until explicit retry or context invalidation,
+   so the UI cannot oscillate into an endless spinner.
+8. A watcher that failed to create or subscribe is not counted as active.
+9. A watcher gap/reconnect requires full reconciliation, and exported watcher
+   diagnostics contain counters rather than paths.
+
+### Greenfield difference
+
+If this application were starting today, `PanelState` would not own watcher
+construction, backoff, reconciliation, listing, cursor, and selection in one
+type. A `DirectoryObserver` state machine would emit typed snapshots into a
+panel reducer. Command predicates would live behind a small `ActionPolicy`
+interface from day one, persisted stores would share one versioned envelope,
+and preview/search/index work would enter the same bounded scheduler instead
+of acquiring separate lifecycle adapters over time. The current pass moves in
+that direction without forcing a high-risk rewrite of the working core.
 
 ## The core <-> UI boundary today
 
@@ -745,8 +812,10 @@ validates.
 
 ## Invariants and testing
 
-The pure core is covered by 424 GUI-free tests (425 `#[test]` functions, one
-`#[ignore]`d manual profiling harness). The one area the tests do **not**
-exercise is egui-frame behaviour: the dialog focus edge-trigger driven by the
-flag bus is invisible to the test suite, which is why the Effect-bus migration
-must be verified manually in the running app, not just by `cargo test`.
+The crate currently exposes 623 unit tests. The default suite passes 620 with
+three explicit ignores: two manual profiling/benchmark harnesses and one
+single-threaded CI performance gate, which is run separately. The one area the
+tests do **not** exercise is full egui-frame behaviour: dialog focus, texture
+presentation, and hover layout remain outside a screenshot-driven integration
+suite. Any Effect-bus or preview-surface migration therefore still needs a
+manual running-app pass in addition to `cargo test`.

@@ -337,6 +337,9 @@ fn is_video_ext(path: &Path) -> bool {
 /// CoreGraphics dimensions are trusted only after both multiplications and the
 /// allocation request have succeeded.
 fn allocate_rgba_pixels(width: usize, height: usize) -> Result<(usize, Vec<u8>), String> {
+    if width > MAX_IMAGE_DIMENSION as usize || height > MAX_IMAGE_DIMENSION as usize {
+        return Err("image dimensions exceed the preview limit".to_string());
+    }
     let bytes_per_row = width
         .checked_mul(4)
         .ok_or_else(|| "image row is too wide".to_string())?;
@@ -752,8 +755,8 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImageCache, MAX_DECODED_IMAGE_BYTES, PreviewFailure, allocate_rgba_pixels,
-        classify_failure, color_image_from_rgba, load_via_image_crate,
+        ImageCache, MAX_DECODED_IMAGE_BYTES, MAX_IMAGE_DIMENSION, PreviewFailure,
+        allocate_rgba_pixels, classify_failure, color_image_from_rgba, load_via_image_crate,
     };
     use crate::testutil::TempDir;
 
@@ -765,6 +768,7 @@ mod tests {
         assert!(allocate_rgba_pixels(usize::MAX, 1).is_err());
         assert!(allocate_rgba_pixels(usize::MAX / 4, 5).is_err());
         assert!(allocate_rgba_pixels(MAX_DECODED_IMAGE_BYTES / 4 + 1, 1).is_err());
+        assert!(allocate_rgba_pixels(MAX_IMAGE_DIMENSION as usize + 1, 1).is_err());
     }
 
     #[test]

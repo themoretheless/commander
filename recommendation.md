@@ -144,18 +144,18 @@ intentional, not a dropped row.)
 | D10 | Panel filter/cursor invariants: `ensure_cursor_valid()` after every filter/facet/sort change, bounds-checked `filtered_entries`, and an explicit (not silent-empty) `selected_or_cursor` miss | 18, 19, below the cut | small; strongest case for the `ViewState` encapsulation in Track A | **done:** filter/facet/sort re-clamp immediately; cached indices are bounded; stale cursor is typed `Result` |
 | D11 | egui widget-Id hygiene: add `id_salt` to the three dialog `ScrollArea`s and derive toast Ids from stable identity | below the cut (x4) | trivial | open |
 | D12 | **Security: escape or eliminate the AppleScript injection in `action_get_info`** (interpolated filename breaks out of the AppleScript string literal into `do shell script`) | 1 | small; escape `"`/`\` or drop the AppleScript call for a native `NSWorkspace`/Finder API | **done in this pass** (`escape_for_applescript_literal` + unit tests) |
-| D13 | Cross-pane comparison directory-blindness: add `is_dir` checks to `sync::compare`/`compare::classify_entry`/`conflict::detect`, and key `apply_sync`'s name-collision resolution by path/index instead of lowercased name | 2, 27, 28 | medium | **partial:** stable source paths + explicit case-conflict rows done; directory-type checks open |
+| D13 | Cross-pane comparison directory-blindness: add `is_dir` checks to `sync::compare`/`compare::classify_entry`/`conflict::detect`, and key `apply_sync`'s name-collision resolution by path/index instead of lowercased name | 2, 27, 28 | medium | **done (2026-07-18):** typed fingerprints, explicit folder-pair/type-conflict rows, and fail-closed conditional conflict policies |
 | D14 | Cap `textdiff`'s line count (or switch to a linear-space diff) before the O(n·m) DP allocation, so two ordinary text files can't abort the process | 5 | small | **done:** checked 8M-cell budget + flat matrix + regression test |
 | D15 | Data-safety gating: require an explicit drop-target (or a confirmation) before `drop_dragged` falls back to Move-into-other-panel, and gate toolbar Copy/Move/Delete on `pending_op`/`active_transfer` like the keyboard and drag-drop paths already do | 6, 32 | small-medium | **done:** explicit drop target/cancel plus queue-aware toolbar/core guards and disabled-state reasons |
-| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | open; preload-window budget cap partially done |
-| D17 | Persistence hardening: bound `MaxAgeDays`/`MinAgeDays` (or use `checked_mul`/`saturating_mul`), and give the four config-store loaders item-level fault tolerance instead of discarding the whole file on one bad field | 29, 31 | small-medium | open |
+| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | **partial:** budget-aware preload, four-worker cap, persistent failure cache, fully background streamed decode, memory/dimension limits, diagnostics, and retry done; fallback-orientation parity still needs a fixture audit |
+| D17 | Persistence hardening: bound `MaxAgeDays`/`MinAgeDays` (or use `checked_mul`/`saturating_mul`), and give the four config-store loaders item-level fault tolerance instead of discarding the whole file on one bad field | 29, 31 | small-medium | **done (2026-07-18):** day matching avoids duration multiplication; shared item-level recovery preserves valid records and reports aggregate health |
 | D18 | Small UI/data-integrity fixes: `select_all` should preserve filtered-out selections like `invert_selection` does; run Find's directory walk off the UI thread; clear the batch-rename dialog's stale error on rule edit; scope `Escape` to the active panel's preview only | 33, 35, 49, below the cut | small each | open |
 | D19 | **Non-modal dialog retargeting: snapshot the working panel/selection/directory once at dialog-open time** instead of re-deriving it live from `Workspace` every frame, for the batch-rename studio and the treemap dialog | 3, 42 | medium; natural fit for the `UiState` extraction (A5) | **done:** Batch Rename and treemap snapshots retain their opening context |
 | D20 | Undo coverage gaps: add a `Rename` variant to `undo::Action` so F2 single-file rename is undoable (and toast when an action genuinely can't be undone, instead of silently reverting something else or no-op'ing); make "Gather into Folder"'s undo also remove the now-empty folder it created | 8, below the cut | medium | **done:** F2 rename undo/redo + feedback; typed Gather/Ungather removes/recreates the folder safely |
 | D21 | Conflict-resolution UI deadlock: recompute `need_bytes`/`overflow` after `resolve_pending_conflicts` shrinks `tr.entries`, so a chosen policy (Skip Existing, Keep Newer, ...) can actually un-stick the disabled buttons it was meant to fix | 7 | small-medium | **done:** policies remain selectable and rebuild entries/size/conflicts/scan |
 | D22 | Drag-and-drop plumbing rewrite: capture the actual dragged row(s) explicitly instead of falling back to a stale `panel.selected` when the drag starts on an unselected row; mirror drag state so the destination panel can render its own drop-target highlight; clear `drag_entries`/`drop_target` on `drop_dragged`'s early-return concurrency guard instead of leaving a phantom overlay | 4, 43, 44 | medium; one rewrite closes all three plus the already-tracked #6 | **done:** explicit anchor, cross-panel target feedback, cancel path, full cleanup |
 | D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | open |
-| D24 | Silent no-op cleanup: toast when `JumpSlot` targets a missing directory; toast on copy-path commands with an empty selection; give `JumpList` a way to prune a dead entry instead of only bypassing it; fix `select_by_mask`'s live-count preview to agree with what Select will actually do for a subtraction-only mask | 46, 47, below the cut (x2) | small each | open |
+| D24 | Silent no-op cleanup: toast when `JumpSlot` targets a missing directory; toast on copy-path commands with an empty selection; give `JumpList` a way to prune a dead entry instead of only bypassing it; fix `select_by_mask`'s live-count preview to agree with what Select will actually do for a subtraction-only mask | 46, 47, below the cut (x2) | small each | **partial:** palette and both toolbar layouts now explain shared core availability reasons; direct-shortcut feedback, dead-jump pruning, and mask-preview parity remain |
 
 Severity caveats from manual verification (do not act on these as written):
 round-4 **#20** (was round-2 #1) is a real `exists()`/`path_is_taken()`
@@ -816,6 +816,9 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 The 2026-07-14 pass screened exactly 100 active GitHub repositories with at
 least 1,000 stars, read representative architecture/feature contracts, and
 cross-checked the recurring patterns against 30 research papers and standards.
+The fixed cohort was revalidated in full on 2026-07-18: all 100 repositories
+were reachable and none was archived. This is a relevance-curated Top 100 for
+Commander, not a claim to be GitHub's global all-category leaderboard.
 The evidence, repository-by-repository lessons, dedup boundary, and 100 new
 stable proposals (`G001-G100`) live in [research.md](research.md).
 
@@ -828,8 +831,25 @@ verification, and measurement/maintainability slices. Existing Track E
 ideas supported by the research were explicitly excluded from the new count,
 so post-copy verification, crash journaling, dry-run, archive browsing,
 virtualization, logging, and remote-watcher work are not double-counted.
+The refresh adds a separate `H001-H012` ledger for concrete gaps closed in
+comparison, persistence, command availability, preview, and watcher recovery,
+plus ten explicitly deferred candidates so future work is not mislabeled as
+shipped.
 
 ## Tracking
+
+**Round-15 refreshed Top-100 comparative pass: done.** The fixed, relevant
+100-repository cohort was revalidated on 2026-07-18 with 100 reachable and zero
+archived projects. The `H001-H012` implementation slice adds type-aware
+compare/sync/conflict behavior, item-level settings recovery, one contextual
+command-availability policy with disabled reasons, fully background bounded
+image decode with stable retryable errors, and observable watcher recovery
+with full reconciliation after gaps/reconnects. Three review passes then
+closed two correctness edges (native dimension enforcement and watcher-error
+backoff), removed a per-frame settings mutex plus action-bar listing allocation,
+and made every non-ready preview state pointer-dismissible. Full verification:
+620 passed, 3 intentionally ignored harnesses, the isolated single-threaded
+performance gate passed, and strict all-target/all-feature clippy is clean.
 
 **Round-14 G091-G100 measurement/maintainability pass: done.** CI now measures
 real startup, first-listing, filter, and operation-dialog probes against a
@@ -951,13 +971,14 @@ Next suggested order: the safety/invariant cluster and Track B are now closed,
 so continue with **D4 (cheap perf) + D11 (id_salt) + D18/D24's small UI/data
 fixes**, then **A2 -> A3 -> A4 ...**. Schedule **D9** (remaining
 destructive-op partial-failure integrity, with
-on-disk undo tests), **D13** (directory-blind comparison), and **D23**
-(filesystem edge cases) as dedicated passes, **D16** (image pipeline) and
-**D17** (persistence hardening) whenever those modules are next touched, and
-**D5** alongside the `DirIndex` extraction. D10 is also the strongest concrete
-motivation for the `ViewState` encapsulation in Track A, and D19's dialog-
-snapshot fix is the strongest concrete motivation for the `UiState`
-extraction (A5).
+on-disk undo tests) and **D23** (filesystem edge cases) as dedicated passes;
+finish **D16** with decode-time downsampling and an orientation fixture audit,
+and place **D5** alongside the `DirIndex` extraction. The best small follow-ups
+from the refreshed cohort are direct-shortcut availability feedback, watcher
+event coalescing telemetry, and extension-preserving filename truncation. D10
+is also the strongest concrete motivation for the `ViewState` encapsulation in
+Track A, and D19's dialog-snapshot fix is the strongest concrete motivation for
+the `UiState` extraction (A5).
 
 Track E (ideas) is deliberately unscheduled - revisit it after the D-track
 correctness work above lands, and pull specific ideas into Track A/B once

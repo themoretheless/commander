@@ -24,7 +24,9 @@ module is a thin egui layer over it.
   facets (kind, size, and date buckets: Today / Week / Month, plus an
   Older-than-a-month bucket).
 - **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
-  and frequency.
+  and frequency. Availability comes from the same workspace policy as both
+  toolbar layouts; unavailable matches stay visible with a reason, and Enter
+  selects the first action that can actually run.
 - **Streaming search** with cancellable generations, stable result identity,
   one fielded query grammar, Exact/Fuzzy/Regex modes, replayable history,
   optional inspectable content indexes, and bounded ZIP-member search.
@@ -87,7 +89,9 @@ module is a thin egui layer over it.
   **synchronise** sheet (`Cmd+Shift+S`), and a disk-usage **treemap**
   (`Cmd+Shift+M`).
 - **Compare mode** tints rows by how they differ from the other panel, with
-  relative-size occupancy bars.
+  relative-size occupancy bars. Same-named folders and file/folder collisions
+  have explicit states; directories are never called identical merely because
+  their metadata-sized fingerprints happen to match.
 - **Cross-pane selection**: select files only in this panel, differing from the
   other, identical to the other, or same-named (palette).
 - **Selection algebra**: select-by-mask (`Cmd+G`), and stash/union/intersect/
@@ -102,7 +106,10 @@ module is a thin egui layer over it.
 ### Viewing and the rest
 
 - **Preview** of images (via ImageIO, including RAW/HEIC) and text in the
-  opposite panel, with look-ahead caching.
+  opposite panel, with look-ahead caching. Decode stays off the UI thread,
+  fallback input is streamed, decoded images have dimension and 256 MiB
+  allocation limits, and failed previews explain the failure and can be
+  retried instead of spinning forever.
 - **Relative dates** in the Modified column (Finder/Things style), with the
   absolute timestamp on hover.
 - **Status bar and selection summary**: each panel's footer shows item count and
@@ -118,14 +125,17 @@ module is a thin egui layer over it.
   honored; text scales from 80% to 200%, with compact toolbars and a bottom
   Operations Center on constrained widths.
 - **Developer diagnostics**: the gear panel shows workers, queued I/O, cache
-  bytes, frame and cancellation percentiles, startup phases, and CI budgets.
+  bytes/jobs/failures, frame and cancellation percentiles, startup phases,
+  persistence recovery, watcher health/reconnects, and CI budgets.
   It can export a capability report or a salted, redacted support bundle and
   exposes bounded rollout/kill controls for optional index, preview, and
   external-provider paths.
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,
   Compress, Copy Path, Show in Finder, Tags, Share, Move to Trash.
-- **Session persistence** (panel paths, layout, view toggles) and a **light /
-  dark theme** following the system appearance.
+- **Resilient session/config persistence** (panel paths, layout, view toggles,
+  bookmarks, smart folders, templates, and collections): a malformed record
+  is skipped without discarding valid siblings. Includes a **light / dark
+  theme** following the system appearance.
 
 ## Roadmap
 
@@ -158,10 +168,12 @@ The review material is split by trust level: [audit.md](audit.md) is the
 verified defect ranking, [recommendation.md](recommendation.md) now contains a
 compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
 full 621-item raw sweep. [research.md](research.md) is the external evidence
-layer: 100 high-star repositories, 30 primary papers/standards, and 100
-deduplicated proposals. Its implementation ledger records G001-G050 as the
-first shipped research milestone and G051-G100 as the second; all 100 items
-are implemented and tested.
+layer: a fixed, relevant cohort of 100 high-star repositories, 30 primary
+papers/standards, and 100 deduplicated proposals. The whole cohort was
+revalidated on 2026-07-18 with 100 reachable and zero archived projects. Its
+implementation ledger records G001-G050 as the first shipped research
+milestone and G051-G100 as the second; the latest H001-H012 gap pass records
+additional compare, persistence, command, preview, and watcher hardening.
 
 ## Review backlog
 
@@ -196,6 +208,11 @@ The two implementation milestones now cover all `G001-G100`: the final slice
 adds live CI performance probes, percentile telemetry, empirical benchmark
 trees, startup phases, developer diagnostics, redacted support exports,
 runtime provider controls, KLM workflow budgets, and colocated operation ADRs.
+The 2026-07-18 comparative refresh then closed twelve concrete gaps: typed
+file/folder comparison, fail-closed conflict policy, item-level settings
+recovery, shared command availability with disabled reasons, fully background
+and bounded image decoding with retryable failures, and observable watcher
+recovery with mandatory reconciliation after gaps or reconnects.
 
 ## Keyboard shortcuts
 

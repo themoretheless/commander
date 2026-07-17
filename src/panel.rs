@@ -1097,7 +1097,10 @@ impl PanelState {
         {
             self.watcher = None;
             self.watched_path = None;
-            self.watcher_retry = Some((self.current_path.clone(), std::time::Instant::now()));
+            self.watcher_retry = Some((
+                self.current_path.clone(),
+                std::time::Instant::now() + WATCHER_RETRY_BACKOFF,
+            ));
         }
         if self.notify.is_some() && self.watcher.is_none() {
             self.start_watcher();
@@ -1923,6 +1926,21 @@ impl PanelState {
             .iter()
             .filter_map(|&i| self.entries.get(i))
             .collect()
+    }
+
+    /// Visit the filtered view without allocating a temporary `Vec`. Returning
+    /// `false` stops the walk, which keeps action-bar capability checks cheap
+    /// when the first actionable selection is near the front of the listing.
+    pub(crate) fn visit_filtered(&self, mut visitor: impl FnMut(usize, &FileEntry) -> bool) {
+        self.ensure_filter_cache();
+        let cache = self.filter_cache.borrow();
+        for &index in &cache.indices {
+            if let Some(entry) = self.entries.get(index)
+                && !visitor(index, entry)
+            {
+                break;
+            }
+        }
     }
 
     pub fn toggle_select(&mut self, path: PathBuf) {
@@ -3248,6 +3266,23 @@ mod tests {
         let health_after = crate::watcher_health::snapshot();
         assert!(health_after.listing_reconciliations > health_before.listing_reconciliations);
         assert!(health_after.gap_reconciliations > health_before.gap_reconciliations);
+    }
+
+    #[test]
+    fn backend_restart_request_observes_retry_backoff() {
+        let tmp = TempDir::new();
+        let mut panel = PanelState::new(tmp.path().to_path_buf());
+        panel.notify = Some(Arc::new(|| {}));
+        panel
+            .watcher_restart_requested
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        panel.poll_fs_changes();
+
+        assert!(!panel.watcher_active());
+        let (path, retry_at) = panel.watcher_retry.as_ref().unwrap();
+        assert_eq!(path, &panel.current_path);
+        assert!(*retry_at > std::time::Instant::now());
     }
 
     /// Profiling harness, not a test: drives a real watcher + poll loop

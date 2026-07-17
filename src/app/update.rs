@@ -120,8 +120,9 @@ impl App {
             data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
         });
-        let persistence = crate::persistence::health_snapshot();
-        if persistence.issue_generation > self.persistence_issue_seen {
+        let persistence_generation = crate::persistence::issue_generation();
+        if persistence_generation > self.persistence_issue_seen {
+            let persistence = crate::persistence::health_snapshot();
             self.persistence_issue_seen = persistence.issue_generation;
             if let Some(message) = persistence.last_issue {
                 self.toasts.push(crate::toasts::Toast::new(

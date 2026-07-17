@@ -2,6 +2,7 @@
 
 use serde::de::DeserializeOwned;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -21,14 +22,23 @@ pub struct DecodedItems<T> {
 }
 
 static HEALTH: OnceLock<Mutex<PersistenceHealth>> = OnceLock::new();
+static ISSUE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn health_state() -> &'static Mutex<PersistenceHealth> {
     HEALTH.get_or_init(|| Mutex::new(PersistenceHealth::default()))
 }
 
+fn publish_issue(health: &mut PersistenceHealth) {
+    let previous = ISSUE_GENERATION
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            Some(generation.saturating_add(1))
+        })
+        .unwrap_or_else(|generation| generation);
+    health.issue_generation = previous.saturating_add(1);
+}
+
 fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
     let mut health = crate::lock_util::recover(health_state());
-    health.issue_generation = health.issue_generation.saturating_add(1);
     health.recovered_stores = health.recovered_stores.saturating_add(1);
     health.recovered_items = health
         .recovered_items
@@ -39,15 +49,20 @@ fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
     health.last_issue = Some(format!(
         "{store}: recovered {recovered} item(s), skipped {rejected} invalid item(s)"
     ));
+    publish_issue(&mut health);
 }
 
 fn record_unreadable(store: &'static str) {
     let mut health = crate::lock_util::recover(health_state());
-    health.issue_generation = health.issue_generation.saturating_add(1);
     health.unreadable_stores = health.unreadable_stores.saturating_add(1);
     health.last_issue = Some(format!(
         "{store}: settings could not be read; defaults are active"
     ));
+    publish_issue(&mut health);
+}
+
+pub fn issue_generation() -> u64 {
+    ISSUE_GENERATION.load(Ordering::Acquire)
 }
 
 pub fn health_snapshot() -> PersistenceHealth {

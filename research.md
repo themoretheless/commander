@@ -8,8 +8,10 @@ and engineering hypotheses.
 
 ## Method and limits
 
-- Snapshot date: **2026-07-14** (Asia/Tbilisi). Star values are point-in-time
-  GraphQL counts, not live badges, and small drift after capture is expected.
+- Original snapshot date: **2026-07-14** (Asia/Tbilisi). Star values in the
+  100-row table are the original point-in-time GraphQL counts, not live badges.
+  Every repository was revalidated through the GitHub REST API on
+  **2026-07-18**; all 100 were reachable and none was archived.
 - Inclusion rule: a public, non-archived GitHub repository with at least
   **1,000 stars**, and a transferable lesson for a keyboard-first desktop file
   manager. Stars are a popularity signal, not proof of quality.
@@ -17,13 +19,37 @@ and engineering hypotheses.
   file managers (20), editors (15), search/launchers (15), transfer/backup
   systems (20), storage tools (10), Rust desktop foundations (10), and
   keyboard-first workflow tools (10).
-- GitHub GraphQL supplied repository identity, archive status, star count, and
-  update metadata. The README/feature contracts of 24 representative projects
-  were then read more closely. Scientific claims below link to the paper,
-  author copy, publisher, standards body, or project documentation.
+- This is a relevance-curated Top 100 for Commander, not GitHub's global
+  all-category leaderboard. The strata prevent editor popularity alone from
+  crowding out filesystem, transfer, recovery, and desktop-runtime evidence.
+- GitHub GraphQL supplied the original repository identity, archive status,
+  star count, and update metadata; REST supplied the full-cohort refresh. The
+  README/feature contracts of 24 representative projects were then read more
+  closely. Scientific claims below link to the paper, author copy, publisher,
+  standards body, or project documentation.
 - This is comparative design research, not a license to copy source or visual
   identity. Any implementation must be designed for Commander's macOS/egui
   constraints and tested against its own workloads.
+
+### 2026-07-18 cohort refresh
+
+The refresh retained all 100 entries with no replacements, duplicates, or
+archived projects. These are the ten highest current star counts inside the
+fixed cohort; the original per-row values below remain frozen so the research
+snapshot stays reproducible.
+
+| Rank | Repository | Refreshed stars |
+| ---: | --- | ---: |
+| 1 | [microsoft/vscode](https://github.com/microsoft/vscode) | 187,623 |
+| 2 | [tauri-apps/tauri](https://github.com/tauri-apps/tauri) | 109,169 |
+| 3 | [neovim/neovim](https://github.com/neovim/neovim) | 101,197 |
+| 4 | [zed-industries/zed](https://github.com/zed-industries/zed) | 87,149 |
+| 5 | [syncthing/syncthing](https://github.com/syncthing/syncthing) | 86,557 |
+| 6 | [localsend/localsend](https://github.com/localsend/localsend) | 85,434 |
+| 7 | [junegunn/fzf](https://github.com/junegunn/fzf) | 81,804 |
+| 8 | [jesseduffield/lazygit](https://github.com/jesseduffield/lazygit) | 80,470 |
+| 9 | [BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep) | 66,265 |
+| 10 | [meilisearch/meilisearch](https://github.com/meilisearch/meilisearch) | 58,629 |
 
 ## 100-repository sample
 
@@ -215,6 +241,10 @@ and engineering hypotheses.
 | E10 | [Iced](https://github.com/iced-rs/iced) | Typed messages separate state transitions from asynchronous commands. |
 | E11 | [tracing](https://github.com/tokio-rs/tracing) | Structured operation spans survive thread and async boundaries. |
 | E12 | [tus protocol server](https://github.com/tus/tusd) | Persisted offsets make interrupted transfer resumable. |
+| E13 | [VS Code when-clause contexts](https://code.visualstudio.com/api/references/when-clause-contexts) | One context policy can drive command, menu, and keybinding availability. |
+| E14 | [notify `Event`](https://docs.rs/notify/latest/notify/struct.Event.html) | `need_rescan` means incremental watcher state is no longer trustworthy. |
+| E15 | [watchexec](https://watchexec.github.io/docs/) | Event batching and coalescing belong between noisy backends and consumers. |
+| E16 | [rclone backend overview](https://rclone.org/overview/) | Operations must be selected from backend capabilities, not assumed globally. |
 
 ## Synthesis
 
@@ -423,6 +453,54 @@ medium, and `L` large relative effort.
 
 All 100 proposals are now implemented. The ledger describes shipped ownership
 and verification evidence rather than a future roadmap.
+
+## 2026-07-18 comparative implementation pass
+
+The refreshed cohort was evaluated against the current code rather than used
+to generate another speculative feature pile. Twelve missing or incomplete
+contracts were selected because they improve correctness, recovery, foreground
+latency, or action clarity without widening the product surface.
+
+| ID | Implemented delta | Primary evidence |
+| --- | --- | --- |
+| H001 | Compare file kind as part of the cross-pane fingerprint. | `compare`, `sync` |
+| H002 | Represent folder pairs and file/folder collisions explicitly. | `compare`, compare UI |
+| H003 | Make conditional conflict policies fail closed on type uncertainty. | `conflict`, `sync` |
+| H004 | Recover valid siblings from partially damaged JSON stores. | `persistence`, config stores, `session` |
+| H005 | Aggregate path-free persistence recovery diagnostics and surface them once. | `persistence`, developer diagnostics |
+| H006 | Compute command availability from immutable workspace context snapshots. | `command`, `workspace` |
+| H007 | Reuse availability in wide/compact toolbars and the command palette. | app toolbar and palette adapters |
+| H008 | Show disabled reasons and make palette Enter choose the first enabled match. | command palette UI |
+| H009 | Move all image decoding off the egui frame and stream fallback input. | `image_cache` |
+| H010 | Bound decoded image buffers/dimensions and expose stable failure plus retry states. | `image_cache`, preview UI |
+| H011 | Count watcher gaps, backend/start failures, reconnects, and reconciliations without paths. | `watcher_health`, support bundle schema 2 |
+| H012 | Back off failed watchers and require a full reconciliation after gaps or reconnects. | `panel`, `watcher_health` |
+
+The implementation deliberately preserves several distinctions learned from
+the cohort: directories are never declared byte-identical from size/mtime;
+type conflicts never silently inherit a file policy; one damaged persisted
+record does not erase valid siblings; an unavailable action has one policy and
+one explanation; preview failure is a stable retryable state rather than an
+infinite spinner; and a watcher that failed to subscribe is never reported as
+active.
+
+### Next ten evidence-backed candidates
+
+These remain proposals, ordered by expected value versus coupling. They are
+not counted as implemented.
+
+| Rank | Candidate | Why it remains separate |
+| ---: | --- | --- |
+| 1 | Decode-time image downsampling to the visible preview size. | The new cap prevents runaway allocation, but full-resolution decode can still waste CPU and memory. |
+| 2 | A typed preview-provider fallback chain with timeout and health. | Current native/fallback paths are bounded, but provider selection is not yet inspectable per format. |
+| 3 | Explain unavailable direct keyboard commands with the same reason as the palette. | Palette and toolbars are consistent; shortcut feedback still needs a low-noise policy. |
+| 4 | Batch/coalesce watcher events before reconciliation and expose batch telemetry. | Recovery is correct now; event storms can still create avoidable listing work. |
+| 5 | Select watcher depth and polling fallback from volume/backend capability. | One local policy cannot fit APFS, removable media, SMB, and NFS equally well. |
+| 6 | Preserve filename extensions when compact rows truncate long names. | Dense editors and file managers keep the most decision-relevant suffix visible. |
+| 7 | Show focused-pane contextual key help generated from command availability. | The registry now has enough policy data; the remaining work is a restrained UI treatment. |
+| 8 | Replace the growing context struct with typed composable command predicates. | Useful only when more command dimensions appear; premature today, likely valuable later. |
+| 9 | Gate operations by a cached per-volume capability matrix. | Transfer policy models capabilities, but all visible actions do not yet consume one shared matrix. |
+| 10 | Expose conflict-copy/version retention as an operation policy. | Durability/versioning exists underneath; the user-facing recovery contract can be more explicit. |
 
 ## Original promotion candidates
 

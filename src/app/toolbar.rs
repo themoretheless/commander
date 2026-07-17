@@ -31,7 +31,7 @@ impl ToolbarCommands {
     fn capture(workspace: &Workspace) -> Self {
         use crate::command::{Command, availability};
 
-        let context = workspace.command_context();
+        let context = workspace.action_bar_command_context();
         Self {
             copy: availability(Command::RequestCopy, &context),
             move_items: availability(Command::RequestMove, &context),
