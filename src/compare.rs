@@ -15,19 +15,41 @@ pub enum CompareStatus {
     Identical,
     /// Same name but a different size or mtime.
     Differs,
+    /// Both entries are directories. Their recursive contents have not been
+    /// compared, so the row must not claim byte-level identity.
+    DirectoryPair,
+    /// The same name identifies a file on one side and a directory on the other.
+    TypeConflict,
     /// No entry of this name in the other panel.
     Unique,
 }
 
-/// Other-panel entries indexed by lowercase name → (size, mtime), for folder
-/// comparison. Built once per frame from a panel's loaded entries.
-pub type CompareMap = HashMap<String, (u64, Option<SystemTime>)>;
+/// Minimal same-name fingerprint used by compare mode. Entry type is part of
+/// identity so a zero-byte file can never be mistaken for a directory.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CompareFingerprint {
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    pub is_dir: bool,
+}
+
+/// Other-panel entries indexed by lowercase name, built once per frame.
+pub type CompareMap = HashMap<String, CompareFingerprint>;
 
 /// Index a panel's entries for comparison against the other panel.
 pub fn build_compare_map(entries: &[FileEntry]) -> CompareMap {
     entries
         .iter()
-        .map(|e| (e.name_lower.clone(), (e.size, e.modified)))
+        .map(|e| {
+            (
+                e.name_lower.clone(),
+                CompareFingerprint {
+                    size: e.size,
+                    modified: e.modified,
+                    is_dir: e.is_dir,
+                },
+            )
+        })
         .collect()
 }
 
@@ -52,13 +74,20 @@ pub fn select_by_compare<'a>(
     entries
         .filter(|e| match other.get(&e.name_lower) {
             None => criterion == CompareCriterion::Unique,
-            Some(&(size, mtime)) => match criterion {
+            Some(fingerprint) => match criterion {
                 CompareCriterion::Unique => false,
-                CompareCriterion::Differing => size != e.size || mtime != e.modified,
-                CompareCriterion::Newer => match (e.modified, mtime) {
-                    (Some(a), Some(b)) => a > b,
-                    _ => false,
-                },
+                CompareCriterion::Differing => {
+                    fingerprint.is_dir != e.is_dir
+                        || (!e.is_dir
+                            && (fingerprint.size != e.size || fingerprint.modified != e.modified))
+                }
+                CompareCriterion::Newer if fingerprint.is_dir == e.is_dir && !e.is_dir => {
+                    match (e.modified, fingerprint.modified) {
+                        (Some(a), Some(b)) => a > b,
+                        _ => false,
+                    }
+                }
+                CompareCriterion::Newer => false,
             },
         })
         .map(|e| e.path.clone())
@@ -83,8 +112,10 @@ pub fn matching_name_paths<'a>(
 pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
     match other.get(&entry.name_lower) {
         None => CompareStatus::Unique,
-        Some(&(size, mtime)) => {
-            if size == entry.size && mtime == entry.modified {
+        Some(fingerprint) if fingerprint.is_dir != entry.is_dir => CompareStatus::TypeConflict,
+        Some(_) if entry.is_dir => CompareStatus::DirectoryPair,
+        Some(fingerprint) => {
+            if fingerprint.size == entry.size && fingerprint.modified == entry.modified {
                 CompareStatus::Identical
             } else {
                 CompareStatus::Differs
@@ -98,9 +129,19 @@ pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
 pub fn compare_hint(entry: &FileEntry, other: &CompareMap) -> Option<String> {
     match other.get(&entry.name_lower) {
         None => Some("Only in this panel".to_string()),
-        Some(&(size, mtime)) => {
-            let size_differs = size != entry.size;
-            let time_differs = mtime != entry.modified;
+        Some(fingerprint) if fingerprint.is_dir != entry.is_dir => {
+            let here = if entry.is_dir { "folder" } else { "file" };
+            let there = if fingerprint.is_dir { "folder" } else { "file" };
+            Some(format!(
+                "Same name, but this pane has a {here} and the other has a {there}"
+            ))
+        }
+        Some(_) if entry.is_dir => {
+            Some("Folder exists in both panes; recursive contents not compared".to_string())
+        }
+        Some(fingerprint) => {
+            let size_differs = fingerprint.size != entry.size;
+            let time_differs = fingerprint.modified != entry.modified;
             match (size_differs, time_differs) {
                 (false, false) => None,
                 (true, true) => Some("Same name, different size and modified time".to_string()),
@@ -136,8 +177,22 @@ mod tests {
 
         // Other panel has "same" (identical) and "diff" (different size/mtime).
         let mut other = CompareMap::new();
-        other.insert("same.txt".to_string(), (3, Some(t0)));
-        other.insert("diff.txt".to_string(), (999, Some(t1)));
+        other.insert(
+            "same.txt".to_string(),
+            CompareFingerprint {
+                size: 3,
+                modified: Some(t0),
+                is_dir: false,
+            },
+        );
+        other.insert(
+            "diff.txt".to_string(),
+            CompareFingerprint {
+                size: 999,
+                modified: Some(t1),
+                is_dir: false,
+            },
+        );
 
         assert_eq!(
             classify_entry(&mk(&same, t0), &other),
@@ -187,8 +242,22 @@ mod tests {
         let entries = [a.clone(), b.clone(), c.clone()];
 
         let mut other = CompareMap::new();
-        other.insert("a.txt".to_string(), (10, Some(older)));
-        other.insert("b.txt".to_string(), (10, Some(older)));
+        other.insert(
+            "a.txt".to_string(),
+            CompareFingerprint {
+                size: 10,
+                modified: Some(older),
+                is_dir: false,
+            },
+        );
+        other.insert(
+            "b.txt".to_string(),
+            CompareFingerprint {
+                size: 10,
+                modified: Some(older),
+                is_dir: false,
+            },
+        );
 
         let newer_sel = select_by_compare(entries.iter(), &other, CompareCriterion::Newer);
         assert!(newer_sel.contains(&a.path) && newer_sel.len() == 1);
@@ -227,6 +296,40 @@ mod tests {
         let e = FileEntry::from_meta(f, &meta).unwrap();
         let map = build_compare_map(std::slice::from_ref(&e));
         assert!(map.contains_key("photo.jpg"));
-        assert_eq!(map["photo.jpg"].0, 2);
+        assert_eq!(map["photo.jpg"].size, 2);
+    }
+
+    #[test]
+    fn directories_are_unverified_and_type_mismatches_are_explicit() {
+        let left = TempDir::new();
+        let right = TempDir::new();
+        let left_dir = left.dir("shared");
+        let right_dir = right.dir("shared");
+        let left_file = left.file("mixed", "");
+        let right_mixed_dir = right.dir("mixed");
+        let entry = |path: &std::path::Path| {
+            let metadata = std::fs::metadata(path).unwrap();
+            FileEntry::from_meta(path.to_path_buf(), &metadata).unwrap()
+        };
+        let other = build_compare_map(&[entry(&right_dir), entry(&right_mixed_dir)]);
+
+        assert_eq!(
+            classify_entry(&entry(&left_dir), &other),
+            CompareStatus::DirectoryPair
+        );
+        assert_eq!(
+            classify_entry(&entry(&left_file), &other),
+            CompareStatus::TypeConflict
+        );
+        assert!(
+            compare_hint(&entry(&left_dir), &other)
+                .unwrap()
+                .contains("not compared")
+        );
+        assert!(
+            compare_hint(&entry(&left_file), &other)
+                .unwrap()
+                .contains("file")
+        );
     }
 }

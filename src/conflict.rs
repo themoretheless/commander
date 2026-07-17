@@ -14,6 +14,8 @@ pub struct Conflict {
     pub src_path: PathBuf,
     pub src_size: u64,
     pub dst_size: u64,
+    pub src_is_dir: bool,
+    pub dst_is_dir: bool,
     /// Source mtime is strictly newer than the destination's.
     pub src_newer: bool,
     /// Destination mtime is strictly newer than the source's.
@@ -37,6 +39,8 @@ pub fn detect(sources: &[FileEntry], dest: &[FileEntry]) -> Vec<Conflict> {
                 src_path: s.path.clone(),
                 src_size: s.size,
                 dst_size: d.size,
+                src_is_dir: s.is_dir,
+                dst_is_dir: d.is_dir,
                 src_newer,
                 dst_newer,
             })
@@ -92,12 +96,12 @@ pub fn resolve(
         RelationPolicy::SkipAll => conflicts.iter().map(|c| c.src_path.clone()).collect(),
         RelationPolicy::KeepNewer => conflicts
             .iter()
-            .filter(|c| c.dst_newer)
+            .filter(|c| c.src_is_dir || c.dst_is_dir || !c.src_newer)
             .map(|c| c.src_path.clone())
             .collect(),
         RelationPolicy::KeepLarger => conflicts
             .iter()
-            .filter(|c| c.dst_size > c.src_size)
+            .filter(|c| c.src_is_dir || c.dst_is_dir || c.src_size <= c.dst_size)
             .map(|c| c.src_path.clone())
             .collect(),
     };
@@ -139,6 +143,12 @@ mod tests {
         e
     }
 
+    fn dir(mut entry: FileEntry) -> FileEntry {
+        entry.is_dir = true;
+        entry.size = 0;
+        entry
+    }
+
     #[test]
     fn detect_matches_case_insensitively_with_flags() {
         let sources = [
@@ -152,6 +162,30 @@ mod tests {
         assert_eq!(c.name, "Photo.JPG");
         assert_eq!((c.src_size, c.dst_size), (10, 99));
         assert!(c.src_newer && !c.dst_newer); // 200 > 100
+    }
+
+    #[test]
+    fn conditional_policies_fail_closed_for_directories_and_equal_files() {
+        let sources = vec![
+            dir(entry("folder", 0, Some(300))),
+            entry("equal.txt", 10, Some(100)),
+        ];
+        let destinations = vec![
+            dir(dst("folder", 0, Some(100))),
+            dst("equal.txt", 10, Some(100)),
+        ];
+        let conflicts = detect(&sources, &destinations);
+
+        assert!(
+            resolve(&sources, &conflicts, RelationPolicy::KeepNewer)
+                .keep
+                .is_empty()
+        );
+        assert!(
+            resolve(&sources, &conflicts, RelationPolicy::KeepLarger)
+                .keep
+                .is_empty()
+        );
     }
 
     fn sample() -> (Vec<FileEntry>, Vec<Conflict>) {

@@ -396,7 +396,8 @@ impl App {
                         let stripe = match crate::compare::classify_entry(entry, map) {
                             CompareStatus::Unique => Some(t.accent),
                             CompareStatus::Differs => Some(t.accent_warning),
-                            CompareStatus::Identical => None,
+                            CompareStatus::TypeConflict => Some(t.accent_red),
+                            CompareStatus::Identical | CompareStatus::DirectoryPair => None,
                         };
                         if let Some(color) = stripe {
                             let edge = egui::Rect::from_min_size(
@@ -538,6 +539,12 @@ impl App {
                                                 CompareStatus::Unique => ("+", "Only in this pane"),
                                                 CompareStatus::Differs => ("\u{2260}", "Differs"),
                                                 CompareStatus::Identical => ("=", "Identical"),
+                                                CompareStatus::DirectoryPair => {
+                                                    ("?", "Folder pair; contents not compared")
+                                                }
+                                                CompareStatus::TypeConflict => {
+                                                    ("!", "File/folder type conflict")
+                                                }
                                             };
                                         ui.label(
                                             egui::RichText::new(symbol)

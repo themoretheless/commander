@@ -400,13 +400,16 @@ fn status_label(status: SyncStatus) -> &'static str {
         SyncStatus::RightNewer => "right newer",
         SyncStatus::Differing => "differs",
         SyncStatus::Identical => "identical",
+        SyncStatus::DirectoryPair => "folder pair",
+        SyncStatus::TypeConflict => "type conflict",
         SyncStatus::CaseConflict => "case conflict",
     }
 }
 
 fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
     match status {
-        SyncStatus::Identical => t.text_muted,
+        SyncStatus::Identical | SyncStatus::DirectoryPair => t.text_muted,
+        SyncStatus::TypeConflict => t.accent_red,
         SyncStatus::Differing | SyncStatus::CaseConflict => t.accent_warning,
         _ => t.accent,
     }

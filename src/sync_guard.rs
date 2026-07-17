@@ -183,7 +183,10 @@ pub fn assess(actions: &[SyncAction], guard: &GuardPolicy) -> Assessment {
             assessment.planned_actions += 1;
             match action.status {
                 SyncStatus::LeftOnly | SyncStatus::RightOnly => assessment.additions += 1,
-                SyncStatus::Identical | SyncStatus::CaseConflict => {}
+                SyncStatus::Identical
+                | SyncStatus::DirectoryPair
+                | SyncStatus::TypeConflict
+                | SyncStatus::CaseConflict => {}
                 SyncStatus::LeftNewer | SyncStatus::RightNewer | SyncStatus::Differing => {
                     assessment.changed_existing += 1;
                 }
@@ -195,6 +198,8 @@ pub fn assess(actions: &[SyncAction], guard: &GuardPolicy) -> Assessment {
                 | SyncStatus::RightNewer
                 | SyncStatus::Differing
                 | SyncStatus::Identical
+                | SyncStatus::DirectoryPair
+                | SyncStatus::TypeConflict
         ) {
             assessment.existing_pairs += 1;
         }
