@@ -19,6 +19,14 @@ impl App {
         // below does not conflict with reading the usage history).
         let query = self.palette_input.clone().unwrap();
         let matches = crate::command::rank(&query, &self.palette_usage, self.palette_tick);
+        let command_context = self.ws.command_context();
+        let availabilities: Vec<crate::command::CommandAvailability> = matches
+            .iter()
+            .map(|m| crate::command::availability(m.command, &command_context))
+            .collect();
+        let primary_index = availabilities
+            .iter()
+            .position(|availability| availability.enabled);
         let previews: Vec<String> = matches
             .iter()
             .map(|m| self.palette_command_preview(m.command))
@@ -81,14 +89,16 @@ impl App {
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
                             for (i, m) in matches.iter().enumerate() {
-                                let fill = if i == 0 {
+                                let availability = availabilities[i];
+                                let is_primary = primary_index == Some(i);
+                                let fill = if is_primary {
                                     t.accent.linear_multiply(0.12)
                                 } else {
                                     Color32::TRANSPARENT
                                 };
-                                let lead = if i == 0 { "\u{25b8} " } else { "  " };
-                                let job = Self::palette_row_job(lead, m, t);
-                                let resp = Frame::NONE
+                                let lead = if is_primary { "\u{25b8} " } else { "  " };
+                                let job = Self::palette_row_job(lead, m, availability.enabled, t);
+                                let response = Frame::NONE
                                     .fill(fill)
                                     .corner_radius(crate::theme::ROUNDING_SM)
                                     .inner_margin(Margin::symmetric(8, 6))
@@ -98,7 +108,14 @@ impl App {
                                                 ui.add(egui::Label::new(job));
                                                 let preview =
                                                     previews.get(i).map_or("", String::as_str);
-                                                let detail = if preview.is_empty() {
+                                                let detail = if let Some(reason) =
+                                                    availability.reason
+                                                {
+                                                    format!(
+                                                        "{} \u{00b7} {reason}",
+                                                        Self::palette_category(m.command)
+                                                    )
+                                                } else if preview.is_empty() {
                                                     Self::palette_category(m.command).to_string()
                                                 } else {
                                                     format!(
@@ -108,9 +125,13 @@ impl App {
                                                     )
                                                 };
                                                 ui.label(
-                                                    egui::RichText::new(detail)
-                                                        .size(10.0)
-                                                        .color(t.text_muted),
+                                                    egui::RichText::new(detail).size(10.0).color(
+                                                        if availability.enabled {
+                                                            t.text_muted
+                                                        } else {
+                                                            t.text_secondary
+                                                        },
+                                                    ),
                                                 );
                                             });
                                             ui.with_layout(
@@ -127,7 +148,14 @@ impl App {
                                                                 ui.label(
                                                                     egui::RichText::new(m.shortcut)
                                                                         .size(10.0)
-                                                                        .color(t.text_secondary),
+                                                                        .color(
+                                                                            if availability.enabled
+                                                                            {
+                                                                                t.text_secondary
+                                                                            } else {
+                                                                                t.text_muted
+                                                                            },
+                                                                        ),
                                                                 );
                                                             });
                                                     }
@@ -135,10 +163,15 @@ impl App {
                                             );
                                         });
                                     })
-                                    .response
-                                    .interact(Sense::click())
-                                    .on_hover_text(m.shortcut);
-                                if resp.clicked() {
+                                    .response;
+                                let response = if availability.enabled {
+                                    response.interact(Sense::click()).on_hover_text(m.shortcut)
+                                } else {
+                                    response
+                                        .interact(Sense::hover())
+                                        .on_hover_text(availability.reason.unwrap_or_default())
+                                };
+                                if availability.enabled && response.clicked() {
                                     run = Some((m.label, m.command));
                                 }
                             }
@@ -146,8 +179,9 @@ impl App {
                 }
 
                 if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && let Some(m) = matches.first()
+                    && let Some(index) = primary_index
                 {
+                    let m = &matches[index];
                     run = Some((m.label, m.command));
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -299,6 +333,7 @@ impl App {
     fn palette_row_job(
         lead: &str,
         m: &crate::command::CommandMatch,
+        enabled: bool,
         t: ThemeColors,
     ) -> egui::text::LayoutJob {
         use egui::text::{LayoutJob, TextFormat};
@@ -313,7 +348,13 @@ impl App {
         let mut buf = [0u8; 4];
         for (idx, ch) in m.label.chars().enumerate() {
             let hit = m.matched.iter().any(|&(s, e)| idx >= s && idx < e);
-            let color = if hit { t.accent } else { t.text_primary };
+            let color = if !enabled {
+                t.text_muted
+            } else if hit {
+                t.accent
+            } else {
+                t.text_primary
+            };
             job.append(ch.encode_utf8(&mut buf), 0.0, fmt(color));
         }
         job

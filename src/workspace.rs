@@ -460,6 +460,114 @@ impl Workspace {
         }
     }
 
+    /// Capture the command-relevant state once for palettes, menus, and
+    /// toolbars. Counts follow the same filtered selection semantics as the
+    /// operations themselves, so a hidden stale selection cannot enable a
+    /// command that would later do nothing.
+    pub fn command_context(&self) -> crate::command::CommandContext {
+        let (active, inactive) = match self.active {
+            ActivePanel::Left => (&self.left, &self.right),
+            ActivePanel::Right => (&self.right, &self.left),
+        };
+        let visible = active.filtered_entries();
+        let cursor = active
+            .cursor
+            .checked_sub(1)
+            .and_then(|index| active.filtered_get(index));
+        let selected_entries = visible
+            .iter()
+            .filter(|entry| active.selected.contains(&entry.path))
+            .count();
+        let picked_entries = if active.selected.is_empty() {
+            usize::from(cursor.is_some())
+        } else {
+            selected_entries
+        };
+        let listing_entries = if active.selected.is_empty() {
+            visible.len()
+        } else {
+            selected_entries
+        };
+
+        let mut selected_files = visible
+            .iter()
+            .copied()
+            .filter(|entry| !entry.is_dir && active.selected.contains(&entry.path));
+        let first_selected_file = selected_files.next();
+        let second_selected_file = selected_files.next();
+        let third_selected_file = selected_files.next();
+        let can_diff = if first_selected_file.is_some()
+            && second_selected_file.is_some()
+            && third_selected_file.is_none()
+        {
+            true
+        } else {
+            let candidate = if first_selected_file.is_some() && second_selected_file.is_none() {
+                first_selected_file
+            } else {
+                cursor.filter(|entry| !entry.is_dir)
+            };
+            candidate.is_some_and(|entry| {
+                inactive
+                    .entries
+                    .iter()
+                    .any(|other| !other.is_dir && other.name_lower == entry.name_lower)
+            })
+        };
+
+        let active_transfer = self.active_transfer.is_some();
+        let pending_operation = self.pending_op.is_some();
+        let safe_state = self.mutations_blocked();
+        let can_transfer_into_cursor_folder = !active_transfer
+            && !pending_operation
+            && !safe_state
+            && cursor.is_some_and(|target| {
+                target.is_dir
+                    && !active.selected.is_empty()
+                    && visible.iter().any(|entry| {
+                        active.selected.contains(&entry.path) && entry.path != target.path
+                    })
+            });
+
+        crate::command::CommandContext {
+            visible_entries: visible.len(),
+            visible_files: visible.iter().filter(|entry| !entry.is_dir).count(),
+            other_entries: inactive.entries.len(),
+            picked_entries,
+            selected_entries,
+            listing_entries,
+            marked_entries: active
+                .entries
+                .iter()
+                .filter(|entry| active.marked.contains(&entry.path))
+                .count(),
+            stashed_entries: active
+                .entries
+                .iter()
+                .filter(|entry| self.selection_stash.contains(&entry.path))
+                .count(),
+            shelf_entries: self.shelf.len(),
+            cursor_entry: cursor.is_some(),
+            cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
+            cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
+            cursor_has_extension: cursor
+                .is_some_and(|entry| !entry.is_dir && !entry.extension.is_empty()),
+            can_go_up: active.current_path.parent().is_some(),
+            can_go_back: active.can_go_back(),
+            can_go_forward: active.can_go_forward(),
+            can_diff,
+            can_transfer_into_cursor_folder,
+            can_undo: self.stack.can_undo(),
+            can_redo: self.stack.can_redo(),
+            preview_open: inactive.preview.is_some(),
+            info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
+            safe_state,
+            pending_operation,
+            active_transfer,
+            transfer_queue_busy: active_transfer || self.queued_count() > 0,
+        }
+    }
+
     /// Add to the active panel's selection every visible entry whose name also
     /// exists in the inactive panel (by lowercased name). Builds on top of any
     /// existing selection so it composes with mask/manual picks.
@@ -2656,13 +2764,6 @@ impl Workspace {
         self.drop_dragged_as(kind, notify);
     }
 
-    pub fn can_transfer_into_cursor_folder(&self) -> bool {
-        self.active_transfer.is_none()
-            && self.pending_op.is_none()
-            && !self.mutations_blocked()
-            && self.keyboard_drop_plan().is_some()
-    }
-
     fn keyboard_drop_plan(&self) -> Option<(Vec<PathBuf>, PathBuf)> {
         let panel = self.active_panel_ref();
         if panel.cursor == 0 {
@@ -2729,6 +2830,36 @@ mod tests {
         ws.left.refresh();
         ws.right.refresh();
         ws
+    }
+
+    #[test]
+    fn command_context_counts_only_actionable_filtered_selection() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let file = left.file("report.txt", "data");
+        let folder = left.dir("Archive");
+        let mut ws = workspace(&left, &right);
+
+        ws.left.selected.insert(file.clone());
+        ws.left.cursor = ws
+            .left
+            .filtered_entries()
+            .iter()
+            .position(|entry| entry.path == folder)
+            .unwrap()
+            + 1;
+        let context = ws.command_context();
+        assert_eq!(context.visible_entries, 2);
+        assert_eq!(context.selected_entries, 1);
+        assert_eq!(context.picked_entries, 1);
+        assert!(context.cursor_is_dir);
+        assert!(context.can_transfer_into_cursor_folder);
+
+        ws.left.search_query = "does-not-match".to_string();
+        let filtered = ws.command_context();
+        assert_eq!(filtered.visible_entries, 0);
+        assert_eq!(filtered.selected_entries, 0);
+        assert_eq!(filtered.picked_entries, 0);
+        assert_eq!(filtered.listing_entries, 0);
     }
 
     fn apply_batch_rename(

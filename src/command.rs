@@ -198,6 +198,181 @@ impl Command {
     }
 }
 
+/// UI-independent facts used to decide whether a command can do useful work.
+/// Keeping this snapshot free of egui and filesystem access lets every command
+/// surface share one policy and makes the edge cases cheap to test.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CommandContext {
+    pub visible_entries: usize,
+    pub visible_files: usize,
+    pub other_entries: usize,
+    pub picked_entries: usize,
+    pub selected_entries: usize,
+    pub listing_entries: usize,
+    pub marked_entries: usize,
+    pub stashed_entries: usize,
+    pub shelf_entries: usize,
+    pub cursor_entry: bool,
+    pub cursor_is_dir: bool,
+    pub cursor_is_file: bool,
+    pub cursor_has_extension: bool,
+    pub can_go_up: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub can_diff: bool,
+    pub can_transfer_into_cursor_folder: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub preview_open: bool,
+    pub info_open: bool,
+    pub safe_state: bool,
+    pub pending_operation: bool,
+    pub active_transfer: bool,
+    pub transfer_queue_busy: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandAvailability {
+    pub enabled: bool,
+    pub reason: Option<&'static str>,
+}
+
+impl CommandAvailability {
+    const fn enabled() -> Self {
+        Self {
+            enabled: true,
+            reason: None,
+        }
+    }
+
+    const fn disabled(reason: &'static str) -> Self {
+        Self {
+            enabled: false,
+            reason: Some(reason),
+        }
+    }
+}
+
+const SAFE_STATE_REASON: &str = "Review the interrupted operation first";
+const PENDING_REASON: &str = "Finish or cancel the current confirmation";
+const TRANSFER_REASON: &str = "Wait for the active transfer to finish";
+const QUEUE_REASON: &str = "Wait for the transfer queue to finish";
+const PICK_REASON: &str = "Select or highlight at least one item";
+const CURSOR_REASON: &str = "Highlight an item first";
+const VISIBLE_REASON: &str = "No visible items in this panel";
+
+fn require(requirements: &[(bool, &'static str)]) -> CommandAvailability {
+    requirements
+        .iter()
+        .find_map(|(met, reason)| (!met).then_some(CommandAvailability::disabled(reason)))
+        .unwrap_or_else(CommandAvailability::enabled)
+}
+
+/// Return whether `command` is meaningful in `context`, with a concise reason
+/// suitable for disabled controls. This describes capability, not execution;
+/// operation methods still repeat their safety checks at commit time.
+pub fn availability(command: Command, context: &CommandContext) -> CommandAvailability {
+    use Command::*;
+
+    match command {
+        RequestCopy | RequestMove => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (!context.pending_operation, PENDING_REASON),
+            (context.picked_entries > 0, PICK_REASON),
+        ]),
+        RequestDelete => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (!context.pending_operation, PENDING_REASON),
+            (!context.active_transfer, TRANSFER_REASON),
+            (context.picked_entries > 0, PICK_REASON),
+        ]),
+        MoveIntoCursorFolder | CopyIntoCursorFolder => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (!context.pending_operation, PENDING_REASON),
+            (!context.active_transfer, TRANSFER_REASON),
+            (
+                context.selected_entries > 0,
+                "Select at least one source item",
+            ),
+            (context.cursor_is_dir, "Highlight a destination folder"),
+            (
+                context.can_transfer_into_cursor_folder,
+                "Choose a source outside the destination folder",
+            ),
+        ]),
+        CreateDir | BeginSync => require(&[(!context.safe_state, SAFE_STATE_REASON)]),
+        BeginRename => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (context.cursor_entry, CURSOR_REASON),
+        ]),
+        BeginBatchRename | BeginRunBar | GatherIntoFolder => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (context.picked_entries > 0, PICK_REASON),
+        ]),
+        ShelfDrain => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (!context.pending_operation, PENDING_REASON),
+            (!context.active_transfer, TRANSFER_REASON),
+            (context.shelf_entries > 0, "The shelf is empty"),
+        ]),
+        Undo => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (!context.transfer_queue_busy, QUEUE_REASON),
+            (context.can_undo, "Nothing to undo"),
+        ]),
+        Redo => require(&[
+            (!context.safe_state, SAFE_STATE_REASON),
+            (!context.transfer_queue_busy, QUEUE_REASON),
+            (context.can_redo, "Nothing to redo"),
+        ]),
+        DiffFiles => require(&[(context.can_diff, "Select two files or a matching file pair")]),
+        TogglePreview => require(&[(
+            context.preview_open || context.cursor_is_file,
+            "Highlight a file to preview",
+        )]),
+        ToggleInfo => require(&[(context.info_open || context.cursor_entry, CURSOR_REASON)]),
+        CopyPath | CopyName | CopyParentPath | CopyFileUrl | CopyShellPath | CopyRelativePath
+        | ShelfAdd => require(&[(context.picked_entries > 0, PICK_REASON)]),
+        SelectAll | InvertSelection | SelectOnlyHere | BeginSelectMask => {
+            require(&[(context.visible_entries > 0, VISIBLE_REASON)])
+        }
+        SelectSameNamed | SelectDiffering | SelectIdentical => require(&[
+            (context.visible_entries > 0, VISIBLE_REASON),
+            (context.other_entries > 0, "The other panel is empty"),
+        ]),
+        SelectJunk | SelectLargest | SelectEmptyFiles => {
+            require(&[(context.visible_files > 0, "No visible files in this panel")])
+        }
+        SelectLikeCursor => require(&[(
+            context.cursor_has_extension,
+            "Highlight a file with an extension",
+        )]),
+        CopyListingText | CopyListingCsv | CopyListingMarkdown => {
+            require(&[(context.listing_entries > 0, VISIBLE_REASON)])
+        }
+        StashSelection => require(&[(
+            context.selected_entries > 0,
+            "Select at least one item to stash",
+        )]),
+        StashUnion | StashIntersect | StashSubtract | StashSymmetricDiff => require(&[(
+            context.stashed_entries > 0,
+            "No stashed items in this panel",
+        )]),
+        ToggleMark => require(&[(context.cursor_entry, CURSOR_REASON)]),
+        ClearMarks | MarkedUnion | MarkedIntersect | MarkedSubtract | MarkedSymmetricDiff => {
+            require(&[(context.marked_entries > 0, "No marked items in this panel")])
+        }
+        JumpBack => require(&[(context.can_go_back, "No earlier folder in history")]),
+        JumpForward => require(&[(context.can_go_forward, "No later folder in history")]),
+        GoUp => require(&[(context.can_go_up, "Already at the filesystem root")]),
+        Activate => require(&[(context.cursor_entry || context.can_go_up, "No item to open")]),
+        ToggleSelect | ExtendSelectUp | ExtendSelectDown => {
+            require(&[(context.cursor_entry, CURSOR_REASON)])
+        }
+        _ => CommandAvailability::enabled(),
+    }
+}
+
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
 pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
     vec![
@@ -697,6 +872,89 @@ mod tests {
             code,
             command: false,
             shift: true,
+        }
+    }
+
+    #[test]
+    fn availability_explains_missing_command_context() {
+        let context = CommandContext::default();
+
+        assert_eq!(
+            availability(Command::RequestCopy, &context).reason,
+            Some(PICK_REASON)
+        );
+        assert_eq!(
+            availability(Command::DiffFiles, &context).reason,
+            Some("Select two files or a matching file pair")
+        );
+        assert_eq!(
+            availability(Command::Undo, &context).reason,
+            Some("Nothing to undo")
+        );
+        assert_eq!(
+            availability(Command::SelectAll, &context).reason,
+            Some(VISIBLE_REASON)
+        );
+    }
+
+    #[test]
+    fn availability_prioritizes_safety_and_busy_reasons() {
+        let mut context = CommandContext {
+            picked_entries: 1,
+            selected_entries: 1,
+            cursor_entry: true,
+            cursor_is_dir: true,
+            can_transfer_into_cursor_folder: true,
+            ..CommandContext::default()
+        };
+        assert!(availability(Command::RequestCopy, &context).enabled);
+
+        context.pending_operation = true;
+        assert_eq!(
+            availability(Command::RequestCopy, &context).reason,
+            Some(PENDING_REASON)
+        );
+        context.safe_state = true;
+        assert_eq!(
+            availability(Command::RequestCopy, &context).reason,
+            Some(SAFE_STATE_REASON)
+        );
+
+        context.safe_state = false;
+        context.pending_operation = false;
+        context.active_transfer = true;
+        assert!(
+            availability(Command::RequestCopy, &context).enabled,
+            "copy may queue behind an active transfer"
+        );
+        assert_eq!(
+            availability(Command::RequestDelete, &context).reason,
+            Some(TRANSFER_REASON)
+        );
+    }
+
+    #[test]
+    fn availability_keeps_close_actions_reachable() {
+        let context = CommandContext {
+            preview_open: true,
+            info_open: true,
+            ..CommandContext::default()
+        };
+
+        assert!(availability(Command::TogglePreview, &context).enabled);
+        assert!(availability(Command::ToggleInfo, &context).enabled);
+    }
+
+    #[test]
+    fn every_catalog_availability_has_a_consistent_reason() {
+        let context = CommandContext::default();
+        for (label, _, command) in command_catalog() {
+            let availability = availability(command, &context);
+            assert_eq!(
+                availability.enabled,
+                availability.reason.is_none(),
+                "inconsistent availability for {label}"
+            );
         }
     }
 
