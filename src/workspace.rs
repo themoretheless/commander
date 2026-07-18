@@ -49,6 +49,7 @@ pub struct PendingTransfer {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: crate::operation::DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     pub filesystem: Box<crate::filesystem_policy::OperationPreflight>,
@@ -185,6 +186,7 @@ pub struct Workspace {
     pub safe_state: Option<crate::operation::SafeState>,
     reviewed_safe_operation: Option<crate::operation::OperationId>,
     pub durability_profile: crate::operation::DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
@@ -401,6 +403,7 @@ impl Workspace {
             safe_state: None,
             reviewed_safe_operation: None,
             durability_profile: crate::operation::DurabilityProfile::default(),
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
@@ -1239,6 +1242,7 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             filesystem,
@@ -1330,6 +1334,7 @@ impl Workspace {
             return;
         };
         self.durability_profile = t.durability;
+        self.version_retention = t.version_retention;
         self.name_policy = t.name_policy;
         self.symlink_policy = t.symlink_policy;
         // A Move is undoable, promoted onto the history stack when it finishes
@@ -1351,6 +1356,7 @@ impl Workspace {
             policy: t.policy,
             method: t.method,
             durability: t.durability,
+            version_retention: t.version_retention,
             name_policy: t.name_policy,
             symlink_policy: t.symlink_policy,
             post_success: None,
@@ -1949,6 +1955,7 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             post_success,
@@ -2030,15 +2037,17 @@ impl Workspace {
     fn exec_delete_with_profile(
         entries: &[FileEntry],
         durability: crate::operation::DurabilityProfile,
+        retention: crate::operation::VersionRetentionPolicy,
     ) -> DeleteOutcome {
         let mut outcome = DeleteOutcome::default();
         let operation_id = crate::operation::OperationId::new();
         for (index, entry) in entries.iter().enumerate() {
             if durability.keeps_versions()
-                && let Err(message) = crate::version_store::preserve(
+                && let Err(message) = crate::version_store::preserve_with_policy(
                     &entry.path,
                     &operation_id,
                     operation_id.step_key(index, &entry.path),
+                    retention,
                 )
             {
                 outcome.failed += 1;
@@ -2080,7 +2089,11 @@ impl Workspace {
         match &self.pending_op {
             Some(PendingOp::Delete { .. }) => {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
-                    let outcome = Self::exec_delete_with_profile(&entries, self.durability_profile);
+                    let outcome = Self::exec_delete_with_profile(
+                        &entries,
+                        self.durability_profile,
+                        self.version_retention,
+                    );
                     self.left.refresh();
                     self.right.refresh();
                     return Some(outcome);
@@ -2158,6 +2171,7 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             post_success: None,
@@ -2699,6 +2713,7 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             post_success: None,
@@ -2843,6 +2858,7 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             filesystem,
@@ -4341,6 +4357,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method,
             durability: crate::operation::DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             filesystem: filesystem_preflight(&[], Path::new("/"), Default::default()),

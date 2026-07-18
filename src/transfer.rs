@@ -533,6 +533,7 @@ pub struct TransferSpec {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     pub post_success: Option<PostTransferAction>,
@@ -1588,10 +1589,11 @@ pub fn spawn_transfer(
                 false
             } else {
                 let version_result = if replace_existing && spec.durability.keeps_versions() {
-                    crate::version_store::preserve(
+                    crate::version_store::preserve_with_policy(
                         &landing,
                         &spec.operation_id,
                         work_item.key.clone(),
+                        spec.version_retention,
                     )
                     .map(|_| ())
                     .map_err(std::io::Error::other)
@@ -2475,6 +2477,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
@@ -2502,6 +2505,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
@@ -2530,6 +2534,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
@@ -2565,6 +2570,7 @@ mod tests {
             policy,
             method,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,

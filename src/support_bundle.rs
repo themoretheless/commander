@@ -308,6 +308,7 @@ mod tests {
             policy: OverwritePolicy::OverwriteAll,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Verified,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,

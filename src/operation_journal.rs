@@ -232,6 +232,8 @@ pub struct OperationRecord {
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
     #[serde(default)]
+    pub version_retention: crate::operation::VersionRetentionPolicy,
+    #[serde(default)]
     pub name_policy: crate::filesystem_policy::NamePolicy,
     #[serde(default)]
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
@@ -498,6 +500,7 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
             policy: spec.policy,
             method: spec.method,
             durability: spec.durability,
+            version_retention: spec.version_retention,
             name_policy: spec.name_policy,
             symlink_policy: spec.symlink_policy,
             post_success: spec.post_success.clone(),
@@ -863,6 +866,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         policy: record.policy,
         method: record.method,
         durability: record.durability,
+        version_retention: record.version_retention,
         name_policy: record.name_policy,
         symlink_policy: record.symlink_policy,
         post_success: record.post_success,
@@ -1384,6 +1388,7 @@ mod tests {
             policy: OverwritePolicy::OverwriteAll,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Verified,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
@@ -1419,6 +1424,22 @@ mod tests {
         save_at(&path, &journal).unwrap();
         assert_eq!(load_at(&path).unwrap().schema, JOURNAL_SCHEMA);
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn legacy_operation_defaults_version_retention() {
+        let temp = TempDir::new();
+        let source = temp.file("source.txt", "source");
+        let destination = temp.path().join("destination.txt");
+        let record = incomplete_record(&source, &destination, StepStatus::Planned);
+        let mut value = serde_json::to_value(record).unwrap();
+        value.as_object_mut().unwrap().remove("version_retention");
+
+        let restored: OperationRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            restored.version_retention,
+            crate::operation::VersionRetentionPolicy::Recent
+        );
     }
 
     #[test]

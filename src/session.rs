@@ -56,6 +56,8 @@ pub struct Session {
     #[serde(default)]
     pub durability_profile: crate::operation::DurabilityProfile,
     #[serde(default)]
+    pub version_retention: crate::operation::VersionRetentionPolicy,
+    #[serde(default)]
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     #[serde(default)]
     pub name_policy: crate::filesystem_policy::NamePolicy,
@@ -137,6 +139,7 @@ mod tests {
             recent_order: crate::panel::RecentOrder::Frecency,
             search_history: crate::search::QueryHistory::default(),
             durability_profile: crate::operation::DurabilityProfile::default(),
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
@@ -182,6 +185,7 @@ mod tests {
         obj.remove("recent_stats");
         obj.remove("recent_order");
         obj.remove("search_history");
+        obj.remove("version_retention");
         obj.remove("name_policy");
         obj.remove("symlink_policy");
         let back: Session = serde_json::from_value(val).unwrap();
@@ -189,6 +193,10 @@ mod tests {
         assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
         assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);
         assert_eq!(back.search_history, crate::search::QueryHistory::default());
+        assert_eq!(
+            back.version_retention,
+            crate::operation::VersionRetentionPolicy::Recent
+        );
         assert_eq!(
             back.name_policy,
             crate::filesystem_policy::NamePolicy::default()

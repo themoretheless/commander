@@ -340,6 +340,7 @@ pub(crate) struct DupState {
 pub(crate) struct SyncState {
     pub policy: crate::sync::SyncPolicy,
     pub durability: crate::operation::DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub actions: Vec<crate::sync::SyncAction>,
     pub left_dir: PathBuf,
     pub right_dir: PathBuf,
@@ -544,6 +545,7 @@ impl App {
             ws.right.natural_name_sort = s.right_natural_sort;
             ws.right.density = s.right_density;
             ws.durability_profile = s.durability_profile;
+            ws.version_retention = s.version_retention;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
             ws.name_policy = s.name_policy;
             ws.symlink_policy = s.symlink_policy;
@@ -671,6 +673,7 @@ impl App {
             recent_order: self.recent_order,
             search_history: self.search_history.clone(),
             durability_profile: self.ws.durability_profile,
+            version_retention: self.ws.version_retention,
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
             name_policy: self.ws.name_policy,
             symlink_policy: self.ws.symlink_policy,

@@ -29,6 +29,7 @@ impl App {
             self.sync = Some(SyncState {
                 policy,
                 durability: self.ws.durability_profile,
+                version_retention: self.ws.version_retention,
                 actions,
                 left_dir,
                 right_dir,
@@ -115,6 +116,20 @@ impl App {
                         );
                         for profile in crate::operation::DurabilityProfile::ALL {
                             ui.selectable_value(&mut state.durability, profile, profile.label());
+                        }
+                        if state.durability == crate::operation::DurabilityProfile::Versioned {
+                            egui::ComboBox::from_id_salt("sync_version_retention")
+                                .selected_text(state.version_retention.label())
+                                .show_ui(ui, |ui| {
+                                    for policy in crate::operation::VersionRetentionPolicy::ALL {
+                                        ui.selectable_value(
+                                            &mut state.version_retention,
+                                            policy,
+                                            policy.label(),
+                                        )
+                                        .on_hover_text(policy.consequence());
+                                    }
+                                });
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.small_button("Refresh").clicked() {
@@ -359,6 +374,7 @@ impl App {
             };
             let c = ctx.clone();
             self.ws.durability_profile = state.durability;
+            self.ws.version_retention = state.version_retention;
             let plan = crate::sync_guard::GuardedPlan {
                 actions: &state.actions,
                 stamp: &stamp,
