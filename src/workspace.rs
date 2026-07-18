@@ -572,9 +572,9 @@ impl Workspace {
         }
     }
 
-    /// Minimal context for the six action-bar commands. It reuses the shared
-    /// availability policy but avoids an O(directory size) scan on ordinary
-    /// frames with no selection.
+    /// Minimal context for always-visible action surfaces. It reuses the
+    /// shared availability policy but avoids an O(directory size) scan on
+    /// ordinary frames with no selection.
     pub fn action_bar_command_context(&self) -> crate::command::CommandContext {
         let active = self.active_panel_ref();
         let cursor = active
@@ -608,14 +608,22 @@ impl Workspace {
             cursor_entry: cursor.is_some(),
             cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
             cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
+            can_go_up: active.current_path.parent().is_some(),
+            can_go_back: active.can_go_back(),
+            can_go_forward: active.can_go_forward(),
             can_transfer_into_cursor_folder: !safe_state
                 && !pending_operation
                 && !active_transfer
                 && cursor.is_some_and(|target| target.is_dir)
                 && has_transfer_source,
+            can_undo: self.stack.can_undo(),
+            can_redo: self.stack.can_redo(),
+            preview_open: self.inactive_panel().preview.is_some(),
+            info_open: matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))),
             safe_state,
             pending_operation,
             active_transfer,
+            transfer_queue_busy: active_transfer || self.queued_count() > 0,
             ..crate::command::CommandContext::default()
         }
     }

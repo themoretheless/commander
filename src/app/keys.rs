@@ -37,10 +37,13 @@ impl App {
         if self.ws.active_transfer.is_some() {
             // A transfer's progress window is effectively modal, but Copy/Move
             // stay live so a second transfer can be queued behind it instead
-            // of the hotkey being dropped on the floor.
+            // of the hotkey being dropped on the floor. Every other mapped key
+            // gets direct feedback instead of failing silently.
             for cmd in map_keys(&presses) {
                 if matches!(cmd, Command::RequestCopy | Command::RequestMove) {
-                    self.ws.execute(cmd);
+                    self.execute_key_command(ctx, cmd);
+                } else {
+                    self.push_key_feedback(ctx, "Wait for the active transfer to finish");
                 }
             }
             self.type_ahead = None;
@@ -48,10 +51,29 @@ impl App {
             return;
         }
         for cmd in map_keys(&presses) {
-            self.ws.execute(cmd);
+            self.execute_key_command(ctx, cmd);
         }
         let claimed = self.handle_chords(ctx);
         self.handle_type_ahead(ctx, claimed);
+    }
+
+    fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
+        let context = self.ws.command_context();
+        let availability = crate::command::availability(command, &context);
+        if availability.enabled {
+            self.ws.execute(command);
+        } else if let Some(reason) = availability.reason {
+            self.push_key_feedback(ctx, reason);
+        }
+    }
+
+    fn push_key_feedback(&mut self, ctx: &egui::Context, message: &'static str) {
+        self.toasts.push(crate::toasts::Toast::new(
+            message,
+            crate::toasts::ToastKind::Info,
+            false,
+            ctx.input(|input| input.time),
+        ));
     }
 
     /// Vim-style chords, modifier-free: `g g` jumps to the top, `s s`

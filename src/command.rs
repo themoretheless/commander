@@ -261,116 +261,259 @@ const PICK_REASON: &str = "Select or highlight at least one item";
 const CURSOR_REASON: &str = "Highlight an item first";
 const VISIBLE_REASON: &str = "No visible items in this panel";
 
-fn require(requirements: &[(bool, &'static str)]) -> CommandAvailability {
-    requirements
-        .iter()
-        .find_map(|(met, reason)| (!met).then_some(CommandAvailability::disabled(reason)))
-        .unwrap_or_else(CommandAvailability::enabled)
+/// A reusable, typed condition for command availability. Commands compose
+/// these small predicates instead of embedding UI-specific boolean formulas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandPredicate {
+    MutationsAllowed,
+    ConfirmationClosed,
+    TransferIdle,
+    TransferQueueIdle,
+    HasPickedEntry,
+    HasSelectedEntry,
+    HasCursorEntry,
+    CursorIsDirectory,
+    HasTransferSource,
+    HasShelfEntry,
+    CanUndo,
+    CanRedo,
+    CanDiff,
+    PreviewTarget,
+    InfoTarget,
+    HasVisibleEntry,
+    HasVisibleFile,
+    HasOtherEntry,
+    HasListingEntry,
+    CursorHasExtension,
+    HasStashedEntry,
+    HasMarkedEntry,
+    CanGoBack,
+    CanGoForward,
+    CanGoUp,
+    CanActivate,
+}
+
+impl CommandPredicate {
+    fn failure(self, context: &CommandContext) -> Option<&'static str> {
+        let (met, reason) = match self {
+            Self::MutationsAllowed => (!context.safe_state, SAFE_STATE_REASON),
+            Self::ConfirmationClosed => (!context.pending_operation, PENDING_REASON),
+            Self::TransferIdle => (!context.active_transfer, TRANSFER_REASON),
+            Self::TransferQueueIdle => (!context.transfer_queue_busy, QUEUE_REASON),
+            Self::HasPickedEntry => (context.picked_entries > 0, PICK_REASON),
+            Self::HasSelectedEntry => (
+                context.selected_entries > 0,
+                "Select at least one source item",
+            ),
+            Self::HasCursorEntry => (context.cursor_entry, CURSOR_REASON),
+            Self::CursorIsDirectory => (context.cursor_is_dir, "Highlight a destination folder"),
+            Self::HasTransferSource => (
+                context.can_transfer_into_cursor_folder,
+                "Choose a source outside the destination folder",
+            ),
+            Self::HasShelfEntry => (context.shelf_entries > 0, "The shelf is empty"),
+            Self::CanUndo => (context.can_undo, "Nothing to undo"),
+            Self::CanRedo => (context.can_redo, "Nothing to redo"),
+            Self::CanDiff => (context.can_diff, "Select two files or a matching file pair"),
+            Self::PreviewTarget => (
+                context.preview_open || context.cursor_is_file,
+                "Highlight a file to preview",
+            ),
+            Self::InfoTarget => (context.info_open || context.cursor_entry, CURSOR_REASON),
+            Self::HasVisibleEntry => (context.visible_entries > 0, VISIBLE_REASON),
+            Self::HasVisibleFile => (context.visible_files > 0, "No visible files in this panel"),
+            Self::HasOtherEntry => (context.other_entries > 0, "The other panel is empty"),
+            Self::HasListingEntry => (context.listing_entries > 0, VISIBLE_REASON),
+            Self::CursorHasExtension => (
+                context.cursor_has_extension,
+                "Highlight a file with an extension",
+            ),
+            Self::HasStashedEntry => (
+                context.stashed_entries > 0,
+                "No stashed items in this panel",
+            ),
+            Self::HasMarkedEntry => (context.marked_entries > 0, "No marked items in this panel"),
+            Self::CanGoBack => (context.can_go_back, "No earlier folder in history"),
+            Self::CanGoForward => (context.can_go_forward, "No later folder in history"),
+            Self::CanGoUp => (context.can_go_up, "Already at the filesystem root"),
+            Self::CanActivate => (context.cursor_entry || context.can_go_up, "No item to open"),
+        };
+        (!met).then_some(reason)
+    }
+}
+
+/// Return the reusable policy fragments attached to a command.
+pub fn predicates(command: Command) -> &'static [CommandPredicate] {
+    use Command::*;
+    use CommandPredicate as P;
+
+    const MUTATE_PICKED: &[P] = &[
+        P::MutationsAllowed,
+        P::ConfirmationClosed,
+        P::HasPickedEntry,
+    ];
+    const DELETE: &[P] = &[
+        P::MutationsAllowed,
+        P::ConfirmationClosed,
+        P::TransferIdle,
+        P::HasPickedEntry,
+    ];
+    const TRANSFER_INTO: &[P] = &[
+        P::MutationsAllowed,
+        P::ConfirmationClosed,
+        P::TransferIdle,
+        P::HasSelectedEntry,
+        P::CursorIsDirectory,
+        P::HasTransferSource,
+    ];
+    const MUTATE: &[P] = &[P::MutationsAllowed];
+    const RENAME: &[P] = &[P::MutationsAllowed, P::HasCursorEntry];
+    const MUTATE_SELECTION: &[P] = &[P::MutationsAllowed, P::HasPickedEntry];
+    const SHELF_DRAIN: &[P] = &[
+        P::MutationsAllowed,
+        P::ConfirmationClosed,
+        P::TransferIdle,
+        P::HasShelfEntry,
+    ];
+    const UNDO: &[P] = &[P::MutationsAllowed, P::TransferQueueIdle, P::CanUndo];
+    const REDO: &[P] = &[P::MutationsAllowed, P::TransferQueueIdle, P::CanRedo];
+    const DIFF: &[P] = &[P::CanDiff];
+    const PREVIEW: &[P] = &[P::PreviewTarget];
+    const INFO: &[P] = &[P::InfoTarget];
+    const PICKED: &[P] = &[P::HasPickedEntry];
+    const VISIBLE: &[P] = &[P::HasVisibleEntry];
+    const COMPARE: &[P] = &[P::HasVisibleEntry, P::HasOtherEntry];
+    const VISIBLE_FILES: &[P] = &[P::HasVisibleFile];
+    const EXTENSION: &[P] = &[P::CursorHasExtension];
+    const LISTING: &[P] = &[P::HasListingEntry];
+    const SELECTED: &[P] = &[P::HasSelectedEntry];
+    const STASHED: &[P] = &[P::HasStashedEntry];
+    const CURSOR: &[P] = &[P::HasCursorEntry];
+    const MARKED: &[P] = &[P::HasMarkedEntry];
+    const BACK: &[P] = &[P::CanGoBack];
+    const FORWARD: &[P] = &[P::CanGoForward];
+    const UP: &[P] = &[P::CanGoUp];
+    const ACTIVATE: &[P] = &[P::CanActivate];
+
+    match command {
+        RequestCopy | RequestMove => MUTATE_PICKED,
+        RequestDelete => DELETE,
+        MoveIntoCursorFolder | CopyIntoCursorFolder => TRANSFER_INTO,
+        CreateDir | BeginSync => MUTATE,
+        BeginRename => RENAME,
+        BeginBatchRename | BeginRunBar | GatherIntoFolder => MUTATE_SELECTION,
+        ShelfDrain => SHELF_DRAIN,
+        Undo => UNDO,
+        Redo => REDO,
+        DiffFiles => DIFF,
+        TogglePreview => PREVIEW,
+        ToggleInfo => INFO,
+        CopyPath | CopyName | CopyParentPath | CopyFileUrl | CopyShellPath | CopyRelativePath
+        | ShelfAdd => PICKED,
+        SelectAll | InvertSelection | SelectOnlyHere | BeginSelectMask => VISIBLE,
+        SelectSameNamed | SelectDiffering | SelectIdentical => COMPARE,
+        SelectJunk | SelectLargest | SelectEmptyFiles => VISIBLE_FILES,
+        SelectLikeCursor => EXTENSION,
+        CopyListingText | CopyListingCsv | CopyListingMarkdown => LISTING,
+        StashSelection => SELECTED,
+        StashUnion | StashIntersect | StashSubtract | StashSymmetricDiff => STASHED,
+        ToggleMark | ToggleSelect | ExtendSelectUp | ExtendSelectDown => CURSOR,
+        ClearMarks | MarkedUnion | MarkedIntersect | MarkedSubtract | MarkedSymmetricDiff => MARKED,
+        JumpBack => BACK,
+        JumpForward => FORWARD,
+        GoUp => UP,
+        Activate => ACTIVATE,
+        _ => &[],
+    }
 }
 
 /// Return whether `command` is meaningful in `context`, with a concise reason
 /// suitable for disabled controls. This describes capability, not execution;
 /// operation methods still repeat their safety checks at commit time.
 pub fn availability(command: Command, context: &CommandContext) -> CommandAvailability {
-    use Command::*;
+    predicates(command)
+        .iter()
+        .find_map(|predicate| predicate.failure(context))
+        .map_or_else(CommandAvailability::enabled, CommandAvailability::disabled)
+}
 
-    match command {
-        RequestCopy | RequestMove => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (!context.pending_operation, PENDING_REASON),
-            (context.picked_entries > 0, PICK_REASON),
-        ]),
-        RequestDelete => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (!context.pending_operation, PENDING_REASON),
-            (!context.active_transfer, TRANSFER_REASON),
-            (context.picked_entries > 0, PICK_REASON),
-        ]),
-        MoveIntoCursorFolder | CopyIntoCursorFolder => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (!context.pending_operation, PENDING_REASON),
-            (!context.active_transfer, TRANSFER_REASON),
-            (
-                context.selected_entries > 0,
-                "Select at least one source item",
-            ),
-            (context.cursor_is_dir, "Highlight a destination folder"),
-            (
-                context.can_transfer_into_cursor_folder,
-                "Choose a source outside the destination folder",
-            ),
-        ]),
-        CreateDir | BeginSync => require(&[(!context.safe_state, SAFE_STATE_REASON)]),
-        BeginRename => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (context.cursor_entry, CURSOR_REASON),
-        ]),
-        BeginBatchRename | BeginRunBar | GatherIntoFolder => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (context.picked_entries > 0, PICK_REASON),
-        ]),
-        ShelfDrain => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (!context.pending_operation, PENDING_REASON),
-            (!context.active_transfer, TRANSFER_REASON),
-            (context.shelf_entries > 0, "The shelf is empty"),
-        ]),
-        Undo => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (!context.transfer_queue_busy, QUEUE_REASON),
-            (context.can_undo, "Nothing to undo"),
-        ]),
-        Redo => require(&[
-            (!context.safe_state, SAFE_STATE_REASON),
-            (!context.transfer_queue_busy, QUEUE_REASON),
-            (context.can_redo, "Nothing to redo"),
-        ]),
-        DiffFiles => require(&[(context.can_diff, "Select two files or a matching file pair")]),
-        TogglePreview => require(&[(
-            context.preview_open || context.cursor_is_file,
-            "Highlight a file to preview",
-        )]),
-        ToggleInfo => require(&[(context.info_open || context.cursor_entry, CURSOR_REASON)]),
-        CopyPath | CopyName | CopyParentPath | CopyFileUrl | CopyShellPath | CopyRelativePath
-        | ShelfAdd => require(&[(context.picked_entries > 0, PICK_REASON)]),
-        SelectAll | InvertSelection | SelectOnlyHere | BeginSelectMask => {
-            require(&[(context.visible_entries > 0, VISIBLE_REASON)])
-        }
-        SelectSameNamed | SelectDiffering | SelectIdentical => require(&[
-            (context.visible_entries > 0, VISIBLE_REASON),
-            (context.other_entries > 0, "The other panel is empty"),
-        ]),
-        SelectJunk | SelectLargest | SelectEmptyFiles => {
-            require(&[(context.visible_files > 0, "No visible files in this panel")])
-        }
-        SelectLikeCursor => require(&[(
-            context.cursor_has_extension,
-            "Highlight a file with an extension",
-        )]),
-        CopyListingText | CopyListingCsv | CopyListingMarkdown => {
-            require(&[(context.listing_entries > 0, VISIBLE_REASON)])
-        }
-        StashSelection => require(&[(
-            context.selected_entries > 0,
-            "Select at least one item to stash",
-        )]),
-        StashUnion | StashIntersect | StashSubtract | StashSymmetricDiff => require(&[(
-            context.stashed_entries > 0,
-            "No stashed items in this panel",
-        )]),
-        ToggleMark => require(&[(context.cursor_entry, CURSOR_REASON)]),
-        ClearMarks | MarkedUnion | MarkedIntersect | MarkedSubtract | MarkedSymmetricDiff => {
-            require(&[(context.marked_entries > 0, "No marked items in this panel")])
-        }
-        JumpBack => require(&[(context.can_go_back, "No earlier folder in history")]),
-        JumpForward => require(&[(context.can_go_forward, "No later folder in history")]),
-        GoUp => require(&[(context.can_go_up, "Already at the filesystem root")]),
-        Activate => require(&[(context.cursor_entry || context.can_go_up, "No item to open")]),
-        ToggleSelect | ExtendSelectUp | ExtendSelectDown => {
-            require(&[(context.cursor_entry, CURSOR_REASON)])
-        }
-        _ => CommandAvailability::enabled(),
-    }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShortcutHint {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub command: Command,
+}
+
+/// Keyboard help for the focused pane. Unavailable actions are omitted and
+/// stateful actions describe what the next key press will actually do.
+pub fn contextual_shortcuts(context: &CommandContext) -> Vec<ShortcutHint> {
+    let mut candidates = vec![
+        ShortcutHint {
+            key: "Tab",
+            label: "Switch",
+            command: Command::SwitchPanel,
+        },
+        ShortcutHint {
+            key: "Enter",
+            label: "Open",
+            command: Command::Activate,
+        },
+        ShortcutHint {
+            key: "Space",
+            label: "Select",
+            command: Command::ToggleSelect,
+        },
+        ShortcutHint {
+            key: "F3",
+            label: if context.preview_open {
+                "Close preview"
+            } else {
+                "Preview"
+            },
+            command: Command::TogglePreview,
+        },
+        ShortcutHint {
+            key: "F5",
+            label: "Copy",
+            command: Command::RequestCopy,
+        },
+        ShortcutHint {
+            key: "F6",
+            label: "Move",
+            command: Command::RequestMove,
+        },
+        ShortcutHint {
+            key: "Cmd+Enter",
+            label: "Move in",
+            command: Command::MoveIntoCursorFolder,
+        },
+        ShortcutHint {
+            key: "Cmd+Z",
+            label: "Undo",
+            command: Command::Undo,
+        },
+        ShortcutHint {
+            key: "Backspace",
+            label: "Up",
+            command: Command::GoUp,
+        },
+        ShortcutHint {
+            key: "F7",
+            label: "New folder",
+            command: Command::CreateDir,
+        },
+        ShortcutHint {
+            key: "F8",
+            label: "Delete",
+            command: Command::RequestDelete,
+        },
+    ];
+    candidates.retain(|hint| {
+        (!context.active_transfer
+            || matches!(hint.command, Command::RequestCopy | Command::RequestMove))
+            && availability(hint.command, context).enabled
+    });
+    candidates
 }
 
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
@@ -943,6 +1086,76 @@ mod tests {
 
         assert!(availability(Command::TogglePreview, &context).enabled);
         assert!(availability(Command::ToggleInfo, &context).enabled);
+    }
+
+    #[test]
+    fn commands_compose_typed_predicates_in_priority_order() {
+        assert_eq!(
+            predicates(Command::RequestDelete),
+            &[
+                CommandPredicate::MutationsAllowed,
+                CommandPredicate::ConfirmationClosed,
+                CommandPredicate::TransferIdle,
+                CommandPredicate::HasPickedEntry,
+            ]
+        );
+        assert_eq!(
+            predicates(Command::SelectDiffering),
+            &[
+                CommandPredicate::HasVisibleEntry,
+                CommandPredicate::HasOtherEntry,
+            ]
+        );
+    }
+
+    #[test]
+    fn contextual_shortcuts_only_describe_available_next_actions() {
+        let mut context = CommandContext {
+            cursor_entry: true,
+            cursor_is_file: true,
+            picked_entries: 1,
+            can_go_up: true,
+            ..CommandContext::default()
+        };
+        let hints = contextual_shortcuts(&context);
+        assert!(hints.iter().any(|hint| hint.label == "Preview"));
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.command == Command::RequestCopy)
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.command == Command::RequestDelete)
+        );
+        assert!(!hints.iter().any(|hint| hint.command == Command::Undo));
+
+        context.preview_open = true;
+        context.cursor_entry = false;
+        context.cursor_is_file = false;
+        context.picked_entries = 0;
+        let hints = contextual_shortcuts(&context);
+        assert!(hints.iter().any(|hint| hint.label == "Close preview"));
+        assert!(
+            !hints
+                .iter()
+                .any(|hint| hint.command == Command::RequestCopy)
+        );
+        assert!(
+            !hints
+                .iter()
+                .any(|hint| hint.command == Command::RequestDelete)
+        );
+
+        context.active_transfer = true;
+        context.picked_entries = 1;
+        let hints = contextual_shortcuts(&context);
+        assert!(
+            hints
+                .iter()
+                .all(|hint| matches!(hint.command, Command::RequestCopy | Command::RequestMove))
+        );
     }
 
     #[test]

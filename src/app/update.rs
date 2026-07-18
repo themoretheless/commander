@@ -337,6 +337,8 @@ impl App {
         let quick_context = self.quick_action_context();
         let quick_actions = crate::quick_actions::actions(quick_context);
         let next_hint = crate::quick_actions::next_hint(quick_context);
+        let shortcut_context = self.ws.action_bar_command_context();
+        let shortcut_hints = crate::command::contextual_shortcuts(&shortcut_context);
         // Top/bottom panels don't reduce the panel-carving `Ui`'s width, so
         // this doubles as "the window's content width" for the inner
         // `>= 1280.0` check below, deep inside nested layout closures where
@@ -353,33 +355,22 @@ impl App {
                     .inner_margin(Margin::symmetric(12, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            const FULL_KEYS: [(&str, &str); 8] = [
-                                ("Tab", "Switch"),
-                                ("Enter", "Open"),
-                                ("Space", "Select"),
-                                ("F5", "Copy"),
-                                ("F6", "Move"),
-                                ("F7", "MkDir"),
-                                ("F8", "Delete"),
-                                ("\u{2318}H", "Hidden"),
-                            ];
-                            const COMPACT_KEYS: [(&str, &str); 4] = [
-                                ("Tab", "Switch"),
-                                ("Enter", "Open"),
-                                ("F5", "Copy"),
-                                ("F6", "Move"),
-                            ];
-                            let keys = if compact {
-                                &COMPACT_KEYS[..if panel_width < 600.0 { 2 } else { 4 }]
+                            let key_limit = if compact {
+                                if panel_width < 600.0 { 2 } else { 4 }
                             } else {
-                                &FULL_KEYS[..]
+                                8
                             };
-                            for &(key, action) in keys {
+                            for hint in shortcut_hints.iter().take(key_limit) {
                                 ui.label(
-                                    egui::RichText::new(key).size(11.0).strong().color(t.accent),
+                                    egui::RichText::new(hint.key)
+                                        .size(11.0)
+                                        .strong()
+                                        .color(t.accent),
                                 );
                                 ui.label(
-                                    egui::RichText::new(action).size(11.0).color(t.text_muted),
+                                    egui::RichText::new(hint.label)
+                                        .size(11.0)
+                                        .color(t.text_muted),
                                 );
                                 ui.add_space(8.0);
                             }
