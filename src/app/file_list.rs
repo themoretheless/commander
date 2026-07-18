@@ -488,28 +488,38 @@ impl App {
                         let responsive = crate::accessibility::file_row_layout(
                             ui.available_width() - if is_marked { 16.0 } else { 0.0 },
                         );
-                        if query.is_empty() {
+                        let max_name_chars =
+                            (responsive.name_width / (metrics.name_pt * 0.72)).floor() as usize;
+                        let display_name = crate::display_name::truncate_preserving_extension(
+                            &entry.name,
+                            max_name_chars.max(1),
+                        );
+                        let shortened = matches!(&display_name, std::borrow::Cow::Owned(_));
+                        let name_response = if query.is_empty() {
                             ui.add_sized(
                                 [responsive.name_width, row_content],
                                 egui::Label::new(
-                                    egui::RichText::new(&entry.name)
+                                    egui::RichText::new(display_name.as_ref())
                                         .size(metrics.name_pt)
                                         .color(name_color),
                                 )
                                 .truncate(),
-                            );
+                            )
                         } else {
                             ui.add_sized(
                                 [responsive.name_width, row_content],
                                 egui::Label::new(highlight_name_job(
-                                    &entry.name,
+                                    display_name.as_ref(),
                                     &query,
                                     name_color,
                                     t.accent,
                                     metrics.name_pt,
                                 ))
                                 .truncate(),
-                            );
+                            )
+                        };
+                        if shortened {
+                            name_response.on_hover_text(&entry.name);
                         }
 
                         if responsive.show_metadata {

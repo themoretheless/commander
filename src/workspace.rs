@@ -168,6 +168,14 @@ enum ActionExecution {
     Started { cleanup_on_failure: Option<PathBuf> },
 }
 
+struct CommandCapabilityCache {
+    left_path: PathBuf,
+    right_path: PathBuf,
+    left_read_only: bool,
+    right_read_only: bool,
+    expires_at: std::time::Instant,
+}
+
 pub struct Workspace {
     pub left: PanelState,
     pub right: PanelState,
@@ -257,6 +265,7 @@ pub struct Workspace {
     /// A history replay owns the active transfer. The stack transition is
     /// committed only after that worker reports a clean terminal state.
     pending_history_transition: Option<PendingHistoryTransition>,
+    command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
@@ -428,6 +437,7 @@ impl Workspace {
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
             pending_history_transition: None,
+            command_capabilities: std::cell::RefCell::new(None),
             opener,
         }
     }
@@ -458,6 +468,36 @@ impl Workspace {
             ActivePanel::Left => &mut self.right,
             ActivePanel::Right => &mut self.left,
         }
+    }
+
+    fn pane_read_only(&self) -> (bool, bool) {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+        let now = std::time::Instant::now();
+        if let Some(cached) = self.command_capabilities.borrow().as_ref()
+            && cached.left_path == self.left.current_path
+            && cached.right_path == self.right.current_path
+            && cached.expires_at > now
+        {
+            return (cached.left_read_only, cached.right_read_only);
+        }
+
+        let read_only = |path: &Path| {
+            let profile = crate::volume_profile::profile(path);
+            let matrix = crate::filesystem_policy::matrix_for_profile(&profile, true);
+            matrix.state(crate::filesystem_policy::Capability::Write)
+                == crate::filesystem_policy::CapabilityState::Unavailable
+        };
+        let left_read_only = read_only(&self.left.current_path);
+        let right_read_only = read_only(&self.right.current_path);
+        self.command_capabilities
+            .replace(Some(CommandCapabilityCache {
+                left_path: self.left.current_path.clone(),
+                right_path: self.right.current_path.clone(),
+                left_read_only,
+                right_read_only,
+                expires_at: now + TTL,
+            }));
+        (left_read_only, right_read_only)
     }
 
     /// Capture the complete command-relevant state for the palette and other
@@ -522,6 +562,11 @@ impl Workspace {
         let active_transfer = self.active_transfer.is_some();
         let pending_operation = self.pending_op.is_some();
         let safe_state = self.mutations_blocked();
+        let (left_read_only, right_read_only) = self.pane_read_only();
+        let (active_read_only, inactive_read_only) = match self.active {
+            ActivePanel::Left => (left_read_only, right_read_only),
+            ActivePanel::Right => (right_read_only, left_read_only),
+        };
         let can_transfer_into_cursor_folder = !active_transfer
             && !pending_operation
             && !safe_state
@@ -569,6 +614,8 @@ impl Workspace {
             pending_operation,
             active_transfer,
             transfer_queue_busy: active_transfer || self.queued_count() > 0,
+            active_read_only,
+            inactive_read_only,
         }
     }
 
@@ -597,6 +644,11 @@ impl Workspace {
         let safe_state = self.mutations_blocked();
         let pending_operation = self.pending_op.is_some();
         let active_transfer = self.active_transfer.is_some();
+        let (left_read_only, right_read_only) = self.pane_read_only();
+        let (active_read_only, inactive_read_only) = match self.active {
+            ActivePanel::Left => (left_read_only, right_read_only),
+            ActivePanel::Right => (right_read_only, left_read_only),
+        };
         let selected_entries = usize::from(has_selected);
         crate::command::CommandContext {
             picked_entries: if active.selected.is_empty() {
@@ -624,6 +676,8 @@ impl Workspace {
             pending_operation,
             active_transfer,
             transfer_queue_busy: active_transfer || self.queued_count() > 0,
+            active_read_only,
+            inactive_read_only,
             ..crate::command::CommandContext::default()
         }
     }

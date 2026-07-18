@@ -229,6 +229,8 @@ pub struct CommandContext {
     pub pending_operation: bool,
     pub active_transfer: bool,
     pub transfer_queue_busy: bool,
+    pub active_read_only: bool,
+    pub inactive_read_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,6 +293,9 @@ pub enum CommandPredicate {
     CanGoForward,
     CanGoUp,
     CanActivate,
+    ActiveWritable,
+    InactiveWritable,
+    AnyPaneWritable,
 }
 
 impl CommandPredicate {
@@ -337,6 +342,15 @@ impl CommandPredicate {
             Self::CanGoForward => (context.can_go_forward, "No later folder in history"),
             Self::CanGoUp => (context.can_go_up, "Already at the filesystem root"),
             Self::CanActivate => (context.cursor_entry || context.can_go_up, "No item to open"),
+            Self::ActiveWritable => (!context.active_read_only, "The active panel is read-only"),
+            Self::InactiveWritable => (
+                !context.inactive_read_only,
+                "The destination panel is read-only",
+            ),
+            Self::AnyPaneWritable => (
+                !context.active_read_only || !context.inactive_read_only,
+                "Both panels are read-only",
+            ),
         };
         (!met).then_some(reason)
     }
@@ -347,16 +361,25 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
     use Command::*;
     use CommandPredicate as P;
 
-    const MUTATE_PICKED: &[P] = &[
+    const COPY: &[P] = &[
         P::MutationsAllowed,
         P::ConfirmationClosed,
         P::HasPickedEntry,
+        P::InactiveWritable,
+    ];
+    const MOVE: &[P] = &[
+        P::MutationsAllowed,
+        P::ConfirmationClosed,
+        P::HasPickedEntry,
+        P::ActiveWritable,
+        P::InactiveWritable,
     ];
     const DELETE: &[P] = &[
         P::MutationsAllowed,
         P::ConfirmationClosed,
         P::TransferIdle,
         P::HasPickedEntry,
+        P::ActiveWritable,
     ];
     const TRANSFER_INTO: &[P] = &[
         P::MutationsAllowed,
@@ -365,15 +388,19 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
         P::HasSelectedEntry,
         P::CursorIsDirectory,
         P::HasTransferSource,
+        P::ActiveWritable,
     ];
-    const MUTATE: &[P] = &[P::MutationsAllowed];
-    const RENAME: &[P] = &[P::MutationsAllowed, P::HasCursorEntry];
-    const MUTATE_SELECTION: &[P] = &[P::MutationsAllowed, P::HasPickedEntry];
+    const MUTATE_ACTIVE: &[P] = &[P::MutationsAllowed, P::ActiveWritable];
+    const SYNC: &[P] = &[P::MutationsAllowed, P::AnyPaneWritable];
+    const RENAME: &[P] = &[P::MutationsAllowed, P::HasCursorEntry, P::ActiveWritable];
+    const MUTATE_SELECTION: &[P] = &[P::MutationsAllowed, P::HasPickedEntry, P::ActiveWritable];
+    const RUN_SELECTION: &[P] = &[P::MutationsAllowed, P::HasPickedEntry];
     const SHELF_DRAIN: &[P] = &[
         P::MutationsAllowed,
         P::ConfirmationClosed,
         P::TransferIdle,
         P::HasShelfEntry,
+        P::ActiveWritable,
     ];
     const UNDO: &[P] = &[P::MutationsAllowed, P::TransferQueueIdle, P::CanUndo];
     const REDO: &[P] = &[P::MutationsAllowed, P::TransferQueueIdle, P::CanRedo];
@@ -396,12 +423,15 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
     const ACTIVATE: &[P] = &[P::CanActivate];
 
     match command {
-        RequestCopy | RequestMove => MUTATE_PICKED,
+        RequestCopy => COPY,
+        RequestMove => MOVE,
         RequestDelete => DELETE,
         MoveIntoCursorFolder | CopyIntoCursorFolder => TRANSFER_INTO,
-        CreateDir | BeginSync => MUTATE,
+        CreateDir => MUTATE_ACTIVE,
+        BeginSync => SYNC,
         BeginRename => RENAME,
-        BeginBatchRename | BeginRunBar | GatherIntoFolder => MUTATE_SELECTION,
+        BeginBatchRename | GatherIntoFolder => MUTATE_SELECTION,
+        BeginRunBar => RUN_SELECTION,
         ShelfDrain => SHELF_DRAIN,
         Undo => UNDO,
         Redo => REDO,
@@ -1097,6 +1127,7 @@ mod tests {
                 CommandPredicate::ConfirmationClosed,
                 CommandPredicate::TransferIdle,
                 CommandPredicate::HasPickedEntry,
+                CommandPredicate::ActiveWritable,
             ]
         );
         assert_eq!(
@@ -1105,6 +1136,39 @@ mod tests {
                 CommandPredicate::HasVisibleEntry,
                 CommandPredicate::HasOtherEntry,
             ]
+        );
+    }
+
+    #[test]
+    fn capability_predicates_gate_only_the_required_panes() {
+        let mut context = CommandContext {
+            picked_entries: 1,
+            cursor_entry: true,
+            ..CommandContext::default()
+        };
+        context.inactive_read_only = true;
+        assert_eq!(
+            availability(Command::RequestCopy, &context).reason,
+            Some("The destination panel is read-only")
+        );
+        assert!(availability(Command::RequestDelete, &context).enabled);
+
+        context.inactive_read_only = false;
+        context.active_read_only = true;
+        assert!(availability(Command::RequestCopy, &context).enabled);
+        assert_eq!(
+            availability(Command::RequestMove, &context).reason,
+            Some("The active panel is read-only")
+        );
+        assert_eq!(
+            availability(Command::RequestDelete, &context).reason,
+            Some("The active panel is read-only")
+        );
+
+        context.inactive_read_only = true;
+        assert_eq!(
+            availability(Command::BeginSync, &context).reason,
+            Some("Both panels are read-only")
         );
     }
 
