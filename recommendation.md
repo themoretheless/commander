@@ -147,7 +147,7 @@ intentional, not a dropped row.)
 | D13 | Cross-pane comparison directory-blindness: add `is_dir` checks to `sync::compare`/`compare::classify_entry`/`conflict::detect`, and key `apply_sync`'s name-collision resolution by path/index instead of lowercased name | 2, 27, 28 | medium | **done (2026-07-18):** typed fingerprints, explicit folder-pair/type-conflict rows, and fail-closed conditional conflict policies |
 | D14 | Cap `textdiff`'s line count (or switch to a linear-space diff) before the O(n·m) DP allocation, so two ordinary text files can't abort the process | 5 | small | **done:** checked 8M-cell budget + flat matrix + regression test |
 | D15 | Data-safety gating: require an explicit drop-target (or a confirmation) before `drop_dragged` falls back to Move-into-other-panel, and gate toolbar Copy/Move/Delete on `pending_op`/`active_transfer` like the keyboard and drag-drop paths already do | 6, 32 | small-medium | **done:** explicit drop target/cancel plus queue-aware toolbar/core guards and disabled-state reasons |
-| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | **partial:** budget-aware preload, four-worker cap, persistent failure cache, fully background streamed decode, memory/dimension limits, diagnostics, and retry done; fallback-orientation parity still needs a fixture audit |
+| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | **partial:** budget-aware preload, four-worker/decoder bounds, viewport downsampling, persistent failures, typed fallback/timeouts, streamed decode, memory limits, and native/standard orientation transforms are done; fixture-backed color/orientation parity remains |
 | D17 | Persistence hardening: bound `MaxAgeDays`/`MinAgeDays` (or use `checked_mul`/`saturating_mul`), and give the four config-store loaders item-level fault tolerance instead of discarding the whole file on one bad field | 29, 31 | small-medium | **done (2026-07-18):** day matching avoids duration multiplication; shared item-level recovery preserves valid records and reports aggregate health |
 | D18 | Small UI/data-integrity fixes: `select_all` should preserve filtered-out selections like `invert_selection` does; run Find's directory walk off the UI thread; clear the batch-rename dialog's stale error on rule edit; scope `Escape` to the active panel's preview only | 33, 35, 49, below the cut | small each | open |
 | D19 | **Non-modal dialog retargeting: snapshot the working panel/selection/directory once at dialog-open time** instead of re-deriving it live from `Workspace` every frame, for the batch-rename studio and the treemap dialog | 3, 42 | medium; natural fit for the `UiState` extraction (A5) | **done:** Batch Rename and treemap snapshots retain their opening context |
@@ -155,7 +155,7 @@ intentional, not a dropped row.)
 | D21 | Conflict-resolution UI deadlock: recompute `need_bytes`/`overflow` after `resolve_pending_conflicts` shrinks `tr.entries`, so a chosen policy (Skip Existing, Keep Newer, ...) can actually un-stick the disabled buttons it was meant to fix | 7 | small-medium | **done:** policies remain selectable and rebuild entries/size/conflicts/scan |
 | D22 | Drag-and-drop plumbing rewrite: capture the actual dragged row(s) explicitly instead of falling back to a stale `panel.selected` when the drag starts on an unselected row; mirror drag state so the destination panel can render its own drop-target highlight; clear `drag_entries`/`drop_target` on `drop_dragged`'s early-return concurrency guard instead of leaving a phantom overlay | 4, 43, 44 | medium; one rewrite closes all three plus the already-tracked #6 | **done:** explicit anchor, cross-panel target feedback, cancel path, full cleanup |
 | D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | open |
-| D24 | Silent no-op cleanup: toast when `JumpSlot` targets a missing directory; toast on copy-path commands with an empty selection; give `JumpList` a way to prune a dead entry instead of only bypassing it; fix `select_by_mask`'s live-count preview to agree with what Select will actually do for a subtraction-only mask | 46, 47, below the cut (x2) | small each | **partial:** palette and both toolbar layouts now explain shared core availability reasons; direct-shortcut feedback, dead-jump pruning, and mask-preview parity remain |
+| D24 | Silent no-op cleanup: toast when `JumpSlot` targets a missing directory; toast on copy-path commands with an empty selection; give `JumpList` a way to prune a dead entry instead of only bypassing it; fix `select_by_mask`'s live-count preview to agree with what Select will actually do for a subtraction-only mask | 46, 47, below the cut (x2) | small each | **partial:** palette, toolbars, and direct mapped shortcuts now explain shared reasons (including empty copy-path selection); dead-jump pruning and mask-preview parity remain |
 
 Severity caveats from manual verification (do not act on these as written):
 round-4 **#20** (was round-2 #1) is a real `exists()`/`path_is_taken()`
@@ -231,9 +231,9 @@ at a time):
 | Idea | Effort | Note |
 | --- | --- | --- |
 | Move directory listing (`read_dir`/`jwalk`) off the main thread | medium | Distinct from the deferred "virtualised file list" - this is about the synchronous read, not render cost |
-| Cap/pool image-preload thread spawns and gate them by volume speed | small | Complements D16; a slow network volume can turn the look-ahead cache into a thundering herd |
+| Cap/pool image-preload thread spawns and gate them by volume speed | small | **partial (I001-I002):** worker/decoder slots are bounded; volume-speed admission remains |
 | Make the free-space preflight non-blocking with a timeout | small | Same root cause as D23's `free_space()` hang fix, framed as a proactive UX improvement |
-| Make the recursive fs watcher opt-out/shallow on non-local volumes | medium | FSEvents doesn't work reliably over SMB/NFS; `notify` falls back to a polling backend that can hammer a share |
+| Make the recursive fs watcher opt-out/shallow on non-local volumes | done | **shipped (I004-I005):** backend policy selects recursive native, shallow native, or paced shallow polling with fallback |
 | Surface the already-computed `walk_log` cost as a "slow volume" indicator | small | The measurement exists today and is silently discarded after driving an internal skip decision |
 | Roll up (not just truncate) the confirmation-dialog scan past `MAX_FLAT_ENTRIES` | small | A 100k-file tree currently just shows "... (truncated)" with no size/count summary of what was cut |
 
@@ -832,11 +832,28 @@ ideas supported by the research were explicitly excluded from the new count,
 so post-copy verification, crash journaling, dry-run, archive browsing,
 virtualization, logging, and remote-watcher work are not double-counted.
 The refresh adds a separate `H001-H012` ledger for concrete gaps closed in
-comparison, persistence, command availability, preview, and watcher recovery,
-plus ten explicitly deferred candidates so future work is not mislabeled as
-shipped.
+comparison, persistence, command availability, preview, and watcher recovery.
+The former deferred list is now the implemented `I001-I010` ledger; a fresh
+`J001-J010` list remains explicitly unimplemented so future work is not
+mislabeled as shipped.
 
 ## Tracking
+
+**Round-16 I001-I010 follow-up pass: done.** Preview decode now targets the
+physical viewport through typed ImageIO/standard/video providers with a hard
+timeout, four-slot bound, and health telemetry. Typed command predicates drive
+the palette, toolbars, direct-key refusal feedback, and focused-pane key bar.
+Watcher bursts publish bounded generations; volume policy chooses recursive
+native, shallow native, or shallow polling with fallback. Compact rows retain
+regular/compound extensions; visible mutations use a cached capability matrix;
+Versioned operations expose persisted Compact/Recent/Archive/Forever retention
+and prune only after manifest commit. The new `J001-J010` list covers the next
+distinct ideas rather than recycling these shipped items. Three review passes
+then bypassed the full context snapshot for unconditional keys, removed a
+per-row suffix-case allocation, made compact-name width conservative, and
+separated decoder saturation from damaged-file failures. Full verification:
+635 passed, 3 intentionally ignored harnesses, the isolated performance gate
+passed, and strict all-target clippy is clean.
 
 **Round-15 refreshed Top-100 comparative pass: done.** The fixed, relevant
 100-repository cohort was revalidated on 2026-07-18 with 100 reachable and zero
@@ -972,13 +989,13 @@ so continue with **D4 (cheap perf) + D11 (id_salt) + D18/D24's small UI/data
 fixes**, then **A2 -> A3 -> A4 ...**. Schedule **D9** (remaining
 destructive-op partial-failure integrity, with
 on-disk undo tests) and **D23** (filesystem edge cases) as dedicated passes;
-finish **D16** with decode-time downsampling and an orientation fixture audit,
-and place **D5** alongside the `DirIndex` extraction. The best small follow-ups
-from the refreshed cohort are direct-shortcut availability feedback, watcher
-event coalescing telemetry, and extension-preserving filename truncation. D10
-is also the strongest concrete motivation for the `ViewState` encapsulation in
-Track A, and D19's dialog-snapshot fix is the strongest concrete motivation for
-the `UiState` extraction (A5).
+finish **D16** with a fixture-backed orientation/color-management audit now
+that decode-time downsampling is shipped, and place **D5** alongside the
+`DirIndex` extraction. The best bounded follow-ups from `J001-J010` are the
+per-format decoder circuit breaker, a visible deduplicated version-store quota,
+and per-root trust labels. D10 is also the strongest concrete motivation for
+the `ViewState` encapsulation in Track A, and D19's dialog-snapshot fix is the
+strongest concrete motivation for the `UiState` extraction (A5).
 
 Track E (ideas) is deliberately unscheduled - revisit it after the D-track
 correctness work above lands, and pull specific ideas into Track A/B once

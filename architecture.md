@@ -16,8 +16,8 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: more than 60 focused modules and 623
-unit tests sit under a thin presentation layer. The broad suite runs 620; two
+That split is real and worth protecting: more than 60 focused modules and 638
+unit tests sit under a thin presentation layer. The broad suite runs 635; two
 manual profiling harnesses and the separately executed single-threaded
 performance timing gate are ignored there. The debt is concentrated in three
 oversized core files and in how the core signals the UI.
@@ -51,8 +51,10 @@ machines own `G081-G090`. `measurement`, `benchmark_fixture`,
 
 The fixed 100-repository cohort was refreshed in full on 2026-07-18: every
 entry remained reachable and non-archived. That pass produced the smaller
-`H001-H012` hardening ledger in `research.md`; it closes current gaps without
-changing the longer-term module migration order below.
+`H001-H012` hardening ledger in `research.md`; the subsequent `I001-I010`
+follow-up closes preview, command, watcher, naming, capability, and retention
+gaps. `J001-J010` is the new unimplemented idea set. None changes the
+longer-term module migration order below.
 
 ## Module map (current)
 
@@ -62,8 +64,9 @@ Grouped by the bounded context each module really belongs to:
 
 - **Navigation / panel state**: `panel` (the `PanelState` god object: entries,
   cursor, selection, sort, filter, history, watcher, dir-size index),
-  `watcher_health` (path-free backend/recovery counters), `jumplist`, `crumbs`,
-  `scan`, `collections`, `tree_overview`.
+  `watcher_policy` (backend/depth/coalescing choice), `watcher_health`
+  (path-free backend/recovery/batch counters), `jumplist`, `crumbs`, `scan`,
+  `collections`, `tree_overview`.
 - **Discovery / search**: `query` is the canonical grammar, `search` owns
   cancellable generations and provider composition, `content_index` owns the
   optional root-scoped snapshot, and `archive` provides bounded ZIP browsing
@@ -71,9 +74,9 @@ Grouped by the bounded context each module really belongs to:
   mechanisms, not UI policies.
 - **Workspace / coordination**: `workspace` (the second god object: two panels,
   transfer queue, undo, pending ops, the dialog-intent flag bus, compare/sync
-  glue, drop handling), `command` (the `Command` enum + key mapping and the
-  pure `CommandContext`/`CommandAvailability` policy used by every action
-  surface).
+  glue, drop handling), `command` (the `Command` enum + key mapping and typed
+  composable predicates over pure `CommandContext` snapshots used by every
+  action surface).
 - **Selection / comparison**: `compare` (cross-pane classification + selection
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
@@ -81,7 +84,8 @@ Grouped by the bounded context each module really belongs to:
   failure classes; `operation_journal` owns serializable event transitions and recovery;
   `path_identity`, `filesystem_policy`, `mount_guard`, `version_store`, `undo`,
   and `sync_guard` supply identity proof, filesystem capability policy,
-  remount safety, versions, reversible history, and circuit breakers.
+  remount safety, bounded version retention, reversible history, and circuit
+  breakers.
 - **Transfer execution**: `transfer` coordinates staging and commit;
   `native_copy`, `delta_copy`, and `verified_hash` own specialized data paths;
   `volume_profile` and `transfer_tuning` own capability/telemetry policy;
@@ -104,7 +108,8 @@ Grouped by the bounded context each module really belongs to:
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
   `session`, `persistence` (shared item-level recovery and path-free health),
-  `density`, `focus_mode`, `quick_actions`, `treemap`, `toasts` (a pure,
+  `density`, `display_name` (Unicode/extension-aware compact names),
+  `focus_mode`, `quick_actions`, `treemap`, `toasts` (a pure,
   time-driven toast queue with an injected clock; no egui types),
   `lock_util` (the single poison-recovery policy at worker/UI mutex borders).
 
@@ -127,12 +132,12 @@ policy.
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 4,892 | God object plus a large colocated test module |
-| `src/transfer.rs` | 3,623 | Coordinator still contains buffered/sparse tree mechanics |
-| `src/panel.rs` | 3,339 | God object; `PanelState` mixes 4 concerns |
-| `src/operation_journal.rs` | 1,714 | Durable state, transition machines, recovery, rollback, and tests |
+| `src/workspace.rs` | 4,971 | God object plus a large colocated test module |
+| `src/transfer.rs` | 3,629 | Coordinator still contains buffered/sparse tree mechanics |
+| `src/panel.rs` | 3,509 | God object; `PanelState` mixes 4 concerns |
+| `src/operation_journal.rs` | 1,735 | Durable state, transition machines, recovery, rollback, and tests |
 | `src/search.rs` | 1,496 | Provider composition and a large fixture suite |
-| `src/app/update.rs` | 1,293 | Per-frame hub; drains the flag bus |
+| `src/app/update.rs` | 1,284 | Per-frame hub; drains the flag bus |
 
 ### Research milestone 1 (G001-G050)
 
@@ -212,24 +217,30 @@ renders the resulting state or sends an explicit command.
 | Concern | Policy owner | Runtime owner | Presentation boundary |
 | --- | --- | --- | --- |
 | Cross-pane comparison | `compare`, `conflict`, `sync` | panel/workspace snapshots | compare labels, colors, conflict sheet |
-| Action availability | `command::CommandContext` and `CommandAvailability` | immutable `Workspace` context snapshots | palette plus wide/compact toolbar |
+| Action availability | typed `command::CommandPredicate` composition | immutable `Workspace` context snapshots | palette, toolbar, keyboard feedback, contextual key bar |
 | Config recovery | `persistence` | each typed store | one toast plus developer counters |
-| Image preview | `image_cache` decode/admission state | cache workers and result map | loading, failed, retry, close states |
-| Directory watching | `watcher_health` recovery facts | `PanelState` watcher lifecycle | developer panel and support bundle |
+| Image preview | `image_cache` target/provider/admission state | bounded cache/decoder workers and result map | loading, failed, retry, close, provider-health states |
+| Directory watching | `watcher_policy` plus `watcher_health` facts | `PanelState` native/polling lifecycle and event generations | developer panel and support bundle |
+| Compact names | `display_name` Unicode/suffix policy | immutable row data | file row plus full-name tooltip/accessibility label |
+| Volume action gating | `filesystem_policy::CapabilityMatrix` | five-second workspace pane cache | every command surface's enabled state/reason |
+| Version retention | `operation::VersionRetentionPolicy` | `version_store` manifest and immutable `TransferSpec` | transfer, delete, and sync review surfaces |
 
 The important flows are intentionally short:
 
 1. An action surface requests one immutable context snapshot (complete for the
-   palette, minimal for the action bar), asks each `Command` for availability,
-   and renders or invokes that answer.
+   palette/keyboard, minimal for always-visible controls), evaluates the
+   command's typed predicates, and renders, explains, or invokes that answer.
 2. A config store parses its top-level JSON, recovers each valid item through
    `persistence`, and reports aggregate counts without recording values/paths.
-3. Preview requests enter `Loading`; a worker streams and bounds the decode,
-   then publishes either a texture payload or a stable classified failure.
-   Retry explicitly invalidates that failure before scheduling fresh work.
-4. Watcher overflow, backend error, or subscription failure invalidates the
-   incremental view. The panel backs off, reconnects, and performs a full
-   reconciliation before trusting incremental events again.
+3. Preview requests capture a physical viewport target, enter `Loading`, and
+   acquire one of four decoder slots. ImageIO/video/standard providers decode
+   toward that target behind a hard timeout and publish either a texture or a
+   stable classified failure. Retry explicitly invalidates the failure.
+4. Direct watcher events increment a generation and publish once per bounded
+   batch. Overflow/backend errors bypass batching, invalidate the incremental
+   view, back off, reconnect, and force a full reconciliation.
+5. A versioned mutation commits the new version record first, atomically
+   publishes the retained manifest, and only then removes expired stored data.
 
 ### Hard invariants
 
@@ -247,6 +258,16 @@ The important flows are intentionally short:
 8. A watcher that failed to create or subscribe is not counted as active.
 9. A watcher gap/reconnect requires full reconciliation, and exported watcher
    diagnostics contain counters rather than paths.
+10. One watcher burst publishes at most one ready generation per coalescing
+    window; a remote/unknown root uses shallow polling rather than an unbounded
+    recursive native assumption.
+11. Compact file-row text preserves a meaningful regular/compound extension;
+    assistive semantics retain the unshortened name.
+12. Copy requires a writable destination, Move requires writable source and
+    destination, and local mutations consume the shared volume matrix.
+13. Retention always keeps the newest verified version for every original
+    path, even when the age window has elapsed.
+14. A failed retention-manifest write deletes no previously recorded version.
 
 ### Greenfield difference
 
@@ -812,7 +833,7 @@ validates.
 
 ## Invariants and testing
 
-The crate currently exposes 623 unit tests. The default suite passes 620 with
+The crate currently exposes 638 unit tests. The default suite passes 635 with
 three explicit ignores: two manual profiling/benchmark harnesses and one
 single-threaded CI performance gate, which is run separately. The one area the
 tests do **not** exercise is full egui-frame behaviour: dialog focus, texture

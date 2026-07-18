@@ -26,7 +26,8 @@ module is a thin egui layer over it.
 - **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
   and frequency. Availability comes from the same workspace policy as both
   toolbar layouts; unavailable matches stay visible with a reason, and Enter
-  selects the first action that can actually run.
+  selects the first action that can actually run. Direct shortcuts use the
+  same typed predicates and explain a refused action instead of disappearing.
 - **Streaming search** with cancellable generations, stable result identity,
   one fielded query grammar, Exact/Fuzzy/Regex modes, replayable history,
   optional inspectable content indexes, and bounded ZIP-member search.
@@ -48,7 +49,8 @@ module is a thin egui layer over it.
 - **Durable operations**: Fast/Verified/Versioned profiles, typed failures,
   source/destination revalidation, an idempotent operation journal, safe-state
   lockout, and a Recovery Center with Resume, Roll back, Inspect, and repair
-  plans.
+  plans. Versioned operations expose Compact/Recent/Archive/Forever retention;
+  pruning publishes the retained manifest before deleting expired copies.
 - **Adaptive transfers**: resumable buffered and delta checkpoints, fixed or
   measured-threshold FastCDC delta copy, sparse-file preservation, explicit
   clone/rename/delta/buffered telemetry, per-volume concurrency, bandwidth and
@@ -67,6 +69,9 @@ module is a thin egui layer over it.
   interrupted copy never destroys the existing file. Copying or moving a path
   into itself is rejected, and a **free-space preflight** warns before a copy
   that will not fit (a clone or same-volume move needs ~0 extra space).
+  Visible actions also consume the shared volume capability matrix: Copy needs
+  a writable destination, Move needs both panes writable, and local mutations
+  are disabled on a read-only active volume with the exact reason shown.
 - **Drag and drop** between panels and onto subfolders, routed through the same
   engine as the keyboard. `Cmd+Enter` moves into the highlighted folder and
   `Cmd+Shift+Enter` copies into it; both actions are also available from the
@@ -106,10 +111,11 @@ module is a thin egui layer over it.
 ### Viewing and the rest
 
 - **Preview** of images (via ImageIO, including RAW/HEIC) and text in the
-  opposite panel, with look-ahead caching. Decode stays off the UI thread,
-  fallback input is streamed, decoded images have dimension and 256 MiB
-  allocation limits, and failed previews explain the failure and can be
-  retried instead of spinning forever.
+  opposite panel, with look-ahead caching. Image/video decoding targets the
+  physical preview viewport, applies orientation, and runs through typed
+  native/standard fallbacks behind a hard timeout and four-slot limit. Decoded
+  images retain dimension and 256 MiB allocation caps; failures are explicit
+  and retryable rather than infinite spinners.
 - **Relative dates** in the Modified column (Finder/Things style), with the
   absolute timestamp on hover.
 - **Status bar and selection summary**: each panel's footer shows item count and
@@ -123,10 +129,13 @@ module is a thin egui layer over it.
   shape/text cues. File rows expose named columns and state to assistive
   technology. System high-contrast and reduced-motion preferences are
   honored; text scales from 80% to 200%, with compact toolbars and a bottom
-  Operations Center on constrained widths.
+  Operations Center on constrained widths. The bottom key bar is generated
+  from the focused pane's available actions, and compact file names preserve
+  regular/compound extensions while exposing the full name on hover.
 - **Developer diagnostics**: the gear panel shows workers, queued I/O, cache
   bytes/jobs/failures, frame and cancellation percentiles, startup phases,
-  persistence recovery, watcher health/reconnects, and CI budgets.
+  persistence recovery, preview-provider fallback/timeouts, watcher
+  native/polling policy, merged event batches/reconnects, and CI budgets.
   It can export a capability report or a salted, redacted support bundle and
   exposes bounded rollout/kill controls for optional index, preview, and
   external-provider paths.
@@ -172,8 +181,8 @@ layer: a fixed, relevant cohort of 100 high-star repositories, 30 primary
 papers/standards, and 100 deduplicated proposals. The whole cohort was
 revalidated on 2026-07-18 with 100 reachable and zero archived projects. Its
 implementation ledger records G001-G050 as the first shipped research
-milestone and G051-G100 as the second; the latest H001-H012 gap pass records
-additional compare, persistence, command, preview, and watcher hardening.
+milestone and G051-G100 as the second; H001-H012 and I001-I010 record the two
+comparative hardening slices. J001-J010 is the current unimplemented idea set.
 
 ## Review backlog
 

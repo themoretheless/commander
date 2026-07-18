@@ -484,23 +484,42 @@ one explanation; preview failure is a stable retryable state rather than an
 infinite spinner; and a watcher that failed to subscribe is never reported as
 active.
 
+### I001-I010 follow-up implementation ledger
+
+The ten candidates from the comparative review are now implemented as five
+independently tested commits. They remain separate from `G001-G100` and
+`H001-H012` so the original research counts stay stable.
+
+| ID | Implemented delta | Primary owner |
+| --- | --- | --- |
+| I001 | Downsample image/video previews at decode time to the physical viewport target. | `image_cache`, preview renderer |
+| I002 | Use typed ImageIO/standard/video providers with fallback, hard timeout, bounded decoder slots, and path-free health. | `image_cache`, developer diagnostics |
+| I003 | Explain unavailable mapped keyboard commands with the shared command reason. | `command`, `app/keys` |
+| I004 | Coalesce direct watcher bursts into generation batches and count merged events. | `panel`, `watcher_health` |
+| I005 | Select native/polling depth and fallback from the cached volume backend profile. | `watcher_policy`, `panel` |
+| I006 | Truncate compact file names without hiding regular or compound extensions. | `display_name`, file-row renderer |
+| I007 | Generate focused-pane key help from the same availability policy as other action surfaces. | `command`, shortcut bar |
+| I008 | Compose command availability from typed reusable predicates. | `command` |
+| I009 | Gate visible mutations through a short-lived shared filesystem capability matrix. | `workspace`, `filesystem_policy` |
+| I010 | Expose Compact/Recent/Archive/Forever version retention and prune only after manifest commit. | `operation`, `version_store`, operation dialogs |
+
 ### Next ten evidence-backed candidates
 
-These remain proposals, ordered by expected value versus coupling. They are
+These are new proposals, ordered by expected value versus coupling. They are
 not counted as implemented.
 
-| Rank | Candidate | Why it remains separate |
-| ---: | --- | --- |
-| 1 | Decode-time image downsampling to the visible preview size. | The new cap prevents runaway allocation, but full-resolution decode can still waste CPU and memory. |
-| 2 | A typed preview-provider fallback chain with timeout and health. | Current native/fallback paths are bounded, but provider selection is not yet inspectable per format. |
-| 3 | Explain unavailable direct keyboard commands with the same reason as the palette. | Palette and toolbars are consistent; shortcut feedback still needs a low-noise policy. |
-| 4 | Batch/coalesce watcher events before reconciliation and expose batch telemetry. | Recovery is correct now; event storms can still create avoidable listing work. |
-| 5 | Select watcher depth and polling fallback from volume/backend capability. | One local policy cannot fit APFS, removable media, SMB, and NFS equally well. |
-| 6 | Preserve filename extensions when compact rows truncate long names. | Dense editors and file managers keep the most decision-relevant suffix visible. |
-| 7 | Show focused-pane contextual key help generated from command availability. | The registry now has enough policy data; the remaining work is a restrained UI treatment. |
-| 8 | Replace the growing context struct with typed composable command predicates. | Useful only when more command dimensions appear; premature today, likely valuable later. |
-| 9 | Gate operations by a cached per-volume capability matrix. | Transfer policy models capabilities, but all visible actions do not yet consume one shared matrix. |
-| 10 | Expose conflict-copy/version retention as an operation policy. | Durability/versioning exists underneath; the user-facing recovery contract can be more explicit. |
+| ID | Candidate | Evidence and boundary |
+| --- | --- | --- |
+| J001 | Color-manage previews with ICC conversion and bounded HDR tone mapping. | Preview pixels are now bounded; visual fidelity is the next independent contract (repos 9, 75; S29). |
+| J002 | Deduplicate preserved versions by verified content chunks and enforce a visible store quota. | Retention bounds record count/time, not duplicate bytes or total recovery-space consumption (repos 53, 56, 67; S17, S23). |
+| J003 | Assign per-root trust labels that gate run-command, external providers, and automatic archive inspection. | Capability-scoped extension systems keep trust explicit; this is narrower than a general plugin API (repos 30, 50, 84; S26). |
+| J004 | Make preview/index/hash admission battery- and thermal-aware while keeping foreground operations deterministic. | One quota scheduler exists, but machine pressure is not yet an input to background admission (repos 11, 65, 98; E02). |
+| J005 | Export recipient-encrypted support bundles with an explicit expiry and plaintext preview. | Bundles are redacted and capped today; encryption is a separate transport/privacy guarantee (repos 71, 84; S15, S26). |
+| J006 | Publish a rate-limited assistive operation timeline for phase changes, failures, and recovery decisions. | Visual states are distinct, but long operations need equivalent non-visual temporal feedback (repos 22, 82; S29-S30). |
+| J007 | Record path-free change provenance so a refreshed row can distinguish Commander, external watcher, reconciliation, and recovery effects. | Watcher generations prove freshness but do not explain why a row changed (repos 51, 71; E14). |
+| J008 | Add named workspace profiles that bind two roots, view filters, transfer policies, and trusted command templates. | Collections bind roots and sessions bind settings; a typed profile would compose them without making virtual views own files (repos 16, 42, 50). |
+| J009 | Save conflict rules scoped by root pair and file kind, always with a deterministic sample preview before first use. | Relation policies are typed but ephemeral; rsync-style itemization keeps automation inspectable (repos 53, 67; S10, S15). |
+| J010 | Add per-format decoder circuit breakers with quarantine, cooldown, and one explicit probe retry. | Provider timeout/health is global; repeated failures in one format should not suppress healthy formats (repos 7, 30, 84; E03). |
 
 ## Original promotion candidates
 
