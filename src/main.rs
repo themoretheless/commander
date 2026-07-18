@@ -70,6 +70,7 @@ mod verified_hash;
 mod version_store;
 mod volume_profile;
 mod watcher_health;
+mod watcher_policy;
 pub mod workload;
 mod workspace;
 

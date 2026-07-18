@@ -159,6 +159,31 @@ impl App {
                             );
                             text_row(
                                 ui,
+                                "Watcher batches",
+                                &format!(
+                                    "{} batches / {} events merged",
+                                    watcher.event_batches, watcher.coalesced_events
+                                ),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Watcher policy",
+                                &format!(
+                                    "{} native / {} polling / {} shallow / {} fallbacks",
+                                    watcher.native_starts,
+                                    watcher.polling_starts,
+                                    watcher.shallow_starts,
+                                    watcher.backend_fallbacks,
+                                ),
+                                if watcher.backend_fallbacks == 0 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
                                 "Index cache",
                                 &format_size(
                                     u64::try_from(index.progress.content_bytes).unwrap_or(u64::MAX),

@@ -17,6 +17,18 @@ pub struct WatcherHealth {
     pub listing_reconciliations: u64,
     pub gap_reconciliations: u64,
     pub size_reconciliations: u64,
+    #[serde(default)]
+    pub event_batches: u64,
+    #[serde(default)]
+    pub coalesced_events: u64,
+    #[serde(default)]
+    pub native_starts: u64,
+    #[serde(default)]
+    pub polling_starts: u64,
+    #[serde(default)]
+    pub shallow_starts: u64,
+    #[serde(default)]
+    pub backend_fallbacks: u64,
 }
 
 #[derive(Default)]
@@ -32,6 +44,12 @@ struct Counters {
     listing_reconciliations: AtomicU64,
     gap_reconciliations: AtomicU64,
     size_reconciliations: AtomicU64,
+    event_batches: AtomicU64,
+    coalesced_events: AtomicU64,
+    native_starts: AtomicU64,
+    polling_starts: AtomicU64,
+    shallow_starts: AtomicU64,
+    backend_fallbacks: AtomicU64,
 }
 
 fn counters() -> &'static Counters {
@@ -87,6 +105,32 @@ pub(crate) fn record_size_reconciliation() {
     bump(&counters().size_reconciliations);
 }
 
+pub(crate) fn record_event_batch(coalesced: bool) {
+    if coalesced {
+        bump(&counters().coalesced_events);
+    } else {
+        bump(&counters().event_batches);
+    }
+}
+
+pub(crate) fn record_watcher_start(
+    backend: crate::watcher_policy::WatcherBackend,
+    depth: crate::watcher_policy::WatchDepth,
+    fallback: bool,
+) {
+    let counters = counters();
+    match backend {
+        crate::watcher_policy::WatcherBackend::Native => bump(&counters.native_starts),
+        crate::watcher_policy::WatcherBackend::Polling => bump(&counters.polling_starts),
+    }
+    if depth == crate::watcher_policy::WatchDepth::DirectoryOnly {
+        bump(&counters.shallow_starts);
+    }
+    if fallback {
+        bump(&counters.backend_fallbacks);
+    }
+}
+
 pub fn snapshot() -> WatcherHealth {
     let counters = counters();
     let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
@@ -102,6 +146,12 @@ pub fn snapshot() -> WatcherHealth {
         listing_reconciliations: load(&counters.listing_reconciliations),
         gap_reconciliations: load(&counters.gap_reconciliations),
         size_reconciliations: load(&counters.size_reconciliations),
+        event_batches: load(&counters.event_batches),
+        coalesced_events: load(&counters.coalesced_events),
+        native_starts: load(&counters.native_starts),
+        polling_starts: load(&counters.polling_starts),
+        shallow_starts: load(&counters.shallow_starts),
+        backend_fallbacks: load(&counters.backend_fallbacks),
     }
 }
 
@@ -121,5 +171,24 @@ mod tests {
         assert!(after.rescan_signals > before.rescan_signals);
         assert!(after.listing_reconciliations > before.listing_reconciliations);
         assert!(after.gap_reconciliations > before.gap_reconciliations);
+    }
+
+    #[test]
+    fn snapshot_counts_batches_and_backend_policy_without_paths() {
+        let before = snapshot();
+        record_event_batch(false);
+        record_event_batch(true);
+        record_watcher_start(
+            crate::watcher_policy::WatcherBackend::Polling,
+            crate::watcher_policy::WatchDepth::DirectoryOnly,
+            true,
+        );
+        let after = snapshot();
+
+        assert!(after.event_batches > before.event_batches);
+        assert!(after.coalesced_events > before.coalesced_events);
+        assert!(after.polling_starts > before.polling_starts);
+        assert!(after.shallow_starts > before.shallow_starts);
+        assert!(after.backend_fallbacks > before.backend_fallbacks);
     }
 }

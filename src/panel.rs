@@ -719,6 +719,133 @@ fn strip_leading_zeros(s: &[char]) -> &[char] {
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
+enum DirectoryWatcher {
+    Native(notify::RecommendedWatcher),
+    Polling(notify::PollWatcher),
+}
+
+impl DirectoryWatcher {
+    fn watch(
+        &mut self,
+        path: &Path,
+        depth: crate::watcher_policy::WatchDepth,
+    ) -> notify::Result<()> {
+        use notify::Watcher as _;
+
+        let mode = match depth {
+            crate::watcher_policy::WatchDepth::Recursive => notify::RecursiveMode::Recursive,
+            crate::watcher_policy::WatchDepth::DirectoryOnly => notify::RecursiveMode::NonRecursive,
+        };
+        match self {
+            Self::Native(watcher) => watcher.watch(path, mode),
+            Self::Polling(watcher) => watcher.watch(path, mode),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct WatcherSignals {
+    reload: Arc<std::sync::atomic::AtomicBool>,
+    sizes_dirty: Arc<std::sync::atomic::AtomicBool>,
+    rescan_generation: Arc<std::sync::atomic::AtomicU64>,
+    restart_requested: Arc<std::sync::atomic::AtomicBool>,
+    event_generation: Arc<std::sync::atomic::AtomicU64>,
+    ready_generation: Arc<std::sync::atomic::AtomicU64>,
+    batch_scheduled: Arc<std::sync::atomic::AtomicBool>,
+    wake: Option<Notify>,
+    watched: PathBuf,
+    coalesce_window: std::time::Duration,
+}
+
+impl WatcherSignals {
+    fn into_handler(self) -> Box<dyn FnMut(Result<notify::Event, notify::Error>) + Send + 'static> {
+        Box::new(move |result| {
+            let Ok(event) = result else {
+                crate::watcher_health::record_backend_error();
+                self.restart_requested
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                invalidate_size_cache(&self.watched);
+                flag_watcher_gap(&self.rescan_generation, &self.reload);
+                if let Some(wake) = &self.wake {
+                    wake();
+                }
+                return;
+            };
+
+            crate::watcher_health::record_event();
+            if event.need_rescan() {
+                crate::watcher_health::record_rescan_signal();
+                invalidate_size_cache(&self.watched);
+                flag_watcher_gap(&self.rescan_generation, &self.reload);
+                if let Some(wake) = &self.wake {
+                    wake();
+                }
+                return;
+            }
+
+            // A change anywhere under a cached directory makes its size
+            // stale, even though its own mtime does not move.
+            let mut direct = event.paths.is_empty();
+            for path in &event.paths {
+                invalidate_size_cache(path);
+                if path == &self.watched || path.parent() == Some(self.watched.as_path()) {
+                    direct = true;
+                }
+            }
+            if direct {
+                crate::watcher_health::record_direct_event();
+                self.event_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let coalesced = self
+                    .batch_scheduled
+                    .swap(true, std::sync::atomic::Ordering::AcqRel);
+                crate::watcher_health::record_event_batch(coalesced);
+                if !coalesced {
+                    let scheduled = Arc::clone(&self.batch_scheduled);
+                    let events = Arc::clone(&self.event_generation);
+                    let ready = Arc::clone(&self.ready_generation);
+                    let wake = self.wake.clone();
+                    let delay = self.coalesce_window;
+                    let spawn = std::thread::Builder::new()
+                        .name("commander-watcher-batch".to_string())
+                        .spawn(move || {
+                            std::thread::sleep(delay);
+                            // Clear first so an event racing with publication
+                            // schedules the next bounded batch.
+                            scheduled.store(false, std::sync::atomic::Ordering::Release);
+                            ready.store(
+                                events.load(std::sync::atomic::Ordering::Acquire),
+                                std::sync::atomic::Ordering::Release,
+                            );
+                            if let Some(wake) = wake {
+                                wake();
+                            }
+                        });
+                    if spawn.is_err() {
+                        self.batch_scheduled
+                            .store(false, std::sync::atomic::Ordering::Release);
+                        self.ready_generation.store(
+                            self.event_generation
+                                .load(std::sync::atomic::Ordering::Acquire),
+                            std::sync::atomic::Ordering::Release,
+                        );
+                        if let Some(wake) = &self.wake {
+                            wake();
+                        }
+                    }
+                }
+            } else {
+                crate::watcher_health::record_deep_event();
+                self.sizes_dirty
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Some(wake) = &self.wake {
+                    wake();
+                }
+            }
+        })
+    }
+}
+
 /// A category facet for the quick-filter chips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KindFacet {
@@ -972,7 +1099,11 @@ pub struct PanelState {
     /// Bumped whenever `entries` content or order changes.
     entries_gen: u64,
     filter_cache: std::cell::RefCell<FilterCache>,
-    watcher: Option<notify::RecommendedWatcher>,
+    watcher_event_generation: Arc<std::sync::atomic::AtomicU64>,
+    watcher_ready_generation: Arc<std::sync::atomic::AtomicU64>,
+    watcher_batch_scheduled: Arc<std::sync::atomic::AtomicBool>,
+    applied_event_generation: u64,
+    watcher: Option<DirectoryWatcher>,
     watched_path: Option<PathBuf>,
     watcher_retry: Option<(PathBuf, std::time::Instant)>,
 }
@@ -1020,6 +1151,10 @@ impl PanelState {
             last_sizes_recompute: None,
             entries_gen: 0,
             filter_cache: std::cell::RefCell::new(FilterCache::stale()),
+            watcher_event_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            watcher_ready_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            watcher_batch_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            applied_event_generation: 0,
             watcher: None,
             watched_path: None,
             watcher_retry: None,
@@ -1105,9 +1240,14 @@ impl PanelState {
         if self.notify.is_some() && self.watcher.is_none() {
             self.start_watcher();
         }
-        let reload = self
+        let gap_reload = self
             .needs_refresh
             .swap(false, std::sync::atomic::Ordering::Relaxed);
+        let ready_generation = self
+            .watcher_ready_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let batch_reload = ready_generation != self.applied_event_generation;
+        let reload = gap_reload || batch_reload;
         if reload {
             let rescan_generation = self
                 .watcher_rescan_generation
@@ -1117,6 +1257,7 @@ impl PanelState {
                 invalidate_size_cache(&self.current_path);
                 self.applied_rescan_generation = rescan_generation;
             }
+            self.applied_event_generation = ready_generation;
             self.reload_entries();
             let retry = self.compute_dir_sizes(true);
             self.sizes_dirty
@@ -1147,8 +1288,6 @@ impl PanelState {
     }
 
     fn start_watcher(&mut self) {
-        use notify::{Event, RecursiveMode, Watcher};
-
         // Skip if already watching this path
         if self.watched_path.as_ref() == Some(&self.current_path) {
             return;
@@ -1167,84 +1306,71 @@ impl PanelState {
         self.watcher = None;
         self.watched_path = None;
 
-        let flag = Arc::clone(&self.needs_refresh);
-        let sizes_flag = Arc::clone(&self.sizes_dirty);
-        let rescan_generation = Arc::clone(&self.watcher_rescan_generation);
-        let restart_requested = Arc::clone(&self.watcher_restart_requested);
-        let wake = self.notify.clone();
-        let watched = self.current_path.clone();
+        let profile = crate::volume_profile::profile(&self.current_path);
+        let policy = crate::watcher_policy::policy_for(profile.backend);
+        let attempts = [
+            (policy.backend, policy.depth, false),
+            (
+                crate::watcher_policy::WatcherBackend::Polling,
+                crate::watcher_policy::WatchDepth::DirectoryOnly,
+                true,
+            ),
+        ];
+        let attempt_count = if policy.backend == crate::watcher_policy::WatcherBackend::Native {
+            2
+        } else {
+            1
+        };
 
-        let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                crate::watcher_health::record_event();
-                if event.need_rescan() {
-                    crate::watcher_health::record_rescan_signal();
-                    invalidate_size_cache(&watched);
-                    flag_watcher_gap(&rescan_generation, &flag);
-                    if let Some(wake) = &wake {
-                        wake();
-                    }
-                    return;
+        for &(backend, depth, fallback) in attempts.iter().take(attempt_count) {
+            let signals = WatcherSignals {
+                reload: Arc::clone(&self.needs_refresh),
+                sizes_dirty: Arc::clone(&self.sizes_dirty),
+                rescan_generation: Arc::clone(&self.watcher_rescan_generation),
+                restart_requested: Arc::clone(&self.watcher_restart_requested),
+                event_generation: Arc::clone(&self.watcher_event_generation),
+                ready_generation: Arc::clone(&self.watcher_ready_generation),
+                batch_scheduled: Arc::clone(&self.watcher_batch_scheduled),
+                wake: self.notify.clone(),
+                watched: self.current_path.clone(),
+                coalesce_window: policy.coalesce_window,
+            };
+            let watcher = match backend {
+                crate::watcher_policy::WatcherBackend::Native => {
+                    notify::recommended_watcher(signals.into_handler())
+                        .map(DirectoryWatcher::Native)
                 }
-                // A change anywhere under a cached directory makes its
-                // size stale, even though its own mtime doesn't move.
-                let mut direct = event.paths.is_empty();
-                for p in &event.paths {
-                    invalidate_size_cache(p);
-                    if p == &watched || p.parent() == Some(watched.as_path()) {
-                        direct = true;
-                    }
-                }
-                if direct {
-                    crate::watcher_health::record_direct_event();
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                } else {
-                    crate::watcher_health::record_deep_event();
-                    sizes_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                if let Some(wake) = &wake {
-                    wake();
-                }
-            } else {
-                crate::watcher_health::record_backend_error();
-                restart_requested.store(true, std::sync::atomic::Ordering::Relaxed);
-                invalidate_size_cache(&watched);
-                flag_watcher_gap(&rescan_generation, &flag);
-                if let Some(wake) = &wake {
-                    wake();
-                }
-            }
-        });
-
-        match watcher {
-            Ok(mut watcher) => {
-                // Recursive: deep events never reload the listing, but they
-                // must invalidate cached sizes (see the callback above).
-                if watcher
-                    .watch(&self.current_path, RecursiveMode::Recursive)
-                    .is_ok()
-                {
-                    self.watched_path = Some(self.current_path.clone());
-                    self.watcher = Some(watcher);
-                    self.watcher_retry = None;
-                    if recovering {
-                        crate::watcher_health::record_reconnect();
-                        invalidate_size_cache(&self.current_path);
-                        flag_watcher_gap(&self.watcher_rescan_generation, &self.needs_refresh);
-                        if let Some(wake) = &self.notify {
-                            wake();
-                        }
-                    }
-                } else {
-                    crate::watcher_health::record_watch_failure();
-                    self.mark_watcher_unavailable();
-                }
-            }
-            Err(_) => {
+                crate::watcher_policy::WatcherBackend::Polling => notify::PollWatcher::new(
+                    signals.into_handler(),
+                    notify::Config::default().with_poll_interval(policy.poll_interval),
+                )
+                .map(DirectoryWatcher::Polling),
+            };
+            let Ok(mut watcher) = watcher else {
                 crate::watcher_health::record_start_failure();
-                self.mark_watcher_unavailable();
+                continue;
+            };
+            if watcher.watch(&self.current_path, depth).is_err() {
+                crate::watcher_health::record_watch_failure();
+                continue;
             }
+
+            self.watched_path = Some(self.current_path.clone());
+            self.watcher = Some(watcher);
+            self.watcher_retry = None;
+            crate::watcher_health::record_watcher_start(backend, depth, fallback);
+            if recovering {
+                crate::watcher_health::record_reconnect();
+                invalidate_size_cache(&self.current_path);
+                flag_watcher_gap(&self.watcher_rescan_generation, &self.needs_refresh);
+                if let Some(wake) = &self.notify {
+                    wake();
+                }
+            }
+            return;
         }
+
+        self.mark_watcher_unavailable();
     }
 
     fn mark_watcher_unavailable(&mut self) {
@@ -3266,6 +3392,50 @@ mod tests {
         let health_after = crate::watcher_health::snapshot();
         assert!(health_after.listing_reconciliations > health_before.listing_reconciliations);
         assert!(health_after.gap_reconciliations > health_before.gap_reconciliations);
+    }
+
+    #[test]
+    fn direct_watcher_events_publish_one_batched_generation() {
+        let tmp = TempDir::new();
+        let event_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let ready_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let batch_scheduled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wake_counter = Arc::clone(&wakes);
+        let signals = WatcherSignals {
+            reload: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rescan_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            restart_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            event_generation: Arc::clone(&event_generation),
+            ready_generation: Arc::clone(&ready_generation),
+            batch_scheduled: Arc::clone(&batch_scheduled),
+            wake: Some(Arc::new(move || {
+                wake_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })),
+            watched: tmp.path().to_path_buf(),
+            coalesce_window: std::time::Duration::from_millis(10),
+        };
+        let mut handler = signals.into_handler();
+
+        for name in ["one.txt", "two.txt"] {
+            handler(Ok(
+                notify::Event::new(notify::EventKind::Any).add_path(tmp.path().join(name))
+            ));
+        }
+        assert_eq!(
+            event_generation.load(std::sync::atomic::Ordering::Acquire),
+            2
+        );
+        assert!(batch_scheduled.load(std::sync::atomic::Ordering::Acquire));
+
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert_eq!(
+            ready_generation.load(std::sync::atomic::Ordering::Acquire),
+            2
+        );
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(!batch_scheduled.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
