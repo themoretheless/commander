@@ -511,12 +511,18 @@ impl App {
                     match preview {
                         PreviewContent::Image(path) => {
                             let path = path.clone();
+                            let preview_extent = ui.available_size();
+                            image_cache.set_preview_extent(
+                                preview_extent.x,
+                                preview_extent.y,
+                                ui.ctx().pixels_per_point(),
+                            );
                             if let Some(texture) = image_cache.get(&path) {
                                 let tex_size = texture.size_vec2();
                                 ui.centered_and_justified(|ui| {
-                                    let avail = ui.available_size();
-                                    let scale =
-                                        (avail.x / tex_size.x).min(avail.y / tex_size.y).min(1.0);
+                                    let scale = (preview_extent.x / tex_size.x)
+                                        .min(preview_extent.y / tex_size.y)
+                                        .min(1.0);
                                     let display_size =
                                         egui::vec2(tex_size.x * scale, tex_size.y * scale);
                                     let resp = ui.add(egui::Image::from_texture(

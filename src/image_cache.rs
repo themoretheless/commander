@@ -1,22 +1,72 @@
 use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 pub(crate) const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
 const MAX_DECODED_IMAGE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_PRELOAD_WORKERS: usize = 4;
+const MAX_PREVIEW_TARGET_DIMENSION: u32 = 4_096;
+const DECODE_TIMEOUT: Duration = Duration::from_secs(12);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreviewTarget {
+    width: u32,
+    height: u32,
+}
+
+impl PreviewTarget {
+    const DEFAULT: Self = Self {
+        width: 1_600,
+        height: 1_200,
+    };
+
+    fn from_points(width: f32, height: f32, pixels_per_point: f32) -> Self {
+        let scaled = |points: f32| {
+            let pixels = if points.is_finite() && pixels_per_point.is_finite() {
+                points.max(1.0) * pixels_per_point.max(1.0)
+            } else {
+                1.0
+            };
+            (pixels.ceil() as u32).clamp(1, MAX_PREVIEW_TARGET_DIMENSION)
+        };
+        Self {
+            width: scaled(width),
+            height: scaled(height),
+        }
+    }
+
+    const fn covers(self, other: Self) -> bool {
+        self.width >= other.width && self.height >= other.height
+    }
+
+    const fn max_dimension(self) -> u32 {
+        if self.width > self.height {
+            self.width
+        } else {
+            self.height
+        }
+    }
+}
+
+struct DecodedPreview {
+    image: ColorImage,
+    byte_size: usize,
+    decoded_for: PreviewTarget,
+}
 
 struct CacheEntry {
     texture: TextureHandle,
     byte_size: usize,
     last_used: u64, // frame counter
+    decoded_for: PreviewTarget,
 }
 
 /// A decoded image plus its GPU byte size, or `None` while still loading.
-type PendingLoad = Option<(ColorImage, usize)>;
+type PendingLoad = Option<DecodedPreview>;
 /// Background-load slots shared with the worker threads, keyed by path.
 type PendingMap = Arc<Mutex<HashMap<PathBuf, PendingLoad>>>;
 type FailedMap = Arc<Mutex<HashMap<PathBuf, PreviewFailure>>>;
@@ -26,6 +76,7 @@ pub(crate) enum PreviewFailure {
     TooLarge,
     Unreadable,
     Unsupported,
+    TimedOut,
     Decode,
 }
 
@@ -35,8 +86,94 @@ impl PreviewFailure {
             Self::TooLarge => "This image exceeds the preview memory limit.",
             Self::Unreadable => "Commander cannot read this file.",
             Self::Unsupported => "This image format is not supported.",
+            Self::TimedOut => "The preview provider exceeded its time budget.",
             Self::Decode => "The image is incomplete or damaged.",
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProviderTally {
+    pub attempts: u64,
+    pub successes: u64,
+    pub failures: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PreviewProviderStats {
+    pub image_io: ProviderTally,
+    pub standard: ProviderTally,
+    pub video: ProviderTally,
+    pub fallbacks: u64,
+    pub timeouts: u64,
+    pub active_decoders: usize,
+}
+
+#[derive(Default)]
+struct ProviderCounters {
+    image_io: ProviderAtomicTally,
+    standard: ProviderAtomicTally,
+    video: ProviderAtomicTally,
+    fallbacks: AtomicU64,
+    timeouts: AtomicU64,
+}
+
+#[derive(Default)]
+struct ProviderAtomicTally {
+    attempts: AtomicU64,
+    successes: AtomicU64,
+    failures: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DecoderProvider {
+    ImageIo,
+    Standard,
+    Video,
+}
+
+fn provider_counters() -> &'static ProviderCounters {
+    static COUNTERS: OnceLock<ProviderCounters> = OnceLock::new();
+    COUNTERS.get_or_init(ProviderCounters::default)
+}
+
+fn provider_tally(provider: DecoderProvider) -> &'static ProviderAtomicTally {
+    let counters = provider_counters();
+    match provider {
+        DecoderProvider::ImageIo => &counters.image_io,
+        DecoderProvider::Standard => &counters.standard,
+        DecoderProvider::Video => &counters.video,
+    }
+}
+
+fn record_provider_result<T>(
+    provider: DecoderProvider,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    let tally = provider_tally(provider);
+    tally.attempts.fetch_add(1, Ordering::Relaxed);
+    if result.is_ok() {
+        tally.successes.fetch_add(1, Ordering::Relaxed);
+    } else {
+        tally.failures.fetch_add(1, Ordering::Relaxed);
+    }
+    result
+}
+
+fn preview_provider_stats() -> PreviewProviderStats {
+    let counters = provider_counters();
+    let tally = |value: &ProviderAtomicTally| ProviderTally {
+        attempts: value.attempts.load(Ordering::Relaxed),
+        successes: value.successes.load(Ordering::Relaxed),
+        failures: value.failures.load(Ordering::Relaxed),
+    };
+    PreviewProviderStats {
+        image_io: tally(&counters.image_io),
+        standard: tally(&counters.standard),
+        video: tally(&counters.video),
+        fallbacks: counters.fallbacks.load(Ordering::Relaxed),
+        timeouts: counters.timeouts.load(Ordering::Relaxed),
+        active_decoders: ACTIVE_DECODERS.load(Ordering::Acquire),
     }
 }
 
@@ -54,6 +191,7 @@ pub(crate) struct ImageCacheStats {
     pub bytes: usize,
     pub pending: usize,
     pub failed: usize,
+    pub providers: PreviewProviderStats,
 }
 
 pub struct ImageCache {
@@ -65,6 +203,7 @@ pub struct ImageCache {
     failed: FailedMap,
     generation: Arc<AtomicU64>,
     current_dir: Option<PathBuf>,
+    preview_target: PreviewTarget,
 }
 
 impl ImageCache {
@@ -77,7 +216,12 @@ impl ImageCache {
             failed: Arc::new(Mutex::new(HashMap::new())),
             generation: Arc::new(AtomicU64::new(0)),
             current_dir: None,
+            preview_target: PreviewTarget::DEFAULT,
         }
+    }
+
+    pub fn set_preview_extent(&mut self, width: f32, height: f32, pixels_per_point: f32) {
+        self.preview_target = PreviewTarget::from_points(width, height, pixels_per_point);
     }
 
     /// Get cached texture for a path, or None if not loaded yet.
@@ -131,35 +275,44 @@ impl ImageCache {
                 .map(|(path, _)| path.clone())
                 .collect();
             for path in completed {
-                if let Some(Some((image, byte_size))) = pending.remove(&path) {
+                if let Some(Some(decoded)) = pending.remove(&path) {
                     let name = path
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_string();
-                    let texture = ctx.load_texture(&name, image, TextureOptions::LINEAR);
-                    self.total_bytes = self.total_bytes.saturating_add(byte_size);
+                    let texture = ctx.load_texture(&name, decoded.image, TextureOptions::LINEAR);
+                    self.total_bytes = self.total_bytes.saturating_add(decoded.byte_size);
                     self.entries.insert(
                         path,
                         CacheEntry {
                             texture,
-                            byte_size,
+                            byte_size: decoded.byte_size,
                             last_used: self.frame,
+                            decoded_for: decoded.decoded_for,
                         },
                     );
                 }
             }
         }
 
+        let target = self.preview_target;
         let failed = crate::lock_util::recover(&self.failed).clone();
         let mut available_slots =
             MAX_PRELOAD_WORKERS.saturating_sub(crate::lock_util::recover(&self.pending).len());
         for path in paths {
-            if self.entries.contains_key(path) {
+            if self
+                .entries
+                .get(path)
+                .is_some_and(|entry| entry.decoded_for.covers(target))
+            {
                 if let Some(entry) = self.entries.get_mut(path) {
                     entry.last_used = self.frame;
                 }
                 continue;
+            }
+            if let Some(entry) = self.entries.remove(path) {
+                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
             }
             if available_slots == 0 || failed.contains_key(path) {
                 continue;
@@ -195,12 +348,12 @@ impl ImageCache {
                         crate::lock_util::recover(&pending_clone).remove(&path_clone);
                         return;
                     }
-                    let result = load_image_from_disk(&path_clone);
+                    let result = load_image_with_timeout(&path_clone, target);
                     match result {
-                        Ok((img, byte_size)) => {
+                        Ok(decoded) => {
                             let mut pending = crate::lock_util::recover(&pending_clone);
                             if !cancelled() {
-                                pending.insert(path_clone.clone(), Some((img, byte_size)));
+                                pending.insert(path_clone.clone(), Some(decoded));
                                 drop(pending);
                                 ctx_clone.request_repaint();
                             } else {
@@ -294,13 +447,16 @@ impl ImageCache {
             bytes: self.total_bytes,
             pending: crate::lock_util::recover(&self.pending).len(),
             failed: crate::lock_util::recover(&self.failed).len(),
+            providers: preview_provider_stats(),
         }
     }
 }
 
 fn classify_failure(error: &str) -> PreviewFailure {
     let normalized = error.to_ascii_lowercase();
-    if normalized.contains("too large")
+    if normalized.contains("timed out") || normalized.contains("time budget") {
+        PreviewFailure::TimedOut
+    } else if normalized.contains("too large")
         || normalized.contains("allocation")
         || normalized.contains("memory")
         || normalized.contains("limit")
@@ -384,25 +540,99 @@ fn color_image_from_rgba(size: [usize; 2], rgba: Vec<u8>) -> Result<(ColorImage,
     Ok((ColorImage::new(size, pixels), byte_size))
 }
 
-fn load_image_from_disk(path: &Path) -> Result<(ColorImage, usize), String> {
-    // Video — extract first frame via AVFoundation
+static ACTIVE_DECODERS: AtomicUsize = AtomicUsize::new(0);
+
+struct DecoderPermit;
+
+impl DecoderPermit {
+    fn acquire() -> Option<Self> {
+        ACTIVE_DECODERS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_PRELOAD_WORKERS).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for DecoderPermit {
+    fn drop(&mut self) {
+        ACTIVE_DECODERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn run_decode_with_timeout(
+    timeout: Duration,
+    decode: impl FnOnce() -> Result<DecodedPreview, String> + Send + 'static,
+) -> Result<DecodedPreview, String> {
+    let permit = DecoderPermit::acquire()
+        .ok_or_else(|| "preview providers are still busy after an earlier timeout".to_string())?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("commander-preview-decoder".to_string())
+        .spawn(move || {
+            let _permit = permit;
+            let _ = sender.send(decode());
+        })
+        .map_err(|error| format!("preview provider thread could not start: {error}"))?;
+
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            provider_counters().timeouts.fetch_add(1, Ordering::Relaxed);
+            Err("preview provider timed out".to_string())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("preview provider stopped unexpectedly".to_string())
+        }
+    }
+}
+
+fn load_image_with_timeout(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
+    let path = path.to_path_buf();
+    run_decode_with_timeout(DECODE_TIMEOUT, move || load_image_from_disk(&path, target))
+}
+
+fn load_image_from_disk(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
+    // Video uses AVFoundation's orientation-aware thumbnail provider.
     #[cfg(target_os = "macos")]
     if is_video_ext(path) {
-        return load_video_thumbnail(path);
+        return record_provider_result(DecoderProvider::Video, load_video_thumbnail(path, target));
     }
 
-    // Try macOS ImageIO first (supports DNG, CR2, NEF, ARW, HEIC, etc.)
+    // ImageIO handles macOS-native camera/HEIF formats. A typed standard
+    // provider remains available as a bounded fallback for common formats.
     #[cfg(target_os = "macos")]
-    if let Ok(result) = load_via_imageio(path) {
-        return Ok(result);
+    {
+        match record_provider_result(DecoderProvider::ImageIo, load_via_imageio(path, target)) {
+            Ok(decoded) => Ok(decoded),
+            Err(image_io_error) => {
+                provider_counters()
+                    .fallbacks
+                    .fetch_add(1, Ordering::Relaxed);
+                record_provider_result(
+                    DecoderProvider::Standard,
+                    load_via_image_crate(path, target),
+                )
+                .map_err(|standard_error| {
+                    format!("ImageIO: {image_io_error}; standard decoder: {standard_error}")
+                })
+            }
+        }
     }
 
-    load_via_image_crate(path)
+    #[cfg(not(target_os = "macos"))]
+    record_provider_result(
+        DecoderProvider::Standard,
+        load_via_image_crate(path, target),
+    )
 }
 
 /// Stream a standard image decoder from the file instead of retaining a second
 /// full compressed copy beside the decoded pixels.
-fn load_via_image_crate(path: &Path) -> Result<(ColorImage, usize), String> {
+fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
+    use image::ImageDecoder as _;
+
     let mut reader = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
@@ -412,17 +642,32 @@ fn load_via_image_crate(path: &Path) -> Result<(ColorImage, usize), String> {
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
     limits.max_alloc = Some(MAX_DECODED_IMAGE_BYTES as u64);
     reader.limits(limits);
-    let img = reader.decode().map_err(|e| e.to_string())?;
+    let mut decoder = reader.into_decoder().map_err(|error| error.to_string())?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).map_err(|error| error.to_string())?;
+    img.apply_orientation(orientation);
+    let img = if img.width() > target.width || img.height() > target.height {
+        img.thumbnail(target.width, target.height)
+    } else {
+        img
+    };
     let rgba = img.into_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
-    color_image_from_rgba(size, pixels)
+    let (image, byte_size) = color_image_from_rgba(size, pixels)?;
+    Ok(DecodedPreview {
+        image,
+        byte_size,
+        decoded_for: target,
+    })
 }
 
 /// Load image via macOS CoreGraphics/ImageIO.
 /// Supports: DNG, CR2, NEF, ARW, ORF, RAF, RW2, HEIC, TIFF, and all standard formats.
 #[cfg(target_os = "macos")]
-fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
+fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
@@ -452,7 +697,7 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
                 url: *mut Object,
                 options: *mut Object,
             ) -> CGImageSourceRef;
-            fn CGImageSourceCreateImageAtIndex(
+            fn CGImageSourceCreateThumbnailAtIndex(
                 source: CGImageSourceRef,
                 index: usize,
                 options: *mut Object,
@@ -490,11 +735,41 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
             return Err("CGImageSourceCreateWithURL failed".into());
         }
 
-        let cg_image = CGImageSourceCreateImageAtIndex(source, 0, std::ptr::null_mut());
+        let options: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
+        let always_key = CString::new("kCGImageSourceCreateThumbnailFromImageAlways").unwrap();
+        let transform_key = CString::new("kCGImageSourceCreateThumbnailWithTransform").unwrap();
+        let size_key = CString::new("kCGImageSourceThumbnailMaxPixelSize").unwrap();
+        let always_key: *mut Object =
+            msg_send![class!(NSString), stringWithUTF8String: always_key.as_ptr()];
+        let transform_key: *mut Object =
+            msg_send![class!(NSString), stringWithUTF8String: transform_key.as_ptr()];
+        let size_key: *mut Object =
+            msg_send![class!(NSString), stringWithUTF8String: size_key.as_ptr()];
+        let yes: *mut Object = msg_send![class!(NSNumber), numberWithBool: 1_i8];
+        let max_size: *mut Object = msg_send![
+            class!(NSNumber),
+            numberWithUnsignedLongLong: u64::from(target.max_dimension())
+        ];
+        if options.is_null()
+            || always_key.is_null()
+            || transform_key.is_null()
+            || size_key.is_null()
+            || yes.is_null()
+            || max_size.is_null()
+        {
+            CFRelease(source);
+            let _: () = msg_send![pool, drain];
+            return Err("ImageIO thumbnail options could not be created".into());
+        }
+        let _: () = msg_send![options, setObject: yes forKey: always_key];
+        let _: () = msg_send![options, setObject: yes forKey: transform_key];
+        let _: () = msg_send![options, setObject: max_size forKey: size_key];
+
+        let cg_image = CGImageSourceCreateThumbnailAtIndex(source, 0, options);
         if cg_image.is_null() {
             CFRelease(source);
             let _: () = msg_send![pool, drain];
-            return Err("CGImageSourceCreateImageAtIndex failed".into());
+            return Err("CGImageSourceCreateThumbnailAtIndex failed".into());
         }
 
         let w = CGImageGetWidth(cg_image);
@@ -567,7 +842,12 @@ fn load_via_imageio(path: &Path) -> Result<(ColorImage, usize), String> {
         CFRelease(source);
         let _: () = msg_send![pool, drain];
 
-        color_image_from_rgba([w, h], pixels)
+        let (image, byte_size) = color_image_from_rgba([w, h], pixels)?;
+        Ok(DecodedPreview {
+            image,
+            byte_size,
+            decoded_for: target,
+        })
     }
 }
 
@@ -582,7 +862,7 @@ unsafe extern "C" {}
 
 /// Extract first frame from video via AVFoundation's AVAssetImageGenerator.
 #[cfg(target_os = "macos")]
-fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
+fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
@@ -618,6 +898,17 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
 
         // appliesPreferredTrackTransform = YES (correct rotation)
         let _: () = msg_send![generator, setAppliesPreferredTrackTransform: true];
+
+        #[repr(C)]
+        struct CGSize {
+            width: f64,
+            height: f64,
+        }
+        let maximum_size = CGSize {
+            width: f64::from(target.width),
+            height: f64::from(target.height),
+        };
+        let _: () = msg_send![generator, setMaximumSize: maximum_size];
 
         // CMTime for 1 second (or 0 if short video)
         // CMTimeMake(1, 1) = 1 second
@@ -748,14 +1039,19 @@ fn load_video_thumbnail(path: &Path) -> Result<(ColorImage, usize), String> {
         CGImageRelease(cg_image);
         let _: () = msg_send![pool, drain];
 
-        color_image_from_rgba([w, h], pixels)
+        let (image, byte_size) = color_image_from_rgba([w, h], pixels)?;
+        Ok(DecodedPreview {
+            image,
+            byte_size,
+            decoded_for: target,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ImageCache, MAX_DECODED_IMAGE_BYTES, MAX_IMAGE_DIMENSION, PreviewFailure,
+        ImageCache, MAX_DECODED_IMAGE_BYTES, MAX_IMAGE_DIMENSION, PreviewFailure, PreviewTarget,
         allocate_rgba_pixels, classify_failure, color_image_from_rgba, load_via_image_crate,
     };
     use crate::testutil::TempDir;
@@ -788,9 +1084,40 @@ mod tests {
         let pixels = image::RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 255]));
         pixels.save(&path).unwrap();
 
-        let (decoded, bytes) = load_via_image_crate(&path).unwrap();
-        assert_eq!(decoded.size, [3, 2]);
-        assert_eq!(bytes, 3 * 2 * 4);
+        let decoded = load_via_image_crate(
+            &path,
+            PreviewTarget {
+                width: 10,
+                height: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(decoded.image.size, [3, 2]);
+        assert_eq!(decoded.byte_size, 3 * 2 * 4);
+    }
+
+    #[test]
+    fn standard_decoder_downsamples_to_preview_target() {
+        let dir = TempDir::new();
+        let path = dir.path().join("large-preview.png");
+        let pixels = image::RgbaImage::from_pixel(120, 60, image::Rgba([12, 34, 56, 255]));
+        pixels.save(&path).unwrap();
+
+        let decoded = load_via_image_crate(
+            &path,
+            PreviewTarget {
+                width: 30,
+                height: 30,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(decoded.image.size, [30, 15]);
+        assert_eq!(decoded.byte_size, 30 * 15 * 4);
+        assert!(decoded.decoded_for.covers(PreviewTarget {
+            width: 20,
+            height: 10,
+        }));
     }
 
     #[test]

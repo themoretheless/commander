@@ -104,6 +104,35 @@ impl App {
                             );
                             text_row(
                                 ui,
+                                "Preview providers",
+                                &format!(
+                                    "ImageIO {}/{} / standard {}/{} / video {}/{}",
+                                    image_cache.providers.image_io.successes,
+                                    image_cache.providers.image_io.attempts,
+                                    image_cache.providers.standard.successes,
+                                    image_cache.providers.standard.attempts,
+                                    image_cache.providers.video.successes,
+                                    image_cache.providers.video.attempts,
+                                ),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Provider recovery",
+                                &format!(
+                                    "{} fallbacks / {} timeouts / {} active",
+                                    image_cache.providers.fallbacks,
+                                    image_cache.providers.timeouts,
+                                    image_cache.providers.active_decoders,
+                                ),
+                                if image_cache.providers.timeouts == 0 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
                                 "Filesystem watchers",
                                 &format!("{active_watchers}/2 active / {} events", watcher.events),
                                 if active_watchers == 2 {
