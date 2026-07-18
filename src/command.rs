@@ -457,6 +457,13 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
     }
 }
 
+/// Return whether availability for `command` depends on workspace state.
+/// Unconditional commands can bypass the comparatively expensive context
+/// snapshot on keyboard hot paths.
+pub fn requires_context(command: Command) -> bool {
+    !predicates(command).is_empty()
+}
+
 /// Return whether `command` is meaningful in `context`, with a concise reason
 /// suitable for disabled controls. This describes capability, not execution;
 /// operation methods still repeat their safety checks at commit time.
@@ -1137,6 +1144,8 @@ mod tests {
                 CommandPredicate::HasOtherEntry,
             ]
         );
+        assert!(!requires_context(Command::CursorDown));
+        assert!(requires_context(Command::RequestDelete));
     }
 
     #[test]

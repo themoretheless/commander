@@ -58,6 +58,11 @@ impl App {
     }
 
     fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
+        if !crate::command::requires_context(command) {
+            self.ws.execute(command);
+            return;
+        }
+
         let context = self.ws.command_context();
         let availability = crate::command::availability(command, &context);
         if availability.enabled {

@@ -7,11 +7,10 @@ const COMPOUND_SUFFIXES: &[&str] = &[
 ];
 
 fn suffix(name: &str) -> Option<&str> {
-    let lower = name.to_ascii_lowercase();
-    if let Some(compound) = COMPOUND_SUFFIXES
-        .iter()
-        .find(|suffix| lower.ends_with(**suffix))
-    {
+    if let Some(compound) = COMPOUND_SUFFIXES.iter().find(|compound| {
+        name.get(name.len().saturating_sub(compound.len())..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(compound))
+    }) {
         return name.get(name.len().saturating_sub(compound.len())..);
     }
 

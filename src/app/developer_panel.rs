@@ -120,12 +120,15 @@ impl App {
                                 ui,
                                 "Provider recovery",
                                 &format!(
-                                    "{} fallbacks / {} timeouts / {} active",
+                                    "{} fallbacks / {} timeouts / {} busy / {} active",
                                     image_cache.providers.fallbacks,
                                     image_cache.providers.timeouts,
+                                    image_cache.providers.saturated,
                                     image_cache.providers.active_decoders,
                                 ),
-                                if image_cache.providers.timeouts == 0 {
+                                if image_cache.providers.timeouts == 0
+                                    && image_cache.providers.saturated == 0
+                                {
                                     t.text_primary
                                 } else {
                                     t.accent_warning

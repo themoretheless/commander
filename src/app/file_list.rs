@@ -489,7 +489,7 @@ impl App {
                             ui.available_width() - if is_marked { 16.0 } else { 0.0 },
                         );
                         let max_name_chars =
-                            (responsive.name_width / (metrics.name_pt * 0.72)).floor() as usize;
+                            (responsive.name_width / metrics.name_pt).floor() as usize;
                         let display_name = crate::display_name::truncate_preserving_extension(
                             &entry.name,
                             max_name_chars.max(1),

@@ -77,6 +77,7 @@ pub(crate) enum PreviewFailure {
     Unreadable,
     Unsupported,
     TimedOut,
+    Busy,
     Decode,
 }
 
@@ -87,6 +88,7 @@ impl PreviewFailure {
             Self::Unreadable => "Commander cannot read this file.",
             Self::Unsupported => "This image format is not supported.",
             Self::TimedOut => "The preview provider exceeded its time budget.",
+            Self::Busy => "All preview decoders are busy. Retry in a moment.",
             Self::Decode => "The image is incomplete or damaged.",
         }
     }
@@ -106,6 +108,7 @@ pub(crate) struct PreviewProviderStats {
     pub video: ProviderTally,
     pub fallbacks: u64,
     pub timeouts: u64,
+    pub saturated: u64,
     pub active_decoders: usize,
 }
 
@@ -116,6 +119,7 @@ struct ProviderCounters {
     video: ProviderAtomicTally,
     fallbacks: AtomicU64,
     timeouts: AtomicU64,
+    saturated: AtomicU64,
 }
 
 #[derive(Default)]
@@ -173,6 +177,7 @@ fn preview_provider_stats() -> PreviewProviderStats {
         video: tally(&counters.video),
         fallbacks: counters.fallbacks.load(Ordering::Relaxed),
         timeouts: counters.timeouts.load(Ordering::Relaxed),
+        saturated: counters.saturated.load(Ordering::Relaxed),
         active_decoders: ACTIVE_DECODERS.load(Ordering::Acquire),
     }
 }
@@ -454,7 +459,9 @@ impl ImageCache {
 
 fn classify_failure(error: &str) -> PreviewFailure {
     let normalized = error.to_ascii_lowercase();
-    if normalized.contains("timed out") || normalized.contains("time budget") {
+    if normalized.contains("still busy") || normalized.contains("decoder capacity") {
+        PreviewFailure::Busy
+    } else if normalized.contains("timed out") || normalized.contains("time budget") {
         PreviewFailure::TimedOut
     } else if normalized.contains("too large")
         || normalized.contains("allocation")
@@ -565,8 +572,15 @@ fn run_decode_with_timeout(
     timeout: Duration,
     decode: impl FnOnce() -> Result<DecodedPreview, String> + Send + 'static,
 ) -> Result<DecodedPreview, String> {
-    let permit = DecoderPermit::acquire()
-        .ok_or_else(|| "preview providers are still busy after an earlier timeout".to_string())?;
+    let permit = match DecoderPermit::acquire() {
+        Some(permit) => permit,
+        None => {
+            provider_counters()
+                .saturated
+                .fetch_add(1, Ordering::Relaxed);
+            return Err("preview providers are still busy after an earlier timeout".to_string());
+        }
+    };
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("commander-preview-decoder".to_string())
@@ -1133,6 +1147,14 @@ mod tests {
         assert_eq!(
             classify_failure("unsupported image format"),
             PreviewFailure::Unsupported
+        );
+        assert_eq!(
+            classify_failure("preview providers are still busy"),
+            PreviewFailure::Busy
+        );
+        assert_eq!(
+            classify_failure("preview provider timed out"),
+            PreviewFailure::TimedOut
         );
         assert_eq!(classify_failure("invalid checksum"), PreviewFailure::Decode);
     }
