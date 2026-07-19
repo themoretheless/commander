@@ -656,6 +656,18 @@ pub fn mark_failed(
     })
 }
 
+pub fn mark_rolled_back(operation_id: &OperationId, key: &IdempotencyKey) -> Result<(), String> {
+    update_step(operation_id, key, |step| {
+        step.status = step
+            .status
+            .transition(StepEvent::RollBack)
+            .map_err(|error| error.to_string())?;
+        step.checkpoint = None;
+        step.failure = None;
+        Ok(())
+    })
+}
+
 pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(), String> {
     mutate(|journal| {
         let operation = journal

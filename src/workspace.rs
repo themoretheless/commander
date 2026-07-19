@@ -2027,9 +2027,9 @@ impl Workspace {
         match safe_rename_order(map, existing) {
             RenameOrder::Conflict(why) => Err(why),
             RenameOrder::Steps(steps) => apply_steps(&steps, |from, to| {
-                std::fs::rename(dir.join(from), dir.join(to))
+                crate::native_copy::rename_noreplace(&dir.join(from), &dir.join(to))
             })
-            .map_err(|e: std::io::Error| e.to_string()),
+            .map_err(|e| e.to_string()),
         }
     }
 
