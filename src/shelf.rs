@@ -10,12 +10,13 @@ use std::path::{Path, PathBuf};
 #[derive(Default)]
 pub struct Shelf {
     items: Vec<PathBuf>,
+    membership: HashSet<PathBuf>,
 }
 
 impl Shelf {
     /// Add `path` if not already present (keeps first-seen order).
     pub fn add(&mut self, path: PathBuf) {
-        if !self.items.contains(&path) {
+        if self.membership.insert(path.clone()) {
             self.items.push(path);
         }
     }
@@ -27,11 +28,14 @@ impl Shelf {
     }
 
     pub fn remove(&mut self, path: &Path) {
-        self.items.retain(|p| p != path);
+        if self.membership.remove(path) {
+            self.items.retain(|item| item != path);
+        }
     }
 
     pub fn clear(&mut self) {
         self.items.clear();
+        self.membership.clear();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -96,6 +100,11 @@ mod tests {
         assert_eq!(s.items(), &[PathBuf::from("/a/x"), PathBuf::from("/b/y")]);
         s.remove(Path::new("/a/x"));
         assert_eq!(s.items(), &[PathBuf::from("/b/y")]);
+        s.add(PathBuf::from("/a/x"));
+        assert_eq!(s.items(), &[PathBuf::from("/b/y"), PathBuf::from("/a/x")]);
+        s.clear();
+        s.add(PathBuf::from("/a/x"));
+        assert_eq!(s.items(), &[PathBuf::from("/a/x")]);
     }
 
     #[test]

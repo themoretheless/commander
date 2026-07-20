@@ -1211,8 +1211,7 @@ impl PanelState {
             self.marked.retain(|p| existing.contains(p));
         }
 
-        let restored = cursor_path
-            .and_then(|path| self.filtered_entries().iter().position(|e| e.path == path));
+        let restored = cursor_path.and_then(|path| self.filtered_position(|e| e.path == path));
         match restored {
             Some(idx) => self.cursor = idx + 1,
             None => self.cursor = self.cursor.min(self.filtered_count()),
@@ -1715,12 +1714,8 @@ impl PanelState {
         if let Some((cursor_path, scroll_anchor)) = remembered {
             self.scroll_anchor = scroll_anchor.min(self.filtered_count().saturating_sub(1));
             self.cursor = cursor_path
-                .and_then(|path| {
-                    self.filtered_entries()
-                        .iter()
-                        .position(|entry| entry.path == path)
-                        .map(|index| index + 1)
-                })
+                .and_then(|path| self.filtered_position(|entry| entry.path == path))
+                .map(|index| index + 1)
                 .unwrap_or_else(|| {
                     self.scroll_anchor
                         .saturating_add(1)
@@ -1742,7 +1737,7 @@ impl PanelState {
         if let Some(parent) = self.current_path.parent().map(|p| p.to_path_buf()) {
             self.navigate_to(parent);
             if let Some(name) = child
-                && let Some(idx) = self.filtered_entries().iter().position(|e| e.name == name)
+                && let Some(idx) = self.filtered_position(|e| e.name == name)
             {
                 self.cursor = idx + 1;
                 self.scroll_to_cursor = true;
@@ -1758,13 +1753,9 @@ impl PanelState {
             return false;
         }
         let q = buffer.to_lowercase();
-        let pos = {
-            let entries = self.filtered_entries();
-            entries
-                .iter()
-                .position(|e| e.name_lower.starts_with(&q))
-                .or_else(|| entries.iter().position(|e| e.name_lower.contains(&q)))
-        };
+        let pos = self
+            .filtered_position(|e| e.name_lower.starts_with(&q))
+            .or_else(|| self.filtered_position(|e| e.name_lower.contains(&q)));
         if let Some(idx) = pos {
             self.cursor = idx + 1;
             self.scroll_to_cursor = true;
@@ -1914,21 +1905,34 @@ impl PanelState {
         added
     }
 
-    /// How many filtered entries any term of `mask` matches (live preview,
-    /// no mutation).
+    /// How many filtered entries would change selection state if `mask` were
+    /// applied. A subtraction-only mask therefore reports zero until it has a
+    /// selected match, which keeps the preview aligned with the actual action.
     pub fn mask_match_count(&self, mask: &str) -> usize {
         let terms = parse_mask(mask);
         if terms.is_empty() {
             return 0;
         }
-        self.filtered_entries()
-            .iter()
-            .filter(|e| {
-                terms
-                    .iter()
-                    .any(|(t, _)| term_matches(t, &e.name_lower, &e.extension))
-            })
-            .count()
+        let mut changes = 0;
+        self.visit_filtered(|_, entry| {
+            let add = terms.iter().any(|(term, subtract)| {
+                !subtract && term_matches(term, &entry.name_lower, &entry.extension)
+            });
+            let remove = terms.iter().any(|(term, subtract)| {
+                *subtract && term_matches(term, &entry.name_lower, &entry.extension)
+            });
+            let selected = self.selected.contains(&entry.path);
+            let next = if remove {
+                false
+            } else if add {
+                true
+            } else {
+                selected
+            };
+            changes += usize::from(next != selected);
+            true
+        });
+        changes
     }
 
     /// Add the file under the cursor to the selection (range-select step).
@@ -2054,6 +2058,26 @@ impl PanelState {
             .collect()
     }
 
+    fn filtered_position(&self, mut predicate: impl FnMut(&FileEntry) -> bool) -> Option<usize> {
+        self.ensure_filter_cache();
+        let cache = self.filter_cache.borrow();
+        cache
+            .indices
+            .iter()
+            .filter_map(|&index| self.entries.get(index))
+            .position(&mut predicate)
+    }
+
+    fn filtered_available_count(&self) -> usize {
+        self.ensure_filter_cache();
+        self.filter_cache
+            .borrow()
+            .indices
+            .iter()
+            .filter(|&&index| self.entries.get(index).is_some())
+            .count()
+    }
+
     /// Visit the filtered view without allocating a temporary `Vec`. Returning
     /// `false` stops the walk, which keeps action-bar capability checks cheap
     /// when the first actionable selection is near the front of the listing.
@@ -2102,17 +2126,18 @@ impl PanelState {
     }
 
     pub fn select_all(&mut self) {
-        let all: Vec<PathBuf> = self
+        let visible: Vec<PathBuf> = self
             .filtered_entries()
             .iter()
             .map(|e| e.path.clone())
             .collect();
-        let all_selected =
-            self.selected.len() == all.len() && all.iter().all(|p| self.selected.contains(p));
+        let all_selected = visible.iter().all(|path| self.selected.contains(path));
         if all_selected {
-            self.selected.clear();
+            for path in visible {
+                self.selected.remove(&path);
+            }
         } else {
-            self.selected = all.into_iter().collect();
+            self.selected.extend(visible);
         }
     }
 
@@ -2157,7 +2182,7 @@ impl PanelState {
                 Some(entry) => Ok(vec![entry.clone()]),
                 None => Err(StaleCursor {
                     cursor: self.cursor,
-                    visible_entries: self.filtered_entries().len(),
+                    visible_entries: self.filtered_available_count(),
                 }),
             }
         } else {
@@ -2646,6 +2671,30 @@ mod tests {
         assert_eq!(p.selected.len(), 2);
         p.select_all();
         assert!(p.selected.is_empty());
+    }
+
+    #[test]
+    fn select_all_preserves_selection_hidden_by_filter() {
+        let mut p = panel_with(vec![
+            entry("alpha", false, 1),
+            entry("album", false, 1),
+            entry("zebra", false, 1),
+        ]);
+        let alpha = p.entries[0].path.clone();
+        let album = p.entries[1].path.clone();
+        let zebra = p.entries[2].path.clone();
+        p.selected.insert(zebra.clone());
+        p.search_query = "al".to_string();
+
+        p.select_all();
+        assert!(p.selected.contains(&alpha));
+        assert!(p.selected.contains(&album));
+        assert!(p.selected.contains(&zebra));
+
+        p.select_all();
+        assert!(!p.selected.contains(&alpha));
+        assert!(!p.selected.contains(&album));
+        assert!(p.selected.contains(&zebra));
     }
 
     #[test]
@@ -3189,6 +3238,30 @@ mod tests {
         assert!(!names.contains(&"raw.jpg".to_string()));
         assert!(!names.contains(&"c.png".to_string()));
         assert_eq!(p.selected.len(), 2);
+    }
+
+    #[test]
+    fn mask_match_count_reports_selection_changes() {
+        let mut p = panel_with(vec![
+            entry("a.jpg", false, 1),
+            entry("raw.jpg", false, 1),
+            entry("note.txt", false, 1),
+        ]);
+        for e in &mut p.entries {
+            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+        }
+        let raw = p
+            .entries
+            .iter()
+            .find(|entry| entry.name == "raw.jpg")
+            .unwrap()
+            .path
+            .clone();
+
+        assert_eq!(p.mask_match_count("!*raw*"), 0);
+        p.selected.insert(raw);
+        assert_eq!(p.mask_match_count("!*raw*"), 1);
+        assert_eq!(p.mask_match_count("*.jpg, !*raw*"), 2);
     }
 
     #[test]
