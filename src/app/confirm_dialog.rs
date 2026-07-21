@@ -7,6 +7,8 @@ use crate::transfer::OverwritePolicy;
 impl App {
     pub(crate) fn show_confirm_dialog(&mut self, ctx: &egui::Context) {
         let t = self.colors;
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::Confirmation);
         let mutations_blocked = self.ws.mutations_blocked();
         let Some(op) = &self.ws.pending_op else {
             return;
@@ -390,7 +392,7 @@ impl App {
                     }
                 });
 
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if escape_requested {
                     self.dismiss_pending_op(ctx);
                 }
                 if !has_conflicts

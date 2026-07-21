@@ -257,7 +257,6 @@ impl CommandAvailability {
 
 const SAFE_STATE_REASON: &str = "Review the interrupted operation first";
 const PENDING_REASON: &str = "Finish or cancel the current confirmation";
-const TRANSFER_REASON: &str = "Wait for the active transfer to finish";
 const QUEUE_REASON: &str = "Wait for the transfer queue to finish";
 const PICK_REASON: &str = "Select or highlight at least one item";
 const CURSOR_REASON: &str = "Highlight an item first";
@@ -269,7 +268,6 @@ const VISIBLE_REASON: &str = "No visible items in this panel";
 pub enum CommandPredicate {
     MutationsAllowed,
     ConfirmationClosed,
-    TransferIdle,
     TransferQueueIdle,
     HasPickedEntry,
     HasSelectedEntry,
@@ -303,7 +301,6 @@ impl CommandPredicate {
         let (met, reason) = match self {
             Self::MutationsAllowed => (!context.safe_state, SAFE_STATE_REASON),
             Self::ConfirmationClosed => (!context.pending_operation, PENDING_REASON),
-            Self::TransferIdle => (!context.active_transfer, TRANSFER_REASON),
             Self::TransferQueueIdle => (!context.transfer_queue_busy, QUEUE_REASON),
             Self::HasPickedEntry => (context.picked_entries > 0, PICK_REASON),
             Self::HasSelectedEntry => (
@@ -377,14 +374,14 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
     const DELETE: &[P] = &[
         P::MutationsAllowed,
         P::ConfirmationClosed,
-        P::TransferIdle,
+        P::TransferQueueIdle,
         P::HasPickedEntry,
         P::ActiveWritable,
     ];
     const TRANSFER_INTO: &[P] = &[
         P::MutationsAllowed,
         P::ConfirmationClosed,
-        P::TransferIdle,
+        P::TransferQueueIdle,
         P::HasSelectedEntry,
         P::CursorIsDirectory,
         P::HasTransferSource,
@@ -398,7 +395,7 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
     const SHELF_DRAIN: &[P] = &[
         P::MutationsAllowed,
         P::ConfirmationClosed,
-        P::TransferIdle,
+        P::TransferQueueIdle,
         P::HasShelfEntry,
         P::ActiveWritable,
     ];
@@ -1103,13 +1100,14 @@ mod tests {
         context.safe_state = false;
         context.pending_operation = false;
         context.active_transfer = true;
+        context.transfer_queue_busy = true;
         assert!(
             availability(Command::RequestCopy, &context).enabled,
             "copy may queue behind an active transfer"
         );
         assert_eq!(
             availability(Command::RequestDelete, &context).reason,
-            Some(TRANSFER_REASON)
+            Some(QUEUE_REASON)
         );
     }
 
@@ -1132,7 +1130,7 @@ mod tests {
             &[
                 CommandPredicate::MutationsAllowed,
                 CommandPredicate::ConfirmationClosed,
-                CommandPredicate::TransferIdle,
+                CommandPredicate::TransferQueueIdle,
                 CommandPredicate::HasPickedEntry,
                 CommandPredicate::ActiveWritable,
             ]

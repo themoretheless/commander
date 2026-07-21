@@ -94,14 +94,12 @@ pub fn load() -> Option<Session> {
     crate::persistence::load_json(&session_path(), "Session")
 }
 
-/// Save the session atomically (temp file + rename). Returns `false` if
-/// serialization or the atomic write failed. The autosave caller treats this
-/// as best-effort; an explicit caller could surface the failure.
-pub fn save(session: &Session) -> bool {
-    match serde_json::to_string_pretty(session) {
-        Ok(json) => crate::fs_util::write_atomic(&session_path(), &json),
-        Err(_) => false,
-    }
+/// Save through a unique private sibling and one atomic replace. There is no
+/// cross-process lock or CAS: concurrent session writers are last-writer-wins.
+pub fn save(
+    session: &Session,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::PreCommitError> {
+    crate::persistence::save_json_atomic(&session_path(), session)
 }
 
 #[cfg(test)]

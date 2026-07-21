@@ -15,6 +15,7 @@ impl App {
                 .to_string();
             self.path_input = Some(current);
         }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Path);
         let Some(buffer) = &mut self.path_input else {
             return;
         };
@@ -105,7 +106,7 @@ impl App {
                     {
                         go = Some(p.clone());
                     }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if escape_requested {
                         cancel = true;
                     }
                 });

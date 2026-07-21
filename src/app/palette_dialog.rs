@@ -10,6 +10,7 @@ impl App {
         if just_opened {
             self.palette_input = Some(String::new());
         }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Palette);
         if self.palette_input.is_none() {
             return;
         }
@@ -184,7 +185,7 @@ impl App {
                     let m = &matches[index];
                     run = Some((m.label, m.command));
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if escape_requested {
                     cancel = true;
                 }
             });

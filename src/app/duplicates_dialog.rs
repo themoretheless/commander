@@ -18,6 +18,8 @@ impl App {
                 policy,
             });
         }
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::Duplicates);
         if self.duplicates.is_none() {
             return;
         }
@@ -95,7 +97,7 @@ impl App {
                                 .corner_radius(CornerRadius::ZERO),
                             )
                             .clicked()
-                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            || escape_requested
                         {
                             cancel = true;
                         }
@@ -190,7 +192,7 @@ impl App {
                         });
                     });
 
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if escape_requested {
                         cancel = true;
                     }
                 });

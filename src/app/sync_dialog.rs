@@ -44,6 +44,7 @@ impl App {
                 error,
             });
         }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Sync);
         if self.sync.is_none() {
             return;
         }
@@ -316,7 +317,7 @@ impl App {
                         });
                     });
 
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if escape_requested {
                         cancel = true;
                     }
                 });

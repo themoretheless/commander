@@ -85,7 +85,13 @@ impl eframe::App for App {
     /// eframe calls this on exit and on its auto-save interval; persist our
     /// own session snapshot (panel paths, layout, view toggles).
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        crate::session::save(&self.to_session());
+        match crate::session::save(&self.to_session()) {
+            Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
+            Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(failure)) => {
+                crate::persistence::record_durability_warning("Session", &failure);
+            }
+            Err(error) => crate::persistence::record_save_failure("Session", &error),
+        }
     }
 }
 
@@ -133,17 +139,13 @@ impl App {
                 ));
             }
         }
-        // Repaint only when there's activity (scroll animation, background loads)
-        // egui will auto-repaint on user input (mouse, keyboard)
-        let has_animation = ctx.egui_is_using_pointer()
-            || ctx.input(|i| i.smooth_scroll_delta.length() > 0.0)
-            || self.ws.left.preview.is_some()
-            || self.ws.right.preview.is_some();
+        // Static previews do not need a frame loop. Preview workers repaint on
+        // completion, while loading state schedules its own bounded cadence.
+        let has_animation =
+            ctx.egui_is_using_pointer() || ctx.input(|i| i.smooth_scroll_delta.length() > 0.0);
         if has_animation {
             ctx.request_repaint();
         }
-
-        self.update_focus_mode(ctx);
 
         let index_idle = ctx.input(|input| {
             input.events.is_empty()
@@ -198,6 +200,8 @@ impl App {
         self.ws.right.drop_target = None;
 
         self.handle_keys(ctx);
+        self.capture_escape_request(ctx);
+        self.update_focus_mode(ctx);
         self.preload_images(ctx);
         {
             let c = ctx.clone();
@@ -510,12 +514,14 @@ impl App {
         if !self.focus_mode {
             return;
         }
+        let escape_requested =
+            self.take_escape_request(crate::accessibility::EscapeRoute::FocusMode);
         let exit_focus = ctx.input(|i| {
             crate::focus_mode::should_exit(
                 self.focus_started_at,
                 i.time,
                 i.pointer.delta().length_sq(),
-                i.key_pressed(egui::Key::Escape),
+                escape_requested,
             )
         });
         if exit_focus {
@@ -805,10 +811,48 @@ impl App {
             });
     }
 
+    fn apply_context_menu_effect(
+        &mut self,
+        panel: ActivePanel,
+        effect: Option<crate::provider_runtime::ContextMenuUiEffect>,
+        ctx: &egui::Context,
+    ) {
+        let Some(effect) = effect else {
+            return;
+        };
+        match effect {
+            crate::provider_runtime::ContextMenuUiEffect::RefreshPanel => match panel {
+                ActivePanel::Left => self.ws.left.refresh(),
+                ActivePanel::Right => self.ws.right.refresh(),
+            },
+            crate::provider_runtime::ContextMenuUiEffect::Notice { level, message } => {
+                let kind = match level {
+                    crate::provider_runtime::ContextMenuNoticeLevel::Info => {
+                        crate::toasts::ToastKind::Info
+                    }
+                    crate::provider_runtime::ContextMenuNoticeLevel::Error => {
+                        crate::toasts::ToastKind::Error
+                    }
+                };
+                let now = ctx.input(|input| input.time);
+                self.toasts
+                    .push(crate::toasts::Toast::new(message, kind, false, now));
+            }
+        }
+    }
+
     /// Tree sidebar plus the two file panels with the resizable divider.
     fn show_main_area(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let t = self.colors;
+        let active_left = self.ws.active == ActivePanel::Left;
+        let close_active_preview =
+            self.take_escape_request(crate::accessibility::EscapeRoute::ActivePreview);
+        let (close_left_preview, close_right_preview) = if active_left {
+            (close_active_preview, false)
+        } else {
+            (false, close_active_preview)
+        };
         let left_metrics = crate::density::metrics(self.ws.left.density);
         let right_metrics = crate::density::metrics(self.ws.right.density);
         let drag_source = if !self.ws.left.drag_entries.is_empty() {
@@ -900,6 +944,7 @@ impl App {
                 external_opener(path);
             }
         };
+        let context_menu = std::rc::Rc::clone(&self.context_menu);
 
         // Left panel
         let pane_min = crate::accessibility::pane_min_width(remaining);
@@ -913,21 +958,25 @@ impl App {
                 {
                     self.ws.active = ActivePanel::Left;
                 }
-                tree_toggle |= Self::render_panel(
+                Self::render_panel(
                     &mut self.ws.left,
                     ui,
                     self.ws.active == ActivePanel::Left,
+                    close_left_preview,
                     &t,
                     &mut self.image_cache,
                     "left",
                     self.show_tree,
                     self.show_size_bars,
                     left_compare.as_ref(),
+                    context_menu.as_ref(),
                     &opener,
                     dragging,
                     left_metrics,
-                );
+                )
             });
+        let left_outcome = left_resp.inner;
+        tree_toggle |= left_outcome.tree_toggle;
 
         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
         if dragging
@@ -979,24 +1028,31 @@ impl App {
                     {
                         self.ws.active = ActivePanel::Right;
                     }
-                    tree_toggle |= Self::render_panel(
+                    Self::render_panel(
                         &mut self.ws.right,
                         ui,
                         self.ws.active == ActivePanel::Right,
+                        close_right_preview,
                         &t,
                         &mut self.image_cache,
                         "right",
                         self.show_tree,
                         self.show_size_bars,
                         right_compare.as_ref(),
+                        context_menu.as_ref(),
                         &opener,
                         dragging,
                         right_metrics,
-                    );
-                });
+                    )
+                })
+                .inner
             });
+        let right_outcome = right_resp.inner;
+        tree_toggle |= right_outcome.tree_toggle;
 
         let pending_archive = archive_open.into_inner();
+        self.apply_context_menu_effect(ActivePanel::Left, left_outcome.context_menu, &ctx);
+        self.apply_context_menu_effect(ActivePanel::Right, right_outcome.context_menu, &ctx);
 
         if dragging
             && drag_source != Some(ActivePanel::Right)
@@ -1201,7 +1257,7 @@ impl App {
             } else {
                 crate::toasts::remaining_fraction(toast, now)
             };
-            egui::Area::new(egui::Id::new(("toast", row)))
+            egui::Area::new(egui::Id::new(("toast", toast.id())))
                 .fixed_pos(egui::pos2(stack.x, y))
                 .order(egui::Order::Tooltip)
                 .show(ctx, |ui| {

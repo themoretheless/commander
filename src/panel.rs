@@ -1,10 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::Hash;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -63,24 +66,159 @@ fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemTime, u64)>>
 
 fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
     let path = cache_path();
-    let Ok(data) = fs::read_to_string(&path) else {
+    let Ok(file) = fs::File::open(path) else {
         return HashMap::new();
     };
-    let Ok(cache): Result<PersistedCache, _> = serde_json::from_str(&data) else {
-        return HashMap::new();
-    };
-    if cache.schema != 1 {
-        return HashMap::new();
+    load_cache_from_reader_with_bounds(
+        std::io::BufReader::new(file),
+        DIR_SIZE_CACHE_LIMIT,
+        DIR_SIZE_CACHE_RETAIN,
+    )
+    .unwrap_or_default()
+}
+
+struct BoundedCacheAccumulator {
+    candidates: BoundedUniqueMap<VolumePathKey, (SystemTime, u64)>,
+}
+
+impl BoundedCacheAccumulator {
+    fn new(limit: usize, retain: usize) -> Self {
+        Self {
+            candidates: BoundedUniqueMap::new(limit, retain),
+        }
     }
-    cache
-        .entries
-        .into_iter()
-        .map(|entry| {
-            let mtime = std::time::UNIX_EPOCH
-                + std::time::Duration::new(entry.mtime_secs, entry.mtime_nanos);
-            (entry.key, (mtime, entry.size))
+
+    fn push(&mut self, entry: PersistedCacheEntry) {
+        let Some(mtime) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(
+            entry.mtime_secs,
+            entry.mtime_nanos,
+        )) else {
+            return;
+        };
+        self.candidates
+            .insert_by(entry.key, (mtime, entry.size), &mut compare_cache_entries);
+    }
+
+    fn finish(self) -> HashMap<VolumePathKey, (SystemTime, u64)> {
+        self.candidates.finish_by(&mut compare_cache_entries)
+    }
+}
+
+fn compare_cache_entries(
+    key_a: &VolumePathKey,
+    value_a: &(SystemTime, u64),
+    key_b: &VolumePathKey,
+    value_b: &(SystemTime, u64),
+) -> Ordering {
+    value_a
+        .0
+        .cmp(&value_b.0)
+        .then_with(|| compare_volume_path_keys(key_a, key_b))
+        .then(value_a.1.cmp(&value_b.1))
+}
+
+struct PersistedEntriesSeed<'a> {
+    accumulator: &'a mut BoundedCacheAccumulator,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for PersistedEntriesSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(PersistedEntriesVisitor {
+            accumulator: self.accumulator,
         })
-        .collect()
+    }
+}
+
+struct PersistedEntriesVisitor<'a> {
+    accumulator: &'a mut BoundedCacheAccumulator,
+}
+
+impl<'de> serde::de::Visitor<'de> for PersistedEntriesVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an array of persisted directory-size entries")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        while let Some(entry) = sequence.next_element::<PersistedCacheEntry>()? {
+            self.accumulator.push(entry);
+        }
+        Ok(())
+    }
+}
+
+struct PersistedCacheVisitor {
+    limit: usize,
+    retain: usize,
+}
+
+impl<'de> serde::de::Visitor<'de> for PersistedCacheVisitor {
+    type Value = HashMap<VolumePathKey, (SystemTime, u64)>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a Commander directory-size cache object")
+    }
+
+    fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut schema = None;
+        let mut saw_entries = false;
+        let mut accumulator = BoundedCacheAccumulator::new(self.limit, self.retain);
+
+        while let Some(field) = object.next_key::<String>()? {
+            match field.as_str() {
+                "schema" => {
+                    if schema.is_some() {
+                        return Err(serde::de::Error::duplicate_field("schema"));
+                    }
+                    schema = Some(object.next_value::<u32>()?);
+                }
+                "entries" => {
+                    if saw_entries {
+                        return Err(serde::de::Error::duplicate_field("entries"));
+                    }
+                    saw_entries = true;
+                    object.next_value_seed(PersistedEntriesSeed {
+                        accumulator: &mut accumulator,
+                    })?;
+                }
+                _ => {
+                    object.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+
+        Ok(if schema == Some(1) {
+            accumulator.finish()
+        } else {
+            HashMap::new()
+        })
+    }
+}
+
+fn load_cache_from_reader_with_bounds(
+    reader: impl Read,
+    limit: usize,
+    retain: usize,
+) -> Result<HashMap<VolumePathKey, (SystemTime, u64)>, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let cache = serde::Deserializer::deserialize_map(
+        &mut deserializer,
+        PersistedCacheVisitor { limit, retain },
+    )?;
+    deserializer.end()?;
+    Ok(cache)
 }
 
 /// When each directory was last size-walked and how long the walk took.
@@ -97,8 +235,520 @@ fn walk_log() -> &'static Mutex<HashMap<VolumePathKey, (std::time::Instant, std:
 
 const WALK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
 const WALK_EXPENSIVE: std::time::Duration = std::time::Duration::from_secs(2);
+const WALK_LOG_LIMIT: usize = 4_096;
+const WALK_LOG_RETAIN: usize = 3_584;
+const DIR_SIZE_CACHE_LIMIT: usize = 10_000;
+const DIR_SIZE_CACHE_RETAIN: usize = 9_000;
 const DEFAULT_VISIBLE_ROWS: usize = 32;
 pub(crate) const WATCHER_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn compare_volume_path_keys(a: &VolumePathKey, b: &VolumePathKey) -> Ordering {
+    a.path
+        .cmp(&b.path)
+        .then(a.volume_id.cmp(&b.volume_id))
+        .then(a.generation.cmp(&b.generation))
+}
+
+/// These mutexes protect advisory caches and cancellable scan state. Recovering
+/// their values after a panic is safe: every commit revalidates both epoch
+/// identities, and a subsequent scan replaces panel-local snapshots.
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Serializes scan replacement, watcher invalidation and result publication.
+/// The boundary closes the check-before-lock race across all participating
+/// maps; filesystem traversal itself never holds it.
+fn scan_commit_boundary() -> &'static Mutex<()> {
+    static BOUNDARY: Mutex<()> = Mutex::new(());
+    &BOUNDARY
+}
+
+#[derive(Debug)]
+struct ScanEpoch {
+    cancelled: AtomicBool,
+}
+
+impl ScanEpoch {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, AtomicOrdering::Release);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(AtomicOrdering::Acquire)
+    }
+}
+
+/// Weak identities keep per-path invalidation state only while a walk is
+/// active. Identity comparison avoids counter wraparound/ABA entirely.
+fn active_path_epochs() -> &'static Mutex<HashMap<VolumePathKey, Weak<ScanEpoch>>> {
+    static EPOCHS: OnceLock<Mutex<HashMap<VolumePathKey, Weak<ScanEpoch>>>> = OnceLock::new();
+    EPOCHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn capture_path_epoch(key: &VolumePathKey) -> Arc<ScanEpoch> {
+    let mut epochs = lock_recover(active_path_epochs());
+    epochs.retain(|_, epoch| epoch.strong_count() > 0);
+    if let Some(epoch) = epochs.get(key).and_then(Weak::upgrade)
+        && !epoch.is_cancelled()
+    {
+        return epoch;
+    }
+
+    let epoch = Arc::new(ScanEpoch::new());
+    epochs.insert(key.clone(), Arc::downgrade(&epoch));
+    epoch
+}
+
+fn scan_is_current(current: &Mutex<Arc<ScanEpoch>>, candidate: &Arc<ScanEpoch>) -> bool {
+    !candidate.is_cancelled() && Arc::ptr_eq(&lock_recover(current), candidate)
+}
+
+fn begin_panel_scan(
+    current: &Mutex<Arc<ScanEpoch>>,
+    sizes: &Mutex<HashMap<PathBuf, u64>>,
+    counts: &Mutex<HashMap<PathBuf, usize>>,
+) -> Arc<ScanEpoch> {
+    let _boundary = lock_recover(scan_commit_boundary());
+    let next = Arc::new(ScanEpoch::new());
+    {
+        let mut current = lock_recover(current);
+        current.cancel();
+        *current = Arc::clone(&next);
+    }
+    lock_recover(sizes).clear();
+    lock_recover(counts).clear();
+    next
+}
+
+fn hash_map_capacity_upper_bound(limit: usize) -> usize {
+    if limit == 0 {
+        0
+    } else {
+        limit.saturating_mul(2).max(3)
+    }
+}
+
+fn partial_retain_newest<T>(
+    values: &mut Vec<T>,
+    retain: usize,
+    compare: &mut impl FnMut(&T, &T) -> Ordering,
+) {
+    if values.len() <= retain {
+        return;
+    }
+    if retain == 0 {
+        values.clear();
+        return;
+    }
+
+    let discard = values.len() - retain;
+    values.select_nth_unstable_by(discard, compare);
+    values.drain(..discard);
+}
+
+fn shrink_bounded_map<K: Eq + Hash, V>(map: &mut HashMap<K, V>, limit: usize) {
+    map.shrink_to(limit);
+    debug_assert!(map.len() <= limit);
+    debug_assert!(map.capacity() <= hash_map_capacity_upper_bound(limit));
+}
+
+fn insert_comparator_max_by<K, V>(
+    map: &mut HashMap<K, V>,
+    key: K,
+    value: V,
+    compare: &mut impl FnMut(&K, &V, &K, &V) -> Ordering,
+) where
+    K: Eq + Hash,
+{
+    let replace = map
+        .get_key_value(&key)
+        .is_none_or(|(current_key, current_value)| {
+            compare(current_key, current_value, &key, &value) == Ordering::Less
+        });
+    if replace {
+        map.insert(key, value);
+    }
+}
+
+fn retain_top_map_by<K, V>(
+    map: &mut HashMap<K, V>,
+    retain: usize,
+    compare: &mut impl FnMut(&K, &V, &K, &V) -> Ordering,
+) where
+    K: Eq + Hash,
+{
+    if map.len() <= retain {
+        return;
+    }
+
+    let mut candidates: Vec<_> = map.drain().collect();
+    partial_retain_newest(
+        &mut candidates,
+        retain,
+        &mut |(key_a, value_a), (key_b, value_b)| compare(key_a, value_a, key_b, value_b),
+    );
+    map.extend(candidates);
+}
+
+/// Keeps one comparator-max value per key. Once unique cardinality crosses
+/// `limit`, discarded values cannot reach the final top set because retained
+/// values are only replaced by comparator-greater duplicates.
+struct BoundedUniqueMap<K, V> {
+    entries: HashMap<K, V>,
+    limit: usize,
+    retain: usize,
+    overflowed: bool,
+}
+
+impl<K, V> BoundedUniqueMap<K, V>
+where
+    K: Eq + Hash,
+{
+    fn new(limit: usize, retain: usize) -> Self {
+        Self::from_map(HashMap::with_capacity(limit), limit, retain)
+    }
+
+    fn from_map(entries: HashMap<K, V>, limit: usize, retain: usize) -> Self {
+        Self {
+            entries,
+            limit,
+            retain: retain.min(limit),
+            overflowed: false,
+        }
+    }
+
+    fn insert_by(
+        &mut self,
+        key: K,
+        value: V,
+        compare: &mut impl FnMut(&K, &V, &K, &V) -> Ordering,
+    ) {
+        insert_comparator_max_by(&mut self.entries, key, value, compare);
+        if self.entries.len() > self.limit {
+            self.overflowed = true;
+            retain_top_map_by(&mut self.entries, self.retain, compare);
+        }
+    }
+
+    fn finish_by(mut self, compare: &mut impl FnMut(&K, &V, &K, &V) -> Ordering) -> HashMap<K, V> {
+        if self.entries.len() > self.limit {
+            self.overflowed = true;
+            retain_top_map_by(&mut self.entries, self.retain, compare);
+        }
+        if self.overflowed {
+            retain_top_map_by(&mut self.entries, self.retain, compare);
+        }
+        shrink_bounded_map(&mut self.entries, self.limit);
+        self.entries
+    }
+}
+
+fn extend_bounded_by<K, V>(
+    map: &mut HashMap<K, V>,
+    incoming: impl IntoIterator<Item = (K, V)>,
+    limit: usize,
+    retain: usize,
+    mut compare: impl FnMut(&K, &V, &K, &V) -> Ordering,
+) where
+    K: Eq + Hash,
+{
+    let mut bounded = BoundedUniqueMap::from_map(std::mem::take(map), limit, retain);
+    for (key, value) in incoming {
+        bounded.insert_by(key, value, &mut compare);
+    }
+    *map = bounded.finish_by(&mut compare);
+}
+
+#[cfg(test)]
+fn prune_walk_log_to(
+    log: &mut HashMap<VolumePathKey, (std::time::Instant, std::time::Duration)>,
+    limit: usize,
+    retain: usize,
+) {
+    if log.len() > limit {
+        retain_top_map_by(
+            log,
+            retain.min(limit),
+            &mut |key_a, (when_a, duration_a), key_b, (when_b, duration_b)| {
+                when_a
+                    .cmp(when_b)
+                    .then_with(|| compare_volume_path_keys(key_a, key_b))
+                    .then(duration_a.cmp(duration_b))
+            },
+        );
+    }
+    shrink_bounded_map(log, limit);
+}
+
+fn prune_dir_size_cache_to(
+    cache: &mut HashMap<VolumePathKey, (SystemTime, u64)>,
+    limit: usize,
+    retain: usize,
+) {
+    if cache.len() > limit {
+        retain_top_map_by(cache, retain.min(limit), &mut compare_cache_entries);
+    }
+    shrink_bounded_map(cache, limit);
+}
+
+fn publish_scan_values_if_current<V>(
+    current: &Mutex<Arc<ScanEpoch>>,
+    epoch: &Arc<ScanEpoch>,
+    target: &Mutex<HashMap<PathBuf, V>>,
+    values: impl IntoIterator<Item = (PathBuf, V)>,
+) -> bool {
+    let values: Vec<_> = values.into_iter().collect();
+    if values.is_empty() {
+        return false;
+    }
+
+    let _boundary = lock_recover(scan_commit_boundary());
+    if !scan_is_current(current, epoch) {
+        return false;
+    }
+    lock_recover(target).extend(values);
+    true
+}
+
+fn publish_cached_size_if_current(
+    current: &Mutex<Arc<ScanEpoch>>,
+    epoch: &Arc<ScanEpoch>,
+    sizes: &Mutex<HashMap<PathBuf, u64>>,
+    path: &Path,
+    key: &VolumePathKey,
+    expected_mtime: Option<SystemTime>,
+) -> bool {
+    let _boundary = lock_recover(scan_commit_boundary());
+    if !scan_is_current(current, epoch) {
+        return false;
+    }
+    let cache = lock_recover(dir_size_cache());
+    let Some(&(cached_mtime, cached_size)) = cache.get(key) else {
+        return false;
+    };
+    if expected_mtime.is_some_and(|expected| cached_mtime != expected) {
+        return false;
+    }
+    lock_recover(sizes).insert(path.to_path_buf(), cached_size);
+    true
+}
+
+fn dir_size_recursive_until(path: &Path, is_cancelled: impl Fn() -> bool) -> Option<u64> {
+    let mut pending = vec![path.to_path_buf()];
+    let mut total = 0u64;
+
+    while let Some(directory) = pending.pop() {
+        if is_cancelled() {
+            return None;
+        }
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries {
+            if is_cancelled() {
+                return None;
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if let Ok(metadata) = fs::symlink_metadata(entry.path()) {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+
+    (!is_cancelled()).then_some(total)
+}
+
+struct DirMeasurement {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    cache_key: VolumePathKey,
+    path_epoch: Arc<ScanEpoch>,
+    size: u64,
+    completed_at: std::time::Instant,
+    elapsed: std::time::Duration,
+}
+
+#[derive(Clone, Copy)]
+struct RankedDirSize {
+    modified: SystemTime,
+    completed_at: Option<std::time::Instant>,
+    size: u64,
+}
+
+fn compare_ranked_dir_sizes(
+    key_a: &VolumePathKey,
+    value_a: &RankedDirSize,
+    key_b: &VolumePathKey,
+    value_b: &RankedDirSize,
+) -> Ordering {
+    if key_a == key_b {
+        return value_a
+            .completed_at
+            .cmp(&value_b.completed_at)
+            .then(value_a.modified.cmp(&value_b.modified))
+            .then(value_a.size.cmp(&value_b.size));
+    }
+
+    value_a
+        .modified
+        .cmp(&value_b.modified)
+        .then(value_a.completed_at.cmp(&value_b.completed_at))
+        .then_with(|| compare_volume_path_keys(key_a, key_b))
+        .then(value_a.size.cmp(&value_b.size))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PublishOutcome {
+    published: usize,
+    cache_changed: bool,
+}
+
+fn publish_dir_measurements_if_current(
+    current: &Mutex<Arc<ScanEpoch>>,
+    scan_epoch: &Arc<ScanEpoch>,
+    sizes: &Mutex<HashMap<PathBuf, u64>>,
+    results: &[DirMeasurement],
+) -> PublishOutcome {
+    if results.is_empty() {
+        return PublishOutcome::default();
+    }
+
+    let _boundary = lock_recover(scan_commit_boundary());
+    if !scan_is_current(current, scan_epoch) {
+        return PublishOutcome::default();
+    }
+
+    let epochs = lock_recover(active_path_epochs());
+    let valid: Vec<_> = results
+        .iter()
+        .filter(|result| {
+            !result.path_epoch.is_cancelled()
+                && epochs
+                    .get(&result.cache_key)
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|current| Arc::ptr_eq(&current, &result.path_epoch))
+        })
+        .collect();
+    drop(epochs);
+    if valid.is_empty() {
+        return PublishOutcome::default();
+    }
+
+    let paths: HashSet<&Path> = valid.iter().map(|result| result.path.as_path()).collect();
+    let keys: HashSet<&VolumePathKey> = valid.iter().map(|result| &result.cache_key).collect();
+    {
+        let mut log = lock_recover(walk_log());
+        log.retain(|old, _| !paths.contains(old.path.as_path()) || keys.contains(old));
+        extend_bounded_by(
+            &mut log,
+            valid.iter().map(|result| {
+                (
+                    result.cache_key.clone(),
+                    (result.completed_at, result.elapsed),
+                )
+            }),
+            WALK_LOG_LIMIT,
+            WALK_LOG_RETAIN,
+            |key_a, (when_a, duration_a), key_b, (when_b, duration_b)| {
+                when_a
+                    .cmp(when_b)
+                    .then_with(|| compare_volume_path_keys(key_a, key_b))
+                    .then(duration_a.cmp(duration_b))
+            },
+        );
+    }
+
+    let cache_changed = valid.iter().any(|result| result.modified.is_some());
+    if cache_changed {
+        let cache_paths: HashSet<&Path> = valid
+            .iter()
+            .filter(|result| result.modified.is_some())
+            .map(|result| result.path.as_path())
+            .collect();
+        let cache_keys: HashSet<&VolumePathKey> = valid
+            .iter()
+            .filter(|result| result.modified.is_some())
+            .map(|result| &result.cache_key)
+            .collect();
+        let mut cache = lock_recover(dir_size_cache());
+        let previous = std::mem::take(&mut *cache);
+        let previous = previous.into_iter().filter_map(|(key, (modified, size))| {
+            (!cache_paths.contains(key.path.as_path()) || cache_keys.contains(&key)).then_some((
+                key,
+                RankedDirSize {
+                    modified,
+                    completed_at: None,
+                    size,
+                },
+            ))
+        });
+        let incoming = valid.iter().filter_map(|result| {
+            result.modified.map(|modified| {
+                (
+                    result.cache_key.clone(),
+                    RankedDirSize {
+                        modified,
+                        completed_at: Some(result.completed_at),
+                        size: result.size,
+                    },
+                )
+            })
+        });
+        let mut ranked = HashMap::new();
+        extend_bounded_by(
+            &mut ranked,
+            previous.chain(incoming),
+            DIR_SIZE_CACHE_LIMIT,
+            DIR_SIZE_CACHE_RETAIN,
+            compare_ranked_dir_sizes,
+        );
+        cache.extend(
+            ranked
+                .into_iter()
+                .map(|(key, value)| (key, (value.modified, value.size))),
+        );
+        shrink_bounded_map(&mut cache, DIR_SIZE_CACHE_LIMIT);
+    }
+
+    lock_recover(sizes).extend(
+        valid
+            .iter()
+            .map(|result| (result.path.clone(), result.size)),
+    );
+    {
+        let mut epochs = lock_recover(active_path_epochs());
+        for result in &valid {
+            let owned_only_by_result = Arc::strong_count(&result.path_epoch) == 1;
+            let still_registered = epochs
+                .get(&result.cache_key)
+                .and_then(Weak::upgrade)
+                .is_some_and(|current| Arc::ptr_eq(&current, &result.path_epoch));
+            if owned_only_by_result && still_registered {
+                epochs.remove(&result.cache_key);
+            }
+        }
+    }
+    PublishOutcome {
+        published: valid.len(),
+        cache_changed,
+    }
+}
 
 fn visible_window(total: usize, anchor: usize, page_rows: usize) -> std::ops::Range<usize> {
     let rows = page_rows.max(DEFAULT_VISIBLE_ROWS).min(total);
@@ -109,9 +759,8 @@ fn visible_window(total: usize, anchor: usize, page_rows: usize) -> std::ops::Ra
 
 #[cfg(test)]
 pub(crate) fn reset_walk_log() {
-    if let Ok(mut log) = walk_log().lock() {
-        log.clear();
-    }
+    let _boundary = lock_recover(scan_commit_boundary());
+    lock_recover(walk_log()).clear();
 }
 
 /// Session-wide most-recent-first list of visited directories (for the
@@ -258,19 +907,26 @@ pub fn rank_visited(
     matches.into_iter().map(|(_, item)| item).collect()
 }
 
-/// Mark cached sizes stale for every directory that contains `path`.
+/// Invalidate cached sizes for every directory that contains `path`.
 /// A change at `path` (watcher event) makes all its ancestors' sizes stale,
 /// even though their mtimes don't move (mtime only reflects direct children).
-/// The size value is kept (still useful for display); the stored mtime is
-/// reset to the epoch so the next mtime comparison can never match.
+/// Active per-path epochs are cancelled before cache entries are removed, so
+/// an already-running walk cannot recreate data invalidated by this event.
 pub fn invalidate_size_cache(path: &Path) {
-    if let Ok(mut cache) = dir_size_cache().lock() {
-        for (key, entry) in cache.iter_mut() {
-            if path.starts_with(&key.path) {
-                entry.0 = std::time::UNIX_EPOCH;
+    let _boundary = lock_recover(scan_commit_boundary());
+    {
+        let mut epochs = lock_recover(active_path_epochs());
+        for (key, epoch) in epochs.iter() {
+            if path.starts_with(&key.path)
+                && let Some(epoch) = epoch.upgrade()
+            {
+                epoch.cancel();
             }
         }
+        epochs.retain(|key, epoch| !path.starts_with(&key.path) && epoch.strong_count() > 0);
     }
+    lock_recover(dir_size_cache()).retain(|key, _| !path.starts_with(&key.path));
+    lock_recover(walk_log()).retain(|key, _| !path.starts_with(&key.path));
 }
 
 fn flag_watcher_gap(
@@ -286,10 +942,10 @@ fn flag_watcher_gap(
 /// Stale paths are harmless because reuse always verifies mtime; probing them
 /// here could block every panel behind the mutex when a remote volume is down.
 pub fn flush_cache() {
-    let entries = {
-        let Ok(cache) = dir_size_cache().lock() else {
-            return;
-        };
+    let mut entries = {
+        let _boundary = lock_recover(scan_commit_boundary());
+        let mut cache = lock_recover(dir_size_cache());
+        prune_dir_size_cache_to(&mut cache, DIR_SIZE_CACHE_LIMIT, DIR_SIZE_CACHE_RETAIN);
         cache
             .iter()
             .filter_map(|(p, (mtime, size))| {
@@ -304,6 +960,7 @@ pub fn flush_cache() {
             .collect::<Vec<_>>()
         // Lock dropped here: serialization and IO happen outside it.
     };
+    entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
     let persisted = PersistedCache { schema: 1, entries };
     if let Ok(json) = serde_json::to_string(&persisted) {
         crate::fs_util::write_atomic(&cache_path(), &json);
@@ -490,10 +1147,35 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PreviewIdentity {
+    pub path: PathBuf,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+}
+
+impl PreviewIdentity {
+    pub fn from_entry(entry: &FileEntry) -> Self {
+        Self {
+            path: entry.path.clone(),
+            size: entry.size,
+            modified: entry.modified,
+        }
+    }
+
+    pub fn matches_entry(&self, entry: &FileEntry) -> bool {
+        self.path == entry.path && self.size == entry.size && self.modified == entry.modified
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreviewContent {
     Image(PathBuf),
-    Text { path: PathBuf, content: String },
+    Pending(PreviewIdentity),
+    Text {
+        identity: PreviewIdentity,
+        content: Arc<str>,
+    },
     Info(InfoCard),
 }
 
@@ -553,27 +1235,21 @@ pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usiz
     }
 }
 
-/// Create preview content for a file entry (image marker or text body).
+/// Create a preview marker without reading file contents. Text is resolved by
+/// the app's cancellable background preview pipeline.
 pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
     if entry.is_dir {
         return None;
     }
-    let kind = if entry.is_image() {
-        crate::ports::PreviewKind::Image
-    } else {
-        crate::ports::PreviewKind::Text
-    };
-    let capability = match kind {
-        crate::ports::PreviewKind::Image => {
-            crate::provider_runtime::ProviderCapability::PreviewImage
-        }
-        crate::ports::PreviewKind::Text => crate::provider_runtime::ProviderCapability::PreviewText,
-    };
+    if !entry.is_image() {
+        return Some(PreviewContent::Pending(PreviewIdentity::from_entry(entry)));
+    }
+
     let root = entry.path.parent().unwrap_or(Path::new("/"));
     if !crate::provider_runtime::activate_builtin(
         "native-preview",
         &crate::provider_runtime::ActivationRequest {
-            capability,
+            capability: crate::provider_runtime::ProviderCapability::PreviewImage,
             root,
             extension: (!entry.extension.is_empty()).then_some(entry.extension.as_str()),
             bytes: Some(entry.size),
@@ -581,20 +1257,7 @@ pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
     ) {
         return None;
     }
-    let request = crate::ports::PreviewRequest {
-        path: &entry.path,
-        kind,
-        max_bytes: crate::ports::DEFAULT_TEXT_PREVIEW_BYTES,
-    };
-    match crate::ports::PreviewProvider::preview(&crate::ports::NativePreviewProvider, &request)
-        .ok()?
-    {
-        crate::ports::PreviewArtifact::Image => Some(PreviewContent::Image(entry.path.clone())),
-        crate::ports::PreviewArtifact::Text(content) => Some(PreviewContent::Text {
-            path: entry.path.clone(),
-            content,
-        }),
-    }
+    Some(PreviewContent::Image(entry.path.clone()))
 }
 
 /// Glob match supporting `*` (any run) and `?` (one char). Inputs are
@@ -1081,6 +1744,8 @@ pub struct PanelState {
     pub view_memory: HashMap<PathBuf, ViewSettings>,
     pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
+    /// Identity and cancellation source for the newest metadata scan.
+    dir_scan_epoch: Arc<Mutex<Arc<ScanEpoch>>>,
     notify: Option<Notify>,
     pub drag_entries: Vec<PathBuf>,
     pub drop_target: Option<PathBuf>,
@@ -1140,6 +1805,7 @@ impl PanelState {
             view_memory: HashMap::new(),
             dir_sizes: Arc::new(Mutex::new(HashMap::new())),
             dir_counts: Arc::new(Mutex::new(HashMap::new())),
+            dir_scan_epoch: Arc::new(Mutex::new(Arc::new(ScanEpoch::new()))),
             notify: None,
             drag_entries: Vec::new(),
             drop_target: None,
@@ -1392,13 +2058,7 @@ impl PanelState {
     /// Returns `true` when some dir was skipped because of the walk
     /// cooldown and the caller should retry later.
     fn compute_dir_sizes(&self, forced: bool) -> bool {
-        // Clear panel-local sizes and counts for current directory listing
-        if let Ok(mut sizes) = self.dir_sizes.lock() {
-            sizes.clear();
-        }
-        if let Ok(mut counts) = self.dir_counts.lock() {
-            counts.clear();
-        }
+        let scan_epoch = begin_panel_scan(&self.dir_scan_epoch, &self.dir_sizes, &self.dir_counts);
 
         // Collect dirs that need background work
         let mut need_count: Vec<PathBuf> = Vec::new();
@@ -1415,15 +2075,16 @@ impl PanelState {
             let dir_mtime = fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
             let cache_key = VolumePathKey::observe(&entry.path);
 
-            // Check global cache: if mtime matches, reuse cached size
             if let Some(mtime) = dir_mtime
-                && let Ok(cache) = dir_size_cache().lock()
-                && let Some(&(cached_mtime, cached_size)) = cache.get(&cache_key)
-                && cached_mtime == mtime
+                && publish_cached_size_if_current(
+                    &self.dir_scan_epoch,
+                    &scan_epoch,
+                    &self.dir_sizes,
+                    &entry.path,
+                    &cache_key,
+                    Some(mtime),
+                )
             {
-                if let Ok(mut sizes) = self.dir_sizes.lock() {
-                    sizes.insert(entry.path.clone(), cached_size);
-                }
                 continue;
             }
 
@@ -1436,25 +2097,29 @@ impl PanelState {
             let guards_enabled = true;
 
             let mut skip = false;
-            if guards_enabled
-                && let Ok(log) = walk_log().lock()
-                && let Some(&(when, cost)) = log.get(&cache_key)
-            {
-                if when.elapsed() < WALK_COOLDOWN {
-                    skip = true;
-                    retry = true;
-                } else if !forced && cost > WALK_EXPENSIVE {
-                    skip = true;
+            if guards_enabled {
+                let _boundary = lock_recover(scan_commit_boundary());
+                if !scan_is_current(&self.dir_scan_epoch, &scan_epoch) {
+                    return retry;
+                }
+                if let Some(&(when, cost)) = lock_recover(walk_log()).get(&cache_key) {
+                    if when.elapsed() < WALK_COOLDOWN {
+                        skip = true;
+                        retry = true;
+                    } else if !forced && cost > WALK_EXPENSIVE {
+                        skip = true;
+                    }
                 }
             }
             if skip {
-                // Keep showing the last known size instead of "…".
-                if let Ok(cache) = dir_size_cache().lock()
-                    && let Some(&(_, cached_size)) = cache.get(&cache_key)
-                    && let Ok(mut sizes) = self.dir_sizes.lock()
-                {
-                    sizes.insert(entry.path.clone(), cached_size);
-                }
+                publish_cached_size_if_current(
+                    &self.dir_scan_epoch,
+                    &scan_epoch,
+                    &self.dir_sizes,
+                    &entry.path,
+                    &cache_key,
+                    None,
+                );
                 continue;
             }
 
@@ -1492,89 +2157,121 @@ impl PanelState {
         }
 
         // Subdir counts
-        let counts = Arc::clone(&self.dir_counts);
-        let wake1 = self.notify.clone();
-        fs_pool().spawn_fifo(move || {
-            use rayon::prelude::*;
-            let count = |path: &PathBuf| {
-                let count = fs::read_dir(path)
-                    .map(|entries| entries.filter_map(Result::ok).count())
-                    .unwrap_or(0);
-                (path.clone(), count)
-            };
-            for path in &visible_counts {
-                let (path, count) = count(path);
-                if let Ok(mut map) = counts.lock() {
-                    map.insert(path, count);
+        if !visible_counts.is_empty() || !background_counts.is_empty() {
+            let counts = Arc::clone(&self.dir_counts);
+            let current = Arc::clone(&self.dir_scan_epoch);
+            let epoch = Arc::clone(&scan_epoch);
+            let wake1 = self.notify.clone();
+            fs_pool().spawn_fifo(move || {
+                use rayon::prelude::*;
+                fn count(path: &PathBuf, epoch: &ScanEpoch) -> Option<(PathBuf, usize)> {
+                    if epoch.is_cancelled() {
+                        return None;
+                    }
+                    let Ok(entries) = fs::read_dir(path) else {
+                        return Some((path.clone(), 0));
+                    };
+                    let mut count = 0;
+                    for entry in entries {
+                        if epoch.is_cancelled() {
+                            return None;
+                        }
+                        count += usize::from(entry.is_ok());
+                    }
+                    (!epoch.is_cancelled()).then(|| (path.clone(), count))
                 }
-                if let Some(wake) = &wake1 {
+
+                let visible_results: Vec<_> = visible_counts
+                    .iter()
+                    .filter_map(|path| count(path, &epoch))
+                    .collect();
+                if publish_scan_values_if_current(&current, &epoch, &counts, visible_results)
+                    && let Some(wake) = &wake1
+                {
                     wake();
                 }
-            }
-            let background_results: Vec<_> =
-                fs_pool().install(|| background_counts.par_iter().map(count).collect());
-            if let Ok(mut map) = counts.lock() {
-                map.extend(background_results);
-            }
-            if let Some(wake) = &wake1 {
-                wake();
-            }
-        });
+                if epoch.is_cancelled() {
+                    return;
+                }
+
+                let background_results: Vec<_> = background_counts
+                    .par_iter()
+                    .filter_map(|path| count(path, &epoch))
+                    .collect();
+                if publish_scan_values_if_current(&current, &epoch, &counts, background_results)
+                    && let Some(wake) = &wake1
+                {
+                    wake();
+                }
+            });
+        }
 
         // Dir sizes
         if !visible_sizes.is_empty() || !background_sizes.is_empty() {
             let sizes = Arc::clone(&self.dir_sizes);
+            let current = Arc::clone(&self.dir_scan_epoch);
+            let epoch = Arc::clone(&scan_epoch);
             let wake2 = self.notify.clone();
             fs_pool().spawn_fifo(move || {
                 use rayon::prelude::*;
                 fn measure(
                     (path, modified, cache_key): &(PathBuf, Option<SystemTime>, VolumePathKey),
-                ) -> (PathBuf, Option<SystemTime>, VolumePathKey, u64) {
+                    scan_epoch: &Arc<ScanEpoch>,
+                ) -> Option<DirMeasurement> {
+                    if scan_epoch.is_cancelled() {
+                        return None;
+                    }
+                    let path_epoch = capture_path_epoch(cache_key);
                     let started = std::time::Instant::now();
-                    let size = crate::fs_util::dir_size_recursive(path);
-                    if let Ok(mut log) = walk_log().lock() {
-                        log.retain(|key, _| key.path != *path || key == cache_key);
-                        log.insert(
-                            cache_key.clone(),
-                            (std::time::Instant::now(), started.elapsed()),
-                        );
-                    }
-                    (path.clone(), *modified, cache_key.clone(), size)
+                    let size = dir_size_recursive_until(path, || {
+                        scan_epoch.is_cancelled() || path_epoch.is_cancelled()
+                    })?;
+                    let completed_at = std::time::Instant::now();
+                    Some(DirMeasurement {
+                        path: path.clone(),
+                        modified: *modified,
+                        cache_key: cache_key.clone(),
+                        path_epoch,
+                        size,
+                        completed_at,
+                        elapsed: completed_at.duration_since(started),
+                    })
                 }
 
-                let publish = |results: &[(PathBuf, Option<SystemTime>, VolumePathKey, u64)]| {
-                    if let Ok(mut map) = sizes.lock() {
-                        for (path, _, _, size) in results {
-                            map.insert(path.clone(), *size);
-                        }
-                    }
-                    if let Ok(mut cache) = dir_size_cache().lock() {
-                        for (path, modified, key, size) in results {
-                            if let Some(modified) = modified {
-                                cache.retain(|old, _| old.path != *path || old == key);
-                                cache.insert(key.clone(), (*modified, *size));
-                            }
-                        }
-                    }
-                };
+                let visible_results: Vec<_> = visible_sizes
+                    .iter()
+                    .filter_map(|item| measure(item, &epoch))
+                    .collect();
+                let visible_outcome =
+                    publish_dir_measurements_if_current(&current, &epoch, &sizes, &visible_results);
+                if visible_outcome.cache_changed {
+                    flush_cache();
+                }
+                if visible_outcome.published > 0
+                    && let Some(wake) = &wake2
+                {
+                    wake();
+                }
+                if epoch.is_cancelled() {
+                    return;
+                }
 
-                for item in &visible_sizes {
-                    let result = measure(item);
-                    publish(std::slice::from_ref(&result));
-                    if let Some(wake) = &wake2 {
-                        wake();
-                    }
-                }
-                if !visible_sizes.is_empty() {
+                let background_results: Vec<_> = background_sizes
+                    .par_iter()
+                    .filter_map(|item| measure(item, &epoch))
+                    .collect();
+                let background_outcome = publish_dir_measurements_if_current(
+                    &current,
+                    &epoch,
+                    &sizes,
+                    &background_results,
+                );
+                if background_outcome.cache_changed {
                     flush_cache();
                 }
-                let background_results: Vec<_> =
-                    fs_pool().install(|| background_sizes.par_iter().map(measure).collect());
-                if !background_results.is_empty() {
-                    publish(&background_results);
-                    flush_cache();
-                }
-                if let Some(wake) = &wake2 {
+                if background_outcome.published > 0
+                    && let Some(wake) = &wake2
+                {
                     wake();
                 }
             });
@@ -2192,7 +2889,7 @@ impl PanelState {
 
     pub fn total_size_selected(&self) -> u64 {
         self.ensure_filter_cache();
-        let sizes = self.dir_sizes.lock().ok();
+        let sizes = lock_recover(&self.dir_sizes);
         let cache = self.filter_cache.borrow();
         cache
             .indices
@@ -2201,10 +2898,7 @@ impl PanelState {
             .filter(|e| self.selected.contains(&e.path))
             .map(|e| {
                 if e.is_dir {
-                    sizes
-                        .as_ref()
-                        .and_then(|s| s.get(&e.path).copied())
-                        .unwrap_or(0)
+                    sizes.get(&e.path).copied().unwrap_or(0)
                 } else {
                     e.size
                 }
@@ -2219,7 +2913,7 @@ impl PanelState {
     /// Subdirectory sizes come from the background-computed map; an unsized
     /// subdir counts as 0. Largest/oldest keep the first-seen entry on ties.
     pub fn folder_overview(&self) -> FolderOverview {
-        let sizes = self.dir_sizes.lock().ok();
+        let sizes = lock_recover(&self.dir_sizes);
         let mut dir_count = 0usize;
         let mut computed = 0usize;
         let mut total = 0u64;
@@ -2230,7 +2924,7 @@ impl PanelState {
         for (i, e) in self.entries.iter().enumerate() {
             let size = if e.is_dir {
                 dir_count += 1;
-                match sizes.as_ref().and_then(|s| s.get(&e.path).copied()) {
+                match sizes.get(&e.path).copied() {
                     Some(s) => {
                         computed += 1;
                         total += s;
@@ -3361,25 +4055,26 @@ mod tests {
     }
 
     #[test]
-    fn size_cache_invalidation_marks_ancestors_only() {
+    fn size_cache_invalidation_cancels_epoch_and_removes_ancestors_only() {
         let tmp = TempDir::new();
         let a = tmp.dir("a");
         let other = tmp.dir("other");
         let a_key = VolumePathKey::observe(&a);
         let other_key = VolumePathKey::observe(&other);
+        let active_epoch = capture_path_epoch(&a_key);
         let now = SystemTime::now();
         {
-            let mut cache = dir_size_cache().lock().unwrap();
+            let _boundary = lock_recover(scan_commit_boundary());
+            let mut cache = lock_recover(dir_size_cache());
             cache.insert(a_key.clone(), (now, 100));
             cache.insert(other_key.clone(), (now, 5));
         }
 
         invalidate_size_cache(&a.join("b/c/file.txt"));
 
-        let cache = dir_size_cache().lock().unwrap();
-        let (a_mtime, a_size) = cache[&a_key];
-        assert_eq!(a_mtime, std::time::UNIX_EPOCH, "ancestor mtime is reset");
-        assert_eq!(a_size, 100, "stale size is kept for display");
+        assert!(active_epoch.is_cancelled());
+        let cache = lock_recover(dir_size_cache());
+        assert!(!cache.contains_key(&a_key));
         assert_eq!(cache[&other_key].0, now, "unrelated dirs stay valid");
     }
 
@@ -3397,6 +4092,489 @@ mod tests {
             generation: 2,
         };
         assert_ne!(first, remounted);
+    }
+
+    #[test]
+    fn stale_directory_scan_cannot_publish_after_epoch_replacement() {
+        let panel = panel_with(Vec::new());
+        let old_path = PathBuf::from("/old/child");
+        let current_path = PathBuf::from("/current/child");
+
+        panel.compute_dir_sizes(true);
+        let old_epoch = Arc::clone(&lock_recover(&panel.dir_scan_epoch));
+        assert!(publish_scan_values_if_current(
+            &panel.dir_scan_epoch,
+            &old_epoch,
+            &panel.dir_sizes,
+            [(old_path.clone(), 10)],
+        ));
+        assert!(publish_scan_values_if_current(
+            &panel.dir_scan_epoch,
+            &old_epoch,
+            &panel.dir_counts,
+            [(old_path.clone(), 1)],
+        ));
+
+        panel.compute_dir_sizes(true);
+        let current_epoch = Arc::clone(&lock_recover(&panel.dir_scan_epoch));
+        assert!(!Arc::ptr_eq(&old_epoch, &current_epoch));
+        assert!(old_epoch.is_cancelled());
+
+        assert!(!publish_scan_values_if_current(
+            &panel.dir_scan_epoch,
+            &old_epoch,
+            &panel.dir_sizes,
+            [(old_path.clone(), 20)],
+        ));
+        assert!(!publish_scan_values_if_current(
+            &panel.dir_scan_epoch,
+            &old_epoch,
+            &panel.dir_counts,
+            [(old_path, 2)],
+        ));
+        assert!(publish_scan_values_if_current(
+            &panel.dir_scan_epoch,
+            &current_epoch,
+            &panel.dir_sizes,
+            [(current_path.clone(), 30)],
+        ));
+        assert!(publish_scan_values_if_current(
+            &panel.dir_scan_epoch,
+            &current_epoch,
+            &panel.dir_counts,
+            [(current_path.clone(), 3)],
+        ));
+
+        assert_eq!(
+            *panel.dir_sizes.lock().unwrap(),
+            HashMap::from([(current_path.clone(), 30)])
+        );
+        assert_eq!(
+            *panel.dir_counts.lock().unwrap(),
+            HashMap::from([(current_path, 3)])
+        );
+    }
+
+    #[test]
+    fn watcher_invalidation_wins_against_worker_paused_before_commit() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("subject");
+        let changed = directory.join("nested/file.bin");
+        let cache_key = VolumePathKey::observe(&directory);
+        let path_epoch = capture_path_epoch(&cache_key);
+        let panel = panel_with(Vec::new());
+        panel.compute_dir_sizes(true);
+        let scan_epoch = Arc::clone(&lock_recover(&panel.dir_scan_epoch));
+
+        {
+            let _boundary = lock_recover(scan_commit_boundary());
+            lock_recover(dir_size_cache()).remove(&cache_key);
+            lock_recover(walk_log()).remove(&cache_key);
+        }
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let current = Arc::clone(&panel.dir_scan_epoch);
+        let sizes = Arc::clone(&panel.dir_sizes);
+        let worker_scan_epoch = Arc::clone(&scan_epoch);
+        let worker_path_epoch = Arc::clone(&path_epoch);
+        let worker_key = cache_key.clone();
+        let worker_path = directory.clone();
+        let worker = std::thread::spawn(move || {
+            let measurement = DirMeasurement {
+                path: worker_path,
+                modified: Some(SystemTime::now()),
+                cache_key: worker_key,
+                path_epoch: worker_path_epoch,
+                size: 42,
+                completed_at: std::time::Instant::now(),
+                elapsed: std::time::Duration::from_millis(1),
+            };
+            worker_barrier.wait();
+            worker_barrier.wait();
+            publish_dir_measurements_if_current(
+                &current,
+                &worker_scan_epoch,
+                &sizes,
+                &[measurement],
+            )
+        });
+
+        barrier.wait();
+        invalidate_size_cache(&changed);
+        assert!(path_epoch.is_cancelled());
+        assert!(scan_is_current(&panel.dir_scan_epoch, &scan_epoch));
+        barrier.wait();
+
+        assert_eq!(worker.join().unwrap(), PublishOutcome::default());
+        assert!(!lock_recover(&panel.dir_sizes).contains_key(&directory));
+        let _boundary = lock_recover(scan_commit_boundary());
+        assert!(!lock_recover(dir_size_cache()).contains_key(&cache_key));
+        assert!(!lock_recover(walk_log()).contains_key(&cache_key));
+    }
+
+    #[test]
+    fn recursive_size_walk_stops_between_entries_when_cancelled() {
+        let tmp = TempDir::new();
+        tmp.file("a.bin", "123");
+        tmp.file("b.bin", "456");
+        tmp.file("c.bin", "789");
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+
+        let result = dir_size_recursive_until(tmp.path(), || {
+            checks.fetch_add(1, AtomicOrdering::SeqCst) >= 2
+        });
+
+        assert_eq!(result, None);
+        assert_eq!(checks.load(AtomicOrdering::SeqCst), 3);
+    }
+
+    #[test]
+    fn shuffled_duplicate_batch_deduplicates_before_top_k() {
+        let key = |name: &str| VolumePathKey {
+            path: PathBuf::from(format!("/batch/{name}")),
+            volume_id: 1,
+            generation: 1,
+        };
+        let a = key("a");
+        let b = key("b");
+        let started = std::time::Instant::now();
+        let completed = |seconds| started + std::time::Duration::from_secs(seconds);
+        let modified = |seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+        let entries = [
+            (
+                a.clone(),
+                RankedDirSize {
+                    modified: modified(1),
+                    completed_at: Some(completed(100)),
+                    size: 100,
+                },
+            ),
+            (
+                a.clone(),
+                RankedDirSize {
+                    modified: modified(200),
+                    completed_at: Some(completed(99)),
+                    size: 99,
+                },
+            ),
+            (
+                b.clone(),
+                RankedDirSize {
+                    modified: modified(98),
+                    completed_at: Some(completed(98)),
+                    size: 98,
+                },
+            ),
+        ];
+        let permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for order in permutations {
+            let mut ordered = order.into_iter().map(|index| entries[index].clone());
+            let mut cache = HashMap::new();
+            let (first_key, first_value) = ordered.next().unwrap();
+            cache.insert(first_key, first_value);
+
+            extend_bounded_by(&mut cache, ordered, 2, 2, compare_ranked_dir_sizes);
+
+            assert_eq!(cache.len(), 2, "order {order:?}");
+            assert!(cache.capacity() <= hash_map_capacity_upper_bound(2));
+            assert_eq!(
+                cache[&a].completed_at,
+                Some(completed(100)),
+                "order {order:?}"
+            );
+            assert_eq!(cache[&a].size, 100, "order {order:?}");
+            assert_eq!(
+                cache[&b].completed_at,
+                Some(completed(98)),
+                "order {order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn advisory_lock_state_is_recovered_after_poisoning() {
+        let state = Mutex::new(1usize);
+        let panic = std::panic::catch_unwind(|| {
+            let mut state = state.lock().unwrap();
+            *state = 2;
+            panic!("poison advisory state");
+        });
+
+        assert!(panic.is_err());
+        assert!(state.is_poisoned());
+        assert_eq!(*lock_recover(&state), 2);
+    }
+
+    #[test]
+    fn dir_size_cache_pruning_is_bounded_and_deterministic() {
+        let key = |name: &str| VolumePathKey {
+            path: PathBuf::from(format!("/cache/{name}")),
+            volume_id: 1,
+            generation: 1,
+        };
+        let oldest = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let mut cache = HashMap::from([
+            (key("a"), (oldest, 1)),
+            (key("b"), (oldest, 2)),
+            (key("c"), (oldest + std::time::Duration::from_secs(1), 3)),
+            (key("d"), (oldest + std::time::Duration::from_secs(2), 4)),
+            (key("e"), (oldest + std::time::Duration::from_secs(3), 5)),
+        ]);
+
+        prune_dir_size_cache_to(&mut cache, 4, 3);
+
+        assert_eq!(cache.len(), 3);
+        assert!(cache.capacity() <= hash_map_capacity_upper_bound(4));
+        assert_eq!(
+            cache
+                .keys()
+                .map(|key| key.path.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([key("c").path, key("d").path, key("e").path])
+        );
+    }
+
+    #[test]
+    fn walk_log_pruning_is_bounded_and_deterministic() {
+        let key = |name: &str| VolumePathKey {
+            path: PathBuf::from(format!("/walk/{name}")),
+            volume_id: 1,
+            generation: 1,
+        };
+        let oldest = std::time::Instant::now();
+        let cost = std::time::Duration::from_millis(1);
+        let mut log = HashMap::from([
+            (key("a"), (oldest, cost)),
+            (key("b"), (oldest, cost)),
+            (key("c"), (oldest + std::time::Duration::from_secs(1), cost)),
+            (key("d"), (oldest + std::time::Duration::from_secs(2), cost)),
+            (key("e"), (oldest + std::time::Duration::from_secs(3), cost)),
+        ]);
+
+        prune_walk_log_to(&mut log, 4, 3);
+
+        assert_eq!(log.len(), 3);
+        assert!(log.capacity() <= hash_map_capacity_upper_bound(4));
+        assert_eq!(
+            log.keys()
+                .map(|key| key.path.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([key("c").path, key("d").path, key("e").path])
+        );
+    }
+
+    #[test]
+    fn oversized_batch_is_selected_before_extend_and_shrinks_capacity() {
+        let key = |prefix: &str, index: usize| VolumePathKey {
+            path: PathBuf::from(format!("/{prefix}/{index:03}")),
+            volume_id: 1,
+            generation: 1,
+        };
+        let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let mut cache = HashMap::with_capacity(1_024);
+        cache.extend((0..4).map(|index| (key("old", index), (base, index as u64))));
+        let incoming: Vec<_> = (0..100)
+            .map(|index| {
+                (
+                    key("incoming", index),
+                    (
+                        base + std::time::Duration::from_secs(index as u64 + 1),
+                        index as u64,
+                    ),
+                )
+            })
+            .collect();
+
+        extend_bounded_by(&mut cache, incoming, 8, 6, compare_cache_entries);
+
+        assert_eq!(cache.len(), 6);
+        assert!(cache.capacity() <= hash_map_capacity_upper_bound(8));
+        assert_eq!(
+            cache
+                .keys()
+                .map(|key| key.path.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+            (94..100).map(|index| key("incoming", index).path).collect()
+        );
+    }
+
+    #[test]
+    fn oversized_persisted_load_is_streamed_and_capacity_bounded() {
+        let persisted = PersistedCache {
+            schema: 1,
+            entries: (0..50)
+                .map(|index| PersistedCacheEntry {
+                    key: VolumePathKey {
+                        path: PathBuf::from(format!("/load/{index:03}")),
+                        volume_id: 1,
+                        generation: 1,
+                    },
+                    mtime_secs: index as u64 + 1,
+                    mtime_nanos: 0,
+                    size: index as u64,
+                })
+                .collect(),
+        };
+        let json = serde_json::to_vec(&persisted).unwrap();
+
+        let cache = load_cache_from_reader_with_bounds(json.as_slice(), 8, 6).unwrap();
+
+        assert_eq!(cache.len(), 6);
+        assert!(cache.capacity() <= hash_map_capacity_upper_bound(8));
+        assert_eq!(
+            cache
+                .keys()
+                .map(|key| key.path.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+            (44..50)
+                .map(|index| PathBuf::from(format!("/load/{index:03}")))
+                .collect()
+        );
+    }
+
+    #[test]
+    fn shuffled_persisted_duplicates_are_deduplicated_before_top_k() {
+        let key = |name: &str| VolumePathKey {
+            path: PathBuf::from(format!("/load/{name}")),
+            volume_id: 1,
+            generation: 1,
+        };
+        let a = key("a");
+        let b = key("b");
+        let entries = [
+            PersistedCacheEntry {
+                key: a.clone(),
+                mtime_secs: 100,
+                mtime_nanos: 0,
+                size: 100,
+            },
+            PersistedCacheEntry {
+                key: a.clone(),
+                mtime_secs: 99,
+                mtime_nanos: 0,
+                size: 99,
+            },
+            PersistedCacheEntry {
+                key: b.clone(),
+                mtime_secs: 98,
+                mtime_nanos: 0,
+                size: 98,
+            },
+        ];
+        let permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for order in permutations {
+            let persisted = PersistedCache {
+                schema: 1,
+                entries: order
+                    .into_iter()
+                    .map(|index| PersistedCacheEntry {
+                        key: entries[index].key.clone(),
+                        mtime_secs: entries[index].mtime_secs,
+                        mtime_nanos: entries[index].mtime_nanos,
+                        size: entries[index].size,
+                    })
+                    .collect(),
+            };
+            let json = serde_json::to_vec(&persisted).unwrap();
+
+            let cache = load_cache_from_reader_with_bounds(json.as_slice(), 2, 2).unwrap();
+
+            assert_eq!(cache.len(), 2, "order {order:?}");
+            assert!(cache.capacity() <= hash_map_capacity_upper_bound(2));
+            assert_eq!(
+                cache[&a],
+                (
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(100),
+                    100,
+                ),
+                "order {order:?}"
+            );
+            assert_eq!(
+                cache[&b],
+                (
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(98),
+                    98,
+                ),
+                "order {order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_between_retain_and_limit_is_not_pruned() {
+        let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let incoming = (0..9_500).map(|index| {
+            (
+                VolumePathKey {
+                    path: PathBuf::from(format!("/batch-threshold/{index:05}")),
+                    volume_id: 1,
+                    generation: 1,
+                },
+                (
+                    base + std::time::Duration::from_secs(index as u64),
+                    index as u64,
+                ),
+            )
+        });
+        let mut cache = HashMap::new();
+
+        extend_bounded_by(
+            &mut cache,
+            incoming,
+            DIR_SIZE_CACHE_LIMIT,
+            DIR_SIZE_CACHE_RETAIN,
+            compare_cache_entries,
+        );
+
+        assert_eq!(cache.len(), 9_500);
+        assert!(cache.capacity() <= hash_map_capacity_upper_bound(DIR_SIZE_CACHE_LIMIT));
+    }
+
+    #[test]
+    fn persisted_load_between_retain_and_limit_is_not_pruned() {
+        let persisted = PersistedCache {
+            schema: 1,
+            entries: (0..9_500)
+                .map(|index| PersistedCacheEntry {
+                    key: VolumePathKey {
+                        path: PathBuf::from(format!("/load-threshold/{index:05}")),
+                        volume_id: 1,
+                        generation: 1,
+                    },
+                    mtime_secs: index as u64 + 1,
+                    mtime_nanos: 0,
+                    size: index as u64,
+                })
+                .collect(),
+        };
+        let json = serde_json::to_vec(&persisted).unwrap();
+
+        let cache = load_cache_from_reader_with_bounds(
+            json.as_slice(),
+            DIR_SIZE_CACHE_LIMIT,
+            DIR_SIZE_CACHE_RETAIN,
+        )
+        .unwrap();
+
+        assert_eq!(cache.len(), 9_500);
+        assert!(cache.capacity() <= hash_map_capacity_upper_bound(DIR_SIZE_CACHE_LIMIT));
     }
 
     #[test]
@@ -3557,14 +4735,15 @@ mod tests {
     }
 
     #[test]
-    fn make_preview_reads_text_and_skips_dirs() {
+    fn make_preview_marks_text_pending_without_reading_and_skips_dirs() {
         let tmp = TempDir::new();
         let file = tmp.file("note.txt", "hello");
         let meta = std::fs::metadata(&file).unwrap();
-        let fe = FileEntry::from_meta(file, &meta).unwrap();
+        let fe = FileEntry::from_meta(file.clone(), &meta).unwrap();
+        std::fs::remove_file(file).unwrap();
         match make_preview(&fe) {
-            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "hello"),
-            other => panic!("expected text preview, got {:?}", other.is_some()),
+            Some(PreviewContent::Pending(identity)) => assert_eq!(identity.path, fe.path),
+            other => panic!("expected pending preview, got {other:?}"),
         }
 
         let dir = tmp.dir("d");

@@ -3,8 +3,68 @@
 //! `crate::rename`; this file is only the egui shell.
 
 use super::*;
-use crate::rename::{PlanStatus, plan_batch_rename, plan_is_applicable};
+use crate::rename::{PlanStatus, RenamePlan, RenameRule, plan_batch_rename, plan_is_applicable};
 use crate::rename_order::{RenameOrder, safe_rename_order};
+use crate::workspace::BatchRenameContext;
+
+const PREVIEW_SCROLL_ID: &str = "batch_rename_preview";
+
+fn clear_error_after_rule_change(
+    error: &mut Option<String>,
+    previous: &RenameRule,
+    current: &RenameRule,
+) {
+    if previous != current {
+        *error = None;
+    }
+}
+
+struct ValidatedBatchRename {
+    rule: RenameRule,
+    plans: Vec<RenamePlan>,
+    will_change: usize,
+    applicable: bool,
+    block_reason: Option<String>,
+}
+
+impl ValidatedBatchRename {
+    fn build(context: &BatchRenameContext, rule: RenameRule) -> Self {
+        let regex_err = crate::rename::regex_error(&rule);
+        let plans = plan_batch_rename(&context.targets, &context.existing, &rule);
+        let changes: Vec<(String, String)> = plans
+            .iter()
+            .filter(|plan| plan.to != plan.from)
+            .map(|plan| (plan.from.clone(), plan.to.clone()))
+            .collect();
+        let will_change = changes.len();
+        let (applicable, block_reason) = if let Some(error) = regex_err {
+            (false, Some(format!("Invalid regex: {error}")))
+        } else if plan_is_applicable(&plans) {
+            (true, None)
+        } else if plans.iter().any(|plan| plan.status == PlanStatus::Invalid) {
+            (false, Some("Fix the invalid names to continue".to_string()))
+        } else if changes.is_empty() {
+            (false, None)
+        } else {
+            match safe_rename_order(&changes, &context.existing) {
+                RenameOrder::Steps(steps) => (!steps.is_empty(), None),
+                RenameOrder::Conflict(reason) => (false, Some(reason)),
+            }
+        };
+
+        Self {
+            rule,
+            plans,
+            will_change,
+            applicable,
+            block_reason,
+        }
+    }
+
+    fn rule_for_submit(&self, submit_requested: bool) -> Option<RenameRule> {
+        (submit_requested && self.applicable).then(|| self.rule.clone())
+    }
+}
 
 impl App {
     pub(crate) fn show_batch_rename_dialog(&mut self, ctx: &egui::Context) {
@@ -12,6 +72,7 @@ impl App {
             let Some(context) = self.ws.batch_rename_context() else {
                 return;
             };
+            let scroll_nonce = self.issue_transient_nonce();
             self.batch_rename = Some(BatchRenameState {
                 context,
                 find: String::new(),
@@ -26,46 +87,21 @@ impl App {
                 num_pad: 2,
                 focused: false,
                 error: None,
+                scroll_nonce,
             });
         }
+        let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
+            crate::accessibility::ModalSurface::BatchRename,
+        ));
         let Some(state) = &mut self.batch_rename else {
             return;
         };
         let t = self.colors;
 
-        // Compute the live plan from the current rule.
-        let names = &state.context.targets;
-        let existing = &state.context.existing;
-        let rule = state.rule();
-        let regex_err = crate::rename::regex_error(&rule);
-        let plans = plan_batch_rename(names, existing, &rule);
+        let target_count = state.context.targets.len();
+        let rule_before_controls = state.rule();
 
-        // Rows whose name actually changes (Ok, or a resolvable collision).
-        let changes: Vec<(String, String)> = plans
-            .iter()
-            .filter(|p| p.to != p.from)
-            .map(|p| (p.from.clone(), p.to.clone()))
-            .collect();
-        let will_change = changes.len();
-        // A strictly-clean batch is applicable; otherwise (no invalid names)
-        // consult the safe-order resolver, which permits swaps, rotations and
-        // case-only renames and blocks only an unresolvable conflict.
-        let (applicable, block_reason): (bool, Option<String>) = if let Some(err) = &regex_err {
-            (false, Some(format!("Invalid regex: {err}")))
-        } else if plan_is_applicable(&plans) {
-            (true, None)
-        } else if plans.iter().any(|p| p.status == PlanStatus::Invalid) {
-            (false, Some("Fix the invalid names to continue".to_string()))
-        } else if changes.is_empty() {
-            (false, None)
-        } else {
-            match safe_rename_order(&changes, existing) {
-                RenameOrder::Steps(s) => (!s.is_empty(), None),
-                RenameOrder::Conflict(why) => (false, Some(why)),
-            }
-        };
-
-        let mut commit = false;
+        let mut commit: Option<(RenameRule, BatchRenameContext)> = None;
         let mut cancel = false;
 
         egui::Window::new("Batch rename")
@@ -82,7 +118,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_width(560.0);
                 ui.label(
-                    egui::RichText::new(format!("Batch rename {} item(s)", names.len()))
+                    egui::RichText::new(format!("Batch rename {target_count} item(s)"))
                         .size(13.0)
                         .strong()
                         .color(t.text_primary),
@@ -164,16 +200,24 @@ impl App {
                     });
                 });
 
+                let validation = ValidatedBatchRename::build(&state.context, state.rule());
+                clear_error_after_rule_change(
+                    &mut state.error,
+                    &rule_before_controls,
+                    &validation.rule,
+                );
+
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(6.0);
 
                 // ── Preview ─────────────────────────────────────────────
                 egui::ScrollArea::vertical()
+                    .id_salt((PREVIEW_SCROLL_ID, state.scroll_nonce))
                     .max_height(240.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        for p in &plans {
+                        for p in &validation.plans {
                             let (color, mark) = match p.status {
                                 PlanStatus::Ok => (t.accent, "→"),
                                 PlanStatus::Unchanged => (t.text_muted, "="),
@@ -193,17 +237,26 @@ impl App {
                     });
 
                 ui.add_space(10.0);
+                let mut submit_requested = false;
                 ui.horizontal(|ui| {
-                    let summary = if applicable {
-                        format!("{will_change} of {} will change", plans.len())
-                    } else if let Some(reason) = &block_reason {
+                    let summary = if validation.applicable {
+                        format!(
+                            "{} of {} will change",
+                            validation.will_change,
+                            validation.plans.len()
+                        )
+                    } else if let Some(reason) = &validation.block_reason {
                         reason.clone()
-                    } else if will_change == 0 {
+                    } else if validation.will_change == 0 {
                         "Nothing to change".to_string()
                     } else {
                         "Fix the flagged rows to continue".to_string()
                     };
-                    let summary_color = if applicable { t.accent } else { t.text_muted };
+                    let summary_color = if validation.applicable {
+                        t.accent
+                    } else {
+                        t.text_muted
+                    };
                     ui.label(egui::RichText::new(summary).size(11.0).color(summary_color));
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -224,7 +277,7 @@ impl App {
                         ui.add_space(8.0);
                         if ui
                             .add_enabled(
-                                applicable,
+                                validation.applicable,
                                 egui::Button::new(
                                     egui::RichText::new("Rename")
                                         .size(13.0)
@@ -235,7 +288,7 @@ impl App {
                             )
                             .clicked()
                         {
-                            commit = true;
+                            submit_requested = true;
                         }
                     });
                 });
@@ -245,10 +298,13 @@ impl App {
                     ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
                 }
 
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && applicable {
-                    commit = true;
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submit_requested = true;
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if let Some(rule) = validation.rule_for_submit(submit_requested) {
+                    commit = Some((rule, state.context.clone()));
+                }
+                if escape_requested {
                     cancel = true;
                 }
             });
@@ -257,14 +313,7 @@ impl App {
             self.batch_rename = None;
             return;
         }
-        if commit {
-            let Some((rule, context)) = self
-                .batch_rename
-                .as_ref()
-                .map(|state| (state.rule(), state.context.clone()))
-            else {
-                return;
-            };
+        if let Some((rule, context)) = commit {
             match self.ws.apply_batch_rename_in(&context, &rule) {
                 Ok(n) => {
                     self.batch_rename = None;
@@ -307,5 +356,64 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changing_rule_clears_previous_apply_error() {
+        let previous = RenameRule::default();
+        let mut current = previous.clone();
+        current.prefix = "archive-".to_string();
+        let mut error = Some("target already exists".to_string());
+
+        clear_error_after_rule_change(&mut error, &previous, &current);
+
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn unchanged_rule_keeps_apply_error() {
+        let rule = RenameRule::default();
+        let mut error = Some("permission denied".to_string());
+
+        clear_error_after_rule_change(&mut error, &rule, &rule);
+
+        assert_eq!(error.as_deref(), Some("permission denied"));
+    }
+
+    #[test]
+    fn same_frame_invalid_edit_cannot_submit_under_previous_validation() {
+        let context = BatchRenameContext {
+            panel: ActivePanel::Left,
+            dir: PathBuf::from("/fixture"),
+            targets: vec!["report.txt".to_string()],
+            existing: std::collections::HashSet::from(["report.txt".to_string()]),
+        };
+        let previously_valid = RenameRule {
+            prefix: "archived-".to_string(),
+            ..RenameRule::default()
+        };
+        let previous = ValidatedBatchRename::build(&context, previously_valid.clone());
+        assert_eq!(previous.rule_for_submit(true), Some(previously_valid));
+
+        let edited_rule = RenameRule {
+            find: "(".to_string(),
+            regex: true,
+            ..RenameRule::default()
+        };
+        let current = ValidatedBatchRename::build(&context, edited_rule);
+
+        assert!(!current.applicable);
+        assert!(
+            current
+                .block_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("Invalid regex:"))
+        );
+        assert_eq!(current.rule_for_submit(true), None);
     }
 }

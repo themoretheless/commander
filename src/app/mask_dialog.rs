@@ -3,12 +3,24 @@
 
 use super::*;
 
+fn change_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 change".to_string()
+    } else {
+        format!("{count} changes")
+    }
+}
+
 impl App {
     pub(crate) fn show_mask_dialog(&mut self, ctx: &egui::Context) {
         let just_opened = std::mem::take(&mut self.ws.mask_request);
         if just_opened {
             self.mask_input = Some(String::new());
         }
+        let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
+            crate::accessibility::ModalSurface::Mask,
+        ));
+        let active_panel = self.ws.active_panel_ref();
         let Some(buffer) = &mut self.mask_input else {
             return;
         };
@@ -16,14 +28,6 @@ impl App {
 
         let mut commit = false;
         let mut cancel = false;
-
-        // Live match count against the active panel.
-        let count = self.ws.active_panel_ref().mask_match_count(buffer);
-        let match_label = if count == 1 {
-            "1 match".to_string()
-        } else {
-            format!("{count} matches")
-        };
 
         egui::Window::new("Select by mask")
             .collapsible(false)
@@ -56,8 +60,16 @@ impl App {
                     resp.request_focus();
                 }
 
+                // Count after TextEdit so the label and Enter action observe
+                // the exact same buffer from this frame.
+                let count = active_panel.mask_match_count(buffer);
+                let change_label = change_count_label(count);
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(&match_label).size(11.0).color(t.accent));
+                ui.label(
+                    egui::RichText::new(&change_label)
+                        .size(11.0)
+                        .color(t.accent),
+                );
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -93,7 +105,7 @@ impl App {
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         commit = true;
                     }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if escape_requested {
                         cancel = true;
                     }
                 });
@@ -106,5 +118,17 @@ impl App {
         if commit && let Some(buf) = self.mask_input.take() {
             self.ws.active_panel().select_by_mask(&buf);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_labels_selection_changes_not_pattern_matches() {
+        assert_eq!(change_count_label(0), "0 changes");
+        assert_eq!(change_count_label(1), "1 change");
+        assert_eq!(change_count_label(7), "7 changes");
     }
 }

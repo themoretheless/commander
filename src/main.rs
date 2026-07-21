@@ -103,7 +103,12 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(cc)))
+            let context_menu = native_menu::MacOsContextMenu::new().map_err(|error| {
+                std::io::Error::other(format!(
+                    "could not construct the main-thread AppKit adapter: {error:?}"
+                ))
+            })?;
+            Ok(Box::new(app::App::new(cc, std::rc::Rc::new(context_menu))))
         }),
     )
 }

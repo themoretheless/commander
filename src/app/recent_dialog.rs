@@ -9,6 +9,7 @@ impl App {
         if just_opened {
             self.recent_input = Some(String::new());
         }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recent);
         let Some(buffer) = &mut self.recent_input else {
             return;
         };
@@ -103,7 +104,7 @@ impl App {
                 {
                     go = Some(item.path.clone());
                 }
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if escape_requested {
                     cancel = true;
                 }
             });

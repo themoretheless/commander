@@ -10,6 +10,8 @@ impl App {
             self.smart_folders_mut(); // force a load from disk
             self.saved_search_open = true;
         }
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::SavedSearch);
         if !self.saved_search_open {
             return;
         }
@@ -106,7 +108,7 @@ impl App {
                             .corner_radius(CornerRadius::ZERO),
                         )
                         .clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        || escape_requested
                     {
                         close = true;
                     }

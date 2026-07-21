@@ -405,6 +405,7 @@ impl App {
     }
 
     pub(crate) fn show_recovery_dialog(&mut self, ctx: &egui::Context) {
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recovery);
         let requested = std::mem::take(&mut self.ws.recovery_request);
         let mut state = std::mem::take(&mut self.recovery);
         state.poll_scan();
@@ -654,7 +655,7 @@ impl App {
                     }
                 }
 
-                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                if escape_requested {
                     close = true;
                 }
             });

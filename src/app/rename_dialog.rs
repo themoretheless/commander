@@ -19,6 +19,7 @@ impl App {
                 focused: false,
             });
         }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Rename);
 
         let Some(state) = &mut self.renaming else {
             return;
@@ -113,11 +114,10 @@ impl App {
                     }
 
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
                     if enter && can_commit {
                         commit = true;
                     }
-                    if esc {
+                    if escape_requested {
                         cancel = true;
                     }
                 });

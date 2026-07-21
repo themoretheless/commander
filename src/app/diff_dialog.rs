@@ -63,6 +63,7 @@ impl App {
                 }
             }
         }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Diff);
         let Some(state) = &self.diff else {
             return;
         };
@@ -150,7 +151,7 @@ impl App {
                             .corner_radius(CornerRadius::ZERO),
                         )
                         .clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        || escape_requested
                     {
                         close = true;
                     }

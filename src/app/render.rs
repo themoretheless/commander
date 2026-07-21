@@ -1,6 +1,121 @@
 use super::*;
 use crate::panel::{FacetSet, KindFacet};
 
+#[derive(Default)]
+pub(crate) struct PanelRenderOutcome {
+    pub tree_toggle: bool,
+    pub context_menu: Option<crate::provider_runtime::ContextMenuUiEffect>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_text_preview(
+    ui: &mut egui::Ui,
+    path: &std::path::Path,
+    content: Option<&str>,
+    image_cache: &mut crate::image_cache::ImageCache,
+    t: &ThemeColors,
+    panel_side: &str,
+    close_preview: &mut bool,
+) {
+    let load_state = image_cache.text_preview_load_state(path);
+    Frame::NONE
+        .fill(t.bg_panel)
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                    )
+                    .size(12.0)
+                    .strong()
+                    .color(t.text_primary),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("✕").clicked() {
+                        *close_preview = true;
+                    }
+                });
+            });
+            ui.add(egui::Separator::default().spacing(4.0));
+
+            match load_state {
+                crate::image_cache::TextPreviewLoadState::Idle
+                | crate::image_cache::TextPreviewLoadState::Debouncing
+                | crate::image_cache::TextPreviewLoadState::Loading => {
+                    ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.spinner();
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Loading preview")
+                                    .size(11.0)
+                                    .color(t.text_muted),
+                            );
+                        });
+                    });
+                }
+                crate::image_cache::TextPreviewLoadState::Waiting => {
+                    ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.spinner();
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Finishing the previous preview")
+                                    .size(11.0)
+                                    .color(t.text_muted),
+                            );
+                        });
+                    });
+                }
+                crate::image_cache::TextPreviewLoadState::Failed(error) => {
+                    ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new("Preview unavailable")
+                                    .size(13.0)
+                                    .strong()
+                                    .color(t.text_primary),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(error.message())
+                                    .size(11.0)
+                                    .color(t.text_secondary),
+                            );
+                            ui.add_space(10.0);
+                            if ui.button("\u{21bb} Retry").clicked() {
+                                image_cache.retry_text_preview(path);
+                                ui.ctx().request_repaint();
+                            }
+                        });
+                    });
+                }
+                crate::image_cache::TextPreviewLoadState::Ready => {
+                    if let Some(content) = content {
+                        egui::ScrollArea::both()
+                            .id_salt(format!("text_preview_{}", panel_side))
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| {
+                                ui.style_mut().interaction.selectable_labels = true;
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(content)
+                                            .size(12.0)
+                                            .font(egui::FontId::monospace(12.0))
+                                            .color(t.text_secondary),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                    }
+                }
+            }
+        });
+}
+
 impl App {
     /// A row of toggleable quick-filter chips under the filter box.
     fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) -> bool {
@@ -112,8 +227,8 @@ impl App {
         panel.facets != before
     }
 
-    /// Render one file panel. Returns `true` if the tree-sidebar toggle
-    /// button was clicked (the tree itself is owned by [`App`]).
+    /// Render one file panel and return deferred UI effects after its borrows
+    /// end (the tree and context-menu port are owned by [`App`]).
     // The arguments are mutable borrows of disjoint `self` fields (panel,
     // image_cache) plus the shared theme/opener; a bundling struct can't
     // hold them together without fighting the borrow checker.
@@ -122,18 +237,21 @@ impl App {
         panel: &mut PanelState,
         ui: &mut egui::Ui,
         is_active: bool,
+        close_preview_on_escape: bool,
         t: &ThemeColors,
         image_cache: &mut crate::image_cache::ImageCache,
         panel_side: &str,
         tree_open: bool,
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
+        context_menu: &dyn crate::ports::ContextMenuPort,
         opener: &dyn Fn(&std::path::Path),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
-    ) -> bool {
+    ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
+        let mut context_menu_effect = None;
 
         Frame::NONE
             .fill(panel_bg)
@@ -507,7 +625,7 @@ impl App {
                     // Borrow the preview rather than cloning its (up to 1MB) text
                     // body every frame; defer the close so the immutable borrow
                     // ends before we clear it.
-                    let mut close_preview = false;
+                    let mut close_preview = close_preview_on_escape;
                     match preview {
                         PreviewContent::Image(path) => {
                             let path = path.clone();
@@ -528,9 +646,7 @@ impl App {
                                     let resp = ui.add(egui::Image::from_texture(
                                         egui::load::SizedTexture::new(texture.id(), display_size),
                                     ));
-                                    if resp.clicked()
-                                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                                    {
+                                    if resp.clicked() {
                                         close_preview = true;
                                     }
                                 });
@@ -592,58 +708,25 @@ impl App {
                                     }
                                 }
                             }
-                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                close_preview = true;
-                            }
                         }
-                        PreviewContent::Text { path, content } => {
-                            // Text viewer
-                            Frame::NONE
-                                .fill(t.bg_panel)
-                                .inner_margin(Margin::same(8))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(
-                                                path.file_name()
-                                                    .map(|n| n.to_string_lossy().to_string())
-                                                    .unwrap_or_default(),
-                                            )
-                                            .size(12.0)
-                                            .strong()
-                                            .color(t.text_primary),
-                                        );
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if ui.small_button("✕").clicked()
-                                                    || ui
-                                                        .input(|i| i.key_pressed(egui::Key::Escape))
-                                                {
-                                                    close_preview = true;
-                                                }
-                                            },
-                                        );
-                                    });
-                                    ui.add(egui::Separator::default().spacing(4.0));
-
-                                    egui::ScrollArea::both()
-                                        .id_salt(format!("text_preview_{}", panel_side))
-                                        .auto_shrink([false; 2])
-                                        .show(ui, |ui| {
-                                            ui.style_mut().interaction.selectable_labels = true;
-                                            ui.add(
-                                                egui::Label::new(
-                                                    egui::RichText::new(content)
-                                                        .size(12.0)
-                                                        .font(egui::FontId::monospace(12.0))
-                                                        .color(t.text_secondary),
-                                                )
-                                                .wrap(),
-                                            );
-                                        });
-                                });
-                        }
+                        PreviewContent::Pending(identity) => render_text_preview(
+                            ui,
+                            &identity.path,
+                            None,
+                            image_cache,
+                            t,
+                            panel_side,
+                            &mut close_preview,
+                        ),
+                        PreviewContent::Text { identity, content } => render_text_preview(
+                            ui,
+                            &identity.path,
+                            Some(content.as_ref()),
+                            image_cache,
+                            t,
+                            panel_side,
+                            &mut close_preview,
+                        ),
                         PreviewContent::Info(card) => {
                             Frame::NONE
                                 .fill(t.bg_panel)
@@ -659,10 +742,7 @@ impl App {
                                         ui.with_layout(
                                             Layout::right_to_left(Align::Center),
                                             |ui| {
-                                                if ui.small_button("✕").clicked()
-                                                    || ui
-                                                        .input(|i| i.key_pressed(egui::Key::Escape))
-                                                {
+                                                if ui.small_button("✕").clicked() {
                                                     close_preview = true;
                                                 }
                                             },
@@ -708,18 +788,37 @@ impl App {
                         }
                     }
                     if close_preview {
+                        if let Some(
+                            PreviewContent::Pending(identity)
+                            | PreviewContent::Text { identity, .. },
+                        ) = panel.preview.as_ref()
+                        {
+                            image_cache.cancel_text_preview_if_active(identity);
+                        }
                         panel.preview = None;
                     }
                     return;
                 }
 
                 // File list
-                Self::render_file_list(
-                    ui, panel, is_active, t, panel_side, size_bars, compare, opener, dragging,
+                context_menu_effect = Self::render_file_list(
+                    ui,
+                    panel,
+                    is_active,
+                    t,
+                    panel_side,
+                    size_bars,
+                    compare,
+                    context_menu,
+                    opener,
+                    dragging,
                     metrics,
                 );
             });
 
-        tree_toggle
+        PanelRenderOutcome {
+            tree_toggle,
+            context_menu: context_menu_effect,
+        }
     }
 }

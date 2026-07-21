@@ -4,14 +4,17 @@
 //! only renders this state and forwards [`Command`]s / notify callbacks.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+
+mod transfer_queue;
+
+pub use transfer_queue::QueueRow;
 
 use crate::command::Command;
 use crate::panel::{self, FileEntry, PanelState, PreviewContent};
 use crate::scan::{self, FlatList};
 use crate::transfer::{
-    self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferProgress,
-    TransferSpec, TransferState,
+    self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferSpec,
+    TransferState,
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -105,24 +108,6 @@ impl PendingTransfer {
             crate::fs_util::SpaceVerdict::WontFit { .. }
         )
     }
-}
-
-/// One transfer waiting in (or running from) the queue: the fully-built spec
-/// plus the undo action to record if it finishes cleanly (a user Move) or
-/// `None` for copies and undo/redo-driven transfers.
-pub struct QueuedJob {
-    spec: TransferSpec,
-    undo: Option<crate::undo::Action>,
-    submitted: crate::operation_view::SubmittedSummary,
-}
-
-/// One row for the queue panel: enough to label and act on a job without
-/// exposing the opqueue/transfer internals to the UI layer.
-pub struct QueueRow {
-    pub id: crate::opqueue::JobId,
-    pub label: String,
-    pub summary: crate::operation_view::SubmittedSummary,
-    pub state: crate::opqueue::JobState,
 }
 
 /// Pending file operation awaiting user confirmation.
@@ -254,7 +239,7 @@ pub struct Workspace {
     /// runs one job at a time (concurrency cap 1 for now) and `poll_transfer`
     /// drains the next when the active one finishes. Replaces the old ad-hoc
     /// single-slot sync follow-up.
-    queue: crate::opqueue::Queue<QueuedJob>,
+    queue: crate::opqueue::Queue<transfer_queue::QueuedJob>,
     /// The queue job currently spawned as `active_transfer`, so it can be
     /// marked done/failed when the worker finishes.
     running_job: Option<crate::opqueue::JobId>,
@@ -563,6 +548,7 @@ impl Workspace {
         };
 
         let active_transfer = self.active_transfer.is_some();
+        let transfer_queue_busy = self.has_unfinished_transfer_work();
         let pending_operation = self.pending_op.is_some();
         let safe_state = self.mutations_blocked();
         let (left_read_only, right_read_only) = self.pane_read_only();
@@ -570,7 +556,7 @@ impl Workspace {
             ActivePanel::Left => (left_read_only, right_read_only),
             ActivePanel::Right => (right_read_only, left_read_only),
         };
-        let can_transfer_into_cursor_folder = !active_transfer
+        let can_transfer_into_cursor_folder = !transfer_queue_busy
             && !pending_operation
             && !safe_state
             && cursor.is_some_and(|target| target.is_dir)
@@ -616,7 +602,7 @@ impl Workspace {
             safe_state,
             pending_operation,
             active_transfer,
-            transfer_queue_busy: active_transfer || self.queued_count() > 0,
+            transfer_queue_busy,
             active_read_only,
             inactive_read_only,
         }
@@ -647,6 +633,7 @@ impl Workspace {
         let safe_state = self.mutations_blocked();
         let pending_operation = self.pending_op.is_some();
         let active_transfer = self.active_transfer.is_some();
+        let transfer_queue_busy = self.has_unfinished_transfer_work();
         let (left_read_only, right_read_only) = self.pane_read_only();
         let (active_read_only, inactive_read_only) = match self.active {
             ActivePanel::Left => (left_read_only, right_read_only),
@@ -668,7 +655,7 @@ impl Workspace {
             can_go_forward: active.can_go_forward(),
             can_transfer_into_cursor_folder: !safe_state
                 && !pending_operation
-                && !active_transfer
+                && !transfer_queue_busy
                 && cursor.is_some_and(|target| target.is_dir)
                 && has_transfer_source,
             can_undo: self.stack.can_undo(),
@@ -678,7 +665,7 @@ impl Workspace {
             safe_state,
             pending_operation,
             active_transfer,
-            transfer_queue_busy: active_transfer || self.queued_count() > 0,
+            transfer_queue_busy,
             active_read_only,
             inactive_read_only,
             ..crate::command::CommandContext::default()
@@ -1124,19 +1111,15 @@ impl Workspace {
     }
 
     /// Delete is not queue-backed, so it is available only while no operation
-    /// is pending or running.
+    /// is pending and no queued, paused, or running transfer exists.
     pub fn can_request_delete(&self) -> bool {
-        self.pending_op.is_none() && self.active_transfer.is_none() && !self.mutations_blocked()
+        self.pending_op.is_none()
+            && !self.has_unfinished_transfer_work()
+            && !self.mutations_blocked()
     }
 
     pub fn mutations_blocked(&self) -> bool {
         self.safe_state.is_some()
-    }
-
-    pub fn acknowledge_safe_state(&mut self) {
-        if let Some(state) = self.safe_state.take() {
-            self.reviewed_safe_operation = Some(state.operation_id);
-        }
     }
 
     fn ensure_matching_recovery_review(
@@ -1167,7 +1150,7 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) -> Result<usize, String> {
         self.ensure_matching_recovery_review(operation_id)?;
-        if self.active_transfer.is_some() || self.queued_count() > 0 {
+        if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before resuming recovery".to_string());
         }
         let spec = crate::operation_journal::build_resume_spec(operation_id)?;
@@ -1183,7 +1166,7 @@ impl Workspace {
         operation_id: &crate::operation::OperationId,
     ) -> Result<crate::operation_journal::RepairPlan, String> {
         self.ensure_matching_recovery_review(operation_id)?;
-        if self.active_transfer.is_some() || self.queued_count() > 0 {
+        if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before rolling back recovery".to_string());
         }
         crate::operation_journal::repair_plan(operation_id)?;
@@ -1203,8 +1186,8 @@ impl Workspace {
                 "Complete the current integrity review before cleaning staging".to_string(),
             );
         }
-        if self.active_transfer.is_some() {
-            return Err("Wait for the active transfer before cleaning staging".to_string());
+        if self.has_unfinished_transfer_work() {
+            return Err("Wait for the transfer queue before cleaning staging".to_string());
         }
         crate::operation_journal::clean_orphan(orphan)?;
         self.left.refresh();
@@ -1370,271 +1353,6 @@ impl Workspace {
         self.pump_queue(notify);
     }
 
-    /// Append a transfer to the queue without starting it.
-    fn enqueue_only(&mut self, spec: TransferSpec, undo: Option<crate::undo::Action>) {
-        let (kind, verb) = match spec.kind {
-            TransferKind::Copy => (crate::opqueue::JobKind::Copy, "Copy"),
-            TransferKind::Move => (crate::opqueue::JobKind::Move, "Move"),
-        };
-        let paths = spec
-            .entries
-            .iter()
-            .map(|entry| entry.path.clone())
-            .collect::<Vec<_>>();
-        let submitted =
-            crate::operation_view::SubmittedSummary::capture(verb, &paths, spec.target.clone());
-        self.queue.enqueue(
-            kind,
-            QueuedJob {
-                spec,
-                undo,
-                submitted,
-            },
-        );
-    }
-
-    /// Start the next queued job if no transfer is active (concurrency cap 1).
-    /// The single place that spawns the worker, so the running job, its undo
-    /// action and `active_transfer` always move together.
-    fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
-        if self.active_transfer.is_some() || self.mutations_blocked() {
-            return;
-        }
-        let Some(id) = self.queue.dequeue_next() else {
-            return;
-        };
-        // Clone the spec/undo out of the (now Running) job to launch it.
-        // `job.spec` is the opqueue payload (a QueuedJob); its `.spec` is the
-        // TransferSpec and `.undo` the recorded action.
-        let Some(job) = self.queue.get(id) else {
-            return;
-        };
-        let spec = job.spec.spec.clone();
-        let submitted = job.spec.submitted.clone();
-        self.reviewed_safe_operation = None;
-        self.pending_undo_action = job.spec.undo.clone();
-        self.running_job = Some(id);
-        // The worker sizes the entries once and fills in `total_bytes`; passing
-        // 0 here keeps a same-volume move from walking the tree twice (once for
-        // the denominator, once for the rename's progress).
-        let mut initial_progress = TransferProgress::unknown(spec.entries.len());
-        initial_progress.submitted = Some(submitted);
-        let progress = Arc::new(Mutex::new(initial_progress));
-        self.active_transfer = Some(progress.clone());
-        transfer::spawn_transfer(spec, progress, notify);
-    }
-
-    /// Number of transfers waiting behind the active one (for a queued-count
-    /// indicator).
-    pub fn queued_count(&self) -> usize {
-        self.queue
-            .jobs()
-            .iter()
-            .filter(|j| j.state == crate::opqueue::JobState::Pending)
-            .count()
-    }
-
-    /// Cancel active transfer.
-    pub fn cancel_transfer(&mut self) {
-        if let Some(ref state) = self.active_transfer {
-            // A poisoned progress mutex (worker thread panicked) must not panic
-            // the UI thread in turn; recover the guard and flag cancellation.
-            let mut s = crate::lock_util::recover(state);
-            // Ignore a cancel that races in after the worker already finished
-            // cleanly: flagging it would demote a completed Move to "not clean"
-            // in poll_transfer and silently drop its undo entry.
-            s.request_cancel();
-        }
-    }
-
-    /// Finish the current top-level entry, then checkpoint and stop before the
-    /// worker accepts another entry from this transfer.
-    pub fn stop_transfer_after_current(&mut self) {
-        if let Some(state) = &self.active_transfer {
-            let mut progress = crate::lock_util::recover(state);
-            progress.request_stop();
-        }
-    }
-
-    /// Auto-close finished transfers. A transfer that finished with errors
-    /// stays open so the user can read the error list (dismissed via OK).
-    /// Returns `true` when a clean Move just finished, so the UI can raise the
-    /// undo toast.
-    pub fn poll_transfer(&mut self, notify: impl Fn() + Send + 'static) -> bool {
-        let (close, clean, had_errors, cancelled, placements, safe_state) = self
-            .active_transfer
-            .as_ref()
-            .map(|s| {
-                // Recover from a poisoned lock rather than panicking the UI.
-                let s = crate::lock_util::recover(s);
-                // Close only once the worker has set `finished` (it now does so
-                // even on cancel, after its cleanup), so we never tear the
-                // shared state out from under a still-running cleanup pass. A
-                // finished run with errors stays open so the user can read them.
-                let clean = s.finished && s.errors.is_empty() && !s.cancelled && !s.stopped;
-                let errs = !s.errors.is_empty();
-                // Only a clean Move needs its placements (to record undo).
-                let placements = if clean {
-                    s.placements.clone()
-                } else {
-                    Vec::new()
-                };
-                let failures = if s.finished {
-                    s.failures
-                        .iter()
-                        .filter(|failure| {
-                            failure.class == crate::operation::FailureClass::IntegrityUncertain
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let safe_state = if failures.is_empty() {
-                    None
-                } else {
-                    let mut paths = failures
-                        .iter()
-                        .filter_map(|failure| failure.path.clone())
-                        .collect::<Vec<_>>();
-                    paths.sort();
-                    paths.dedup();
-                    Some(crate::operation::SafeState {
-                        operation_id: s.operation_id.clone().unwrap_or_else(|| {
-                            crate::operation::OperationId("unknown-operation".to_string())
-                        }),
-                        reason: failures[0].message.clone(),
-                        paths,
-                        failures,
-                    })
-                };
-                (
-                    s.finished && (s.cancelled || s.stopped || s.errors.is_empty()),
-                    clean,
-                    errs,
-                    s.cancelled || s.stopped,
-                    placements,
-                    safe_state,
-                )
-            })
-            .unwrap_or((false, false, false, false, Vec::new(), None));
-
-        if self.safe_state.is_none()
-            && let Some(safe_state) = safe_state
-            && self.reviewed_safe_operation.as_ref() != Some(&safe_state.operation_id)
-        {
-            self.safe_state = Some(safe_state);
-            self.cancel_pending_jobs();
-        }
-
-        if !close {
-            return false;
-        }
-        self.active_transfer = None;
-        // Retire the finished job from the queue so a free slot opens up.
-        if let Some(id) = self.running_job.take() {
-            if cancelled {
-                // Record the truthful terminal state, and stop the rest of the
-                // pipeline: a user Cancel means "stop", not "skip to the next
-                // queued op" (e.g. the second pass of a two-way sync).
-                self.queue.cancel(id);
-                self.cancel_pending_jobs();
-            } else if had_errors {
-                self.queue.fail(id);
-            } else {
-                self.queue.complete(id);
-            }
-            self.queue.clear_finished();
-        }
-        self.left.refresh();
-        self.right.refresh();
-        self.finish_history_transition(clean);
-        // Record the move on the history stack on a clean run, built from where
-        // the files ACTUALLY landed: a KeepBoth conflict renames to "name copy",
-        // which is not faithfully reversible, so those entries are dropped (and
-        // an all-KeepBoth move raises no undo toast). Read this BEFORE pumping
-        // the next job (which overwrites `pending_undo_action`).
-        let raised = if clean {
-            match self.pending_undo_action.take() {
-                Some(crate::undo::Action::Move { .. }) => {
-                    let pairs = faithfully_undoable(placements);
-                    if pairs.is_empty() {
-                        false
-                    } else {
-                        self.stack.push(crate::undo::Action::Move { pairs });
-                        true
-                    }
-                }
-                Some(crate::undo::Action::Gather { folder, .. }) => {
-                    let pairs = faithfully_undoable(placements);
-                    if pairs.is_empty() {
-                        false
-                    } else {
-                        self.stack
-                            .push(crate::undo::Action::Gather { folder, pairs });
-                        true
-                    }
-                }
-                Some(action) => {
-                    self.stack.push(action);
-                    true
-                }
-                None => false,
-            }
-        } else {
-            self.pending_undo_action = None;
-            false
-        };
-        // Start the next queued transfer, if any.
-        self.pump_queue(notify);
-        raised
-    }
-
-    /// Cancel every still-pending queued job. Used when the user cancels the
-    /// active transfer: the queued work (e.g. a two-way sync's second pass) was
-    /// part of the same intent, so a Cancel stops it too rather than letting
-    /// `pump_queue` start it next.
-    fn cancel_pending_jobs(&mut self) {
-        let pending: Vec<crate::opqueue::JobId> = self
-            .queue
-            .jobs()
-            .iter()
-            .filter(|j| j.state == crate::opqueue::JobState::Pending)
-            .map(|j| j.id)
-            .collect();
-        for id in pending {
-            self.queue.cancel(id);
-        }
-    }
-
-    /// Cancel only work that has not started. The active worker keeps running,
-    /// matching the Operations Center's consequence-specific action label.
-    pub fn cancel_pending_transfers(&mut self) {
-        self.cancel_pending_jobs();
-        self.queue.clear_finished();
-    }
-
-    /// Dismiss a finished transfer the user is acknowledging via the OK button.
-    /// `poll_transfer` deliberately leaves a finished-with-errors transfer open
-    /// (so the error list can be read) and does NOT retire its queue job; this
-    /// does that retirement and starts the next queued job, so acknowledging an
-    /// errored transfer can never wedge the queue (running_job stuck Running,
-    /// `runnable()` then forever blocked at the concurrency cap).
-    pub fn dismiss_transfer(&mut self, notify: impl Fn() + Send + 'static) {
-        self.active_transfer = None;
-        if let Some(id) = self.running_job.take() {
-            // It is shown via OK only because it finished with errors.
-            self.queue.fail(id);
-            self.queue.clear_finished();
-        }
-        // An errored/aborted run records no undo history.
-        self.pending_undo_action = None;
-        self.finish_history_transition(false);
-        self.left.refresh();
-        self.right.refresh();
-        self.pump_queue(notify);
-    }
-
     fn finish_history_transition(&mut self, clean: bool) {
         let Some(transition) = self.pending_history_transition.take() else {
             return;
@@ -1649,68 +1367,6 @@ impl Workspace {
             // only container we can prove was not populated by foreign data.
             let _ = std::fs::remove_dir(folder);
         }
-    }
-
-    /// Snapshot of every job in the transfer queue, in priority order, for
-    /// the queue panel to render.
-    pub fn queue_snapshot(&self) -> Vec<QueueRow> {
-        self.queue
-            .jobs()
-            .iter()
-            .map(|j| {
-                let summary = j.spec.submitted.clone();
-                QueueRow {
-                    id: j.id,
-                    label: summary.label(),
-                    summary,
-                    state: j.state,
-                }
-            })
-            .collect()
-    }
-
-    /// Hold a `Pending` job back so it waits for an explicit resume.
-    pub fn queue_pause(&mut self, id: crate::opqueue::JobId) {
-        self.queue.pause(id);
-    }
-
-    /// Return a held job to the `Pending` pool.
-    pub fn queue_resume(&mut self, id: crate::opqueue::JobId) {
-        self.queue.resume(id);
-    }
-
-    /// Move a `Pending` job to the front so it runs next.
-    pub fn queue_promote(&mut self, id: crate::opqueue::JobId) {
-        self.queue.promote(id);
-    }
-
-    /// Swap a `Pending` job with its immediate neighbour in queue order.
-    /// `offset` is `-1` (move up / earlier) or `1` (move down / later).
-    pub fn queue_move(&mut self, id: crate::opqueue::JobId, offset: i32) {
-        let Some(from) = self.queue.jobs().iter().position(|j| j.id == id) else {
-            return;
-        };
-        let last = self.queue.jobs().len() as i32 - 1;
-        let to = (from as i32 + offset).clamp(0, last.max(0)) as usize;
-        self.queue.reorder(id, to);
-    }
-
-    /// Cancel a queued job. The running job is stopped through the live
-    /// transfer (so its worker thread actually stops, same as the transfer
-    /// dialog's own Cancel); a pending/paused job is simply dropped from the
-    /// queue, since no worker exists for it yet.
-    pub fn queue_cancel(&mut self, id: crate::opqueue::JobId) {
-        if self.running_job == Some(id) {
-            self.cancel_transfer();
-        } else {
-            self.queue.cancel(id);
-            self.queue.clear_finished();
-        }
-    }
-
-    /// Drop every finished (Done/Failed/Cancelled) job from the queue panel.
-    pub fn queue_clear_finished(&mut self) {
-        self.queue.clear_finished();
     }
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
@@ -1746,7 +1402,7 @@ impl Workspace {
         if self.mutations_blocked() {
             return Some("Safe-state review is required before history replay".to_string());
         }
-        if self.active_transfer.is_some() || self.queued_count() > 0 {
+        if self.has_unfinished_transfer_work() {
             return Some("Wait for the transfer queue before replaying history".to_string());
         }
         None
@@ -2306,6 +1962,9 @@ impl Workspace {
         if context.targets.is_empty() {
             return Err("Nothing selected to rename".into());
         }
+        if let Some(error) = crate::rename::regex_error(rule) {
+            return Err(format!("Invalid regex: {error}"));
+        }
         let existing = Self::dir_names(&context.dir);
         let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule);
         if plans
@@ -2526,7 +2185,8 @@ impl Workspace {
     /// longer be read are kept on the shelf (not silently discarded), and the
     /// outcome reports both how many copies started and how many were left.
     pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
-        if self.shelf.is_empty() || self.active_transfer.is_some() || self.mutations_blocked() {
+        if self.shelf.is_empty() || self.has_unfinished_transfer_work() || self.mutations_blocked()
+        {
             return ShelfDrainOutcome::default();
         }
         let dest = self.active_panel_ref().current_path.clone();
@@ -2756,14 +2416,19 @@ impl Workspace {
             return;
         };
 
-        let shown = match &target.preview {
-            Some(PreviewContent::Image(p)) => Some(p.as_path()),
-            Some(PreviewContent::Text { path, .. }) => Some(path.as_path()),
+        let shown_matches = match &target.preview {
+            Some(PreviewContent::Image(path)) => {
+                entry.is_image() && path.as_path() == entry.path.as_path()
+            }
+            Some(PreviewContent::Pending(identity))
+            | Some(PreviewContent::Text { identity, .. }) => {
+                !entry.is_image() && identity.matches_entry(entry)
+            }
             // The Get-Info card is a deliberate snapshot; don't auto-follow it.
             Some(PreviewContent::Info(_)) => return,
-            None => None,
+            None => false,
         };
-        if shown == Some(entry.path.as_path()) {
+        if shown_matches {
             return;
         }
         target.preview = panel::make_preview(entry);
@@ -2821,7 +2486,10 @@ impl Workspace {
     pub fn drop_dragged_as(&mut self, kind: TransferKind, notify: impl Fn() + Send + 'static) {
         // Ignore drops while a transfer or another dialog is in flight, so we
         // never stack a second operation over the first.
-        if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
+        if self.has_unfinished_transfer_work()
+            || self.pending_op.is_some()
+            || self.mutations_blocked()
+        {
             self.clear_drag_state();
             return;
         }
@@ -2882,7 +2550,10 @@ impl Workspace {
         kind: TransferKind,
         notify: impl Fn() + Send + 'static,
     ) {
-        if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
+        if self.has_unfinished_transfer_work()
+            || self.pending_op.is_some()
+            || self.mutations_blocked()
+        {
             return;
         }
         let Some((paths, target)) = self.keyboard_drop_plan() else {
@@ -2949,7 +2620,9 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use crate::transfer::TransferProgress;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
         let mut ws = Workspace::with_opener(
@@ -3495,6 +3168,27 @@ mod tests {
     }
 
     #[test]
+    fn apply_batch_rename_rejects_invalid_regex_before_mutation() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let original = l.file("report.txt", "content");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(original.clone());
+        let invalid = crate::rename::RenameRule {
+            find: "(".to_string(),
+            replace: "renamed".to_string(),
+            regex: true,
+            ..Default::default()
+        };
+
+        let error = apply_batch_rename(&mut ws, &invalid).unwrap_err();
+
+        assert!(error.starts_with("Invalid regex:"), "{error}");
+        assert!(original.is_file());
+        assert!(!l.path().join("renamed").exists());
+        assert!(!ws.stack.can_undo());
+    }
+
+    #[test]
     fn apply_sync_mirror_copies_left_only_file_right() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("new.txt", "hello");
@@ -3540,7 +3234,7 @@ mod tests {
             .queue
             .jobs()
             .iter()
-            .filter_map(|job| job.spec.spec.group_id.clone())
+            .filter_map(|job| job.spec.group_id())
             .collect::<Vec<_>>();
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0], groups[1], "both passes share one intent id");
@@ -3802,7 +3496,15 @@ mod tests {
         let rows = ws.queue_snapshot();
         let (running_id, pending1, pending2) = (rows[0].id, rows[1].id, rows[2].id);
 
-        // Pause the first pending job; the running one is untouched.
+        // Workspace only supports pausing work that has not started; attempting
+        // to pause the live row must not desynchronise it from active_transfer.
+        ws.queue_pause(running_id);
+        assert_eq!(
+            ws.queue_snapshot()[0].state,
+            crate::opqueue::JobState::Running
+        );
+
+        // Pause the first pending job; the running one remains untouched.
         ws.queue_pause(pending1);
         let rows = ws.queue_snapshot();
         assert_eq!(rows[0].state, crate::opqueue::JobState::Running);
@@ -3814,7 +3516,7 @@ mod tests {
         assert_eq!(ids_after_move, vec![running_id, pending2, pending1]);
 
         // Resume the paused job.
-        ws.queue_resume(pending1);
+        ws.queue_resume(pending1, || {});
         let resumed = ws
             .queue_snapshot()
             .into_iter()
@@ -3826,6 +3528,77 @@ mod tests {
         assert!(r.path().join("a.txt").is_file());
         assert!(r.path().join("b.txt").is_file());
         assert!(r.path().join("c.txt").is_file());
+    }
+
+    #[test]
+    fn resuming_the_only_paused_job_starts_it_when_idle() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let source = l.file("paused.txt", "content");
+        let meta = std::fs::metadata(&source).unwrap();
+        let entry = FileEntry::from_meta(source, &meta).unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.enqueue_copy(
+            vec![entry],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+        );
+        let id = ws.queue_snapshot()[0].id;
+        ws.queue_pause(id);
+
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0, "paused work is not runnable");
+        assert_eq!(ws.unfinished_queue_count(), 1);
+
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let notify_count = Arc::clone(&notifications);
+        ws.queue_resume(id, move || {
+            notify_count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(ws.active_transfer.is_some(), "resume fills the idle slot");
+        assert_eq!(
+            ws.queue_snapshot()[0].state,
+            crate::opqueue::JobState::Running
+        );
+        drain_transfers(&mut ws);
+        assert!(r.path().join("paused.txt").is_file());
+        assert!(
+            notifications.load(Ordering::SeqCst) > 0,
+            "resumed worker forwards repaint notifications"
+        );
+    }
+
+    #[test]
+    fn paused_queue_blocks_recovery_history_and_synchronous_mutations() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let source = l.file("held.txt", "content");
+        let meta = std::fs::metadata(&source).unwrap();
+        let entry = FileEntry::from_meta(source, &meta).unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.enqueue_copy(
+            vec![entry],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+        );
+        let id = ws.queue_snapshot()[0].id;
+        ws.queue_pause(id);
+
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+        assert_eq!(ws.unfinished_queue_count(), 1);
+        assert!(ws.has_unfinished_transfer_work());
+        assert!(!ws.can_request_delete());
+        let command_context = ws.command_context();
+        assert!(command_context.transfer_queue_busy);
+        assert!(!crate::command::availability(Command::RequestDelete, &command_context).enabled);
+
+        let operation_id = crate::operation::OperationId("paused-guard".to_string());
+        let resume_error = ws.resume_recovery(&operation_id, || {}).unwrap_err();
+        assert!(resume_error.contains("Wait for the transfer queue"));
+        let rollback_error = ws.rollback_recovery(&operation_id).unwrap_err();
+        assert!(rollback_error.contains("Wait for the transfer queue"));
+        let undo_error = ws.perform_undo(|| {}).unwrap_err();
+        assert!(undo_error.contains("Wait for the transfer queue"));
     }
 
     #[test]
@@ -4012,6 +3785,50 @@ mod tests {
     }
 
     #[test]
+    fn integrity_safe_state_cancels_a_paused_tail() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let source = l.file("held.txt", "content");
+        let meta = std::fs::metadata(&source).unwrap();
+        let entry = FileEntry::from_meta(source.clone(), &meta).unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.enqueue_copy(
+            vec![entry],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+        );
+        let paused_id = ws.queue_snapshot()[0].id;
+        ws.queue_pause(paused_id);
+
+        let progress = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = progress.lock().unwrap();
+            state.operation_id = Some(crate::operation::OperationId(
+                "uncertain-with-paused-tail".to_string(),
+            ));
+            state.finished = true;
+            state.errors.push("placement uncertain".to_string());
+            state
+                .failures
+                .push(crate::operation::ClassifiedFailure::message(
+                    crate::operation::FailureClass::IntegrityUncertain,
+                    Some(source),
+                    "placement uncertain",
+                ));
+        }
+        ws.active_transfer = Some(progress);
+
+        assert!(!ws.poll_transfer(|| {}));
+        assert!(ws.safe_state.is_some());
+        assert_eq!(ws.unfinished_queue_count(), 0);
+        let paused_tail = ws
+            .queue_snapshot()
+            .into_iter()
+            .find(|row| row.id == paused_id)
+            .unwrap();
+        assert_eq!(paused_tail.state, crate::opqueue::JobState::Cancelled);
+    }
+
+    #[test]
     fn faithfully_undoable_drops_keep_both_renames() {
         let pairs = vec![
             // A clean move kept its name and is reversible.
@@ -4071,7 +3888,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_a_transfer_drops_the_queued_jobs() {
+    fn cancelling_a_pipeline_drops_its_paused_tail() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let a = l.file("a.txt", "AAA");
         let b = l.file("b.txt", "BBBB");
@@ -4092,7 +3909,10 @@ mod tests {
             OverwritePolicy::KeepBoth,
             || {},
         );
-        assert_eq!(ws.queued_count(), 1, "second copy queued behind the first");
+        let tail_id = ws.queue_snapshot()[1].id;
+        ws.queue_pause(tail_id);
+        assert_eq!(ws.queued_count(), 0, "paused tail is not runnable");
+        assert_eq!(ws.unfinished_queue_count(), 2);
 
         // Simulate the user cancelling the active transfer and the worker
         // stopping: flag it cancelled+finished, then poll.
@@ -4105,11 +3925,8 @@ mod tests {
         ws.poll_transfer(|| {});
 
         assert!(ws.active_transfer.is_none(), "cancelled transfer closed");
-        assert_eq!(
-            ws.queued_count(),
-            0,
-            "a Cancel stops the queued work too, not just the active op"
-        );
+        assert_eq!(ws.unfinished_queue_count(), 0);
+        assert!(ws.queue_snapshot().is_empty());
         assert!(
             !r.path().join("b.txt").exists(),
             "the queued copy never started"
@@ -4803,7 +4620,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_follows_cursor_and_is_cached_by_path() {
+    fn preview_follows_cursor_without_reading_text_on_the_workspace_thread() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "alpha");
         l.file("b.txt", "beta");
@@ -4812,25 +4629,33 @@ mod tests {
         ws.left.cursor = 1; // a.txt
         ws.execute(Command::TogglePreview);
         match &ws.right.preview {
-            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "alpha"),
-            _ => panic!("expected text preview for a.txt"),
+            Some(PreviewContent::Pending(identity)) => {
+                assert_eq!(identity.path, l.path().join("a.txt"));
+            }
+            other => panic!("expected pending text preview, got {other:?}"),
         }
 
-        // Preview follows the cursor.
+        // Preview follows the cursor by replacing only the pending identity.
         ws.left.cursor = 2; // b.txt
         ws.sync_preview();
-        match &ws.right.preview {
-            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "beta"),
-            _ => panic!("expected text preview for b.txt"),
-        }
+        let identity = match &ws.right.preview {
+            Some(PreviewContent::Pending(identity)) => {
+                assert_eq!(identity.path, l.path().join("b.txt"));
+                identity.clone()
+            }
+            other => panic!("expected pending text preview, got {other:?}"),
+        };
+        ws.right.preview = Some(PreviewContent::Text {
+            identity,
+            content: std::sync::Arc::from("beta"),
+        });
 
-        // Cached by path: the file is gone, but the cursor didn't move,
-        // so sync must NOT re-read the filesystem (a re-read would drop
-        // the preview).
+        // A ready preview survives while the cached listing identity is stable;
+        // sync_preview performs no filesystem read of its own.
         std::fs::remove_file(l.path().join("b.txt")).unwrap();
         ws.sync_preview();
         match &ws.right.preview {
-            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "beta"),
+            Some(PreviewContent::Text { content, .. }) => assert_eq!(content.as_ref(), "beta"),
             _ => panic!("preview must survive while the cursor is unchanged"),
         }
     }

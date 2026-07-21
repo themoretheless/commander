@@ -10,10 +10,12 @@ impl App {
         panel_side: &str,
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
+        context_menu: &dyn crate::ports::ContextMenuPort,
         opener: &dyn Fn(&std::path::Path),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
-    ) {
+    ) -> Option<crate::provider_runtime::ContextMenuUiEffect> {
+        let mut context_menu_effect = None;
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
@@ -132,7 +134,6 @@ impl App {
                 let mut open_path: Option<std::path::PathBuf> = None;
                 let mut drag_anchor: Option<std::path::PathBuf> = None;
                 let mut pending_drop_target: Option<std::path::PathBuf> = None;
-                let mut ctx_refresh = false;
                 let mut scrolled = false;
 
                 // Lock shared data once for all rows (clone Arc to avoid borrowing panel)
@@ -569,8 +570,11 @@ impl App {
                         }
                     });
 
-                    if row_resp.secondary_clicked() && crate::native_menu::show(&entry.path) {
-                        ctx_refresh = true;
+                    if row_resp.secondary_clicked() {
+                        context_menu_effect = crate::provider_runtime::request_context_menu(
+                            context_menu,
+                            &entry.path,
+                        );
                     }
 
                     if row_resp.double_clicked() {
@@ -625,9 +629,6 @@ impl App {
                 }
                 if let Some(target) = pending_drop_target {
                     panel.drop_target = Some(target);
-                }
-                if ctx_refresh {
-                    panel.refresh();
                 }
                 if let Some(path) = open_path {
                     opener(&path);
@@ -760,6 +761,7 @@ impl App {
                     });
                 });
             });
+        context_menu_effect
     }
 
     pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {

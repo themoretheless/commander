@@ -284,7 +284,8 @@ impl App {
             self.ws.queue_pause(id);
         }
         if let Some(id) = resume {
-            self.ws.queue_resume(id);
+            let ctx = ui.ctx().clone();
+            self.ws.queue_resume(id, move || ctx.request_repaint());
         }
         if let Some(id) = promote {
             self.ws.queue_promote(id);

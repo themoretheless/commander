@@ -3,44 +3,41 @@
 //! them to the workspace. No file-manager logic lives here.
 
 use super::*;
+use crate::accessibility::{
+    EscapeRoute, KeyboardRoute, ModalSurface, UiContract, UiContractState, consume_escape_route,
+    resolve_ui_contract, text_input_state, top_open_modal,
+};
 use crate::command::{Command, KeyCode, KeyPress, map_keys};
+
+fn keyboard_command_allowed(route: KeyboardRoute, command: Command) -> bool {
+    match route {
+        KeyboardRoute::Workspace => true,
+        KeyboardRoute::Transfer => {
+            matches!(command, Command::RequestCopy | Command::RequestMove)
+        }
+        KeyboardRoute::TextInput(_) | KeyboardRoute::Modal(_) => false,
+    }
+}
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
-        // A text field (e.g. the filter box) owns the keyboard:
-        // typing there must not trigger navigation/file-op hotkeys.
-        if ctx.egui_wants_keyboard_input() {
-            return;
-        }
-        // Dialogs own the keyboard too: they handle Enter/Esc themselves,
-        // and hotkeys must not fire underneath a modal window.
-        if self.ws.pending_op.is_some()
-            || self.renaming.is_some()
-            || self.mask_input.is_some()
-            || self.run_command.is_some()
-            || self.path_input.is_some()
-            || self.recent_input.is_some()
-            || self.palette_input.is_some()
-            || self.batch_rename.is_some()
-            || self.sync.is_some()
-            || self.duplicates.is_some()
-            || self.diff.is_some()
-            || self.treemap.is_some()
-            || self.find.is_some()
-            || self.saved_search_open
-        {
+        let contract = self.ui_contract(ctx);
+        if matches!(
+            contract.keyboard,
+            KeyboardRoute::TextInput(_) | KeyboardRoute::Modal(_)
+        ) {
             self.type_ahead = None;
             self.chord = None;
             return;
         }
         let presses = ctx.input(Self::collect_presses);
-        if self.ws.active_transfer.is_some() {
+        if contract.keyboard == KeyboardRoute::Transfer {
             // A transfer's progress window is effectively modal, but Copy/Move
             // stay live so a second transfer can be queued behind it instead
             // of the hotkey being dropped on the floor. Every other mapped key
             // gets direct feedback instead of failing silently.
             for cmd in map_keys(&presses) {
-                if matches!(cmd, Command::RequestCopy | Command::RequestMove) {
+                if keyboard_command_allowed(contract.keyboard, cmd) {
                     self.execute_key_command(ctx, cmd);
                 } else {
                     self.push_key_feedback(ctx, "Wait for the active transfer to finish");
@@ -55,6 +52,65 @@ impl App {
         }
         let claimed = self.handle_chords(ctx);
         self.handle_type_ahead(ctx, claimed);
+    }
+
+    pub(crate) fn ui_contract(&self, ctx: &egui::Context) -> UiContract {
+        let modal = top_open_modal(|surface| match surface {
+            ModalSurface::Transfer => self.ws.active_transfer.is_some(),
+            ModalSurface::SafeState => self.ws.safe_state.is_some(),
+            ModalSurface::Recovery => self.recovery.open || self.ws.recovery_request,
+            ModalSurface::History => {
+                self.history_preview.is_some() || self.ws.undo_request || self.ws.redo_request
+            }
+            ModalSurface::Confirmation => self.ws.pending_op.is_some(),
+            ModalSurface::Rename => self.renaming.is_some() || self.ws.rename_target.is_some(),
+            ModalSurface::BatchRename => {
+                self.batch_rename.is_some() || self.ws.batch_rename_request
+            }
+            ModalSurface::Sync => self.sync.is_some() || self.ws.sync_request,
+            ModalSurface::Duplicates => self.duplicates.is_some() || self.ws.duplicates_request,
+            ModalSurface::Diff => self.diff.is_some() || self.ws.diff_request,
+            ModalSurface::Treemap => self.treemap.is_some() || self.ws.treemap_request,
+            ModalSurface::Find => self.find.is_some() || self.ws.find_request,
+            ModalSurface::Archive => self.archive.is_some() || self.ws.archive_request.is_some(),
+            ModalSurface::SavedSearch => self.saved_search_open || self.ws.saved_search_request,
+            ModalSurface::Collections => {
+                self.collections_dialog.is_some() || self.ws.collections_request
+            }
+            ModalSurface::Mask => self.mask_input.is_some() || self.ws.mask_request,
+            ModalSurface::Path => self.path_input.is_some() || self.ws.path_request,
+            ModalSurface::Recent => self.recent_input.is_some() || self.ws.recent_request,
+            ModalSurface::RunCommand => self.run_command.is_some() || self.ws.run_command_request,
+            ModalSurface::Palette => self.palette_input.is_some() || self.ws.palette_request,
+        });
+        let active_left = self.ws.active == ActivePanel::Left;
+        let active_preview_open = if active_left {
+            self.ws.left.preview.is_some()
+        } else {
+            self.ws.right.preview.is_some()
+        };
+        resolve_ui_contract(UiContractState {
+            text_input: text_input_state(ctx),
+            modal,
+            active_preview_open,
+            focus_mode: self.focus_mode,
+        })
+    }
+
+    pub(crate) fn capture_escape_request(&mut self, ctx: &egui::Context) {
+        self.escape_request = if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.ui_contract(ctx).escape
+        } else {
+            EscapeRoute::None
+        };
+    }
+
+    pub(crate) fn take_escape_request(&mut self, owner: EscapeRoute) -> bool {
+        consume_escape_route(&mut self.escape_request, owner)
+    }
+
+    pub(crate) fn take_modal_escape(&mut self, owner: ModalSurface) -> bool {
+        self.take_escape_request(EscapeRoute::Modal(owner))
     }
 
     fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
@@ -264,3 +320,7 @@ impl App {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "../ui_contract.rs"]
+mod ui_contract;
