@@ -17,6 +17,7 @@ impl App {
     }
 
     pub(crate) fn show_history_dialog(&mut self, ctx: &egui::Context) {
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::History);
         let Some(mut state) = self.history_preview.take() else {
             return;
         };
@@ -189,7 +190,7 @@ impl App {
                     });
                 });
 
-                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                if escape_requested {
                     cancel = true;
                 }
                 if can_execute && ui.input(|input| input.key_pressed(egui::Key::Enter)) {

@@ -4,15 +4,19 @@
 //! only renders this state and forwards [`Command`]s / notify callbacks.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+
+mod transfer_queue;
+
+pub use transfer_queue::QueueRow;
 
 use crate::command::Command;
 use crate::panel::{self, FileEntry, PanelState, PreviewContent};
 use crate::scan::{self, FlatList};
 use crate::transfer::{
-    self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferProgress,
-    TransferSpec, TransferState,
+    self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferSpec,
+    TransferState,
 };
+use crate::ui_request::{UiModal, UiRequest};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ActivePanel {
@@ -49,6 +53,7 @@ pub struct PendingTransfer {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: crate::operation::DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     pub filesystem: Box<crate::filesystem_policy::OperationPreflight>,
@@ -106,24 +111,6 @@ impl PendingTransfer {
     }
 }
 
-/// One transfer waiting in (or running from) the queue: the fully-built spec
-/// plus the undo action to record if it finishes cleanly (a user Move) or
-/// `None` for copies and undo/redo-driven transfers.
-pub struct QueuedJob {
-    spec: TransferSpec,
-    undo: Option<crate::undo::Action>,
-    submitted: crate::operation_view::SubmittedSummary,
-}
-
-/// One row for the queue panel: enough to label and act on a job without
-/// exposing the opqueue/transfer internals to the UI layer.
-pub struct QueueRow {
-    pub id: crate::opqueue::JobId,
-    pub label: String,
-    pub summary: crate::operation_view::SubmittedSummary,
-    pub state: crate::opqueue::JobState,
-}
-
 /// Pending file operation awaiting user confirmation.
 pub enum PendingOp {
     Transfer(PendingTransfer),
@@ -168,6 +155,14 @@ enum ActionExecution {
     Started { cleanup_on_failure: Option<PathBuf> },
 }
 
+struct CommandCapabilityCache {
+    left_path: PathBuf,
+    right_path: PathBuf,
+    left_read_only: bool,
+    right_read_only: bool,
+    expires_at: std::time::Instant,
+}
+
 pub struct Workspace {
     pub left: PanelState,
     pub right: PanelState,
@@ -177,63 +172,13 @@ pub struct Workspace {
     pub safe_state: Option<crate::operation::SafeState>,
     reviewed_safe_operation: Option<crate::operation::OperationId>,
     pub durability_profile: crate::operation::DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
-    /// Set by [`Command::BeginRename`]; the UI picks this up to open the
-    /// inline rename editor seeded with this path, then clears it.
-    pub rename_target: Option<PathBuf>,
-    /// Set by [`Command::BeginSelectMask`]; the UI opens the mask input.
-    pub mask_request: bool,
-    /// Set by [`Command::BeginRunBar`]; the UI opens the run-command bar.
-    pub run_command_request: bool,
-    /// Set by [`Command::GatherIntoFolder`]; the UI runs it with a notify.
-    pub gather_request: bool,
-    /// Set by keyboard/toolbar drop alternatives; the UI supplies worker notify.
-    pub keyboard_drop_request: Option<TransferKind>,
-    /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
-    pub path_request: bool,
-    /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
-    pub recent_request: bool,
-    /// Set by [`Command::Undo`]; the UI runs the undo with a notify callback.
-    pub undo_request: bool,
-    /// Set by [`Command::BeginPalette`]; the UI opens the command palette.
-    pub palette_request: bool,
-    /// Set by [`Command::BeginBatchRename`]; the UI opens the batch-rename
-    /// studio for the active panel's selection.
-    pub batch_rename_request: bool,
-    /// Set by [`Command::BeginSync`]; the UI opens the synchronise sheet.
-    pub sync_request: bool,
-    /// Set by [`Command::FindDuplicates`]; the UI opens the duplicates sheet.
-    pub duplicates_request: bool,
-    /// Set by [`Command::DiffFiles`]; the UI opens the diff sheet.
-    pub diff_request: bool,
-    /// Set by [`Command::DiskTreemap`]; the UI opens the treemap sheet.
-    pub treemap_request: bool,
-    /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
-    pub find_request: bool,
-    /// Set when activating a supported archive; the UI opens a read-only browser.
-    pub archive_request: Option<PathBuf>,
-    /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
-    pub saved_search_request: bool,
-    /// Set by [`Command::OpenProjectCollections`]; the UI opens virtual projects.
-    pub collections_request: bool,
-    /// Set by [`Command::ToggleQueuePanel`]; the UI flips the transfer-queue
-    /// panel's visibility.
-    pub queue_panel_request: bool,
-    /// Set by [`Command::OpenReceipts`]; the UI opens the operation history.
-    pub receipts_request: bool,
-    /// Set by [`Command::OpenRecoveryCenter`]; the UI refreshes durable recovery.
-    pub recovery_request: bool,
-    /// Set by the Copy* commands; the UI formats the selection and copies it.
-    pub clipboard_request: Option<crate::clipboard::PathStyle>,
-    /// Set by the Copy-listing commands: (text to copy, toast label). The UI
-    /// puts the text on the clipboard and shows the label.
-    pub clipboard_text_request: Option<(String, String)>,
-    /// Set by [`Command::Redo`]; the UI replays the next redoable action.
-    pub redo_request: bool,
-    /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
-    pub drain_request: bool,
+    /// Typed intents waiting for the app shell. This replaces the former
+    /// collection of one-shot booleans and optional payload slots.
+    ui_requests: crate::ui_request::UiRequestQueue,
     /// The drop stack: paths gathered across folders to copy in one go.
     pub shelf: crate::shelf::Shelf,
     /// Persisted directory bookmarks (favorites + quick-jump slots 1..9).
@@ -244,7 +189,7 @@ pub struct Workspace {
     /// runs one job at a time (concurrency cap 1 for now) and `poll_transfer`
     /// drains the next when the active one finishes. Replaces the old ad-hoc
     /// single-slot sync follow-up.
-    queue: crate::opqueue::Queue<QueuedJob>,
+    queue: crate::opqueue::Queue<transfer_queue::QueuedJob>,
     /// The queue job currently spawned as `active_transfer`, so it can be
     /// marked done/failed when the worker finishes.
     running_job: Option<crate::opqueue::JobId>,
@@ -257,6 +202,7 @@ pub struct Workspace {
     /// A history replay owns the active transfer. The stack transition is
     /// committed only after that worker reports a clean terminal state.
     pending_history_transition: Option<PendingHistoryTransition>,
+    command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
     pub opener: Box<dyn Fn(&Path)>,
@@ -392,34 +338,11 @@ impl Workspace {
             safe_state: None,
             reviewed_safe_operation: None,
             durability_profile: crate::operation::DurabilityProfile::default(),
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            rename_target: None,
-            mask_request: false,
-            run_command_request: false,
-            gather_request: false,
-            keyboard_drop_request: None,
-            path_request: false,
-            recent_request: false,
-            undo_request: false,
-            palette_request: false,
-            batch_rename_request: false,
-            sync_request: false,
-            duplicates_request: false,
-            diff_request: false,
-            treemap_request: false,
-            find_request: false,
-            archive_request: None,
-            saved_search_request: false,
-            collections_request: false,
-            queue_panel_request: false,
-            receipts_request: false,
-            recovery_request: false,
-            clipboard_request: None,
-            clipboard_text_request: None,
-            redo_request: false,
-            drain_request: false,
+            ui_requests: crate::ui_request::UiRequestQueue::default(),
             shelf: crate::shelf::Shelf::default(),
             bookmarks: crate::bookmarks::load(),
             selection_stash: std::collections::HashSet::new(),
@@ -428,6 +351,7 @@ impl Workspace {
             stack: crate::undo::UndoStack::default(),
             pending_undo_action: None,
             pending_history_transition: None,
+            command_capabilities: std::cell::RefCell::new(None),
             opener,
         }
     }
@@ -457,6 +381,245 @@ impl Workspace {
         match self.active {
             ActivePanel::Left => &mut self.right,
             ActivePanel::Right => &mut self.left,
+        }
+    }
+
+    pub(crate) fn emit_ui_request(&mut self, request: UiRequest) {
+        self.ui_requests.emit(request);
+    }
+
+    pub(crate) fn drain_ui_requests(&mut self) -> Vec<UiRequest> {
+        self.ui_requests.drain_snapshot()
+    }
+
+    pub(crate) fn defer_ui_requests(&mut self, requests: Vec<UiRequest>) {
+        self.ui_requests.prepend_deferred(requests);
+    }
+
+    pub(crate) fn first_pending_ui_modal(&self) -> Option<UiModal> {
+        self.ui_requests.first_pending_modal()
+    }
+
+    pub(crate) fn has_any_pending_ui_modal(&self) -> bool {
+        self.ui_requests.has_any_modal()
+    }
+
+    #[cfg(test)]
+    fn pending_ui_requests(&self) -> Vec<UiRequest> {
+        self.ui_requests.snapshot()
+    }
+
+    fn pane_read_only(&self) -> (bool, bool) {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+        let now = std::time::Instant::now();
+        if let Some(cached) = self.command_capabilities.borrow().as_ref()
+            && cached.left_path == self.left.current_path
+            && cached.right_path == self.right.current_path
+            && cached.expires_at > now
+        {
+            return (cached.left_read_only, cached.right_read_only);
+        }
+
+        let read_only = |path: &Path| {
+            let profile = crate::volume_profile::profile(path);
+            let matrix = crate::filesystem_policy::matrix_for_profile(&profile, true);
+            matrix.state(crate::filesystem_policy::Capability::Write)
+                == crate::filesystem_policy::CapabilityState::Unavailable
+        };
+        let left_read_only = read_only(&self.left.current_path);
+        let right_read_only = read_only(&self.right.current_path);
+        self.command_capabilities
+            .replace(Some(CommandCapabilityCache {
+                left_path: self.left.current_path.clone(),
+                right_path: self.right.current_path.clone(),
+                left_read_only,
+                right_read_only,
+                expires_at: now + TTL,
+            }));
+        (left_read_only, right_read_only)
+    }
+
+    /// Capture the complete command-relevant state for the palette and other
+    /// broad command surfaces. The filtered view is visited once without a
+    /// temporary allocation.
+    pub fn command_context(&self) -> crate::command::CommandContext {
+        let (active, inactive) = match self.active {
+            ActivePanel::Left => (&self.left, &self.right),
+            ActivePanel::Right => (&self.right, &self.left),
+        };
+        let visible_entries = active.filtered_count();
+        let cursor = active
+            .cursor
+            .checked_sub(1)
+            .and_then(|index| active.filtered_get(index));
+        let mut visible_files = 0usize;
+        let mut selected_entries = 0usize;
+        let mut selected_file_count = 0usize;
+        let mut first_selected_file_index = None;
+        let mut has_transfer_source = false;
+        active.visit_filtered(|index, entry| {
+            if !entry.is_dir {
+                visible_files = visible_files.saturating_add(1);
+            }
+            if active.selected.contains(&entry.path) {
+                selected_entries = selected_entries.saturating_add(1);
+                has_transfer_source |= cursor.is_some_and(|target| entry.path != target.path);
+                if !entry.is_dir {
+                    selected_file_count = selected_file_count.saturating_add(1);
+                    first_selected_file_index.get_or_insert(index);
+                }
+            }
+            true
+        });
+        let picked_entries = if active.selected.is_empty() {
+            usize::from(cursor.is_some())
+        } else {
+            selected_entries
+        };
+        let listing_entries = if active.selected.is_empty() {
+            visible_entries
+        } else {
+            selected_entries
+        };
+
+        let can_diff = if selected_file_count == 2 {
+            true
+        } else {
+            let candidate = if selected_file_count == 1 {
+                first_selected_file_index.and_then(|index| active.entries.get(index))
+            } else {
+                cursor.filter(|entry| !entry.is_dir)
+            };
+            candidate.is_some_and(|entry| {
+                inactive
+                    .entries
+                    .iter()
+                    .any(|other| !other.is_dir && other.name_lower == entry.name_lower)
+            })
+        };
+
+        let active_transfer = self.active_transfer.is_some();
+        let transfer_queue_busy = self.has_unfinished_transfer_work();
+        let pending_operation = self.pending_op.is_some();
+        let safe_state = self.mutations_blocked();
+        let (left_read_only, right_read_only) = self.pane_read_only();
+        let (active_read_only, inactive_read_only) = match self.active {
+            ActivePanel::Left => (left_read_only, right_read_only),
+            ActivePanel::Right => (right_read_only, left_read_only),
+        };
+        let can_transfer_into_cursor_folder = !transfer_queue_busy
+            && !pending_operation
+            && !safe_state
+            && cursor.is_some_and(|target| target.is_dir)
+            && has_transfer_source;
+
+        let (marked_entries, stashed_entries) =
+            active
+                .entries
+                .iter()
+                .fold((0usize, 0usize), |(marked, stashed), entry| {
+                    (
+                        marked.saturating_add(usize::from(active.marked.contains(&entry.path))),
+                        stashed.saturating_add(usize::from(
+                            self.selection_stash.contains(&entry.path),
+                        )),
+                    )
+                });
+
+        crate::command::CommandContext {
+            visible_entries,
+            visible_files,
+            other_entries: inactive.entries.len(),
+            picked_entries,
+            selected_entries,
+            listing_entries,
+            marked_entries,
+            stashed_entries,
+            shelf_entries: self.shelf.len(),
+            cursor_entry: cursor.is_some(),
+            cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
+            cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
+            cursor_has_extension: cursor
+                .is_some_and(|entry| !entry.is_dir && !entry.extension.is_empty()),
+            can_go_up: active.current_path.parent().is_some(),
+            can_go_back: active.can_go_back(),
+            can_go_forward: active.can_go_forward(),
+            can_diff,
+            can_transfer_into_cursor_folder,
+            can_undo: self.stack.can_undo(),
+            can_redo: self.stack.can_redo(),
+            preview_open: inactive.preview.is_some(),
+            info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
+            safe_state,
+            pending_operation,
+            active_transfer,
+            transfer_queue_busy,
+            active_read_only,
+            inactive_read_only,
+        }
+    }
+
+    /// Minimal context for always-visible action surfaces. It reuses the
+    /// shared availability policy but avoids an O(directory size) scan on
+    /// ordinary frames with no selection.
+    pub fn action_bar_command_context(&self) -> crate::command::CommandContext {
+        let active = self.active_panel_ref();
+        let cursor = active
+            .cursor
+            .checked_sub(1)
+            .and_then(|index| active.filtered_get(index));
+        let mut has_selected = false;
+        let mut has_transfer_source = false;
+        if !active.selected.is_empty() {
+            active.visit_filtered(|_, entry| {
+                if active.selected.contains(&entry.path) {
+                    has_selected = true;
+                    has_transfer_source |= cursor.is_some_and(|target| entry.path != target.path);
+                }
+                !(has_selected
+                    && (!cursor.is_some_and(|target| target.is_dir) || has_transfer_source))
+            });
+        }
+
+        let safe_state = self.mutations_blocked();
+        let pending_operation = self.pending_op.is_some();
+        let active_transfer = self.active_transfer.is_some();
+        let transfer_queue_busy = self.has_unfinished_transfer_work();
+        let (left_read_only, right_read_only) = self.pane_read_only();
+        let (active_read_only, inactive_read_only) = match self.active {
+            ActivePanel::Left => (left_read_only, right_read_only),
+            ActivePanel::Right => (right_read_only, left_read_only),
+        };
+        let selected_entries = usize::from(has_selected);
+        crate::command::CommandContext {
+            picked_entries: if active.selected.is_empty() {
+                usize::from(cursor.is_some())
+            } else {
+                selected_entries
+            },
+            selected_entries,
+            cursor_entry: cursor.is_some(),
+            cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
+            cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
+            can_go_up: active.current_path.parent().is_some(),
+            can_go_back: active.can_go_back(),
+            can_go_forward: active.can_go_forward(),
+            can_transfer_into_cursor_folder: !safe_state
+                && !pending_operation
+                && !transfer_queue_busy
+                && cursor.is_some_and(|target| target.is_dir)
+                && has_transfer_source,
+            can_undo: self.stack.can_undo(),
+            can_redo: self.stack.can_redo(),
+            preview_open: self.inactive_panel().preview.is_some(),
+            info_open: matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))),
+            safe_state,
+            pending_operation,
+            active_transfer,
+            transfer_queue_busy,
+            active_read_only,
+            inactive_read_only,
+            ..crate::command::CommandContext::default()
         }
     }
 
@@ -668,7 +831,7 @@ impl Workspace {
                     if entry.is_dir {
                         self.active_panel().navigate_to(entry.path);
                     } else if crate::archive::is_supported(&entry.path) {
-                        self.archive_request = Some(entry.path);
+                        self.emit_ui_request(UiRequest::Archive(entry.path));
                     } else {
                         (self.opener)(&entry.path);
                     }
@@ -720,8 +883,12 @@ impl Workspace {
                     panel.cursor += 1;
                 }
             }
-            Command::MoveIntoCursorFolder => self.keyboard_drop_request = Some(TransferKind::Move),
-            Command::CopyIntoCursorFolder => self.keyboard_drop_request = Some(TransferKind::Copy),
+            Command::MoveIntoCursorFolder => {
+                self.emit_ui_request(UiRequest::TransferIntoCursorFolder(TransferKind::Move))
+            }
+            Command::CopyIntoCursorFolder => {
+                self.emit_ui_request(UiRequest::TransferIntoCursorFolder(TransferKind::Copy))
+            }
             Command::TogglePreview => {
                 if self.inactive_panel().preview.is_some() {
                     self.inactive_panel_mut().preview = None;
@@ -741,9 +908,12 @@ impl Workspace {
             Command::RequestDelete => self.request_delete(),
             Command::BeginRename => {
                 let panel = self.active_panel_ref();
-                if panel.cursor > 0 {
-                    self.rename_target =
-                        panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
+                if panel.cursor > 0
+                    && let Some(path) = panel
+                        .filtered_get(panel.cursor - 1)
+                        .map(|entry| entry.path.clone())
+                {
+                    self.emit_ui_request(UiRequest::Rename(path));
                 }
             }
             Command::EqualizePanels => {
@@ -757,32 +927,32 @@ impl Workspace {
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
-            Command::BeginBatchRename => self.batch_rename_request = true,
-            Command::BeginSync => self.sync_request = true,
-            Command::FindDuplicates => self.duplicates_request = true,
-            Command::DiffFiles => self.diff_request = true,
-            Command::DiskTreemap => self.treemap_request = true,
-            Command::BeginFind => self.find_request = true,
-            Command::OpenSavedSearch => self.saved_search_request = true,
-            Command::OpenProjectCollections => self.collections_request = true,
+            Command::BeginBatchRename => self.emit_ui_request(UiRequest::BatchRename),
+            Command::BeginSync => self.emit_ui_request(UiRequest::Sync),
+            Command::FindDuplicates => self.emit_ui_request(UiRequest::FindDuplicates),
+            Command::DiffFiles => self.emit_ui_request(UiRequest::DiffFiles),
+            Command::DiskTreemap => self.emit_ui_request(UiRequest::DiskTreemap),
+            Command::BeginFind => self.emit_ui_request(UiRequest::Find),
+            Command::OpenSavedSearch => self.emit_ui_request(UiRequest::SavedSearch),
+            Command::OpenProjectCollections => self.emit_ui_request(UiRequest::ProjectCollections),
             Command::CopyPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
+                self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::FullPath))
             }
             Command::CopyName => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly)
+                self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::NameOnly))
             }
-            Command::CopyParentPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::ParentPath)
-            }
+            Command::CopyParentPath => self.emit_ui_request(UiRequest::CopyPaths(
+                crate::clipboard::PathStyle::ParentPath,
+            )),
             Command::CopyFileUrl => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::FileUrl)
+                self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::FileUrl))
             }
-            Command::CopyShellPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::ShellEscaped)
-            }
-            Command::CopyRelativePath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::RelativeToOther)
-            }
+            Command::CopyShellPath => self.emit_ui_request(UiRequest::CopyPaths(
+                crate::clipboard::PathStyle::ShellEscaped,
+            )),
+            Command::CopyRelativePath => self.emit_ui_request(UiRequest::CopyPaths(
+                crate::clipboard::PathStyle::RelativeToOther,
+            )),
             Command::CycleDensity => {
                 let panel = self.active_panel();
                 panel.density = crate::density::cycle(panel.density, 1);
@@ -799,21 +969,17 @@ impl Workspace {
             }
             Command::ShelfDrain => {
                 if !self.shelf.is_empty() {
-                    self.drain_request = true;
+                    self.emit_ui_request(UiRequest::DrainShelf);
                 }
             }
-            Command::BeginSelectMask => self.mask_request = true,
-            Command::BeginRunBar => self.run_command_request = true,
-            Command::GatherIntoFolder => self.gather_request = true,
-            Command::BeginGoToPath => self.path_request = true,
-            Command::BeginRecent => self.recent_request = true,
-            Command::BeginPalette => self.palette_request = true,
-            Command::Undo => {
-                self.undo_request = true;
-            }
-            Command::Redo => {
-                self.redo_request = true;
-            }
+            Command::BeginSelectMask => self.emit_ui_request(UiRequest::SelectMask),
+            Command::BeginRunBar => self.emit_ui_request(UiRequest::RunCommand),
+            Command::GatherIntoFolder => self.emit_ui_request(UiRequest::GatherIntoFolder),
+            Command::BeginGoToPath => self.emit_ui_request(UiRequest::GoToPath),
+            Command::BeginRecent => self.emit_ui_request(UiRequest::Recent),
+            Command::BeginPalette => self.emit_ui_request(UiRequest::Palette),
+            Command::Undo => self.emit_ui_request(UiRequest::Undo),
+            Command::Redo => self.emit_ui_request(UiRequest::Redo),
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
             Command::InvertSelection => self.active_panel().invert_selection(),
@@ -832,9 +998,9 @@ impl Workspace {
             Command::MarkedIntersect => self.marked_intersect(),
             Command::MarkedSubtract => self.marked_subtract(),
             Command::MarkedSymmetricDiff => self.marked_symmetric_diff(),
-            Command::ToggleQueuePanel => self.queue_panel_request = true,
-            Command::OpenReceipts => self.receipts_request = true,
-            Command::OpenRecoveryCenter => self.recovery_request = true,
+            Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
+            Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
+            Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
@@ -879,7 +1045,7 @@ impl Workspace {
             (crate::listing_export::format(&entries, fmt), entries.len())
         };
         let label = format!("listing ({count} rows as {})", fmt.label());
-        self.clipboard_text_request = Some((text, label));
+        self.emit_ui_request(UiRequest::CopyText { text, label });
     }
 
     // ── File operations ─────────────────────────────────────────────────
@@ -899,19 +1065,15 @@ impl Workspace {
     }
 
     /// Delete is not queue-backed, so it is available only while no operation
-    /// is pending or running.
+    /// is pending and no queued, paused, or running transfer exists.
     pub fn can_request_delete(&self) -> bool {
-        self.pending_op.is_none() && self.active_transfer.is_none() && !self.mutations_blocked()
+        self.pending_op.is_none()
+            && !self.has_unfinished_transfer_work()
+            && !self.mutations_blocked()
     }
 
     pub fn mutations_blocked(&self) -> bool {
         self.safe_state.is_some()
-    }
-
-    pub fn acknowledge_safe_state(&mut self) {
-        if let Some(state) = self.safe_state.take() {
-            self.reviewed_safe_operation = Some(state.operation_id);
-        }
     }
 
     fn ensure_matching_recovery_review(
@@ -942,7 +1104,7 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) -> Result<usize, String> {
         self.ensure_matching_recovery_review(operation_id)?;
-        if self.active_transfer.is_some() || self.queued_count() > 0 {
+        if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before resuming recovery".to_string());
         }
         let spec = crate::operation_journal::build_resume_spec(operation_id)?;
@@ -958,7 +1120,7 @@ impl Workspace {
         operation_id: &crate::operation::OperationId,
     ) -> Result<crate::operation_journal::RepairPlan, String> {
         self.ensure_matching_recovery_review(operation_id)?;
-        if self.active_transfer.is_some() || self.queued_count() > 0 {
+        if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before rolling back recovery".to_string());
         }
         crate::operation_journal::repair_plan(operation_id)?;
@@ -978,8 +1140,8 @@ impl Workspace {
                 "Complete the current integrity review before cleaning staging".to_string(),
             );
         }
-        if self.active_transfer.is_some() {
-            return Err("Wait for the active transfer before cleaning staging".to_string());
+        if self.has_unfinished_transfer_work() {
+            return Err("Wait for the transfer queue before cleaning staging".to_string());
         }
         crate::operation_journal::clean_orphan(orphan)?;
         self.left.refresh();
@@ -1017,6 +1179,7 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             filesystem,
@@ -1108,6 +1271,7 @@ impl Workspace {
             return;
         };
         self.durability_profile = t.durability;
+        self.version_retention = t.version_retention;
         self.name_policy = t.name_policy;
         self.symlink_policy = t.symlink_policy;
         // A Move is undoable, promoted onto the history stack when it finishes
@@ -1129,6 +1293,7 @@ impl Workspace {
             policy: t.policy,
             method: t.method,
             durability: t.durability,
+            version_retention: t.version_retention,
             name_policy: t.name_policy,
             symlink_policy: t.symlink_policy,
             post_success: None,
@@ -1139,271 +1304,6 @@ impl Workspace {
             journal_enabled: false,
         };
         self.enqueue_only(spec, undo);
-        self.pump_queue(notify);
-    }
-
-    /// Append a transfer to the queue without starting it.
-    fn enqueue_only(&mut self, spec: TransferSpec, undo: Option<crate::undo::Action>) {
-        let (kind, verb) = match spec.kind {
-            TransferKind::Copy => (crate::opqueue::JobKind::Copy, "Copy"),
-            TransferKind::Move => (crate::opqueue::JobKind::Move, "Move"),
-        };
-        let paths = spec
-            .entries
-            .iter()
-            .map(|entry| entry.path.clone())
-            .collect::<Vec<_>>();
-        let submitted =
-            crate::operation_view::SubmittedSummary::capture(verb, &paths, spec.target.clone());
-        self.queue.enqueue(
-            kind,
-            QueuedJob {
-                spec,
-                undo,
-                submitted,
-            },
-        );
-    }
-
-    /// Start the next queued job if no transfer is active (concurrency cap 1).
-    /// The single place that spawns the worker, so the running job, its undo
-    /// action and `active_transfer` always move together.
-    fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
-        if self.active_transfer.is_some() || self.mutations_blocked() {
-            return;
-        }
-        let Some(id) = self.queue.dequeue_next() else {
-            return;
-        };
-        // Clone the spec/undo out of the (now Running) job to launch it.
-        // `job.spec` is the opqueue payload (a QueuedJob); its `.spec` is the
-        // TransferSpec and `.undo` the recorded action.
-        let Some(job) = self.queue.get(id) else {
-            return;
-        };
-        let spec = job.spec.spec.clone();
-        let submitted = job.spec.submitted.clone();
-        self.reviewed_safe_operation = None;
-        self.pending_undo_action = job.spec.undo.clone();
-        self.running_job = Some(id);
-        // The worker sizes the entries once and fills in `total_bytes`; passing
-        // 0 here keeps a same-volume move from walking the tree twice (once for
-        // the denominator, once for the rename's progress).
-        let mut initial_progress = TransferProgress::unknown(spec.entries.len());
-        initial_progress.submitted = Some(submitted);
-        let progress = Arc::new(Mutex::new(initial_progress));
-        self.active_transfer = Some(progress.clone());
-        transfer::spawn_transfer(spec, progress, notify);
-    }
-
-    /// Number of transfers waiting behind the active one (for a queued-count
-    /// indicator).
-    pub fn queued_count(&self) -> usize {
-        self.queue
-            .jobs()
-            .iter()
-            .filter(|j| j.state == crate::opqueue::JobState::Pending)
-            .count()
-    }
-
-    /// Cancel active transfer.
-    pub fn cancel_transfer(&mut self) {
-        if let Some(ref state) = self.active_transfer {
-            // A poisoned progress mutex (worker thread panicked) must not panic
-            // the UI thread in turn; recover the guard and flag cancellation.
-            let mut s = crate::lock_util::recover(state);
-            // Ignore a cancel that races in after the worker already finished
-            // cleanly: flagging it would demote a completed Move to "not clean"
-            // in poll_transfer and silently drop its undo entry.
-            s.request_cancel();
-        }
-    }
-
-    /// Finish the current top-level entry, then checkpoint and stop before the
-    /// worker accepts another entry from this transfer.
-    pub fn stop_transfer_after_current(&mut self) {
-        if let Some(state) = &self.active_transfer {
-            let mut progress = crate::lock_util::recover(state);
-            progress.request_stop();
-        }
-    }
-
-    /// Auto-close finished transfers. A transfer that finished with errors
-    /// stays open so the user can read the error list (dismissed via OK).
-    /// Returns `true` when a clean Move just finished, so the UI can raise the
-    /// undo toast.
-    pub fn poll_transfer(&mut self, notify: impl Fn() + Send + 'static) -> bool {
-        let (close, clean, had_errors, cancelled, placements, safe_state) = self
-            .active_transfer
-            .as_ref()
-            .map(|s| {
-                // Recover from a poisoned lock rather than panicking the UI.
-                let s = crate::lock_util::recover(s);
-                // Close only once the worker has set `finished` (it now does so
-                // even on cancel, after its cleanup), so we never tear the
-                // shared state out from under a still-running cleanup pass. A
-                // finished run with errors stays open so the user can read them.
-                let clean = s.finished && s.errors.is_empty() && !s.cancelled && !s.stopped;
-                let errs = !s.errors.is_empty();
-                // Only a clean Move needs its placements (to record undo).
-                let placements = if clean {
-                    s.placements.clone()
-                } else {
-                    Vec::new()
-                };
-                let failures = if s.finished {
-                    s.failures
-                        .iter()
-                        .filter(|failure| {
-                            failure.class == crate::operation::FailureClass::IntegrityUncertain
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let safe_state = if failures.is_empty() {
-                    None
-                } else {
-                    let mut paths = failures
-                        .iter()
-                        .filter_map(|failure| failure.path.clone())
-                        .collect::<Vec<_>>();
-                    paths.sort();
-                    paths.dedup();
-                    Some(crate::operation::SafeState {
-                        operation_id: s.operation_id.clone().unwrap_or_else(|| {
-                            crate::operation::OperationId("unknown-operation".to_string())
-                        }),
-                        reason: failures[0].message.clone(),
-                        paths,
-                        failures,
-                    })
-                };
-                (
-                    s.finished && (s.cancelled || s.stopped || s.errors.is_empty()),
-                    clean,
-                    errs,
-                    s.cancelled || s.stopped,
-                    placements,
-                    safe_state,
-                )
-            })
-            .unwrap_or((false, false, false, false, Vec::new(), None));
-
-        if self.safe_state.is_none()
-            && let Some(safe_state) = safe_state
-            && self.reviewed_safe_operation.as_ref() != Some(&safe_state.operation_id)
-        {
-            self.safe_state = Some(safe_state);
-            self.cancel_pending_jobs();
-        }
-
-        if !close {
-            return false;
-        }
-        self.active_transfer = None;
-        // Retire the finished job from the queue so a free slot opens up.
-        if let Some(id) = self.running_job.take() {
-            if cancelled {
-                // Record the truthful terminal state, and stop the rest of the
-                // pipeline: a user Cancel means "stop", not "skip to the next
-                // queued op" (e.g. the second pass of a two-way sync).
-                self.queue.cancel(id);
-                self.cancel_pending_jobs();
-            } else if had_errors {
-                self.queue.fail(id);
-            } else {
-                self.queue.complete(id);
-            }
-            self.queue.clear_finished();
-        }
-        self.left.refresh();
-        self.right.refresh();
-        self.finish_history_transition(clean);
-        // Record the move on the history stack on a clean run, built from where
-        // the files ACTUALLY landed: a KeepBoth conflict renames to "name copy",
-        // which is not faithfully reversible, so those entries are dropped (and
-        // an all-KeepBoth move raises no undo toast). Read this BEFORE pumping
-        // the next job (which overwrites `pending_undo_action`).
-        let raised = if clean {
-            match self.pending_undo_action.take() {
-                Some(crate::undo::Action::Move { .. }) => {
-                    let pairs = faithfully_undoable(placements);
-                    if pairs.is_empty() {
-                        false
-                    } else {
-                        self.stack.push(crate::undo::Action::Move { pairs });
-                        true
-                    }
-                }
-                Some(crate::undo::Action::Gather { folder, .. }) => {
-                    let pairs = faithfully_undoable(placements);
-                    if pairs.is_empty() {
-                        false
-                    } else {
-                        self.stack
-                            .push(crate::undo::Action::Gather { folder, pairs });
-                        true
-                    }
-                }
-                Some(action) => {
-                    self.stack.push(action);
-                    true
-                }
-                None => false,
-            }
-        } else {
-            self.pending_undo_action = None;
-            false
-        };
-        // Start the next queued transfer, if any.
-        self.pump_queue(notify);
-        raised
-    }
-
-    /// Cancel every still-pending queued job. Used when the user cancels the
-    /// active transfer: the queued work (e.g. a two-way sync's second pass) was
-    /// part of the same intent, so a Cancel stops it too rather than letting
-    /// `pump_queue` start it next.
-    fn cancel_pending_jobs(&mut self) {
-        let pending: Vec<crate::opqueue::JobId> = self
-            .queue
-            .jobs()
-            .iter()
-            .filter(|j| j.state == crate::opqueue::JobState::Pending)
-            .map(|j| j.id)
-            .collect();
-        for id in pending {
-            self.queue.cancel(id);
-        }
-    }
-
-    /// Cancel only work that has not started. The active worker keeps running,
-    /// matching the Operations Center's consequence-specific action label.
-    pub fn cancel_pending_transfers(&mut self) {
-        self.cancel_pending_jobs();
-        self.queue.clear_finished();
-    }
-
-    /// Dismiss a finished transfer the user is acknowledging via the OK button.
-    /// `poll_transfer` deliberately leaves a finished-with-errors transfer open
-    /// (so the error list can be read) and does NOT retire its queue job; this
-    /// does that retirement and starts the next queued job, so acknowledging an
-    /// errored transfer can never wedge the queue (running_job stuck Running,
-    /// `runnable()` then forever blocked at the concurrency cap).
-    pub fn dismiss_transfer(&mut self, notify: impl Fn() + Send + 'static) {
-        self.active_transfer = None;
-        if let Some(id) = self.running_job.take() {
-            // It is shown via OK only because it finished with errors.
-            self.queue.fail(id);
-            self.queue.clear_finished();
-        }
-        // An errored/aborted run records no undo history.
-        self.pending_undo_action = None;
-        self.finish_history_transition(false);
-        self.left.refresh();
-        self.right.refresh();
         self.pump_queue(notify);
     }
 
@@ -1421,68 +1321,6 @@ impl Workspace {
             // only container we can prove was not populated by foreign data.
             let _ = std::fs::remove_dir(folder);
         }
-    }
-
-    /// Snapshot of every job in the transfer queue, in priority order, for
-    /// the queue panel to render.
-    pub fn queue_snapshot(&self) -> Vec<QueueRow> {
-        self.queue
-            .jobs()
-            .iter()
-            .map(|j| {
-                let summary = j.spec.submitted.clone();
-                QueueRow {
-                    id: j.id,
-                    label: summary.label(),
-                    summary,
-                    state: j.state,
-                }
-            })
-            .collect()
-    }
-
-    /// Hold a `Pending` job back so it waits for an explicit resume.
-    pub fn queue_pause(&mut self, id: crate::opqueue::JobId) {
-        self.queue.pause(id);
-    }
-
-    /// Return a held job to the `Pending` pool.
-    pub fn queue_resume(&mut self, id: crate::opqueue::JobId) {
-        self.queue.resume(id);
-    }
-
-    /// Move a `Pending` job to the front so it runs next.
-    pub fn queue_promote(&mut self, id: crate::opqueue::JobId) {
-        self.queue.promote(id);
-    }
-
-    /// Swap a `Pending` job with its immediate neighbour in queue order.
-    /// `offset` is `-1` (move up / earlier) or `1` (move down / later).
-    pub fn queue_move(&mut self, id: crate::opqueue::JobId, offset: i32) {
-        let Some(from) = self.queue.jobs().iter().position(|j| j.id == id) else {
-            return;
-        };
-        let last = self.queue.jobs().len() as i32 - 1;
-        let to = (from as i32 + offset).clamp(0, last.max(0)) as usize;
-        self.queue.reorder(id, to);
-    }
-
-    /// Cancel a queued job. The running job is stopped through the live
-    /// transfer (so its worker thread actually stops, same as the transfer
-    /// dialog's own Cancel); a pending/paused job is simply dropped from the
-    /// queue, since no worker exists for it yet.
-    pub fn queue_cancel(&mut self, id: crate::opqueue::JobId) {
-        if self.running_job == Some(id) {
-            self.cancel_transfer();
-        } else {
-            self.queue.cancel(id);
-            self.queue.clear_finished();
-        }
-    }
-
-    /// Drop every finished (Done/Failed/Cancelled) job from the queue panel.
-    pub fn queue_clear_finished(&mut self) {
-        self.queue.clear_finished();
     }
 
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
@@ -1518,7 +1356,7 @@ impl Workspace {
         if self.mutations_blocked() {
             return Some("Safe-state review is required before history replay".to_string());
         }
-        if self.active_transfer.is_some() || self.queued_count() > 0 {
+        if self.has_unfinished_transfer_work() {
             return Some("Wait for the transfer queue before replaying history".to_string());
         }
         None
@@ -1727,6 +1565,7 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             post_success,
@@ -1798,9 +1637,9 @@ impl Workspace {
         match safe_rename_order(map, existing) {
             RenameOrder::Conflict(why) => Err(why),
             RenameOrder::Steps(steps) => apply_steps(&steps, |from, to| {
-                std::fs::rename(dir.join(from), dir.join(to))
+                crate::native_copy::rename_noreplace(&dir.join(from), &dir.join(to))
             })
-            .map_err(|e: std::io::Error| e.to_string()),
+            .map_err(|e| e.to_string()),
         }
     }
 
@@ -1808,15 +1647,17 @@ impl Workspace {
     fn exec_delete_with_profile(
         entries: &[FileEntry],
         durability: crate::operation::DurabilityProfile,
+        retention: crate::operation::VersionRetentionPolicy,
     ) -> DeleteOutcome {
         let mut outcome = DeleteOutcome::default();
         let operation_id = crate::operation::OperationId::new();
         for (index, entry) in entries.iter().enumerate() {
             if durability.keeps_versions()
-                && let Err(message) = crate::version_store::preserve(
+                && let Err(message) = crate::version_store::preserve_with_policy(
                     &entry.path,
                     &operation_id,
                     operation_id.step_key(index, &entry.path),
+                    retention,
                 )
             {
                 outcome.failed += 1;
@@ -1858,7 +1699,11 @@ impl Workspace {
         match &self.pending_op {
             Some(PendingOp::Delete { .. }) => {
                 if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
-                    let outcome = Self::exec_delete_with_profile(&entries, self.durability_profile);
+                    let outcome = Self::exec_delete_with_profile(
+                        &entries,
+                        self.durability_profile,
+                        self.version_retention,
+                    );
                     self.left.refresh();
                     self.right.refresh();
                     return Some(outcome);
@@ -1936,6 +1781,7 @@ impl Workspace {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             post_success: None,
@@ -2069,6 +1915,9 @@ impl Workspace {
         }
         if context.targets.is_empty() {
             return Err("Nothing selected to rename".into());
+        }
+        if let Some(error) = crate::rename::regex_error(rule) {
+            return Err(format!("Invalid regex: {error}"));
         }
         let existing = Self::dir_names(&context.dir);
         let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule);
@@ -2290,7 +2139,8 @@ impl Workspace {
     /// longer be read are kept on the shelf (not silently discarded), and the
     /// outcome reports both how many copies started and how many were left.
     pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
-        if self.shelf.is_empty() || self.active_transfer.is_some() || self.mutations_blocked() {
+        if self.shelf.is_empty() || self.has_unfinished_transfer_work() || self.mutations_blocked()
+        {
             return ShelfDrainOutcome::default();
         }
         let dest = self.active_panel_ref().current_path.clone();
@@ -2477,6 +2327,7 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             post_success: None,
@@ -2519,14 +2370,19 @@ impl Workspace {
             return;
         };
 
-        let shown = match &target.preview {
-            Some(PreviewContent::Image(p)) => Some(p.as_path()),
-            Some(PreviewContent::Text { path, .. }) => Some(path.as_path()),
+        let shown_matches = match &target.preview {
+            Some(PreviewContent::Image(path)) => {
+                entry.is_image() && path.as_path() == entry.path.as_path()
+            }
+            Some(PreviewContent::Pending(identity))
+            | Some(PreviewContent::Text { identity, .. }) => {
+                !entry.is_image() && identity.matches_entry(entry)
+            }
             // The Get-Info card is a deliberate snapshot; don't auto-follow it.
             Some(PreviewContent::Info(_)) => return,
-            None => None,
+            None => false,
         };
-        if shown == Some(entry.path.as_path()) {
+        if shown_matches {
             return;
         }
         target.preview = panel::make_preview(entry);
@@ -2584,7 +2440,10 @@ impl Workspace {
     pub fn drop_dragged_as(&mut self, kind: TransferKind, notify: impl Fn() + Send + 'static) {
         // Ignore drops while a transfer or another dialog is in flight, so we
         // never stack a second operation over the first.
-        if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
+        if self.has_unfinished_transfer_work()
+            || self.pending_op.is_some()
+            || self.mutations_blocked()
+        {
             self.clear_drag_state();
             return;
         }
@@ -2621,6 +2480,7 @@ impl Workspace {
             policy,
             method: CopyMethod::Native,
             durability: self.durability_profile,
+            version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
             filesystem,
@@ -2644,7 +2504,10 @@ impl Workspace {
         kind: TransferKind,
         notify: impl Fn() + Send + 'static,
     ) {
-        if self.active_transfer.is_some() || self.pending_op.is_some() || self.mutations_blocked() {
+        if self.has_unfinished_transfer_work()
+            || self.pending_op.is_some()
+            || self.mutations_blocked()
+        {
             return;
         }
         let Some((paths, target)) = self.keyboard_drop_plan() else {
@@ -2654,13 +2517,6 @@ impl Workspace {
         panel.drag_entries = paths;
         panel.drop_target = Some(target);
         self.drop_dragged_as(kind, notify);
-    }
-
-    pub fn can_transfer_into_cursor_folder(&self) -> bool {
-        self.active_transfer.is_none()
-            && self.pending_op.is_none()
-            && !self.mutations_blocked()
-            && self.keyboard_drop_plan().is_some()
     }
 
     fn keyboard_drop_plan(&self) -> Option<(Vec<PathBuf>, PathBuf)> {
@@ -2718,7 +2574,9 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use crate::transfer::TransferProgress;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
         let mut ws = Workspace::with_opener(
@@ -2729,6 +2587,40 @@ mod tests {
         ws.left.refresh();
         ws.right.refresh();
         ws
+    }
+
+    #[test]
+    fn command_context_counts_only_actionable_filtered_selection() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let file = left.file("report.txt", "data");
+        let folder = left.dir("Archive");
+        let mut ws = workspace(&left, &right);
+
+        ws.left.selected.insert(file.clone());
+        ws.left.cursor = ws
+            .left
+            .filtered_entries()
+            .iter()
+            .position(|entry| entry.path == folder)
+            .unwrap()
+            + 1;
+        let context = ws.command_context();
+        let action_bar = ws.action_bar_command_context();
+        assert_eq!(context.visible_entries, 2);
+        assert_eq!(context.selected_entries, 1);
+        assert_eq!(context.picked_entries, 1);
+        assert!(context.cursor_is_dir);
+        assert!(context.can_transfer_into_cursor_folder);
+        assert_eq!(action_bar.selected_entries, 1);
+        assert!(action_bar.can_transfer_into_cursor_folder);
+
+        ws.left.search_query = "does-not-match".to_string();
+        let filtered = ws.command_context();
+        assert_eq!(filtered.visible_entries, 0);
+        assert_eq!(filtered.selected_entries, 0);
+        assert_eq!(filtered.picked_entries, 0);
+        assert_eq!(filtered.listing_entries, 0);
+        assert_eq!(ws.action_bar_command_context().picked_entries, 0);
     }
 
     fn apply_batch_rename(
@@ -2782,6 +2674,115 @@ mod tests {
         assert!(ws.active == ActivePanel::Right);
         ws.execute(Command::SwitchPanel);
         assert!(ws.active == ActivePanel::Left);
+    }
+
+    #[test]
+    fn every_fixed_ui_command_emits_the_expected_typed_request() {
+        use crate::clipboard::PathStyle;
+
+        let cases = [
+            (
+                Command::MoveIntoCursorFolder,
+                UiRequest::TransferIntoCursorFolder(TransferKind::Move),
+            ),
+            (
+                Command::CopyIntoCursorFolder,
+                UiRequest::TransferIntoCursorFolder(TransferKind::Copy),
+            ),
+            (Command::BeginBatchRename, UiRequest::BatchRename),
+            (Command::BeginSync, UiRequest::Sync),
+            (Command::FindDuplicates, UiRequest::FindDuplicates),
+            (Command::DiffFiles, UiRequest::DiffFiles),
+            (Command::DiskTreemap, UiRequest::DiskTreemap),
+            (Command::BeginFind, UiRequest::Find),
+            (Command::OpenSavedSearch, UiRequest::SavedSearch),
+            (
+                Command::OpenProjectCollections,
+                UiRequest::ProjectCollections,
+            ),
+            (Command::CopyPath, UiRequest::CopyPaths(PathStyle::FullPath)),
+            (Command::CopyName, UiRequest::CopyPaths(PathStyle::NameOnly)),
+            (
+                Command::CopyParentPath,
+                UiRequest::CopyPaths(PathStyle::ParentPath),
+            ),
+            (
+                Command::CopyFileUrl,
+                UiRequest::CopyPaths(PathStyle::FileUrl),
+            ),
+            (
+                Command::CopyShellPath,
+                UiRequest::CopyPaths(PathStyle::ShellEscaped),
+            ),
+            (
+                Command::CopyRelativePath,
+                UiRequest::CopyPaths(PathStyle::RelativeToOther),
+            ),
+            (Command::BeginSelectMask, UiRequest::SelectMask),
+            (Command::BeginRunBar, UiRequest::RunCommand),
+            (Command::GatherIntoFolder, UiRequest::GatherIntoFolder),
+            (Command::BeginGoToPath, UiRequest::GoToPath),
+            (Command::BeginRecent, UiRequest::Recent),
+            (Command::BeginPalette, UiRequest::Palette),
+            (Command::Undo, UiRequest::Undo),
+            (Command::Redo, UiRequest::Redo),
+            (Command::ToggleQueuePanel, UiRequest::ToggleQueuePanel),
+            (Command::OpenReceipts, UiRequest::OperationHistory),
+            (Command::OpenRecoveryCenter, UiRequest::OpenRecoveryCenter),
+        ];
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&left, &right);
+
+        for (command, expected) in cases {
+            ws.execute(command);
+            assert_eq!(ws.drain_ui_requests(), vec![expected], "{command:?}");
+        }
+    }
+
+    #[test]
+    fn same_frame_ui_commands_preserve_fifo_and_duplicates() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&left, &right);
+
+        ws.execute(Command::ToggleQueuePanel);
+        ws.execute(Command::ToggleQueuePanel);
+        ws.execute(Command::BeginPalette);
+        ws.execute(Command::BeginRecent);
+
+        assert_eq!(
+            ws.drain_ui_requests(),
+            vec![
+                UiRequest::ToggleQueuePanel,
+                UiRequest::ToggleQueuePanel,
+                UiRequest::Palette,
+                UiRequest::Recent,
+            ]
+        );
+    }
+
+    #[test]
+    fn conditional_and_listing_commands_emit_payload_requests() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let shelf_item = left.file("shelf.txt", "x");
+        let mut ws = workspace(&left, &right);
+        ws.shelf.add(shelf_item);
+
+        ws.execute(Command::ShelfDrain);
+        assert_eq!(ws.drain_ui_requests(), vec![UiRequest::DrainShelf]);
+
+        for (command, format_label) in [
+            (Command::CopyListingText, "text"),
+            (Command::CopyListingCsv, "CSV"),
+            (Command::CopyListingMarkdown, "Markdown"),
+        ] {
+            ws.execute(command);
+            let requests = ws.drain_ui_requests();
+            let [UiRequest::CopyText { text, label }] = requests.as_slice() else {
+                panic!("{command:?} did not emit one CopyText request: {requests:?}");
+            };
+            assert!(text.contains("shelf.txt"));
+            assert!(label.contains(format_label));
+        }
     }
 
     #[test]
@@ -2938,7 +2939,10 @@ mod tests {
         workspace.left.cursor = 1;
         workspace.execute(Command::Activate);
 
-        assert_eq!(workspace.archive_request, Some(archive));
+        assert_eq!(
+            workspace.pending_ui_requests(),
+            vec![UiRequest::Archive(archive)]
+        );
         assert_eq!(opened.load(Ordering::Relaxed), 0);
     }
 
@@ -3230,6 +3234,27 @@ mod tests {
     }
 
     #[test]
+    fn apply_batch_rename_rejects_invalid_regex_before_mutation() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let original = l.file("report.txt", "content");
+        let mut ws = workspace(&l, &r);
+        ws.left.selected.insert(original.clone());
+        let invalid = crate::rename::RenameRule {
+            find: "(".to_string(),
+            replace: "renamed".to_string(),
+            regex: true,
+            ..Default::default()
+        };
+
+        let error = apply_batch_rename(&mut ws, &invalid).unwrap_err();
+
+        assert!(error.starts_with("Invalid regex:"), "{error}");
+        assert!(original.is_file());
+        assert!(!l.path().join("renamed").exists());
+        assert!(!ws.stack.can_undo());
+    }
+
+    #[test]
     fn apply_sync_mirror_copies_left_only_file_right() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("new.txt", "hello");
@@ -3275,7 +3300,7 @@ mod tests {
             .queue
             .jobs()
             .iter()
-            .filter_map(|job| job.spec.spec.group_id.clone())
+            .filter_map(|job| job.spec.group_id())
             .collect::<Vec<_>>();
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0], groups[1], "both passes share one intent id");
@@ -3537,7 +3562,15 @@ mod tests {
         let rows = ws.queue_snapshot();
         let (running_id, pending1, pending2) = (rows[0].id, rows[1].id, rows[2].id);
 
-        // Pause the first pending job; the running one is untouched.
+        // Workspace only supports pausing work that has not started; attempting
+        // to pause the live row must not desynchronise it from active_transfer.
+        ws.queue_pause(running_id);
+        assert_eq!(
+            ws.queue_snapshot()[0].state,
+            crate::opqueue::JobState::Running
+        );
+
+        // Pause the first pending job; the running one remains untouched.
         ws.queue_pause(pending1);
         let rows = ws.queue_snapshot();
         assert_eq!(rows[0].state, crate::opqueue::JobState::Running);
@@ -3549,7 +3582,7 @@ mod tests {
         assert_eq!(ids_after_move, vec![running_id, pending2, pending1]);
 
         // Resume the paused job.
-        ws.queue_resume(pending1);
+        ws.queue_resume(pending1, || {});
         let resumed = ws
             .queue_snapshot()
             .into_iter()
@@ -3561,6 +3594,77 @@ mod tests {
         assert!(r.path().join("a.txt").is_file());
         assert!(r.path().join("b.txt").is_file());
         assert!(r.path().join("c.txt").is_file());
+    }
+
+    #[test]
+    fn resuming_the_only_paused_job_starts_it_when_idle() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let source = l.file("paused.txt", "content");
+        let meta = std::fs::metadata(&source).unwrap();
+        let entry = FileEntry::from_meta(source, &meta).unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.enqueue_copy(
+            vec![entry],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+        );
+        let id = ws.queue_snapshot()[0].id;
+        ws.queue_pause(id);
+
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0, "paused work is not runnable");
+        assert_eq!(ws.unfinished_queue_count(), 1);
+
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let notify_count = Arc::clone(&notifications);
+        ws.queue_resume(id, move || {
+            notify_count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(ws.active_transfer.is_some(), "resume fills the idle slot");
+        assert_eq!(
+            ws.queue_snapshot()[0].state,
+            crate::opqueue::JobState::Running
+        );
+        drain_transfers(&mut ws);
+        assert!(r.path().join("paused.txt").is_file());
+        assert!(
+            notifications.load(Ordering::SeqCst) > 0,
+            "resumed worker forwards repaint notifications"
+        );
+    }
+
+    #[test]
+    fn paused_queue_blocks_recovery_history_and_synchronous_mutations() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let source = l.file("held.txt", "content");
+        let meta = std::fs::metadata(&source).unwrap();
+        let entry = FileEntry::from_meta(source, &meta).unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.enqueue_copy(
+            vec![entry],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+        );
+        let id = ws.queue_snapshot()[0].id;
+        ws.queue_pause(id);
+
+        assert!(ws.active_transfer.is_none());
+        assert_eq!(ws.queued_count(), 0);
+        assert_eq!(ws.unfinished_queue_count(), 1);
+        assert!(ws.has_unfinished_transfer_work());
+        assert!(!ws.can_request_delete());
+        let command_context = ws.command_context();
+        assert!(command_context.transfer_queue_busy);
+        assert!(!crate::command::availability(Command::RequestDelete, &command_context).enabled);
+
+        let operation_id = crate::operation::OperationId("paused-guard".to_string());
+        let resume_error = ws.resume_recovery(&operation_id, || {}).unwrap_err();
+        assert!(resume_error.contains("Wait for the transfer queue"));
+        let rollback_error = ws.rollback_recovery(&operation_id).unwrap_err();
+        assert!(rollback_error.contains("Wait for the transfer queue"));
+        let undo_error = ws.perform_undo(|| {}).unwrap_err();
+        assert!(undo_error.contains("Wait for the transfer queue"));
     }
 
     #[test]
@@ -3747,6 +3851,50 @@ mod tests {
     }
 
     #[test]
+    fn integrity_safe_state_cancels_a_paused_tail() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let source = l.file("held.txt", "content");
+        let meta = std::fs::metadata(&source).unwrap();
+        let entry = FileEntry::from_meta(source.clone(), &meta).unwrap();
+        let mut ws = workspace(&l, &r);
+        ws.enqueue_copy(
+            vec![entry],
+            r.path().to_path_buf(),
+            OverwritePolicy::KeepBoth,
+        );
+        let paused_id = ws.queue_snapshot()[0].id;
+        ws.queue_pause(paused_id);
+
+        let progress = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = progress.lock().unwrap();
+            state.operation_id = Some(crate::operation::OperationId(
+                "uncertain-with-paused-tail".to_string(),
+            ));
+            state.finished = true;
+            state.errors.push("placement uncertain".to_string());
+            state
+                .failures
+                .push(crate::operation::ClassifiedFailure::message(
+                    crate::operation::FailureClass::IntegrityUncertain,
+                    Some(source),
+                    "placement uncertain",
+                ));
+        }
+        ws.active_transfer = Some(progress);
+
+        assert!(!ws.poll_transfer(|| {}));
+        assert!(ws.safe_state.is_some());
+        assert_eq!(ws.unfinished_queue_count(), 0);
+        let paused_tail = ws
+            .queue_snapshot()
+            .into_iter()
+            .find(|row| row.id == paused_id)
+            .unwrap();
+        assert_eq!(paused_tail.state, crate::opqueue::JobState::Cancelled);
+    }
+
+    #[test]
     fn faithfully_undoable_drops_keep_both_renames() {
         let pairs = vec![
             // A clean move kept its name and is reversible.
@@ -3806,7 +3954,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_a_transfer_drops_the_queued_jobs() {
+    fn cancelling_a_pipeline_drops_its_paused_tail() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let a = l.file("a.txt", "AAA");
         let b = l.file("b.txt", "BBBB");
@@ -3827,7 +3975,10 @@ mod tests {
             OverwritePolicy::KeepBoth,
             || {},
         );
-        assert_eq!(ws.queued_count(), 1, "second copy queued behind the first");
+        let tail_id = ws.queue_snapshot()[1].id;
+        ws.queue_pause(tail_id);
+        assert_eq!(ws.queued_count(), 0, "paused tail is not runnable");
+        assert_eq!(ws.unfinished_queue_count(), 2);
 
         // Simulate the user cancelling the active transfer and the worker
         // stopping: flag it cancelled+finished, then poll.
@@ -3840,11 +3991,8 @@ mod tests {
         ws.poll_transfer(|| {});
 
         assert!(ws.active_transfer.is_none(), "cancelled transfer closed");
-        assert_eq!(
-            ws.queued_count(),
-            0,
-            "a Cancel stops the queued work too, not just the active op"
-        );
+        assert_eq!(ws.unfinished_queue_count(), 0);
+        assert!(ws.queue_snapshot().is_empty());
         assert!(
             !r.path().join("b.txt").exists(),
             "the queued copy never started"
@@ -4092,6 +4240,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method,
             durability: crate::operation::DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             filesystem: filesystem_preflight(&[], Path::new("/"), Default::default()),
@@ -4193,7 +4342,7 @@ mod tests {
         ws.left.cursor = 1;
 
         ws.execute(Command::BeginRename);
-        assert_eq!(ws.rename_target.as_deref(), Some(f.as_path()));
+        assert_eq!(ws.pending_ui_requests(), vec![UiRequest::Rename(f)]);
     }
 
     #[test]
@@ -4537,7 +4686,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_follows_cursor_and_is_cached_by_path() {
+    fn preview_follows_cursor_without_reading_text_on_the_workspace_thread() {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "alpha");
         l.file("b.txt", "beta");
@@ -4546,25 +4695,33 @@ mod tests {
         ws.left.cursor = 1; // a.txt
         ws.execute(Command::TogglePreview);
         match &ws.right.preview {
-            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "alpha"),
-            _ => panic!("expected text preview for a.txt"),
+            Some(PreviewContent::Pending(identity)) => {
+                assert_eq!(identity.path, l.path().join("a.txt"));
+            }
+            other => panic!("expected pending text preview, got {other:?}"),
         }
 
-        // Preview follows the cursor.
+        // Preview follows the cursor by replacing only the pending identity.
         ws.left.cursor = 2; // b.txt
         ws.sync_preview();
-        match &ws.right.preview {
-            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "beta"),
-            _ => panic!("expected text preview for b.txt"),
-        }
+        let identity = match &ws.right.preview {
+            Some(PreviewContent::Pending(identity)) => {
+                assert_eq!(identity.path, l.path().join("b.txt"));
+                identity.clone()
+            }
+            other => panic!("expected pending text preview, got {other:?}"),
+        };
+        ws.right.preview = Some(PreviewContent::Text {
+            identity,
+            content: std::sync::Arc::from("beta"),
+        });
 
-        // Cached by path: the file is gone, but the cursor didn't move,
-        // so sync must NOT re-read the filesystem (a re-read would drop
-        // the preview).
+        // A ready preview survives while the cached listing identity is stable;
+        // sync_preview performs no filesystem read of its own.
         std::fs::remove_file(l.path().join("b.txt")).unwrap();
         ws.sync_preview();
         match &ws.right.preview {
-            Some(PreviewContent::Text { content, .. }) => assert_eq!(content, "beta"),
+            Some(PreviewContent::Text { content, .. }) => assert_eq!(content.as_ref(), "beta"),
             _ => panic!("preview must survive while the cursor is unchanged"),
         }
     }
@@ -4615,8 +4772,10 @@ mod tests {
             + 1;
 
         ws.execute(Command::MoveIntoCursorFolder);
-        assert_eq!(ws.keyboard_drop_request, Some(TransferKind::Move));
-        ws.keyboard_drop_request = None;
+        assert_eq!(
+            ws.drain_ui_requests(),
+            vec![UiRequest::TransferIntoCursorFolder(TransferKind::Move)]
+        );
         ws.transfer_selection_into_cursor_folder(TransferKind::Move, || {});
         wait_transfer(&mut ws);
 
@@ -4640,8 +4799,10 @@ mod tests {
             + 1;
 
         ws.execute(Command::CopyIntoCursorFolder);
-        assert_eq!(ws.keyboard_drop_request, Some(TransferKind::Copy));
-        ws.keyboard_drop_request = None;
+        assert_eq!(
+            ws.drain_ui_requests(),
+            vec![UiRequest::TransferIntoCursorFolder(TransferKind::Copy)]
+        );
         ws.transfer_selection_into_cursor_folder(TransferKind::Copy, || {});
         wait_transfer(&mut ws);
 

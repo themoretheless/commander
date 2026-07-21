@@ -42,10 +42,9 @@ fn store_path() -> PathBuf {
 
 /// Load the saved searches, or an empty set if absent/corrupt.
 pub fn load() -> SmartFolders {
-    std::fs::read_to_string(store_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    SmartFolders {
+        items: crate::persistence::load_item_store(&store_path(), "Saved searches"),
+    }
 }
 
 /// Save the searches atomically (temp file + rename). Returns `false` if

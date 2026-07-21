@@ -34,15 +34,19 @@ mod update;
 
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::panel::{PanelState, SortColumn, format_size};
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
 pub(crate) use crate::transfer::{CopyMethod, TransferKind};
+pub(crate) use crate::ui_request::{UiModal, UiRequest};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
 pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
+    /// Main-thread-owned desktop integration injected by the composition root.
+    pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
@@ -74,6 +78,10 @@ pub struct App {
     /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
     pub(crate) focus_mode: bool,
     pub(crate) focus_started_at: f64,
+    /// Escape is read once per frame, then consumed by exactly one routed owner.
+    pub(crate) escape_request: crate::accessibility::EscapeRoute,
+    /// Monotonic identity source for transient widget state across reopenings.
+    pub(crate) transient_nonce: u64,
     /// Active select-by-mask input buffer.
     pub(crate) mask_input: Option<String>,
     /// Active go-to-path input buffer.
@@ -140,6 +148,7 @@ pub struct App {
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
     pub(crate) show_developer_panel: bool,
     pub(crate) developer_notice: Option<DeveloperNotice>,
+    pub(crate) persistence_issue_seen: u64,
 }
 
 pub(crate) struct DeveloperNotice {
@@ -170,6 +179,8 @@ impl DeveloperNotice {
 pub(crate) struct RunCommandState {
     /// The editable command line (placeholders expand against the selection).
     pub line: String,
+    /// Separates egui scroll memory from earlier openings of this dialog.
+    pub scroll_nonce: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -339,6 +350,7 @@ pub(crate) struct DupState {
 pub(crate) struct SyncState {
     pub policy: crate::sync::SyncPolicy,
     pub durability: crate::operation::DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub actions: Vec<crate::sync::SyncAction>,
     pub left_dir: PathBuf,
     pub right_dir: PathBuf,
@@ -372,6 +384,8 @@ pub(crate) struct BatchRenameState {
     /// Set once so the first text field grabs focus on the opening frame.
     pub focused: bool,
     pub error: Option<String>,
+    /// Separates egui scroll memory from earlier openings of this dialog.
+    pub scroll_nonce: u64,
 }
 
 impl BatchRenameState {
@@ -473,7 +487,10 @@ pub(crate) struct RecoveryScanResult {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+    ) -> Self {
         let mut startup = crate::measurement::StartupTrace::start();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session = crate::session::load();
@@ -543,6 +560,7 @@ impl App {
             ws.right.natural_name_sort = s.right_natural_sort;
             ws.right.density = s.right_density;
             ws.durability_profile = s.durability_profile;
+            ws.version_retention = s.version_retention;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
             ws.name_policy = s.name_policy;
             ws.symlink_policy = s.symlink_policy;
@@ -552,11 +570,13 @@ impl App {
         let recovery = RecoveryState::scan(&ws);
         startup.checkpoint(crate::measurement::StartupPhase::RecoveryScan);
         let image_cache = crate::image_cache::ImageCache::new();
-        let content_index = crate::content_index::ContentIndex::load();
+        let content_index =
+            crate::content_index::ContentIndex::load(crate::workload::global_handle());
         let project_collections = crate::collections::load();
         startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
         let mut app = App {
             ws,
+            context_menu,
             ui_scale,
             theme_mode: mode,
             colors: ThemeColors::for_preferences(mode, accessibility_preferences),
@@ -579,6 +599,8 @@ impl App {
             failure_notice_seen: std::collections::HashSet::new(),
             focus_mode: false,
             focus_started_at: 0.0,
+            escape_request: crate::accessibility::EscapeRoute::None,
+            transient_nonce: 0,
             mask_input: None,
             path_input: None,
             recent_input: None,
@@ -618,11 +640,35 @@ impl App {
             startup_trace: Some(startup),
             show_developer_panel: false,
             developer_notice: None,
+            persistence_issue_seen: 0,
         };
         if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
         }
         app
+    }
+
+    pub(crate) fn issue_transient_nonce(&mut self) -> u64 {
+        self.transient_nonce = self
+            .transient_nonce
+            .checked_add(1)
+            .expect("transient UI nonce space exhausted");
+        self.transient_nonce
+    }
+
+    pub(crate) fn mark_modal_opened(ctx: &egui::Context, modal: UiModal) {
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new(("ui_request_opened", modal)), true);
+        });
+    }
+
+    pub(crate) fn take_modal_opened(ctx: &egui::Context, modal: UiModal) -> bool {
+        ctx.data_mut(|data| {
+            let id = egui::Id::new(("ui_request_opened", modal));
+            let opened = data.get_temp::<bool>(id).unwrap_or(false);
+            data.remove::<bool>(id);
+            opened
+        })
     }
 
     /// The command-template store, loaded from disk on first access.
@@ -669,6 +715,7 @@ impl App {
             recent_order: self.recent_order,
             search_history: self.search_history.clone(),
             durability_profile: self.ws.durability_profile,
+            version_retention: self.ws.version_retention,
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
             name_policy: self.ws.name_policy,
             symlink_policy: self.ws.symlink_policy,

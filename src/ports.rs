@@ -6,6 +6,36 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_TEXT_PREVIEW_BYTES: u64 = 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenuCommand {
+    Duplicate,
+    Compress,
+    MoveToTrash,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextMenuFailure {
+    MainThreadRequired,
+    Action {
+        command: ContextMenuCommand,
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextMenuResult {
+    Dismissed,
+    RefreshRequested,
+    Unsupported { reason: String },
+    Failed(ContextMenuFailure),
+}
+
+/// Main-thread desktop context-menu boundary. It intentionally has no
+/// `Send`/`Sync` bounds: AppKit adapters are owned and invoked by the UI thread.
+pub trait ContextMenuPort {
+    fn show_context_menu(&self, path: &Path) -> ContextMenuResult;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PreviewKind {
     Image,

@@ -1,6 +1,6 @@
 //! Local verified versions for the `Versioned` durability profile.
 
-use crate::operation::{IdempotencyKey, OperationId};
+use crate::operation::{IdempotencyKey, OperationId, VersionRetentionPolicy};
 use crate::path_identity::PathIdentity;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -20,12 +20,13 @@ struct VersionManifest {
     records: Vec<VersionRecord>,
 }
 
-pub fn preserve(
+pub fn preserve_with_policy(
     path: &Path,
     operation_id: &OperationId,
     key: IdempotencyKey,
+    retention: VersionRetentionPolicy,
 ) -> Result<Option<VersionRecord>, String> {
-    preserve_at(&versions_dir(), path, operation_id, key)
+    preserve_at(&versions_dir(), path, operation_id, key, retention)
 }
 
 fn preserve_at(
@@ -33,6 +34,7 @@ fn preserve_at(
     path: &Path,
     operation_id: &OperationId,
     key: IdempotencyKey,
+    retention: VersionRetentionPolicy,
 ) -> Result<Option<VersionRecord>, String> {
     let before = PathIdentity::observe(path).map_err(|error| {
         format!(
@@ -91,7 +93,83 @@ fn preserve_at(
         let _ = remove_path(&stored);
         return Err("Could not save version manifest".to_string());
     }
+    prune_manifest(root, &manifest, retention, record.created_at_secs);
     Ok(Some(record))
+}
+
+fn retained_records(
+    records: &[VersionRecord],
+    policy: VersionRetentionPolicy,
+    now_secs: u64,
+) -> (Vec<VersionRecord>, Vec<VersionRecord>) {
+    if policy == VersionRetentionPolicy::Forever {
+        return (records.to_vec(), Vec::new());
+    }
+
+    let mut by_path = std::collections::HashMap::<&Path, Vec<(usize, &VersionRecord)>>::new();
+    for (index, record) in records.iter().enumerate() {
+        by_path
+            .entry(record.original.as_path())
+            .or_default()
+            .push((index, record));
+    }
+    let mut keep = vec![false; records.len()];
+    for versions in by_path.values_mut() {
+        versions.sort_by(|(left_index, left), (right_index, right)| {
+            right
+                .created_at_secs
+                .cmp(&left.created_at_secs)
+                .then(right_index.cmp(left_index))
+        });
+        for (rank, (index, record)) in versions.iter().enumerate() {
+            let newest = rank == 0;
+            let within_count = policy.max_per_path().is_none_or(|max| rank < max);
+            let within_age = policy
+                .max_age_secs()
+                .is_none_or(|max_age| now_secs.saturating_sub(record.created_at_secs) <= max_age);
+            keep[*index] = newest || (within_count && within_age);
+        }
+    }
+    let (retained, expired) = records
+        .iter()
+        .cloned()
+        .enumerate()
+        .partition::<Vec<_>, _>(|(index, _)| keep[*index]);
+    let retained = retained.into_iter().map(|(_, record)| record).collect();
+    let expired = expired.into_iter().map(|(_, record)| record).collect();
+    (retained, expired)
+}
+
+fn prune_manifest(
+    root: &Path,
+    manifest: &VersionManifest,
+    policy: VersionRetentionPolicy,
+    now_secs: u64,
+) {
+    let (retained, expired) = retained_records(&manifest.records, policy, now_secs);
+    if expired.is_empty() {
+        return;
+    }
+    let pruned = VersionManifest { records: retained };
+    // Publish the manifest before deleting data. A failed policy update keeps
+    // extra recovery data; it never leaves a manifest pointing at a deleted
+    // version.
+    if !save_manifest(root, &pruned) {
+        return;
+    }
+    for record in expired {
+        let _ = remove_path(&record.stored);
+        remove_empty_version_dirs(record.stored.parent(), root);
+    }
+}
+
+fn remove_empty_version_dirs(mut directory: Option<&Path>, root: &Path) {
+    while let Some(path) = directory {
+        if path == root || !path.starts_with(root) || fs::remove_dir(path).is_err() {
+            break;
+        }
+        directory = path.parent();
+    }
 }
 
 pub fn restore(record: &VersionRecord) -> Result<(), String> {
@@ -305,6 +383,7 @@ mod tests {
             &original,
             &operation,
             operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
         )
         .unwrap()
         .unwrap();
@@ -314,5 +393,73 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&original).unwrap(), "before");
         assert_eq!(load_manifest(&versions).records, vec![record]);
+    }
+
+    #[test]
+    fn retention_keeps_newest_per_path_and_applies_age_and_count() {
+        let record = |path: &str, sequence: u64, created_at_secs: u64| VersionRecord {
+            operation_id: OperationId(format!("operation-{sequence}")),
+            key: IdempotencyKey(format!("key-{sequence}")),
+            original: PathBuf::from(path),
+            stored: PathBuf::from(format!("stored-{sequence}")),
+            created_at_secs,
+        };
+        let records = vec![
+            record("a.txt", 1, 10),
+            record("a.txt", 2, 20),
+            record("a.txt", 3, 30),
+            record("a.txt", 4, 40),
+            record("b.txt", 5, 1),
+        ];
+        let (retained, expired) = retained_records(&records, VersionRetentionPolicy::Compact, 100);
+        assert_eq!(
+            retained
+                .iter()
+                .map(|record| record.key.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key-2", "key-3", "key-4", "key-5"]
+        );
+        assert_eq!(expired.len(), 1);
+
+        let old_now = VersionRetentionPolicy::Compact
+            .max_age_secs()
+            .unwrap()
+            .saturating_add(1_000);
+        let (retained, expired) =
+            retained_records(&records, VersionRetentionPolicy::Compact, old_now);
+        assert_eq!(
+            retained.len(),
+            2,
+            "the newest record for each path survives"
+        );
+        assert_eq!(expired.len(), 3);
+    }
+
+    #[test]
+    fn compact_policy_prunes_the_oldest_stored_copy_after_manifest_commit() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "version-0");
+        let mut created = Vec::new();
+        for index in 0..4 {
+            std::fs::write(&original, format!("version-{index}")).unwrap();
+            let operation = OperationId(format!("operation-{index}"));
+            created.push(
+                preserve_at(
+                    &versions,
+                    &original,
+                    &operation,
+                    operation.step_key(index, &original),
+                    VersionRetentionPolicy::Compact,
+                )
+                .unwrap()
+                .unwrap(),
+            );
+        }
+
+        let manifest = load_manifest(&versions);
+        assert_eq!(manifest.records.len(), 3);
+        assert!(!created[0].stored.exists());
+        assert!(created[1..].iter().all(|record| record.stored.exists()));
     }
 }

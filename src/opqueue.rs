@@ -48,12 +48,22 @@ pub enum JobState {
 }
 
 impl JobState {
+    /// Not started yet, whether runnable now or explicitly held by the user.
+    pub fn is_waiting(self) -> bool {
+        matches!(self, JobState::Pending | JobState::Paused)
+    }
+
     /// Terminal states accept no further transitions.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
             JobState::Done | JobState::Failed | JobState::Cancelled
         )
+    }
+
+    /// Work that can still run or is currently running.
+    pub fn is_unfinished(self) -> bool {
+        !self.is_terminal()
     }
 }
 
@@ -143,6 +153,14 @@ impl<S> Queue<S> {
         self.jobs
             .iter()
             .filter(|j| j.state == JobState::Running)
+            .count()
+    }
+
+    /// Number of jobs that are pending, paused, or running.
+    pub fn unfinished_count(&self) -> usize {
+        self.jobs
+            .iter()
+            .filter(|job| job.state.is_unfinished())
             .count()
     }
 
@@ -436,6 +454,26 @@ mod tests {
         // Cancel is refused from a terminal state (Done, or already-Cancelled).
         assert!(!queue.cancel(done));
         assert!(!queue.cancel(running));
+    }
+
+    #[test]
+    fn unfinished_count_includes_pending_running_and_paused() {
+        let mut queue = q();
+        let running = queue.enqueue(JobKind::Copy, "running");
+        let paused = queue.enqueue(JobKind::Copy, "paused");
+        let done = queue.enqueue(JobKind::Copy, "done");
+        let pending = queue.enqueue(JobKind::Copy, "pending");
+        queue.set_concurrency(3);
+        assert_eq!(queue.dequeue_next(), Some(running));
+        assert_eq!(queue.dequeue_next(), Some(paused));
+        assert_eq!(queue.dequeue_next(), Some(done));
+        assert!(queue.pause(paused));
+        assert!(queue.complete(done));
+
+        assert!(queue.get(pending).unwrap().state.is_waiting());
+        assert!(queue.get(paused).unwrap().state.is_waiting());
+        assert!(!queue.get(running).unwrap().state.is_waiting());
+        assert_eq!(queue.unfinished_count(), 3);
     }
 
     #[test]

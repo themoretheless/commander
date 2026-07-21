@@ -46,9 +46,7 @@ impl App {
     }
 
     pub(crate) fn show_archive_dialog(&mut self, ctx: &egui::Context) {
-        if let Some(path) = self.ws.archive_request.take() {
-            self.open_archive(path, ctx);
-        }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Archive);
         if self.archive.is_none() {
             return;
         }
@@ -314,7 +312,7 @@ impl App {
                 });
         }
 
-        if !window_open || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if !window_open || escape_requested {
             self.archive = None;
             return;
         }

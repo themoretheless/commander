@@ -2,6 +2,10 @@
 
 use super::*;
 
+fn review_recovery_request(operation_id: &crate::operation::OperationId) -> UiRequest {
+    UiRequest::ReviewRecovery(operation_id.clone())
+}
+
 impl App {
     pub(crate) fn show_safe_state_dialog(&mut self, ctx: &egui::Context) {
         if self.recovery.open {
@@ -140,7 +144,23 @@ impl App {
             self.ws.acknowledge_safe_state();
         }
         if recovery {
-            self.ws.recovery_request = true;
+            self.ws
+                .emit_ui_request(review_recovery_request(&state.operation_id));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_state_review_preserves_the_operation_identity() {
+        let operation_id = crate::operation::OperationId("safe-state-op".to_string());
+
+        assert_eq!(
+            review_recovery_request(&operation_id),
+            UiRequest::ReviewRecovery(operation_id)
+        );
     }
 }

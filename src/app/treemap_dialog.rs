@@ -63,25 +63,26 @@ impl App {
         }
     }
 
+    pub(crate) fn open_treemap(&mut self, ctx: &egui::Context) {
+        let mut initial = self.ws.treemap_snapshot();
+        initial.items.retain(|(_, bytes)| *bytes > 0);
+        self.treemap = Some(DiskUsageState {
+            progress: crate::tree_overview::ScanProgress {
+                directories: 1,
+                current: initial.dir.clone(),
+                ..Default::default()
+            },
+            initial,
+            mode: DiskUsageMode::Map,
+            run: None,
+            overview: None,
+            stopping: false,
+            error: None,
+        });
+        self.start_disk_usage_scan(ctx);
+    }
+
     pub(crate) fn show_treemap_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.treemap_request) {
-            let mut initial = self.ws.treemap_snapshot();
-            initial.items.retain(|(_, bytes)| *bytes > 0);
-            self.treemap = Some(DiskUsageState {
-                progress: crate::tree_overview::ScanProgress {
-                    directories: 1,
-                    current: initial.dir.clone(),
-                    ..Default::default()
-                },
-                initial,
-                mode: DiskUsageMode::Map,
-                run: None,
-                overview: None,
-                stopping: false,
-                error: None,
-            });
-            self.start_disk_usage_scan(ctx);
-        }
         if self.treemap.is_none() {
             return;
         }

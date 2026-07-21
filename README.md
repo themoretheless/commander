@@ -24,7 +24,10 @@ module is a thin egui layer over it.
   facets (kind, size, and date buckets: Today / Week / Month, plus an
   Older-than-a-month bucket).
 - **Command palette** (`Cmd+K`): fuzzy-filter every command, ranked by recency
-  and frequency.
+  and frequency. Availability comes from the same workspace policy as both
+  toolbar layouts; unavailable matches stay visible with a reason, and Enter
+  selects the first action that can actually run. Direct shortcuts use the
+  same typed predicates and explain a refused action instead of disappearing.
 - **Streaming search** with cancellable generations, stable result identity,
   one fielded query grammar, Exact/Fuzzy/Regex modes, replayable history,
   optional inspectable content indexes, and bounded ZIP-member search.
@@ -46,7 +49,8 @@ module is a thin egui layer over it.
 - **Durable operations**: Fast/Verified/Versioned profiles, typed failures,
   source/destination revalidation, an idempotent operation journal, safe-state
   lockout, and a Recovery Center with Resume, Roll back, Inspect, and repair
-  plans.
+  plans. Versioned operations expose Compact/Recent/Archive/Forever retention;
+  pruning publishes the retained manifest before deleting expired copies.
 - **Adaptive transfers**: resumable buffered and delta checkpoints, fixed or
   measured-threshold FastCDC delta copy, sparse-file preservation, explicit
   clone/rename/delta/buffered telemetry, per-volume concurrency, bandwidth and
@@ -65,6 +69,9 @@ module is a thin egui layer over it.
   interrupted copy never destroys the existing file. Copying or moving a path
   into itself is rejected, and a **free-space preflight** warns before a copy
   that will not fit (a clone or same-volume move needs ~0 extra space).
+  Visible actions also consume the shared volume capability matrix: Copy needs
+  a writable destination, Move needs both panes writable, and local mutations
+  are disabled on a read-only active volume with the exact reason shown.
 - **Drag and drop** between panels and onto subfolders, routed through the same
   engine as the keyboard. `Cmd+Enter` moves into the highlighted folder and
   `Cmd+Shift+Enter` copies into it; both actions are also available from the
@@ -87,7 +94,9 @@ module is a thin egui layer over it.
   **synchronise** sheet (`Cmd+Shift+S`), and a disk-usage **treemap**
   (`Cmd+Shift+M`).
 - **Compare mode** tints rows by how they differ from the other panel, with
-  relative-size occupancy bars.
+  relative-size occupancy bars. Same-named folders and file/folder collisions
+  have explicit states; directories are never called identical merely because
+  their metadata-sized fingerprints happen to match.
 - **Cross-pane selection**: select files only in this panel, differing from the
   other, identical to the other, or same-named (palette).
 - **Selection algebra**: select-by-mask (`Cmd+G`), and stash/union/intersect/
@@ -102,7 +111,13 @@ module is a thin egui layer over it.
 ### Viewing and the rest
 
 - **Preview** of images (via ImageIO, including RAW/HEIC) and text in the
-  opposite panel, with look-ahead caching.
+  opposite panel, with look-ahead caching. Image/video decoding targets the
+  physical preview viewport, applies orientation, and runs through typed
+  native/standard fallbacks behind a hard timeout and four-slot limit. Decoded
+  images retain dimension and 256 MiB allocation caps; failures are explicit
+  and retryable rather than infinite spinners. Text preview is debounced and
+  read on an isolated one-worker executor with cancellation, file-identity
+  revalidation, a 256 KiB limit, and explicit timeout/error states.
 - **Relative dates** in the Modified column (Finder/Things style), with the
   absolute timestamp on hover.
 - **Status bar and selection summary**: each panel's footer shows item count and
@@ -116,16 +131,22 @@ module is a thin egui layer over it.
   shape/text cues. File rows expose named columns and state to assistive
   technology. System high-contrast and reduced-motion preferences are
   honored; text scales from 80% to 200%, with compact toolbars and a bottom
-  Operations Center on constrained widths.
+  Operations Center on constrained widths. The bottom key bar is generated
+  from the focused pane's available actions, and compact file names preserve
+  regular/compound extensions while exposing the full name on hover.
 - **Developer diagnostics**: the gear panel shows workers, queued I/O, cache
-  bytes, frame and cancellation percentiles, startup phases, and CI budgets.
+  bytes/jobs/failures, frame and cancellation percentiles, startup phases,
+  persistence recovery, preview-provider fallback/timeouts, watcher
+  native/polling policy, merged event batches/reconnects, and CI budgets.
   It can export a capability report or a salted, redacted support bundle and
   exposes bounded rollout/kill controls for optional index, preview, and
   external-provider paths.
 - **Native context menu**: Open With, Quick Look, Get Info, Duplicate,
   Compress, Copy Path, Show in Finder, Tags, Share, Move to Trash.
-- **Session persistence** (panel paths, layout, view toggles) and a **light /
-  dark theme** following the system appearance.
+- **Resilient session/config persistence** (panel paths, layout, view toggles,
+  bookmarks, smart folders, templates, and collections): a malformed record
+  is skipped without discarding valid siblings. Includes a **light / dark
+  theme** following the system appearance.
 
 ## Roadmap
 
@@ -158,10 +179,12 @@ The review material is split by trust level: [audit.md](audit.md) is the
 verified defect ranking, [recommendation.md](recommendation.md) now contains a
 compact Top-500 cleanup/design backlog, and [backlog.md](backlog.md) keeps the
 full 621-item raw sweep. [research.md](research.md) is the external evidence
-layer: 100 high-star repositories, 30 primary papers/standards, and 100
-deduplicated proposals. Its implementation ledger records G001-G050 as the
-first shipped research milestone and G051-G100 as the second; all 100 items
-are implemented and tested.
+layer: a fixed, relevant cohort of 100 high-star repositories, 30 primary
+papers/standards, and 100 deduplicated proposals. The whole cohort was
+revalidated on 2026-07-18 with 100 reachable and zero archived projects. Its
+implementation ledger records G001-G050 as the first shipped research
+milestone and G051-G100 as the second; H001-H012 and I001-I010 record the two
+comparative hardening slices. J001-J010 is the current unimplemented idea set.
 
 ## Review backlog
 
@@ -196,6 +219,11 @@ The two implementation milestones now cover all `G001-G100`: the final slice
 adds live CI performance probes, percentile telemetry, empirical benchmark
 trees, startup phases, developer diagnostics, redacted support exports,
 runtime provider controls, KLM workflow budgets, and colocated operation ADRs.
+The 2026-07-18 comparative refresh then closed twelve concrete gaps: typed
+file/folder comparison, fail-closed conflict policy, item-level settings
+recovery, shared command availability with disabled reasons, fully background
+and bounded image decoding with retryable failures, and observable watcher
+recovery with mandatory reconciliation after gaps or reconnects.
 
 ## Keyboard shortcuts
 
@@ -272,10 +300,14 @@ cargo clippy --all-targets       # lints (the repo is clippy-clean)
 cargo fmt --check                # formatting
 ```
 
-The file-manager logic lives in a UI-independent core (`workspace`, `panel`,
-`transfer`, `opqueue`, `scan`, `command`, `compare`, `fs_util`, `rename`,
-`sync`, `bookmarks`, `jumplist`, `cmdtemplate`, `undo`, `receipts`, ...) that
-is unit-tested without a GUI; the `app` module is a thin egui layer over it.
+The file-manager logic lives in a UI-independent core (`workspace`,
+`workspace/transfer_queue`, `panel`, `transfer`, `opqueue`, `scan`, `command`,
+`compare`, `ui_request`, `workload`, `ports`, `provider_runtime`, `fs_util`,
+`rename`, `sync`, `undo`, ...) that is unit-tested without a GUI. `Workspace`
+emits typed FIFO `UiRequest` values; `app/update.rs` owns the single per-frame
+dispatcher and the `app` module remains the egui adapter. Main-thread AppKit
+context-menu behavior and background workload admission are injected through
+narrow handles rather than reached through UI-global state.
 The architecture and the refactoring plan are documented in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
 

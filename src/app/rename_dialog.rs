@@ -4,21 +4,22 @@
 use super::*;
 
 impl App {
+    pub(crate) fn open_rename(&mut self, path: std::path::PathBuf) {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.renaming = Some(RenameState {
+            siblings: crate::workspace::Workspace::rename_siblings(&path),
+            path,
+            buffer: name,
+            error: None,
+            focused: false,
+        });
+    }
+
     pub(crate) fn show_rename_dialog(&mut self, ctx: &egui::Context) {
-        // Pick up a rename request raised by Command::BeginRename.
-        if let Some(path) = self.ws.rename_target.take() {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            self.renaming = Some(RenameState {
-                siblings: crate::workspace::Workspace::rename_siblings(&path),
-                path,
-                buffer: name,
-                error: None,
-                focused: false,
-            });
-        }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Rename);
 
         let Some(state) = &mut self.renaming else {
             return;
@@ -113,11 +114,10 @@ impl App {
                     }
 
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
                     if enter && can_commit {
                         commit = true;
                     }
-                    if esc {
+                    if escape_requested {
                         cancel = true;
                     }
                 });

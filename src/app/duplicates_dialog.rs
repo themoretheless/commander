@@ -7,17 +7,23 @@ use crate::dedup::{KeepPolicy, default_keep, delete_count};
 use crate::panel::format_size;
 
 impl App {
+    pub(crate) fn open_duplicates(&mut self) {
+        let policy = KeepPolicy::KeepShortestPath;
+        let groups = self.ws.find_duplicates();
+        let keep = groups
+            .iter()
+            .map(|group| default_keep(group, policy))
+            .collect();
+        self.duplicates = Some(DupState {
+            groups,
+            keep,
+            policy,
+        });
+    }
+
     pub(crate) fn show_duplicates_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.duplicates_request) {
-            let policy = KeepPolicy::KeepShortestPath;
-            let groups = self.ws.find_duplicates();
-            let keep = groups.iter().map(|g| default_keep(g, policy)).collect();
-            self.duplicates = Some(DupState {
-                groups,
-                keep,
-                policy,
-            });
-        }
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::Duplicates);
         if self.duplicates.is_none() {
             return;
         }
@@ -95,7 +101,7 @@ impl App {
                                 .corner_radius(CornerRadius::ZERO),
                             )
                             .clicked()
-                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            || escape_requested
                         {
                             cancel = true;
                         }
@@ -190,7 +196,7 @@ impl App {
                         });
                     });
 
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if escape_requested {
                         cancel = true;
                     }
                 });

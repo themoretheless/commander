@@ -26,7 +26,15 @@ impl App {
         }
         let t = self.colors;
         let workload = crate::workload::stats();
-        let (image_entries, image_bytes) = self.image_cache.stats();
+        let persistence = crate::persistence::health_snapshot();
+        let watcher = crate::watcher_health::snapshot();
+        let active_watchers = usize::from(self.ws.left.watcher_active())
+            + usize::from(self.ws.right.watcher_active());
+        let watcher_errors = watcher
+            .backend_errors
+            .saturating_add(watcher.start_failures)
+            .saturating_add(watcher.watch_failures);
+        let image_cache = self.image_cache.stats();
         let active_root = self.ws.active_panel_ref().current_path.clone();
         let index = self.content_index.status(&active_root);
         let runtime_metrics = crate::measurement::snapshots();
@@ -74,10 +82,108 @@ impl App {
                                 "Image cache",
                                 &format!(
                                     "{} / {} entries",
-                                    format_size(u64::try_from(image_bytes).unwrap_or(u64::MAX)),
-                                    image_entries
+                                    format_size(
+                                        u64::try_from(image_cache.bytes).unwrap_or(u64::MAX)
+                                    ),
+                                    image_cache.entries
                                 ),
                                 t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Preview jobs",
+                                &format!(
+                                    "{} loading / {} failed",
+                                    image_cache.pending, image_cache.failed
+                                ),
+                                if image_cache.failed == 0 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
+                                "Preview providers",
+                                &format!(
+                                    "ImageIO {}/{} / standard {}/{} / video {}/{}",
+                                    image_cache.providers.image_io.successes,
+                                    image_cache.providers.image_io.attempts,
+                                    image_cache.providers.standard.successes,
+                                    image_cache.providers.standard.attempts,
+                                    image_cache.providers.video.successes,
+                                    image_cache.providers.video.attempts,
+                                ),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Provider recovery",
+                                &format!(
+                                    "{} fallbacks / {} timeouts / {} busy / {} active",
+                                    image_cache.providers.fallbacks,
+                                    image_cache.providers.timeouts,
+                                    image_cache.providers.saturated,
+                                    image_cache.providers.active_decoders,
+                                ),
+                                if image_cache.providers.timeouts == 0
+                                    && image_cache.providers.saturated == 0
+                                {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
+                                "Filesystem watchers",
+                                &format!("{active_watchers}/2 active / {} events", watcher.events),
+                                if active_watchers == 2 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
+                                "Watcher recovery",
+                                &format!(
+                                    "{} rescans / {} errors / {} reconnects / {} reconciled",
+                                    watcher.rescan_signals,
+                                    watcher_errors,
+                                    watcher.reconnects,
+                                    watcher.gap_reconciliations
+                                ),
+                                if active_watchers == 2 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
+                            );
+                            text_row(
+                                ui,
+                                "Watcher batches",
+                                &format!(
+                                    "{} batches / {} events merged",
+                                    watcher.event_batches, watcher.coalesced_events
+                                ),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Watcher policy",
+                                &format!(
+                                    "{} native / {} polling / {} shallow / {} fallbacks",
+                                    watcher.native_starts,
+                                    watcher.polling_starts,
+                                    watcher.shallow_starts,
+                                    watcher.backend_fallbacks,
+                                ),
+                                if watcher.backend_fallbacks == 0 {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
                             );
                             text_row(
                                 ui,
@@ -116,6 +222,24 @@ impl App {
                                     workload.cancellation_latency_samples
                                 ),
                                 t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Settings recovery",
+                                &format!(
+                                    "{} stores / {} kept / {} rejected / {} unreadable",
+                                    persistence.recovered_stores,
+                                    persistence.recovered_items,
+                                    persistence.rejected_items,
+                                    persistence.unreadable_stores
+                                ),
+                                if persistence.rejected_items == 0
+                                    && persistence.unreadable_stores == 0
+                                {
+                                    t.text_primary
+                                } else {
+                                    t.accent_warning
+                                },
                             );
                         });
 

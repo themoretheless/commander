@@ -17,6 +17,32 @@ fn compact_path(path: &std::path::Path, max_chars: usize) -> String {
     format!("...{tail}")
 }
 
+#[derive(Clone, Copy)]
+struct ToolbarCommands {
+    copy: crate::command::CommandAvailability,
+    move_items: crate::command::CommandAvailability,
+    move_in: crate::command::CommandAvailability,
+    copy_in: crate::command::CommandAvailability,
+    create_dir: crate::command::CommandAvailability,
+    delete: crate::command::CommandAvailability,
+}
+
+impl ToolbarCommands {
+    fn capture(workspace: &Workspace) -> Self {
+        use crate::command::{Command, availability};
+
+        let context = workspace.action_bar_command_context();
+        Self {
+            copy: availability(Command::RequestCopy, &context),
+            move_items: availability(Command::RequestMove, &context),
+            move_in: availability(Command::MoveIntoCursorFolder, &context),
+            copy_in: availability(Command::CopyIntoCursorFolder, &context),
+            create_dir: availability(Command::CreateDir, &context),
+            delete: availability(Command::RequestDelete, &context),
+        }
+    }
+}
+
 impl App {
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = self.colors;
@@ -32,6 +58,8 @@ impl App {
             self.compact_toolbar(ui, ctx, t, active_side, &active_path);
             return;
         }
+
+        let actions = ToolbarCommands::capture(&self.ws);
 
         Frame::NONE
             .fill(t.bg_toolbar)
@@ -70,13 +98,6 @@ impl App {
                     ui.add_space(14.0);
 
                     // Action buttons
-                    let can_transfer = self.ws.can_request_transfer();
-                    let can_delete = self.ws.can_request_delete();
-                    let busy_reason = if self.ws.pending_op.is_some() {
-                        "Finish or cancel the current confirmation"
-                    } else {
-                        "Wait for the active transfer to finish"
-                    };
                     let btn = |ui: &mut egui::Ui,
                                label: &str,
                                shortcut: &str,
@@ -100,8 +121,8 @@ impl App {
                         ui,
                         "Copy",
                         "F5  Copy selected to other panel",
-                        can_transfer,
-                        busy_reason,
+                        actions.copy.enabled,
+                        actions.copy.reason.unwrap_or_default(),
                     ) {
                         self.ws.request_copy();
                     }
@@ -109,12 +130,11 @@ impl App {
                         ui,
                         "Move",
                         "F6  Move selected to other panel",
-                        can_transfer,
-                        busy_reason,
+                        actions.move_items.enabled,
+                        actions.move_items.reason.unwrap_or_default(),
                     ) {
                         self.ws.request_move();
                     }
-                    let can_move_in = self.ws.can_transfer_into_cursor_folder();
                     if btn(
                         ui,
                         "Move In",
@@ -125,10 +145,11 @@ impl App {
                             )
                             .keyboard
                         ),
-                        can_move_in,
-                        "Select items and highlight a destination folder",
+                        actions.move_in.enabled,
+                        actions.move_in.reason.unwrap_or_default(),
                     ) {
-                        self.ws.keyboard_drop_request = Some(TransferKind::Move);
+                        self.ws
+                            .execute(crate::command::Command::MoveIntoCursorFolder);
                     }
                     if btn(
                         ui,
@@ -140,19 +161,32 @@ impl App {
                             )
                             .keyboard
                         ),
-                        can_move_in,
-                        "Select items and highlight a destination folder",
+                        actions.copy_in.enabled,
+                        actions.copy_in.reason.unwrap_or_default(),
                     ) {
-                        self.ws.keyboard_drop_request = Some(TransferKind::Copy);
+                        self.ws
+                            .execute(crate::command::Command::CopyIntoCursorFolder);
                     }
-                    if btn(ui, "New Folder", "F7  Create new directory", true, "") {
+                    if btn(
+                        ui,
+                        "New Folder",
+                        "F7  Create new directory",
+                        actions.create_dir.enabled,
+                        actions.create_dir.reason.unwrap_or_default(),
+                    ) {
                         self.ws.create_dir();
                     }
-                    if btn(ui, "Delete", "F8  Move to Trash", can_delete, busy_reason) {
+                    if btn(
+                        ui,
+                        "Delete",
+                        "F8  Move to Trash",
+                        actions.delete.enabled,
+                        actions.delete.reason.unwrap_or_default(),
+                    ) {
                         self.ws.request_delete();
                     }
                     if btn(ui, "\u{2318}K", "Open command palette", true, "") {
-                        self.ws.palette_request = true;
+                        self.ws.execute(crate::command::Command::BeginPalette);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -304,6 +338,7 @@ impl App {
         active_side: &str,
         active_path: &str,
     ) {
+        let actions = ToolbarCommands::capture(&self.ws);
         Frame::NONE
             .fill(t.bg_toolbar)
             .inner_margin(Margin::symmetric(8, 4))
@@ -336,13 +371,6 @@ impl App {
                         );
                     }
 
-                    let can_transfer = self.ws.can_request_transfer();
-                    let can_delete = self.ws.can_request_delete();
-                    let busy_reason = if self.ws.pending_op.is_some() {
-                        "Finish or cancel the current confirmation"
-                    } else {
-                        "Wait for the active transfer to finish"
-                    };
                     let command = |ui: &mut egui::Ui,
                                    label: &str,
                                    tooltip: &str,
@@ -361,50 +389,72 @@ impl App {
                         .on_disabled_hover_text(disabled_reason)
                         .clicked()
                     };
-                    if command(ui, "F5", "Copy to other panel", can_transfer, busy_reason) {
+                    if command(
+                        ui,
+                        "F5",
+                        "Copy to other panel",
+                        actions.copy.enabled,
+                        actions.copy.reason.unwrap_or_default(),
+                    ) {
                         self.ws.request_copy();
                     }
-                    if command(ui, "F6", "Move to other panel", can_transfer, busy_reason) {
+                    if command(
+                        ui,
+                        "F6",
+                        "Move to other panel",
+                        actions.move_items.enabled,
+                        actions.move_items.reason.unwrap_or_default(),
+                    ) {
                         self.ws.request_move();
                     }
-                    if command(ui, "F8", "Move to Trash", can_delete, busy_reason) {
+                    if command(
+                        ui,
+                        "F8",
+                        "Move to Trash",
+                        actions.delete.enabled,
+                        actions.delete.reason.unwrap_or_default(),
+                    ) {
                         self.ws.request_delete();
                     }
                     if command(ui, "⌘K", "Open command palette", true, "") {
-                        self.ws.palette_request = true;
+                        self.ws.execute(crate::command::Command::BeginPalette);
                     }
 
                     ui.menu_button(egui::RichText::new("…").size(18.0), |ui| {
-                        if ui.button("New Folder").clicked() {
+                        if ui
+                            .add_enabled(
+                                actions.create_dir.enabled,
+                                egui::Button::new("New Folder"),
+                            )
+                            .on_disabled_hover_text(actions.create_dir.reason.unwrap_or_default())
+                            .clicked()
+                        {
                             self.ws.create_dir();
                             ui.close();
                         }
 
-                        let can_move_in = self.ws.can_transfer_into_cursor_folder();
                         if ui
                             .add_enabled(
-                                can_move_in,
+                                actions.move_in.enabled,
                                 egui::Button::new("Move into highlighted folder"),
                             )
-                            .on_disabled_hover_text(
-                                "Select items and highlight a destination folder",
-                            )
+                            .on_disabled_hover_text(actions.move_in.reason.unwrap_or_default())
                             .clicked()
                         {
-                            self.ws.keyboard_drop_request = Some(TransferKind::Move);
+                            self.ws
+                                .execute(crate::command::Command::MoveIntoCursorFolder);
                             ui.close();
                         }
                         if ui
                             .add_enabled(
-                                can_move_in,
+                                actions.copy_in.enabled,
                                 egui::Button::new("Copy into highlighted folder"),
                             )
-                            .on_disabled_hover_text(
-                                "Select items and highlight a destination folder",
-                            )
+                            .on_disabled_hover_text(actions.copy_in.reason.unwrap_or_default())
                             .clicked()
                         {
-                            self.ws.keyboard_drop_request = Some(TransferKind::Copy);
+                            self.ws
+                                .execute(crate::command::Command::CopyIntoCursorFolder);
                             ui.close();
                         }
 

@@ -42,18 +42,54 @@ pub fn dir_size_recursive(path: &Path) -> u64 {
         .sum()
 }
 
-/// Recursively copy a directory tree (no progress reporting).
+/// Recursively copy a directory tree into a new destination. Directory
+/// symlinks are recreated rather than traversed, and a failed copy removes
+/// only the destination root created by this call.
 pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
+    std::fs::create_dir(dst)?;
+    if let Err(copy_error) = copy_dir_contents(src, dst) {
+        return match std::fs::remove_dir_all(dst) {
+            Ok(()) => Err(copy_error),
+            Err(cleanup_error) => Err(std::io::Error::new(
+                copy_error.kind(),
+                format!(
+                    "{copy_error}; partial copy preserved at {} because cleanup failed: {cleanup_error}",
+                    dst.display()
+                ),
+            )),
+        };
+    }
+    Ok(())
+}
+
+fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        let source = entry.path();
+        let destination = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            copy_symlink(&source, &destination)?;
+        } else if file_type.is_dir() {
+            copy_dir_all(&source, &destination)?;
         } else {
-            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+            std::fs::copy(source, destination)?;
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(src)?, dst)
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "preserving symlinks is not supported on this platform",
+    ))
 }
 
 /// True when `dest` is the same path as `src` or lives inside `src`'s subtree.
@@ -173,7 +209,10 @@ pub fn free_name_against(name: &str, taken: &std::collections::HashSet<String>) 
 /// new path.
 pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
     let dest = available_copy_name(path);
-    if path.is_dir() {
+    let file_type = std::fs::symlink_metadata(path)?.file_type();
+    if file_type.is_symlink() {
+        copy_symlink(path, &dest)?;
+    } else if file_type.is_dir() {
         copy_dir_all(path, &dest)?;
     } else {
         std::fs::copy(path, &dest)?;
@@ -181,28 +220,26 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
     Ok(dest)
 }
 
-/// Parse the available bytes from `df -Pk` output (the Available column,
-/// index 3, is in 1024-byte blocks). Reads the last non-empty line rather than
-/// line 2, so a trailing newline does not matter and (under `-P`, which never
-/// wraps the row) a long device name cannot shift the columns. Pure, so it is
-/// unit-testable.
-pub fn parse_df_avail_bytes(out: &str) -> Option<u64> {
-    let line = out.lines().rfind(|l| !l.trim().is_empty())?;
-    let cols: Vec<&str> = line.split_whitespace().collect();
-    let avail_kib: u64 = cols.get(3)?.parse().ok()?;
-    Some(avail_kib * 1024)
+/// Free space in bytes on the volume containing `path`. A direct filesystem
+/// query avoids spawning and waiting for `df` on the UI path.
+#[cfg(unix)]
+pub fn free_space(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `stats` points to writable storage
+    // that is read only after statvfs reports success.
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let stats = unsafe { stats.assume_init() };
+    (stats.f_bavail as u64).checked_mul(stats.f_frsize)
 }
 
-/// Free space in bytes on the volume containing `path`, via `df -Pk`.
-/// `-P` forces POSIX one-line-per-filesystem output so a long device name
-/// never wraps onto a second line and misaligns the Available column.
-pub fn free_space(path: &Path) -> Option<u64> {
-    let out = std::process::Command::new("df")
-        .arg("-Pk")
-        .arg(path)
-        .output()
-        .ok()?;
-    parse_df_avail_bytes(&String::from_utf8_lossy(&out.stdout))
+#[cfg(not(unix))]
+pub fn free_space(_path: &Path) -> Option<u64> {
+    None
 }
 
 /// Whether two paths live on the same filesystem (so a move is an instant
@@ -401,6 +438,26 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_preserves_directory_symlinks_without_traversing_them() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.file("real/inside.txt", "inside");
+        std::os::unix::fs::symlink("real", src.path().join("linked")).unwrap();
+
+        let copy = dst.path().join("copy");
+        copy_dir_all(src.path(), &copy).unwrap();
+
+        let copied_link = copy.join("linked");
+        assert!(
+            std::fs::symlink_metadata(&copied_link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(copied_link).unwrap(), Path::new("real"));
+    }
+
     #[test]
     fn first_available_skips_taken_names() {
         let tmp = TempDir::new();
@@ -504,18 +561,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_df_avail_reads_available_column() {
-        let out = "Filesystem 1024-blocks      Used Available Capacity  Mounted on\n\
-                   /dev/disk3s1 971350180 100000000 800000000      12%  /\n";
-        assert_eq!(parse_df_avail_bytes(out), Some(800_000_000 * 1024));
-        assert_eq!(parse_df_avail_bytes("only a header line\n"), None);
-        assert_eq!(parse_df_avail_bytes(""), None);
-
-        // Trailing blank lines must not defeat the parse (last non-empty row
-        // wins, not literally the last line).
-        let trailing = "Filesystem 1024-blocks Used Available Capacity Mounted on\n\
-                        /dev/disk3s1 971350180 100000000 800000000 12% /\n\n";
-        assert_eq!(parse_df_avail_bytes(trailing), Some(800_000_000 * 1024));
+    fn free_space_uses_the_containing_filesystem() {
+        let tmp = TempDir::new();
+        assert!(free_space(tmp.path()).is_some_and(|bytes| bytes > 0));
+        assert_eq!(
+            free_space(Path::new("/definitely/not/present/commander")),
+            None
+        );
     }
 
     #[test]

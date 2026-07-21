@@ -16,13 +16,14 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: more than 60 focused modules and 606
-`#[test]` functions sit under a thin presentation layer. The broad suite runs
-603; two profiling harnesses and the separately executed single-threaded
-performance timing gate are ignored there. The debt is concentrated in three
-oversized core files and in how the core signals the UI.
+That split is real and worth protecting: more than 60 focused modules and 720
+unit tests sit under a thin presentation layer. The broad suite passes 717;
+three manual/performance harnesses are intentionally ignored there, and the
+single-threaded performance timing gate is run separately. The largest debt is
+still concentrated in three oversized core files, but core-to-UI signalling is
+now a typed, FIFO boundary rather than a field-level flag bus.
 
-### External-research constraints (2026-07-14)
+### External-research constraints (2026-07-14, revalidated 2026-07-18)
 
 The comparative pass in [research.md](research.md) adds five constraints to the
 target architecture without changing the current migration order:
@@ -42,12 +43,21 @@ target architecture without changing the current migration order:
    selection, and mark states. Pointer-only actions have keyboard equivalents.
 
 These constraints reinforce, rather than replace, the planned `ViewConfig`,
-typed Effect queue, `TransferCenter`/`UndoCenter`, and injected ports. The
+`TransferCenter`/`UndoCenter`, and remaining injected ports. The typed queue
+portion is now shipped as `ui_request::UiRequestQueue`; historical roadmap
+references to an Effect bus describe that completed migration. The
 `G044` has an owner in `volume_profile`; `path_identity` supplies the core of
 `G057`. `ports`/`provider_runtime`, `workload`, and the journal transition
 machines own `G081-G090`. `measurement`, `benchmark_fixture`,
 `capability_diagnostic`, `support_bundle`, `feature_flags`, and `klm` own
 `G091-G100` without adding policy to `Workspace`.
+
+The fixed 100-repository cohort was refreshed in full on 2026-07-18: every
+entry remained reachable and non-archived. That pass produced the smaller
+`H001-H012` hardening ledger in `research.md`; the subsequent `I001-I010`
+follow-up closes preview, command, watcher, naming, capability, and retention
+gaps. `J001-J010` is the new unimplemented idea set. None changes the
+longer-term module migration order below.
 
 ## Module map (current)
 
@@ -57,15 +67,21 @@ Grouped by the bounded context each module really belongs to:
 
 - **Navigation / panel state**: `panel` (the `PanelState` god object: entries,
   cursor, selection, sort, filter, history, watcher, dir-size index),
-  `jumplist`, `crumbs`, `scan`, `collections`, `tree_overview`.
+  `watcher_policy` (backend/depth/coalescing choice), `watcher_health`
+  (path-free backend/recovery/batch counters), `jumplist`, `crumbs`, `scan`,
+  `collections`, `tree_overview`.
 - **Discovery / search**: `query` is the canonical grammar, `search` owns
   cancellable generations and provider composition, `content_index` owns the
   optional root-scoped snapshot, and `archive` provides bounded ZIP browsing
   and member search. `fuzzy`, `image_cache`, and `io_budget` are shared
   mechanisms, not UI policies.
 - **Workspace / coordination**: `workspace` (the second god object: two panels,
-  transfer queue, undo, pending ops, the dialog-intent flag bus, compare/sync
-  glue, drop handling), `command` (the `Command` enum + key mapping).
+  undo, pending ops, compare/sync glue, and drop handling),
+  `workspace::transfer_queue` (queue admission, sequencing, cancellation and
+  retirement), `ui_request` (the toolkit-independent FIFO intent boundary),
+  `command` (the `Command` enum + key mapping and typed
+  composable predicates over pure `CommandContext` snapshots used by every
+  action surface).
 - **Selection / comparison**: `compare` (cross-pane classification + selection
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
@@ -73,7 +89,8 @@ Grouped by the bounded context each module really belongs to:
   failure classes; `operation_journal` owns serializable event transitions and recovery;
   `path_identity`, `filesystem_policy`, `mount_guard`, `version_store`, `undo`,
   and `sync_guard` supply identity proof, filesystem capability policy,
-  remount safety, versions, reversible history, and circuit breakers.
+  remount safety, bounded version retention, reversible history, and circuit
+  breakers.
 - **Transfer execution**: `transfer` coordinates staging and commit;
   `native_copy`, `delta_copy`, and `verified_hash` own specialized data paths;
   `volume_profile` and `transfer_tuning` own capability/telemetry policy;
@@ -81,7 +98,8 @@ Grouped by the bounded context each module really belongs to:
   `rename`, `rename_order`, `sync`, and `shelf` remain adjacent operation
   helpers.
 - **Capability / workload boundaries**: `ports` defines narrow preview,
-  search, filesystem, and hashing contracts; `provider_runtime` enforces lazy
+  search, filesystem, hashing, and main-thread context-menu contracts;
+  `provider_runtime` enforces lazy
   capability activation, startup budgets, and out-of-process optional
   providers; `workload` owns priority, quotas, cancellation, backpressure,
   immutable snapshots, generation rejection, and scheduler telemetry;
@@ -91,18 +109,22 @@ Grouped by the bounded context each module really belongs to:
   startup phases, and versioned CI budgets; `benchmark_fixture` generates
   deterministic empirical trees; `capability_diagnostic` explains per-volume
   fast paths and fallbacks; `support_bundle` exports capped, salted-redacted
-  evidence; `klm` checks the ten core operator workflows.
+  evidence including watcher health; `klm` checks the ten core operator
+  workflows.
 - **Presentation-independent helpers**: `listing_export`, `reldate`,
   `file_color`, `clipboard`, `cmdtemplate`, `bookmarks`, `smart_folder`,
-  `session`, `density`, `focus_mode`, `quick_actions`, `treemap`, `toasts`
-  (a pure, time-driven toast queue with an injected clock; no egui types),
+  `session`, `persistence` (shared item-level recovery and path-free health),
+  `density`, `display_name` (Unicode/extension-aware compact names),
+  `focus_mode`, `quick_actions`, `treemap`, `toasts` (a pure,
+  time-driven toast queue with an injected clock; no egui types),
   `lock_util` (the single poison-recovery policy at worker/UI mutex borders).
 
 ### UI adapter (`app/`, egui)
 
 `app/mod.rs` owns the `App` struct (presentation state: theme, zoom, image
-cache, tree widget, and ~20 transient dialog buffers). Per-frame orchestration
-lives in `app/update.rs`; input translation in `app/keys.rs`; one file per
+cache, tree widget, and transient dialog buffers). Per-frame orchestration
+lives in `app/update.rs`, including the single `UiRequest` snapshot drain;
+input translation lives in `app/keys.rs`; one file per
 dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
 `find_dialog`, `recovery_dialog`, `safe_state_dialog`, `collections_dialog`,
 ...); row rendering in `app/file_list.rs` and `app/render.rs`; native macOS
@@ -110,18 +132,42 @@ menu in `native_menu`. Toolkit-independent accessibility and responsive-layout
 contracts live in `accessibility`; operation presentation vocabulary lives in
 `operation_view` rather than individual dialogs. `app/developer_panel.rs`
 renders immutable diagnostics snapshots and sends explicit feature-control or
-export commands; it does not own measurement or rollout policy.
+export commands; it does not own measurement, persistence, watcher, or rollout
+policy.
 
 ### Size hot-spots
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 4,705 | God object plus a large colocated test module |
-| `src/transfer.rs` | 3,623 | Coordinator still contains buffered/sparse tree mechanics |
-| `src/panel.rs` | 3,220 | God object; `PanelState` mixes 4 concerns |
-| `src/operation_journal.rs` | 1,714 | Durable state, transition machines, recovery, rollback, and tests |
+| `src/workspace.rs` | 4,866 | God object plus a large colocated test module; queue lifecycle is extracted |
+| `src/panel.rs` | 4,761 | God object; `PanelState` mixes listing, view, selection, watcher, and cache concerns |
+| `src/transfer.rs` | 3,839 | Coordinator still contains buffered/sparse tree mechanics |
+| `src/operation_journal.rs` | 1,747 | Durable state, transition machines, recovery, rollback, and tests |
 | `src/search.rs` | 1,496 | Provider composition and a large fixture suite |
-| `src/app/update.rs` | 1,277 | Per-frame hub; drains the flag bus |
+| `src/app/update.rs` | 1,509 | Per-frame hub; owns the typed request dispatcher and rendering orchestration |
+
+## Agent/critic remediation pass (2026-07-21)
+
+Each architectural concern was implemented by a scoped agent and reviewed by
+an independent critic. P0-P2 findings were corrected and re-reviewed before a
+track was accepted; one unsafe journal patch was rejected rather than merged.
+
+| Track | Result | Remaining boundary |
+| --- | --- | --- |
+| Workspace decomposition | accepted after paused-queue P1/P2 fixes | `transfer_queue` is still an `impl Workspace`; extract a controller returning typed retirement outcomes |
+| Typed UI request queue | accepted after Recovery handoff and FIFO Escape fixes | `App` still owns many dialog buffers; a later `UiState` extraction is separate work |
+| Operation journal/rollback rewrite | rejected, not integrated | identity revalidation and crash-safe proof need a fresh design pass |
+| Panel size/cache pipeline | accepted | continue splitting listing/view/watcher ownership out of `PanelState` |
+| Async text preview | accepted after timeout, identity, and worker-retirement fixes | retain the isolated one-worker executor and 256 KiB text budget |
+| Atomic persistence/session save | accepted | callers must keep distinguishing pre-commit failure from committed-not-durable |
+| Workload dependency injection | accepted | migrate remaining global-runtime consumers incrementally |
+| Dialog/UI UX contracts | accepted | keep modal Escape and opening snapshots centralized |
+| Headless UI/accessibility contract | accepted | screenshot-level layout QA remains outside the unit suite |
+| macOS context-menu port | accepted | Clipboard, Trash, opener, and free-space probing still need equivalent ports |
+
+The rejected journal track is intentionally absent from the worktree. This is
+part of the safety contract: a large patch is not progress if its identity and
+rollback invariants cannot be demonstrated.
 
 ### Research milestone 1 (G001-G050)
 
@@ -192,6 +238,78 @@ support exports take one coherent snapshot. Operation decisions are indexed in
 [`src/operation/README.md`](src/operation/README.md) with three accepted ADRs
 for durable invariants, state ownership, and failure/recovery policy.
 
+## Comparative hardening slice (2026-07-18)
+
+The `H001-H012` pass follows one rule: policy is computed in a pure core owner,
+mutable runtime state stays with the subsystem that observes it, and egui only
+renders the resulting state or sends an explicit command.
+
+| Concern | Policy owner | Runtime owner | Presentation boundary |
+| --- | --- | --- | --- |
+| Cross-pane comparison | `compare`, `conflict`, `sync` | panel/workspace snapshots | compare labels, colors, conflict sheet |
+| Action availability | typed `command::CommandPredicate` composition | immutable `Workspace` context snapshots | palette, toolbar, keyboard feedback, contextual key bar |
+| Config recovery | `persistence` | each typed store | one toast plus developer counters |
+| Image preview | `image_cache` target/provider/admission state | bounded cache/decoder workers and result map | loading, failed, retry, close, provider-health states |
+| Directory watching | `watcher_policy` plus `watcher_health` facts | `PanelState` native/polling lifecycle and event generations | developer panel and support bundle |
+| Compact names | `display_name` Unicode/suffix policy | immutable row data | file row plus full-name tooltip/accessibility label |
+| Volume action gating | `filesystem_policy::CapabilityMatrix` | five-second workspace pane cache | every command surface's enabled state/reason |
+| Version retention | `operation::VersionRetentionPolicy` | `version_store` manifest and immutable `TransferSpec` | transfer, delete, and sync review surfaces |
+
+The important flows are intentionally short:
+
+1. An action surface requests one immutable context snapshot (complete for the
+   palette/keyboard, minimal for always-visible controls), evaluates the
+   command's typed predicates, and renders, explains, or invokes that answer.
+2. A config store parses its top-level JSON, recovers each valid item through
+   `persistence`, and reports aggregate counts without recording values/paths.
+3. Preview requests capture a physical viewport target, enter `Loading`, and
+   acquire one of four decoder slots. ImageIO/video/standard providers decode
+   toward that target behind a hard timeout and publish either a texture or a
+   stable classified failure. Retry explicitly invalidates the failure.
+4. Direct watcher events increment a generation and publish once per bounded
+   batch. Overflow/backend errors bypass batching, invalidate the incremental
+   view, back off, reconnect, and force a full reconciliation.
+5. A versioned mutation commits the new version record first, atomically
+   publishes the retained manifest, and only then removes expired stored data.
+
+### Hard invariants
+
+1. A directory pair is never classified content-identical from byte size and
+   modification time alone.
+2. File/folder type conflicts never inherit a conditional overwrite policy.
+3. One malformed persisted item cannot erase valid sibling records.
+4. Every visible unavailable palette/toolbar action has one core reason and
+   cannot execute through that surface.
+5. The egui frame never opens or decodes an image.
+6. No accepted decoded pixel/color buffer exceeds 256 MiB or a 32,768-pixel
+   dimension; allocation failure is data, not a panic.
+7. A failed preview remains failed until explicit retry or context invalidation,
+   so the UI cannot oscillate into an endless spinner.
+8. A watcher that failed to create or subscribe is not counted as active.
+9. A watcher gap/reconnect requires full reconciliation, and exported watcher
+   diagnostics contain counters rather than paths.
+10. One watcher burst publishes at most one ready generation per coalescing
+    window; a remote/unknown root uses shallow polling rather than an unbounded
+    recursive native assumption.
+11. Compact file-row text preserves a meaningful regular/compound extension;
+    assistive semantics retain the unshortened name.
+12. Copy requires a writable destination, Move requires writable source and
+    destination, and local mutations consume the shared volume matrix.
+13. Retention always keeps the newest verified version for every original
+    path, even when the age window has elapsed.
+14. A failed retention-manifest write deletes no previously recorded version.
+
+### Greenfield difference
+
+If this application were starting today, `PanelState` would not own watcher
+construction, backoff, reconciliation, listing, cursor, and selection in one
+type. A `DirectoryObserver` state machine would emit typed snapshots into a
+panel reducer. Command predicates would live behind a small `ActionPolicy`
+interface from day one, persisted stores would share one versioned envelope,
+and preview/search/index work would enter the same bounded scheduler instead
+of acquiring separate lifecycle adapters over time. The current pass moves in
+that direction without forcing a high-risk rewrite of the working core.
+
 ## The core <-> UI boundary today
 
 Three mechanisms connect the core to the shell, in descending order of how much
@@ -202,15 +320,14 @@ coupling they create:
    `Command`s, and `Workspace::execute(Command)` runs them. This direction is
    healthy.
 
-2. **The `*_request` flag bus (the main debt).** `Workspace` carries ~20 fields
-   such as `mask_request: bool`, `sync_request: bool`, `treemap_request: bool`,
-   `clipboard_request: Option<PathStyle>`, `clipboard_text_request:
-   Option<(String, String)>`. `execute` raises a dialog intent by setting a
-   flag; each `show_*_dialog` in `app/` drains it with `mem::take`. The flag is
-   **edge-triggered** (also meaning "this is the opening frame, grab focus") and
-   the bus is **bidirectional** (the UI sets some flags directly too). The field
-   names literally encode the UI's dialog catalogue, so the domain depends on
-   the presentation.
+2. **Typed UI requests (clean, with a deliberate vocabulary dependency).**
+   `Workspace` owns one private `UiRequestQueue`; producers emit payload-bearing
+   `UiRequest` values and `app/update.rs` drains one fixed FIFO snapshot per
+   frame. Requests created during dispatch wait for the next frame, deferred
+   modals retain order, and the first pending modal owns focus/Escape until it
+   opens. `Rename`, `Archive`, and safe-state recovery carry immutable path or
+   operation identity payloads. The core knows the intent catalogue, but not
+   egui types, dialog buffers, validation, or rendering.
 
 3. **Public-field mutation (encapsulation leak).** `PanelState` exposes 25+
    `pub` fields; the UI mutates `selected`, `cursor`, `sort_col`, `facets`,
@@ -232,19 +349,23 @@ coupling they create:
   `transfer_tuning`, and `verified_hash` are now separate, but the next split
   should extract a `TransferExecutor` state machine and a `CopyBackend` port
   rather than add another branch to `CopyMethod::copy_entry`.
-- **The flag bus** (mechanism #2 above) is a hand-rolled, untyped event queue
-  smeared across ~20 fields with no single drain point.
-- **Leaky OS ports.** Narrow provider/filesystem/hash ports now protect optional
-  background work, but `Workspace` still injects only
-  `opener: Box<dyn Fn(&Path)>` for native shell behavior. Clipboard, Trash,
-  persistence and free-space probing are called inline from the core, so those
-  paths are not testable without real side-effects. The same
-  gap is security-relevant, not just a testability one: `native_menu`'s
+- **The request catalogue remains shared vocabulary.** The old 25-field flag
+  bus is gone, but adding a new shell intent still adds one `UiRequest` variant
+  and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
+  presentation state in `app`; do not let the enum grow dialog implementation
+  details.
+- **Remaining OS port gaps.** Preview/filesystem/hash providers and the macOS
+  context menu now sit behind narrow typed ports; the AppKit adapter is
+  main-thread-owned and its result is reduced to a UI effect. `Workspace` still
+  injects `opener: Box<dyn Fn(&Path)>`, while Clipboard, Trash, persistence and
+  free-space probing are called inline, so those paths are not fully isolated
+  from real side-effects. The same gap is security-relevant, not just a
+  testability one: `native_menu`'s
   "Get Info" action hand-builds an AppleScript string and shells out to
   `osascript`. The audit's #1/D12 AppleScript-injection finding is now
   fixed in `native_menu.rs` by escaping double quotes and backslashes before
-  interpolation; the remaining design debt is that native OS side-effects still
-  report no structured outcome back to the UI.
+  interpolation. Mutating context-menu actions now report structured success or
+  failure; other native side-effects still need the same treatment.
 - **Async intermixed with view state** on `PanelState`, which prevents the
   panel from being cloned or snapshot-tested. The [audit](audit.md) found
   concrete bugs in exactly this plumbing: a clear/spawn race in the dir-size
@@ -379,10 +500,11 @@ app/ drains Effects once, owns every dialog's state, and holds the ports.
 
 Target shape:
 
-- **Effect bus.** Replace the ~20 `*_request` fields with one typed
-  `effects: Vec<Effect>` queue, pushed by both `execute` and the UI, drained in
-  one place. The dialog-open `Effect` carries a "just opened" marker so the
-  focus edge-trigger is preserved.
+- **Typed UI request bus (shipped).** The former 25 `*_request`/payload fields
+  are one private `VecDeque<UiRequest>`, pushed by both `execute` and App
+  adapters and drained once in `app/update.rs`. Dialog `open_*` methods own the
+  one-shot focus edge, payload modals retain identity, and modal handoffs are
+  tested through the same dispatcher engine production uses.
 - **`UiState`.** Group the ~20 transient dialog buffers out of `App` into a
   dedicated state struct, shrinking the `App` god object.
 - **`ViewConfig` value object.** Bundle the five sort/filter/hidden fields and
@@ -718,7 +840,7 @@ can be taken on faith until that port is read.
 - ports::os_integration was fully discarded and replaced with a plain pure function (applescript_escape) after verifying that native_menu.rs's action_get_info is a static `extern "C" fn` AppKit callback with no receiver to inject a trait object onto -- it reads its target path from a thread_local, not from any struct. This is a case where the round 2/3 plan's own DIP instinct (wrap this in a port, like opener) was simply the wrong tool for a call site with no `self`; the corrected plan ships a one-function fix with a unit test instead of an unused trait. Reviewers should confirm no OTHER AppleScript/osascript call site exists anywhere in the crate that WOULD benefit from a real port (grep for `osascript` found exactly one call site, native_menu.rs:101-112, at the time of this plan).
 - ports::persist grew from one helper (load_lenient<T:Default>) to three (load_lenient, load_optional<T> for session.rs's Option<Session>-returning, no-Default case, and save_atomic<T> for the four-way-duplicated save side) after verifying session.rs's load() genuinely does not fit the single-signature framing round 2 proposed, and that the save-side duplication is exactly as real as the load-side duplication round 2 already targeted. Three small helpers instead of one is slightly more surface area to review, but each is a straightforward 10-20 line generic function; the alternative (forcing session.rs to adopt a Default impl it doesn't have today, purely to fit one helper's signature) would be a behavior change disguised as a refactor, which is worse.
 - poll_transfer/dismiss_transfer straddle transfer_center, undo_center, AND panel::state::Refreshable by design today (workspace.rs:875-948 and 979-987 both call self.left.refresh()/self.right.refresh() in addition to the undo-recording read-before-pump ordering). This plan resolves both the panel coupling (via the explicit Refreshable parameter) and the ISP over-widening (via the narrow trait instead of the concrete struct) -- but poll()'s own internal, unconditional call to pump_queue() before returning is a separate, pre-existing control-flow fact this plan does NOT change, only documents explicitly in poll's own doc-comment so its Option<undo::Action> return-value change is not mistaken for altering that internal ordering. Run the full transfer+undo suite by hand, not just cargo test, both before and after this step.
-- The Effect bus is the one module in this plan whose correctness the 424-test suite cannot verify at all: the dialog focus edge-trigger is egui-frame behavior. The dual-write staging (additive field first, then the actual cutover) de-risks the diff size but does not de-risk the verification gap -- every commit touching effects.rs or its app/update.rs drain loop needs a manual pass in the running app testing each dialog's open/focus behavior individually. This round adds explicit obligations beyond round 2's: (a) Effect::Open's just_opened payload must actually reach RenameState's D19 snapshot field end-to-end, AND (b) the just_opened flag must correctly REPLACE (not merely supplement) all three dialogs' own focused:bool fields once Step 16 deletes them -- a regression here (e.g. a dialog re-grabbing focus every frame because just_opened is read wrong) would not be caught by cargo test and needs the same by-hand verification as (a).
+- Historical risk note for the Effect-bus plan: egui frame timing originally had no automated coverage. The shipped `UiRequest` implementation closes most of that gap with headless tests for FIFO modal ownership, deferred multi-frame dispatch, IME/text focus, payload identity, SafeState-to-Recovery handoff, and transition-frame Escape. A running-app pass is still required for native-window focus and visual layering, but the claim that the suite cannot verify the boundary at all is no longer true.
 - ports::notify's abstraction shape is fixed as Arc<dyn NotifyPort + Send + Sync> uniformly for ~8 of ~9 call sites, but spawn_transfer's own `impl Fn() + Send + 'static` bound requires ONE explicit adapter closure (`move || n.on_progress()`) rather than a bare Arc clone -- this is a real, if small, asymmetry in the ~9 call sites this plan now states explicitly rather than leaving implicit. Confirm at Step 13's landing that this one adapter closure is present and tested (or at minimum exercised by the existing transfer-completion tests), since a missed adapter at this one site is a compile error, not a silent bug, so the risk here is review clarity rather than correctness.
 - panel::watcher's fs-event closure crosses three module boundaries at closure-construction time (writes panel::size_cache's needs_refresh/sizes_dirty flags via RefreshHandle/DirtyHandle accessors, and calls panel::persist_cache's invalidate_size_cache directly) -- this round additionally documents panel::size_cache's own SIZES_DEBOUNCE timer as a third, previously-unnamed timing policy in the same subsystem (alongside panel::walk_log's WALK_COOLDOWN/WALK_EXPENSIVE and panel::watcher's own notify-driven trigger), giving a reviewer a complete three-policy inventory across three files instead of the two the plan tracked before. This is a documented, narrowed coupling, not an eliminated one -- a reviewer of any future change to panel.rs's timing/debounce logic must still read three modules' doc-comments together, and that residual review cost is accepted rather than solved.
 - panel::drag_state's privatization commit now explicitly includes rewriting three workspace.rs test-module call sites (drop_prefers_source_panel_target, drop_falls_back_to_other_panel_path, drop_with_conflict_opens_dialog_instead_of_moving) in addition to the five production call sites round 2 already accounted for -- a genuinely larger single commit (production code in three files plus test code in a fourth) than a pure 40-line struct extraction, landing in one commit specifically so the crate compiles with zero EXTERNAL raw-field access at any intermediate point. Reviewers should expect this commit's diff to touch four files, not three, and should re-verify by grepping for `.drag_entries` and `.drop_target` outside panel::state's own module after this step lands -- the only remaining hits should be inside workspace.rs's drop_dragged/take_drop_plan PRODUCTION bodies (deferred to the drop_glue step), not test code.
@@ -745,8 +867,10 @@ validates.
 
 ## Invariants and testing
 
-The pure core is covered by 424 GUI-free tests (425 `#[test]` functions, one
-`#[ignore]`d manual profiling harness). The one area the tests do **not**
-exercise is egui-frame behaviour: the dialog focus edge-trigger driven by the
-flag bus is invisible to the test suite, which is why the Effect-bus migration
-must be verified manually in the running app, not just by `cargo test`.
+The crate currently exposes 720 unit tests. The default suite passes 717 with
+three explicit ignores, including the separately executed single-threaded CI
+performance gate. Headless egui/AccessKit tests now exercise text-focus and IME
+suppression, modal priority, FIFO pending ownership, one-shot Escape routing,
+and the SafeState-to-Recovery transition frame. They still do **not** replace a
+full screenshot-driven running-app pass for texture presentation, hover
+geometry, native menus, and multi-window layout.

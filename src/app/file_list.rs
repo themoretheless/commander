@@ -10,10 +10,12 @@ impl App {
         panel_side: &str,
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
+        context_menu: &dyn crate::ports::ContextMenuPort,
         opener: &dyn Fn(&std::path::Path),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
-    ) {
+    ) -> Option<crate::provider_runtime::ContextMenuUiEffect> {
+        let mut context_menu_effect = None;
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
@@ -132,7 +134,6 @@ impl App {
                 let mut open_path: Option<std::path::PathBuf> = None;
                 let mut drag_anchor: Option<std::path::PathBuf> = None;
                 let mut pending_drop_target: Option<std::path::PathBuf> = None;
-                let mut ctx_refresh = false;
                 let mut scrolled = false;
 
                 // Lock shared data once for all rows (clone Arc to avoid borrowing panel)
@@ -396,7 +397,8 @@ impl App {
                         let stripe = match crate::compare::classify_entry(entry, map) {
                             CompareStatus::Unique => Some(t.accent),
                             CompareStatus::Differs => Some(t.accent_warning),
-                            CompareStatus::Identical => None,
+                            CompareStatus::TypeConflict => Some(t.accent_red),
+                            CompareStatus::Identical | CompareStatus::DirectoryPair => None,
                         };
                         if let Some(color) = stripe {
                             let edge = egui::Rect::from_min_size(
@@ -487,28 +489,38 @@ impl App {
                         let responsive = crate::accessibility::file_row_layout(
                             ui.available_width() - if is_marked { 16.0 } else { 0.0 },
                         );
-                        if query.is_empty() {
+                        let max_name_chars =
+                            (responsive.name_width / metrics.name_pt).floor() as usize;
+                        let display_name = crate::display_name::truncate_preserving_extension(
+                            &entry.name,
+                            max_name_chars.max(1),
+                        );
+                        let shortened = matches!(&display_name, std::borrow::Cow::Owned(_));
+                        let name_response = if query.is_empty() {
                             ui.add_sized(
                                 [responsive.name_width, row_content],
                                 egui::Label::new(
-                                    egui::RichText::new(&entry.name)
+                                    egui::RichText::new(display_name.as_ref())
                                         .size(metrics.name_pt)
                                         .color(name_color),
                                 )
                                 .truncate(),
-                            );
+                            )
                         } else {
                             ui.add_sized(
                                 [responsive.name_width, row_content],
                                 egui::Label::new(highlight_name_job(
-                                    &entry.name,
+                                    display_name.as_ref(),
                                     &query,
                                     name_color,
                                     t.accent,
                                     metrics.name_pt,
                                 ))
                                 .truncate(),
-                            );
+                            )
+                        };
+                        if shortened {
+                            name_response.on_hover_text(&entry.name);
                         }
 
                         if responsive.show_metadata {
@@ -538,6 +550,12 @@ impl App {
                                                 CompareStatus::Unique => ("+", "Only in this pane"),
                                                 CompareStatus::Differs => ("\u{2260}", "Differs"),
                                                 CompareStatus::Identical => ("=", "Identical"),
+                                                CompareStatus::DirectoryPair => {
+                                                    ("?", "Folder pair; contents not compared")
+                                                }
+                                                CompareStatus::TypeConflict => {
+                                                    ("!", "File/folder type conflict")
+                                                }
                                             };
                                         ui.label(
                                             egui::RichText::new(symbol)
@@ -552,8 +570,11 @@ impl App {
                         }
                     });
 
-                    if row_resp.secondary_clicked() && crate::native_menu::show(&entry.path) {
-                        ctx_refresh = true;
+                    if row_resp.secondary_clicked() {
+                        context_menu_effect = crate::provider_runtime::request_context_menu(
+                            context_menu,
+                            &entry.path,
+                        );
                     }
 
                     if row_resp.double_clicked() {
@@ -608,9 +629,6 @@ impl App {
                 }
                 if let Some(target) = pending_drop_target {
                     panel.drop_target = Some(target);
-                }
-                if ctx_refresh {
-                    panel.refresh();
                 }
                 if let Some(path) = open_path {
                     opener(&path);
@@ -743,6 +761,7 @@ impl App {
                     });
                 });
             });
+        context_menu_effect
     }
 
     pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {

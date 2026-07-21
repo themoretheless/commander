@@ -17,6 +17,7 @@ mod crumbs;
 mod dedup;
 mod delta_copy;
 mod density;
+mod display_name;
 pub mod feature_flags;
 mod file_color;
 mod filesystem_policy;
@@ -39,6 +40,7 @@ mod operation_view;
 mod opqueue;
 mod panel;
 mod path_identity;
+mod persistence;
 pub mod ports;
 pub mod provider_runtime;
 mod query;
@@ -64,10 +66,13 @@ mod transfer;
 mod transfer_tuning;
 mod tree_overview;
 mod treemap;
+mod ui_request;
 mod undo;
 mod verified_hash;
 mod version_store;
 mod volume_profile;
+mod watcher_health;
+mod watcher_policy;
 pub mod workload;
 mod workspace;
 
@@ -99,7 +104,12 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(cc)))
+            let context_menu = native_menu::MacOsContextMenu::new().map_err(|error| {
+                std::io::Error::other(format!(
+                    "could not construct the main-thread AppKit adapter: {error:?}"
+                ))
+            })?;
+            Ok(Box::new(app::App::new(cc, std::rc::Rc::new(context_menu))))
         }),
     )
 }

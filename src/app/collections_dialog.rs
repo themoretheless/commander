@@ -69,21 +69,22 @@ impl App {
         }
     }
 
-    pub(crate) fn show_collections_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.collections_request) {
-            let selected = self
-                .project_collections
-                .items
-                .first()
-                .map(|collection| collection.name.clone());
-            self.collections_dialog = Some(CollectionsDialogState {
-                selected: selected.clone(),
-                ..Default::default()
-            });
-            if let Some(name) = selected {
-                self.start_collection_view(ctx, &name);
-            }
+    pub(crate) fn open_collections(&mut self, ctx: &egui::Context) {
+        let selected = self
+            .project_collections
+            .items
+            .first()
+            .map(|collection| collection.name.clone());
+        self.collections_dialog = Some(CollectionsDialogState {
+            selected: selected.clone(),
+            ..Default::default()
+        });
+        if let Some(name) = selected {
+            self.start_collection_view(ctx, &name);
         }
+    }
+
+    pub(crate) fn show_collections_dialog(&mut self, ctx: &egui::Context) {
         if self.collections_dialog.is_none() {
             return;
         }

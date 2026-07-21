@@ -34,6 +34,56 @@ impl DurabilityProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VersionRetentionPolicy {
+    Compact,
+    #[default]
+    Recent,
+    Archive,
+    Forever,
+}
+
+impl VersionRetentionPolicy {
+    pub const ALL: [Self; 4] = [Self::Compact, Self::Recent, Self::Archive, Self::Forever];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Recent => "Recent",
+            Self::Archive => "Archive",
+            Self::Forever => "Forever",
+        }
+    }
+
+    pub fn consequence(self) -> &'static str {
+        match self {
+            Self::Compact => "Keep 3 versions per path for up to 30 days",
+            Self::Recent => "Keep 10 versions per path for up to 90 days",
+            Self::Archive => "Keep 50 versions per path for up to one year",
+            Self::Forever => "Keep every version until it is removed manually",
+        }
+    }
+
+    pub const fn max_per_path(self) -> Option<usize> {
+        match self {
+            Self::Compact => Some(3),
+            Self::Recent => Some(10),
+            Self::Archive => Some(50),
+            Self::Forever => None,
+        }
+    }
+
+    pub const fn max_age_secs(self) -> Option<u64> {
+        const DAY: u64 = 24 * 60 * 60;
+        match self {
+            Self::Compact => Some(30 * DAY),
+            Self::Recent => Some(90 * DAY),
+            Self::Archive => Some(365 * DAY),
+            Self::Forever => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailureClass {
     Retryable,
@@ -170,6 +220,12 @@ mod tests {
         assert!(DurabilityProfile::Verified.verifies());
         assert!(DurabilityProfile::Versioned.verifies());
         assert!(DurabilityProfile::Versioned.keeps_versions());
+        assert_eq!(
+            VersionRetentionPolicy::default(),
+            VersionRetentionPolicy::Recent
+        );
+        assert_eq!(VersionRetentionPolicy::Compact.max_per_path(), Some(3));
+        assert_eq!(VersionRetentionPolicy::Forever.max_age_secs(), None);
     }
 
     #[test]

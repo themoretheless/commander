@@ -177,17 +177,23 @@ pub struct ContentIndex {
     snapshots: HashMap<PathBuf, Arc<RootIndex>>,
     load_errors: HashMap<PathBuf, String>,
     active: Option<BuildRun>,
+    workload: crate::workload::WorkloadHandle,
     idle: Arc<AtomicBool>,
     next_generation: u64,
 }
 
 impl ContentIndex {
-    pub fn load() -> Self {
+    pub fn load(workload: crate::workload::WorkloadHandle) -> Self {
+        Self::from_settings(load_settings_from(&settings_path()), workload)
+    }
+
+    fn from_settings(settings: SettingsStore, workload: crate::workload::WorkloadHandle) -> Self {
         Self {
-            settings: load_settings_from(&settings_path()),
+            settings,
             snapshots: HashMap::new(),
             load_errors: HashMap::new(),
             active: None,
+            workload,
             idle: Arc::new(AtomicBool::new(false)),
             next_generation: 0,
         }
@@ -267,6 +273,30 @@ impl ContentIndex {
             return false;
         }
         let exclusions = self.exclusions(&root);
+        if let Err(error) = self.enqueue_build(root.clone(), exclusions, notify) {
+            self.load_errors
+                .insert(root, format!("Content index queue refused build: {error}"));
+            return false;
+        }
+        self.load_errors.remove(&root);
+        if let Some(settings) = self
+            .settings
+            .roots
+            .iter_mut()
+            .find(|settings| settings.root == root)
+        {
+            settings.last_error = None;
+            let _ = save_settings_to(&settings_path(), &self.settings);
+        }
+        true
+    }
+
+    fn enqueue_build(
+        &mut self,
+        root: PathBuf,
+        exclusions: Vec<PathBuf>,
+        notify: Notify,
+    ) -> Result<(), crate::workload::AdmissionError> {
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
         let idle = Arc::clone(&self.idle);
@@ -274,7 +304,7 @@ impl ContentIndex {
         let worker_root = root.clone();
         self.next_generation = self.next_generation.saturating_add(1);
         let generation = self.next_generation;
-        let task = match crate::workload::submit(
+        let task = self.workload.submit(
             crate::workload::TaskSpec::new(
                 crate::workload::TaskKind::Index,
                 root.clone(),
@@ -305,32 +335,15 @@ impl ContentIndex {
                 let _ = sender.send(BuildEvent::Complete(result));
                 notify();
             },
-        ) {
-            Ok(task) => task,
-            Err(error) => {
-                self.load_errors
-                    .insert(root, format!("Content index queue refused build: {error}"));
-                return false;
-            }
-        };
+        )?;
         self.active = Some(BuildRun {
-            root: root.clone(),
+            root,
             receiver,
             cancelled,
             progress: BuildProgress::default(),
             task,
         });
-        self.load_errors.remove(&root);
-        if let Some(settings) = self
-            .settings
-            .roots
-            .iter_mut()
-            .find(|settings| settings.root == root)
-        {
-            settings.last_error = None;
-            let _ = save_settings_to(&settings_path(), &self.settings);
-        }
-        true
+        Ok(())
     }
 
     pub fn poll(&mut self) {
@@ -480,6 +493,12 @@ impl ContentIndex {
     fn set_last_error(&mut self, root: &Path, error: Option<String>) {
         self.settings_for_mut(root.to_path_buf()).last_error = error;
         let _ = save_settings_to(&settings_path(), &self.settings);
+    }
+}
+
+impl Drop for ContentIndex {
+    fn drop(&mut self) {
+        drop(self.active.take());
     }
 }
 
@@ -910,5 +929,37 @@ mod tests {
             last_error: None,
         };
         assert_eq!(status.coverage_percent(), 75.0);
+    }
+
+    #[test]
+    fn injected_workload_owns_and_cancels_the_active_build() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let root = temp.path().to_path_buf();
+        let runtime = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let settings = SettingsStore {
+            roots: vec![RootSettings {
+                root: root.clone(),
+                enabled: true,
+                excluded_roots: Vec::new(),
+                last_error: None,
+            }],
+        };
+        let mut index = ContentIndex::from_settings(settings, runtime.handle());
+        index.set_idle(true);
+
+        index
+            .enqueue_build(root, Vec::new(), Arc::new(|| {}))
+            .unwrap();
+        assert_eq!(runtime.stats().queued, 1);
+
+        drop(index);
+
+        let stats = runtime.stats();
+        assert_eq!(stats.queued, 0);
+        assert_eq!(stats.cancelled, 1);
+        assert!(!runtime.run_next());
     }
 }

@@ -533,6 +533,7 @@ pub struct TransferSpec {
     pub policy: OverwritePolicy,
     pub method: CopyMethod,
     pub durability: DurabilityProfile,
+    pub version_retention: crate::operation::VersionRetentionPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     pub post_success: Option<PostTransferAction>,
@@ -1588,10 +1589,11 @@ pub fn spawn_transfer(
                 false
             } else {
                 let version_result = if replace_existing && spec.durability.keeps_versions() {
-                    crate::version_store::preserve(
+                    crate::version_store::preserve_with_policy(
                         &landing,
                         &spec.operation_id,
                         work_item.key.clone(),
+                        spec.version_retention,
                     )
                     .map(|_| ())
                     .map_err(std::io::Error::other)
@@ -1602,11 +1604,24 @@ pub fn spawn_transfer(
                     if replace_existing {
                         swap_into_place(&copy_target, &landing)
                     } else {
-                        crate::native_copy::rename_noreplace(&copy_target, &landing)
+                        crate::native_copy::rename_noreplace(&copy_target, &landing).map(|()| None)
                     }
                 });
                 match placement {
-                    Ok(()) => true,
+                    Ok(cleanup_warning) => {
+                        if let Some(message) = cleanup_warning {
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(landing.clone()),
+                                    message,
+                                ),
+                            );
+                        }
+                        true
+                    }
                     Err(e) => {
                         // The swap left the staged data at `copy_target`. For a
                         // rename that is the source's ONLY copy, so move it back
@@ -1728,12 +1743,20 @@ pub fn spawn_transfer(
         crate::lock_util::recover(&progress)
             .set_phase(crate::operation_view::OperationPhase::Finalize);
         notify();
+        let failure_rollback = run_failure_rollback(
+            spec.rollback_cleanup.as_ref(),
+            &spec.operation_id,
+            journal_enabled,
+            &progress,
+        );
         run_post_success(spec.post_success.as_ref(), &progress);
         finish_progress(&progress);
         if journal_enabled {
             let status = {
                 let state = crate::lock_util::recover(&progress);
-                if state
+                if failure_rollback == FailureRollback::Complete {
+                    crate::operation_journal::OperationStatus::RolledBack
+                } else if state
                     .failures
                     .iter()
                     .any(|failure| failure.class == FailureClass::IntegrityUncertain)
@@ -1807,6 +1830,134 @@ fn run_post_success(action: Option<&PostTransferAction>, progress: &TransferStat
             &path.display().to_string(),
             ClassifiedFailure::io(Some(path.clone()), "Post-transfer cleanup failed", &error),
         );
+    }
+}
+
+/// Roll back placements made inside an operation-created container when the
+/// enclosing transfer does not finish cleanly. This is used by Gather: a
+/// partial move must put every completed entry back before removing the folder
+/// it created. No-clobber restores fail closed if another process recreated a
+/// source name, leaving the user's data at the reported landing instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailureRollback {
+    NotRequested,
+    Complete,
+    Incomplete,
+}
+
+fn run_failure_rollback(
+    container: Option<&PathBuf>,
+    operation_id: &OperationId,
+    journal_enabled: bool,
+    progress: &TransferState,
+) -> FailureRollback {
+    let Some(container) = container else {
+        return FailureRollback::NotRequested;
+    };
+    let placements = {
+        let state = crate::lock_util::recover(progress);
+        let incomplete = state.files_done < state.files_total || !state.errors.is_empty();
+        if !incomplete {
+            return FailureRollback::NotRequested;
+        }
+        state.placements.clone()
+    };
+    let journal_steps = journal_enabled
+        .then(|| crate::operation_journal::operation(operation_id).ok())
+        .flatten()
+        .map(|operation| operation.steps);
+
+    let mut failed = Vec::new();
+    let mut complete = true;
+    for (source, landing) in placements.into_iter().rev() {
+        if !landing.starts_with(container) {
+            complete = false;
+            record_failure(
+                progress,
+                &landing.display().to_string(),
+                ClassifiedFailure::message(
+                    FailureClass::IntegrityUncertain,
+                    Some(landing.clone()),
+                    "rollback refused a placement outside its operation container",
+                ),
+            );
+            failed.push((source, landing));
+            continue;
+        }
+
+        if let Err(error) = crate::native_copy::rename_noreplace(&landing, &source) {
+            complete = false;
+            record_failure(
+                progress,
+                &landing.display().to_string(),
+                ClassifiedFailure::message(
+                    FailureClass::IntegrityUncertain,
+                    Some(landing.clone()),
+                    format!(
+                        "rollback could not restore {}; data preserved at {}: {error}",
+                        source.display(),
+                        landing.display()
+                    ),
+                ),
+            );
+            failed.push((source, landing));
+            continue;
+        }
+
+        if journal_enabled {
+            let key = journal_steps.as_ref().and_then(|steps| {
+                steps
+                    .iter()
+                    .find(|step| {
+                        step.source == source
+                            && step.landing.as_deref().unwrap_or(&step.destination) == landing
+                    })
+                    .map(|step| step.key.clone())
+            });
+            let journal_result = key.map_or_else(
+                || Err("completed rollback effect is missing from the journal".to_string()),
+                |key| crate::operation_journal::mark_rolled_back(operation_id, &key),
+            );
+            if let Err(error) = journal_result {
+                complete = false;
+                record_journal_error(
+                    progress,
+                    &landing.display().to_string(),
+                    Some(source),
+                    error,
+                );
+            }
+        }
+    }
+
+    crate::lock_util::recover(progress).placements = failed;
+    if !crate::lock_util::recover(progress).placements.is_empty() {
+        return FailureRollback::Incomplete;
+    }
+
+    let removal = std::fs::remove_dir(container).or_else(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    });
+    if let Err(error) = removal {
+        complete = false;
+        record_failure(
+            progress,
+            &container.display().to_string(),
+            ClassifiedFailure::io(
+                Some(container.clone()),
+                "rollback restored entries but could not remove its container",
+                &error,
+            ),
+        );
+    }
+    if complete {
+        FailureRollback::Complete
+    } else {
+        FailureRollback::Incomplete
     }
 }
 
@@ -1891,10 +2042,14 @@ fn cleanup_path(path: &Path) -> std::io::Result<()> {
 /// (never deleted) and its location is returned so it can be recovered.
 fn undo_placement(staged: &Path, source: &Path, was_renamed: bool) -> Option<String> {
     if !was_renamed {
-        let _ = cleanup_path(staged);
-        return None;
+        return cleanup_path(staged).err().map(|error| {
+            format!(
+                "partial copy cleanup failed at {}: {error}",
+                staged.display()
+            )
+        });
     }
-    if std::fs::rename(staged, source).is_ok() {
+    if crate::native_copy::rename_noreplace(staged, source).is_ok() {
         return None;
     }
     if staged.symlink_metadata().is_ok() {
@@ -1907,17 +2062,19 @@ fn undo_placement(staged: &Path, source: &Path, was_renamed: bool) -> Option<Str
 /// Replace `dest` with the freshly-staged `staged`: move the existing `dest`
 /// to a backup, rename `staged` into place, then drop the backup. Restores
 /// the original on failure, so an interrupted overwrite never loses data.
-fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<()> {
+fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<Option<String>> {
     if !fs_util::path_is_taken(dest) {
-        return crate::native_copy::rename_noreplace(staged, dest);
+        return crate::native_copy::rename_noreplace(staged, dest).map(|()| None);
     }
     let backup = staging_path(dest);
     std::fs::rename(dest, &backup)?;
     match std::fs::rename(staged, dest) {
-        Ok(()) => {
-            let _ = cleanup_path(&backup);
-            Ok(())
-        }
+        Ok(()) => Ok(cleanup_path(&backup).err().map(|error| {
+            format!(
+                "destination is complete but old destination cleanup failed; preserved at {}: {error}",
+                backup.display()
+            )
+        })),
         Err(e) => {
             // Put the original back. If even that fails, the original now
             // lives only at the hidden backup path; name it in the error so
@@ -2461,6 +2618,61 @@ mod tests {
     }
 
     #[test]
+    fn failed_gather_rolls_completed_placements_back_and_removes_its_folder() {
+        let root = TempDir::new();
+        let container = root.dir("Gathered");
+        let landing = root.file("Gathered/a.txt", "a");
+        let source = root.path().join("a.txt");
+        let progress = Arc::new(Mutex::new(TransferProgress::new(2, 2)));
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.files_done = 1;
+            state.errors.push("second entry failed".to_string());
+            state.placements.push((source.clone(), landing.clone()));
+        }
+
+        let outcome = run_failure_rollback(Some(&container), &OperationId::new(), false, &progress);
+
+        assert_eq!(outcome, FailureRollback::Complete);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "a");
+        assert!(!landing.exists());
+        assert!(!container.exists());
+        let state = crate::lock_util::recover(&progress);
+        assert!(state.placements.is_empty());
+        assert_eq!(state.errors, ["second entry failed"]);
+    }
+
+    #[test]
+    fn failed_gather_never_clobbers_a_recreated_source_during_rollback() {
+        let root = TempDir::new();
+        let container = root.dir("Gathered");
+        let landing = root.file("Gathered/a.txt", "moved");
+        let source = root.file("a.txt", "external");
+        let progress = Arc::new(Mutex::new(TransferProgress::new(2, 2)));
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.files_done = 1;
+            state.errors.push("second entry failed".to_string());
+            state.placements.push((source.clone(), landing.clone()));
+        }
+
+        let outcome = run_failure_rollback(Some(&container), &OperationId::new(), false, &progress);
+
+        assert_eq!(outcome, FailureRollback::Incomplete);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "external");
+        assert_eq!(std::fs::read_to_string(&landing).unwrap(), "moved");
+        assert!(container.exists());
+        let state = crate::lock_util::recover(&progress);
+        assert_eq!(state.placements, [(source, landing)]);
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("data preserved"))
+        );
+    }
+
+    #[test]
     fn successful_post_action_removes_the_empty_source_folder() {
         let root = TempDir::new();
         let folder = root.dir("Gathered");
@@ -2475,6 +2687,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
@@ -2502,6 +2715,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
@@ -2530,6 +2744,7 @@ mod tests {
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
@@ -2565,6 +2780,7 @@ mod tests {
             policy,
             method,
             durability: DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,

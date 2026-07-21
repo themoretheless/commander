@@ -7,15 +7,24 @@
 use super::*;
 use crate::cmdtemplate::{SegmentKind, SelectionCtx, expand, preview_segments};
 
+const TEMPLATES_SCROLL_ID: &str = "run_command_templates";
+
 impl App {
+    pub(crate) fn open_run_command(&mut self, ctx: &egui::Context) {
+        self.command_templates_mut();
+        let scroll_nonce = self.issue_transient_nonce();
+        self.run_command = Some(RunCommandState {
+            line: String::new(),
+            scroll_nonce,
+        });
+        Self::mark_modal_opened(ctx, UiModal::RunCommand);
+    }
+
     pub(crate) fn show_run_command_dialog(&mut self, ctx: &egui::Context) {
-        let just_opened = std::mem::take(&mut self.ws.run_command_request);
-        if just_opened {
-            self.command_templates_mut(); // force a load from disk
-            self.run_command = Some(RunCommandState {
-                line: String::new(),
-            });
-        }
+        let just_opened = Self::take_modal_opened(ctx, UiModal::RunCommand);
+        let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
+            crate::accessibility::ModalSurface::RunCommand,
+        ));
         if self.run_command.is_none() {
             return;
         }
@@ -108,22 +117,25 @@ impl App {
                 if !matching.is_empty() {
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new("Templates").size(10.0).color(t.text_muted));
-                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                        for (name, raw) in &matching {
-                            let row = ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new(format!("{name}    {raw}"))
-                                        .size(12.0)
-                                        .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            );
-                            if row.clicked() {
-                                fill = Some(raw.clone());
+                    egui::ScrollArea::vertical()
+                        .id_salt((TEMPLATES_SCROLL_ID, state.scroll_nonce))
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            for (name, raw) in &matching {
+                                let row = ui.add(
+                                    egui::Button::new(
+                                        egui::RichText::new(format!("{name}    {raw}"))
+                                            .size(12.0)
+                                            .color(t.text_primary),
+                                    )
+                                    .fill(t.bg_card)
+                                    .corner_radius(CornerRadius::ZERO),
+                                );
+                                if row.clicked() {
+                                    fill = Some(raw.clone());
+                                }
                             }
-                        }
-                    });
+                        });
                 }
 
                 ui.add_space(12.0);
@@ -175,7 +187,7 @@ impl App {
                     if can_run && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         run = Some(expand(&state.line, &sctx));
                     }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if escape_requested {
                         cancel = true;
                     }
                 });

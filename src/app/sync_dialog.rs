@@ -6,43 +6,46 @@ use super::*;
 use crate::sync::{SyncDirection, SyncPolicy, SyncStatus};
 
 impl App {
+    pub(crate) fn open_sync(&mut self) {
+        let policy = SyncPolicy::TwoWay;
+        let left_dir = self.ws.left.current_path.clone();
+        let right_dir = self.ws.right.current_path.clone();
+        let left_show_hidden = self.ws.left.show_hidden;
+        let right_show_hidden = self.ws.right.show_hidden;
+        let guard = self.ws.sync_guard_policy.clone();
+        let marker_input = guard
+            .health_marker
+            .as_deref()
+            .map_or_else(String::new, |path| path.to_string_lossy().into_owned());
+        let marker_enabled = guard.health_marker.is_some();
+        let (actions, stamp, error) = match self.ws.build_guarded_sync_plan(policy) {
+            Ok((actions, stamp)) => (actions, Some(stamp), None),
+            Err(error) => (Vec::new(), None, Some(error)),
+        };
+        let settings_fingerprint = stamp.as_ref().map_or(0, |stamp| {
+            crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key())
+        });
+        self.sync = Some(SyncState {
+            policy,
+            durability: self.ws.durability_profile,
+            version_retention: self.ws.version_retention,
+            actions,
+            left_dir,
+            right_dir,
+            left_show_hidden,
+            right_show_hidden,
+            guard,
+            stamp,
+            settings_fingerprint,
+            allow_large_plan: false,
+            marker_enabled,
+            marker_input,
+            error,
+        });
+    }
+
     pub(crate) fn show_sync_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.sync_request) {
-            let policy = SyncPolicy::TwoWay;
-            let left_dir = self.ws.left.current_path.clone();
-            let right_dir = self.ws.right.current_path.clone();
-            let left_show_hidden = self.ws.left.show_hidden;
-            let right_show_hidden = self.ws.right.show_hidden;
-            let guard = self.ws.sync_guard_policy.clone();
-            let marker_input = guard
-                .health_marker
-                .as_deref()
-                .map_or_else(String::new, |path| path.to_string_lossy().into_owned());
-            let marker_enabled = guard.health_marker.is_some();
-            let (actions, stamp, error) = match self.ws.build_guarded_sync_plan(policy) {
-                Ok((actions, stamp)) => (actions, Some(stamp), None),
-                Err(error) => (Vec::new(), None, Some(error)),
-            };
-            let settings_fingerprint = stamp.as_ref().map_or(0, |stamp| {
-                crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key())
-            });
-            self.sync = Some(SyncState {
-                policy,
-                durability: self.ws.durability_profile,
-                actions,
-                left_dir,
-                right_dir,
-                left_show_hidden,
-                right_show_hidden,
-                guard,
-                stamp,
-                settings_fingerprint,
-                allow_large_plan: false,
-                marker_enabled,
-                marker_input,
-                error,
-            });
-        }
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Sync);
         if self.sync.is_none() {
             return;
         }
@@ -115,6 +118,20 @@ impl App {
                         );
                         for profile in crate::operation::DurabilityProfile::ALL {
                             ui.selectable_value(&mut state.durability, profile, profile.label());
+                        }
+                        if state.durability == crate::operation::DurabilityProfile::Versioned {
+                            egui::ComboBox::from_id_salt("sync_version_retention")
+                                .selected_text(state.version_retention.label())
+                                .show_ui(ui, |ui| {
+                                    for policy in crate::operation::VersionRetentionPolicy::ALL {
+                                        ui.selectable_value(
+                                            &mut state.version_retention,
+                                            policy,
+                                            policy.label(),
+                                        )
+                                        .on_hover_text(policy.consequence());
+                                    }
+                                });
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.small_button("Refresh").clicked() {
@@ -301,7 +318,7 @@ impl App {
                         });
                     });
 
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if escape_requested {
                         cancel = true;
                     }
                 });
@@ -359,6 +376,7 @@ impl App {
             };
             let c = ctx.clone();
             self.ws.durability_profile = state.durability;
+            self.ws.version_retention = state.version_retention;
             let plan = crate::sync_guard::GuardedPlan {
                 actions: &state.actions,
                 stamp: &stamp,
@@ -400,13 +418,16 @@ fn status_label(status: SyncStatus) -> &'static str {
         SyncStatus::RightNewer => "right newer",
         SyncStatus::Differing => "differs",
         SyncStatus::Identical => "identical",
+        SyncStatus::DirectoryPair => "folder pair",
+        SyncStatus::TypeConflict => "type conflict",
         SyncStatus::CaseConflict => "case conflict",
     }
 }
 
 fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
     match status {
-        SyncStatus::Identical => t.text_muted,
+        SyncStatus::Identical | SyncStatus::DirectoryPair => t.text_muted,
+        SyncStatus::TypeConflict => t.accent_red,
         SyncStatus::Differing | SyncStatus::CaseConflict => t.accent_warning,
         _ => t.accent,
     }

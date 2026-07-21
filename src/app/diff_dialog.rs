@@ -17,52 +17,51 @@ fn read_text(path: &Path) -> Result<String, ()> {
 }
 
 impl App {
-    pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.diff_request) {
-            match self.ws.diff_targets() {
-                None => {
-                    let now = ctx.input(|i| i.time);
-                    self.toasts.push(crate::toasts::Toast::new(
-                        "Select a file pair to diff",
-                        crate::toasts::ToastKind::Info,
-                        false,
-                        now,
-                    ));
-                }
-                Some((a, b)) => {
-                    let name = |p: &Path| {
-                        p.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    };
-                    let (lines, message) = match (read_text(&a), read_text(&b)) {
-                        (Ok(ta), Ok(tb)) => match diff_lines(&ta, &tb) {
-                            Ok(lines) => (lines, None),
-                            Err(_) => (
-                                Vec::new(),
-                                Some(
-                                    "These files contain too many line combinations to compare safely."
-                                        .to_string(),
-                                ),
-                            ),
-                        },
-                        _ => (
+    pub(crate) fn open_diff(&mut self, ctx: &egui::Context) {
+        match self.ws.diff_targets() {
+            None => {
+                let now = ctx.input(|input| input.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    "Select a file pair to diff",
+                    crate::toasts::ToastKind::Info,
+                    false,
+                    now,
+                ));
+            }
+            Some((a, b)) => {
+                let name = |path: &Path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                };
+                let (lines, message) = match (read_text(&a), read_text(&b)) {
+                    (Ok(ta), Ok(tb)) => match diff_lines(&ta, &tb) {
+                        Ok(lines) => (lines, None),
+                        Err(_) => (
                             Vec::new(),
                             Some(
-                                "One or both files are binary, too large, or unreadable."
+                                "These files contain too many line combinations to compare safely."
                                     .to_string(),
                             ),
                         ),
-                    };
-                    self.diff = Some(DiffState {
-                        name_a: name(&a),
-                        name_b: name(&b),
-                        lines,
-                        message,
-                    });
-                }
+                    },
+                    _ => (
+                        Vec::new(),
+                        Some("One or both files are binary, too large, or unreadable.".to_string()),
+                    ),
+                };
+                self.diff = Some(DiffState {
+                    name_a: name(&a),
+                    name_b: name(&b),
+                    lines,
+                    message,
+                });
             }
         }
+    }
+
+    pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Diff);
         let Some(state) = &self.diff else {
             return;
         };
@@ -150,7 +149,7 @@ impl App {
                             .corner_radius(CornerRadius::ZERO),
                         )
                         .clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        || escape_requested
                     {
                         close = true;
                     }

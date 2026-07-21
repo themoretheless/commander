@@ -3,44 +3,76 @@
 //! them to the workspace. No file-manager logic lives here.
 
 use super::*;
+use crate::accessibility::{
+    EscapeRoute, KeyboardRoute, ModalSurface, UiContract, UiContractState, consume_escape_route,
+    resolve_ui_contract, text_input_state, top_open_modal,
+};
 use crate::command::{Command, KeyCode, KeyPress, map_keys};
+
+fn keyboard_command_allowed(route: KeyboardRoute, command: Command) -> bool {
+    match route {
+        KeyboardRoute::Workspace => true,
+        KeyboardRoute::Transfer => {
+            matches!(command, Command::RequestCopy | Command::RequestMove)
+        }
+        KeyboardRoute::TextInput(_) | KeyboardRoute::Modal(_) => false,
+    }
+}
+
+fn prioritized_modal(
+    open: impl Fn(ModalSurface) -> bool,
+    first_pending: Option<ModalSurface>,
+) -> Option<ModalSurface> {
+    top_open_modal(open).or(first_pending)
+}
+
+fn modal_surface(modal: UiModal) -> ModalSurface {
+    match modal {
+        UiModal::Recovery => ModalSurface::Recovery,
+        UiModal::History => ModalSurface::History,
+        UiModal::Rename => ModalSurface::Rename,
+        UiModal::BatchRename => ModalSurface::BatchRename,
+        UiModal::Sync => ModalSurface::Sync,
+        UiModal::Duplicates => ModalSurface::Duplicates,
+        UiModal::Diff => ModalSurface::Diff,
+        UiModal::Treemap => ModalSurface::Treemap,
+        UiModal::Find => ModalSurface::Find,
+        UiModal::Archive => ModalSurface::Archive,
+        UiModal::SavedSearch => ModalSurface::SavedSearch,
+        UiModal::Collections => ModalSurface::Collections,
+        UiModal::Mask => ModalSurface::Mask,
+        UiModal::Path => ModalSurface::Path,
+        UiModal::Recent => ModalSurface::Recent,
+        UiModal::RunCommand => ModalSurface::RunCommand,
+        UiModal::Palette => ModalSurface::Palette,
+    }
+}
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
-        // A text field (e.g. the filter box) owns the keyboard:
-        // typing there must not trigger navigation/file-op hotkeys.
-        if ctx.egui_wants_keyboard_input() {
-            return;
-        }
-        // Dialogs own the keyboard too: they handle Enter/Esc themselves,
-        // and hotkeys must not fire underneath a modal window.
-        if self.ws.pending_op.is_some()
-            || self.renaming.is_some()
-            || self.mask_input.is_some()
-            || self.run_command.is_some()
-            || self.path_input.is_some()
-            || self.recent_input.is_some()
-            || self.palette_input.is_some()
-            || self.batch_rename.is_some()
-            || self.sync.is_some()
-            || self.duplicates.is_some()
-            || self.diff.is_some()
-            || self.treemap.is_some()
-            || self.find.is_some()
-            || self.saved_search_open
-        {
+        let contract = self.ui_contract(ctx);
+        if matches!(
+            contract.keyboard,
+            KeyboardRoute::TextInput(_) | KeyboardRoute::Modal(_)
+        ) {
             self.type_ahead = None;
             self.chord = None;
             return;
         }
         let presses = ctx.input(Self::collect_presses);
-        if self.ws.active_transfer.is_some() {
+        if contract.keyboard == KeyboardRoute::Transfer {
             // A transfer's progress window is effectively modal, but Copy/Move
             // stay live so a second transfer can be queued behind it instead
-            // of the hotkey being dropped on the floor.
+            // of the hotkey being dropped on the floor. Every other mapped key
+            // gets direct feedback instead of failing silently.
             for cmd in map_keys(&presses) {
-                if matches!(cmd, Command::RequestCopy | Command::RequestMove) {
-                    self.ws.execute(cmd);
+                if keyboard_command_allowed(contract.keyboard, cmd) {
+                    self.execute_key_command(ctx, cmd);
+                    if self.ws.has_any_pending_ui_modal() {
+                        break;
+                    }
+                } else {
+                    self.push_key_feedback(ctx, "Wait for the active transfer to finish");
                 }
             }
             self.type_ahead = None;
@@ -48,10 +80,99 @@ impl App {
             return;
         }
         for cmd in map_keys(&presses) {
-            self.ws.execute(cmd);
+            self.execute_key_command(ctx, cmd);
+            if self.ws.has_any_pending_ui_modal() {
+                break;
+            }
+        }
+        if self.ws.has_any_pending_ui_modal() {
+            self.type_ahead = None;
+            self.chord = None;
+            return;
         }
         let claimed = self.handle_chords(ctx);
         self.handle_type_ahead(ctx, claimed);
+    }
+
+    pub(crate) fn ui_contract(&self, ctx: &egui::Context) -> UiContract {
+        let first_pending = self.ws.first_pending_ui_modal().map(modal_surface);
+        let modal = prioritized_modal(
+            |surface| match surface {
+                ModalSurface::Transfer => self.ws.active_transfer.is_some(),
+                ModalSurface::SafeState => self.ws.safe_state.is_some(),
+                ModalSurface::Recovery => self.recovery.open,
+                ModalSurface::History => self.history_preview.is_some(),
+                ModalSurface::Confirmation => self.ws.pending_op.is_some(),
+                ModalSurface::Rename => self.renaming.is_some(),
+                ModalSurface::BatchRename => self.batch_rename.is_some(),
+                ModalSurface::Sync => self.sync.is_some(),
+                ModalSurface::Duplicates => self.duplicates.is_some(),
+                ModalSurface::Diff => self.diff.is_some(),
+                ModalSurface::Treemap => self.treemap.is_some(),
+                ModalSurface::Find => self.find.is_some(),
+                ModalSurface::Archive => self.archive.is_some(),
+                ModalSurface::SavedSearch => self.saved_search_open,
+                ModalSurface::Collections => self.collections_dialog.is_some(),
+                ModalSurface::Mask => self.mask_input.is_some(),
+                ModalSurface::Path => self.path_input.is_some(),
+                ModalSurface::Recent => self.recent_input.is_some(),
+                ModalSurface::RunCommand => self.run_command.is_some(),
+                ModalSurface::Palette => self.palette_input.is_some(),
+            },
+            first_pending,
+        );
+        let active_left = self.ws.active == ActivePanel::Left;
+        let active_preview_open = if active_left {
+            self.ws.left.preview.is_some()
+        } else {
+            self.ws.right.preview.is_some()
+        };
+        resolve_ui_contract(UiContractState {
+            text_input: text_input_state(ctx),
+            modal,
+            active_preview_open,
+            focus_mode: self.focus_mode,
+        })
+    }
+
+    pub(crate) fn capture_escape_request(&mut self, ctx: &egui::Context) {
+        self.escape_request = if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.ui_contract(ctx).escape
+        } else {
+            EscapeRoute::None
+        };
+    }
+
+    pub(crate) fn take_escape_request(&mut self, owner: EscapeRoute) -> bool {
+        consume_escape_route(&mut self.escape_request, owner)
+    }
+
+    pub(crate) fn take_modal_escape(&mut self, owner: ModalSurface) -> bool {
+        self.take_escape_request(EscapeRoute::Modal(owner))
+    }
+
+    fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
+        if !crate::command::requires_context(command) {
+            self.ws.execute(command);
+            return;
+        }
+
+        let context = self.ws.command_context();
+        let availability = crate::command::availability(command, &context);
+        if availability.enabled {
+            self.ws.execute(command);
+        } else if let Some(reason) = availability.reason {
+            self.push_key_feedback(ctx, reason);
+        }
+    }
+
+    fn push_key_feedback(&mut self, ctx: &egui::Context, message: &'static str) {
+        self.toasts.push(crate::toasts::Toast::new(
+            message,
+            crate::toasts::ToastKind::Info,
+            false,
+            ctx.input(|input| input.time),
+        ));
     }
 
     /// Vim-style chords, modifier-free: `g g` jumps to the top, `s s`
@@ -235,5 +356,144 @@ impl App {
                 shift: i.modifiers.shift,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+#[path = "../ui_contract.rs"]
+mod ui_contract;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TransitionFrameSink {
+        operation_id: crate::operation::OperationId,
+        safe_state_open: bool,
+        retained_transfer_open: bool,
+        recovery_open: bool,
+    }
+
+    impl crate::ui_request::UiRequestSink for TransitionFrameSink {
+        fn any_modal_open(&self) -> bool {
+            self.safe_state_open || self.retained_transfer_open || self.recovery_open
+        }
+
+        fn is_modal_open(&self, modal: UiModal) -> bool {
+            modal == UiModal::Recovery && self.recovery_open
+        }
+
+        fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
+            matches!(
+                request,
+                UiRequest::ReviewRecovery(operation_id)
+                    if self.safe_state_open
+                        && self.retained_transfer_open
+                        && operation_id == &self.operation_id
+            )
+        }
+
+        fn apply(&mut self, request: UiRequest) {
+            assert_eq!(
+                request,
+                UiRequest::ReviewRecovery(self.operation_id.clone())
+            );
+            self.recovery_open = true;
+        }
+    }
+
+    #[test]
+    fn an_open_modal_keeps_priority_over_a_deferred_request() {
+        let mut queue = crate::ui_request::UiRequestQueue::default();
+        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::Palette);
+        let modal = prioritized_modal(
+            |surface| surface == ModalSurface::Palette,
+            queue.first_pending_modal().map(modal_surface),
+        );
+
+        assert_eq!(modal, Some(ModalSurface::Palette));
+    }
+
+    #[test]
+    fn first_pending_modal_reserves_escape_in_fifo_order() {
+        let mut queue = crate::ui_request::UiRequestQueue::default();
+        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::Palette);
+        let modal = prioritized_modal(|_| false, queue.first_pending_modal().map(modal_surface));
+
+        assert_eq!(modal, Some(ModalSurface::Recent));
+        assert_eq!(
+            resolve_ui_contract(UiContractState {
+                modal,
+                ..Default::default()
+            })
+            .escape,
+            EscapeRoute::Modal(ModalSurface::Recent)
+        );
+    }
+
+    #[test]
+    fn recovery_dialog_owns_escape_with_safe_state_and_retained_transfer() {
+        let modal = prioritized_modal(
+            |surface| {
+                matches!(
+                    surface,
+                    ModalSurface::Recovery | ModalSurface::SafeState | ModalSurface::Transfer
+                )
+            },
+            Some(ModalSurface::Palette),
+        );
+
+        assert_eq!(modal, Some(ModalSurface::Recovery));
+        assert_eq!(
+            resolve_ui_contract(UiContractState {
+                modal,
+                ..Default::default()
+            })
+            .escape,
+            EscapeRoute::Modal(ModalSurface::Recovery)
+        );
+    }
+
+    #[test]
+    fn transition_frame_finalizes_escape_for_recovery_after_dispatch() {
+        let operation_id = crate::operation::OperationId("transition-frame".to_string());
+        let mut queue = crate::ui_request::UiRequestQueue::default();
+        queue.emit(UiRequest::ReviewRecovery(operation_id.clone()));
+        let mut sink = TransitionFrameSink {
+            operation_id,
+            safe_state_open: true,
+            retained_transfer_open: true,
+            recovery_open: false,
+        };
+
+        let before_dispatch = prioritized_modal(
+            |surface| matches!(surface, ModalSurface::SafeState | ModalSurface::Transfer),
+            queue.first_pending_modal().map(modal_surface),
+        );
+        assert_eq!(before_dispatch, Some(ModalSurface::SafeState));
+
+        let deferred = crate::ui_request::dispatch_snapshot(queue.drain_snapshot(), &mut sink);
+        assert!(deferred.is_empty());
+        let after_dispatch = prioritized_modal(
+            |surface| match surface {
+                ModalSurface::Recovery => sink.recovery_open,
+                ModalSurface::SafeState => sink.safe_state_open,
+                ModalSurface::Transfer => sink.retained_transfer_open,
+                _ => false,
+            },
+            queue.first_pending_modal().map(modal_surface),
+        );
+
+        assert_eq!(after_dispatch, Some(ModalSurface::Recovery));
+        assert_eq!(
+            resolve_ui_contract(UiContractState {
+                modal: after_dispatch,
+                ..Default::default()
+            })
+            .escape,
+            EscapeRoute::Modal(ModalSurface::Recovery)
+        );
     }
 }

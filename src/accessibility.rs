@@ -1,4 +1,4 @@
-//! UI-independent accessibility and responsive-layout contracts.
+//! Accessibility, input-routing, and responsive-layout contracts.
 
 use std::sync::OnceLock;
 
@@ -109,6 +109,203 @@ pub fn focus_order(layout: FocusLayout) -> Vec<FocusRegion> {
 
 pub fn modal_trap_active(was_open: bool, is_open: bool) -> bool {
     was_open || is_open
+}
+
+macro_rules! modal_registry {
+    ($($surface:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum ModalSurface {
+            $($surface),+
+        }
+
+        /// Commander input priority, highest first. This is not a claim about
+        /// renderer paint order; the render layer must consume this registry
+        /// when it implements modal Escape/focus routing.
+        pub const MODAL_REGISTRY: &[ModalSurface] = &[$(ModalSurface::$surface),+];
+    };
+}
+
+modal_registry!(
+    Palette,
+    RunCommand,
+    Recent,
+    Path,
+    Mask,
+    Collections,
+    SavedSearch,
+    Archive,
+    Find,
+    Treemap,
+    Diff,
+    Duplicates,
+    Sync,
+    BatchRename,
+    Rename,
+    Confirmation,
+    History,
+    Recovery,
+    SafeState,
+    Transfer,
+);
+
+/// Resolve the highest-priority open surface through the single modal
+/// registry. Callers provide only state lookup, never another ordering.
+pub fn top_open_modal(mut is_open: impl FnMut(ModalSurface) -> bool) -> Option<ModalSurface> {
+    MODAL_REGISTRY
+        .iter()
+        .copied()
+        .find(|surface| is_open(*surface))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextInputMode {
+    TextEdit,
+    ImeComposition,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextInputState {
+    pub text_edit_focused: bool,
+    pub ime_composing: bool,
+}
+
+impl TextInputState {
+    pub const fn mode(self) -> Option<TextInputMode> {
+        if self.ime_composing {
+            Some(TextInputMode::ImeComposition)
+        } else if self.text_edit_focused {
+            Some(TextInputMode::TextEdit)
+        } else {
+            None
+        }
+    }
+}
+
+const IME_COMPOSITION_ID: &str = "commander_ime_composition_active";
+
+pub fn ime_composition_transition(events: &[egui::Event]) -> Option<bool> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => Some(!text.is_empty()),
+            egui::Event::Ime(egui::ImeEvent::Commit(_)) => Some(false),
+            _ => None,
+        })
+        .next_back()
+}
+
+pub const fn next_ime_composition(
+    previous: bool,
+    text_edit_focused: bool,
+    transition: Option<bool>,
+) -> bool {
+    match transition {
+        Some(active) => active,
+        None => previous && text_edit_focused,
+    }
+}
+
+/// Read only TextEdit focus, not generic egui keyboard focus. IME composition
+/// is retained across frames until commit, empty preedit, or focus loss.
+pub fn text_input_state(ctx: &egui::Context) -> TextInputState {
+    let text_edit_focused = ctx.text_edit_focused();
+    let transition = ctx.input(|input| ime_composition_transition(&input.events));
+    let ime_composing = ctx.data_mut(|data| {
+        let id = egui::Id::new(IME_COMPOSITION_ID);
+        let previous = data.get_temp::<bool>(id).unwrap_or(false);
+        let active = next_ime_composition(previous, text_edit_focused, transition);
+        data.insert_temp(id, active);
+        active
+    });
+    TextInputState {
+        text_edit_focused,
+        ime_composing,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyboardRoute {
+    Workspace,
+    TextInput(TextInputMode),
+    Transfer,
+    Modal(ModalSurface),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EscapeRoute {
+    Modal(ModalSurface),
+    TextInput(TextInputMode),
+    ActivePreview,
+    FocusMode,
+    None,
+}
+
+/// A render-layer effect that is deliberately not claimed as applied by the
+/// headless reducer. Track 8 can consume it while implementing real focus
+/// trapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingFocusEffect {
+    TrapModal(ModalSurface),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiContractState {
+    pub text_input: TextInputState,
+    pub modal: Option<ModalSurface>,
+    pub active_preview_open: bool,
+    pub focus_mode: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiContract {
+    pub keyboard: KeyboardRoute,
+    pub escape: EscapeRoute,
+    pub pending_focus: Option<PendingFocusEffect>,
+}
+
+/// Resolve input ownership without an egui frame. IME composition owns Escape
+/// before any Commander surface so cancelling a candidate cannot close a
+/// dialog. A regular TextEdit inside a modal still leaves Escape to the modal.
+pub fn resolve_ui_contract(state: UiContractState) -> UiContract {
+    let text_input = state.text_input.mode();
+    let keyboard = if let Some(mode) = text_input {
+        KeyboardRoute::TextInput(mode)
+    } else {
+        match state.modal {
+            Some(ModalSurface::Transfer) => KeyboardRoute::Transfer,
+            Some(surface) => KeyboardRoute::Modal(surface),
+            None => KeyboardRoute::Workspace,
+        }
+    };
+    let escape = if text_input == Some(TextInputMode::ImeComposition) {
+        EscapeRoute::TextInput(TextInputMode::ImeComposition)
+    } else if let Some(surface) = state.modal {
+        EscapeRoute::Modal(surface)
+    } else if text_input == Some(TextInputMode::TextEdit) {
+        EscapeRoute::TextInput(TextInputMode::TextEdit)
+    } else if state.active_preview_open {
+        EscapeRoute::ActivePreview
+    } else if state.focus_mode {
+        EscapeRoute::FocusMode
+    } else {
+        EscapeRoute::None
+    };
+    UiContract {
+        keyboard,
+        escape,
+        pending_focus: state.modal.map(PendingFocusEffect::TrapModal),
+    }
+}
+
+/// Consume a routed Escape request only when `owner` is its exact recipient.
+/// Resetting the request makes the single-owner guarantee explicit even when
+/// several surfaces are rendered during the same frame.
+pub fn consume_escape_route(request: &mut EscapeRoute, owner: EscapeRoute) -> bool {
+    if owner == EscapeRoute::None || *request != owner {
+        return false;
+    }
+    *request = EscapeRoute::None;
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

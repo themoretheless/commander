@@ -56,6 +56,8 @@ pub struct Session {
     #[serde(default)]
     pub durability_profile: crate::operation::DurabilityProfile,
     #[serde(default)]
+    pub version_retention: crate::operation::VersionRetentionPolicy,
+    #[serde(default)]
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     #[serde(default)]
     pub name_policy: crate::filesystem_policy::NamePolicy,
@@ -89,18 +91,15 @@ fn session_path() -> PathBuf {
 
 /// Load the saved session, or None if absent/corrupt.
 pub fn load() -> Option<Session> {
-    let data = std::fs::read_to_string(session_path()).ok()?;
-    serde_json::from_str(&data).ok()
+    crate::persistence::load_json(&session_path(), "Session")
 }
 
-/// Save the session atomically (temp file + rename). Returns `false` if
-/// serialization or the atomic write failed. The autosave caller treats this
-/// as best-effort; an explicit caller could surface the failure.
-pub fn save(session: &Session) -> bool {
-    match serde_json::to_string_pretty(session) {
-        Ok(json) => crate::fs_util::write_atomic(&session_path(), &json),
-        Err(_) => false,
-    }
+/// Save through a unique private sibling and one atomic replace. There is no
+/// cross-process lock or CAS: concurrent session writers are last-writer-wins.
+pub fn save(
+    session: &Session,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::PreCommitError> {
+    crate::persistence::save_json_atomic(&session_path(), session)
 }
 
 #[cfg(test)]
@@ -138,6 +137,7 @@ mod tests {
             recent_order: crate::panel::RecentOrder::Frecency,
             search_history: crate::search::QueryHistory::default(),
             durability_profile: crate::operation::DurabilityProfile::default(),
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
@@ -183,6 +183,7 @@ mod tests {
         obj.remove("recent_stats");
         obj.remove("recent_order");
         obj.remove("search_history");
+        obj.remove("version_retention");
         obj.remove("name_policy");
         obj.remove("symlink_policy");
         let back: Session = serde_json::from_value(val).unwrap();
@@ -190,6 +191,10 @@ mod tests {
         assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
         assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);
         assert_eq!(back.search_history, crate::search::QueryHistory::default());
+        assert_eq!(
+            back.version_retention,
+            crate::operation::VersionRetentionPolicy::Recent
+        );
         assert_eq!(
             back.name_policy,
             crate::filesystem_policy::NamePolicy::default()

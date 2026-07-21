@@ -7,6 +7,8 @@ use crate::transfer::OverwritePolicy;
 impl App {
     pub(crate) fn show_confirm_dialog(&mut self, ctx: &egui::Context) {
         let t = self.colors;
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::Confirmation);
         let mutations_blocked = self.ws.mutations_blocked();
         let Some(op) = &self.ws.pending_op else {
             return;
@@ -390,7 +392,7 @@ impl App {
                     }
                 });
 
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if escape_requested {
                     self.dismiss_pending_op(ctx);
                 }
                 if !has_conflicts
@@ -532,7 +534,12 @@ impl App {
             Some(PendingOp::Transfer(transfer)) => transfer.durability,
             _ => self.ws.durability_profile,
         };
+        let current_retention = match &self.ws.pending_op {
+            Some(PendingOp::Transfer(transfer)) => transfer.version_retention,
+            _ => self.ws.version_retention,
+        };
         let mut selected = current;
+        let mut retention = current_retention;
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new("Durability")
@@ -554,11 +561,38 @@ impl App {
                 ui.selectable_value(&mut selected, profile, profile.label())
                     .on_hover_text(tooltip);
             }
+            if selected == crate::operation::DurabilityProfile::Versioned {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Retention")
+                        .size(10.0)
+                        .color(t.text_muted),
+                );
+                egui::ComboBox::from_id_salt("version_retention")
+                    .selected_text(retention.label())
+                    .show_ui(ui, |ui| {
+                        for policy in crate::operation::VersionRetentionPolicy::ALL {
+                            ui.selectable_value(&mut retention, policy, policy.label())
+                                .on_hover_text(policy.consequence());
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new(retention.consequence())
+                        .size(10.0)
+                        .color(t.text_secondary),
+                );
+            }
         });
         if selected != current {
             self.ws.durability_profile = selected;
             if let Some(PendingOp::Transfer(transfer)) = &mut self.ws.pending_op {
                 transfer.durability = selected;
+            }
+        }
+        if retention != current_retention {
+            self.ws.version_retention = retention;
+            if let Some(PendingOp::Transfer(transfer)) = &mut self.ws.pending_op {
+                transfer.version_retention = retention;
             }
         }
     }

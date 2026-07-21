@@ -44,6 +44,45 @@ impl RenameStep {
     }
 }
 
+#[derive(Debug)]
+pub struct RenameRollbackFailure<E> {
+    pub from: String,
+    pub to: String,
+    pub error: E,
+}
+
+/// A failed forward rename together with every reverse step that could not be
+/// completed. Keeping both error layers is essential: the original failure
+/// explains why the batch stopped, while rollback failures identify names
+/// that may still be at an intermediate location.
+#[derive(Debug)]
+pub struct ApplyStepsError<E> {
+    pub failed_from: String,
+    pub failed_to: String,
+    pub operation: E,
+    pub rollback_failures: Vec<RenameRollbackFailure<E>>,
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for ApplyStepsError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "rename {} to {} failed: {}",
+            self.failed_from, self.failed_to, self.operation
+        )?;
+        for failure in &self.rollback_failures {
+            write!(
+                formatter,
+                "; rollback {} to {} failed: {}",
+                failure.from, failure.to, failure.error
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ApplyStepsError<E> {}
+
 /// Execute an ordered plan via an injected `rename(from, to)` (so the same
 /// logic drives `std::fs::rename` in the app and an in-memory map in tests).
 /// On the first failure, the already-applied steps are reversed best-effort
@@ -52,15 +91,27 @@ impl RenameStep {
 pub fn apply_steps<E>(
     steps: &[RenameStep],
     mut rename: impl FnMut(&str, &str) -> Result<(), E>,
-) -> Result<usize, E> {
+) -> Result<usize, ApplyStepsError<E>> {
     for (i, step) in steps.iter().enumerate() {
         let (from, to) = step.endpoints();
-        if let Err(e) = rename(from, to) {
+        if let Err(operation) = rename(from, to) {
+            let mut rollback_failures = Vec::new();
             for prev in steps[..i].iter().rev() {
                 let (pf, pt) = prev.endpoints();
-                let _ = rename(pt, pf); // reverse; best-effort
+                if let Err(error) = rename(pt, pf) {
+                    rollback_failures.push(RenameRollbackFailure {
+                        from: pt.to_string(),
+                        to: pf.to_string(),
+                        error,
+                    });
+                }
             }
-            return Err(e);
+            return Err(ApplyStepsError {
+                failed_from: from.to_string(),
+                failed_to: to.to_string(),
+                operation,
+                rollback_failures,
+            });
         }
     }
     // Every step except a bare ToTemp lands a name in its final place; a cycle
@@ -465,6 +516,33 @@ mod tests {
         assert!(res.is_err());
         // a->x was applied then rolled back; nothing landed.
         assert_eq!(fs, existing(&["a", "b"]));
+    }
+
+    #[test]
+    fn apply_steps_reports_a_failed_rollback_without_hiding_the_original_error() {
+        let pairs = [("a", "x"), ("b", "y")];
+        let order = safe_rename_order(&map(&pairs), &existing(&["a", "b"]));
+        let mut fs: HashSet<String> = existing(&["a", "b"]);
+
+        let error = apply_steps(steps(&order), |from, to| {
+            if (from, to) == ("b", "y") {
+                return Err("forward failure");
+            }
+            if (from, to) == ("x", "a") {
+                return Err("rollback failure");
+            }
+            assert!(fs.remove(from));
+            fs.insert(to.to_string());
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert_eq!(error.operation, "forward failure");
+        assert_eq!(error.rollback_failures.len(), 1);
+        assert_eq!(error.rollback_failures[0].from, "x");
+        assert_eq!(error.rollback_failures[0].to, "a");
+        assert_eq!(error.rollback_failures[0].error, "rollback failure");
+        assert_eq!(fs, existing(&["x", "b"]));
     }
 
     #[test]

@@ -36,6 +36,11 @@ pub enum SyncStatus {
     Differing,
     /// Present both sides with identical size and mtime.
     Identical,
+    /// Same-named directories exist on both sides, but this shallow plan has
+    /// not compared their recursive contents.
+    DirectoryPair,
+    /// The same name is a file on one side and a directory on the other.
+    TypeConflict,
     /// Multiple entries fold to the same case-insensitive name, so choosing a
     /// source by display name would be ambiguous on a case-sensitive volume.
     CaseConflict,
@@ -64,6 +69,12 @@ pub struct SyncAction {
 impl SyncAction {
     /// Whether this row has a stable source for `direction`.
     pub fn allows(&self, direction: SyncDirection) -> bool {
+        if matches!(
+            self.status,
+            SyncStatus::DirectoryPair | SyncStatus::TypeConflict
+        ) {
+            return direction == SyncDirection::Skip;
+        }
         match direction {
             SyncDirection::ToLeft => self.right_path.is_some(),
             SyncDirection::ToRight => self.left_path.is_some(),
@@ -94,6 +105,12 @@ pub(crate) fn test_action(name: &str, status: SyncStatus, direction: SyncDirecti
 
 /// Compare two same-named entries by size and mtime.
 pub(crate) fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
+    if left.is_dir != right.is_dir {
+        return SyncStatus::TypeConflict;
+    }
+    if left.is_dir {
+        return SyncStatus::DirectoryPair;
+    }
     if left.size == right.size && left.modified == right.modified {
         return SyncStatus::Identical;
     }
@@ -115,16 +132,16 @@ fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirection {
     match policy {
         SyncPolicy::MirrorLeftToRight => match status {
             LeftOnly | LeftNewer | RightNewer | Differing => ToRight,
-            RightOnly | Identical | CaseConflict => Skip,
+            RightOnly | Identical | DirectoryPair | TypeConflict | CaseConflict => Skip,
         },
         SyncPolicy::MirrorRightToLeft => match status {
             RightOnly | RightNewer | LeftNewer | Differing => ToLeft,
-            LeftOnly | Identical | CaseConflict => Skip,
+            LeftOnly | Identical | DirectoryPair | TypeConflict | CaseConflict => Skip,
         },
         SyncPolicy::TwoWay => match status {
             LeftOnly | LeftNewer => ToRight,
             RightOnly | RightNewer => ToLeft,
-            Differing | Identical | CaseConflict => Skip,
+            Differing | Identical | DirectoryPair | TypeConflict | CaseConflict => Skip,
         },
     }
 }
@@ -223,6 +240,9 @@ pub struct PaneRelation {
     pub identical: Vec<usize>,
     /// Present in both but differing in size or mtime.
     pub differing: Vec<usize>,
+    /// Same-named directories whose recursive contents are not part of this
+    /// shallow relation.
+    pub directories: Vec<usize>,
 }
 
 /// Classify each `active` entry against `other` (matched case-insensitively by
@@ -235,8 +255,11 @@ pub fn pane_relation(active: &[FileEntry], other: &[FileEntry]) -> PaneRelation 
     for (i, a) in active.iter().enumerate() {
         match omap.get(a.name_lower.as_str()) {
             None => rel.only_here.push(i),
-            Some(o) if compare(a, o) == SyncStatus::Identical => rel.identical.push(i),
-            Some(_) => rel.differing.push(i),
+            Some(o) => match compare(a, o) {
+                SyncStatus::Identical => rel.identical.push(i),
+                SyncStatus::DirectoryPair => rel.directories.push(i),
+                _ => rel.differing.push(i),
+            },
         }
     }
     rel
@@ -260,6 +283,12 @@ mod tests {
             modified_str: "-".to_string(),
             size_str: crate::panel::format_size(size),
         }
+    }
+
+    fn directory(name: &str, secs: Option<u64>) -> FileEntry {
+        let mut entry = entry(name, 0, secs);
+        entry.is_dir = true;
+        entry
     }
 
     fn status_of<'a>(actions: &'a [SyncAction], name: &str) -> &'a SyncAction {
@@ -318,6 +347,43 @@ mod tests {
             compare(&entry("a", 10, Some(100)), &entry("a", 20, Some(100))),
             SyncStatus::Differing
         );
+    }
+
+    #[test]
+    fn compare_never_claims_directory_identity_or_auto_resolves_type_conflicts() {
+        assert_eq!(
+            compare(
+                &directory("shared", Some(100)),
+                &directory("shared", Some(100))
+            ),
+            SyncStatus::DirectoryPair
+        );
+        assert_eq!(
+            compare(
+                &entry("mixed", 0, Some(100)),
+                &directory("mixed", Some(100))
+            ),
+            SyncStatus::TypeConflict
+        );
+
+        let actions = sync_diff(
+            &[entry("mixed", 0, Some(100))],
+            &[directory("mixed", Some(100))],
+            SyncPolicy::MirrorLeftToRight,
+        );
+        assert_eq!(actions[0].direction, SyncDirection::Skip);
+        assert!(!actions[0].allows(SyncDirection::ToRight));
+    }
+
+    #[test]
+    fn pane_relation_keeps_unverified_directories_out_of_identical_selection() {
+        let relation = pane_relation(
+            &[directory("shared", Some(100))],
+            &[directory("shared", Some(100))],
+        );
+        assert!(relation.identical.is_empty());
+        assert!(relation.differing.is_empty());
+        assert_eq!(relation.directories, vec![0]);
     }
 
     #[test]

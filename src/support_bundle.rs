@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 const MAX_OPERATION_SPANS: usize = 500;
 const MAX_VERSION_SUMMARIES: usize = 500;
 
@@ -73,6 +73,7 @@ pub struct RuntimeSupport {
     )>,
     pub startup: Option<crate::measurement::StartupSnapshot>,
     pub feature_controls: Vec<crate::feature_flags::FeatureSnapshot>,
+    pub watcher_health: crate::watcher_health::WatcherHealth,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -197,6 +198,7 @@ pub(crate) fn build(
             latency_metrics: crate::measurement::snapshots(),
             startup: crate::measurement::latest_startup(),
             feature_controls: crate::feature_flags::snapshots(),
+            watcher_health: crate::watcher_health::snapshot(),
         },
         operation_spans_truncated,
         operation_spans,
@@ -306,6 +308,7 @@ mod tests {
             policy: OverwritePolicy::OverwriteAll,
             method: CopyMethod::Native,
             durability: DurabilityProfile::Verified,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
@@ -377,7 +380,7 @@ mod tests {
         let bundle = build(&[], &[], &[], vec!["journal unavailable".to_string()]);
         export_to(&path, &bundle).unwrap();
         let decoded: SupportBundle = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(decoded.schema, 1);
+        assert_eq!(decoded.schema, 2);
         assert_eq!(decoded.collection_warnings, vec!["journal unavailable"]);
     }
 }

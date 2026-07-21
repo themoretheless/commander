@@ -13,6 +13,8 @@ pub enum ToastKind {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Toast {
+    /// Queue-assigned identity used by egui. Zero means not queued yet.
+    id: u64,
     pub message: String,
     pub kind: ToastKind,
     /// Whether the toast offers an inline Undo (the op is on the undo stack).
@@ -25,12 +27,17 @@ pub struct Toast {
 impl Toast {
     pub fn new(message: impl Into<String>, kind: ToastKind, undoable: bool, now: f64) -> Self {
         Toast {
+            id: 0,
             message: message.into(),
             kind,
             undoable,
             born: now,
             ttl: DEFAULT_TTL,
         }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -39,16 +46,25 @@ pub const DEFAULT_TTL: f64 = 6.0;
 /// Most toasts shown at once; older ones drop off.
 pub const MAX_TOASTS: usize = 3;
 
-#[derive(Default)]
 pub struct ToastQueue {
     toasts: Vec<Toast>,
+    next_id: u64,
+}
+
+impl Default for ToastQueue {
+    fn default() -> Self {
+        Self {
+            toasts: Vec::new(),
+            next_id: 1,
+        }
+    }
 }
 
 impl ToastQueue {
     /// Push a toast. If the newest existing toast carries the same message,
     /// reset its timer (coalesce) rather than stacking a duplicate. Otherwise
     /// append, capping the queue at [`MAX_TOASTS`] by dropping the oldest.
-    pub fn push(&mut self, toast: Toast) {
+    pub fn push(&mut self, mut toast: Toast) {
         if let Some(last) = self.toasts.last_mut()
             && last.message == toast.message
         {
@@ -58,6 +74,11 @@ impl ToastQueue {
             last.undoable = toast.undoable;
             return;
         }
+        toast.id = self.next_id;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("toast ID space exhausted");
         self.toasts.push(toast);
         while self.toasts.len() > MAX_TOASTS {
             self.toasts.remove(0);
@@ -105,8 +126,10 @@ mod tests {
     fn identical_consecutive_message_coalesces_and_resets_timer() {
         let mut q = ToastQueue::default();
         q.push(toast("Moved 8 items", 0.0));
+        let id = q.active()[0].id();
         q.push(toast("Moved 8 items", 4.0)); // same message later -> reset
         assert_eq!(q.active().len(), 1);
+        assert_eq!(q.active()[0].id(), id);
         assert_eq!(q.active()[0].born, 4.0);
         // A different message stacks.
         q.push(toast("Renamed 2 items", 5.0));
@@ -150,5 +173,22 @@ mod tests {
         q.dismiss_undoable();
         let msgs: Vec<&str> = q.active().iter().map(|t| t.message.as_str()).collect();
         assert_eq!(msgs, vec!["Copied 1 item"]);
+    }
+
+    #[test]
+    fn ids_are_unique_and_stable_when_older_toasts_are_pruned() {
+        let mut q = ToastQueue::default();
+        let mut short = toast("short", 0.0);
+        short.ttl = 1.0;
+        q.push(short);
+        q.push(toast("persistent", 0.5));
+        let persistent_id = q.active()[1].id();
+
+        q.prune(2.0);
+        assert_eq!(q.active()[0].id(), persistent_id);
+
+        q.push(toast("new", 2.0));
+        assert_ne!(q.active()[0].id(), q.active()[1].id());
+        assert_eq!(q.active()[0].id(), persistent_id);
     }
 }

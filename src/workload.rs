@@ -531,12 +531,59 @@ fn trim_samples(samples: &mut VecDeque<u64>) {
     }
 }
 
-type Work = Box<dyn FnOnce(CancellationToken) + Send + 'static>;
+pub type WorkloadJob = Box<dyn FnOnce(CancellationToken) + Send + 'static>;
 
 struct RuntimeState {
     scheduler: Scheduler,
-    pending: HashMap<TaskId, Work>,
+    pending: HashMap<TaskId, WorkloadJob>,
     tick: u64,
+}
+
+pub trait WorkloadBackend: Send + Sync + 'static {
+    fn submit_boxed(
+        self: Arc<Self>,
+        spec: TaskSpec,
+        work: WorkloadJob,
+    ) -> Result<TaskSnapshot, AdmissionError>;
+
+    fn cancel_task(self: Arc<Self>, id: TaskId) -> bool;
+
+    fn stats(&self) -> SchedulerStats;
+}
+
+/// Cloneable ownership boundary for workload admission and task cancellation.
+///
+/// A handle keeps its backend alive. Submitted task handles hold only a weak
+/// reference, so a task cannot extend the backend lifecycle on its own.
+#[derive(Clone)]
+pub struct WorkloadHandle {
+    backend: Arc<dyn WorkloadBackend>,
+}
+
+impl WorkloadHandle {
+    pub fn new(backend: Arc<dyn WorkloadBackend>) -> Self {
+        Self { backend }
+    }
+
+    pub fn from_runtime(runtime: Arc<WorkloadRuntime>) -> Self {
+        Self::new(runtime)
+    }
+
+    pub fn submit(
+        &self,
+        spec: TaskSpec,
+        work: impl FnOnce(CancellationToken) + Send + 'static,
+    ) -> Result<TaskHandle, AdmissionError> {
+        let snapshot = Arc::clone(&self.backend).submit_boxed(spec, Box::new(work))?;
+        Ok(TaskHandle {
+            snapshot,
+            owner: Arc::downgrade(&self.backend),
+        })
+    }
+
+    pub fn stats(&self) -> SchedulerStats {
+        self.backend.stats()
+    }
 }
 
 pub struct WorkloadRuntime {
@@ -559,19 +606,24 @@ impl WorkloadRuntime {
         spec: TaskSpec,
         work: impl FnOnce(CancellationToken) + Send + 'static,
     ) -> Result<TaskHandle, AdmissionError> {
+        WorkloadHandle::from_runtime(Arc::clone(self)).submit(spec, work)
+    }
+
+    fn submit_boxed(
+        self: &Arc<Self>,
+        spec: TaskSpec,
+        work: WorkloadJob,
+    ) -> Result<TaskSnapshot, AdmissionError> {
         let snapshot = {
             let mut state = crate::lock_util::recover(&self.state);
             state.tick = state.tick.saturating_add(1);
             let tick = state.tick;
             let snapshot = state.scheduler.submit_at(spec, tick)?;
-            state.pending.insert(snapshot.id, Box::new(work));
+            state.pending.insert(snapshot.id, work);
             snapshot
         };
         self.pump();
-        Ok(TaskHandle {
-            snapshot,
-            runtime: Arc::downgrade(self),
-        })
+        Ok(snapshot)
     }
 
     fn pump(self: &Arc<Self>) {
@@ -654,10 +706,28 @@ impl WorkloadRuntime {
     }
 }
 
+impl WorkloadBackend for WorkloadRuntime {
+    fn submit_boxed(
+        self: Arc<Self>,
+        spec: TaskSpec,
+        work: WorkloadJob,
+    ) -> Result<TaskSnapshot, AdmissionError> {
+        WorkloadRuntime::submit_boxed(&self, spec, work)
+    }
+
+    fn cancel_task(self: Arc<Self>, id: TaskId) -> bool {
+        WorkloadRuntime::cancel(&self, id)
+    }
+
+    fn stats(&self) -> SchedulerStats {
+        WorkloadRuntime::stats(self)
+    }
+}
+
 #[derive(Clone)]
 pub struct TaskHandle {
     snapshot: TaskSnapshot,
-    runtime: Weak<WorkloadRuntime>,
+    owner: Weak<dyn WorkloadBackend>,
 }
 
 impl TaskHandle {
@@ -666,9 +736,9 @@ impl TaskHandle {
     }
 
     pub fn cancel(&self) -> bool {
-        self.runtime
+        self.owner
             .upgrade()
-            .is_some_and(|runtime| runtime.cancel(self.snapshot.id))
+            .is_some_and(|runtime| runtime.cancel_task(self.snapshot.id))
     }
 }
 
@@ -677,15 +747,108 @@ fn global_runtime() -> &'static Arc<WorkloadRuntime> {
     RUNTIME.get_or_init(|| WorkloadRuntime::new(SchedulerLimits::default()))
 }
 
+pub fn global_handle() -> WorkloadHandle {
+    WorkloadHandle::from_runtime(Arc::clone(global_runtime()))
+}
+
 pub fn submit(
     spec: TaskSpec,
     work: impl FnOnce(CancellationToken) + Send + 'static,
 ) -> Result<TaskHandle, AdmissionError> {
-    global_runtime().submit(spec, work)
+    global_handle().submit(spec, work)
 }
 
 pub fn stats() -> SchedulerStats {
-    global_runtime().stats()
+    global_handle().stats()
+}
+
+#[cfg(test)]
+struct DeterministicBackend {
+    state: Mutex<RuntimeState>,
+}
+
+#[cfg(test)]
+impl WorkloadBackend for DeterministicBackend {
+    fn submit_boxed(
+        self: Arc<Self>,
+        spec: TaskSpec,
+        work: WorkloadJob,
+    ) -> Result<TaskSnapshot, AdmissionError> {
+        let mut state = crate::lock_util::recover(&self.state);
+        state.tick = state.tick.saturating_add(1);
+        let tick = state.tick;
+        let snapshot = state.scheduler.submit_at(spec, tick)?;
+        state.pending.insert(snapshot.id, work);
+        Ok(snapshot)
+    }
+
+    fn cancel_task(self: Arc<Self>, id: TaskId) -> bool {
+        let mut state = crate::lock_util::recover(&self.state);
+        state.tick = state.tick.saturating_add(1);
+        let tick = state.tick;
+        let cancelled = state.scheduler.cancel_at(id, tick);
+        state.pending.remove(&id);
+        cancelled
+    }
+
+    fn stats(&self) -> SchedulerStats {
+        crate::lock_util::recover(&self.state).scheduler.stats()
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct DeterministicWorkload {
+    backend: Arc<DeterministicBackend>,
+}
+
+#[cfg(test)]
+impl DeterministicWorkload {
+    pub(crate) fn new(limits: SchedulerLimits) -> Self {
+        Self {
+            backend: Arc::new(DeterministicBackend {
+                state: Mutex::new(RuntimeState {
+                    scheduler: Scheduler::new(limits),
+                    pending: HashMap::new(),
+                    tick: 0,
+                }),
+            }),
+        }
+    }
+
+    pub(crate) fn handle(&self) -> WorkloadHandle {
+        WorkloadHandle::new(self.backend.clone())
+    }
+
+    pub(crate) fn run_next(&self) -> bool {
+        let (started, work) = {
+            let mut state = crate::lock_util::recover(&self.backend.state);
+            state.tick = state.tick.saturating_add(1);
+            let tick = state.tick;
+            let Some(started) = state.scheduler.start_next_at(tick) else {
+                return false;
+            };
+            let Some(work) = state.pending.remove(&started.snapshot.id) else {
+                state.scheduler.cancel_at(started.snapshot.id, tick);
+                return false;
+            };
+            (started, work)
+        };
+        let task_id = started.snapshot.id;
+        let succeeded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            work(started.token);
+        }))
+        .is_ok();
+        let mut state = crate::lock_util::recover(&self.backend.state);
+        state.tick = state.tick.saturating_add(1);
+        let tick = state.tick;
+        state.scheduler.complete_at(task_id, tick, succeeded);
+        true
+    }
+
+    pub(crate) fn stats(&self) -> SchedulerStats {
+        self.backend.stats()
+    }
 }
 
 #[cfg(test)]
@@ -841,5 +1004,32 @@ mod tests {
         done_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
+    }
+
+    #[test]
+    fn injected_handle_runs_deterministically_without_global_state() {
+        let runtime = DeterministicWorkload::new(SchedulerLimits {
+            max_running: 1,
+            max_queued: 4,
+            max_inflight_bytes: 100,
+            per_kind_running: [1; TaskKind::COUNT],
+        });
+        let handle = runtime.handle();
+        let ran = Arc::new(AtomicBool::new(false));
+        let worker_ran = Arc::clone(&ran);
+
+        let task = handle
+            .submit(spec(TaskKind::Index, 1, Priority::Background), move |_| {
+                worker_ran.store(true, Ordering::Release);
+            })
+            .unwrap();
+
+        assert_eq!(handle.stats().queued, 1);
+        assert!(!ran.load(Ordering::Acquire));
+        assert!(runtime.run_next());
+        assert!(ran.load(Ordering::Acquire));
+        assert_eq!(runtime.stats().queued, 0);
+        assert_eq!(runtime.stats().running, 0);
+        assert!(!task.cancel());
     }
 }

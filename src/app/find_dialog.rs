@@ -230,18 +230,19 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 
+    pub(crate) fn open_find(&mut self) {
+        self.search_engine.cancel();
+        let root = self.ws.active_panel_ref().current_path.clone();
+        let index_exclusions =
+            format_index_exclusions(&root, &self.content_index.exclusions(&root));
+        self.find = Some(FindState {
+            root,
+            index_exclusions,
+            ..Default::default()
+        });
+    }
+
     pub(crate) fn show_find_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.find_request) {
-            self.search_engine.cancel();
-            let root = self.ws.active_panel_ref().current_path.clone();
-            let index_exclusions =
-                format_index_exclusions(&root, &self.content_index.exclusions(&root));
-            self.find = Some(FindState {
-                root,
-                index_exclusions,
-                ..Default::default()
-            });
-        }
         if self.find.is_none() {
             return;
         }

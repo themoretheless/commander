@@ -1,5 +1,6 @@
 //! Lazy provider activation and the process boundary for optional providers.
 
+use crate::ports::{ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -7,6 +8,56 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenuNoticeLevel {
+    Info,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextMenuUiEffect {
+    RefreshPanel,
+    Notice {
+        level: ContextMenuNoticeLevel,
+        message: String,
+    },
+}
+
+pub fn reduce_context_menu_result(result: ContextMenuResult) -> Option<ContextMenuUiEffect> {
+    match result {
+        ContextMenuResult::Dismissed => None,
+        ContextMenuResult::RefreshRequested => Some(ContextMenuUiEffect::RefreshPanel),
+        ContextMenuResult::Unsupported { reason } => Some(ContextMenuUiEffect::Notice {
+            level: ContextMenuNoticeLevel::Info,
+            message: format!("Context menu unavailable: {reason}"),
+        }),
+        ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired) => {
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: "Context menu must run on the main thread".to_string(),
+            })
+        }
+        ContextMenuResult::Failed(ContextMenuFailure::Action { command, message }) => {
+            let action = match command {
+                ContextMenuCommand::Duplicate => "duplicate item",
+                ContextMenuCommand::Compress => "start compression",
+                ContextMenuCommand::MoveToTrash => "move item to Trash",
+            };
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: format!("Could not {action}: {message}"),
+            })
+        }
+    }
+}
+
+pub fn request_context_menu(
+    port: &dyn ContextMenuPort,
+    path: &Path,
+) -> Option<ContextMenuUiEffect> {
+    reduce_context_menu_result(port.show_context_menu(path))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderCapability {
@@ -349,6 +400,31 @@ impl ExternalProviderClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+
+    struct FakeContextMenuPort {
+        result: ContextMenuResult,
+        calls: Cell<usize>,
+        path: RefCell<Option<PathBuf>>,
+    }
+
+    impl FakeContextMenuPort {
+        fn returning(result: ContextMenuResult) -> Self {
+            Self {
+                result,
+                calls: Cell::new(0),
+                path: RefCell::new(None),
+            }
+        }
+    }
+
+    impl ContextMenuPort for FakeContextMenuPort {
+        fn show_context_menu(&self, path: &Path) -> ContextMenuResult {
+            self.calls.set(self.calls.get() + 1);
+            self.path.replace(Some(path.to_path_buf()));
+            self.result.clone()
+        }
+    }
 
     fn descriptor(id: &str, capability: ProviderCapability, cost: u64) -> ProviderDescriptor {
         ProviderDescriptor {
@@ -434,6 +510,70 @@ mod tests {
             registry.register(optional),
             Err(ActivationError::OptionalProviderMustBeExternal(_))
         ));
+    }
+
+    #[test]
+    fn context_menu_request_uses_the_injected_main_thread_port() {
+        let port = FakeContextMenuPort::returning(ContextMenuResult::RefreshRequested);
+        let path = Path::new("/tmp/example");
+        assert_eq!(
+            request_context_menu(&port, path),
+            Some(ContextMenuUiEffect::RefreshPanel)
+        );
+        assert_eq!(port.calls.get(), 1);
+        assert_eq!(port.path.borrow().as_deref(), Some(path));
+    }
+
+    #[test]
+    fn unsupported_context_menu_reduces_to_an_explicit_info_notice() {
+        let port = FakeContextMenuPort::returning(ContextMenuResult::Unsupported {
+            reason: "AppKit is unavailable".to_string(),
+        });
+        assert_eq!(
+            request_context_menu(&port, Path::new("/tmp/example")),
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Info,
+                message: "Context menu unavailable: AppKit is unavailable".to_string(),
+            })
+        );
+        assert_eq!(port.calls.get(), 1);
+    }
+
+    #[test]
+    fn context_menu_failures_reduce_to_errors_without_refresh() {
+        for (command, action) in [
+            (ContextMenuCommand::Duplicate, "duplicate item"),
+            (ContextMenuCommand::Compress, "start compression"),
+            (ContextMenuCommand::MoveToTrash, "move item to Trash"),
+        ] {
+            assert_eq!(
+                reduce_context_menu_result(ContextMenuResult::Failed(ContextMenuFailure::Action {
+                    command,
+                    message: "permission denied".to_string(),
+                })),
+                Some(ContextMenuUiEffect::Notice {
+                    level: ContextMenuNoticeLevel::Error,
+                    message: format!("Could not {action}: permission denied"),
+                })
+            );
+        }
+        assert_eq!(
+            reduce_context_menu_result(ContextMenuResult::Failed(
+                ContextMenuFailure::MainThreadRequired
+            )),
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: "Context menu must run on the main thread".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn dismissed_context_menu_has_no_ui_effect() {
+        assert_eq!(
+            reduce_context_menu_result(ContextMenuResult::Dismissed),
+            None
+        );
     }
 
     #[test]

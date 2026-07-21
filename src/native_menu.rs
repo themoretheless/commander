@@ -1,9 +1,12 @@
+use crate::ports::{ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, NO, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::ffi::CString;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 /// NSPoint / NSSize — same layout {f64, f64}
@@ -15,8 +18,8 @@ struct NSPoint {
 }
 
 thread_local! {
-    static MENU_PATH: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
-    static NEEDS_REFRESH: Cell<bool> = const { Cell::new(false) };
+    static MENU_PATH: RefCell<PathBuf> = const { RefCell::new(PathBuf::new()) };
+    static MENU_RESULT: RefCell<ContextMenuResult> = const { RefCell::new(ContextMenuResult::Dismissed) };
 }
 
 unsafe fn nsstring(s: &str) -> *mut Object {
@@ -26,6 +29,31 @@ unsafe fn nsstring(s: &str) -> *mut Object {
 
 fn with_path<F: FnOnce(&Path)>(f: F) {
     MENU_PATH.with(|p| f(&p.borrow()));
+}
+
+fn set_menu_result(result: ContextMenuResult) {
+    MENU_RESULT.with(|slot| *slot.borrow_mut() = result);
+}
+
+fn take_menu_result() -> ContextMenuResult {
+    MENU_RESULT.with(|slot| slot.replace(ContextMenuResult::Dismissed))
+}
+
+fn record_action_result<T, E: std::fmt::Display>(
+    command: ContextMenuCommand,
+    result: Result<T, E>,
+) {
+    match result {
+        Ok(_) => set_menu_result(ContextMenuResult::RefreshRequested),
+        Err(error) => set_menu_result(ContextMenuResult::Failed(ContextMenuFailure::Action {
+            command,
+            message: error.to_string(),
+        })),
+    }
+}
+
+fn is_main_thread() -> bool {
+    unsafe { msg_send![class!(NSThread), isMainThread] }
 }
 
 fn escape_for_applescript_literal(s: &str) -> String {
@@ -133,15 +161,16 @@ fn ensure_class() -> bool {
 
         extern "C" fn action_duplicate(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                let _ = crate::fs_util::duplicate(p);
-                NEEDS_REFRESH.with(|r| r.set(true));
+                record_action_result(ContextMenuCommand::Duplicate, crate::fs_util::duplicate(p));
             });
         }
 
         extern "C" fn action_compress(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                let _ = crate::fs_util::compress_to_zip(p);
-                NEEDS_REFRESH.with(|r| r.set(true));
+                record_action_result(
+                    ContextMenuCommand::Compress,
+                    crate::fs_util::compress_to_zip(p),
+                );
             });
         }
 
@@ -163,8 +192,7 @@ fn ensure_class() -> bool {
 
         extern "C" fn action_trash(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                let _ = trash::delete(p);
-                NEEDS_REFRESH.with(|r| r.set(true));
+                record_action_result(ContextMenuCommand::MoveToTrash, trash::delete(p));
             });
         }
 
@@ -469,17 +497,46 @@ unsafe fn build_share_submenu(handler: *mut Object, path: &Path) -> *mut Object 
     submenu
 }
 
+#[derive(Debug)]
+pub struct MacOsContextMenu {
+    // An Rc marker makes the AppKit adapter statically !Send and !Sync.
+    _main_thread_only: PhantomData<Rc<()>>,
+}
+
+impl MacOsContextMenu {
+    pub fn new() -> Result<Self, ContextMenuFailure> {
+        if !is_main_thread() {
+            return Err(ContextMenuFailure::MainThreadRequired);
+        }
+        Ok(Self {
+            _main_thread_only: PhantomData,
+        })
+    }
+}
+
+impl ContextMenuPort for MacOsContextMenu {
+    fn show_context_menu(&self, path: &Path) -> ContextMenuResult {
+        show_native(path)
+    }
+}
+
 /// Show a native macOS NSMenu context menu for a file.
-/// Returns `true` if the panel should be refreshed.
-pub fn show(path: &Path) -> bool {
+fn show_native(path: &Path) -> ContextMenuResult {
+    if !is_main_thread() {
+        return ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired);
+    }
     if !ensure_class() {
-        return false;
+        return ContextMenuResult::Unsupported {
+            reason: "AppKit context-menu handler could not be registered".to_string(),
+        };
     }
     let Some(handler_cls) = Class::get("CmdrMenuHandler") else {
-        return false;
+        return ContextMenuResult::Unsupported {
+            reason: "AppKit context-menu handler is unavailable".to_string(),
+        };
     };
     MENU_PATH.with(|p| *p.borrow_mut() = path.to_path_buf());
-    NEEDS_REFRESH.with(|r| r.set(false));
+    set_menu_result(ContextMenuResult::Dismissed);
 
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
@@ -576,12 +633,15 @@ pub fn show(path: &Path) -> bool {
         let _: () = msg_send![pool, drain];
     }
 
-    NEEDS_REFRESH.with(|r| r.get())
+    take_menu_result()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::escape_for_applescript_literal;
+    use super::{
+        ContextMenuCommand, ContextMenuFailure, ContextMenuResult, escape_for_applescript_literal,
+        record_action_result, set_menu_result, take_menu_result,
+    };
 
     #[test]
     fn applescript_literal_escape_leaves_safe_paths_alone() {
@@ -597,5 +657,43 @@ mod tests {
             escape_for_applescript_literal(r#"/tmp/a "quoted" \ path"#),
             r#"/tmp/a \"quoted\" \\ path"#
         );
+    }
+
+    #[test]
+    fn successful_mutating_actions_request_refresh() {
+        for command in [
+            ContextMenuCommand::Duplicate,
+            ContextMenuCommand::Compress,
+            ContextMenuCommand::MoveToTrash,
+        ] {
+            set_menu_result(ContextMenuResult::Dismissed);
+            record_action_result(command, Ok::<(), std::io::Error>(()));
+            assert_eq!(take_menu_result(), ContextMenuResult::RefreshRequested);
+        }
+    }
+
+    #[test]
+    fn failed_mutating_actions_preserve_their_errors_without_refresh() {
+        for command in [
+            ContextMenuCommand::Duplicate,
+            ContextMenuCommand::Compress,
+            ContextMenuCommand::MoveToTrash,
+        ] {
+            set_menu_result(ContextMenuResult::Dismissed);
+            record_action_result(
+                command,
+                Err::<(), _>(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "permission denied",
+                )),
+            );
+            assert_eq!(
+                take_menu_result(),
+                ContextMenuResult::Failed(ContextMenuFailure::Action {
+                    command,
+                    message: "permission denied".to_string(),
+                })
+            );
+        }
     }
 }

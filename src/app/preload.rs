@@ -67,28 +67,85 @@ fn prioritized_indices(
     ordered
 }
 
+#[derive(Clone, Copy)]
+enum PreviewPane {
+    Left,
+    Right,
+}
+
+fn preview_mut(ws: &mut Workspace, pane: PreviewPane) -> &mut Option<PreviewContent> {
+    match pane {
+        PreviewPane::Left => &mut ws.left.preview,
+        PreviewPane::Right => &mut ws.right.preview,
+    }
+}
+
 impl App {
     pub(crate) fn preload_images(&mut self, ctx: &egui::Context) {
-        // Preview content follows the cursor; the core caches it by path,
-        // so this is free while the cursor doesn't move.
+        // Workspace synchronization now creates only image markers or pending
+        // text identities; it never reads text on the UI thread.
         self.ws.sync_preview();
 
-        // Texture preloading is a UI concern: warm the image cache around
-        // the cursor while an image preview is open.
-        let (source, target) = if self.ws.right.preview.is_some() {
-            (&self.ws.left, &self.ws.right)
+        let target_pane = if self.ws.right.preview.is_some() {
+            PreviewPane::Right
         } else if self.ws.left.preview.is_some() {
-            (&self.ws.right, &self.ws.left)
+            PreviewPane::Left
         } else {
+            self.image_cache.cancel_text_preview();
             return;
         };
-        if !matches!(target.preview, Some(PreviewContent::Image(_))) {
+
+        let (text_identity, image_open, info_open) = {
+            let target = match target_pane {
+                PreviewPane::Right => &self.ws.right,
+                PreviewPane::Left => &self.ws.left,
+            };
+            let text_identity = match target.preview.as_ref() {
+                Some(PreviewContent::Pending(identity))
+                | Some(PreviewContent::Text { identity, .. }) => Some(identity.clone()),
+                Some(PreviewContent::Image(_)) | Some(PreviewContent::Info(_)) => None,
+                None => unreachable!("preview pane was selected from a non-empty preview"),
+            };
+            (
+                text_identity,
+                matches!(target.preview, Some(PreviewContent::Image(_))),
+                matches!(target.preview, Some(PreviewContent::Info(_))),
+            )
+        };
+
+        if info_open {
+            self.image_cache.cancel_text_preview();
+            return;
+        }
+        if let Some(identity) = text_identity {
+            let poll = self.image_cache.request_text_preview(ctx, &identity);
+            match poll {
+                crate::image_cache::TextPreviewPoll::Ready(content) => {
+                    *preview_mut(&mut self.ws, target_pane) =
+                        Some(PreviewContent::Text { identity, content });
+                }
+                crate::image_cache::TextPreviewPoll::Loading
+                | crate::image_cache::TextPreviewPoll::Failed(_)
+                | crate::image_cache::TextPreviewPoll::Current => {}
+            }
             return;
         }
 
+        self.image_cache.cancel_text_preview();
+        if !image_open {
+            return;
+        }
+
+        // Texture preloading is a UI concern: warm the image cache around
+        // the cursor while an image preview is open.
+        let source = match target_pane {
+            PreviewPane::Right => &self.ws.left,
+            PreviewPane::Left => &self.ws.right,
+        };
+
         let cursor = source.cursor.saturating_sub(1);
-        let (_, current_bytes) = self.image_cache.stats();
-        let forward = forward_preload_window(current_bytes);
+        let image_stats = self.image_cache.stats();
+        let forward = forward_preload_window(image_stats.bytes);
         let slots = PRELOAD_BACK_WINDOW.saturating_add(forward);
         let paths: Vec<PathBuf> = prioritized_indices(
             source.filtered_count(),
