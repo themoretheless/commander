@@ -16,6 +16,7 @@ use crate::transfer::{
     self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferSpec,
     TransferState,
 };
+use crate::ui_request::{UiModal, UiRequest};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ActivePanel {
@@ -175,60 +176,9 @@ pub struct Workspace {
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
-    /// Set by [`Command::BeginRename`]; the UI picks this up to open the
-    /// inline rename editor seeded with this path, then clears it.
-    pub rename_target: Option<PathBuf>,
-    /// Set by [`Command::BeginSelectMask`]; the UI opens the mask input.
-    pub mask_request: bool,
-    /// Set by [`Command::BeginRunBar`]; the UI opens the run-command bar.
-    pub run_command_request: bool,
-    /// Set by [`Command::GatherIntoFolder`]; the UI runs it with a notify.
-    pub gather_request: bool,
-    /// Set by keyboard/toolbar drop alternatives; the UI supplies worker notify.
-    pub keyboard_drop_request: Option<TransferKind>,
-    /// Set by [`Command::BeginGoToPath`]; the UI opens the path input.
-    pub path_request: bool,
-    /// Set by [`Command::BeginRecent`]; the UI opens the recent switcher.
-    pub recent_request: bool,
-    /// Set by [`Command::Undo`]; the UI runs the undo with a notify callback.
-    pub undo_request: bool,
-    /// Set by [`Command::BeginPalette`]; the UI opens the command palette.
-    pub palette_request: bool,
-    /// Set by [`Command::BeginBatchRename`]; the UI opens the batch-rename
-    /// studio for the active panel's selection.
-    pub batch_rename_request: bool,
-    /// Set by [`Command::BeginSync`]; the UI opens the synchronise sheet.
-    pub sync_request: bool,
-    /// Set by [`Command::FindDuplicates`]; the UI opens the duplicates sheet.
-    pub duplicates_request: bool,
-    /// Set by [`Command::DiffFiles`]; the UI opens the diff sheet.
-    pub diff_request: bool,
-    /// Set by [`Command::DiskTreemap`]; the UI opens the treemap sheet.
-    pub treemap_request: bool,
-    /// Set by [`Command::BeginFind`]; the UI opens the recursive find sheet.
-    pub find_request: bool,
-    /// Set when activating a supported archive; the UI opens a read-only browser.
-    pub archive_request: Option<PathBuf>,
-    /// Set by [`Command::OpenSavedSearch`]; the UI opens the smart-folder picker.
-    pub saved_search_request: bool,
-    /// Set by [`Command::OpenProjectCollections`]; the UI opens virtual projects.
-    pub collections_request: bool,
-    /// Set by [`Command::ToggleQueuePanel`]; the UI flips the transfer-queue
-    /// panel's visibility.
-    pub queue_panel_request: bool,
-    /// Set by [`Command::OpenReceipts`]; the UI opens the operation history.
-    pub receipts_request: bool,
-    /// Set by [`Command::OpenRecoveryCenter`]; the UI refreshes durable recovery.
-    pub recovery_request: bool,
-    /// Set by the Copy* commands; the UI formats the selection and copies it.
-    pub clipboard_request: Option<crate::clipboard::PathStyle>,
-    /// Set by the Copy-listing commands: (text to copy, toast label). The UI
-    /// puts the text on the clipboard and shows the label.
-    pub clipboard_text_request: Option<(String, String)>,
-    /// Set by [`Command::Redo`]; the UI replays the next redoable action.
-    pub redo_request: bool,
-    /// Set by [`Command::ShelfDrain`]; the UI drains the shelf with a notify.
-    pub drain_request: bool,
+    /// Typed intents waiting for the app shell. This replaces the former
+    /// collection of one-shot booleans and optional payload slots.
+    ui_requests: crate::ui_request::UiRequestQueue,
     /// The drop stack: paths gathered across folders to copy in one go.
     pub shelf: crate::shelf::Shelf,
     /// Persisted directory bookmarks (favorites + quick-jump slots 1..9).
@@ -392,31 +342,7 @@ impl Workspace {
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            rename_target: None,
-            mask_request: false,
-            run_command_request: false,
-            gather_request: false,
-            keyboard_drop_request: None,
-            path_request: false,
-            recent_request: false,
-            undo_request: false,
-            palette_request: false,
-            batch_rename_request: false,
-            sync_request: false,
-            duplicates_request: false,
-            diff_request: false,
-            treemap_request: false,
-            find_request: false,
-            archive_request: None,
-            saved_search_request: false,
-            collections_request: false,
-            queue_panel_request: false,
-            receipts_request: false,
-            recovery_request: false,
-            clipboard_request: None,
-            clipboard_text_request: None,
-            redo_request: false,
-            drain_request: false,
+            ui_requests: crate::ui_request::UiRequestQueue::default(),
             shelf: crate::shelf::Shelf::default(),
             bookmarks: crate::bookmarks::load(),
             selection_stash: std::collections::HashSet::new(),
@@ -456,6 +382,31 @@ impl Workspace {
             ActivePanel::Left => &mut self.right,
             ActivePanel::Right => &mut self.left,
         }
+    }
+
+    pub(crate) fn emit_ui_request(&mut self, request: UiRequest) {
+        self.ui_requests.emit(request);
+    }
+
+    pub(crate) fn drain_ui_requests(&mut self) -> Vec<UiRequest> {
+        self.ui_requests.drain_snapshot()
+    }
+
+    pub(crate) fn defer_ui_requests(&mut self, requests: Vec<UiRequest>) {
+        self.ui_requests.prepend_deferred(requests);
+    }
+
+    pub(crate) fn first_pending_ui_modal(&self) -> Option<UiModal> {
+        self.ui_requests.first_pending_modal()
+    }
+
+    pub(crate) fn has_any_pending_ui_modal(&self) -> bool {
+        self.ui_requests.has_any_modal()
+    }
+
+    #[cfg(test)]
+    fn pending_ui_requests(&self) -> Vec<UiRequest> {
+        self.ui_requests.snapshot()
     }
 
     fn pane_read_only(&self) -> (bool, bool) {
@@ -880,7 +831,7 @@ impl Workspace {
                     if entry.is_dir {
                         self.active_panel().navigate_to(entry.path);
                     } else if crate::archive::is_supported(&entry.path) {
-                        self.archive_request = Some(entry.path);
+                        self.emit_ui_request(UiRequest::Archive(entry.path));
                     } else {
                         (self.opener)(&entry.path);
                     }
@@ -932,8 +883,12 @@ impl Workspace {
                     panel.cursor += 1;
                 }
             }
-            Command::MoveIntoCursorFolder => self.keyboard_drop_request = Some(TransferKind::Move),
-            Command::CopyIntoCursorFolder => self.keyboard_drop_request = Some(TransferKind::Copy),
+            Command::MoveIntoCursorFolder => {
+                self.emit_ui_request(UiRequest::TransferIntoCursorFolder(TransferKind::Move))
+            }
+            Command::CopyIntoCursorFolder => {
+                self.emit_ui_request(UiRequest::TransferIntoCursorFolder(TransferKind::Copy))
+            }
             Command::TogglePreview => {
                 if self.inactive_panel().preview.is_some() {
                     self.inactive_panel_mut().preview = None;
@@ -953,9 +908,12 @@ impl Workspace {
             Command::RequestDelete => self.request_delete(),
             Command::BeginRename => {
                 let panel = self.active_panel_ref();
-                if panel.cursor > 0 {
-                    self.rename_target =
-                        panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
+                if panel.cursor > 0
+                    && let Some(path) = panel
+                        .filtered_get(panel.cursor - 1)
+                        .map(|entry| entry.path.clone())
+                {
+                    self.emit_ui_request(UiRequest::Rename(path));
                 }
             }
             Command::EqualizePanels => {
@@ -969,32 +927,32 @@ impl Workspace {
                     ActivePanel::Right => ActivePanel::Left,
                 };
             }
-            Command::BeginBatchRename => self.batch_rename_request = true,
-            Command::BeginSync => self.sync_request = true,
-            Command::FindDuplicates => self.duplicates_request = true,
-            Command::DiffFiles => self.diff_request = true,
-            Command::DiskTreemap => self.treemap_request = true,
-            Command::BeginFind => self.find_request = true,
-            Command::OpenSavedSearch => self.saved_search_request = true,
-            Command::OpenProjectCollections => self.collections_request = true,
+            Command::BeginBatchRename => self.emit_ui_request(UiRequest::BatchRename),
+            Command::BeginSync => self.emit_ui_request(UiRequest::Sync),
+            Command::FindDuplicates => self.emit_ui_request(UiRequest::FindDuplicates),
+            Command::DiffFiles => self.emit_ui_request(UiRequest::DiffFiles),
+            Command::DiskTreemap => self.emit_ui_request(UiRequest::DiskTreemap),
+            Command::BeginFind => self.emit_ui_request(UiRequest::Find),
+            Command::OpenSavedSearch => self.emit_ui_request(UiRequest::SavedSearch),
+            Command::OpenProjectCollections => self.emit_ui_request(UiRequest::ProjectCollections),
             Command::CopyPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::FullPath)
+                self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::FullPath))
             }
             Command::CopyName => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly)
+                self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::NameOnly))
             }
-            Command::CopyParentPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::ParentPath)
-            }
+            Command::CopyParentPath => self.emit_ui_request(UiRequest::CopyPaths(
+                crate::clipboard::PathStyle::ParentPath,
+            )),
             Command::CopyFileUrl => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::FileUrl)
+                self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::FileUrl))
             }
-            Command::CopyShellPath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::ShellEscaped)
-            }
-            Command::CopyRelativePath => {
-                self.clipboard_request = Some(crate::clipboard::PathStyle::RelativeToOther)
-            }
+            Command::CopyShellPath => self.emit_ui_request(UiRequest::CopyPaths(
+                crate::clipboard::PathStyle::ShellEscaped,
+            )),
+            Command::CopyRelativePath => self.emit_ui_request(UiRequest::CopyPaths(
+                crate::clipboard::PathStyle::RelativeToOther,
+            )),
             Command::CycleDensity => {
                 let panel = self.active_panel();
                 panel.density = crate::density::cycle(panel.density, 1);
@@ -1011,21 +969,17 @@ impl Workspace {
             }
             Command::ShelfDrain => {
                 if !self.shelf.is_empty() {
-                    self.drain_request = true;
+                    self.emit_ui_request(UiRequest::DrainShelf);
                 }
             }
-            Command::BeginSelectMask => self.mask_request = true,
-            Command::BeginRunBar => self.run_command_request = true,
-            Command::GatherIntoFolder => self.gather_request = true,
-            Command::BeginGoToPath => self.path_request = true,
-            Command::BeginRecent => self.recent_request = true,
-            Command::BeginPalette => self.palette_request = true,
-            Command::Undo => {
-                self.undo_request = true;
-            }
-            Command::Redo => {
-                self.redo_request = true;
-            }
+            Command::BeginSelectMask => self.emit_ui_request(UiRequest::SelectMask),
+            Command::BeginRunBar => self.emit_ui_request(UiRequest::RunCommand),
+            Command::GatherIntoFolder => self.emit_ui_request(UiRequest::GatherIntoFolder),
+            Command::BeginGoToPath => self.emit_ui_request(UiRequest::GoToPath),
+            Command::BeginRecent => self.emit_ui_request(UiRequest::Recent),
+            Command::BeginPalette => self.emit_ui_request(UiRequest::Palette),
+            Command::Undo => self.emit_ui_request(UiRequest::Undo),
+            Command::Redo => self.emit_ui_request(UiRequest::Redo),
             Command::ToggleInfo => self.toggle_info(),
             Command::SelectAll => self.active_panel().select_all(),
             Command::InvertSelection => self.active_panel().invert_selection(),
@@ -1044,9 +998,9 @@ impl Workspace {
             Command::MarkedIntersect => self.marked_intersect(),
             Command::MarkedSubtract => self.marked_subtract(),
             Command::MarkedSymmetricDiff => self.marked_symmetric_diff(),
-            Command::ToggleQueuePanel => self.queue_panel_request = true,
-            Command::OpenReceipts => self.receipts_request = true,
-            Command::OpenRecoveryCenter => self.recovery_request = true,
+            Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
+            Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
+            Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
                 panel.show_hidden = !panel.show_hidden;
@@ -1091,7 +1045,7 @@ impl Workspace {
             (crate::listing_export::format(&entries, fmt), entries.len())
         };
         let label = format!("listing ({count} rows as {})", fmt.label());
-        self.clipboard_text_request = Some((text, label));
+        self.emit_ui_request(UiRequest::CopyText { text, label });
     }
 
     // ── File operations ─────────────────────────────────────────────────
@@ -2723,6 +2677,115 @@ mod tests {
     }
 
     #[test]
+    fn every_fixed_ui_command_emits_the_expected_typed_request() {
+        use crate::clipboard::PathStyle;
+
+        let cases = [
+            (
+                Command::MoveIntoCursorFolder,
+                UiRequest::TransferIntoCursorFolder(TransferKind::Move),
+            ),
+            (
+                Command::CopyIntoCursorFolder,
+                UiRequest::TransferIntoCursorFolder(TransferKind::Copy),
+            ),
+            (Command::BeginBatchRename, UiRequest::BatchRename),
+            (Command::BeginSync, UiRequest::Sync),
+            (Command::FindDuplicates, UiRequest::FindDuplicates),
+            (Command::DiffFiles, UiRequest::DiffFiles),
+            (Command::DiskTreemap, UiRequest::DiskTreemap),
+            (Command::BeginFind, UiRequest::Find),
+            (Command::OpenSavedSearch, UiRequest::SavedSearch),
+            (
+                Command::OpenProjectCollections,
+                UiRequest::ProjectCollections,
+            ),
+            (Command::CopyPath, UiRequest::CopyPaths(PathStyle::FullPath)),
+            (Command::CopyName, UiRequest::CopyPaths(PathStyle::NameOnly)),
+            (
+                Command::CopyParentPath,
+                UiRequest::CopyPaths(PathStyle::ParentPath),
+            ),
+            (
+                Command::CopyFileUrl,
+                UiRequest::CopyPaths(PathStyle::FileUrl),
+            ),
+            (
+                Command::CopyShellPath,
+                UiRequest::CopyPaths(PathStyle::ShellEscaped),
+            ),
+            (
+                Command::CopyRelativePath,
+                UiRequest::CopyPaths(PathStyle::RelativeToOther),
+            ),
+            (Command::BeginSelectMask, UiRequest::SelectMask),
+            (Command::BeginRunBar, UiRequest::RunCommand),
+            (Command::GatherIntoFolder, UiRequest::GatherIntoFolder),
+            (Command::BeginGoToPath, UiRequest::GoToPath),
+            (Command::BeginRecent, UiRequest::Recent),
+            (Command::BeginPalette, UiRequest::Palette),
+            (Command::Undo, UiRequest::Undo),
+            (Command::Redo, UiRequest::Redo),
+            (Command::ToggleQueuePanel, UiRequest::ToggleQueuePanel),
+            (Command::OpenReceipts, UiRequest::OperationHistory),
+            (Command::OpenRecoveryCenter, UiRequest::OpenRecoveryCenter),
+        ];
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&left, &right);
+
+        for (command, expected) in cases {
+            ws.execute(command);
+            assert_eq!(ws.drain_ui_requests(), vec![expected], "{command:?}");
+        }
+    }
+
+    #[test]
+    fn same_frame_ui_commands_preserve_fifo_and_duplicates() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&left, &right);
+
+        ws.execute(Command::ToggleQueuePanel);
+        ws.execute(Command::ToggleQueuePanel);
+        ws.execute(Command::BeginPalette);
+        ws.execute(Command::BeginRecent);
+
+        assert_eq!(
+            ws.drain_ui_requests(),
+            vec![
+                UiRequest::ToggleQueuePanel,
+                UiRequest::ToggleQueuePanel,
+                UiRequest::Palette,
+                UiRequest::Recent,
+            ]
+        );
+    }
+
+    #[test]
+    fn conditional_and_listing_commands_emit_payload_requests() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let shelf_item = left.file("shelf.txt", "x");
+        let mut ws = workspace(&left, &right);
+        ws.shelf.add(shelf_item);
+
+        ws.execute(Command::ShelfDrain);
+        assert_eq!(ws.drain_ui_requests(), vec![UiRequest::DrainShelf]);
+
+        for (command, format_label) in [
+            (Command::CopyListingText, "text"),
+            (Command::CopyListingCsv, "CSV"),
+            (Command::CopyListingMarkdown, "Markdown"),
+        ] {
+            ws.execute(command);
+            let requests = ws.drain_ui_requests();
+            let [UiRequest::CopyText { text, label }] = requests.as_slice() else {
+                panic!("{command:?} did not emit one CopyText request: {requests:?}");
+            };
+            assert!(text.contains("shelf.txt"));
+            assert!(label.contains(format_label));
+        }
+    }
+
+    #[test]
     fn equalize_points_inactive_panel_at_active_dir() {
         let (l, r) = (TempDir::new(), TempDir::new());
         let mut ws = workspace(&l, &r);
@@ -2876,7 +2939,10 @@ mod tests {
         workspace.left.cursor = 1;
         workspace.execute(Command::Activate);
 
-        assert_eq!(workspace.archive_request, Some(archive));
+        assert_eq!(
+            workspace.pending_ui_requests(),
+            vec![UiRequest::Archive(archive)]
+        );
         assert_eq!(opened.load(Ordering::Relaxed), 0);
     }
 
@@ -4276,7 +4342,7 @@ mod tests {
         ws.left.cursor = 1;
 
         ws.execute(Command::BeginRename);
-        assert_eq!(ws.rename_target.as_deref(), Some(f.as_path()));
+        assert_eq!(ws.pending_ui_requests(), vec![UiRequest::Rename(f)]);
     }
 
     #[test]
@@ -4706,8 +4772,10 @@ mod tests {
             + 1;
 
         ws.execute(Command::MoveIntoCursorFolder);
-        assert_eq!(ws.keyboard_drop_request, Some(TransferKind::Move));
-        ws.keyboard_drop_request = None;
+        assert_eq!(
+            ws.drain_ui_requests(),
+            vec![UiRequest::TransferIntoCursorFolder(TransferKind::Move)]
+        );
         ws.transfer_selection_into_cursor_folder(TransferKind::Move, || {});
         wait_transfer(&mut ws);
 
@@ -4731,8 +4799,10 @@ mod tests {
             + 1;
 
         ws.execute(Command::CopyIntoCursorFolder);
-        assert_eq!(ws.keyboard_drop_request, Some(TransferKind::Copy));
-        ws.keyboard_drop_request = None;
+        assert_eq!(
+            ws.drain_ui_requests(),
+            vec![UiRequest::TransferIntoCursorFolder(TransferKind::Copy)]
+        );
         ws.transfer_selection_into_cursor_folder(TransferKind::Copy, || {});
         wait_transfer(&mut ws);
 

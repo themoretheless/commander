@@ -406,15 +406,8 @@ impl App {
 
     pub(crate) fn show_recovery_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recovery);
-        let requested = std::mem::take(&mut self.ws.recovery_request);
         let mut state = std::mem::take(&mut self.recovery);
         state.poll_scan();
-        if requested {
-            state.open = true;
-            if !state.scanning {
-                state.start_scan(&self.ws);
-            }
-        }
         if state.scanning {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

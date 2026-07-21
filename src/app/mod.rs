@@ -39,6 +39,7 @@ use std::rc::Rc;
 use crate::panel::{PanelState, SortColumn, format_size};
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
 pub(crate) use crate::transfer::{CopyMethod, TransferKind};
+pub(crate) use crate::ui_request::{UiModal, UiRequest};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
 pub struct App {
@@ -653,6 +654,21 @@ impl App {
             .checked_add(1)
             .expect("transient UI nonce space exhausted");
         self.transient_nonce
+    }
+
+    pub(crate) fn mark_modal_opened(ctx: &egui::Context, modal: UiModal) {
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new(("ui_request_opened", modal)), true);
+        });
+    }
+
+    pub(crate) fn take_modal_opened(ctx: &egui::Context, modal: UiModal) -> bool {
+        ctx.data_mut(|data| {
+            let id = egui::Id::new(("ui_request_opened", modal));
+            let opened = data.get_temp::<bool>(id).unwrap_or(false);
+            data.remove::<bool>(id);
+            opened
+        })
     }
 
     /// The command-template store, loaded from disk on first access.

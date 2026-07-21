@@ -5,11 +5,12 @@
 use super::*;
 
 impl App {
+    pub(crate) fn open_saved_search(&mut self) {
+        self.smart_folders_mut();
+        self.saved_search_open = true;
+    }
+
     pub(crate) fn show_saved_search_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.saved_search_request) {
-            self.smart_folders_mut(); // force a load from disk
-            self.saved_search_open = true;
-        }
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::SavedSearch);
         if !self.saved_search_open {

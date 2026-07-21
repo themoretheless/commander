@@ -6,44 +6,45 @@ use super::*;
 use crate::sync::{SyncDirection, SyncPolicy, SyncStatus};
 
 impl App {
+    pub(crate) fn open_sync(&mut self) {
+        let policy = SyncPolicy::TwoWay;
+        let left_dir = self.ws.left.current_path.clone();
+        let right_dir = self.ws.right.current_path.clone();
+        let left_show_hidden = self.ws.left.show_hidden;
+        let right_show_hidden = self.ws.right.show_hidden;
+        let guard = self.ws.sync_guard_policy.clone();
+        let marker_input = guard
+            .health_marker
+            .as_deref()
+            .map_or_else(String::new, |path| path.to_string_lossy().into_owned());
+        let marker_enabled = guard.health_marker.is_some();
+        let (actions, stamp, error) = match self.ws.build_guarded_sync_plan(policy) {
+            Ok((actions, stamp)) => (actions, Some(stamp), None),
+            Err(error) => (Vec::new(), None, Some(error)),
+        };
+        let settings_fingerprint = stamp.as_ref().map_or(0, |stamp| {
+            crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key())
+        });
+        self.sync = Some(SyncState {
+            policy,
+            durability: self.ws.durability_profile,
+            version_retention: self.ws.version_retention,
+            actions,
+            left_dir,
+            right_dir,
+            left_show_hidden,
+            right_show_hidden,
+            guard,
+            stamp,
+            settings_fingerprint,
+            allow_large_plan: false,
+            marker_enabled,
+            marker_input,
+            error,
+        });
+    }
+
     pub(crate) fn show_sync_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.sync_request) {
-            let policy = SyncPolicy::TwoWay;
-            let left_dir = self.ws.left.current_path.clone();
-            let right_dir = self.ws.right.current_path.clone();
-            let left_show_hidden = self.ws.left.show_hidden;
-            let right_show_hidden = self.ws.right.show_hidden;
-            let guard = self.ws.sync_guard_policy.clone();
-            let marker_input = guard
-                .health_marker
-                .as_deref()
-                .map_or_else(String::new, |path| path.to_string_lossy().into_owned());
-            let marker_enabled = guard.health_marker.is_some();
-            let (actions, stamp, error) = match self.ws.build_guarded_sync_plan(policy) {
-                Ok((actions, stamp)) => (actions, Some(stamp), None),
-                Err(error) => (Vec::new(), None, Some(error)),
-            };
-            let settings_fingerprint = stamp.as_ref().map_or(0, |stamp| {
-                crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key())
-            });
-            self.sync = Some(SyncState {
-                policy,
-                durability: self.ws.durability_profile,
-                version_retention: self.ws.version_retention,
-                actions,
-                left_dir,
-                right_dir,
-                left_show_hidden,
-                right_show_hidden,
-                guard,
-                stamp,
-                settings_fingerprint,
-                allow_large_plan: false,
-                marker_enabled,
-                marker_input,
-                error,
-            });
-        }
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Sync);
         if self.sync.is_none() {
             return;

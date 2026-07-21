@@ -4,11 +4,13 @@
 use super::*;
 
 impl App {
+    pub(crate) fn open_recent(&mut self, ctx: &egui::Context) {
+        self.recent_input = Some(String::new());
+        Self::mark_modal_opened(ctx, UiModal::Recent);
+    }
+
     pub(crate) fn show_recent_dialog(&mut self, ctx: &egui::Context) {
-        let just_opened = std::mem::take(&mut self.ws.recent_request);
-        if just_opened {
-            self.recent_input = Some(String::new());
-        }
+        let just_opened = Self::take_modal_opened(ctx, UiModal::Recent);
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recent);
         let Some(buffer) = &mut self.recent_input else {
             return;

@@ -10,16 +10,18 @@ use crate::cmdtemplate::{SegmentKind, SelectionCtx, expand, preview_segments};
 const TEMPLATES_SCROLL_ID: &str = "run_command_templates";
 
 impl App {
+    pub(crate) fn open_run_command(&mut self, ctx: &egui::Context) {
+        self.command_templates_mut();
+        let scroll_nonce = self.issue_transient_nonce();
+        self.run_command = Some(RunCommandState {
+            line: String::new(),
+            scroll_nonce,
+        });
+        Self::mark_modal_opened(ctx, UiModal::RunCommand);
+    }
+
     pub(crate) fn show_run_command_dialog(&mut self, ctx: &egui::Context) {
-        let just_opened = std::mem::take(&mut self.ws.run_command_request);
-        if just_opened {
-            self.command_templates_mut(); // force a load from disk
-            let scroll_nonce = self.issue_transient_nonce();
-            self.run_command = Some(RunCommandState {
-                line: String::new(),
-                scroll_nonce,
-            });
-        }
+        let just_opened = Self::take_modal_opened(ctx, UiModal::RunCommand);
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::RunCommand,
         ));

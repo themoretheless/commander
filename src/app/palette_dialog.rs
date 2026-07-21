@@ -5,11 +5,13 @@
 use super::*;
 
 impl App {
+    pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
+        self.palette_input = Some(String::new());
+        Self::mark_modal_opened(ctx, UiModal::Palette);
+    }
+
     pub(crate) fn show_palette_dialog(&mut self, ctx: &egui::Context) {
-        let just_opened = std::mem::take(&mut self.ws.palette_request);
-        if just_opened {
-            self.palette_input = Some(String::new());
-        }
+        let just_opened = Self::take_modal_opened(ctx, UiModal::Palette);
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Palette);
         if self.palette_input.is_none() {
             return;

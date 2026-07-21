@@ -12,11 +12,13 @@ fn change_count_label(count: usize) -> String {
 }
 
 impl App {
+    pub(crate) fn open_mask(&mut self, ctx: &egui::Context) {
+        self.mask_input = Some(String::new());
+        Self::mark_modal_opened(ctx, UiModal::Mask);
+    }
+
     pub(crate) fn show_mask_dialog(&mut self, ctx: &egui::Context) {
-        let just_opened = std::mem::take(&mut self.ws.mask_request);
-        if just_opened {
-            self.mask_input = Some(String::new());
-        }
+        let just_opened = Self::take_modal_opened(ctx, UiModal::Mask);
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::Mask,
         ));

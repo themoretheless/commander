@@ -66,6 +66,7 @@ mod transfer;
 mod transfer_tuning;
 mod tree_overview;
 mod treemap;
+mod ui_request;
 mod undo;
 mod verified_hash;
 mod version_store;

@@ -148,7 +148,8 @@ impl App {
                         actions.move_in.enabled,
                         actions.move_in.reason.unwrap_or_default(),
                     ) {
-                        self.ws.keyboard_drop_request = Some(TransferKind::Move);
+                        self.ws
+                            .execute(crate::command::Command::MoveIntoCursorFolder);
                     }
                     if btn(
                         ui,
@@ -163,7 +164,8 @@ impl App {
                         actions.copy_in.enabled,
                         actions.copy_in.reason.unwrap_or_default(),
                     ) {
-                        self.ws.keyboard_drop_request = Some(TransferKind::Copy);
+                        self.ws
+                            .execute(crate::command::Command::CopyIntoCursorFolder);
                     }
                     if btn(
                         ui,
@@ -184,7 +186,7 @@ impl App {
                         self.ws.request_delete();
                     }
                     if btn(ui, "\u{2318}K", "Open command palette", true, "") {
-                        self.ws.palette_request = true;
+                        self.ws.execute(crate::command::Command::BeginPalette);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -415,7 +417,7 @@ impl App {
                         self.ws.request_delete();
                     }
                     if command(ui, "⌘K", "Open command palette", true, "") {
-                        self.ws.palette_request = true;
+                        self.ws.execute(crate::command::Command::BeginPalette);
                     }
 
                     ui.menu_button(egui::RichText::new("…").size(18.0), |ui| {
@@ -439,7 +441,8 @@ impl App {
                             .on_disabled_hover_text(actions.move_in.reason.unwrap_or_default())
                             .clicked()
                         {
-                            self.ws.keyboard_drop_request = Some(TransferKind::Move);
+                            self.ws
+                                .execute(crate::command::Command::MoveIntoCursorFolder);
                             ui.close();
                         }
                         if ui
@@ -450,7 +453,8 @@ impl App {
                             .on_disabled_hover_text(actions.copy_in.reason.unwrap_or_default())
                             .clicked()
                         {
-                            self.ws.keyboard_drop_request = Some(TransferKind::Copy);
+                            self.ws
+                                .execute(crate::command::Command::CopyIntoCursorFolder);
                             ui.close();
                         }
 

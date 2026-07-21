@@ -7,17 +7,21 @@ use crate::dedup::{KeepPolicy, default_keep, delete_count};
 use crate::panel::format_size;
 
 impl App {
+    pub(crate) fn open_duplicates(&mut self) {
+        let policy = KeepPolicy::KeepShortestPath;
+        let groups = self.ws.find_duplicates();
+        let keep = groups
+            .iter()
+            .map(|group| default_keep(group, policy))
+            .collect();
+        self.duplicates = Some(DupState {
+            groups,
+            keep,
+            policy,
+        });
+    }
+
     pub(crate) fn show_duplicates_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.duplicates_request) {
-            let policy = KeepPolicy::KeepShortestPath;
-            let groups = self.ws.find_duplicates();
-            let keep = groups.iter().map(|g| default_keep(g, policy)).collect();
-            self.duplicates = Some(DupState {
-                groups,
-                keep,
-                policy,
-            });
-        }
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::Duplicates);
         if self.duplicates.is_none() {

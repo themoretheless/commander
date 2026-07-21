@@ -4,17 +4,19 @@
 use super::*;
 
 impl App {
+    pub(crate) fn open_path(&mut self, ctx: &egui::Context) {
+        let current = self
+            .ws
+            .active_panel_ref()
+            .current_path
+            .display()
+            .to_string();
+        self.path_input = Some(current);
+        Self::mark_modal_opened(ctx, UiModal::Path);
+    }
+
     pub(crate) fn show_path_dialog(&mut self, ctx: &egui::Context) {
-        let just_opened = std::mem::take(&mut self.ws.path_request);
-        if just_opened {
-            let current = self
-                .ws
-                .active_panel_ref()
-                .current_path
-                .display()
-                .to_string();
-            self.path_input = Some(current);
-        }
+        let just_opened = Self::take_modal_opened(ctx, UiModal::Path);
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Path);
         let Some(buffer) = &mut self.path_input else {
             return;

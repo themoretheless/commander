@@ -6,27 +6,29 @@ use super::*;
 use crate::opqueue::JobState;
 
 impl App {
-    pub(crate) fn capture_operations_requests(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.queue_panel_request) {
-            if self.show_operations_center && self.operations_tab == OperationsTab::Queue {
-                self.show_operations_center = false;
-            } else {
-                self.show_operations_center = true;
-                self.operations_tab = OperationsTab::Queue;
-            }
-        }
-        if std::mem::take(&mut self.ws.receipts_request) {
+    pub(crate) fn toggle_queue_panel(&mut self) {
+        if self.show_operations_center && self.operations_tab == OperationsTab::Queue {
+            self.show_operations_center = false;
+        } else {
             self.show_operations_center = true;
-            self.operations_tab = OperationsTab::History;
+            self.operations_tab = OperationsTab::Queue;
         }
-        if std::mem::take(&mut self.ws.recovery_request) {
-            self.show_operations_center = true;
-            self.operations_tab = OperationsTab::Recovery;
-            if !self.recovery.scanning {
-                self.recovery.start_scan(&self.ws);
-            }
-        }
+    }
 
+    pub(crate) fn open_operation_history(&mut self) {
+        self.show_operations_center = true;
+        self.operations_tab = OperationsTab::History;
+    }
+
+    pub(crate) fn open_recovery_center(&mut self) {
+        self.show_operations_center = true;
+        self.operations_tab = OperationsTab::Recovery;
+        if !self.recovery.scanning {
+            self.recovery.start_scan(&self.ws);
+        }
+    }
+
+    pub(crate) fn capture_operation_failures(&mut self, ctx: &egui::Context) {
         let failed = self.ws.active_transfer.as_ref().and_then(|state| {
             let progress = crate::lock_util::recover(state);
             if !progress.finished || progress.errors.is_empty() {
@@ -370,7 +372,7 @@ impl App {
             }
         });
         if undo {
-            self.ws.undo_request = true;
+            self.ws.execute(crate::command::Command::Undo);
         } else if let Some(path) = jump {
             self.ws.active_panel().navigate_to(path);
         }
@@ -461,7 +463,7 @@ impl App {
             self.open_recovery_operation(operation_id, RecoveryDetail::Repair);
         }
         if undo {
-            self.ws.undo_request = true;
+            self.ws.execute(crate::command::Command::Undo);
         }
         if let Some(operation_id) = dismiss {
             self.operation_failures.dismiss(&operation_id);
@@ -567,7 +569,7 @@ impl App {
         }
     }
 
-    fn open_recovery_operation(
+    pub(crate) fn open_recovery_operation(
         &mut self,
         operation_id: crate::operation::OperationId,
         detail: RecoveryDetail,

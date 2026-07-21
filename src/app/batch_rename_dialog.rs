@@ -67,29 +67,30 @@ impl ValidatedBatchRename {
 }
 
 impl App {
+    pub(crate) fn open_batch_rename(&mut self) {
+        let Some(context) = self.ws.batch_rename_context() else {
+            return;
+        };
+        let scroll_nonce = self.issue_transient_nonce();
+        self.batch_rename = Some(BatchRenameState {
+            context,
+            find: String::new(),
+            replace: String::new(),
+            regex_mode: false,
+            prefix: String::new(),
+            suffix: String::new(),
+            case: crate::rename::CaseMode::Keep,
+            numbering_on: false,
+            num_start: 1,
+            num_step: 1,
+            num_pad: 2,
+            focused: false,
+            error: None,
+            scroll_nonce,
+        });
+    }
+
     pub(crate) fn show_batch_rename_dialog(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.ws.batch_rename_request) {
-            let Some(context) = self.ws.batch_rename_context() else {
-                return;
-            };
-            let scroll_nonce = self.issue_transient_nonce();
-            self.batch_rename = Some(BatchRenameState {
-                context,
-                find: String::new(),
-                replace: String::new(),
-                regex_mode: false,
-                prefix: String::new(),
-                suffix: String::new(),
-                case: crate::rename::CaseMode::Keep,
-                numbering_on: false,
-                num_start: 1,
-                num_step: 1,
-                num_pad: 2,
-                focused: false,
-                error: None,
-                scroll_nonce,
-            });
-        }
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::BatchRename,
         ));

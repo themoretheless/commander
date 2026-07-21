@@ -2,6 +2,48 @@
 
 use super::*;
 
+struct AppUiRequestSink<'app, 'ctx> {
+    app: &'app mut App,
+    ctx: &'ctx egui::Context,
+}
+
+impl crate::ui_request::UiRequestSink for AppUiRequestSink<'_, '_> {
+    fn any_modal_open(&self) -> bool {
+        self.app.has_modal_surface()
+    }
+
+    fn is_modal_open(&self, modal: UiModal) -> bool {
+        self.app.is_ui_modal_open(modal)
+    }
+
+    fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
+        self.app.can_transition_ui_request(request)
+    }
+
+    fn apply(&mut self, request: UiRequest) {
+        self.app.dispatch_ui_request(request, self.ctx);
+    }
+}
+
+fn recovery_review_handoff_allowed(
+    safe_state: Option<&crate::operation::SafeState>,
+    active_transfer: Option<&crate::transfer::TransferProgress>,
+    unrelated_modal_open: bool,
+    requested_operation: &crate::operation::OperationId,
+) -> bool {
+    if unrelated_modal_open
+        || safe_state.map(|state| &state.operation_id) != Some(requested_operation)
+    {
+        return false;
+    }
+
+    active_transfer.is_none_or(|progress| {
+        progress.finished
+            && !progress.errors.is_empty()
+            && progress.operation_id.as_ref() == Some(requested_operation)
+    })
+}
+
 fn clipped_label(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
@@ -18,7 +60,7 @@ impl eframe::App for App {
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FrameTime);
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
-        self.capture_operations_requests(&ctx);
+        self.capture_operation_failures(&ctx);
         let modal_was_open = self.has_modal_surface();
         self.show_transfer_dialog(&ctx);
         self.show_safe_state_dialog(&ctx);
@@ -97,9 +139,15 @@ impl eframe::App for App {
 
 impl App {
     fn has_modal_surface(&self) -> bool {
+        self.ws.safe_state.is_some() || self.has_modal_surface_except_safe_state()
+    }
+
+    fn has_modal_surface_except_safe_state(&self) -> bool {
+        self.ws.active_transfer.is_some() || self.has_modal_surface_except_safe_state_and_transfer()
+    }
+
+    fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
         self.ws.pending_op.is_some()
-            || self.ws.active_transfer.is_some()
-            || self.ws.safe_state.is_some()
             || self.recovery.open
             || self.history_preview.is_some()
             || self.renaming.is_some()
@@ -117,6 +165,23 @@ impl App {
             || self.archive.is_some()
             || self.saved_search_open
             || self.collections_dialog.is_some()
+    }
+
+    fn can_transition_ui_request(&self, request: &UiRequest) -> bool {
+        let UiRequest::ReviewRecovery(operation_id) = request else {
+            return false;
+        };
+        let active_transfer = self
+            .ws
+            .active_transfer
+            .as_ref()
+            .map(|state| crate::lock_util::recover(state));
+        recovery_review_handoff_allowed(
+            self.ws.safe_state.as_ref(),
+            active_transfer.as_deref(),
+            self.has_modal_surface_except_safe_state_and_transfer(),
+            operation_id,
+        )
     }
 
     /// Frame bookkeeping: repaint heuristics, notify wiring, fs polling,
@@ -200,8 +265,6 @@ impl App {
         self.ws.right.drop_target = None;
 
         self.handle_keys(ctx);
-        self.capture_escape_request(ctx);
-        self.update_focus_mode(ctx);
         self.preload_images(ctx);
         {
             let c = ctx.clone();
@@ -231,98 +294,163 @@ impl App {
             }
         }
         self.toasts.prune(ctx.input(|i| i.time));
-        // Open a filesystem-aware undo/redo review. Execution happens only from
-        // the confirmation dialog and repeats the preflight at commit time.
-        if std::mem::take(&mut self.ws.undo_request) {
-            self.history_preview = self.ws.preview_undo().map(|preview| HistoryPreviewState {
-                mode: HistoryReplayMode::Undo,
-                preview,
-                error: None,
-            });
-            if self.history_preview.is_none() {
-                self.push_history_notice(ctx, "Nothing to undo", false);
-            }
+        self.dispatch_ui_requests(ctx);
+        self.capture_escape_request(ctx);
+        self.update_focus_mode(ctx);
+    }
+
+    /// Dispatch a fixed frame snapshot. Open modal surfaces serialize behind
+    /// one another; duplicate payload-free opens are idempotent, while
+    /// payload-bearing modal requests retain their FIFO identity.
+    fn dispatch_ui_requests(&mut self, ctx: &egui::Context) {
+        let requests = self.ws.drain_ui_requests();
+        let deferred = crate::ui_request::dispatch_snapshot(
+            requests,
+            &mut AppUiRequestSink { app: self, ctx },
+        );
+        self.ws.defer_ui_requests(deferred);
+    }
+
+    fn is_ui_modal_open(&self, modal: UiModal) -> bool {
+        match modal {
+            UiModal::Recovery => self.recovery.open,
+            UiModal::History => self.history_preview.is_some(),
+            UiModal::Rename => self.renaming.is_some(),
+            UiModal::BatchRename => self.batch_rename.is_some(),
+            UiModal::Sync => self.sync.is_some(),
+            UiModal::Duplicates => self.duplicates.is_some(),
+            UiModal::Diff => self.diff.is_some(),
+            UiModal::Treemap => self.treemap.is_some(),
+            UiModal::Find => self.find.is_some(),
+            UiModal::Archive => self.archive.is_some(),
+            UiModal::SavedSearch => self.saved_search_open,
+            UiModal::Collections => self.collections_dialog.is_some(),
+            UiModal::Mask => self.mask_input.is_some(),
+            UiModal::Path => self.path_input.is_some(),
+            UiModal::Recent => self.recent_input.is_some(),
+            UiModal::RunCommand => self.run_command.is_some(),
+            UiModal::Palette => self.palette_input.is_some(),
         }
-        if std::mem::take(&mut self.ws.redo_request) {
-            self.history_preview = self.ws.preview_redo().map(|preview| HistoryPreviewState {
-                mode: HistoryReplayMode::Redo,
-                preview,
-                error: None,
-            });
-            if self.history_preview.is_none() {
+    }
+
+    fn dispatch_ui_request(&mut self, request: UiRequest, ctx: &egui::Context) {
+        match request {
+            UiRequest::Rename(path) => self.open_rename(path),
+            UiRequest::SelectMask => self.open_mask(ctx),
+            UiRequest::RunCommand => self.open_run_command(ctx),
+            UiRequest::GatherIntoFolder => {
+                let c = ctx.clone();
+                self.ws.gather_into_folder(move || c.request_repaint());
+            }
+            UiRequest::TransferIntoCursorFolder(kind) => {
+                let c = ctx.clone();
+                self.ws
+                    .transfer_selection_into_cursor_folder(kind, move || c.request_repaint());
+            }
+            UiRequest::GoToPath => self.open_path(ctx),
+            UiRequest::Recent => self.open_recent(ctx),
+            UiRequest::Undo => self.open_history_preview(HistoryReplayMode::Undo, ctx),
+            UiRequest::Palette => self.open_palette(ctx),
+            UiRequest::BatchRename => self.open_batch_rename(),
+            UiRequest::Sync => self.open_sync(),
+            UiRequest::FindDuplicates => self.open_duplicates(),
+            UiRequest::DiffFiles => self.open_diff(ctx),
+            UiRequest::DiskTreemap => self.open_treemap(ctx),
+            UiRequest::Find => self.open_find(),
+            UiRequest::Archive(path) => self.open_archive(path, ctx),
+            UiRequest::SavedSearch => self.open_saved_search(),
+            UiRequest::ProjectCollections => self.open_collections(ctx),
+            UiRequest::ToggleQueuePanel => self.toggle_queue_panel(),
+            UiRequest::OperationHistory => self.open_operation_history(),
+            UiRequest::OpenRecoveryCenter => self.open_recovery_center(),
+            UiRequest::ReviewRecovery(operation_id) => {
+                self.open_recovery_operation(operation_id, RecoveryDetail::Inspect)
+            }
+            UiRequest::CopyPaths(style) => self.copy_paths(style, ctx),
+            UiRequest::CopyText { text, label } => {
+                ctx.copy_text(text);
+                let now = ctx.input(|input| input.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!("Copied {label}"),
+                    crate::toasts::ToastKind::Success,
+                    false,
+                    now,
+                ));
+            }
+            UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
+            UiRequest::DrainShelf => self.drain_shelf(ctx),
+        }
+    }
+
+    fn open_history_preview(&mut self, mode: HistoryReplayMode, ctx: &egui::Context) {
+        let preview = match mode {
+            HistoryReplayMode::Undo => self.ws.preview_undo(),
+            HistoryReplayMode::Redo => self.ws.preview_redo(),
+        };
+        self.history_preview = preview.map(|preview| HistoryPreviewState {
+            mode,
+            preview,
+            error: None,
+        });
+        if self.history_preview.is_some() {
+            return;
+        }
+        match mode {
+            HistoryReplayMode::Undo => self.push_history_notice(ctx, "Nothing to undo", false),
+            HistoryReplayMode::Redo => {
                 let reason = self.ws.redo_unavailable_reason();
                 let is_error = reason.is_some();
                 let message = reason.unwrap_or_else(|| "Nothing to redo".to_string());
                 self.push_history_notice(ctx, &message, is_error);
             }
         }
-        // Gather the selection into a new subfolder (queues an undoable Move).
-        if std::mem::take(&mut self.ws.gather_request) {
-            let c = ctx.clone();
-            self.ws.gather_into_folder(move || c.request_repaint());
-        }
-        if let Some(kind) = self.ws.keyboard_drop_request.take() {
-            let c = ctx.clone();
-            self.ws
-                .transfer_selection_into_cursor_folder(kind, move || c.request_repaint());
-        }
-        // Drain the shelf (copy staged items into the active pane).
-        if std::mem::take(&mut self.ws.drain_request) {
-            let c = ctx.clone();
-            let outcome = self.ws.drain_shelf(move || c.request_repaint());
-            if outcome.unavailable > 0 {
-                let now = ctx.input(|i| i.time);
-                let item = |n: usize| if n == 1 { "item" } else { "items" };
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!(
-                        "{} shelf {} unavailable, kept on the shelf",
-                        outcome.unavailable,
-                        item(outcome.unavailable)
-                    ),
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    now,
-                ));
-            }
-        }
-        // Copy the selection's path(s) to the clipboard in the requested style.
-        if let Some(style) = self.ws.clipboard_request.take() {
-            let paths: Vec<std::path::PathBuf> = self
-                .ws
-                .active_panel_ref()
-                .selected_or_cursor()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|e| e.path)
-                .collect();
-            if !paths.is_empty() {
-                let other_root = self.ws.inactive_panel().current_path.clone();
-                let text = crate::clipboard::format(&paths, style, Some(&other_root));
-                ctx.copy_text(text);
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!(
-                        "Copied {} ({})",
-                        crate::clipboard::style_label(style),
-                        paths.len()
-                    ),
-                    crate::toasts::ToastKind::Success,
-                    false,
-                    now,
-                ));
-            }
-        }
-        // Copy an arbitrary text payload (e.g. an exported listing).
-        if let Some((text, label)) = self.ws.clipboard_text_request.take() {
+    }
+
+    fn copy_paths(&mut self, style: crate::clipboard::PathStyle, ctx: &egui::Context) {
+        let paths: Vec<std::path::PathBuf> = self
+            .ws
+            .active_panel_ref()
+            .selected_or_cursor()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        if !paths.is_empty() {
+            let other_root = self.ws.inactive_panel().current_path.clone();
+            let text = crate::clipboard::format(&paths, style, Some(&other_root));
             ctx.copy_text(text);
             let now = ctx.input(|i| i.time);
             self.toasts.push(crate::toasts::Toast::new(
-                format!("Copied {label}"),
+                format!(
+                    "Copied {} ({})",
+                    crate::clipboard::style_label(style),
+                    paths.len()
+                ),
                 crate::toasts::ToastKind::Success,
                 false,
                 now,
             ));
         }
+    }
+
+    fn drain_shelf(&mut self, ctx: &egui::Context) {
+        let c = ctx.clone();
+        let outcome = self.ws.drain_shelf(move || c.request_repaint());
+        if outcome.unavailable == 0 {
+            return;
+        }
+        let now = ctx.input(|input| input.time);
+        let item = |count: usize| if count == 1 { "item" } else { "items" };
+        self.toasts.push(crate::toasts::Toast::new(
+            format!(
+                "{} shelf {} unavailable, kept on the shelf",
+                outcome.unavailable,
+                item(outcome.unavailable)
+            ),
+            crate::toasts::ToastKind::Error,
+            false,
+            now,
+        ));
     }
 
     fn show_toolbar_panel(&mut self, ui: &mut egui::Ui) {
@@ -535,7 +663,7 @@ impl App {
             QuickAction::AddToShelf => self.ws.execute(crate::command::Command::ShelfAdd),
             QuickAction::DrainShelf => self.ws.execute(crate::command::Command::ShelfDrain),
             QuickAction::CopyNames => {
-                self.ws.clipboard_request = Some(crate::clipboard::PathStyle::NameOnly);
+                self.ws.execute(crate::command::Command::CopyName);
             }
             QuickAction::BatchRename => {
                 self.ws.execute(crate::command::Command::BeginBatchRename);
@@ -547,7 +675,7 @@ impl App {
                 self.ws.active_panel().clear_filters();
             }
             QuickAction::SaveFilter => self.save_active_filter_as_smart_folder(ctx),
-            QuickAction::OpenPalette => self.ws.palette_request = true,
+            QuickAction::OpenPalette => self.ws.execute(crate::command::Command::BeginPalette),
             QuickAction::FindFiles => self.ws.execute(crate::command::Command::BeginFind),
             QuickAction::RecentFolders => self.ws.execute(crate::command::Command::BeginRecent),
             QuickAction::FocusMode => {
@@ -707,7 +835,7 @@ impl App {
             self.ws.shelf.clear();
         }
         if drain {
-            self.ws.drain_request = true;
+            self.ws.execute(crate::command::Command::ShelfDrain);
         }
     }
 
@@ -1085,7 +1213,7 @@ impl App {
             self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
         }
         if let Some(path) = pending_archive {
-            self.ws.archive_request = Some(path);
+            self.ws.emit_ui_request(UiRequest::Archive(path));
             ctx.request_repaint();
         }
     }
@@ -1309,7 +1437,7 @@ impl App {
                 });
         }
         if undo {
-            self.ws.undo_request = true;
+            self.ws.execute(crate::command::Command::Undo);
         }
         let repaint_ms = if self.accessibility_preferences.reduced_motion {
             1_000
@@ -1336,5 +1464,46 @@ impl App {
             self.ws
                 .drop_dragged_as(kind, move || ctx2.request_repaint());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recovery_review_handoff_allowed;
+
+    #[test]
+    fn safe_state_handoff_allows_its_retained_error_transfer_only() {
+        let operation_id = crate::operation::OperationId("retained-error".to_string());
+        let safe_state = crate::operation::SafeState {
+            operation_id: operation_id.clone(),
+            reason: "placement uncertain".to_string(),
+            paths: Vec::new(),
+            failures: Vec::new(),
+        };
+        let mut transfer = crate::transfer::TransferProgress::new(1, 1);
+        transfer.operation_id = Some(operation_id.clone());
+        transfer.finished = true;
+        transfer.errors.push("placement uncertain".to_string());
+
+        assert!(recovery_review_handoff_allowed(
+            Some(&safe_state),
+            Some(&transfer),
+            false,
+            &operation_id,
+        ));
+        assert!(!recovery_review_handoff_allowed(
+            Some(&safe_state),
+            Some(&transfer),
+            true,
+            &operation_id,
+        ));
+
+        transfer.operation_id = Some(crate::operation::OperationId("other".to_string()));
+        assert!(!recovery_review_handoff_allowed(
+            Some(&safe_state),
+            Some(&transfer),
+            false,
+            &operation_id,
+        ));
     }
 }

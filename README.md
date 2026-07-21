@@ -115,7 +115,9 @@ module is a thin egui layer over it.
   physical preview viewport, applies orientation, and runs through typed
   native/standard fallbacks behind a hard timeout and four-slot limit. Decoded
   images retain dimension and 256 MiB allocation caps; failures are explicit
-  and retryable rather than infinite spinners.
+  and retryable rather than infinite spinners. Text preview is debounced and
+  read on an isolated one-worker executor with cancellation, file-identity
+  revalidation, a 256 KiB limit, and explicit timeout/error states.
 - **Relative dates** in the Modified column (Finder/Things style), with the
   absolute timestamp on hover.
 - **Status bar and selection summary**: each panel's footer shows item count and
@@ -298,10 +300,14 @@ cargo clippy --all-targets       # lints (the repo is clippy-clean)
 cargo fmt --check                # formatting
 ```
 
-The file-manager logic lives in a UI-independent core (`workspace`, `panel`,
-`transfer`, `opqueue`, `scan`, `command`, `compare`, `fs_util`, `rename`,
-`sync`, `bookmarks`, `jumplist`, `cmdtemplate`, `undo`, `receipts`, ...) that
-is unit-tested without a GUI; the `app` module is a thin egui layer over it.
+The file-manager logic lives in a UI-independent core (`workspace`,
+`workspace/transfer_queue`, `panel`, `transfer`, `opqueue`, `scan`, `command`,
+`compare`, `ui_request`, `workload`, `ports`, `provider_runtime`, `fs_util`,
+`rename`, `sync`, `undo`, ...) that is unit-tested without a GUI. `Workspace`
+emits typed FIFO `UiRequest` values; `app/update.rs` owns the single per-frame
+dispatcher and the `app` module remains the egui adapter. Main-thread AppKit
+context-menu behavior and background workload admission are injected through
+narrow handles rather than reached through UI-global state.
 The architecture and the refactoring plan are documented in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
 
