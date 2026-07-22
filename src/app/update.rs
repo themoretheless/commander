@@ -87,14 +87,14 @@ impl eframe::App for App {
         let modal_open =
             crate::accessibility::modal_trap_active(modal_was_open, self.has_modal_surface());
         let trapped = crate::accessibility::focus_order(crate::accessibility::FocusLayout {
-            toolbar_visible: !self.focus_mode,
-            operations_open: self.show_operations_center,
+            toolbar_visible: !self.ui.focus_mode,
+            operations_open: self.ui.show_operations_center,
             dialog_open: modal_open,
         }) == [crate::accessibility::FocusRegion::Dialog];
         let background_order =
             crate::accessibility::focus_order(crate::accessibility::FocusLayout {
-                toolbar_visible: !self.focus_mode,
-                operations_open: self.show_operations_center,
+                toolbar_visible: !self.ui.focus_mode,
+                operations_open: self.ui.show_operations_center,
                 dialog_open: false,
             });
         ui.add_enabled_ui(!trapped, |ui| {
@@ -105,7 +105,7 @@ impl eframe::App for App {
                         self.show_operations_center(ui);
                     }
                     crate::accessibility::FocusRegion::LeftPanel => {
-                        if !self.focus_mode {
+                        if !self.ui.focus_mode {
                             self.show_shortcut_bar(ui);
                             self.show_shelf_tray(ui);
                             self.show_selection_hud(ui);
@@ -148,23 +148,23 @@ impl App {
 
     fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
         self.ws.pending_op.is_some()
-            || self.recovery.open
-            || self.history_preview.is_some()
-            || self.renaming.is_some()
-            || self.mask_input.is_some()
-            || self.path_input.is_some()
-            || self.recent_input.is_some()
-            || self.run_command.is_some()
-            || self.palette_input.is_some()
-            || self.batch_rename.is_some()
-            || self.sync.is_some()
-            || self.duplicates.is_some()
-            || self.diff.is_some()
-            || self.treemap.is_some()
-            || self.find.is_some()
-            || self.archive.is_some()
-            || self.saved_search_open
-            || self.collections_dialog.is_some()
+            || self.ui.recovery.open
+            || self.ui.history_preview.is_some()
+            || self.ui.renaming.is_some()
+            || self.ui.mask_input.is_some()
+            || self.ui.path_input.is_some()
+            || self.ui.recent_input.is_some()
+            || self.ui.run_command.is_some()
+            || self.ui.palette_input.is_some()
+            || self.ui.batch_rename.is_some()
+            || self.ui.sync.is_some()
+            || self.ui.duplicates.is_some()
+            || self.ui.diff.is_some()
+            || self.ui.treemap.is_some()
+            || self.ui.find.is_some()
+            || self.ui.archive.is_some()
+            || self.ui.saved_search_open
+            || self.ui.collections_dialog.is_some()
     }
 
     fn can_transition_ui_request(&self, request: &UiRequest) -> bool {
@@ -192,11 +192,11 @@ impl App {
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
         });
         let persistence_generation = crate::persistence::issue_generation();
-        if persistence_generation > self.persistence_issue_seen {
+        if persistence_generation > self.ui.persistence_issue_seen {
             let persistence = crate::persistence::health_snapshot();
-            self.persistence_issue_seen = persistence.issue_generation;
+            self.ui.persistence_issue_seen = persistence.issue_generation;
             if let Some(message) = persistence.last_issue {
-                self.toasts.push(crate::toasts::Toast::new(
+                self.ui.toasts.push(crate::toasts::Toast::new(
                     message,
                     crate::toasts::ToastKind::Error,
                     false,
@@ -218,12 +218,12 @@ impl App {
                 && input.smooth_scroll_delta == Vec2::ZERO
         }) && self.ws.active_transfer.is_none()
             && self.ws.pending_op.is_none()
-            && self.find.as_ref().is_none_or(|state| !state.searching);
+            && self.ui.find.as_ref().is_none_or(|state| !state.searching);
         if !index_idle {
             crate::io_budget::note_foreground_activity();
         }
-        self.content_index.set_idle(index_idle);
-        self.content_index.poll();
+        self.ui.content_index.set_idle(index_idle);
+        self.ui.content_index.poll();
 
         // First frame: wire the repaint callback into both panels and do
         // the initial directory read.
@@ -246,7 +246,7 @@ impl App {
             self.ws.right.refresh();
         }
         drop(listing_latency);
-        if first_listing && let Some(mut trace) = self.startup_trace.take() {
+        if first_listing && let Some(mut trace) = self.ui.startup_trace.take() {
             trace.checkpoint(crate::measurement::StartupPhase::FirstListing);
             trace.finish();
         }
@@ -275,14 +275,14 @@ impl App {
                 // log a receipt (jump-back + the same live undo affordance).
                 let now = ctx.input(|i| i.time);
                 if let Some(a) = self.ws.stack.peek_undo() {
-                    self.toasts.push(crate::toasts::Toast::new(
+                    self.ui.toasts.push(crate::toasts::Toast::new(
                         format!("{} {} item(s)", a.verb(), a.item_count()),
                         crate::toasts::ToastKind::Success,
                         true,
                         now,
                     ));
                     if let Some(jump_to) = a.jump_to() {
-                        self.receipts.push(crate::receipts::Receipt {
+                        self.ui.receipts.push(crate::receipts::Receipt {
                             verb: a.verb(),
                             item_count: a.item_count(),
                             timestamp: now,
@@ -293,7 +293,7 @@ impl App {
                 }
             }
         }
-        self.toasts.prune(ctx.input(|i| i.time));
+        self.ui.toasts.prune(ctx.input(|i| i.time));
         self.dispatch_ui_requests(ctx);
         self.capture_escape_request(ctx);
         self.update_focus_mode(ctx);
@@ -313,23 +313,23 @@ impl App {
 
     fn is_ui_modal_open(&self, modal: UiModal) -> bool {
         match modal {
-            UiModal::Recovery => self.recovery.open,
-            UiModal::History => self.history_preview.is_some(),
-            UiModal::Rename => self.renaming.is_some(),
-            UiModal::BatchRename => self.batch_rename.is_some(),
-            UiModal::Sync => self.sync.is_some(),
-            UiModal::Duplicates => self.duplicates.is_some(),
-            UiModal::Diff => self.diff.is_some(),
-            UiModal::Treemap => self.treemap.is_some(),
-            UiModal::Find => self.find.is_some(),
-            UiModal::Archive => self.archive.is_some(),
-            UiModal::SavedSearch => self.saved_search_open,
-            UiModal::Collections => self.collections_dialog.is_some(),
-            UiModal::Mask => self.mask_input.is_some(),
-            UiModal::Path => self.path_input.is_some(),
-            UiModal::Recent => self.recent_input.is_some(),
-            UiModal::RunCommand => self.run_command.is_some(),
-            UiModal::Palette => self.palette_input.is_some(),
+            UiModal::Recovery => self.ui.recovery.open,
+            UiModal::History => self.ui.history_preview.is_some(),
+            UiModal::Rename => self.ui.renaming.is_some(),
+            UiModal::BatchRename => self.ui.batch_rename.is_some(),
+            UiModal::Sync => self.ui.sync.is_some(),
+            UiModal::Duplicates => self.ui.duplicates.is_some(),
+            UiModal::Diff => self.ui.diff.is_some(),
+            UiModal::Treemap => self.ui.treemap.is_some(),
+            UiModal::Find => self.ui.find.is_some(),
+            UiModal::Archive => self.ui.archive.is_some(),
+            UiModal::SavedSearch => self.ui.saved_search_open,
+            UiModal::Collections => self.ui.collections_dialog.is_some(),
+            UiModal::Mask => self.ui.mask_input.is_some(),
+            UiModal::Path => self.ui.path_input.is_some(),
+            UiModal::Recent => self.ui.recent_input.is_some(),
+            UiModal::RunCommand => self.ui.run_command.is_some(),
+            UiModal::Palette => self.ui.palette_input.is_some(),
         }
     }
 
@@ -370,7 +370,7 @@ impl App {
             UiRequest::CopyText { text, label } => {
                 ctx.copy_text(text);
                 let now = ctx.input(|input| input.time);
-                self.toasts.push(crate::toasts::Toast::new(
+                self.ui.toasts.push(crate::toasts::Toast::new(
                     format!("Copied {label}"),
                     crate::toasts::ToastKind::Success,
                     false,
@@ -387,12 +387,12 @@ impl App {
             HistoryReplayMode::Undo => self.ws.preview_undo(),
             HistoryReplayMode::Redo => self.ws.preview_redo(),
         };
-        self.history_preview = preview.map(|preview| HistoryPreviewState {
+        self.ui.history_preview = preview.map(|preview| HistoryPreviewState {
             mode,
             preview,
             error: None,
         });
-        if self.history_preview.is_some() {
+        if self.ui.history_preview.is_some() {
             return;
         }
         match mode {
@@ -420,7 +420,7 @@ impl App {
             let text = crate::clipboard::format(&paths, style, Some(&other_root));
             ctx.copy_text(text);
             let now = ctx.input(|i| i.time);
-            self.toasts.push(crate::toasts::Toast::new(
+            self.ui.toasts.push(crate::toasts::Toast::new(
                 format!(
                     "Copied {} ({})",
                     crate::clipboard::style_label(style),
@@ -441,7 +441,7 @@ impl App {
         }
         let now = ctx.input(|input| input.time);
         let item = |count: usize| if count == 1 { "item" } else { "items" };
-        self.toasts.push(crate::toasts::Toast::new(
+        self.ui.toasts.push(crate::toasts::Toast::new(
             format!(
                 "{} shelf {} unavailable, kept on the shelf",
                 outcome.unavailable,
@@ -569,7 +569,7 @@ impl App {
                                     true,
                                 );
                                 chip(ui, "Tree".to_string(), self.show_tree);
-                                chip(ui, "Compare".to_string(), self.show_compare);
+                                chip(ui, "Compare".to_string(), self.ui.show_compare);
                                 chip(
                                     ui,
                                     "Hidden".to_string(),
@@ -639,21 +639,21 @@ impl App {
     }
 
     fn update_focus_mode(&mut self, ctx: &egui::Context) {
-        if !self.focus_mode {
+        if !self.ui.focus_mode {
             return;
         }
         let escape_requested =
             self.take_escape_request(crate::accessibility::EscapeRoute::FocusMode);
         let exit_focus = ctx.input(|i| {
             crate::focus_mode::should_exit(
-                self.focus_started_at,
+                self.ui.focus_started_at,
                 i.time,
                 i.pointer.delta().length_sq(),
                 escape_requested,
             )
         });
         if exit_focus {
-            self.focus_mode = false;
+            self.ui.focus_mode = false;
         }
     }
 
@@ -679,8 +679,8 @@ impl App {
             QuickAction::FindFiles => self.ws.execute(crate::command::Command::BeginFind),
             QuickAction::RecentFolders => self.ws.execute(crate::command::Command::BeginRecent),
             QuickAction::FocusMode => {
-                self.focus_mode = true;
-                self.focus_started_at = ctx.input(|i| i.time);
+                self.ui.focus_mode = true;
+                self.ui.focus_started_at = ctx.input(|i| i.time);
             }
         }
     }
@@ -732,7 +732,8 @@ impl App {
                 crate::toasts::ToastKind::Error,
             )
         };
-        self.toasts
+        self.ui
+            .toasts
             .push(crate::toasts::Toast::new(msg, kind, false, now));
     }
 
@@ -963,7 +964,8 @@ impl App {
                     }
                 };
                 let now = ctx.input(|input| input.time);
-                self.toasts
+                self.ui
+                    .toasts
                     .push(crate::toasts::Toast::new(message, kind, false, now));
             }
         }
@@ -1001,8 +1003,8 @@ impl App {
         // not rebuild two HashMaps (cloning every name) on every painted frame.
         let cmp_right_gen = self.ws.right.entries_gen();
         let cmp_left_gen = self.ws.left.entries_gen();
-        let (left_compare, right_compare) = if self.show_compare {
-            match self.compare_cache.take() {
+        let (left_compare, right_compare) = if self.ui.show_compare {
+            match self.ui.compare_cache.take() {
                 Some((rg, lg, lmap, rmap)) if rg == cmp_right_gen && lg == cmp_left_gen => {
                     (Some(lmap), Some(rmap))
                 }
@@ -1012,7 +1014,7 @@ impl App {
                 ),
             }
         } else {
-            self.compare_cache = None;
+            self.ui.compare_cache = None;
             (None, None)
         };
 
@@ -1095,7 +1097,7 @@ impl App {
                     &mut self.image_cache,
                     "left",
                     self.show_tree,
-                    self.show_size_bars,
+                    self.ui.show_size_bars,
                     left_compare.as_ref(),
                     context_menu.as_ref(),
                     &opener,
@@ -1165,7 +1167,7 @@ impl App {
                         &mut self.image_cache,
                         "right",
                         self.show_tree,
-                        self.show_size_bars,
+                        self.ui.show_size_bars,
                         right_compare.as_ref(),
                         context_menu.as_ref(),
                         &opener,
@@ -1210,7 +1212,7 @@ impl App {
         // built from) so the next frame reuses them while the entries are
         // unchanged.
         if let (Some(lmap), Some(rmap)) = (left_compare, right_compare) {
-            self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
+            self.ui.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
         }
         if let Some(path) = pending_archive {
             self.ws.emit_ui_request(UiRequest::Archive(path));
@@ -1304,12 +1306,12 @@ impl App {
 
     /// Floating capsule showing the current type-ahead buffer.
     fn show_type_ahead_overlay(&mut self, ctx: &egui::Context) {
-        let Some((buffer, last)) = &self.type_ahead else {
+        let Some((buffer, last)) = &self.ui.type_ahead else {
             return;
         };
         let now = ctx.input(|i| i.time);
         if now - last > 1.5 {
-            self.type_ahead = None;
+            self.ui.type_ahead = None;
             return;
         }
         let t = self.colors;
@@ -1338,13 +1340,13 @@ impl App {
     /// Bottom-right stack of operation toasts, each with a hairline countdown
     /// and an inline Undo on undoable ops.
     fn show_toasts(&mut self, ctx: &egui::Context) {
-        if self.toasts.is_empty() {
+        if self.ui.toasts.is_empty() {
             return;
         }
         let t = self.colors;
         let now = ctx.input(|i| i.time);
         let screen = ctx.input(|i| i.viewport_rect());
-        let active = self.toasts.active();
+        let active = self.ui.toasts.active();
         let mut undo = false;
         let mut avoid = Vec::with_capacity(2);
         for id in ["current_focus_indicator", "active_error_surface"] {

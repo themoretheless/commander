@@ -9,7 +9,7 @@ impl App {
             path.clone(),
             std::sync::Arc::new(move || repaint.request_repaint()),
         );
-        self.archive = Some(ArchiveState {
+        self.ui.archive = Some(ArchiveState {
             path,
             filter: String::new(),
             run: Some(run),
@@ -21,7 +21,7 @@ impl App {
     }
 
     fn poll_archive(&mut self) {
-        let event = self.archive.as_ref().and_then(|state| {
+        let event = self.ui.archive.as_ref().and_then(|state| {
             let run = state.run.as_ref()?;
             match run.try_recv() {
                 Ok(result) => Some(result),
@@ -32,7 +32,7 @@ impl App {
             }
         });
         if let Some(result) = event
-            && let Some(state) = self.archive.as_mut()
+            && let Some(state) = self.ui.archive.as_mut()
         {
             state.run = None;
             match result {
@@ -47,7 +47,7 @@ impl App {
 
     pub(crate) fn show_archive_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Archive);
-        if self.archive.is_none() {
+        if self.ui.archive.is_none() {
             return;
         }
         self.poll_archive();
@@ -57,7 +57,7 @@ impl App {
         let mut reveal = false;
         let mut retry = false;
         {
-            let state = self.archive.as_mut().unwrap();
+            let state = self.ui.archive.as_mut().unwrap();
             let title = state.path.file_name().map_or_else(
                 || "Archive".to_string(),
                 |name| name.to_string_lossy().into_owned(),
@@ -313,13 +313,13 @@ impl App {
         }
 
         if !window_open || escape_requested {
-            self.archive = None;
+            self.ui.archive = None;
             return;
         }
-        if reveal && let Some(state) = &self.archive {
+        if reveal && let Some(state) = &self.ui.archive {
             self.ws.reveal(&state.path);
         }
-        if retry && let Some(path) = self.archive.as_ref().map(|state| state.path.clone()) {
+        if retry && let Some(path) = self.ui.archive.as_ref().map(|state| state.path.clone()) {
             self.open_archive(path, ctx);
         }
     }

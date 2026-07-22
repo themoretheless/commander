@@ -192,7 +192,7 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(12.0);
 
-                        let diagnostics_fill = if self.show_developer_panel {
+                        let diagnostics_fill = if self.ui.show_developer_panel {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
@@ -206,7 +206,7 @@ impl App {
                             .on_hover_text("Developer diagnostics")
                             .clicked()
                         {
-                            self.show_developer_panel = !self.show_developer_panel;
+                            self.ui.show_developer_panel = !self.ui.show_developer_panel;
                         }
 
                         // Theme toggle
@@ -273,7 +273,7 @@ impl App {
                         }
 
                         // Size-bars toggle
-                        let bars_fill = if self.show_size_bars {
+                        let bars_fill = if self.ui.show_size_bars {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
@@ -287,11 +287,11 @@ impl App {
                             .on_hover_text("Toggle size bars")
                             .clicked()
                         {
-                            self.show_size_bars = !self.show_size_bars;
+                            self.ui.show_size_bars = !self.ui.show_size_bars;
                         }
 
                         // Folder-compare toggle
-                        let cmp_fill = if self.show_compare {
+                        let cmp_fill = if self.ui.show_compare {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
@@ -305,7 +305,7 @@ impl App {
                             .on_hover_text("Compare panels (highlight differences)")
                             .clicked()
                         {
-                            self.show_compare = !self.show_compare;
+                            self.ui.show_compare = !self.ui.show_compare;
                         }
 
                         // Refresh button
@@ -473,9 +473,9 @@ impl App {
                             let density = self.ws.active_panel_ref().density;
                             self.ws.active_panel().density = crate::density::cycle(density, 1);
                         }
-                        ui.checkbox(&mut self.show_size_bars, "Show size bars");
-                        ui.checkbox(&mut self.show_compare, "Compare panels");
-                        ui.checkbox(&mut self.show_developer_panel, "Developer diagnostics");
+                        ui.checkbox(&mut self.ui.show_size_bars, "Show size bars");
+                        ui.checkbox(&mut self.ui.show_compare, "Compare panels");
+                        ui.checkbox(&mut self.ui.show_developer_panel, "Developer diagnostics");
 
                         ui.separator();
                         let theme_label = match self.theme_mode {

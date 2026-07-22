@@ -7,24 +7,24 @@ use crate::opqueue::JobState;
 
 impl App {
     pub(crate) fn toggle_queue_panel(&mut self) {
-        if self.show_operations_center && self.operations_tab == OperationsTab::Queue {
-            self.show_operations_center = false;
+        if self.ui.show_operations_center && self.ui.operations_tab == OperationsTab::Queue {
+            self.ui.show_operations_center = false;
         } else {
-            self.show_operations_center = true;
-            self.operations_tab = OperationsTab::Queue;
+            self.ui.show_operations_center = true;
+            self.ui.operations_tab = OperationsTab::Queue;
         }
     }
 
     pub(crate) fn open_operation_history(&mut self) {
-        self.show_operations_center = true;
-        self.operations_tab = OperationsTab::History;
+        self.ui.show_operations_center = true;
+        self.ui.operations_tab = OperationsTab::History;
     }
 
     pub(crate) fn open_recovery_center(&mut self) {
-        self.show_operations_center = true;
-        self.operations_tab = OperationsTab::Recovery;
-        if !self.recovery.scanning {
-            self.recovery.start_scan(&self.ws);
+        self.ui.show_operations_center = true;
+        self.ui.operations_tab = OperationsTab::Recovery;
+        if !self.ui.recovery.scanning {
+            self.ui.recovery.start_scan(&self.ws);
         }
     }
 
@@ -42,16 +42,19 @@ impl App {
             })
         });
         if let Some(notice) = failed
-            && self.failure_notice_seen.insert(notice.operation_id.clone())
+            && self
+                .ui
+                .failure_notice_seen
+                .insert(notice.operation_id.clone())
         {
-            self.operation_failures.upsert(notice);
-            self.show_operations_center = true;
-            self.operations_tab = OperationsTab::Errors;
+            self.ui.operation_failures.upsert(notice);
+            self.ui.show_operations_center = true;
+            self.ui.operations_tab = OperationsTab::Errors;
         }
     }
 
     pub(crate) fn show_operations_center(&mut self, ui: &mut egui::Ui) {
-        if !self.show_operations_center {
+        if !self.ui.show_operations_center {
             return;
         }
         let t = self.colors;
@@ -79,11 +82,11 @@ impl App {
                             .strong()
                             .color(t.text_primary),
                     );
-                    if !self.operation_failures.is_empty() {
+                    if !self.ui.operation_failures.is_empty() {
                         ui.label(
                             egui::RichText::new(format!(
                                 "{} unresolved",
-                                self.operation_failures.notices().len()
+                                self.ui.operation_failures.notices().len()
                             ))
                             .size(10.0)
                             .color(t.accent_red),
@@ -111,17 +114,17 @@ impl App {
                     let width = ((ui.available_width() - 6.0) / 4.0).max(68.0);
                     for tab in OperationsTab::ALL {
                         let label = if tab == OperationsTab::Errors
-                            && !self.operation_failures.is_empty()
+                            && !self.ui.operation_failures.is_empty()
                         {
                             format!(
                                 "{} {}",
                                 tab.label(),
-                                self.operation_failures.notices().len()
+                                self.ui.operation_failures.notices().len()
                             )
                         } else {
                             tab.label().to_string()
                         };
-                        let selected = tab == self.operations_tab;
+                        let selected = tab == self.ui.operations_tab;
                         if ui
                             .add_sized(
                                 [width, 26.0],
@@ -137,14 +140,14 @@ impl App {
                             )
                             .clicked()
                         {
-                            self.operations_tab = tab;
+                            self.ui.operations_tab = tab;
                         }
                     }
                 });
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(5.0);
-                match self.operations_tab {
+                match self.ui.operations_tab {
                     OperationsTab::Queue => self.show_operations_queue(ui),
                     OperationsTab::History => self.show_operations_history(ui),
                     OperationsTab::Errors => self.show_operations_errors(ui),
@@ -152,7 +155,7 @@ impl App {
                 }
             });
         if close {
-            self.show_operations_center = false;
+            self.ui.show_operations_center = false;
         }
     }
 
@@ -311,15 +314,16 @@ impl App {
     fn show_operations_history(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
         ui.add(
-            egui::TextEdit::singleline(&mut self.operations_search)
+            egui::TextEdit::singleline(&mut self.ui.operations_search)
                 .desired_width(f32::INFINITY)
                 .hint_text("Search history...")
                 .margin(egui::vec2(7.0, 5.0)),
         );
         ui.add_space(6.0);
         let receipts = self
+            .ui
             .receipts
-            .search(&self.operations_search)
+            .search(&self.ui.operations_search)
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -380,7 +384,7 @@ impl App {
 
     fn show_operations_errors(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
-        let notices = self.operation_failures.notices().to_vec();
+        let notices = self.ui.operation_failures.notices().to_vec();
         if notices.is_empty() {
             ui.label(
                 egui::RichText::new("No unresolved operation errors")
@@ -451,7 +455,7 @@ impl App {
                 crate::lock_util::recover(state).operation_id.as_ref() == Some(&operation_id)
             });
             if active {
-                self.show_operations_center = false;
+                self.ui.show_operations_center = false;
             } else {
                 self.open_recovery_operation(operation_id, RecoveryDetail::Inspect);
             }
@@ -466,13 +470,13 @@ impl App {
             self.ws.execute(crate::command::Command::Undo);
         }
         if let Some(operation_id) = dismiss {
-            self.operation_failures.dismiss(&operation_id);
+            self.ui.operation_failures.dismiss(&operation_id);
         }
     }
 
     fn show_operations_recovery(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
-        let operations = self.recovery.operations.clone();
+        let operations = self.ui.recovery.operations.clone();
         let mut refresh = false;
         let mut inspect = None;
         let mut rollback = None;
@@ -481,7 +485,7 @@ impl App {
                 egui::RichText::new(format!(
                     "{} interrupted  \u{00b7}  {} staging",
                     operations.len(),
-                    self.recovery.orphans.len()
+                    self.ui.recovery.orphans.len()
                 ))
                 .size(10.0)
                 .color(t.text_muted),
@@ -496,18 +500,18 @@ impl App {
                 }
             });
         });
-        if self.recovery.scanning {
+        if self.ui.recovery.scanning {
             ui.label(
                 egui::RichText::new("Scanning operation journals...")
                     .size(10.0)
                     .color(t.accent),
             );
         }
-        if let Some(error) = &self.recovery.error {
+        if let Some(error) = &self.ui.recovery.error {
             ui.label(egui::RichText::new(error).size(10.0).color(t.accent_red));
         }
         ui.add_space(5.0);
-        if operations.is_empty() && !self.recovery.scanning {
+        if operations.is_empty() && !self.ui.recovery.scanning {
             ui.label(
                 egui::RichText::new("No interrupted operations")
                     .size(11.0)
@@ -559,7 +563,7 @@ impl App {
             });
         }
         if refresh {
-            self.recovery.start_scan(&self.ws);
+            self.ui.recovery.start_scan(&self.ws);
         }
         if let Some(operation_id) = inspect {
             self.open_recovery_operation(operation_id, RecoveryDetail::Inspect);
@@ -575,16 +579,17 @@ impl App {
         detail: RecoveryDetail,
     ) {
         if !self
+            .ui
             .recovery
             .operations
             .iter()
             .any(|record| record.id == operation_id)
-            && !self.recovery.scanning
+            && !self.ui.recovery.scanning
         {
-            self.recovery.start_scan(&self.ws);
+            self.ui.recovery.start_scan(&self.ws);
         }
-        self.recovery.select(operation_id);
-        self.recovery.detail = detail;
-        self.recovery.open = true;
+        self.ui.recovery.select(operation_id);
+        self.ui.recovery.detail = detail;
+        self.ui.recovery.open = true;
     }
 }

@@ -7,13 +7,13 @@ use super::*;
 impl App {
     pub(crate) fn open_saved_search(&mut self) {
         self.smart_folders_mut();
-        self.saved_search_open = true;
+        self.ui.saved_search_open = true;
     }
 
     pub(crate) fn show_saved_search_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::SavedSearch);
-        if !self.saved_search_open {
+        if !self.ui.saved_search_open {
             return;
         }
         let t = self.colors;
@@ -24,6 +24,7 @@ impl App {
         {
             let empty: &[crate::smart_folder::Definition] = &[];
             let items = self
+                .ui
                 .smart_folders
                 .as_ref()
                 .map(|s| s.items.as_slice())
@@ -120,7 +121,7 @@ impl App {
             self.smart_folders_mut().remove(&name);
             if !crate::smart_folder::save(self.smart_folders_mut()) {
                 let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
+                self.ui.toasts.push(crate::toasts::Toast::new(
                     "Could not save saved searches to disk",
                     crate::toasts::ToastKind::Error,
                     false,
@@ -132,14 +133,14 @@ impl App {
             let mut state = FindState::from_definition(&def);
             state.index_exclusions = super::find_dialog::format_index_exclusions(
                 &state.root,
-                &self.content_index.exclusions(&state.root),
+                &self.ui.content_index.exclusions(&state.root),
             );
-            self.find = Some(state);
-            self.saved_search_open = false;
+            self.ui.find = Some(state);
+            self.ui.saved_search_open = false;
             return;
         }
         if close {
-            self.saved_search_open = false;
+            self.ui.saved_search_open = false;
         }
     }
 }

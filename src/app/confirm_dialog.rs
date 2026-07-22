@@ -821,7 +821,7 @@ impl App {
         if selected != current
             && let Err(error) = crate::transfer_tuning::set_rule(&profile, selected)
         {
-            self.toasts.push(crate::toasts::Toast::new(
+            self.ui.toasts.push(crate::toasts::Toast::new(
                 error,
                 crate::toasts::ToastKind::Error,
                 false,

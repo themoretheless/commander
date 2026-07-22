@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     fn start_collection_view(&mut self, ctx: &egui::Context, name: &str) {
-        let Some(collection) = self.project_collections.get(name).cloned() else {
+        let Some(collection) = self.ui.project_collections.get(name).cloned() else {
             return;
         };
         let repaint = ctx.clone();
@@ -12,7 +12,7 @@ impl App {
             collection,
             std::sync::Arc::new(move || repaint.request_repaint()),
         );
-        if let Some(state) = self.collections_dialog.as_mut() {
+        if let Some(state) = self.ui.collections_dialog.as_mut() {
             state.selected = Some(name.to_string());
             state.rows.clear();
             state.run = Some(run);
@@ -27,6 +27,7 @@ impl App {
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(run) = self
+            .ui
             .collections_dialog
             .as_ref()
             .and_then(|state| state.run.as_ref())
@@ -42,7 +43,7 @@ impl App {
                 }
             }
         }
-        if let Some(state) = self.collections_dialog.as_mut() {
+        if let Some(state) = self.ui.collections_dialog.as_mut() {
             for event in events {
                 match event {
                     crate::collections::ViewEvent::Batch(rows) => state.rows.extend(rows),
@@ -71,11 +72,12 @@ impl App {
 
     pub(crate) fn open_collections(&mut self, ctx: &egui::Context) {
         let selected = self
+            .ui
             .project_collections
             .items
             .first()
             .map(|collection| collection.name.clone());
-        self.collections_dialog = Some(CollectionsDialogState {
+        self.ui.collections_dialog = Some(CollectionsDialogState {
             selected: selected.clone(),
             ..Default::default()
         });
@@ -85,14 +87,16 @@ impl App {
     }
 
     pub(crate) fn show_collections_dialog(&mut self, ctx: &egui::Context) {
-        if self.collections_dialog.is_none() {
+        if self.ui.collections_dialog.is_none() {
             return;
         }
         self.poll_collection_view();
 
         let t = self.colors;
-        let collection_names: Vec<String> = self
-            .project_collections
+        // Snapshot the collection metadata before mutably borrowing the dialog
+        // state from the same UiState bucket.
+        let project_collections = self.ui.project_collections.clone();
+        let collection_names: Vec<String> = project_collections
             .items
             .iter()
             .map(|collection| collection.name.clone())
@@ -104,7 +108,7 @@ impl App {
         let mut reveal = None;
 
         {
-            let state = self.collections_dialog.as_mut().unwrap();
+            let state = self.ui.collections_dialog.as_mut().unwrap();
             egui::Window::new("Project collections")
                 .open(&mut window_open)
                 .collapsible(false)
@@ -193,8 +197,7 @@ impl App {
                                 );
                                 return;
                             };
-                            let roots = self
-                                .project_collections
+                            let roots = project_collections
                                 .get(selected)
                                 .map(|collection| collection.roots.clone())
                                 .unwrap_or_default();
@@ -279,12 +282,12 @@ impl App {
         }
 
         if !window_open {
-            self.collections_dialog = None;
+            self.ui.collections_dialog = None;
             return;
         }
         if add {
             let (name, roots) = {
-                let state = self.collections_dialog.as_ref().unwrap();
+                let state = self.ui.collections_dialog.as_ref().unwrap();
                 let mut roots = Vec::new();
                 if state.include_left {
                     roots.push(self.ws.left.current_path.clone());
@@ -295,16 +298,16 @@ impl App {
                 (state.name.trim().to_string(), roots)
             };
             let collection = crate::collections::ProjectCollection::new(name.clone(), roots);
-            let previous = self.project_collections.clone();
-            if self.project_collections.add(collection) {
-                if crate::collections::save(&self.project_collections) {
-                    if let Some(state) = self.collections_dialog.as_mut() {
+            let previous = self.ui.project_collections.clone();
+            if self.ui.project_collections.add(collection) {
+                if crate::collections::save(&self.ui.project_collections) {
+                    if let Some(state) = self.ui.collections_dialog.as_mut() {
                         state.name.clear();
                     }
                     self.start_collection_view(ctx, &name);
                 } else {
-                    self.project_collections = previous;
-                    if let Some(state) = self.collections_dialog.as_mut() {
+                    self.ui.project_collections = previous;
+                    if let Some(state) = self.ui.collections_dialog.as_mut() {
                         state.error = Some("Could not save project collections".to_string());
                     }
                 }
@@ -312,25 +315,27 @@ impl App {
         }
         if let Some(name) = delete {
             let deleting_selected = self
+                .ui
                 .collections_dialog
                 .as_ref()
                 .is_some_and(|state| state.selected.as_deref() == Some(name.as_str()));
-            let previous = self.project_collections.clone();
-            self.project_collections.remove(&name);
-            if !crate::collections::save(&self.project_collections) {
-                self.project_collections = previous;
-                if let Some(state) = self.collections_dialog.as_mut() {
+            let previous = self.ui.project_collections.clone();
+            self.ui.project_collections.remove(&name);
+            if !crate::collections::save(&self.ui.project_collections) {
+                self.ui.project_collections = previous;
+                if let Some(state) = self.ui.collections_dialog.as_mut() {
                     state.error = Some("Could not save project collections".to_string());
                 }
             } else if deleting_selected {
                 let next = self
+                    .ui
                     .project_collections
                     .items
                     .first()
                     .map(|collection| collection.name.clone());
                 if let Some(next) = next {
                     self.start_collection_view(ctx, &next);
-                } else if let Some(state) = self.collections_dialog.as_mut() {
+                } else if let Some(state) = self.ui.collections_dialog.as_mut() {
                     state.selected = None;
                     state.rows.clear();
                     state.run = None;

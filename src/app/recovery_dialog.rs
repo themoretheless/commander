@@ -392,7 +392,7 @@ fn show_repair(
 
 impl App {
     fn push_recovery_toast(&mut self, ctx: &egui::Context, message: String, error: bool) {
-        self.toasts.push(crate::toasts::Toast::new(
+        self.ui.toasts.push(crate::toasts::Toast::new(
             message,
             if error {
                 crate::toasts::ToastKind::Error
@@ -406,13 +406,13 @@ impl App {
 
     pub(crate) fn show_recovery_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recovery);
-        let mut state = std::mem::take(&mut self.recovery);
+        let mut state = std::mem::take(&mut self.ui.recovery);
         state.poll_scan();
         if state.scanning {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if !state.open {
-            self.recovery = state;
+            self.ui.recovery = state;
             return;
         }
 
@@ -714,6 +714,6 @@ impl App {
         if state.detail == RecoveryDetail::Repair && !state.repair_loaded {
             state.load_repair();
         }
-        self.recovery = state;
+        self.ui.recovery = state;
     }
 }

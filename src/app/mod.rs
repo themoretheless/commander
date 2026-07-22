@@ -42,6 +42,84 @@ pub(crate) use crate::transfer::{CopyMethod, TransferKind};
 pub(crate) use crate::ui_request::{UiModal, UiRequest};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
+/// Transient UI state extracted from App to kill god-object.
+/// All dialog boxes, input buffers, view toggles and temp data live here.
+/// App now owns only the core (ws + config + resources) + this bucket.
+pub(crate) struct UiState {
+    /// Active inline rename: the entry being renamed and the edit buffer.
+    pub renaming: Option<RenameState>,
+    /// Type-ahead buffer and the input time of its last keystroke (seconds,
+    /// from egui). Expires after a short idle.
+    pub type_ahead: Option<(String, f64)>,
+    /// Pending vim-style chord leader and its timestamp.
+    pub chord: Option<(char, f64)>,
+    /// Paint relative size occupancy bars behind file rows.
+    pub show_size_bars: bool,
+    /// Compare mode: tint each row by how it differs from the other panel.
+    pub show_compare: bool,
+    pub show_operations_center: bool,
+    pub operations_tab: OperationsTab,
+    pub operations_search: String,
+    pub operation_failures: crate::operation_view::FailureInbox,
+    pub failure_notice_seen: std::collections::HashSet<crate::operation::OperationId>,
+    pub focus_mode: bool,
+    pub focus_started_at: f64,
+    pub escape_request: crate::accessibility::EscapeRoute,
+    pub transient_nonce: u64,
+    /// Active select-by-mask input buffer.
+    pub mask_input: Option<String>,
+    /// Active go-to-path input buffer.
+    pub path_input: Option<String>,
+    /// Active recent-directories quick-switcher filter buffer.
+    pub recent_input: Option<String>,
+    pub recent_order: crate::panel::RecentOrder,
+    pub search_engine: crate::search::SearchEngine,
+    pub search_history: crate::search::QueryHistory,
+    pub content_index: crate::content_index::ContentIndex,
+    /// Transient operation toasts (move / rename confirmations with Undo).
+    pub toasts: crate::toasts::ToastQueue,
+    pub receipts: crate::receipts::ReceiptLog,
+    pub history_preview: Option<HistoryPreviewState>,
+    pub recovery: RecoveryState,
+    /// Active command-palette filter buffer.
+    pub palette_input: Option<String>,
+    /// Command-palette usage history (recency/frequency ranking).
+    pub palette_usage: crate::command::UsageStats,
+    /// Monotonic counter stamped onto each palette command run.
+    pub palette_tick: u64,
+    /// Active batch-rename studio state.
+    pub batch_rename: Option<BatchRenameState>,
+    /// Active synchronise-sheet state.
+    pub sync: Option<SyncState>,
+    /// Active duplicate-finder sheet state.
+    pub duplicates: Option<DupState>,
+    /// Active read-only diff sheet state.
+    pub diff: Option<DiffState>,
+    /// Active disk-usage map and cancellable compressed-tree scan.
+    pub treemap: Option<DiskUsageState>,
+    /// Active recursive-find sheet state.
+    pub find: Option<FindState>,
+    pub archive: Option<ArchiveState>,
+    /// Saved searches, loaded lazily on first use.
+    pub smart_folders: Option<crate::smart_folder::SmartFolders>,
+    /// Whether the saved-search picker is open.
+    pub saved_search_open: bool,
+    pub project_collections: crate::collections::ProjectCollections,
+    pub collections_dialog: Option<CollectionsDialogState>,
+    pub command_templates: Option<crate::cmdtemplate::Templates>,
+    pub run_command: Option<RunCommandState>,
+    pub compare_cache: Option<(
+        u64,
+        u64,
+        crate::compare::CompareMap,
+        crate::compare::CompareMap,
+    )>,
+    pub startup_trace: Option<crate::measurement::StartupTrace>,
+    pub show_developer_panel: bool,
+    pub developer_notice: Option<DeveloperNotice>,
+    pub persistence_issue_seen: u64,
+}
+
 pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
@@ -57,98 +135,8 @@ pub struct App {
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: std::collections::HashMap<PathBuf, Vec<PathBuf>>,
     pub(crate) tree_width: f32,
-    /// Active inline rename: the entry being renamed and the edit buffer.
-    pub(crate) renaming: Option<RenameState>,
-    /// Type-ahead buffer and the input time of its last keystroke (seconds,
-    /// from egui). Expires after a short idle.
-    pub(crate) type_ahead: Option<(String, f64)>,
-    /// Pending vim-style chord leader (`'g'` or `'s'`) and when it was
-    /// pressed (seconds, from egui). Expires after a short idle.
-    pub(crate) chord: Option<(char, f64)>,
-    /// Paint relative size occupancy bars behind file rows.
-    pub(crate) show_size_bars: bool,
-    /// Compare mode: tint each row by how it differs from the other panel.
-    pub(crate) show_compare: bool,
-    /// Whether the unified queue/history/errors/recovery surface is visible.
-    pub(crate) show_operations_center: bool,
-    pub(crate) operations_tab: OperationsTab,
-    pub(crate) operations_search: String,
-    pub(crate) operation_failures: crate::operation_view::FailureInbox,
-    pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::OperationId>,
-    /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
-    pub(crate) focus_mode: bool,
-    pub(crate) focus_started_at: f64,
-    /// Escape is read once per frame, then consumed by exactly one routed owner.
-    pub(crate) escape_request: crate::accessibility::EscapeRoute,
-    /// Monotonic identity source for transient widget state across reopenings.
-    pub(crate) transient_nonce: u64,
-    /// Active select-by-mask input buffer.
-    pub(crate) mask_input: Option<String>,
-    /// Active go-to-path input buffer.
-    pub(crate) path_input: Option<String>,
-    /// Active recent-directories quick-switcher filter buffer.
-    pub(crate) recent_input: Option<String>,
-    /// Ranking mode for recent destinations: habitual (frecency) or strictly
-    /// chronological. Persisted with the session.
-    pub(crate) recent_order: crate::panel::RecentOrder,
-    /// Generation-based background search engine and replayable query history.
-    pub(crate) search_engine: crate::search::SearchEngine,
-    pub(crate) search_history: crate::search::QueryHistory,
-    pub(crate) content_index: crate::content_index::ContentIndex,
-    /// Transient operation toasts (move / rename confirmations with Undo).
-    pub(crate) toasts: crate::toasts::ToastQueue,
-    /// Searchable history of completed moves/deletes/batch-renames.
-    pub(crate) receipts: crate::receipts::ReceiptLog,
-    /// Filesystem-aware confirmation for the pending undo/redo replay.
-    pub(crate) history_preview: Option<HistoryPreviewState>,
-    /// Startup-scanned durable recovery and orphan-staging model.
-    pub(crate) recovery: RecoveryState,
-    /// Active command-palette filter buffer.
-    pub(crate) palette_input: Option<String>,
-    /// Command-palette usage history (recency/frequency ranking).
-    pub(crate) palette_usage: crate::command::UsageStats,
-    /// Monotonic counter stamped onto each palette command run.
-    pub(crate) palette_tick: u64,
-    /// Active batch-rename studio state.
-    pub(crate) batch_rename: Option<BatchRenameState>,
-    /// Active synchronise-sheet state.
-    pub(crate) sync: Option<SyncState>,
-    /// Active duplicate-finder sheet state.
-    pub(crate) duplicates: Option<DupState>,
-    /// Active read-only diff sheet state.
-    pub(crate) diff: Option<DiffState>,
-    /// Active disk-usage map and cancellable compressed-tree scan.
-    pub(crate) treemap: Option<DiskUsageState>,
-    /// Active recursive-find sheet state.
-    pub(crate) find: Option<FindState>,
-    /// Active read-only archive inspector.
-    pub(crate) archive: Option<ArchiveState>,
-    /// Saved searches, loaded lazily on first use.
-    pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
-    /// Whether the saved-search picker is open.
-    pub(crate) saved_search_open: bool,
-    /// Persisted multi-root projects and active virtual-view UI state.
-    pub(crate) project_collections: crate::collections::ProjectCollections,
-    pub(crate) collections_dialog: Option<CollectionsDialogState>,
-    /// Saved command templates, loaded lazily on first use.
-    pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
-    /// Active run-command bar state (the editable command line).
-    pub(crate) run_command: Option<RunCommandState>,
-    /// Cached cross-panel compare maps and the panel generations they were built
-    /// from, so compare mode does not rebuild two HashMaps (cloning every
-    /// `name_lower`) on every painted frame. `(right_gen, left_gen, left_map,
-    /// right_map)`: `left_map` indexes the right panel and vice versa.
-    pub(crate) compare_cache: Option<(
-        u64,
-        u64,
-        crate::compare::CompareMap,
-        crate::compare::CompareMap,
-    )>,
-    /// Startup instrumentation remains live through the first directory read.
-    pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
-    pub(crate) show_developer_panel: bool,
-    pub(crate) developer_notice: Option<DeveloperNotice>,
-    pub(crate) persistence_issue_seen: u64,
+    /// Transient dialogs, input buffers, and view toggles.
+    pub(crate) ui: UiState,
 }
 
 pub(crate) struct DeveloperNotice {
@@ -587,73 +575,76 @@ impl App {
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
-            renaming: None,
-            type_ahead: None,
-            chord: None,
-            show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
-            show_compare: session.as_ref().is_some_and(|s| s.show_compare),
-            show_operations_center: false,
-            operations_tab: OperationsTab::default(),
-            operations_search: String::new(),
-            operation_failures: crate::operation_view::FailureInbox::default(),
-            failure_notice_seen: std::collections::HashSet::new(),
-            focus_mode: false,
-            focus_started_at: 0.0,
-            escape_request: crate::accessibility::EscapeRoute::None,
-            transient_nonce: 0,
-            mask_input: None,
-            path_input: None,
-            recent_input: None,
-            recent_order: session
-                .as_ref()
-                .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
-            search_engine: crate::search::SearchEngine::default(),
-            search_history: session
-                .as_ref()
-                .map(|s| s.search_history.clone())
-                .unwrap_or_default(),
-            content_index,
-            toasts: crate::toasts::ToastQueue::default(),
-            receipts: crate::receipts::ReceiptLog::default(),
-            history_preview: None,
-            recovery,
-            palette_input: None,
-            palette_usage: session
-                .as_ref()
-                .map(|s| s.palette_usage.clone())
-                .unwrap_or_default(),
-            palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
-            batch_rename: None,
-            sync: None,
-            duplicates: None,
-            diff: None,
-            treemap: None,
-            find: None,
-            archive: None,
-            smart_folders: None,
-            saved_search_open: false,
-            project_collections,
-            collections_dialog: None,
-            command_templates: None,
-            run_command: None,
-            compare_cache: None,
-            startup_trace: Some(startup),
-            show_developer_panel: false,
-            developer_notice: None,
-            persistence_issue_seen: 0,
+            ui: UiState {
+                renaming: None,
+                type_ahead: None,
+                chord: None,
+                show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
+                show_compare: session.as_ref().is_some_and(|s| s.show_compare),
+                show_operations_center: false,
+                operations_tab: OperationsTab::default(),
+                operations_search: String::new(),
+                operation_failures: crate::operation_view::FailureInbox::default(),
+                failure_notice_seen: std::collections::HashSet::new(),
+                focus_mode: false,
+                focus_started_at: 0.0,
+                escape_request: crate::accessibility::EscapeRoute::None,
+                transient_nonce: 0,
+                mask_input: None,
+                path_input: None,
+                recent_input: None,
+                recent_order: session
+                    .as_ref()
+                    .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
+                search_engine: crate::search::SearchEngine::default(),
+                search_history: session
+                    .as_ref()
+                    .map(|s| s.search_history.clone())
+                    .unwrap_or_default(),
+                content_index,
+                toasts: crate::toasts::ToastQueue::default(),
+                receipts: crate::receipts::ReceiptLog::default(),
+                history_preview: None,
+                recovery,
+                palette_input: None,
+                palette_usage: session
+                    .as_ref()
+                    .map(|s| s.palette_usage.clone())
+                    .unwrap_or_default(),
+                palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
+                batch_rename: None,
+                sync: None,
+                duplicates: None,
+                diff: None,
+                treemap: None,
+                find: None,
+                archive: None,
+                smart_folders: None,
+                saved_search_open: false,
+                project_collections,
+                collections_dialog: None,
+                command_templates: None,
+                run_command: None,
+                compare_cache: None,
+                startup_trace: Some(startup),
+                show_developer_panel: false,
+                developer_notice: None,
+                persistence_issue_seen: 0,
+            },
         };
-        if let Some(trace) = &mut app.startup_trace {
+        if let Some(trace) = &mut app.ui.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
         }
         app
     }
 
     pub(crate) fn issue_transient_nonce(&mut self) -> u64 {
-        self.transient_nonce = self
+        self.ui.transient_nonce = self
+            .ui
             .transient_nonce
             .checked_add(1)
             .expect("transient UI nonce space exhausted");
-        self.transient_nonce
+        self.ui.transient_nonce
     }
 
     pub(crate) fn mark_modal_opened(ctx: &egui::Context, modal: UiModal) {
@@ -673,13 +664,15 @@ impl App {
 
     /// The command-template store, loaded from disk on first access.
     pub(crate) fn command_templates_mut(&mut self) -> &mut crate::cmdtemplate::Templates {
-        self.command_templates
+        self.ui
+            .command_templates
             .get_or_insert_with(crate::cmdtemplate::load)
     }
 
     /// The saved-search store, loaded from disk on first access.
     pub(crate) fn smart_folders_mut(&mut self) -> &mut crate::smart_folder::SmartFolders {
-        self.smart_folders
+        self.ui
+            .smart_folders
             .get_or_insert_with(crate::smart_folder::load)
     }
 
@@ -694,8 +687,8 @@ impl App {
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
-            show_size_bars: self.show_size_bars,
-            show_compare: self.show_compare,
+            show_size_bars: self.ui.show_size_bars,
+            show_compare: self.ui.show_compare,
             left_sort_col: self.ws.left.sort_col,
             left_sort_order: self.ws.left.sort_order,
             left_hidden: self.ws.left.show_hidden,
@@ -708,12 +701,12 @@ impl App {
             right_natural_sort: self.ws.right.natural_name_sort,
             left_density: self.ws.left.density,
             right_density: self.ws.right.density,
-            palette_usage: self.palette_usage.clone(),
-            palette_tick: self.palette_tick,
+            palette_usage: self.ui.palette_usage.clone(),
+            palette_tick: self.ui.palette_tick,
             recent_paths,
             recent_stats,
-            recent_order: self.recent_order,
-            search_history: self.search_history.clone(),
+            recent_order: self.ui.recent_order,
+            search_history: self.ui.search_history.clone(),
             durability_profile: self.ws.durability_profile,
             version_retention: self.ws.version_retention,
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
@@ -758,10 +751,11 @@ impl App {
                     crate::toasts::ToastKind::Error,
                 )
             };
-            self.toasts
+            self.ui
+                .toasts
                 .push(crate::toasts::Toast::new(message, kind, false, now));
             if outcome.trashed > 0 {
-                self.receipts.push(crate::receipts::Receipt {
+                self.ui.receipts.push(crate::receipts::Receipt {
                     verb: "Deleted",
                     item_count: outcome.trashed,
                     timestamp: now,

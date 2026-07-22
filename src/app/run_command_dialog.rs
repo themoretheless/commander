@@ -13,7 +13,7 @@ impl App {
     pub(crate) fn open_run_command(&mut self, ctx: &egui::Context) {
         self.command_templates_mut();
         let scroll_nonce = self.issue_transient_nonce();
-        self.run_command = Some(RunCommandState {
+        self.ui.run_command = Some(RunCommandState {
             line: String::new(),
             scroll_nonce,
         });
@@ -25,7 +25,7 @@ impl App {
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::RunCommand,
         ));
-        if self.run_command.is_none() {
+        if self.ui.run_command.is_none() {
             return;
         }
         let t = self.colors;
@@ -56,7 +56,7 @@ impl App {
         let mut fill: Option<String> = None; // template raw chosen from the list
         let mut save_template: Option<String> = None; // raw line to persist
 
-        let state = self.run_command.as_mut().unwrap();
+        let state = self.ui.run_command.as_mut().unwrap();
         egui::Window::new("Run command")
             .collapsible(false)
             .resizable(false)
@@ -194,11 +194,11 @@ impl App {
             });
 
         if cancel {
-            self.run_command = None;
+            self.ui.run_command = None;
             return;
         }
         if let Some(raw) = fill
-            && let Some(s) = &mut self.run_command
+            && let Some(s) = &mut self.ui.run_command
         {
             s.line = raw;
             return;
@@ -237,19 +237,20 @@ impl App {
                         crate::toasts::ToastKind::Error,
                     )
                 };
-                self.toasts
+                self.ui
+                    .toasts
                     .push(crate::toasts::Toast::new(text, kind, false, now));
             }
             return; // keep the bar open after saving
         }
         if let Some(cmdline) = run {
-            self.run_command = None;
+            self.ui.run_command = None;
             if cmdline.trim().is_empty() {
                 return;
             }
             let now = ctx.input(|i| i.time);
             if self.ws.mutations_blocked() {
-                self.toasts.push(crate::toasts::Toast::new(
+                self.ui.toasts.push(crate::toasts::Toast::new(
                     "Safe-state review required",
                     crate::toasts::ToastKind::Error,
                     false,
@@ -264,7 +265,7 @@ impl App {
                 .spawn()
             {
                 Ok(_) => {
-                    self.toasts.push(crate::toasts::Toast::new(
+                    self.ui.toasts.push(crate::toasts::Toast::new(
                         "Command started",
                         crate::toasts::ToastKind::Info,
                         false,
@@ -272,7 +273,7 @@ impl App {
                     ));
                 }
                 Err(e) => {
-                    self.toasts.push(crate::toasts::Toast::new(
+                    self.ui.toasts.push(crate::toasts::Toast::new(
                         format!("Command failed to start: {e}"),
                         crate::toasts::ToastKind::Error,
                         false,

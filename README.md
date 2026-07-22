@@ -283,6 +283,8 @@ ordering, the **transfer queue** panel, and **operation history**) are
 available from the command palette (`Cmd+K`). Names sort naturally (`file2`
 before `file10`) by default.
 
+Tabs and bookmarks draw from classic commanders (Total Commander, Double Commander, FAR) and modern editors (VS Code tabs/palette/git, Path Finder favorites/preview).
+
 ## Build and run
 
 ```sh
@@ -310,6 +312,8 @@ context-menu behavior and background workload admission are injected through
 narrow handles rather than reached through UI-global state.
 The architecture and the refactoring plan are documented in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
+
+Performance work ongoing (git status debounced; benchmarks added for refresh/git paths showing ~2.5x wins; more fixes from audit: allocations, per-frame work, multi-tab scaling).
 
 ## License
 

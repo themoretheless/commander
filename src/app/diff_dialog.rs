@@ -8,7 +8,7 @@ use std::path::Path;
 /// Largest file we will read into memory for a diff.
 const DIFF_SIZE_CAP: u64 = 2 * 1024 * 1024;
 
-fn read_text(path: &Path) -> Result<String, ()> {
+pub(crate) fn read_text(path: &Path) -> Result<String, ()> {
     let meta = std::fs::metadata(path).map_err(|_| ())?;
     if meta.len() > DIFF_SIZE_CAP {
         return Err(());
@@ -21,7 +21,7 @@ impl App {
         match self.ws.diff_targets() {
             None => {
                 let now = ctx.input(|input| input.time);
-                self.toasts.push(crate::toasts::Toast::new(
+                self.ui.toasts.push(crate::toasts::Toast::new(
                     "Select a file pair to diff",
                     crate::toasts::ToastKind::Info,
                     false,
@@ -50,7 +50,7 @@ impl App {
                         Some("One or both files are binary, too large, or unreadable.".to_string()),
                     ),
                 };
-                self.diff = Some(DiffState {
+                self.ui.diff = Some(DiffState {
                     name_a: name(&a),
                     name_b: name(&b),
                     lines,
@@ -62,7 +62,7 @@ impl App {
 
     pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Diff);
-        let Some(state) = &self.diff else {
+        let Some(state) = &self.ui.diff else {
             return;
         };
         let t = self.colors;
@@ -157,7 +157,7 @@ impl App {
             });
 
         if close {
-            self.diff = None;
+            self.ui.diff = None;
         }
     }
 }

@@ -13,7 +13,7 @@ fn change_count_label(count: usize) -> String {
 
 impl App {
     pub(crate) fn open_mask(&mut self, ctx: &egui::Context) {
-        self.mask_input = Some(String::new());
+        self.ui.mask_input = Some(String::new());
         Self::mark_modal_opened(ctx, UiModal::Mask);
     }
 
@@ -23,7 +23,7 @@ impl App {
             crate::accessibility::ModalSurface::Mask,
         ));
         let active_panel = self.ws.active_panel_ref();
-        let Some(buffer) = &mut self.mask_input else {
+        let Some(buffer) = &mut self.ui.mask_input else {
             return;
         };
         let t = self.colors;
@@ -114,10 +114,10 @@ impl App {
             });
 
         if cancel {
-            self.mask_input = None;
+            self.ui.mask_input = None;
             return;
         }
-        if commit && let Some(buf) = self.mask_input.take() {
+        if commit && let Some(buf) = self.ui.mask_input.take() {
             self.ws.active_panel().select_by_mask(&buf);
         }
     }
