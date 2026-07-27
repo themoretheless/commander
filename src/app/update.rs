@@ -48,14 +48,33 @@ fn recovery_review_handoff_allowed(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ModalOwnershipSnapshot {
+    prior_open: bool,
+}
+
+impl ModalOwnershipSnapshot {
+    fn capture(prior_open: bool) -> Self {
+        Self { prior_open }
+    }
+
+    fn trap_active_after(self, current_open: bool) -> bool {
+        crate::accessibility::modal_trap_active(self.prior_open, current_open)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FrameInputPolicy {
     trapped: bool,
     background_enabled: bool,
 }
 
 impl FrameInputPolicy {
-    fn resolve(containing_ui_enabled: bool, modal_was_open: bool, modal_is_open: bool) -> Self {
-        let trapped = crate::accessibility::modal_trap_active(modal_was_open, modal_is_open);
+    fn resolve(
+        containing_ui_enabled: bool,
+        modal_ownership: ModalOwnershipSnapshot,
+        modal_is_open: bool,
+    ) -> Self {
+        let trapped = modal_ownership.trap_active_after(modal_is_open);
         Self {
             trapped,
             background_enabled: containing_ui_enabled && !trapped,
@@ -115,9 +134,9 @@ impl eframe::App for App {
         let _frame_latency =
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FrameTime);
         let ctx = ui.ctx().clone();
+        let prior_modal_ownership = ModalOwnershipSnapshot::capture(self.has_modal_surface());
         self.begin_frame(&ctx);
         self.capture_operation_failures(&ctx);
-        let modal_was_open = self.has_modal_surface();
         self.show_transfer_dialog(&ctx);
         self.show_safe_state_dialog(&ctx);
         self.show_recovery_dialog(&ctx);
@@ -140,8 +159,11 @@ impl eframe::App for App {
         self.show_palette_dialog(&ctx);
         // Keep the background disabled on the close frame too, so the pointer
         // release that dismissed a modal cannot click through into a file row.
-        let input_policy =
-            FrameInputPolicy::resolve(ui.is_enabled(), modal_was_open, self.has_modal_surface());
+        let input_policy = FrameInputPolicy::resolve(
+            ui.is_enabled(),
+            prior_modal_ownership,
+            self.has_modal_surface(),
+        );
         let modal_open = input_policy.trapped();
         let trapped = crate::accessibility::focus_order(crate::accessibility::FocusLayout {
             toolbar_visible: !self.ui.focus_mode,
@@ -1528,11 +1550,26 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameInputPolicy, any_modal_surface_open, recovery_review_handoff_allowed};
+    use super::{
+        FrameInputPolicy, ModalOwnershipSnapshot, any_modal_surface_open,
+        recovery_review_handoff_allowed,
+    };
+
+    fn frame_policy(
+        containing_ui_enabled: bool,
+        prior_modal_open: bool,
+        current_modal_open: bool,
+    ) -> FrameInputPolicy {
+        FrameInputPolicy::resolve(
+            containing_ui_enabled,
+            ModalOwnershipSnapshot::capture(prior_modal_open),
+            current_modal_open,
+        )
+    }
 
     #[test]
     fn disabled_background_cannot_activate_a_panel() {
-        let policy = FrameInputPolicy::resolve(true, false, false);
+        let policy = frame_policy(true, false, false);
         assert!(!policy.allows_raw_input(false, true));
         assert!(!policy.allows_raw_input(true, false));
         assert!(policy.allows_raw_input(true, true));
@@ -1541,8 +1578,8 @@ mod tests {
     #[test]
     fn trapped_frame_never_targets_or_executes_a_drop_and_clears_stale_drag() {
         for policy in [
-            FrameInputPolicy::resolve(true, false, true),
-            FrameInputPolicy::resolve(true, true, false),
+            frame_policy(true, false, true),
+            frame_policy(true, true, false),
         ] {
             assert!(policy.trapped());
             assert!(!policy.allows_drop_target(true, true));
@@ -1553,7 +1590,7 @@ mod tests {
 
     #[test]
     fn untrapped_frame_preserves_drop_and_divider_input() {
-        let policy = FrameInputPolicy::resolve(true, false, false);
+        let policy = frame_policy(true, false, false);
         assert!(!policy.trapped());
         assert!(policy.allows_drop_target(true, true));
         assert!(policy.allows_drop_execution(true));
@@ -1563,9 +1600,25 @@ mod tests {
 
     #[test]
     fn trapped_frame_blocks_divider_and_auxiliary_actions() {
-        let policy = FrameInputPolicy::resolve(true, true, false);
+        let policy = frame_policy(true, true, false);
         assert!(!policy.allows_divider_reset(true, true));
         assert!(!policy.background_enabled());
+    }
+
+    #[test]
+    fn prior_modal_ownership_survives_poll_and_render_transitions() {
+        let prior_transfer = any_modal_surface_open(false, true, false, false);
+        let retired_transfer = frame_policy(true, prior_transfer, false);
+        assert!(
+            retired_transfer.trapped(),
+            "a transfer retired by begin_frame still owns its close frame"
+        );
+
+        let idle = frame_policy(true, false, false);
+        assert!(!idle.trapped());
+
+        let newly_opened = frame_policy(true, false, true);
+        assert!(newly_opened.trapped());
     }
 
     #[test]
@@ -1574,10 +1627,20 @@ mod tests {
             any_modal_surface_open(true, false, false, false),
             any_modal_surface_open(false, true, false, false),
         ] {
-            let policy = FrameInputPolicy::resolve(true, false, modal_is_open);
+            let policy = frame_policy(true, false, modal_is_open);
             assert!(policy.trapped());
             assert!(!policy.allows_drop_execution(true));
         }
+    }
+
+    #[test]
+    fn safe_state_to_recovery_handoff_remains_trapped() {
+        let safe_state_with_retained_transfer = any_modal_surface_open(true, true, false, false);
+        let recovery_open = any_modal_surface_open(false, false, false, true);
+
+        let policy = frame_policy(true, safe_state_with_retained_transfer, recovery_open);
+        assert!(policy.trapped());
+        assert!(!policy.background_enabled());
     }
 
     #[test]
