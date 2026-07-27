@@ -29,7 +29,7 @@ impl App {
     }
 
     pub(crate) fn capture_operation_failures(&mut self, ctx: &egui::Context) {
-        let failed = self.ws.active_transfer.as_ref().and_then(|state| {
+        let failed = self.ws.active_transfer().and_then(|state| {
             let progress = crate::lock_util::recover(state);
             if !progress.finished || progress.errors.is_empty() {
                 return None;
@@ -159,7 +159,7 @@ impl App {
     fn show_operations_queue(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
         let rows = self.ws.queue_snapshot();
-        let running = self.ws.active_transfer.as_ref().map(|state| {
+        let running = self.ws.active_transfer().map(|state| {
             let progress = crate::lock_util::recover(state);
             (progress.phase, progress.pause_reason.clone())
         });
@@ -447,7 +447,7 @@ impl App {
             }
         });
         if let Some(operation_id) = view {
-            let active = self.ws.active_transfer.as_ref().is_some_and(|state| {
+            let active = self.ws.active_transfer().is_some_and(|state| {
                 crate::lock_util::recover(state).operation_id.as_ref() == Some(&operation_id)
             });
             if active {

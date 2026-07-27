@@ -14,7 +14,6 @@ use crate::panel::{self, FileEntry, PanelState, PreviewContent};
 use crate::scan::{self, FlatList};
 use crate::transfer::{
     self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferSpec,
-    TransferState,
 };
 use crate::ui_request::{UiModal, UiRequest};
 
@@ -137,22 +136,10 @@ pub struct ShelfDrainOutcome {
     pub unavailable: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HistoryTransition {
-    Undo,
-    Redo,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingHistoryTransition {
-    direction: HistoryTransition,
-    cleanup_on_failure: Option<PathBuf>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ActionExecution {
     Completed,
-    Started { cleanup_on_failure: Option<PathBuf> },
+    Started,
 }
 
 struct CommandCapabilityCache {
@@ -168,9 +155,7 @@ pub struct Workspace {
     pub right: PanelState,
     pub active: ActivePanel,
     pub pending_op: Option<PendingOp>,
-    pub active_transfer: Option<TransferState>,
     pub safe_state: Option<crate::operation::SafeState>,
-    reviewed_safe_operation: Option<crate::operation::OperationId>,
     pub durability_profile: crate::operation::DurabilityProfile,
     pub version_retention: crate::operation::VersionRetentionPolicy,
     pub sync_guard_policy: crate::sync_guard::GuardPolicy,
@@ -185,23 +170,11 @@ pub struct Workspace {
     pub bookmarks: crate::bookmarks::Bookmarks,
     /// A stashed selection for set-algebra combinations (union/intersect/...).
     pub selection_stash: std::collections::HashSet<PathBuf>,
-    /// Pending transfer pipeline. Every copy/move enqueues here; the worker
-    /// runs one job at a time (concurrency cap 1 for now) and `poll_transfer`
-    /// drains the next when the active one finishes. Replaces the old ad-hoc
-    /// single-slot sync follow-up.
-    queue: crate::opqueue::Queue<transfer_queue::QueuedJob>,
-    /// The queue job currently spawned as `active_transfer`, so it can be
-    /// marked done/failed when the worker finishes.
-    running_job: Option<crate::opqueue::JobId>,
+    /// Atomic owner of the transfer queue, active worker, and per-job history
+    /// intent. Workspace applies only the controller's typed outcomes.
+    transfers: transfer_queue::TransferQueueController,
     /// Undo/redo history of reversible operations (moves, batch renames).
     pub stack: crate::undo::UndoStack,
-    /// The action the in-flight transfer will record on a clean finish (a user
-    /// Move). `None` for copies and for undo/redo-driven transfers, which must
-    /// not record fresh history.
-    pending_undo_action: Option<crate::undo::Action>,
-    /// A history replay owns the active transfer. The stack transition is
-    /// committed only after that worker reports a clean terminal state.
-    pending_history_transition: Option<PendingHistoryTransition>,
     command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
     /// Opens a file in an external application. Injected so tests don't
     /// launch real programs; the UI also routes double-clicks through it.
@@ -334,9 +307,7 @@ impl Workspace {
             right: PanelState::new(right),
             active: ActivePanel::Left,
             pending_op: None,
-            active_transfer: None,
             safe_state: None,
-            reviewed_safe_operation: None,
             durability_profile: crate::operation::DurabilityProfile::default(),
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
@@ -346,11 +317,8 @@ impl Workspace {
             shelf: crate::shelf::Shelf::default(),
             bookmarks: crate::bookmarks::load(),
             selection_stash: std::collections::HashSet::new(),
-            queue: crate::opqueue::Queue::new(),
-            running_job: None,
+            transfers: transfer_queue::TransferQueueController::default(),
             stack: crate::undo::UndoStack::default(),
-            pending_undo_action: None,
-            pending_history_transition: None,
             command_capabilities: std::cell::RefCell::new(None),
             opener,
         }
@@ -498,7 +466,7 @@ impl Workspace {
             })
         };
 
-        let active_transfer = self.active_transfer.is_some();
+        let active_transfer = self.active_transfer().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let pending_operation = self.pending_op.is_some();
         let safe_state = self.mutations_blocked();
@@ -583,7 +551,7 @@ impl Workspace {
 
         let safe_state = self.mutations_blocked();
         let pending_operation = self.pending_op.is_some();
-        let active_transfer = self.active_transfer.is_some();
+        let active_transfer = self.active_transfer().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let (left_read_only, right_read_only) = self.pane_read_only();
         let (active_read_only, inactive_read_only) = match self.active {
@@ -1307,22 +1275,6 @@ impl Workspace {
         self.pump_queue(notify);
     }
 
-    fn finish_history_transition(&mut self, clean: bool) {
-        let Some(transition) = self.pending_history_transition.take() else {
-            return;
-        };
-        if clean {
-            match transition.direction {
-                HistoryTransition::Undo => self.stack.commit_undo(),
-                HistoryTransition::Redo => self.stack.commit_redo(),
-            };
-        } else if let Some(folder) = transition.cleanup_on_failure {
-            // Never recursively remove replay output. An empty directory is the
-            // only container we can prove was not populated by foreign data.
-            let _ = std::fs::remove_dir(folder);
-        }
-    }
-
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
     /// move it onto the redo stack only after the filesystem commit succeeds.
     pub fn preview_undo(&self) -> Option<crate::undo::ReplayPreview> {
@@ -1399,16 +1351,11 @@ impl Workspace {
             return Ok(());
         };
         Self::replay_preflight(&crate::undo::preview(&inverse))?;
-        match self.execute_action(inverse, notify)? {
+        match self.execute_action(inverse, transfer_queue::HistoryDirection::Undo, notify)? {
             ActionExecution::Completed => {
                 self.stack.commit_undo();
             }
-            ActionExecution::Started { cleanup_on_failure } => {
-                self.pending_history_transition = Some(PendingHistoryTransition {
-                    direction: HistoryTransition::Undo,
-                    cleanup_on_failure,
-                });
-            }
+            ActionExecution::Started => {}
         }
         Ok(())
     }
@@ -1422,16 +1369,11 @@ impl Workspace {
             return self.redo_unavailable_reason().map_or(Ok(()), Err);
         };
         Self::replay_preflight(&crate::undo::preview(&action))?;
-        match self.execute_action(action, notify)? {
+        match self.execute_action(action, transfer_queue::HistoryDirection::Redo, notify)? {
             ActionExecution::Completed => {
                 self.stack.commit_redo();
             }
-            ActionExecution::Started { cleanup_on_failure } => {
-                self.pending_history_transition = Some(PendingHistoryTransition {
-                    direction: HistoryTransition::Redo,
-                    cleanup_on_failure,
-                });
-            }
+            ActionExecution::Started => {}
         }
         Ok(())
     }
@@ -1442,6 +1384,7 @@ impl Workspace {
     fn execute_action(
         &mut self,
         action: crate::undo::Action,
+        direction: transfer_queue::HistoryDirection,
         notify: impl Fn() + Send + 'static,
     ) -> Result<ActionExecution, String> {
         Self::replay_preflight(&crate::undo::preview(&action))?;
@@ -1458,16 +1401,20 @@ impl Workspace {
                     return Ok(ActionExecution::Completed);
                 };
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
-                self.start_move_silent(sources, dest_dir, None, notify)
-                    .map(|started| {
-                        if started {
-                            ActionExecution::Started {
-                                cleanup_on_failure: None,
-                            }
-                        } else {
-                            ActionExecution::Completed
-                        }
-                    })
+                self.start_move_silent(
+                    sources,
+                    dest_dir,
+                    None,
+                    transfer_queue::HistoryIntent::replay(direction, None),
+                    notify,
+                )
+                .map(|started| {
+                    if started {
+                        ActionExecution::Started
+                    } else {
+                        ActionExecution::Completed
+                    }
+                })
             }
             crate::undo::Action::BatchRename { dir, pairs } => {
                 // Undo/redo replays recorded pairs without re-planning, so order
@@ -1500,11 +1447,10 @@ impl Workspace {
                     folder.clone(),
                     None,
                     Some(folder.clone()),
+                    transfer_queue::HistoryIntent::replay(direction, Some(folder.clone())),
                     notify,
                 );
-                Ok(ActionExecution::Started {
-                    cleanup_on_failure: Some(folder),
-                })
+                Ok(ActionExecution::Started)
             }
             crate::undo::Action::Ungather { folder, pairs } => {
                 let Some(dest_dir) = pairs
@@ -1519,13 +1465,12 @@ impl Workspace {
                     sources,
                     dest_dir,
                     Some(PostTransferAction::RemoveEmptyDir(folder)),
+                    transfer_queue::HistoryIntent::replay(direction, None),
                     notify,
                 )
                 .map(|started| {
                     if started {
-                        ActionExecution::Started {
-                            cleanup_on_failure: None,
-                        }
+                        ActionExecution::Started
                     } else {
                         ActionExecution::Completed
                     }
@@ -1552,6 +1497,7 @@ impl Workspace {
         dest_dir: PathBuf,
         post_success: Option<PostTransferAction>,
         rollback_cleanup: Option<PathBuf>,
+        history: transfer_queue::HistoryIntent,
         notify: impl Fn() + Send + 'static,
     ) {
         let expectations = transfer::capture_expectations(&entries, &dest_dir);
@@ -1575,8 +1521,7 @@ impl Workspace {
             #[cfg(test)]
             journal_enabled: false,
         };
-        // Undo-driven: this move records no new history (undo=None).
-        self.enqueue_only(spec, None);
+        self.enqueue_with_history(spec, history);
         self.pump_queue(notify);
     }
 
@@ -1588,13 +1533,14 @@ impl Workspace {
         sources: Vec<PathBuf>,
         dest_dir: PathBuf,
         post_success: Option<PostTransferAction>,
+        history: transfer_queue::HistoryIntent,
         notify: impl Fn() + Send + 'static,
     ) -> Result<bool, String> {
         let entries = Self::entries_for_paths(&sources)?;
         if entries.is_empty() {
             return Ok(false);
         }
-        self.enqueue_silent_move(entries, dest_dir, post_success, None, notify);
+        self.enqueue_silent_move(entries, dest_dir, post_success, None, history, notify);
         Ok(true)
     }
 
@@ -2574,9 +2520,8 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
-    use crate::transfer::TransferProgress;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
 
     fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
         let mut ws = Workspace::with_opener(
@@ -2587,6 +2532,27 @@ mod tests {
         ws.left.refresh();
         ws.right.refresh();
         ws
+    }
+
+    fn test_transfer_spec(operation_id: &str, target: &Path) -> TransferSpec {
+        TransferSpec {
+            operation_id: crate::operation::OperationId(operation_id.to_string()),
+            group_id: None,
+            kind: TransferKind::Move,
+            entries: Vec::new(),
+            expectations: Vec::new(),
+            target: target.to_path_buf(),
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            durability: crate::operation::DurabilityProfile::default(),
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            post_success: None,
+            rollback_cleanup: None,
+            before_commit: None,
+            journal_enabled: false,
+        }
     }
 
     #[test]
@@ -2641,8 +2607,8 @@ mod tests {
 
     fn wait_transfer(ws: &mut Workspace) {
         let state = ws
-            .active_transfer
-            .clone()
+            .active_transfer()
+            .cloned()
             .expect("transfer should be running");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !state.lock().unwrap().finished {
@@ -2656,7 +2622,7 @@ mod tests {
     /// queued behind it, polling between each.
     fn drain_transfers(ws: &mut Workspace) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while ws.active_transfer.is_some() {
+        while ws.active_transfer().is_some() {
             wait_transfer(ws);
             assert!(
                 std::time::Instant::now() < deadline,
@@ -2959,7 +2925,7 @@ mod tests {
         ws.confirm_pending_op(|| {});
         wait_transfer(&mut ws);
 
-        assert!(ws.active_transfer.is_none(), "clean transfer auto-closes");
+        assert!(ws.active_transfer().is_none(), "clean transfer auto-closes");
         let copied = std::fs::read_to_string(r.path().join("a.txt")).unwrap();
         assert_eq!(copied, "hello");
         assert!(l.path().join("a.txt").exists(), "copy must keep the source");
@@ -3027,7 +2993,10 @@ mod tests {
         ));
 
         ws.pending_op = None;
-        ws.active_transfer = Some(Arc::new(Mutex::new(TransferProgress::new(0, 1))));
+        ws.launch_test_transfer(
+            test_transfer_spec("request-guard", r.path()),
+            transfer_queue::HistoryIntent::None,
+        );
         assert!(
             ws.can_request_transfer(),
             "Copy/Move may queue while active"
@@ -3294,14 +3263,9 @@ mod tests {
 
         // Both passes are enqueued; the first runs now, the second waits behind
         // it on the queue (no more ad-hoc follow-up handling).
-        assert!(ws.active_transfer.is_some(), "first pass running");
+        assert!(ws.active_transfer().is_some(), "first pass running");
         assert_eq!(ws.queued_count(), 1, "second pass queued behind the first");
-        let groups = ws
-            .queue
-            .jobs()
-            .iter()
-            .filter_map(|job| job.spec.group_id())
-            .collect::<Vec<_>>();
+        let groups = ws.transfer_group_ids();
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0], groups[1], "both passes share one intent id");
 
@@ -3338,7 +3302,7 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("stale"), "unexpected error: {error}");
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert_eq!(ws.queued_count(), 0);
         assert!(!r.path().join("report.txt").exists());
     }
@@ -3369,7 +3333,7 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("Health marker"), "unexpected error: {error}");
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert_eq!(ws.queued_count(), 0);
     }
 
@@ -3402,7 +3366,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("changes"), "unexpected error: {error}");
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert_eq!(ws.queued_count(), 0);
 
         ws.apply_sync_guarded(
@@ -3486,11 +3450,11 @@ mod tests {
             OverwritePolicy::KeepBoth,
             || {},
         );
-        assert!(ws.active_transfer.is_some(), "first transfer running");
+        assert!(ws.active_transfer().is_some(), "first transfer running");
         assert_eq!(ws.queued_count(), 1, "second transfer queued, not dropped");
 
         drain_transfers(&mut ws);
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert_eq!(ws.queued_count(), 0);
         assert!(r.path().join("a.txt").is_file(), "first copy landed");
         assert!(r.path().join("b.txt").is_file(), "queued copy ran after");
@@ -3611,7 +3575,7 @@ mod tests {
         let id = ws.queue_snapshot()[0].id;
         ws.queue_pause(id);
 
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert_eq!(ws.queued_count(), 0, "paused work is not runnable");
         assert_eq!(ws.unfinished_queue_count(), 1);
 
@@ -3621,7 +3585,7 @@ mod tests {
             notify_count.fetch_add(1, Ordering::SeqCst);
         });
 
-        assert!(ws.active_transfer.is_some(), "resume fills the idle slot");
+        assert!(ws.active_transfer().is_some(), "resume fills the idle slot");
         assert_eq!(
             ws.queue_snapshot()[0].state,
             crate::opqueue::JobState::Running
@@ -3649,7 +3613,7 @@ mod tests {
         let id = ws.queue_snapshot()[0].id;
         ws.queue_pause(id);
 
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert_eq!(ws.queued_count(), 0);
         assert_eq!(ws.unfinished_queue_count(), 1);
         assert!(ws.has_unfinished_transfer_work());
@@ -3683,7 +3647,7 @@ mod tests {
             || {},
         );
         let running_id = ws.queue_snapshot()[0].id;
-        let progress = ws.active_transfer.clone().unwrap();
+        let progress = ws.active_transfer().cloned().unwrap();
 
         ws.queue_cancel(running_id);
         // Cancelling the running job routes through `cancel_transfer`: the
@@ -3696,7 +3660,7 @@ mod tests {
         );
 
         drain_transfers(&mut ws);
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         let state = progress.lock().unwrap();
         assert!(state.finished);
         if state.cancelled {
@@ -3782,7 +3746,7 @@ mod tests {
 
         // Wait for the first to finish; an errored run stays open (poll does not
         // retire it), so the queue must not advance yet.
-        let st = ws.active_transfer.clone().unwrap();
+        let st = ws.active_transfer().cloned().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !st.lock().unwrap().finished {
             assert!(std::time::Instant::now() < deadline, "timed out");
@@ -3790,7 +3754,7 @@ mod tests {
         }
         ws.poll_transfer(|| {});
         assert!(
-            ws.active_transfer.is_some(),
+            ws.active_transfer().is_some(),
             "errored transfer stays open for OK"
         );
         assert_eq!(ws.queued_count(), 1, "queue waits while the error is shown");
@@ -3799,7 +3763,7 @@ mod tests {
         // fix this left the job Running forever and wedged the whole queue).
         ws.dismiss_transfer(|| {});
         drain_transfers(&mut ws);
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert!(
             r.path().join("y.txt").is_file(),
             "queued copy ran after dismiss"
@@ -3816,10 +3780,12 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let affected = l.file("affected.txt", "data");
         let mut ws = workspace(&l, &r);
-        let progress = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        let progress = ws.launch_test_transfer(
+            test_transfer_spec("uncertain-op", r.path()),
+            transfer_queue::HistoryIntent::None,
+        );
         {
-            let mut state = progress.lock().unwrap();
-            state.operation_id = Some(crate::operation::OperationId("uncertain-op".to_string()));
+            let mut state = crate::lock_util::recover(&progress);
             state.finished = true;
             state.errors.push("placement uncertain".to_string());
             state
@@ -3830,7 +3796,6 @@ mod tests {
                     "placement uncertain",
                 ));
         }
-        ws.active_transfer = Some(progress);
 
         assert!(!ws.poll_transfer(|| {}), "errored transfer stays visible");
         let safe = ws.safe_state.as_ref().expect("safe state raised");
@@ -3865,12 +3830,12 @@ mod tests {
         let paused_id = ws.queue_snapshot()[0].id;
         ws.queue_pause(paused_id);
 
-        let progress = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        let progress = ws.launch_test_transfer(
+            test_transfer_spec("uncertain-with-paused-tail", r.path()),
+            transfer_queue::HistoryIntent::None,
+        );
         {
-            let mut state = progress.lock().unwrap();
-            state.operation_id = Some(crate::operation::OperationId(
-                "uncertain-with-paused-tail".to_string(),
-            ));
+            let mut state = crate::lock_util::recover(&progress);
             state.finished = true;
             state.errors.push("placement uncertain".to_string());
             state
@@ -3881,11 +3846,14 @@ mod tests {
                     "placement uncertain",
                 ));
         }
-        ws.active_transfer = Some(progress);
 
         assert!(!ws.poll_transfer(|| {}));
         assert!(ws.safe_state.is_some());
-        assert_eq!(ws.unfinished_queue_count(), 0);
+        assert_eq!(
+            ws.unfinished_queue_count(),
+            1,
+            "the retained active error remains unfinished until dismiss"
+        );
         let paused_tail = ws
             .queue_snapshot()
             .into_iter()
@@ -3983,14 +3951,14 @@ mod tests {
         // Simulate the user cancelling the active transfer and the worker
         // stopping: flag it cancelled+finished, then poll.
         {
-            let st = ws.active_transfer.clone().unwrap();
+            let st = ws.active_transfer().cloned().unwrap();
             let mut s = st.lock().unwrap();
             s.cancelled = true;
             s.finished = true;
         }
         ws.poll_transfer(|| {});
 
-        assert!(ws.active_transfer.is_none(), "cancelled transfer closed");
+        assert!(ws.active_transfer().is_none(), "cancelled transfer closed");
         assert_eq!(ws.unfinished_queue_count(), 0);
         assert!(ws.queue_snapshot().is_empty());
         assert!(
@@ -4052,7 +4020,7 @@ mod tests {
         assert_eq!(outcome.unavailable, 1);
         assert_eq!(ws.shelf.len(), 1, "unreadable item kept for retry");
         assert!(
-            ws.active_transfer.is_none(),
+            ws.active_transfer().is_none(),
             "nothing readable, no transfer"
         );
     }
@@ -4463,7 +4431,7 @@ mod tests {
             dir: dir.clone(),
             pairs: vec![("a.txt".to_string(), "b.txt".to_string())],
         };
-        let result = ws.execute_action(action, || {});
+        let result = ws.execute_action(action, transfer_queue::HistoryDirection::Undo, || {});
         assert!(
             result.is_err(),
             "a clobbering rename during undo must surface an error, not be swallowed"
@@ -4499,13 +4467,11 @@ mod tests {
             from: l.path().join("a.txt"),
             to: l.path().join("b.txt"),
         });
-        ws.pending_history_transition = Some(PendingHistoryTransition {
-            direction: HistoryTransition::Undo,
-            cleanup_on_failure: None,
-        });
-        let clean = Arc::new(Mutex::new(TransferProgress::new(0, 0)));
+        let clean = ws.launch_test_transfer(
+            test_transfer_spec("clean-undo", r.path()),
+            transfer_queue::HistoryIntent::replay(transfer_queue::HistoryDirection::Undo, None),
+        );
         crate::lock_util::recover(&clean).finished = true;
-        ws.active_transfer = Some(clean);
 
         ws.poll_transfer(|| {});
         assert!(!ws.stack.can_undo());
@@ -4513,17 +4479,18 @@ mod tests {
 
         let replay_folder = l.path().join("gathered");
         std::fs::create_dir(&replay_folder).unwrap();
-        ws.pending_history_transition = Some(PendingHistoryTransition {
-            direction: HistoryTransition::Redo,
-            cleanup_on_failure: Some(replay_folder.clone()),
-        });
-        let failed = Arc::new(Mutex::new(TransferProgress::new(0, 0)));
+        let failed = ws.launch_test_transfer(
+            test_transfer_spec("failed-redo", r.path()),
+            transfer_queue::HistoryIntent::replay(
+                transfer_queue::HistoryDirection::Redo,
+                Some(replay_folder.clone()),
+            ),
+        );
         {
             let mut progress = crate::lock_util::recover(&failed);
             progress.finished = true;
             progress.errors.push("worker failed".to_string());
         }
-        ws.active_transfer = Some(failed);
         ws.poll_transfer(|| {});
         ws.dismiss_transfer(|| {});
         assert!(!ws.stack.can_undo(), "failed redo was not committed");
@@ -4566,12 +4533,12 @@ mod tests {
             ],
         };
 
-        let result = ws.execute_action(action, || {});
+        let result = ws.execute_action(action, transfer_queue::HistoryDirection::Undo, || {});
 
         assert!(result.is_err());
         assert!(existing.is_file());
         assert!(!r.path().join("existing.txt").exists());
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
     }
 
     #[test]
@@ -4820,7 +4787,7 @@ mod tests {
         ws.drop_dragged(|| {});
 
         assert!(file.exists());
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert!(ws.pending_op.is_none());
         assert!(ws.left.drag_entries.is_empty());
     }
@@ -4838,7 +4805,7 @@ mod tests {
 
         // A conflicting drop must NOT move immediately; it stages a
         // confirmation instead, leaving both sides intact.
-        assert!(ws.active_transfer.is_none());
+        assert!(ws.active_transfer().is_none());
         assert!(matches!(ws.pending_op, Some(PendingOp::Transfer(_))));
         assert!(l.path().join("a.txt").exists());
         assert_eq!(

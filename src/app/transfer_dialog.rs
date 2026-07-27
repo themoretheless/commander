@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(crate) fn show_transfer_dialog(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.ws.active_transfer.clone() else {
+        let Some(state) = self.ws.active_transfer().cloned() else {
             return;
         };
         let _latency =

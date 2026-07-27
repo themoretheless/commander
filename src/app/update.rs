@@ -143,7 +143,8 @@ impl App {
     }
 
     fn has_modal_surface_except_safe_state(&self) -> bool {
-        self.ws.active_transfer.is_some() || self.has_modal_surface_except_safe_state_and_transfer()
+        self.ws.active_transfer().is_some()
+            || self.has_modal_surface_except_safe_state_and_transfer()
     }
 
     fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
@@ -173,8 +174,7 @@ impl App {
         };
         let active_transfer = self
             .ws
-            .active_transfer
-            .as_ref()
+            .active_transfer()
             .map(|state| crate::lock_util::recover(state));
         recovery_review_handoff_allowed(
             self.ws.safe_state.as_ref(),
@@ -216,7 +216,7 @@ impl App {
             input.events.is_empty()
                 && !input.pointer.any_down()
                 && input.smooth_scroll_delta == Vec2::ZERO
-        }) && self.ws.active_transfer.is_none()
+        }) && self.ws.active_transfer().is_none()
             && self.ws.pending_op.is_none()
             && self.find.as_ref().is_none_or(|state| !state.searching);
         if !index_idle {
