@@ -143,14 +143,16 @@ impl App {
             PreviewPane::Left => &self.ws.right,
         };
 
-        let cursor = source.cursor.saturating_sub(1);
+        let Some(cursor) = source.cursor().checked_sub(1) else {
+            return;
+        };
         let image_stats = self.image_cache.stats();
         let forward = forward_preload_window(image_stats.bytes);
         let slots = PRELOAD_BACK_WINDOW.saturating_add(forward);
         let paths: Vec<PathBuf> = prioritized_indices(
             source.filtered_count(),
-            source.scroll_anchor,
-            source.page_rows,
+            source.scroll_anchor(),
+            source.page_rows(),
             cursor,
         )
         .into_iter()

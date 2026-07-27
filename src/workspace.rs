@@ -449,10 +449,7 @@ impl Workspace {
             ActivePanel::Right => (&self.right, &self.left),
         };
         let visible_entries = active.filtered_count();
-        let cursor = active
-            .cursor
-            .checked_sub(1)
-            .and_then(|index| active.filtered_get(index));
+        let cursor = active.cursor_entry();
         let mut visible_files = 0usize;
         let mut selected_entries = 0usize;
         let mut selected_file_count = 0usize;
@@ -462,7 +459,7 @@ impl Workspace {
             if !entry.is_dir {
                 visible_files = visible_files.saturating_add(1);
             }
-            if active.selected.contains(&entry.path) {
+            if active.is_selected(&entry.path) {
                 selected_entries = selected_entries.saturating_add(1);
                 has_transfer_source |= cursor.is_some_and(|target| entry.path != target.path);
                 if !entry.is_dir {
@@ -472,12 +469,12 @@ impl Workspace {
             }
             true
         });
-        let picked_entries = if active.selected.is_empty() {
+        let picked_entries = if active.selection_is_empty() {
             usize::from(cursor.is_some())
         } else {
             selected_entries
         };
-        let listing_entries = if active.selected.is_empty() {
+        let listing_entries = if active.selection_is_empty() {
             visible_entries
         } else {
             selected_entries
@@ -520,7 +517,7 @@ impl Workspace {
                 .iter()
                 .fold((0usize, 0usize), |(marked, stashed), entry| {
                     (
-                        marked.saturating_add(usize::from(active.marked.contains(&entry.path))),
+                        marked.saturating_add(usize::from(active.is_marked(&entry.path))),
                         stashed.saturating_add(usize::from(
                             self.selection_stash.contains(&entry.path),
                         )),
@@ -565,15 +562,12 @@ impl Workspace {
     /// ordinary frames with no selection.
     pub fn action_bar_command_context(&self) -> crate::command::CommandContext {
         let active = self.active_panel_ref();
-        let cursor = active
-            .cursor
-            .checked_sub(1)
-            .and_then(|index| active.filtered_get(index));
+        let cursor = active.cursor_entry();
         let mut has_selected = false;
         let mut has_transfer_source = false;
-        if !active.selected.is_empty() {
+        if !active.selection_is_empty() {
             active.visit_filtered(|_, entry| {
-                if active.selected.contains(&entry.path) {
+                if active.is_selected(&entry.path) {
                     has_selected = true;
                     has_transfer_source |= cursor.is_some_and(|target| entry.path != target.path);
                 }
@@ -593,7 +587,7 @@ impl Workspace {
         };
         let selected_entries = usize::from(has_selected);
         crate::command::CommandContext {
-            picked_entries: if active.selected.is_empty() {
+            picked_entries: if active.selection_is_empty() {
                 usize::from(cursor.is_some())
             } else {
                 selected_entries
@@ -661,12 +655,12 @@ impl Workspace {
             .iter()
             .filter_map(|&i| active.get(i).map(|e| e.path.clone()))
             .collect();
-        self.active_panel().selected = paths.into_iter().collect();
+        self.active_panel().replace_selection(paths);
     }
 
     /// Copy the active panel's current selection into the stash.
     pub fn stash_selection(&mut self) {
-        self.selection_stash = self.active_panel_ref().selected.clone();
+        self.selection_stash = self.active_panel_ref().selected_paths().clone();
     }
 
     /// Replace the active panel's selection with `op(current, stash)`, dropping
@@ -682,8 +676,8 @@ impl Workspace {
         let panel = self.active_panel();
         let present: std::collections::HashSet<PathBuf> =
             panel.entries().iter().map(|e| e.path.clone()).collect();
-        let combined = op(&panel.selected, &stash);
-        panel.selected = combined.intersection(&present).cloned().collect();
+        let combined = op(panel.selected_paths(), &stash);
+        panel.replace_selection(combined.intersection(&present).cloned());
     }
 
     pub fn stash_union(&mut self) {
@@ -703,15 +697,12 @@ impl Workspace {
     /// mirroring `Command::ToggleSelect`.
     pub fn toggle_mark(&mut self) {
         let panel = self.active_panel();
-        if panel.cursor > 0 {
-            let path = panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
-            if let Some(path) = path {
-                panel.toggle_mark(path);
-            }
+        if let Some(path) = panel.cursor_entry().map(|entry| entry.path.clone()) {
+            panel.toggle_mark(path);
         }
         let max = panel.filtered_count();
-        if panel.cursor < max {
-            panel.cursor += 1;
+        if panel.cursor() < max {
+            panel.set_cursor(panel.cursor() + 1);
         }
     }
 
@@ -725,11 +716,11 @@ impl Workspace {
         ) -> std::collections::HashSet<PathBuf>,
     ) {
         let panel = self.active_panel();
-        let marked = panel.marked.clone();
+        let marked = panel.marked_paths().clone();
         let present: std::collections::HashSet<PathBuf> =
             panel.entries().iter().map(|e| e.path.clone()).collect();
-        let combined = op(&panel.selected, &marked);
-        panel.selected = combined.intersection(&present).cloned().collect();
+        let combined = op(panel.selected_paths(), &marked);
+        panel.replace_selection(combined.intersection(&present).cloned());
     }
 
     pub fn marked_union(&mut self) {
@@ -760,74 +751,74 @@ impl Workspace {
             }
             Command::CursorUp => {
                 let panel = self.active_panel();
-                if panel.cursor > 0 {
-                    panel.cursor -= 1;
-                    panel.scroll_to_cursor = true;
+                if panel.cursor() > 0 {
+                    panel.set_cursor(panel.cursor() - 1);
+                    panel.set_scroll_to_cursor(true);
                 }
             }
             Command::CursorDown => {
                 let panel = self.active_panel();
                 let max = panel.filtered_count();
-                if panel.cursor < max {
-                    panel.cursor += 1;
-                    panel.scroll_to_cursor = true;
+                if panel.cursor() < max {
+                    panel.set_cursor(panel.cursor() + 1);
+                    panel.set_scroll_to_cursor(true);
                 }
             }
             Command::CursorHome => {
                 let panel = self.active_panel();
-                panel.cursor = 0;
-                panel.scroll_to_cursor = true;
+                panel.set_cursor(0);
+                panel.set_scroll_to_cursor(true);
             }
             Command::CursorEnd => {
                 let panel = self.active_panel();
-                panel.cursor = panel.filtered_count();
-                panel.scroll_to_cursor = true;
+                panel.set_cursor(panel.filtered_count());
+                panel.set_scroll_to_cursor(true);
             }
             Command::CursorPageUp => {
                 let panel = self.active_panel();
-                let page = panel.page_rows.max(1);
-                panel.cursor = panel.cursor.saturating_sub(page);
-                panel.scroll_to_cursor = true;
+                let page = panel.page_rows().max(1);
+                panel.set_cursor(panel.cursor().saturating_sub(page));
+                panel.set_scroll_to_cursor(true);
             }
             Command::CursorPageDown => {
                 let panel = self.active_panel();
-                let page = panel.page_rows.max(1);
+                let page = panel.page_rows().max(1);
                 let max = panel.filtered_count();
-                panel.cursor = (panel.cursor + page).min(max);
-                panel.scroll_to_cursor = true;
+                panel.set_cursor((panel.cursor() + page).min(max));
+                panel.set_scroll_to_cursor(true);
             }
             Command::CursorMove(delta) => {
                 let panel = self.active_panel();
                 let max = panel.filtered_count() as i32;
-                panel.cursor = (panel.cursor as i32 + delta).clamp(0, max) as usize;
-                panel.scroll_to_cursor = true;
+                panel.set_cursor((panel.cursor() as i32 + delta).clamp(0, max) as usize);
+                panel.set_scroll_to_cursor(true);
             }
             Command::ExtendSelectDown => {
                 let panel = self.active_panel();
                 panel.select_cursor();
                 let max = panel.filtered_count();
-                if panel.cursor < max {
-                    panel.cursor += 1;
+                if panel.cursor() < max {
+                    panel.set_cursor(panel.cursor() + 1);
                 }
                 panel.select_cursor();
-                panel.scroll_to_cursor = true;
+                panel.set_scroll_to_cursor(true);
             }
             Command::ExtendSelectUp => {
                 let panel = self.active_panel();
                 panel.select_cursor();
-                if panel.cursor > 1 {
-                    panel.cursor -= 1;
+                if panel.cursor() > 1 {
+                    panel.set_cursor(panel.cursor() - 1);
                 }
                 panel.select_cursor();
-                panel.scroll_to_cursor = true;
+                panel.set_scroll_to_cursor(true);
             }
             Command::Activate => {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
-                if self.active_panel_ref().cursor == 0 {
+                if self.active_panel_ref().cursor() == 0 {
                     self.active_panel().go_up();
                 } else if let Some(entry) = {
                     let panel = self.active_panel_ref();
-                    panel.filtered_get(panel.cursor - 1).cloned()
+                    panel.cursor_entry().cloned()
                 } {
                     if entry.is_dir {
                         self.active_panel().navigate_to(entry.path);
@@ -873,15 +864,12 @@ impl Workspace {
             }
             Command::ToggleSelect => {
                 let panel = self.active_panel();
-                if panel.cursor > 0 {
-                    let path = panel.filtered_get(panel.cursor - 1).map(|e| e.path.clone());
-                    if let Some(path) = path {
-                        panel.toggle_select(path);
-                    }
+                if let Some(path) = panel.cursor_entry().map(|entry| entry.path.clone()) {
+                    panel.toggle_select(path);
                 }
                 let max = panel.filtered_count();
-                if panel.cursor < max {
-                    panel.cursor += 1;
+                if panel.cursor() < max {
+                    panel.set_cursor(panel.cursor() + 1);
                 }
             }
             Command::MoveIntoCursorFolder => {
@@ -896,9 +884,7 @@ impl Workspace {
                 } else {
                     let preview = {
                         let panel = self.active_panel_ref();
-                        panel
-                            .filtered_get(panel.cursor.saturating_sub(1))
-                            .and_then(panel::make_preview)
+                        panel.cursor_entry().and_then(panel::make_preview)
                     };
                     self.inactive_panel_mut().preview = preview;
                 }
@@ -909,11 +895,7 @@ impl Workspace {
             Command::RequestDelete => self.request_delete(),
             Command::BeginRename => {
                 let panel = self.active_panel_ref();
-                if panel.cursor > 0
-                    && let Some(path) = panel
-                        .filtered_get(panel.cursor - 1)
-                        .map(|entry| entry.path.clone())
-                {
+                if let Some(path) = panel.cursor_entry().map(|entry| entry.path.clone()) {
                     self.emit_ui_request(UiRequest::Rename(path));
                 }
             }
@@ -1968,7 +1950,7 @@ impl Workspace {
             ActivePanel::Right => &mut self.right,
         };
         if panel.current_path == context.dir {
-            panel.selected.clear();
+            panel.clear_selection();
             panel.refresh();
         }
         Ok(done)
@@ -2095,8 +2077,8 @@ impl Workspace {
         if let Some(name) = name
             && let Some(idx) = panel.filtered_entries().iter().position(|e| e.name == name)
         {
-            panel.cursor = idx + 1;
-            panel.scroll_to_cursor = true;
+            panel.set_cursor(idx + 1);
+            panel.set_scroll_to_cursor(true);
         }
     }
 
@@ -2119,13 +2101,11 @@ impl Workspace {
         // One file (selected, else under the cursor) vs the same name opposite.
         let one = if files.len() == 1 {
             files.into_iter().next()
-        } else if active.cursor > 0 {
+        } else {
             active
-                .filtered_get(active.cursor - 1)
+                .cursor_entry()
                 .filter(|e| !e.is_dir)
                 .map(|e| e.path.clone())
-        } else {
-            None
         }?;
         let name = one.file_name()?.to_string_lossy().to_lowercase();
         let other = self
@@ -2378,7 +2358,7 @@ impl Workspace {
             return;
         };
 
-        let Some(entry) = source.filtered_get(source.cursor.saturating_sub(1)) else {
+        let Some(entry) = source.cursor_entry() else {
             return;
         };
 
@@ -2408,10 +2388,7 @@ impl Workspace {
             return;
         }
         let panel = self.active_panel_ref();
-        if panel.cursor == 0 {
-            return;
-        }
-        let Some(entry) = panel.filtered_get(panel.cursor - 1).cloned() else {
+        let Some(entry) = panel.cursor_entry().cloned() else {
             return;
         };
         let dir_size = if entry.is_dir {
@@ -2533,11 +2510,8 @@ impl Workspace {
 
     fn keyboard_drop_plan(&self) -> Option<(Vec<PathBuf>, PathBuf)> {
         let panel = self.active_panel_ref();
-        if panel.cursor == 0 {
-            return None;
-        }
-        let target = panel.filtered_get(panel.cursor - 1)?;
-        if !target.is_dir || panel.selected.is_empty() {
+        let target = panel.cursor_entry()?;
+        if !target.is_dir || panel.selection_is_empty() {
             return None;
         }
         let paths = panel
@@ -2759,14 +2733,15 @@ mod tests {
         let folder = left.dir("Archive");
         let mut ws = workspace(&left, &right);
 
-        ws.left.selected.insert(file.clone());
-        ws.left.cursor = ws
+        ws.left.select_path(file.clone());
+        let cursor = ws
             .left
             .filtered_entries()
             .iter()
             .position(|entry| entry.path == folder)
             .unwrap()
             + 1;
+        ws.left.set_cursor(cursor);
         let context = ws.command_context();
         let action_bar = ws.action_bar_command_context();
         assert_eq!(context.visible_entries, 2);
@@ -3381,14 +3356,14 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
 
         ws.execute(Command::SwapPanels);
 
         // Left's content (and cursor) is now on the right, and focus follows.
         assert_eq!(ws.right.current_path, l.path());
         assert_eq!(ws.left.current_path, r.path());
-        assert_eq!(ws.right.cursor, 1);
+        assert_eq!(ws.right.cursor(), 1);
         assert!(ws.active == ActivePanel::Right);
     }
 
@@ -3400,12 +3375,29 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         ws.execute(Command::CursorUp);
-        assert_eq!(ws.left.cursor, 0, "cursor must not go below 0");
+        assert_eq!(ws.left.cursor(), 0, "cursor must not go below 0");
 
         for _ in 0..10 {
             ws.execute(Command::CursorDown);
         }
-        assert_eq!(ws.left.cursor, 2, "cursor must stop at the last entry");
+        assert_eq!(ws.left.cursor(), 2, "cursor must stop at the last entry");
+    }
+
+    #[test]
+    fn parent_focus_never_targets_the_first_entry() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        left.file("first.txt", "x");
+        let mut ws = workspace(&left, &right);
+        ws.left.set_cursor(0);
+
+        assert!(ws.left.cursor_entry().is_none());
+        assert!(ws.left.selected_or_cursor().unwrap().is_empty());
+        assert!(!ws.command_context().cursor_entry);
+
+        ws.execute(Command::TogglePreview);
+        ws.execute(Command::BeginRename);
+        assert!(ws.right.preview.is_none());
+        assert!(ws.pending_ui_requests().is_empty());
     }
 
     #[test]
@@ -3417,16 +3409,16 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         ws.execute(Command::CursorMove(5));
-        assert_eq!(ws.left.cursor, 5, "5j-style jump moves 5 rows down");
+        assert_eq!(ws.left.cursor(), 5, "5j-style jump moves 5 rows down");
 
         ws.execute(Command::CursorMove(-2));
-        assert_eq!(ws.left.cursor, 3, "negative delta moves up");
+        assert_eq!(ws.left.cursor(), 3, "negative delta moves up");
 
         ws.execute(Command::CursorMove(100));
-        assert_eq!(ws.left.cursor, 10, "clamped to the last entry");
+        assert_eq!(ws.left.cursor(), 10, "clamped to the last entry");
 
         ws.execute(Command::CursorMove(-100));
-        assert_eq!(ws.left.cursor, 0, "clamped to the first row");
+        assert_eq!(ws.left.cursor(), 0, "clamped to the first row");
     }
 
     #[test]
@@ -3436,19 +3428,19 @@ mod tests {
             l.file(&format!("f{n:02}.txt"), "x");
         }
         let mut ws = workspace(&l, &r);
-        ws.left.page_rows = 5;
+        ws.left.set_page_rows(5);
 
         ws.execute(Command::CursorEnd);
-        assert_eq!(ws.left.cursor, 20, "End jumps to the last row");
+        assert_eq!(ws.left.cursor(), 20, "End jumps to the last row");
 
         ws.execute(Command::CursorHome);
-        assert_eq!(ws.left.cursor, 0, "Home jumps to the top");
+        assert_eq!(ws.left.cursor(), 0, "Home jumps to the top");
 
         ws.execute(Command::CursorPageDown);
-        assert_eq!(ws.left.cursor, 5, "PageDown moves by one page");
+        assert_eq!(ws.left.cursor(), 5, "PageDown moves by one page");
 
         ws.execute(Command::CursorPageUp);
-        assert_eq!(ws.left.cursor, 0, "PageUp moves back, clamped at 0");
+        assert_eq!(ws.left.cursor(), 0, "PageUp moves back, clamped at 0");
     }
 
     #[test]
@@ -3459,12 +3451,12 @@ mod tests {
         l.file("c.txt", "x");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1; // a.txt
+        ws.left.set_cursor(1); // a.txt
         ws.execute(Command::ExtendSelectDown); // select a, move to b, select b
         ws.execute(Command::ExtendSelectDown); // select b, move to c, select c
 
-        assert_eq!(ws.left.cursor, 3);
-        assert_eq!(ws.left.selected.len(), 3, "a, b and c are selected");
+        assert_eq!(ws.left.cursor(), 3);
+        assert_eq!(ws.left.selected_count(), 3, "a, b and c are selected");
     }
 
     #[test]
@@ -3474,7 +3466,7 @@ mod tests {
         l.file("sub/inner.txt", "x");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1; // dirs sort first, so "sub" is the first row
+        ws.left.set_cursor(1); // dirs sort first, so "sub" is the first row
         ws.execute(Command::Activate);
         assert_eq!(ws.left.current_path, sub);
         assert_eq!(ws.left.entries().len(), 1);
@@ -3495,7 +3487,7 @@ mod tests {
         );
         ws.left.refresh();
 
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
         ws.execute(Command::Activate);
         assert_eq!(opened.load(Ordering::Relaxed), 1);
     }
@@ -3515,7 +3507,7 @@ mod tests {
         );
         workspace.left.refresh();
 
-        workspace.left.cursor = 1;
+        workspace.left.set_cursor(1);
         workspace.execute(Command::Activate);
 
         assert_eq!(
@@ -3531,7 +3523,7 @@ mod tests {
         l.file("a.txt", "hello");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
         ws.execute(Command::RequestCopy);
         assert!(matches!(ws.pending_op, Some(PendingOp::Transfer(_))));
 
@@ -3550,7 +3542,7 @@ mod tests {
         l.file("a.txt", "hello");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
         ws.execute(Command::RequestMove);
         ws.confirm_pending_op(|| {});
         wait_transfer(&mut ws);
@@ -3568,7 +3560,7 @@ mod tests {
         l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
         ws.execute(Command::RequestDelete);
         match &ws.pending_op {
             Some(PendingOp::Delete { entries, .. }) => {
@@ -3584,7 +3576,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("a.txt", "a");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
 
         ws.request_copy();
         assert!(matches!(
@@ -3638,12 +3630,12 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         // A pre-existing manual pick must survive the union.
-        ws.left.selected.insert(only_here.clone());
+        ws.left.select_path(only_here.clone());
         ws.select_same_named();
 
-        assert!(ws.left.selected.contains(&shared), "common name selected");
-        assert!(ws.left.selected.contains(&only_here), "prior pick kept");
-        assert_eq!(ws.left.selected.len(), 2, "no spurious selections");
+        assert!(ws.left.is_selected(&shared), "common name selected");
+        assert!(ws.left.is_selected(&only_here), "prior pick kept");
+        assert_eq!(ws.left.selected_count(), 2, "no spurious selections");
     }
 
     #[test]
@@ -3655,19 +3647,19 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         // Stash {a, b}, then change the selection to {c}.
-        ws.left.selected = [a.clone(), b.clone()].into_iter().collect();
+        ws.left.replace_selection([a.clone(), b.clone()]);
         ws.stash_selection();
-        ws.left.selected = [c.clone()].into_iter().collect();
+        ws.left.replace_selection([c.clone()]);
 
         // Union with the stash -> {a, b, c}.
         ws.stash_union();
-        assert_eq!(ws.left.selected.len(), 3);
-        assert!(ws.left.selected.contains(&a) && ws.left.selected.contains(&c));
+        assert_eq!(ws.left.selected_count(), 3);
+        assert!(ws.left.is_selected(&a) && ws.left.is_selected(&c));
 
         // Subtract the stash {a, b} from {a, b, c} -> {c}.
         ws.stash_subtract();
         assert_eq!(
-            ws.left.selected,
+            ws.left.selected_paths().clone(),
             [c.clone()]
                 .into_iter()
                 .collect::<std::collections::HashSet<_>>()
@@ -3683,18 +3675,18 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         // Mark {a, b}, then set the selection to {c}.
-        ws.left.marked = [a.clone(), b.clone()].into_iter().collect();
-        ws.left.selected = [c.clone()].into_iter().collect();
+        ws.left.replace_marks_for_test([a.clone(), b.clone()]);
+        ws.left.replace_selection([c.clone()]);
 
         // Union with the marked set -> {a, b, c}.
         ws.marked_union();
-        assert_eq!(ws.left.selected.len(), 3);
-        assert!(ws.left.selected.contains(&a) && ws.left.selected.contains(&c));
+        assert_eq!(ws.left.selected_count(), 3);
+        assert!(ws.left.is_selected(&a) && ws.left.is_selected(&c));
 
         // Subtract the marked {a, b} from {a, b, c} -> {c}.
         ws.marked_subtract();
         assert_eq!(
-            ws.left.selected,
+            ws.left.selected_paths().clone(),
             [c.clone()]
                 .into_iter()
                 .collect::<std::collections::HashSet<_>>()
@@ -3706,16 +3698,17 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let a = l.file("a.txt", "1");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = ws
+        let cursor = ws
             .left
             .filtered_entries()
             .iter()
             .position(|e| e.path == a)
             .unwrap()
             + 1;
+        ws.left.set_cursor(cursor);
 
         ws.toggle_mark();
-        assert!(ws.left.marked.contains(&a));
+        assert!(ws.left.is_marked(&a));
 
         // Like `selected`, marks are keyed by path: an unrelated refresh of
         // the same directory (e.g. an external file appearing) keeps them,
@@ -3723,7 +3716,7 @@ mod tests {
         // proves for `selected` at the panel level.
         l.file("b.txt", "2");
         ws.left.refresh();
-        assert!(ws.left.marked.contains(&a));
+        assert!(ws.left.is_marked(&a));
     }
 
     #[test]
@@ -3733,8 +3726,8 @@ mod tests {
         l.file("b.txt", "2");
         l.file("keep.log", "3"); // not selected
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("a.txt"));
-        ws.left.selected.insert(l.path().join("b.txt"));
+        ws.left.select_path(l.path().join("a.txt"));
+        ws.left.select_path(l.path().join("b.txt"));
 
         let rule = crate::rename::RenameRule {
             prefix: "x_".into(),
@@ -3750,7 +3743,7 @@ mod tests {
             "non-selected untouched"
         );
         assert!(
-            ws.left.selected.is_empty(),
+            ws.left.selection_is_empty(),
             "selection cleared after rename"
         );
     }
@@ -3761,11 +3754,11 @@ mod tests {
         let left_file = l.file("left.txt", "left");
         let right_file = r.file("right.txt", "right");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(left_file);
+        ws.left.select_path(left_file);
         let context = ws.batch_rename_context().unwrap();
 
         ws.active = ActivePanel::Right;
-        ws.right.selected.insert(right_file);
+        ws.right.select_path(right_file);
         let rule = crate::rename::RenameRule {
             prefix: "renamed_".into(),
             ..Default::default()
@@ -3798,8 +3791,8 @@ mod tests {
         l.file("report_v1.txt", "a");
         l.file("report_v2.txt", "b");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("report_v1.txt"));
-        ws.left.selected.insert(l.path().join("report_v2.txt"));
+        ws.left.select_path(l.path().join("report_v1.txt"));
+        ws.left.select_path(l.path().join("report_v2.txt"));
 
         // "v1" -> "v2" maps report_v1 onto report_v2's name while report_v2
         // stays put: a duplicate/sibling collision, so the plan is rejected.
@@ -3820,7 +3813,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let original = l.file("report.txt", "content");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(original.clone());
+        ws.left.select_path(original.clone());
         let invalid = crate::rename::RenameRule {
             find: "(".to_string(),
             replace: "renamed".to_string(),
@@ -4008,8 +4001,8 @@ mod tests {
         l.file("IMG_2.jpg", "b");
         l.file("keep.txt", "c"); // not selected
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("IMG_1.jpg"));
-        ws.left.selected.insert(l.path().join("IMG_2.jpg"));
+        ws.left.select_path(l.path().join("IMG_1.jpg"));
+        ws.left.select_path(l.path().join("IMG_2.jpg"));
 
         ws.gather_into_folder(|| {});
         drain_transfers(&mut ws);
@@ -4573,7 +4566,7 @@ mod tests {
         r.file("dup.txt", "existing"); // name conflict in the destination
         let mut ws = workspace(&l, &r);
         // Select the source and move it into the right (inactive) panel.
-        ws.left.selected.insert(l.path().join("dup.txt"));
+        ws.left.select_path(l.path().join("dup.txt"));
         ws.request_move();
         // Resolve the conflict as Keep Both: the moved file lands at "dup copy.txt".
         assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::KeepBoth));
@@ -4720,8 +4713,8 @@ mod tests {
         let mut ws = workspace(&l, &r);
 
         // Two selected in the active panel -> that pair.
-        ws.left.selected.insert(a.clone());
-        ws.left.selected.insert(b.clone());
+        ws.left.select_path(a.clone());
+        ws.left.select_path(b.clone());
         let (x, y) = ws.diff_targets().unwrap();
         let names: Vec<String> = [&x, &y]
             .iter()
@@ -4730,8 +4723,8 @@ mod tests {
         assert!(names.contains(&"a.txt".to_string()) && names.contains(&"b.txt".to_string()));
 
         // One selected -> pair with the same-named file in the other panel.
-        ws.left.selected.clear();
-        ws.left.selected.insert(a.clone());
+        ws.left.clear_selection();
+        ws.left.select_path(a.clone());
         let (x, y) = ws.diff_targets().unwrap();
         assert_eq!(y, a, "active file is the second target");
         assert_eq!(x, r.path().join("a.txt"), "other-panel same name is first");
@@ -4749,13 +4742,13 @@ mod tests {
 
         ws.execute(Command::SelectOnlyHere);
         assert_eq!(
-            ws.left.selected,
+            ws.left.selected_paths().clone(),
             [l.path().join("only.txt")].into_iter().collect()
         );
 
         ws.execute(Command::SelectDiffering);
         assert_eq!(
-            ws.left.selected,
+            ws.left.selected_paths().clone(),
             [l.path().join("both.txt")].into_iter().collect()
         );
     }
@@ -4778,7 +4771,7 @@ mod tests {
         // Only the visible differing entry is selected; the filtered-out
         // "beta.txt" is not, even though it also differs.
         assert_eq!(
-            ws.left.selected,
+            ws.left.selected_paths().clone(),
             [l.path().join("alpha.txt")].into_iter().collect()
         );
     }
@@ -4828,7 +4821,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let f = l.file("doc.txt", "data");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
 
         ws.execute(Command::RequestMove);
         ws.confirm_pending_op(|| {});
@@ -4863,8 +4856,8 @@ mod tests {
         l.file("a.txt", "1");
         l.file("b.txt", "2");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("a.txt"));
-        ws.left.selected.insert(l.path().join("b.txt"));
+        ws.left.select_path(l.path().join("a.txt"));
+        ws.left.select_path(l.path().join("b.txt"));
 
         let rule = crate::rename::RenameRule {
             prefix: "x_".into(),
@@ -4934,7 +4927,7 @@ mod tests {
         let fresh = l.file("fresh.txt", &"y".repeat(10));
         r.file("conflict.txt", "existing");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.extend([conflict, fresh.clone()]);
+        ws.left.extend_selection([conflict, fresh.clone()]);
         ws.request_copy();
 
         let Some(PendingOp::Transfer(tr)) = &mut ws.pending_op else {
@@ -4993,7 +4986,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let f = l.file("a.txt", "x");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
 
         ws.execute(Command::BeginRename);
         assert_eq!(ws.pending_ui_requests(), vec![UiRequest::Rename(f)]);
@@ -5004,7 +4997,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         let f = l.file("old.txt", "data");
         let mut ws = workspace(&l, &r);
-        ws.left.cursor = 1;
+        ws.left.set_cursor(1);
 
         ws.commit_rename(&f, "new.txt").unwrap();
 
@@ -5013,7 +5006,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&renamed).unwrap(), "data");
         // Cursor follows the renamed file by path.
         assert_eq!(
-            ws.left.filtered_get(ws.left.cursor - 1).unwrap().name,
+            ws.left.filtered_get(ws.left.cursor() - 1).unwrap().name,
             "new.txt"
         );
     }
@@ -5254,7 +5247,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("readme.md", "x");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("readme.md"));
+        ws.left.select_path(l.path().join("readme.md"));
         // Upper-case the stem: readme.md -> README.md (a case-only change the
         // old studio refused on a case-insensitive volume).
         let rule = crate::rename::RenameRule {
@@ -5273,7 +5266,7 @@ mod tests {
         let (l, r) = (TempDir::new(), TempDir::new());
         l.file("readme.md", "x");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(l.path().join("readme.md"));
+        ws.left.select_path(l.path().join("readme.md"));
         let rule = crate::rename::RenameRule {
             case: crate::rename::CaseMode::Upper,
             ..Default::default()
@@ -5362,7 +5355,7 @@ mod tests {
         l.file("b.txt", "beta");
         let mut ws = workspace(&l, &r);
 
-        ws.left.cursor = 1; // a.txt
+        ws.left.set_cursor(1); // a.txt
         ws.execute(Command::TogglePreview);
         match &ws.right.preview {
             Some(PreviewContent::Pending(identity)) => {
@@ -5372,7 +5365,7 @@ mod tests {
         }
 
         // Preview follows the cursor by replacing only the pending identity.
-        ws.left.cursor = 2; // b.txt
+        ws.left.set_cursor(2); // b.txt
         ws.sync_preview();
         let identity = match &ws.right.preview {
             Some(PreviewContent::Pending(identity)) => {
@@ -5432,14 +5425,15 @@ mod tests {
         let file = l.file("a.txt", "x");
         let sub = l.dir("sub");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(file.clone());
-        ws.left.cursor = ws
+        ws.left.select_path(file.clone());
+        let cursor = ws
             .left
             .filtered_entries()
             .iter()
             .position(|entry| entry.path == sub)
             .expect("subfolder is visible")
             + 1;
+        ws.left.set_cursor(cursor);
 
         ws.execute(Command::MoveIntoCursorFolder);
         assert_eq!(
@@ -5459,14 +5453,15 @@ mod tests {
         let file = l.file("a.txt", "x");
         let sub = l.dir("sub");
         let mut ws = workspace(&l, &r);
-        ws.left.selected.insert(file.clone());
-        ws.left.cursor = ws
+        ws.left.select_path(file.clone());
+        let cursor = ws
             .left
             .filtered_entries()
             .iter()
             .position(|entry| entry.path == sub)
             .expect("subfolder is visible")
             + 1;
+        ws.left.set_cursor(cursor);
 
         ws.execute(Command::CopyIntoCursorFolder);
         assert_eq!(

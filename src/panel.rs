@@ -11,9 +11,11 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
 mod listing;
+mod selection;
 mod view;
 
 use listing::ListingState;
+use selection::{Focus, SelectionState};
 use view::ViewState;
 pub use view::{ViewConfig, ViewSettings};
 
@@ -1706,21 +1708,7 @@ pub struct StaleCursor {
 pub struct PanelState {
     pub current_path: PathBuf,
     listing: ListingState,
-    /// Selected entries, keyed by path so selection survives
-    /// filtering, sorting and directory refreshes.
-    pub selected: std::collections::HashSet<PathBuf>,
-    /// Files flagged for later reference, independent of `selected`: not
-    /// touched by select-all/invert/clear-selection, and available to the
-    /// selection algebra the same way the stash is.
-    pub marked: std::collections::HashSet<PathBuf>,
-    pub cursor: usize,
-    pub scroll_to_cursor: bool,
-    /// First row visible in the virtualized list. Stored with the focused path
-    /// so a directory can reopen in the same neighborhood.
-    pub scroll_anchor: usize,
-    /// Visible rows in the list viewport, set by the renderer each frame and
-    /// read by PageUp/PageDown. Zero until the panel has been drawn once.
-    pub page_rows: usize,
+    selection: SelectionState,
     pub preview: Option<PreviewContent>,
     /// Per-pane directory history (back/forward); a vim-style jump trail that
     /// truncates its forward tail on a new navigation.
@@ -1762,12 +1750,7 @@ impl PanelState {
         PanelState {
             current_path: path.clone(),
             listing: ListingState::default(),
-            selected: std::collections::HashSet::new(),
-            marked: std::collections::HashSet::new(),
-            cursor: 0,
-            scroll_to_cursor: false,
-            scroll_anchor: 0,
-            page_rows: 0,
+            selection: SelectionState::default(),
             preview: None,
             history: {
                 let mut h = crate::jumplist::JumpList::new();
@@ -1842,6 +1825,97 @@ impl PanelState {
         self.listing.status()
     }
 
+    pub fn selected_paths(&self) -> &HashSet<PathBuf> {
+        self.selection.selected()
+    }
+
+    pub fn marked_paths(&self) -> &HashSet<PathBuf> {
+        self.selection.marked()
+    }
+
+    pub fn selection_is_empty(&self) -> bool {
+        self.selection.selected().is_empty()
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selection.selected().len()
+    }
+
+    pub fn is_selected(&self, path: &Path) -> bool {
+        self.selection.selected().contains(path)
+    }
+
+    pub fn is_marked(&self, path: &Path) -> bool {
+        self.selection.marked().contains(path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn select_path(&mut self, path: PathBuf) -> bool {
+        self.selection.insert_selected(path)
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection.clear_selected();
+    }
+
+    pub fn replace_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.selection
+            .replace_selected(paths.into_iter().collect::<HashSet<_>>());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_marks_for_test(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.selection
+            .replace_marked(paths.into_iter().collect::<HashSet<_>>());
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.selection.cursor()
+    }
+
+    pub fn set_cursor(&mut self, row: usize) {
+        let row = row.min(self.filtered_count());
+        let path = row
+            .checked_sub(1)
+            .and_then(|index| self.filtered_get(index))
+            .map(|entry| entry.path.clone());
+        self.selection.set_cursor(row, path);
+    }
+
+    pub fn cursor_entry(&self) -> Option<&FileEntry> {
+        let Focus::Entry(expected) = self.selection.focus() else {
+            return None;
+        };
+        self.cursor()
+            .checked_sub(1)
+            .and_then(|index| self.filtered_get(index))
+            .filter(|entry| &entry.path == expected)
+    }
+
+    pub fn scroll_to_cursor(&self) -> bool {
+        self.selection.scroll_to_cursor()
+    }
+
+    pub fn set_scroll_to_cursor(&mut self, value: bool) {
+        self.selection.set_scroll_to_cursor(value);
+    }
+
+    pub fn scroll_anchor(&self) -> usize {
+        self.selection.scroll_anchor()
+    }
+
+    pub fn set_scroll_anchor(&mut self, anchor: usize) {
+        self.selection.set_scroll_anchor(anchor);
+    }
+
+    pub fn page_rows(&self) -> usize {
+        self.selection.page_rows()
+    }
+
+    pub fn set_page_rows(&mut self, rows: usize) {
+        self.selection.set_page_rows(rows);
+    }
+
     pub fn view_config(&self) -> ViewConfig {
         self.view.config()
     }
@@ -1856,7 +1930,7 @@ impl PanelState {
 
     pub fn set_search_query(&mut self, query: impl Into<String>) {
         let focus = self.focused_path();
-        let old_cursor = self.cursor;
+        let old_cursor = self.cursor();
         self.view.set_search_query(query);
         self.restore_cursor_focus(focus, old_cursor);
     }
@@ -1867,16 +1941,18 @@ impl PanelState {
 
     pub fn set_facets(&mut self, facets: FacetSet) {
         let focus = self.focused_path();
-        let old_cursor = self.cursor;
+        let old_cursor = self.cursor();
         *self.view.facets_mut() = facets;
         self.restore_cursor_focus(focus, old_cursor);
     }
 
-    pub fn sort_column(&self) -> SortColumn {
+    #[cfg(test)]
+    pub(crate) fn sort_column(&self) -> SortColumn {
         self.view.sort_col()
     }
 
-    pub fn sort_order(&self) -> SortOrder {
+    #[cfg(test)]
+    pub(crate) fn sort_order(&self) -> SortOrder {
         self.view.sort_order()
     }
 
@@ -1913,11 +1989,8 @@ impl PanelState {
     /// Re-read the directory, preserving selection and cursor position
     /// by path (entries may have been added, removed or re-sorted).
     fn reload_entries(&mut self) {
-        let cursor_path = if self.cursor > 0 {
-            self.filtered_get(self.cursor - 1).map(|e| e.path.clone())
-        } else {
-            None
-        };
+        let cursor_path = self.focused_path();
+        let old_cursor = self.cursor();
 
         let mut entries = Self::read_dir(&self.current_path, self.view.show_hidden());
         let status = classify_dir(&self.current_path, entries.is_empty());
@@ -1925,17 +1998,11 @@ impl PanelState {
         self.listing.replace(entries, status);
 
         {
-            let existing: std::collections::HashSet<&PathBuf> =
-                self.listing.entries().iter().map(|e| &e.path).collect();
-            self.selected.retain(|p| existing.contains(p));
-            self.marked.retain(|p| existing.contains(p));
+            self.selection
+                .retain_present(self.listing.entries().iter().map(|entry| &entry.path));
         }
 
-        let restored = cursor_path.and_then(|path| self.filtered_position(|e| e.path == path));
-        match restored {
-            Some(idx) => self.cursor = idx + 1,
-            None => self.cursor = self.cursor.min(self.filtered_count()),
-        }
+        self.restore_cursor_focus(cursor_path, old_cursor);
     }
 
     /// Check if fs watcher flagged a change; if so, refresh.
@@ -2182,7 +2249,7 @@ impl PanelState {
 
         let filtered = self.filtered_indices();
         let visible_paths: std::collections::HashSet<PathBuf> =
-            visible_window(filtered.len(), self.scroll_anchor, self.page_rows)
+            visible_window(filtered.len(), self.scroll_anchor(), self.page_rows())
                 .filter_map(|index| {
                     filtered
                         .get(index)
@@ -2350,7 +2417,7 @@ impl PanelState {
 
     pub fn sort_entries(&mut self) {
         let focus = self.focused_path();
-        let old_cursor = self.cursor;
+        let old_cursor = self.cursor();
         let config = self.view.config();
         self.listing
             .resort(|entries| sort_entries_with_config(entries, config));
@@ -2385,12 +2452,8 @@ impl PanelState {
             config: self.view.config(),
             search_query: self.view.search_query().to_string(),
             facets: self.view.facets(),
-            cursor_path: self
-                .cursor
-                .checked_sub(1)
-                .and_then(|index| self.filtered_get(index))
-                .map(|entry| entry.path.clone()),
-            scroll_anchor: self.scroll_anchor,
+            cursor_path: self.focused_path(),
+            scroll_anchor: self.scroll_anchor(),
         }
     }
 
@@ -2415,22 +2478,23 @@ impl PanelState {
             self.view.clear_filters();
         }
         if let Some((_, scroll_anchor)) = &remembered {
-            self.scroll_anchor = *scroll_anchor;
+            self.set_scroll_anchor(*scroll_anchor);
         }
         self.refresh();
         if let Some((cursor_path, scroll_anchor)) = remembered {
-            self.scroll_anchor = scroll_anchor.min(self.filtered_count().saturating_sub(1));
-            self.cursor = cursor_path
+            self.set_scroll_anchor(scroll_anchor.min(self.filtered_count().saturating_sub(1)));
+            let cursor = cursor_path
                 .and_then(|path| self.filtered_position(|entry| entry.path == path))
                 .map(|index| index + 1)
                 .unwrap_or_else(|| {
-                    self.scroll_anchor
+                    self.scroll_anchor()
                         .saturating_add(1)
                         .min(self.filtered_count())
                 });
-            self.scroll_to_cursor = self.cursor > 0;
+            self.set_cursor(cursor);
+            self.set_scroll_to_cursor(self.cursor() > 0);
         } else {
-            self.scroll_anchor = 0;
+            self.set_scroll_anchor(0);
         }
     }
 
@@ -2446,8 +2510,8 @@ impl PanelState {
             if let Some(name) = child
                 && let Some(idx) = self.filtered_position(|e| e.name == name)
             {
-                self.cursor = idx + 1;
-                self.scroll_to_cursor = true;
+                self.set_cursor(idx + 1);
+                self.set_scroll_to_cursor(true);
             }
         }
     }
@@ -2464,8 +2528,8 @@ impl PanelState {
             .filtered_position(|e| e.name_lower.starts_with(&q))
             .or_else(|| self.filtered_position(|e| e.name_lower.contains(&q)));
         if let Some(idx) = pos {
-            self.cursor = idx + 1;
-            self.scroll_to_cursor = true;
+            self.set_cursor(idx + 1);
+            self.set_scroll_to_cursor(true);
             true
         } else {
             false
@@ -2491,7 +2555,7 @@ impl PanelState {
             .collect();
         let added = paths.len();
         for p in paths {
-            self.selected.insert(p);
+            self.selection.insert_selected(p);
         }
         added
     }
@@ -2508,7 +2572,7 @@ impl PanelState {
         sized.sort_by_key(|e| std::cmp::Reverse(e.1)); // largest first
         let mut added = 0;
         for (p, _) in sized.into_iter().take(n) {
-            if self.selected.insert(p) {
+            if self.selection.insert_selected(p) {
                 added += 1;
             }
         }
@@ -2519,11 +2583,7 @@ impl PanelState {
     /// nothing if the cursor is on `..`, a folder, or an extension-less file.
     /// Returns how many entries were added.
     pub fn select_same_extension_as_cursor(&mut self) -> usize {
-        let ext = match self
-            .cursor
-            .checked_sub(1)
-            .and_then(|i| self.filtered_get(i))
-        {
+        let ext = match self.cursor_entry() {
             Some(e) if !e.is_dir && !e.extension.is_empty() => e.extension.clone(),
             _ => return 0,
         };
@@ -2535,7 +2595,7 @@ impl PanelState {
             .collect();
         let added = paths.len();
         for p in paths {
-            self.selected.insert(p);
+            self.selection.insert_selected(p);
         }
         added
     }
@@ -2551,7 +2611,7 @@ impl PanelState {
             .collect();
         let added = paths.len();
         for p in paths {
-            self.selected.insert(p);
+            self.selection.insert_selected(p);
         }
         added
     }
@@ -2566,11 +2626,11 @@ impl PanelState {
     /// is selected, otherwise the whole filtered view (in display order).
     pub fn listing_entries(&self) -> Vec<&FileEntry> {
         let all = self.filtered_entries();
-        if self.selected.is_empty() {
+        if self.selection.selected().is_empty() {
             all
         } else {
             all.into_iter()
-                .filter(|e| self.selected.contains(&e.path))
+                .filter(|e| self.selection.selected().contains(&e.path))
                 .collect()
         }
     }
@@ -2600,10 +2660,10 @@ impl PanelState {
         let mut added = 0;
         for (path, is_add) in decisions {
             if is_add {
-                self.selected.insert(path);
+                self.selection.insert_selected(path);
                 added += 1;
             } else {
-                self.selected.remove(&path);
+                self.selection.remove_selected(&path);
             }
         }
         added
@@ -2625,7 +2685,7 @@ impl PanelState {
             let remove = terms.iter().any(|(term, subtract)| {
                 *subtract && term_matches(term, &entry.name_lower, &entry.extension)
             });
-            let selected = self.selected.contains(&entry.path);
+            let selected = self.selection.selected().contains(&entry.path);
             let next = if remove {
                 false
             } else if add {
@@ -2641,11 +2701,8 @@ impl PanelState {
 
     /// Add the file under the cursor to the selection (range-select step).
     pub fn select_cursor(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        if let Some(path) = self.filtered_get(self.cursor - 1).map(|e| e.path.clone()) {
-            self.selected.insert(path);
+        if let Some(path) = self.cursor_entry().map(|entry| entry.path.clone()) {
+            self.selection.insert_selected(path);
         }
     }
 
@@ -2680,22 +2737,20 @@ impl PanelState {
     }
 
     fn focused_path(&self) -> Option<PathBuf> {
-        self.cursor
-            .checked_sub(1)
-            .and_then(|index| self.filtered_get(index))
-            .map(|entry| entry.path.clone())
+        self.selection.focused_path().map(Path::to_path_buf)
     }
 
     fn restore_cursor_focus(&mut self, focused: Option<PathBuf>, old_cursor: usize) {
         if old_cursor == 0 {
-            self.cursor = 0;
+            self.set_cursor(0);
             return;
         }
-        self.cursor = focused
+        let cursor = focused
             .and_then(|path| self.filtered_position(|entry| entry.path == path))
             .map(|index| index + 1)
             .unwrap_or_else(|| old_cursor.min(self.filtered_count()));
-        self.scroll_to_cursor = true;
+        self.set_cursor(cursor);
+        self.set_scroll_to_cursor(true);
     }
 
     /// Number of entries matching the current filter (no allocation).
@@ -2706,17 +2761,17 @@ impl PanelState {
     /// Clamp the cursor after any filter, facet, or ordering change. Cursor 0
     /// is the synthetic parent row; real rows occupy 1..=filtered_count().
     pub fn ensure_cursor_valid(&mut self) {
-        let clamped = self.cursor.min(self.filtered_count());
-        if self.cursor != clamped {
-            self.cursor = clamped;
-            self.scroll_to_cursor = true;
+        let clamped = self.cursor().min(self.filtered_count());
+        if self.cursor() != clamped {
+            self.set_cursor(clamped);
+            self.set_scroll_to_cursor(true);
         }
     }
 
     /// Clear both text and facet filters as one invariant-preserving action.
     pub fn clear_filters(&mut self) {
         let focus = self.focused_path();
-        let old_cursor = self.cursor;
+        let old_cursor = self.cursor();
         self.view.clear_filters();
         self.restore_cursor_focus(focus, old_cursor);
     }
@@ -2772,18 +2827,16 @@ impl PanelState {
     }
 
     pub fn toggle_select(&mut self, path: PathBuf) {
-        if !self.selected.remove(&path) {
-            self.selected.insert(path);
-        }
+        self.selection.toggle_selected(path);
     }
 
     /// Start a row drag. An unselected anchor always drags only itself; a
     /// selected anchor drags the visible selected set in listing order.
     pub fn begin_drag(&mut self, anchor: PathBuf) {
-        self.drag_entries = if self.selected.contains(&anchor) {
+        self.drag_entries = if self.selection.selected().contains(&anchor) {
             self.filtered_entries()
                 .into_iter()
-                .filter(|entry| self.selected.contains(&entry.path))
+                .filter(|entry| self.selection.selected().contains(&entry.path))
                 .map(|entry| entry.path.clone())
                 .collect()
         } else {
@@ -2794,13 +2847,11 @@ impl PanelState {
     /// Flip `path`'s membership in the mark set. Unlike `toggle_select`,
     /// marks are never cleared by select-all/invert/clear-selection.
     pub fn toggle_mark(&mut self, path: PathBuf) {
-        if !self.marked.remove(&path) {
-            self.marked.insert(path);
-        }
+        self.selection.toggle_marked(path);
     }
 
     pub fn clear_marks(&mut self) {
-        self.marked.clear();
+        self.selection.clear_marked();
     }
 
     pub fn select_all(&mut self) {
@@ -2809,13 +2860,15 @@ impl PanelState {
             .iter()
             .map(|e| e.path.clone())
             .collect();
-        let all_selected = visible.iter().all(|path| self.selected.contains(path));
+        let all_selected = visible
+            .iter()
+            .all(|path| self.selection.selected().contains(path));
         if all_selected {
             for path in visible {
-                self.selected.remove(&path);
+                self.selection.remove_selected(&path);
             }
         } else {
-            self.selected.extend(visible);
+            self.selection.extend_selected(visible);
         }
     }
 
@@ -2829,9 +2882,7 @@ impl PanelState {
             .map(|e| e.path.clone())
             .collect();
         for p in paths {
-            if !self.selected.remove(&p) {
-                self.selected.insert(p);
-            }
+            self.selection.toggle_selected(p);
         }
     }
 
@@ -2839,29 +2890,28 @@ impl PanelState {
     /// Used by relationship-based selectors (e.g. "select files also in the
     /// other panel") so selections compose instead of replacing each other.
     pub fn extend_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
-        self.selected.extend(paths);
+        self.selection.extend_selected(paths);
     }
 
     pub fn selected_entries(&self) -> Vec<FileEntry> {
         self.filtered_entries()
             .into_iter()
-            .filter(|e| self.selected.contains(&e.path))
+            .filter(|e| self.selection.selected().contains(&e.path))
             .cloned()
             .collect()
     }
 
     pub fn selected_or_cursor(&self) -> Result<Vec<FileEntry>, StaleCursor> {
-        if self.selected.is_empty() {
-            // cursor 0 = ".." row, real files start at cursor 1
-            if self.cursor == 0 {
-                return Ok(vec![]);
-            }
-            match self.filtered_get(self.cursor - 1) {
-                Some(entry) => Ok(vec![entry.clone()]),
-                None => Err(StaleCursor {
-                    cursor: self.cursor,
-                    visible_entries: self.filtered_available_count(),
-                }),
+        if self.selection.selected().is_empty() {
+            match self.selection.focus() {
+                Focus::Parent => Ok(vec![]),
+                Focus::Entry(_) => match self.cursor_entry() {
+                    Some(entry) => Ok(vec![entry.clone()]),
+                    None => Err(StaleCursor {
+                        cursor: self.cursor(),
+                        visible_entries: self.filtered_available_count(),
+                    }),
+                },
             }
         } else {
             Ok(self.selected_entries())
@@ -2873,7 +2923,7 @@ impl PanelState {
         self.filtered_snapshot()
             .iter()
             .filter_map(|&i| self.listing.entries().get(i))
-            .filter(|e| self.selected.contains(&e.path))
+            .filter(|e| self.selection.selected().contains(&e.path))
             .map(|e| {
                 if e.is_dir {
                     sizes.get(&e.path).copied().unwrap_or(0)
@@ -3020,7 +3070,7 @@ mod tests {
             entry("selected.txt", false, 1),
             entry("dragged.txt", false, 1),
         ]);
-        panel.selected.insert(PathBuf::from("/test/selected.txt"));
+        panel.select_path(PathBuf::from("/test/selected.txt"));
 
         panel.begin_drag(PathBuf::from("/test/dragged.txt"));
 
@@ -3030,9 +3080,7 @@ mod tests {
     #[test]
     fn dragging_a_selected_row_uses_the_visible_selection() {
         let mut panel = panel_with(vec![entry("a.txt", false, 1), entry("b.txt", false, 1)]);
-        panel
-            .selected
-            .extend([PathBuf::from("/test/a.txt"), PathBuf::from("/test/b.txt")]);
+        panel.extend_selection([PathBuf::from("/test/a.txt"), PathBuf::from("/test/b.txt")]);
 
         panel.begin_drag(PathBuf::from("/test/b.txt"));
 
@@ -3153,7 +3201,7 @@ mod tests {
         let n = p.select_junk();
         assert_eq!(n, 2);
         let names: std::collections::HashSet<String> = p
-            .selected
+            .selected_paths()
             .iter()
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
             .collect();
@@ -3163,7 +3211,7 @@ mod tests {
     }
 
     fn selected_names(p: &PanelState) -> std::collections::HashSet<String> {
-        p.selected
+        p.selected_paths()
             .iter()
             .filter_map(|x| x.file_name().map(|s| s.to_string_lossy().to_string()))
             .collect()
@@ -3197,7 +3245,7 @@ mod tests {
                 e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
             }
         });
-        p.cursor = 1; // first filtered entry: a.rs
+        p.set_cursor(1); // first filtered entry: a.rs
         assert_eq!(p.select_same_extension_as_cursor(), 2);
         let names = selected_names(&p);
         assert!(names.contains("a.rs"));
@@ -3238,7 +3286,7 @@ mod tests {
         // Nothing selected: the whole filtered view.
         assert_eq!(p.listing_entries().len(), 3);
         // With a selection: only the selected rows, in display order.
-        p.selected.insert(PathBuf::from("/test/b"));
+        p.select_path(PathBuf::from("/test/b"));
         let names: Vec<String> = p.listing_entries().iter().map(|e| e.name.clone()).collect();
         assert_eq!(names, vec!["b"]);
     }
@@ -3299,9 +3347,9 @@ mod tests {
         let mut p = panel_with(vec![entry("a", false, 1)]);
         let path = p.entries()[0].path.clone();
         p.toggle_select(path.clone());
-        assert!(p.selected.contains(&path));
+        assert!(p.is_selected(&path));
         p.toggle_select(path.clone());
-        assert!(!p.selected.contains(&path));
+        assert!(!p.is_selected(&path));
     }
 
     #[test]
@@ -3310,17 +3358,11 @@ mod tests {
         let path = p.entries()[0].path.clone();
         p.toggle_select(path.clone());
         p.toggle_mark(path.clone());
-        assert!(p.marked.contains(&path));
-        assert!(
-            p.selected.contains(&path),
-            "marking does not touch selection"
-        );
+        assert!(p.is_marked(&path));
+        assert!(p.is_selected(&path), "marking does not touch selection");
         p.toggle_mark(path.clone());
-        assert!(!p.marked.contains(&path));
-        assert!(
-            p.selected.contains(&path),
-            "unmarking does not touch selection"
-        );
+        assert!(!p.is_marked(&path));
+        assert!(p.is_selected(&path), "unmarking does not touch selection");
     }
 
     #[test]
@@ -3330,17 +3372,17 @@ mod tests {
         p.toggle_select(path.clone());
         p.toggle_mark(path.clone());
         p.clear_marks();
-        assert!(p.marked.is_empty());
-        assert!(p.selected.contains(&path));
+        assert!(p.marked_paths().is_empty());
+        assert!(p.is_selected(&path));
     }
 
     #[test]
     fn select_all_toggles_between_all_and_none() {
         let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
         p.select_all();
-        assert_eq!(p.selected.len(), 2);
+        assert_eq!(p.selected_count(), 2);
         p.select_all();
-        assert!(p.selected.is_empty());
+        assert!(p.selection_is_empty());
     }
 
     #[test]
@@ -3353,18 +3395,18 @@ mod tests {
         let alpha = p.entries()[0].path.clone();
         let album = p.entries()[1].path.clone();
         let zebra = p.entries()[2].path.clone();
-        p.selected.insert(zebra.clone());
+        p.select_path(zebra.clone());
         p.set_search_query("al");
 
         p.select_all();
-        assert!(p.selected.contains(&alpha));
-        assert!(p.selected.contains(&album));
-        assert!(p.selected.contains(&zebra));
+        assert!(p.is_selected(&alpha));
+        assert!(p.is_selected(&album));
+        assert!(p.is_selected(&zebra));
 
         p.select_all();
-        assert!(!p.selected.contains(&alpha));
-        assert!(!p.selected.contains(&album));
-        assert!(p.selected.contains(&zebra));
+        assert!(!p.is_selected(&alpha));
+        assert!(!p.is_selected(&album));
+        assert!(p.is_selected(&zebra));
     }
 
     #[test]
@@ -3378,28 +3420,21 @@ mod tests {
         let album = p.entries()[1].path.clone();
         let zebra = p.entries()[2].path.clone();
         // Pre-select one visible (alpha) and one that the filter will hide (zebra).
-        p.selected.insert(alpha.clone());
-        p.selected.insert(zebra.clone());
+        p.extend_selection([alpha.clone(), zebra.clone()]);
         // Filter to the "al" rows; zebra is now hidden from the view.
         p.set_search_query("al");
         p.invert_selection();
-        assert!(!p.selected.contains(&alpha), "visible+selected -> cleared");
-        assert!(
-            p.selected.contains(&album),
-            "visible+unselected -> selected"
-        );
-        assert!(
-            p.selected.contains(&zebra),
-            "filtered-out row keeps its state"
-        );
+        assert!(!p.is_selected(&alpha), "visible+selected -> cleared");
+        assert!(p.is_selected(&album), "visible+unselected -> selected");
+        assert!(p.is_selected(&zebra), "filtered-out row keeps its state");
     }
 
     #[test]
     fn selected_or_cursor_falls_back_to_cursor_row() {
         let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
-        p.cursor = 0; // ".." row
+        p.set_cursor(0); // ".." row
         assert!(p.selected_or_cursor().unwrap().is_empty());
-        p.cursor = 2; // second file
+        p.set_cursor(2); // second file
         let picked = p.selected_or_cursor().unwrap();
         assert_eq!(picked.len(), 1);
         assert_eq!(picked[0].name, "b");
@@ -3408,12 +3443,12 @@ mod tests {
     #[test]
     fn sorting_reclamps_a_cursor_after_the_filter_changes() {
         let mut p = panel_with(vec![entry("alpha", false, 1), entry("beta", false, 1)]);
-        p.cursor = 2;
+        p.set_cursor(2);
         p.set_search_query("alpha");
 
         p.sort_entries();
 
-        assert_eq!(p.cursor, 1);
+        assert_eq!(p.cursor(), 1);
         assert_eq!(p.filtered_get(0).unwrap().name, "alpha");
     }
 
@@ -3424,7 +3459,7 @@ mod tests {
             entry("alpha.txt", false, 10),
             entry("notes.md", false, 30),
         ]);
-        p.cursor = 1;
+        p.set_cursor(1);
         let focused = p.focused_path().unwrap();
 
         p.set_search_query("t");
@@ -3450,7 +3485,7 @@ mod tests {
     #[test]
     fn stale_filter_indices_are_bounded_and_cursor_miss_is_explicit() {
         let mut p = panel_with(vec![entry("alpha", false, 1), entry("beta", false, 1)]);
-        p.cursor = 2;
+        p.set_cursor(2);
         assert_eq!(p.filtered_count(), 2); // warm the index cache
         p.clear_entries_without_revision_for_test();
 
@@ -3477,7 +3512,7 @@ mod tests {
         assert_eq!(p.entries().len(), 3);
 
         // Cursor on "b.txt" (row 2), select and mark "c.txt".
-        p.cursor = 2;
+        p.set_cursor(2);
         p.toggle_select(doomed.clone());
         p.toggle_mark(doomed.clone());
 
@@ -3486,10 +3521,10 @@ mod tests {
         std::fs::remove_file(&doomed).unwrap();
         p.refresh();
 
-        let under_cursor = p.filtered_entries()[p.cursor - 1].path.clone();
+        let under_cursor = p.filtered_entries()[p.cursor() - 1].path.clone();
         assert!(under_cursor.ends_with("b.txt"), "cursor follows the path");
-        assert!(p.selected.is_empty(), "selection drops deleted paths");
-        assert!(p.marked.is_empty(), "marks drop deleted paths");
+        assert!(p.selection_is_empty(), "selection drops deleted paths");
+        assert!(p.marked_paths().is_empty(), "marks drop deleted paths");
     }
 
     #[test]
@@ -3554,7 +3589,7 @@ mod tests {
 
         assert_eq!(p.current_path, tmp.path());
         // Cursor should sit on "mmm" (the dir we came from), not row 0.
-        let under = p.filtered_get(p.cursor - 1).unwrap();
+        let under = p.filtered_get(p.cursor() - 1).unwrap();
         assert_eq!(under.name, "mmm");
     }
 
@@ -3620,20 +3655,21 @@ mod tests {
 
         let mut p = PanelState::new(downloads.clone());
         p.refresh();
-        p.cursor = p
+        let cursor = p
             .filtered_entries()
             .iter()
             .position(|entry| entry.path == focused)
             .unwrap()
             + 1;
-        p.scroll_anchor = 1;
+        p.set_cursor(cursor);
+        p.set_scroll_anchor(1);
 
         p.navigate_to(docs);
         p.navigate_to(downloads);
 
-        assert_eq!(p.filtered_get(p.cursor - 1).unwrap().path, focused);
-        assert_eq!(p.scroll_anchor, 1);
-        assert!(p.scroll_to_cursor);
+        assert_eq!(p.filtered_get(p.cursor() - 1).unwrap().path, focused);
+        assert_eq!(p.scroll_anchor(), 1);
+        assert!(p.scroll_to_cursor());
     }
 
     #[test]
@@ -3647,14 +3683,14 @@ mod tests {
 
         let mut p = PanelState::new(downloads.clone());
         p.refresh();
-        p.cursor = 2;
-        p.scroll_anchor = 1;
+        p.set_cursor(2);
+        p.set_scroll_anchor(1);
         p.navigate_to(docs);
         std::fs::remove_file(focused).unwrap();
         p.navigate_to(downloads);
 
-        assert_eq!(p.cursor, 2.min(p.filtered_count()));
-        assert!(p.cursor <= p.filtered_count());
+        assert_eq!(p.cursor(), 2.min(p.filtered_count()));
+        assert!(p.cursor() <= p.filtered_count());
     }
 
     #[test]
@@ -3942,7 +3978,7 @@ mod tests {
         let added = p.select_by_mask("*.jpg, !*raw*");
         assert_eq!(added, 2);
         let names: Vec<String> = p
-            .selected
+            .selected_paths()
             .iter()
             .filter_map(|pth| pth.file_name().map(|n| n.to_string_lossy().to_string()))
             .collect();
@@ -3950,7 +3986,7 @@ mod tests {
         assert!(names.contains(&"b.jpg".to_string()));
         assert!(!names.contains(&"raw.jpg".to_string()));
         assert!(!names.contains(&"c.png".to_string()));
-        assert_eq!(p.selected.len(), 2);
+        assert_eq!(p.selected_count(), 2);
     }
 
     #[test]
@@ -3974,7 +4010,7 @@ mod tests {
             .clone();
 
         assert_eq!(p.mask_match_count("!*raw*"), 0);
-        p.selected.insert(raw);
+        p.select_path(raw);
         assert_eq!(p.mask_match_count("!*raw*"), 1);
         assert_eq!(p.mask_match_count("*.jpg, !*raw*"), 2);
     }
@@ -3992,7 +4028,7 @@ mod tests {
         });
         assert_eq!(p.mask_match_count("pdf"), 1);
         p.select_by_mask("pdf");
-        assert_eq!(p.selected.len(), 1);
+        assert_eq!(p.selected_count(), 1);
     }
 
     #[test]
@@ -4019,12 +4055,12 @@ mod tests {
         p.sort_entries();
 
         assert!(p.type_ahead("ban"));
-        assert_eq!(p.filtered_get(p.cursor - 1).unwrap().name, "banana.txt");
+        assert_eq!(p.filtered_get(p.cursor() - 1).unwrap().name, "banana.txt");
 
         // No prefix hit -> substring fallback finds "cherry-banana".
         assert!(p.type_ahead("cherry"));
         assert_eq!(
-            p.filtered_get(p.cursor - 1).unwrap().name,
+            p.filtered_get(p.cursor() - 1).unwrap().name,
             "cherry-banana.txt"
         );
 
@@ -4034,10 +4070,10 @@ mod tests {
     #[test]
     fn select_cursor_adds_current_row() {
         let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
-        p.cursor = 2; // second file
+        p.set_cursor(2); // second file
         p.select_cursor();
-        assert!(p.selected.contains(&p.entries()[1].path));
-        assert_eq!(p.selected.len(), 1);
+        assert!(p.is_selected(&p.entries()[1].path));
+        assert_eq!(p.selected_count(), 1);
     }
 
     #[test]

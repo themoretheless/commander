@@ -219,7 +219,7 @@ impl App {
             Command::RequestCopy => format!("{picked} item(s) -> {inactive_path}"),
             Command::RequestMove => format!("{picked} item(s) -> {inactive_path}"),
             Command::MoveIntoCursorFolder | Command::CopyIntoCursorFolder => active
-                .filtered_get(active.cursor.saturating_sub(1))
+                .cursor_entry()
                 .filter(|entry| entry.is_dir)
                 .map(|entry| {
                     format!(
@@ -236,7 +236,7 @@ impl App {
             Command::RequestDelete => format!("{picked} item(s) to Trash"),
             Command::CreateDir => format!("in {active_path}"),
             Command::BeginRename => active
-                .filtered_get(active.cursor.saturating_sub(1))
+                .cursor_entry()
                 .map(|e| e.name.clone())
                 .unwrap_or_else(|| "cursor item".to_string()),
             Command::BeginBatchRename => format!("{picked} item(s)"),

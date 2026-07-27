@@ -700,7 +700,7 @@ impl App {
     fn quick_action_context(&self) -> crate::quick_actions::QuickActionContext {
         let active = self.ws.active_panel_ref();
         crate::quick_actions::QuickActionContext {
-            selected_count: active.selected.len(),
+            selected_count: active.selected_count(),
             shelf_count: self.ws.shelf.len(),
             has_filters: crate::panel::filter_is_active(active.search_query(), &active.facets()),
         }
@@ -737,7 +737,7 @@ impl App {
                 self.ws.execute(crate::command::Command::BeginBatchRename);
             }
             QuickAction::ClearSelection => {
-                self.ws.active_panel().selected.clear();
+                self.ws.active_panel().clear_selection();
             }
             QuickAction::ClearFilters => {
                 self.ws.active_panel().clear_filters();

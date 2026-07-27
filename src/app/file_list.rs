@@ -27,7 +27,7 @@ impl App {
                 // ".." row — go up one directory (cursor == 0)
                 let can_go_up = panel.current_path.parent().is_some();
                 if can_go_up {
-                    let is_cursor_on_up = panel.cursor == 0;
+                    let is_cursor_on_up = panel.cursor() == 0;
                     let up_bg = if is_cursor_on_up && is_active {
                         t.bg_selected.linear_multiply(0.25)
                     } else {
@@ -60,7 +60,7 @@ impl App {
                     if up_row.double_clicked() {
                         panel.go_up();
                     } else if up_row.clicked() {
-                        panel.cursor = 0;
+                        panel.set_cursor(0);
                     }
                     if up_row.hovered() && !is_cursor_on_up {
                         ui.painter().rect_filled(
@@ -142,8 +142,8 @@ impl App {
                 let dir_counts = counts_arc.lock().ok();
                 let dir_sizes = sizes_arc.lock().ok();
 
-                let cursor = panel.cursor;
-                let scroll_pending = panel.scroll_to_cursor;
+                let cursor = panel.cursor();
+                let scroll_pending = panel.scroll_to_cursor();
                 // Row sizing follows the density tier. `row_content` is the
                 // allocated row height; `row_h` adds the 1px item spacing so the
                 // virtualization stride matches (Comfortable == 28 + 1 == 29,
@@ -185,7 +185,7 @@ impl App {
                 let now = std::time::SystemTime::now();
 
                 // Feed the visible-row count back to the core for PageUp/Down.
-                panel.page_rows = ((viewport.height() / row_h).floor() as usize).max(1);
+                panel.set_page_rows(((viewport.height() / row_h).floor() as usize).max(1));
 
                 // Largest entry size in the listing, used to scale occupancy
                 // bars. Computed once with the size map already locked above.
@@ -226,7 +226,7 @@ impl App {
                         first_visible = last_visible.saturating_sub(visible_count);
                     }
                 }
-                panel.scroll_anchor = first_visible;
+                panel.set_scroll_anchor(first_visible);
 
                 // Space before visible rows
                 if first_visible > 0 {
@@ -243,8 +243,8 @@ impl App {
                     let entry = &panel.entries()[entry_idx];
                     let row_cursor = idx + 1;
                     let is_cursor = row_cursor == cursor;
-                    let is_selected = panel.selected.contains(&entry.path);
-                    let is_marked = panel.marked.contains(&entry.path);
+                    let is_selected = panel.is_selected(&entry.path);
+                    let is_marked = panel.is_marked(&entry.path);
 
                     let zebra = if idx % 2 == 1 {
                         t.bg_card.linear_multiply(0.3)
@@ -619,10 +619,10 @@ impl App {
 
                 // Apply the interactions recorded during the loop.
                 if let Some(c) = pending_cursor {
-                    panel.cursor = c;
+                    panel.set_cursor(c);
                 }
                 if scrolled {
-                    panel.scroll_to_cursor = false;
+                    panel.set_scroll_to_cursor(false);
                 }
                 if let Some(anchor) = drag_anchor {
                     panel.begin_drag(anchor);
@@ -646,7 +646,7 @@ impl App {
                 ui.horizontal(|ui| {
                     let shown = panel.filtered_count();
                     let total = panel.entries().len();
-                    let sel = panel.selected.len();
+                    let sel = panel.selected_count();
                     // One pass for the folder total plus its largest/oldest entry.
                     let overview = panel.folder_overview();
                     let filters_active =
@@ -735,14 +735,14 @@ impl App {
                                 )
                                 .clicked();
                             if clicked {
-                                panel.selected = crate::compare::select_by_compare(
+                                panel.replace_selection(crate::compare::select_by_compare(
                                     panel
                                         .filtered_indices()
                                         .iter()
                                         .filter_map(|&i| panel.entries().get(i)),
                                     map,
                                     crit,
-                                );
+                                ));
                             }
                         }
                     }
