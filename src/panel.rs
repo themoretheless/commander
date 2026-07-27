@@ -10,8 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
+mod listing;
 mod view;
 
+use listing::ListingState;
 use view::ViewState;
 pub use view::{ViewConfig, ViewSettings};
 
@@ -1383,6 +1385,39 @@ fn strip_leading_zeros(s: &[char]) -> &[char] {
     &s[k..]
 }
 
+fn sort_entries_with_config(entries: &mut [FileEntry], config: ViewConfig) {
+    entries.sort_by(|a, b| {
+        if config.folders_first {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => return Ordering::Less,
+                (false, true) => return Ordering::Greater,
+                _ => {}
+            }
+        }
+
+        let primary = match config.sort_col {
+            SortColumn::Name if config.natural_name_sort => {
+                natural_cmp(&a.name_lower, &b.name_lower)
+            }
+            SortColumn::Name => a.name_lower.cmp(&b.name_lower),
+            SortColumn::Size => a.size.cmp(&b.size),
+            SortColumn::Modified => a.modified.cmp(&b.modified),
+            SortColumn::Extension => a
+                .extension
+                .cmp(&b.extension)
+                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
+            SortColumn::Kind => crate::selection_summary::kind_of(a)
+                .cmp(&crate::selection_summary::kind_of(b))
+                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
+        };
+        let ordered = match config.sort_order {
+            SortOrder::Asc => primary,
+            SortOrder::Desc => primary.reverse(),
+        };
+        ordered.then_with(|| a.path.cmp(&b.path))
+    });
+}
+
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -1633,26 +1668,6 @@ pub fn facet_matches(entry: &FileEntry, facets: &FacetSet, now: SystemTime) -> b
     true
 }
 
-/// Cached filtered view: indices into `entries` matching `query` and facets.
-/// Valid while `generation`, `query` and `facets` are unchanged.
-struct FilterCache {
-    generation: u64,
-    query: String,
-    facets: FacetSet,
-    indices: Vec<usize>,
-}
-
-impl FilterCache {
-    fn stale() -> Self {
-        FilterCache {
-            generation: u64::MAX, // sentinel: never computed
-            query: String::new(),
-            facets: FacetSet::default(),
-            indices: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SortColumn {
     Name,
@@ -1690,7 +1705,7 @@ pub struct StaleCursor {
 
 pub struct PanelState {
     pub current_path: PathBuf,
-    pub entries: Vec<FileEntry>,
+    listing: ListingState,
     /// Selected entries, keyed by path so selection survives
     /// filtering, sorting and directory refreshes.
     pub selected: std::collections::HashSet<PathBuf>,
@@ -1703,8 +1718,6 @@ pub struct PanelState {
     /// First row visible in the virtualized list. Stored with the focused path
     /// so a directory can reopen in the same neighborhood.
     pub scroll_anchor: usize,
-    /// Why the current listing is empty/non-empty (for the empty-state UI).
-    pub dir_status: DirStatus,
     /// Visible rows in the list viewport, set by the renderer each frame and
     /// read by PageUp/PageDown. Zero until the panel has been drawn once.
     pub page_rows: usize,
@@ -1732,9 +1745,6 @@ pub struct PanelState {
     /// but the listing itself is unchanged.
     sizes_dirty: Arc<std::sync::atomic::AtomicBool>,
     last_sizes_recompute: Option<std::time::Instant>,
-    /// Bumped whenever `entries` content or order changes.
-    entries_gen: u64,
-    filter_cache: std::cell::RefCell<FilterCache>,
     watcher_event_generation: Arc<std::sync::atomic::AtomicU64>,
     watcher_ready_generation: Arc<std::sync::atomic::AtomicU64>,
     watcher_batch_scheduled: Arc<std::sync::atomic::AtomicBool>,
@@ -1751,13 +1761,12 @@ impl PanelState {
     pub fn new(path: PathBuf) -> Self {
         PanelState {
             current_path: path.clone(),
-            entries: Vec::new(),
+            listing: ListingState::default(),
             selected: std::collections::HashSet::new(),
             marked: std::collections::HashSet::new(),
             cursor: 0,
             scroll_to_cursor: false,
             scroll_anchor: 0,
-            dir_status: DirStatus::Empty,
             page_rows: 0,
             preview: None,
             history: {
@@ -1778,8 +1787,6 @@ impl PanelState {
             applied_rescan_generation: 0,
             sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_sizes_recompute: None,
-            entries_gen: 0,
-            filter_cache: std::cell::RefCell::new(FilterCache::stale()),
             watcher_event_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             watcher_ready_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             watcher_batch_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1806,6 +1813,35 @@ impl PanelState {
         self.notify.is_some()
     }
 
+    pub fn entries(&self) -> &[FileEntry] {
+        self.listing.entries()
+    }
+
+    #[cfg(test)]
+    fn replace_entries_for_test(&mut self, entries: Vec<FileEntry>) {
+        self.listing.replace_for_test(entries);
+    }
+
+    #[cfg(test)]
+    fn mutate_entries_for_test(&mut self, mutate: impl FnOnce(&mut Vec<FileEntry>)) {
+        self.listing.mutate_for_test(mutate);
+    }
+
+    #[cfg(test)]
+    fn push_entry_for_test(&mut self, entry: FileEntry) {
+        self.listing.push_for_test(entry);
+    }
+
+    #[cfg(test)]
+    fn clear_entries_without_revision_for_test(&mut self) {
+        self.listing
+            .mutate_entries_without_revision_for_test(Vec::clear);
+    }
+
+    pub fn dir_status(&self) -> DirStatus {
+        self.listing.status()
+    }
+
     pub fn view_config(&self) -> ViewConfig {
         self.view.config()
     }
@@ -1819,8 +1855,10 @@ impl PanelState {
     }
 
     pub fn set_search_query(&mut self, query: impl Into<String>) {
+        let focus = self.focused_path();
+        let old_cursor = self.cursor;
         self.view.set_search_query(query);
-        self.ensure_cursor_valid();
+        self.restore_cursor_focus(focus, old_cursor);
     }
 
     pub fn facets(&self) -> FacetSet {
@@ -1828,8 +1866,10 @@ impl PanelState {
     }
 
     pub fn set_facets(&mut self, facets: FacetSet) {
+        let focus = self.focused_path();
+        let old_cursor = self.cursor;
         *self.view.facets_mut() = facets;
-        self.ensure_cursor_valid();
+        self.restore_cursor_focus(focus, old_cursor);
     }
 
     pub fn sort_column(&self) -> SortColumn {
@@ -1879,13 +1919,14 @@ impl PanelState {
             None
         };
 
-        self.entries = Self::read_dir(&self.current_path, self.view.show_hidden());
-        self.dir_status = classify_dir(&self.current_path, self.entries.is_empty());
-        self.sort_entries();
+        let mut entries = Self::read_dir(&self.current_path, self.view.show_hidden());
+        let status = classify_dir(&self.current_path, entries.is_empty());
+        sort_entries_with_config(&mut entries, self.view.config());
+        self.listing.replace(entries, status);
 
         {
             let existing: std::collections::HashSet<&PathBuf> =
-                self.entries.iter().map(|e| &e.path).collect();
+                self.listing.entries().iter().map(|e| &e.path).collect();
             self.selected.retain(|p| existing.contains(p));
             self.marked.retain(|p| existing.contains(p));
         }
@@ -2078,7 +2119,7 @@ impl PanelState {
         let mut need_size: Vec<(PathBuf, Option<SystemTime>, VolumePathKey)> = Vec::new();
         let mut retry = false;
 
-        for entry in &self.entries {
+        for entry in self.listing.entries() {
             if !entry.is_dir {
                 continue;
             }
@@ -2145,7 +2186,7 @@ impl PanelState {
                 .filter_map(|index| {
                     filtered
                         .get(index)
-                        .and_then(|entry| self.entries.get(*entry))
+                        .and_then(|entry| self.listing.entries().get(*entry))
                 })
                 .filter(|entry| entry.is_dir)
                 .map(|entry| entry.path.clone())
@@ -2308,47 +2349,12 @@ impl PanelState {
     }
 
     pub fn sort_entries(&mut self) {
-        let col = self.view.sort_col();
-        let order = self.view.sort_order();
-        let folders_first = self.view.folders_first();
-        let natural = self.view.natural_name_sort();
-
-        self.entries.sort_by(|a, b| {
-            // Folders pinned to the top, unless that grouping is turned off.
-            if folders_first {
-                match (a.is_dir, b.is_dir) {
-                    (true, false) => return Ordering::Less,
-                    (false, true) => return Ordering::Greater,
-                    _ => {}
-                }
-            }
-
-            let cmp = match col {
-                // Natural order over the precomputed lowercase name, so
-                // "file2" sorts before "file10"; plain A-Z when disabled.
-                SortColumn::Name if natural => natural_cmp(&a.name_lower, &b.name_lower),
-                SortColumn::Name => a.name_lower.cmp(&b.name_lower),
-                SortColumn::Size => a.size.cmp(&b.size),
-                SortColumn::Modified => a.modified.cmp(&b.modified),
-                // Group by extension, then by name within an extension.
-                SortColumn::Extension => a
-                    .extension
-                    .cmp(&b.extension)
-                    .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
-                // Group by coarse kind, then by name within a kind.
-                SortColumn::Kind => crate::selection_summary::kind_of(a)
-                    .cmp(&crate::selection_summary::kind_of(b))
-                    .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
-            };
-
-            match order {
-                SortOrder::Asc => cmp,
-                SortOrder::Desc => cmp.reverse(),
-            }
-        });
-        // Content/order changed: filtered indices must be rebuilt.
-        self.entries_gen = self.entries_gen.wrapping_add(1);
-        self.ensure_cursor_valid();
+        let focus = self.focused_path();
+        let old_cursor = self.cursor;
+        let config = self.view.config();
+        self.listing
+            .resort(|entries| sort_entries_with_config(entries, config));
+        self.restore_cursor_focus(focus, old_cursor);
     }
 
     /// Toggle pinning folders to the top, then re-sort in place.
@@ -2668,45 +2674,33 @@ impl PanelState {
         }
     }
 
-    /// Rebuild the cached filtered indices if entries or query changed.
-    /// A warm cache costs two comparisons; the string matching over all
-    /// entries runs only when something actually changed.
-    fn ensure_filter_cache(&self) {
-        let mut cache = self.filter_cache.borrow_mut();
-        let query = self.view.search_query().trim();
-        if cache.generation == self.entries_gen
-            && cache.query == query
-            && cache.facets == self.view.facets()
-        {
+    fn filtered_snapshot(&self) -> Arc<[usize]> {
+        self.listing
+            .filtered_snapshot(self.view.search_query(), self.view.facets())
+    }
+
+    fn focused_path(&self) -> Option<PathBuf> {
+        self.cursor
+            .checked_sub(1)
+            .and_then(|index| self.filtered_get(index))
+            .map(|entry| entry.path.clone())
+    }
+
+    fn restore_cursor_focus(&mut self, focused: Option<PathBuf>, old_cursor: usize) {
+        if old_cursor == 0 {
+            self.cursor = 0;
             return;
         }
-        let _latency =
-            crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FilterResponse);
-        cache.generation = self.entries_gen;
-        cache.query = query.to_string();
-        cache.facets = self.view.facets();
-        cache.indices.clear();
-
-        // Fuzzy subsequence match (shared with the command palette), so "scn"
-        // narrows to "scanner.rs". This is more permissive than a substring
-        // filter; the sort order is left untouched (we narrow, never reorder).
-        let facets = self.view.facets();
-        let no_facets = facets.is_empty();
-        let now = SystemTime::now();
-        cache.indices.extend(
-            self.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| crate::fuzzy::is_match(query, &e.name))
-                .filter(|(_, e)| no_facets || facet_matches(e, &facets, now))
-                .map(|(i, _)| i),
-        );
+        self.cursor = focused
+            .and_then(|path| self.filtered_position(|entry| entry.path == path))
+            .map(|index| index + 1)
+            .unwrap_or_else(|| old_cursor.min(self.filtered_count()));
+        self.scroll_to_cursor = true;
     }
 
     /// Number of entries matching the current filter (no allocation).
     pub fn filtered_count(&self) -> usize {
-        self.ensure_filter_cache();
-        self.filter_cache.borrow().indices.len()
+        self.filtered_snapshot().len()
     }
 
     /// Clamp the cursor after any filter, facet, or ordering change. Cursor 0
@@ -2721,57 +2715,45 @@ impl PanelState {
 
     /// Clear both text and facet filters as one invariant-preserving action.
     pub fn clear_filters(&mut self) {
+        let focus = self.focused_path();
+        let old_cursor = self.cursor;
         self.view.clear_filters();
-        self.ensure_cursor_valid();
+        self.restore_cursor_focus(focus, old_cursor);
     }
 
     /// The i-th entry of the filtered view (no allocation).
     pub fn filtered_get(&self, i: usize) -> Option<&FileEntry> {
-        self.ensure_filter_cache();
-        let idx = *self.filter_cache.borrow().indices.get(i)?;
-        self.entries.get(idx)
+        let snapshot = self.filtered_snapshot();
+        let idx = *snapshot.get(i)?;
+        self.listing.entries().get(idx)
     }
 
-    /// Snapshot of the filtered view as indices into `entries`.
-    /// Cheap (a `Vec<usize>` clone); used by the virtualized list renderer.
-    pub fn filtered_indices(&self) -> Vec<usize> {
-        self.ensure_filter_cache();
-        self.filter_cache
-            .borrow()
-            .indices
-            .iter()
-            .copied()
-            .filter(|&i| i < self.entries.len())
-            .collect()
+    /// Generation-bound shared snapshot of indices into [`Self::entries`].
+    /// Cloning this is O(1), so a warm renderer frame does not allocate O(N).
+    pub fn filtered_indices(&self) -> Arc<[usize]> {
+        self.filtered_snapshot()
     }
 
     pub fn filtered_entries(&self) -> Vec<&FileEntry> {
-        self.ensure_filter_cache();
-        let cache = self.filter_cache.borrow();
-        cache
-            .indices
+        let snapshot = self.filtered_snapshot();
+        snapshot
             .iter()
-            .filter_map(|&i| self.entries.get(i))
+            .filter_map(|&i| self.listing.entries().get(i))
             .collect()
     }
 
     fn filtered_position(&self, mut predicate: impl FnMut(&FileEntry) -> bool) -> Option<usize> {
-        self.ensure_filter_cache();
-        let cache = self.filter_cache.borrow();
-        cache
-            .indices
+        let snapshot = self.filtered_snapshot();
+        snapshot
             .iter()
-            .filter_map(|&index| self.entries.get(index))
+            .filter_map(|&index| self.listing.entries().get(index))
             .position(&mut predicate)
     }
 
     fn filtered_available_count(&self) -> usize {
-        self.ensure_filter_cache();
-        self.filter_cache
-            .borrow()
-            .indices
+        self.filtered_snapshot()
             .iter()
-            .filter(|&&index| self.entries.get(index).is_some())
+            .filter(|&&index| self.listing.entries().get(index).is_some())
             .count()
     }
 
@@ -2779,10 +2761,9 @@ impl PanelState {
     /// `false` stops the walk, which keeps action-bar capability checks cheap
     /// when the first actionable selection is near the front of the listing.
     pub(crate) fn visit_filtered(&self, mut visitor: impl FnMut(usize, &FileEntry) -> bool) {
-        self.ensure_filter_cache();
-        let cache = self.filter_cache.borrow();
-        for &index in &cache.indices {
-            if let Some(entry) = self.entries.get(index)
+        let snapshot = self.filtered_snapshot();
+        for &index in snapshot.iter() {
+            if let Some(entry) = self.listing.entries().get(index)
                 && !visitor(index, entry)
             {
                 break;
@@ -2888,13 +2869,10 @@ impl PanelState {
     }
 
     pub fn total_size_selected(&self) -> u64 {
-        self.ensure_filter_cache();
         let sizes = lock_recover(&self.dir_sizes);
-        let cache = self.filter_cache.borrow();
-        cache
-            .indices
+        self.filtered_snapshot()
             .iter()
-            .filter_map(|&i| self.entries.get(i))
+            .filter_map(|&i| self.listing.entries().get(i))
             .filter(|e| self.selected.contains(&e.path))
             .map(|e| {
                 if e.is_dir {
@@ -2921,7 +2899,7 @@ impl PanelState {
         // per-frame pass allocates at most twice (not once per new maximum).
         let mut largest: Option<(usize, u64)> = None;
         let mut oldest: Option<(usize, SystemTime)> = None;
-        for (i, e) in self.entries.iter().enumerate() {
+        for (i, e) in self.listing.entries().iter().enumerate() {
             let size = if e.is_dir {
                 dir_count += 1;
                 match sizes.get(&e.path).copied() {
@@ -2952,8 +2930,8 @@ impl PanelState {
         };
         FolderOverview {
             total,
-            largest: largest.map(|(i, sz)| (self.entries[i].name.clone(), sz)),
-            oldest: oldest.map(|(i, m)| (self.entries[i].name.clone(), m)),
+            largest: largest.map(|(i, sz)| (self.listing.entries()[i].name.clone(), sz)),
+            oldest: oldest.map(|(i, m)| (self.listing.entries()[i].name.clone(), m)),
         }
     }
 
@@ -2961,7 +2939,7 @@ impl PanelState {
     /// or order change. Lets the app cache per-panel derived data (e.g. the
     /// cross-panel compare map) and rebuild only when the entries change.
     pub fn entries_gen(&self) -> u64 {
-        self.entries_gen
+        self.listing.revision().value()
     }
 
     pub fn set_sort(&mut self, col: SortColumn) {
@@ -3032,7 +3010,7 @@ mod tests {
 
     fn panel_with(entries: Vec<FileEntry>) -> PanelState {
         let mut p = PanelState::new(PathBuf::from("/test"));
-        p.entries = entries;
+        p.replace_entries_for_test(entries);
         p
     }
 
@@ -3081,7 +3059,7 @@ mod tests {
             entry("zoo", true, 0),
         ]);
         p.sort_entries();
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["Apple", "zoo", "beta.txt", "zeta.txt"]);
     }
 
@@ -3090,7 +3068,7 @@ mod tests {
         let mut p = panel_with(vec![entry("a.txt", false, 1), entry("b.txt", false, 2)]);
         p.set_sort(SortColumn::Size); // asc
         p.set_sort(SortColumn::Size); // same column again -> desc
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["b.txt", "a.txt"]);
     }
 
@@ -3104,11 +3082,11 @@ mod tests {
         ]);
         // Off: folders are no longer pinned, names sort as one stream.
         p.toggle_folders_first();
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["Apple", "beta.txt", "zeta.txt", "zoo"]);
         // Back on: folders return to the top.
         p.toggle_folders_first();
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["Apple", "zoo", "beta.txt", "zeta.txt"]);
     }
 
@@ -3120,11 +3098,11 @@ mod tests {
         ]);
         // Natural (default): file2 before file10.
         p.sort_entries();
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file2.txt", "file10.txt"]);
         // ASCII: "file10" sorts before "file2" lexicographically.
         p.toggle_natural_sort();
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file10.txt", "file2.txt"]);
     }
 
@@ -3136,11 +3114,13 @@ mod tests {
             entry("c.txt", false, 1),
             entry("z.rs", false, 1),
         ]);
-        for e in &mut p.entries {
-            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
-        }
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+            }
+        });
         p.set_sort(SortColumn::Extension);
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a.rs", "z.rs", "b.txt", "c.txt"]);
     }
 
@@ -3151,11 +3131,13 @@ mod tests {
             entry("pic.jpg", false, 1),
             entry("doc.pdf", false, 1),
         ]);
-        for e in &mut p.entries {
-            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
-        }
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+            }
+        });
         p.set_sort(SortColumn::Kind);
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         // Declaration order of Kind: Image, Document, Code.
         assert_eq!(names, vec!["pic.jpg", "doc.pdf", "main.rs"]);
     }
@@ -3210,9 +3192,11 @@ mod tests {
             entry("b.txt", false, 1),
             entry("c.rs", false, 1),
         ]);
-        for e in &mut p.entries {
-            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
-        }
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+            }
+        });
         p.cursor = 1; // first filtered entry: a.rs
         assert_eq!(p.select_same_extension_as_cursor(), 2);
         let names = selected_names(&p);
@@ -3240,7 +3224,7 @@ mod tests {
         let mut p = panel_with(vec![entry("a.txt", false, 1), entry("b.txt", false, 2)]);
         p.sort_entries(); // Name asc: a, b
         p.reverse_sort(); // -> desc: b, a
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["b.txt", "a.txt"]);
     }
 
@@ -3313,7 +3297,7 @@ mod tests {
     #[test]
     fn toggle_select_adds_then_removes() {
         let mut p = panel_with(vec![entry("a", false, 1)]);
-        let path = p.entries[0].path.clone();
+        let path = p.entries()[0].path.clone();
         p.toggle_select(path.clone());
         assert!(p.selected.contains(&path));
         p.toggle_select(path.clone());
@@ -3323,7 +3307,7 @@ mod tests {
     #[test]
     fn toggle_mark_adds_then_removes_independently_of_selection() {
         let mut p = panel_with(vec![entry("a", false, 1)]);
-        let path = p.entries[0].path.clone();
+        let path = p.entries()[0].path.clone();
         p.toggle_select(path.clone());
         p.toggle_mark(path.clone());
         assert!(p.marked.contains(&path));
@@ -3342,7 +3326,7 @@ mod tests {
     #[test]
     fn clear_marks_empties_the_set_without_touching_selection() {
         let mut p = panel_with(vec![entry("a", false, 1)]);
-        let path = p.entries[0].path.clone();
+        let path = p.entries()[0].path.clone();
         p.toggle_select(path.clone());
         p.toggle_mark(path.clone());
         p.clear_marks();
@@ -3366,9 +3350,9 @@ mod tests {
             entry("album", false, 1),
             entry("zebra", false, 1),
         ]);
-        let alpha = p.entries[0].path.clone();
-        let album = p.entries[1].path.clone();
-        let zebra = p.entries[2].path.clone();
+        let alpha = p.entries()[0].path.clone();
+        let album = p.entries()[1].path.clone();
+        let zebra = p.entries()[2].path.clone();
         p.selected.insert(zebra.clone());
         p.set_search_query("al");
 
@@ -3390,9 +3374,9 @@ mod tests {
             entry("album", false, 1),
             entry("zebra", false, 1),
         ]);
-        let alpha = p.entries[0].path.clone();
-        let album = p.entries[1].path.clone();
-        let zebra = p.entries[2].path.clone();
+        let alpha = p.entries()[0].path.clone();
+        let album = p.entries()[1].path.clone();
+        let zebra = p.entries()[2].path.clone();
         // Pre-select one visible (alpha) and one that the filter will hide (zebra).
         p.selected.insert(alpha.clone());
         p.selected.insert(zebra.clone());
@@ -3434,11 +3418,41 @@ mod tests {
     }
 
     #[test]
+    fn sort_and_filter_keep_focus_on_the_same_path() {
+        let mut p = panel_with(vec![
+            entry("beta.txt", false, 20),
+            entry("alpha.txt", false, 10),
+            entry("notes.md", false, 30),
+        ]);
+        p.cursor = 1;
+        let focused = p.focused_path().unwrap();
+
+        p.set_search_query("t");
+        assert_eq!(p.focused_path(), Some(focused.clone()));
+        p.set_sort(SortColumn::Size);
+        assert_eq!(p.focused_path(), Some(focused));
+    }
+
+    #[test]
+    fn equal_sort_keys_use_path_as_a_stable_tie_breaker() {
+        let mut z = entry("same.txt", false, 10);
+        z.path = PathBuf::from("/z/same.txt");
+        let mut a = entry("same.txt", false, 10);
+        a.path = PathBuf::from("/a/same.txt");
+        let mut p = panel_with(vec![z, a]);
+
+        p.set_sort(SortColumn::Size);
+
+        assert_eq!(p.entries()[0].path, PathBuf::from("/a/same.txt"));
+        assert_eq!(p.entries()[1].path, PathBuf::from("/z/same.txt"));
+    }
+
+    #[test]
     fn stale_filter_indices_are_bounded_and_cursor_miss_is_explicit() {
         let mut p = panel_with(vec![entry("alpha", false, 1), entry("beta", false, 1)]);
         p.cursor = 2;
         assert_eq!(p.filtered_count(), 2); // warm the index cache
-        p.entries.clear(); // simulate an invariant violation without a generation bump
+        p.clear_entries_without_revision_for_test();
 
         assert!(p.filtered_entries().is_empty());
         assert!(p.filtered_indices().is_empty());
@@ -3460,7 +3474,7 @@ mod tests {
 
         let mut p = PanelState::new(tmp.path().to_path_buf());
         p.refresh();
-        assert_eq!(p.entries.len(), 3);
+        assert_eq!(p.entries().len(), 3);
 
         // Cursor on "b.txt" (row 2), select and mark "c.txt".
         p.cursor = 2;
@@ -3661,7 +3675,7 @@ mod tests {
             entry("file1.txt", false, 1),
         ]);
         p.sort_entries();
-        let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
     }
 
@@ -3867,9 +3881,11 @@ mod tests {
             entry("b.rs", false, 1),
             entry("c.jpg", false, 1),
         ]);
-        for e in &mut p.entries {
-            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
-        }
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+            }
+        });
         p.set_facets(FacetSet {
             kind: Some(KindFacet::Images),
             ..Default::default()
@@ -3914,9 +3930,11 @@ mod tests {
             entry("raw.jpg", false, 1),
         ]);
         // bare ext for files needs the extension field populated:
-        for e in &mut p.entries {
-            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
-        }
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+            }
+        });
         p.sort_entries();
 
         // Add all jpgs, then subtract anything containing "raw".
@@ -3942,11 +3960,13 @@ mod tests {
             entry("raw.jpg", false, 1),
             entry("note.txt", false, 1),
         ]);
-        for e in &mut p.entries {
-            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
-        }
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+            }
+        });
         let raw = p
-            .entries
+            .entries()
             .iter()
             .find(|entry| entry.name == "raw.jpg")
             .unwrap()
@@ -3965,9 +3985,11 @@ mod tests {
             entry("doc.pdf", false, 1),
             entry("note.txt", false, 1),
         ]);
-        for e in &mut p.entries {
-            e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
-        }
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
+            }
+        });
         assert_eq!(p.mask_match_count("pdf"), 1);
         p.select_by_mask("pdf");
         assert_eq!(p.selected.len(), 1);
@@ -4014,7 +4036,7 @@ mod tests {
         let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
         p.cursor = 2; // second file
         p.select_cursor();
-        assert!(p.selected.contains(&p.entries[1].path));
+        assert!(p.selected.contains(&p.entries()[1].path));
         assert_eq!(p.selected.len(), 1);
     }
 
@@ -4029,7 +4051,7 @@ mod tests {
         assert_eq!(p.filtered_get(0).unwrap().name, "alpha");
 
         // Entry change (generation bump via sort) invalidates it too.
-        p.entries.push(entry("alps", false, 1));
+        p.push_entry_for_test(entry("alps", false, 1));
         p.sort_entries();
         assert_eq!(p.filtered_count(), 2);
         let names: Vec<&str> = p
@@ -4050,8 +4072,8 @@ mod tests {
         p.set_search_query("keep");
         let idx = p.filtered_indices();
         assert_eq!(idx.len(), 2);
-        for i in idx {
-            assert!(p.entries[i].name.contains("keep"));
+        for &i in idx.iter() {
+            assert!(p.entries()[i].name.contains("keep"));
         }
     }
 
@@ -4626,15 +4648,30 @@ mod tests {
         tmp.file("before.txt", "before");
         let mut panel = PanelState::new(tmp.path().to_path_buf());
         panel.refresh();
-        assert!(panel.entries.iter().any(|entry| entry.name == "before.txt"));
+        assert!(
+            panel
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "before.txt")
+        );
 
         std::fs::remove_file(tmp.path().join("before.txt")).unwrap();
         tmp.file("after.txt", "after");
         flag_watcher_gap(&panel.watcher_rescan_generation, &panel.needs_refresh);
 
         assert!(panel.poll_fs_changes());
-        assert!(panel.entries.iter().any(|entry| entry.name == "after.txt"));
-        assert!(!panel.entries.iter().any(|entry| entry.name == "before.txt"));
+        assert!(
+            panel
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "after.txt")
+        );
+        assert!(
+            !panel
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "before.txt")
+        );
         assert_eq!(
             panel.applied_rescan_generation,
             panel

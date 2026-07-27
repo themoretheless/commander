@@ -92,7 +92,7 @@ impl App {
                                 Some(("Clear filters", "clear_filters")),
                             )
                         } else {
-                            match panel.dir_status {
+                            match panel.dir_status() {
                                 DirStatus::Denied => (
                                     "\u{1f512}",
                                     "No permission to read this folder",
@@ -196,7 +196,7 @@ impl App {
                             filtered
                                 .iter()
                                 .map(|&i| {
-                                    crate::panel::entry_display_size(&panel.entries[i], sizes)
+                                    crate::panel::entry_display_size(&panel.entries()[i], sizes)
                                 })
                                 .max()
                                 .unwrap_or(0)
@@ -240,7 +240,7 @@ impl App {
                 for (offset, &entry_idx) in filtered[first_visible..last_visible].iter().enumerate()
                 {
                     let idx = first_visible + offset;
-                    let entry = &panel.entries[entry_idx];
+                    let entry = &panel.entries()[entry_idx];
                     let row_cursor = idx + 1;
                     let is_cursor = row_cursor == cursor;
                     let is_selected = panel.selected.contains(&entry.path);
@@ -645,7 +645,7 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let shown = panel.filtered_count();
-                    let total = panel.entries.len();
+                    let total = panel.entries().len();
                     let sel = panel.selected.len();
                     // One pass for the folder total plus its largest/oldest entry.
                     let overview = panel.folder_overview();
@@ -738,8 +738,8 @@ impl App {
                                 panel.selected = crate::compare::select_by_compare(
                                     panel
                                         .filtered_indices()
-                                        .into_iter()
-                                        .filter_map(|i| panel.entries.get(i)),
+                                        .iter()
+                                        .filter_map(|&i| panel.entries().get(i)),
                                     map,
                                     crit,
                                 );

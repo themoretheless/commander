@@ -607,7 +607,7 @@ mod tests {
         let first_listing = probe(9, || {
             let mut panel = crate::panel::PanelState::new(root.clone());
             panel.refresh();
-            std::hint::black_box(panel.entries.len());
+            std::hint::black_box(panel.entries().len());
         });
         let mut panel = crate::panel::PanelState::new(root.clone());
         panel.refresh();

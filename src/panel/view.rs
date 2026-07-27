@@ -111,16 +111,8 @@ impl ViewState {
         self.config.show_hidden = !self.config.show_hidden;
     }
 
-    pub(super) fn folders_first(&self) -> bool {
-        self.config.folders_first
-    }
-
     pub(super) fn toggle_folders_first(&mut self) {
         self.config.folders_first = !self.config.folders_first;
-    }
-
-    pub(super) fn natural_name_sort(&self) -> bool {
-        self.config.natural_name_sort
     }
 
     pub(super) fn toggle_natural_sort(&mut self) {

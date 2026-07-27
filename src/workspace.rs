@@ -487,13 +487,13 @@ impl Workspace {
             true
         } else {
             let candidate = if selected_file_count == 1 {
-                first_selected_file_index.and_then(|index| active.entries.get(index))
+                first_selected_file_index.and_then(|index| active.entries().get(index))
             } else {
                 cursor.filter(|entry| !entry.is_dir)
             };
             candidate.is_some_and(|entry| {
                 inactive
-                    .entries
+                    .entries()
                     .iter()
                     .any(|other| !other.is_dir && other.name_lower == entry.name_lower)
             })
@@ -516,7 +516,7 @@ impl Workspace {
 
         let (marked_entries, stashed_entries) =
             active
-                .entries
+                .entries()
                 .iter()
                 .fold((0usize, 0usize), |(marked, stashed), entry| {
                     (
@@ -530,7 +530,7 @@ impl Workspace {
         crate::command::CommandContext {
             visible_entries,
             visible_files,
-            other_entries: inactive.entries.len(),
+            other_entries: inactive.entries().len(),
             picked_entries,
             selected_entries,
             listing_entries,
@@ -656,7 +656,7 @@ impl Workspace {
             .into_iter()
             .cloned()
             .collect();
-        let rel = crate::sync::pane_relation(&active, &self.inactive_panel().entries);
+        let rel = crate::sync::pane_relation(&active, self.inactive_panel().entries());
         let paths: Vec<PathBuf> = pick(&rel)
             .iter()
             .filter_map(|&i| active.get(i).map(|e| e.path.clone()))
@@ -681,7 +681,7 @@ impl Workspace {
         let stash = self.selection_stash.clone();
         let panel = self.active_panel();
         let present: std::collections::HashSet<PathBuf> =
-            panel.entries.iter().map(|e| e.path.clone()).collect();
+            panel.entries().iter().map(|e| e.path.clone()).collect();
         let combined = op(&panel.selected, &stash);
         panel.selected = combined.intersection(&present).cloned().collect();
     }
@@ -727,7 +727,7 @@ impl Workspace {
         let panel = self.active_panel();
         let marked = panel.marked.clone();
         let present: std::collections::HashSet<PathBuf> =
-            panel.entries.iter().map(|e| e.path.clone()).collect();
+            panel.entries().iter().map(|e| e.path.clone()).collect();
         let combined = op(&panel.selected, &marked);
         panel.selected = combined.intersection(&present).cloned().collect();
     }
@@ -1202,9 +1202,9 @@ impl Workspace {
         // fall back to the known conflicting names on disk.
         let disk_dest;
         let dest: &[FileEntry] = if self.left.current_path == tr.target {
-            &self.left.entries
+            self.left.entries()
         } else if self.right.current_path == tr.target {
-            &self.right.entries
+            self.right.entries()
         } else {
             disk_dest = tr
                 .conflicts
@@ -1897,7 +1897,7 @@ impl Workspace {
             panel: self.active,
             dir: panel.current_path.clone(),
             targets,
-            existing: panel.entries.iter().map(|e| e.name.clone()).collect(),
+            existing: panel.entries().iter().map(|e| e.name.clone()).collect(),
         })
     }
 
@@ -1985,7 +1985,7 @@ impl Workspace {
         use std::collections::HashMap;
         let files: Vec<&FileEntry> = self
             .active_panel_ref()
-            .entries
+            .entries()
             .iter()
             .filter(|e| !e.is_dir)
             .collect();
@@ -2062,7 +2062,7 @@ impl Workspace {
         let active = self.active_panel_ref();
         let sizes = active.dir_sizes.lock().ok();
         let mut items: Vec<(FileEntry, u64)> = active
-            .entries
+            .entries()
             .iter()
             .map(|e| {
                 let bytes = if e.is_dir {
@@ -2130,7 +2130,7 @@ impl Workspace {
         let name = one.file_name()?.to_string_lossy().to_lowercase();
         let other = self
             .inactive_panel()
-            .entries
+            .entries()
             .iter()
             .find(|e| !e.is_dir && e.name_lower == name)?;
         Some((other.path.clone(), one))
@@ -2151,7 +2151,7 @@ impl Workspace {
         let dest = self.active_panel_ref().current_path.clone();
         let existing: std::collections::HashSet<String> = self
             .active_panel_ref()
-            .entries
+            .entries()
             .iter()
             .map(|e| e.name.clone())
             .collect();
@@ -2195,7 +2195,7 @@ impl Workspace {
         &self,
         policy: crate::sync::SyncPolicy,
     ) -> Vec<crate::sync::SyncAction> {
-        crate::sync::sync_diff(&self.left.entries, &self.right.entries, policy)
+        crate::sync::sync_diff(self.left.entries(), self.right.entries(), policy)
     }
 
     /// Build a sync plan and baseline from the same fresh directory reads.
@@ -3477,7 +3477,7 @@ mod tests {
         ws.left.cursor = 1; // dirs sort first, so "sub" is the first row
         ws.execute(Command::Activate);
         assert_eq!(ws.left.current_path, sub);
-        assert_eq!(ws.left.entries.len(), 1);
+        assert_eq!(ws.left.entries().len(), 1);
     }
 
     #[test]
