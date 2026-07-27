@@ -989,6 +989,10 @@ impl DeterministicWorkload {
     }
 
     pub(crate) fn run_next(&self) -> bool {
+        self.run_next_after_dequeue(|| {})
+    }
+
+    pub(crate) fn run_next_after_dequeue(&self, before_run: impl FnOnce()) -> bool {
         let (started, work) = {
             let mut state = crate::lock_util::recover(&self.backend.state);
             state.tick = state.tick.saturating_add(1);
@@ -1002,6 +1006,7 @@ impl DeterministicWorkload {
             };
             (started, work)
         };
+        before_run();
         let task_id = started.snapshot.id;
         let succeeded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             work.run(started.token);

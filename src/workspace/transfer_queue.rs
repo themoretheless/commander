@@ -940,6 +940,7 @@ mod tests {
             post_success: None,
             rollback_cleanup: None,
             before_commit: None,
+            before_post_success: None,
             before_terminal_publish: None,
             journal_enabled: false,
         }

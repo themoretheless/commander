@@ -886,6 +886,8 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         #[cfg(test)]
         before_commit: None,
         #[cfg(test)]
+        before_post_success: None,
+        #[cfg(test)]
         before_terminal_publish: None,
         #[cfg(test)]
         journal_enabled: false,

@@ -1302,6 +1302,8 @@ impl Workspace {
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
+            before_post_success: None,
+            #[cfg(test)]
             before_terminal_publish: None,
             #[cfg(test)]
             journal_enabled: false,
@@ -1554,6 +1556,8 @@ impl Workspace {
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
+            before_post_success: None,
+            #[cfg(test)]
             before_terminal_publish: None,
             #[cfg(test)]
             journal_enabled: false,
@@ -1771,6 +1775,8 @@ impl Workspace {
             rollback_cleanup: Some(folder),
             #[cfg(test)]
             before_commit: None,
+            #[cfg(test)]
+            before_post_success: None,
             #[cfg(test)]
             before_terminal_publish: None,
             #[cfg(test)]
@@ -2320,6 +2326,8 @@ impl Workspace {
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
+            before_post_success: None,
+            #[cfg(test)]
             before_terminal_publish: None,
             #[cfg(test)]
             journal_enabled: false,
@@ -2593,6 +2601,7 @@ mod tests {
             post_success: None,
             rollback_cleanup: None,
             before_commit: None,
+            before_post_success: None,
             before_terminal_publish: None,
             journal_enabled: false,
         }
@@ -2720,11 +2729,17 @@ mod tests {
             .map(|operation| operation.status.is_terminal())
             .unwrap_or(false);
         let progress_is_terminal = crate::lock_util::recover(&progress).finished;
+        ws.cancel_transfer();
+        let late_cancelled = crate::lock_util::recover(&progress).cancelled;
         barrier.wait();
         worker.join().expect("deterministic worker");
 
         assert!(journal_is_terminal, "journal finalized before the barrier");
         assert!(!progress_is_terminal, "finished leaked before finalization");
+        assert!(
+            !late_cancelled,
+            "completed finalization rejects a late cancellation"
+        );
         assert!(before.terminal.is_none(), "poll detached a live worker");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2732,7 +2747,202 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "transfer timed out");
             std::thread::yield_now();
         }
-        assert!(ws.poll_transfer(|| {}).terminal.is_some());
+        assert_eq!(
+            ws.poll_transfer(|| {})
+                .terminal
+                .expect("clean terminal report")
+                .terminal,
+            TransferTerminalState::Done
+        );
+    }
+
+    #[test]
+    fn zero_entry_recovery_stop_before_worker_keeps_required_cleanup_unfinished() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let cleanup = left.dir("recovery-cleanup");
+        let operation_id = crate::operation::OperationId::new();
+        let mut spec = test_transfer_spec(&operation_id.0, right.path());
+        spec.post_success = Some(PostTransferAction::RemoveEmptyDir(cleanup.clone()));
+        spec.journal_enabled = true;
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let mut ws = workspace(&left, &right);
+        ws.enqueue_with_history(spec, transfer_queue::HistoryIntent::None);
+        ws.pump_queue_with_workload(workload.handle(), || {});
+        let progress = ws
+            .active_transfer_view()
+            .expect("zero-entry recovery is active")
+            .progress;
+
+        ws.stop_transfer_after_current();
+        assert!(workload.run_next());
+
+        let state = crate::lock_util::recover(&progress);
+        assert!(state.finished);
+        assert!(state.stopped);
+        assert!(state.stop_requested);
+        drop(state);
+        assert!(
+            cleanup.exists(),
+            "a stopped recovery must not pretend required cleanup completed"
+        );
+        assert_eq!(
+            crate::operation_journal::operation(&operation_id)
+                .expect("recovery journal")
+                .status,
+            crate::operation_journal::OperationStatus::Stopped
+        );
+        let report = ws
+            .poll_transfer(|| {})
+            .terminal
+            .expect("stopped recovery report");
+        assert_eq!(report.terminal, TransferTerminalState::Stopped);
+        assert!(ws.poll_transfer(|| {}).terminal.is_none());
+    }
+
+    #[test]
+    fn cancellation_after_dequeue_finishes_once_before_worker_body_runs() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let mut ws = workspace(&left, &right);
+        ws.enqueue_with_history(
+            test_transfer_spec("cancel-after-dequeue", right.path()),
+            transfer_queue::HistoryIntent::None,
+        );
+        ws.pump_queue_with_workload(workload.handle(), || {});
+        let progress = ws
+            .active_transfer_view()
+            .expect("dequeued transfer is active")
+            .progress;
+        let barrier = Arc::new(Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let (dequeued_tx, dequeued_rx) = mpsc::sync_channel(1);
+        let runner = workload.clone();
+        let worker = std::thread::spawn(move || {
+            assert!(runner.run_next_after_dequeue(|| {
+                let _ = dequeued_tx.send(());
+                worker_barrier.wait();
+            }));
+        });
+        dequeued_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("workload dequeued transfer");
+
+        ws.cancel_transfer();
+        assert!(
+            !crate::lock_util::recover(&progress).finished,
+            "running cancellation waits for the worker terminal path"
+        );
+        barrier.wait();
+        worker.join().expect("deterministic worker");
+
+        let state = crate::lock_util::recover(&progress);
+        assert!(state.finished);
+        assert!(state.cancelled);
+        assert!(state.errors.is_empty());
+        drop(state);
+        let report = ws
+            .poll_transfer(|| {})
+            .terminal
+            .expect("cancelled terminal report");
+        assert_eq!(report.terminal, TransferTerminalState::Cancelled);
+        assert!(ws.active_transfer_view().is_none());
+        assert!(
+            ws.poll_transfer(|| {}).terminal.is_none(),
+            "dequeued cancellation publishes exactly once"
+        );
+    }
+
+    #[test]
+    fn interruption_before_required_post_success_is_not_normalized_to_completion() {
+        for (label, cancel, expected_terminal) in [
+            (
+                "cancel",
+                true,
+                crate::workspace::TransferTerminalState::Cancelled,
+            ),
+            (
+                "stop",
+                false,
+                crate::workspace::TransferTerminalState::Stopped,
+            ),
+        ] {
+            let (left, right) = (TempDir::new(), TempDir::new());
+            let source_folder_name = format!("{label}-source");
+            let source_folder = left.dir(&source_folder_name);
+            let source_path = format!("{source_folder_name}/file.txt");
+            let source = left.file(&source_path, "payload");
+            let entry =
+                FileEntry::from_meta(source.clone(), &std::fs::symlink_metadata(&source).unwrap())
+                    .unwrap();
+            let operation_id = crate::operation::OperationId::new();
+            let mut spec = test_transfer_spec(&operation_id.0, right.path());
+            spec.entries = vec![entry.clone()];
+            spec.expectations =
+                transfer::capture_expectations(std::slice::from_ref(&entry), right.path());
+            spec.post_success = Some(PostTransferAction::RemoveEmptyDir(source_folder.clone()));
+            spec.journal_enabled = true;
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_barrier = Arc::clone(&barrier);
+            let (finalizing_tx, finalizing_rx) = mpsc::sync_channel(1);
+            spec.before_post_success = Some(Arc::new(move || {
+                let _ = finalizing_tx.send(());
+                worker_barrier.wait();
+            }));
+            let workload = crate::workload::DeterministicWorkload::new(
+                crate::workload::SchedulerLimits::default(),
+            );
+            let mut ws = workspace(&left, &right);
+            ws.enqueue_with_history(spec, transfer_queue::HistoryIntent::None);
+            ws.pump_queue_with_workload(workload.handle(), || {});
+            let progress = ws
+                .active_transfer_view()
+                .expect("boundary transfer is active")
+                .progress;
+            let runner = workload.clone();
+            let worker = std::thread::spawn(move || {
+                assert!(runner.run_next());
+            });
+            finalizing_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("worker reached required post-success boundary");
+            assert_eq!(crate::lock_util::recover(&progress).files_done, 1);
+            assert!(right.path().join("file.txt").is_file());
+            assert!(source_folder.exists());
+
+            if cancel {
+                ws.cancel_transfer();
+            } else {
+                ws.stop_transfer_after_current();
+            }
+            barrier.wait();
+            worker.join().expect("deterministic worker");
+
+            let state = crate::lock_util::recover(&progress);
+            assert!(state.finished);
+            assert_eq!(state.cancelled, cancel);
+            assert_eq!(state.stopped, !cancel);
+            drop(state);
+            assert!(
+                source_folder.exists(),
+                "{label} skipped mandatory directory cleanup"
+            );
+            assert_eq!(
+                crate::operation_journal::operation(&operation_id)
+                    .expect("boundary operation journal")
+                    .status,
+                crate::operation_journal::OperationStatus::Stopped
+            );
+            let report = ws
+                .poll_transfer(|| {})
+                .terminal
+                .expect("interrupted terminal report");
+            assert_eq!(report.terminal, expected_terminal);
+            assert!(ws.poll_transfer(|| {}).terminal.is_none());
+        }
     }
 
     #[test]

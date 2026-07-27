@@ -92,6 +92,7 @@ pub struct TransferProgress {
     /// undo can target where files really landed: a KeepBoth conflict lands at
     /// "name copy.ext", not "name". Empty for copies.
     pub placements: Vec<(PathBuf, PathBuf)>,
+    finalization: Option<FinalizationOutcome>,
     scheduler_task: Option<crate::workload::TaskHandle>,
 }
 
@@ -134,21 +135,30 @@ impl TransferProgress {
             errors: Vec::new(),
             failures: Vec::new(),
             placements: Vec::new(),
+            finalization: None,
             scheduler_task: None,
         }
     }
 
-    pub fn request_cancel(&mut self) {
-        if self.finished {
-            return;
+    pub fn request_cancel(&mut self) -> bool {
+        if self.finished || self.finalization.is_some() {
+            return false;
         }
         self.cancelled = true;
+        true
     }
 
     pub fn request_stop(&mut self) {
-        if !self.finished {
+        if !self.finished && self.finalization.is_none() {
             self.stop_requested = true;
         }
+    }
+
+    fn finalization_committed_success(&self) -> bool {
+        self.files_done == self.files_total
+            && self
+                .finalization
+                .is_some_and(FinalizationOutcome::permits_late_interruption_success)
     }
 
     /// Current speed in bytes/sec (averaged over last 2 seconds).
@@ -254,11 +264,10 @@ impl TransferProgress {
 pub(crate) fn request_cancel(progress: &TransferState) {
     let task = {
         let mut state = crate::lock_util::recover(progress);
-        state.request_cancel();
-        if state.finished {
-            None
-        } else {
+        if state.request_cancel() {
             state.scheduler_task.clone()
+        } else {
+            None
         }
     };
     if let Some(task) = task {
@@ -555,6 +564,8 @@ pub struct TransferSpec {
     #[cfg(test)]
     pub before_commit: Option<BeforeCommitHook>,
     #[cfg(test)]
+    pub before_post_success: Option<BeforePostSuccessHook>,
+    #[cfg(test)]
     pub before_terminal_publish: Option<BeforeTerminalPublishHook>,
     #[cfg(test)]
     pub journal_enabled: bool,
@@ -562,6 +573,8 @@ pub struct TransferSpec {
 
 #[cfg(test)]
 pub type BeforeCommitHook = Arc<dyn Fn(&Path, &Path) + Send + Sync>;
+#[cfg(test)]
+pub type BeforePostSuccessHook = Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 pub type BeforeTerminalPublishHook = Arc<dyn Fn() + Send + Sync>;
 
@@ -829,6 +842,29 @@ pub fn total_bytes(entries: &[FileEntry]) -> u64 {
 ///
 /// `notify` is invoked whenever visible progress changed; the UI passes a
 /// repaint request here, keeping this module free of egui types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PostSuccessOutcome {
+    NotRequired,
+    Succeeded,
+    Skipped,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FinalizationOutcome {
+    NotReached,
+    Reached(PostSuccessOutcome),
+}
+
+impl FinalizationOutcome {
+    fn permits_late_interruption_success(self) -> bool {
+        matches!(
+            self,
+            Self::Reached(PostSuccessOutcome::NotRequired | PostSuccessOutcome::Succeeded)
+        )
+    }
+}
+
 #[derive(Clone)]
 struct TerminalContext {
     operation_id: OperationId,
@@ -897,7 +933,7 @@ impl<N: Fn()> Drop for PanicTerminalGuard<'_, N> {
                 "transfer worker panicked before completing finalization",
             ),
         );
-        prepare_terminal_progress(self.progress);
+        prepare_terminal_progress(self.progress, FinalizationOutcome::NotReached);
         if self.journal_enabled && self.journal_started {
             let journal_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 crate::operation_journal::finish(
@@ -932,7 +968,6 @@ fn finalize_and_publish(
     journal_enabled: bool,
     status: crate::operation_journal::OperationStatus,
 ) {
-    prepare_terminal_progress(progress);
     if journal_enabled
         && let Err(error) = crate::operation_journal::finish(&terminal.operation_id, status)
     {
@@ -998,7 +1033,7 @@ fn spawn_transfer_on(
         let notify = || (crate::lock_util::recover(&worker_notify))();
         if scheduler_cancel.is_cancelled() {
             crate::lock_util::recover(&progress).cancelled = true;
-            finish_progress(&progress);
+            finish_progress(&progress, FinalizationOutcome::NotReached);
             notify();
             return;
         }
@@ -1039,7 +1074,7 @@ fn spawn_transfer_on(
         if journal_enabled {
             if let Err(error) = crate::operation_journal::begin(&spec) {
                 record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
-                finish_progress(&progress);
+                finish_progress(&progress, FinalizationOutcome::NotReached);
                 terminal_guard.disarm();
                 notify();
                 return;
@@ -1053,6 +1088,7 @@ fn spawn_transfer_on(
                 "Operation",
                 ClassifiedFailure::io(Some(spec.target.clone()), "mount unavailable", &error),
             );
+            prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
             finalize_and_publish(
                 &terminal,
                 &progress,
@@ -1918,8 +1954,13 @@ fn spawn_transfer_on(
             journal_enabled,
             &progress,
         );
-        run_post_success(spec.post_success.as_ref(), &progress);
-        prepare_terminal_progress(&progress);
+        #[cfg(test)]
+        if let Some(hook) = &spec.before_post_success {
+            hook();
+        }
+        let post_success = run_post_success(spec.post_success.as_ref(), &progress);
+        let finalization = FinalizationOutcome::Reached(post_success);
+        prepare_terminal_progress(&progress, finalization);
         let status = {
             let state = crate::lock_util::recover(&progress);
             if failure_rollback == FailureRollback::Complete {
@@ -1961,12 +2002,8 @@ fn spawn_transfer_on(
                     format!("workload abandoned transfer before execution: {reason}"),
                 ),
             );
-            finish_progress(&abandoned_progress);
-        } else {
-            // No entry began execution, so this is not the late-cancel case
-            // normalized by `finish_progress`, even for an empty transfer.
-            publish_terminal_progress(&abandoned_progress);
         }
+        finish_progress(&abandoned_progress, FinalizationOutcome::NotReached);
         (crate::lock_util::recover(&abandoned_notify))();
     };
     let task = workload.submit_with_abandonment(task_spec, worker, on_abandoned);
@@ -1987,7 +2024,7 @@ fn spawn_transfer_on(
                     format!("workload scheduler refused transfer: {error}"),
                 ),
             );
-            finish_progress(&progress);
+            finish_progress(&progress, FinalizationOutcome::NotReached);
             (crate::lock_util::recover(&notify))();
         }
     }
@@ -1996,9 +2033,12 @@ fn spawn_transfer_on(
 /// Run a transfer-owned follow-up only after every entry completed without an
 /// error or cancellation. Failure is appended to the normal transfer error
 /// surface, so the progress dialog remains open instead of hiding cleanup loss.
-fn run_post_success(action: Option<&PostTransferAction>, progress: &TransferState) {
+fn run_post_success(
+    action: Option<&PostTransferAction>,
+    progress: &TransferState,
+) -> PostSuccessOutcome {
     let Some(action) = action else {
-        return;
+        return PostSuccessOutcome::NotRequired;
     };
     let ready = {
         let state = crate::lock_util::recover(progress);
@@ -2009,7 +2049,7 @@ fn run_post_success(action: Option<&PostTransferAction>, progress: &TransferStat
             && !state.stopped
     };
     if !ready {
-        return;
+        return PostSuccessOutcome::Skipped;
     }
 
     let PostTransferAction::RemoveEmptyDir(path) = action;
@@ -2020,12 +2060,16 @@ fn run_post_success(action: Option<&PostTransferAction>, progress: &TransferStat
             Err(e)
         }
     });
-    if let Err(error) = result {
-        record_failure(
-            progress,
-            &path.display().to_string(),
-            ClassifiedFailure::io(Some(path.clone()), "Post-transfer cleanup failed", &error),
-        );
+    match result {
+        Ok(()) => PostSuccessOutcome::Succeeded,
+        Err(error) => {
+            record_failure(
+                progress,
+                &path.display().to_string(),
+                ClassifiedFailure::io(Some(path.clone()), "Post-transfer cleanup failed", &error),
+            );
+            PostSuccessOutcome::Failed
+        }
     }
 }
 
@@ -2158,18 +2202,20 @@ fn run_failure_rollback(
 }
 
 /// Publish the terminal state. A cancel request that arrived after the final
-/// entry was committed is too late to cancel anything; treating that as a
-/// cancelled Move would discard its valid undo action.
-fn finish_progress(progress: &TransferState) {
-    prepare_terminal_progress(progress);
+/// entry and every mandatory finalization effect completed is too late to
+/// cancel anything; treating that as a cancelled Move would discard its valid
+/// undo action.
+fn finish_progress(progress: &TransferState, finalization: FinalizationOutcome) {
+    prepare_terminal_progress(progress, finalization);
     publish_terminal_progress(progress);
 }
 
 /// Normalize late cancellation and stop requests before deriving the durable
 /// journal status. This deliberately does not expose a terminal snapshot.
-fn prepare_terminal_progress(progress: &TransferState) {
+fn prepare_terminal_progress(progress: &TransferState, finalization: FinalizationOutcome) {
     let mut s = crate::lock_util::recover(progress);
-    if s.files_done == s.files_total {
+    s.finalization = Some(finalization);
+    if s.finalization_committed_success() {
         s.cancelled = false;
         s.stop_requested = false;
         s.stopped = false;
@@ -2802,14 +2848,17 @@ mod tests {
     }
 
     #[test]
-    fn finish_distinguishes_a_late_cancel_from_a_partial_cancel() {
+    fn finish_normalizes_only_after_complete_or_unneeded_post_success() {
         let completed = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
         {
             let mut state = completed.lock().unwrap();
             state.files_done = 1;
             state.cancelled = true;
         }
-        finish_progress(&completed);
+        finish_progress(
+            &completed,
+            FinalizationOutcome::Reached(PostSuccessOutcome::NotRequired),
+        );
         let state = completed.lock().unwrap();
         assert!(state.finished);
         assert!(!state.cancelled);
@@ -2821,10 +2870,42 @@ mod tests {
             state.files_done = 1;
             state.cancelled = true;
         }
-        finish_progress(&partial);
+        finish_progress(
+            &partial,
+            FinalizationOutcome::Reached(PostSuccessOutcome::NotRequired),
+        );
         let state = partial.lock().unwrap();
         assert!(state.finished);
         assert!(state.cancelled);
+        drop(state);
+
+        let skipped_post_success = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = skipped_post_success.lock().unwrap();
+            state.files_done = 1;
+            state.cancelled = true;
+        }
+        finish_progress(
+            &skipped_post_success,
+            FinalizationOutcome::Reached(PostSuccessOutcome::Skipped),
+        );
+        let state = skipped_post_success.lock().unwrap();
+        assert!(state.finished);
+        assert!(state.cancelled);
+
+        let completed_post_success = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = completed_post_success.lock().unwrap();
+            state.files_done = 1;
+            state.cancelled = true;
+        }
+        finish_progress(
+            &completed_post_success,
+            FinalizationOutcome::Reached(PostSuccessOutcome::Succeeded),
+        );
+        let state = completed_post_success.lock().unwrap();
+        assert!(state.finished);
+        assert!(!state.cancelled);
     }
 
     #[test]
@@ -2903,6 +2984,7 @@ mod tests {
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
+            before_post_success: None,
             before_terminal_publish: None,
             journal_enabled: false,
         });
@@ -2932,6 +3014,7 @@ mod tests {
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
+            before_post_success: None,
             before_terminal_publish: None,
             journal_enabled: false,
         });
@@ -2962,6 +3045,7 @@ mod tests {
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
+            before_post_success: None,
             before_terminal_publish: None,
             journal_enabled: false,
         });
@@ -2999,6 +3083,7 @@ mod tests {
             post_success: None,
             rollback_cleanup: None,
             before_commit: None,
+            before_post_success: None,
             before_terminal_publish: None,
             journal_enabled: false,
         }
