@@ -5,7 +5,7 @@
 //! and all path substitutions are shell-quoted by `cmdtemplate::expand`.
 
 use super::*;
-use crate::cmdtemplate::{SegmentKind, SelectionCtx, expand, preview_segments};
+use crate::cmdtemplate::{SegmentKind, expand, preview_segments};
 
 const TEMPLATES_SCROLL_ID: &str = "run_command_templates";
 
@@ -13,9 +13,10 @@ impl App {
     pub(crate) fn open_run_command(&mut self, ctx: &egui::Context) {
         self.command_templates_mut();
         let scroll_nonce = self.issue_transient_nonce();
-        self.run_command = Some(RunCommandState {
+        self.ui.modals.run_command = Some(RunCommandState {
             line: String::new(),
             scroll_nonce,
+            opening: RunCommandOpeningContext::capture(&self.ws),
         });
         Self::mark_modal_opened(ctx, UiModal::RunCommand);
     }
@@ -25,28 +26,25 @@ impl App {
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::RunCommand,
         ));
-        if self.run_command.is_none() {
+        if self.ui.modals.run_command.is_none() {
             return;
         }
         let t = self.colors;
 
-        // Snapshot the selection context before borrowing the bar state.
-        let sel = self
-            .ws
-            .active_panel_ref()
-            .selected_or_cursor()
-            .unwrap_or_default();
-        let dir = self.ws.active_panel_ref().current_path.clone();
-        let sctx = SelectionCtx {
-            paths: sel.iter().map(|e| e.path.clone()).collect(),
-            dir: dir.clone(),
-            dir_other: self.ws.inactive_panel().current_path.clone(),
-        };
-        let sel_count = sel.len();
+        let opening = self
+            .ui
+            .modals
+            .run_command
+            .as_ref()
+            .expect("checked above")
+            .opening
+            .clone();
+        let sctx = opening.selection_context();
+        let sel_count = opening.selection.len();
         // Templates whose extension filter accepts the selection.
         let matching: Vec<(String, String)> = self
             .command_templates_mut()
-            .matching(&sel)
+            .matching(&opening.selection)
             .iter()
             .map(|t| (t.name.clone(), t.raw.clone()))
             .collect();
@@ -56,7 +54,7 @@ impl App {
         let mut fill: Option<String> = None; // template raw chosen from the list
         let mut save_template: Option<String> = None; // raw line to persist
 
-        let state = self.run_command.as_mut().unwrap();
+        let state = self.ui.modals.run_command.as_mut().unwrap();
         egui::Window::new("Run command")
             .collapsible(false)
             .resizable(false)
@@ -194,11 +192,11 @@ impl App {
             });
 
         if cancel {
-            self.run_command = None;
+            self.ui.modals.run_command = None;
             return;
         }
         if let Some(raw) = fill
-            && let Some(s) = &mut self.run_command
+            && let Some(s) = &mut self.ui.modals.run_command
         {
             s.line = raw;
             return;
@@ -243,7 +241,7 @@ impl App {
             return; // keep the bar open after saving
         }
         if let Some(cmdline) = run {
-            self.run_command = None;
+            self.ui.modals.run_command = None;
             if cmdline.trim().is_empty() {
                 return;
             }
@@ -260,7 +258,7 @@ impl App {
             match std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&cmdline)
-                .current_dir(&dir)
+                .current_dir(opening.dir())
                 .spawn()
             {
                 Ok(_) => {
@@ -281,5 +279,50 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str) -> crate::panel::FileEntry {
+        let path = PathBuf::from(path);
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        crate::panel::FileEntry {
+            name_lower: name.to_lowercase(),
+            name,
+            path,
+            is_dir: false,
+            size: 1,
+            extension: "txt".to_string(),
+            modified: None,
+            modified_str: String::new(),
+            size_str: "1 B".to_string(),
+        }
+    }
+
+    #[test]
+    fn run_command_remains_bound_to_its_opening_context() {
+        let opening = RunCommandOpeningContext {
+            active_panel: ActivePanel::Left,
+            selection: vec![entry("/opening/selected.txt")],
+            left_dir: PathBuf::from("/opening"),
+            right_dir: PathBuf::from("/other"),
+        };
+
+        let external_active = ActivePanel::Right;
+        let external_selection = [entry("/changed/new.txt")];
+        let external_dir = PathBuf::from("/changed");
+        let context = opening.selection_context();
+
+        assert_eq!(opening.active_panel, ActivePanel::Left);
+        assert_ne!(opening.active_panel, external_active);
+        assert_ne!(opening.selection[0].path, external_selection[0].path);
+        assert_ne!(opening.dir(), external_dir);
+        assert_eq!(
+            expand("{paths} {dir} {dir_other}", &context),
+            "'/opening/selected.txt' '/opening' '/other'"
+        );
     }
 }

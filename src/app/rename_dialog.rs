@@ -9,7 +9,7 @@ impl App {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        self.renaming = Some(RenameState {
+        self.ui.modals.renaming = Some(RenameState {
             siblings: crate::workspace::Workspace::rename_siblings(&path),
             path,
             buffer: name,
@@ -21,7 +21,7 @@ impl App {
     pub(crate) fn show_rename_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Rename);
 
-        let Some(state) = &mut self.renaming else {
+        let Some(state) = &mut self.ui.modals.renaming else {
             return;
         };
         let t = self.colors;
@@ -124,12 +124,12 @@ impl App {
             });
 
         if cancel {
-            self.renaming = None;
+            self.ui.modals.renaming = None;
             return;
         }
         if commit {
             let (path, buffer, changed) = {
-                let s = self.renaming.as_ref().unwrap();
+                let s = self.ui.modals.renaming.as_ref().unwrap();
                 let old_name = s
                     .path
                     .file_name()
@@ -143,7 +143,7 @@ impl App {
             };
             match self.ws.commit_rename(&path, &buffer) {
                 Ok(()) => {
-                    self.renaming = None;
+                    self.ui.modals.renaming = None;
                     if changed {
                         let now = ctx.input(|i| i.time);
                         self.toasts.push(crate::toasts::Toast::new(
@@ -166,7 +166,7 @@ impl App {
                     }
                 }
                 Err(msg) => {
-                    if let Some(s) = &mut self.renaming {
+                    if let Some(s) = &mut self.ui.modals.renaming {
                         s.error = Some(msg);
                     }
                 }

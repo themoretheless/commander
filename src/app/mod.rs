@@ -30,6 +30,7 @@ mod toolbar;
 mod transfer_dialog;
 mod tree;
 mod treemap_dialog;
+mod ui_state;
 mod update;
 
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
@@ -45,6 +46,8 @@ pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
+    /// Transient interaction state and the complete set of app-owned modals.
+    pub(crate) ui: ui_state::UiState,
     /// Main-thread-owned desktop integration injected by the composition root.
     pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
     pub ui_scale: f32,
@@ -57,14 +60,6 @@ pub struct App {
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: std::collections::HashMap<PathBuf, Vec<PathBuf>>,
     pub(crate) tree_width: f32,
-    /// Active inline rename: the entry being renamed and the edit buffer.
-    pub(crate) renaming: Option<RenameState>,
-    /// Type-ahead buffer and the input time of its last keystroke (seconds,
-    /// from egui). Expires after a short idle.
-    pub(crate) type_ahead: Option<(String, f64)>,
-    /// Pending vim-style chord leader (`'g'` or `'s'`) and when it was
-    /// pressed (seconds, from egui). Expires after a short idle.
-    pub(crate) chord: Option<(char, f64)>,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
@@ -75,19 +70,6 @@ pub struct App {
     pub(crate) operations_search: String,
     pub(crate) operation_failures: crate::operation_view::FailureInbox,
     pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::TransferAttemptId>,
-    /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
-    pub(crate) focus_mode: bool,
-    pub(crate) focus_started_at: f64,
-    /// Escape is read once per frame, then consumed by exactly one routed owner.
-    pub(crate) escape_request: crate::accessibility::EscapeRoute,
-    /// Monotonic identity source for transient widget state across reopenings.
-    pub(crate) transient_nonce: u64,
-    /// Active select-by-mask input buffer.
-    pub(crate) mask_input: Option<String>,
-    /// Active go-to-path input buffer.
-    pub(crate) path_input: Option<String>,
-    /// Active recent-directories quick-switcher filter buffer.
-    pub(crate) recent_input: Option<String>,
     /// Ranking mode for recent destinations: habitual (frecency) or strictly
     /// chronological. Persisted with the session.
     pub(crate) recent_order: crate::panel::RecentOrder,
@@ -99,41 +81,18 @@ pub struct App {
     pub(crate) toasts: crate::toasts::ToastQueue,
     /// Searchable history of completed moves/deletes/batch-renames.
     pub(crate) receipts: crate::receipts::ReceiptLog,
-    /// Filesystem-aware confirmation for the pending undo/redo replay.
-    pub(crate) history_preview: Option<HistoryPreviewState>,
     /// Startup-scanned durable recovery and orphan-staging model.
     pub(crate) recovery: RecoveryState,
-    /// Active command-palette filter buffer.
-    pub(crate) palette_input: Option<String>,
     /// Command-palette usage history (recency/frequency ranking).
     pub(crate) palette_usage: crate::command::UsageStats,
     /// Monotonic counter stamped onto each palette command run.
     pub(crate) palette_tick: u64,
-    /// Active batch-rename studio state.
-    pub(crate) batch_rename: Option<BatchRenameState>,
-    /// Active synchronise-sheet state.
-    pub(crate) sync: Option<SyncState>,
-    /// Active duplicate-finder sheet state.
-    pub(crate) duplicates: Option<DupState>,
-    /// Active read-only diff sheet state.
-    pub(crate) diff: Option<DiffState>,
-    /// Active disk-usage map and cancellable compressed-tree scan.
-    pub(crate) treemap: Option<DiskUsageState>,
-    /// Active recursive-find sheet state.
-    pub(crate) find: Option<FindState>,
-    /// Active read-only archive inspector.
-    pub(crate) archive: Option<ArchiveState>,
     /// Saved searches, loaded lazily on first use.
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
-    /// Whether the saved-search picker is open.
-    pub(crate) saved_search_open: bool,
     /// Persisted multi-root projects and active virtual-view UI state.
     pub(crate) project_collections: crate::collections::ProjectCollections,
-    pub(crate) collections_dialog: Option<CollectionsDialogState>,
     /// Saved command templates, loaded lazily on first use.
     pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
-    /// Active run-command bar state (the editable command line).
-    pub(crate) run_command: Option<RunCommandState>,
     /// Cached cross-panel compare maps and the panel generations they were built
     /// from, so compare mode does not rebuild two HashMaps (cloning every
     /// `name_lower`) on every painted frame. `(right_gen, left_gen, left_map,
@@ -181,6 +140,55 @@ pub(crate) struct RunCommandState {
     pub line: String,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
+    /// Immutable panel/selection context captured when the dialog opens.
+    pub opening: RunCommandOpeningContext,
+}
+
+#[derive(Clone)]
+pub(crate) struct RunCommandOpeningContext {
+    pub active_panel: ActivePanel,
+    pub selection: Vec<crate::panel::FileEntry>,
+    pub left_dir: PathBuf,
+    pub right_dir: PathBuf,
+}
+
+impl RunCommandOpeningContext {
+    fn capture(workspace: &Workspace) -> Self {
+        let active_panel = workspace.active;
+        let active = workspace.active_panel_ref();
+        Self {
+            active_panel,
+            selection: active.selected_or_cursor().unwrap_or_default(),
+            left_dir: workspace.left.current_path.clone(),
+            right_dir: workspace.right.current_path.clone(),
+        }
+    }
+
+    fn dir(&self) -> &std::path::Path {
+        match self.active_panel {
+            ActivePanel::Left => &self.left_dir,
+            ActivePanel::Right => &self.right_dir,
+        }
+    }
+
+    fn dir_other(&self) -> &std::path::Path {
+        match self.active_panel {
+            ActivePanel::Left => &self.right_dir,
+            ActivePanel::Right => &self.left_dir,
+        }
+    }
+
+    fn selection_context(&self) -> crate::cmdtemplate::SelectionCtx {
+        crate::cmdtemplate::SelectionCtx {
+            paths: self
+                .selection
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+            dir: self.dir().to_path_buf(),
+            dir_other: self.dir_other().to_path_buf(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -467,7 +475,6 @@ impl OperationsTab {
 
 #[derive(Default)]
 pub(crate) struct RecoveryState {
-    pub open: bool,
     pub section: RecoverySection,
     pub detail: RecoveryDetail,
     pub operations: Vec<crate::operation_journal::OperationRecord>,
@@ -576,6 +583,7 @@ impl App {
         startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
         let mut app = App {
             ws,
+            ui: ui_state::UiState::default(),
             context_menu,
             ui_scale,
             theme_mode: mode,
@@ -587,9 +595,6 @@ impl App {
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
-            renaming: None,
-            type_ahead: None,
-            chord: None,
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
             show_operations_center: false,
@@ -597,13 +602,6 @@ impl App {
             operations_search: String::new(),
             operation_failures: crate::operation_view::FailureInbox::default(),
             failure_notice_seen: std::collections::HashSet::new(),
-            focus_mode: false,
-            focus_started_at: 0.0,
-            escape_request: crate::accessibility::EscapeRoute::None,
-            transient_nonce: 0,
-            mask_input: None,
-            path_input: None,
-            recent_input: None,
             recent_order: session
                 .as_ref()
                 .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
@@ -615,27 +613,15 @@ impl App {
             content_index,
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
-            history_preview: None,
             recovery,
-            palette_input: None,
             palette_usage: session
                 .as_ref()
                 .map(|s| s.palette_usage.clone())
                 .unwrap_or_default(),
             palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
-            batch_rename: None,
-            sync: None,
-            duplicates: None,
-            diff: None,
-            treemap: None,
-            find: None,
-            archive: None,
             smart_folders: None,
-            saved_search_open: false,
             project_collections,
-            collections_dialog: None,
             command_templates: None,
-            run_command: None,
             compare_cache: None,
             startup_trace: Some(startup),
             show_developer_panel: false,
@@ -649,11 +635,12 @@ impl App {
     }
 
     pub(crate) fn issue_transient_nonce(&mut self) -> u64 {
-        self.transient_nonce = self
+        self.ui.transient_nonce = self
+            .ui
             .transient_nonce
             .checked_add(1)
             .expect("transient UI nonce space exhausted");
-        self.transient_nonce
+        self.ui.transient_nonce
     }
 
     pub(crate) fn mark_modal_opened(ctx: &egui::Context, modal: UiModal) {

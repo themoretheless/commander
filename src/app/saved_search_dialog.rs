@@ -4,16 +4,33 @@
 
 use super::*;
 
+#[derive(Debug, PartialEq, Eq)]
+enum SavedSearchTransition<T> {
+    Stay,
+    Close,
+    Open(T),
+}
+
+fn saved_search_transition<T>(cancel_requested: bool, open: Option<T>) -> SavedSearchTransition<T> {
+    if cancel_requested {
+        SavedSearchTransition::Close
+    } else if let Some(value) = open {
+        SavedSearchTransition::Open(value)
+    } else {
+        SavedSearchTransition::Stay
+    }
+}
+
 impl App {
     pub(crate) fn open_saved_search(&mut self) {
         self.smart_folders_mut();
-        self.saved_search_open = true;
+        self.ui.modals.saved_search_open = true;
     }
 
     pub(crate) fn show_saved_search_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::SavedSearch);
-        if !self.saved_search_open {
+        if !self.ui.modals.saved_search_open {
             return;
         }
         let t = self.colors;
@@ -116,6 +133,11 @@ impl App {
                 });
         }
 
+        let transition = saved_search_transition(close, open_def);
+        if transition == SavedSearchTransition::Close {
+            self.ui.modals.saved_search_open = false;
+            return;
+        }
         if let Some(name) = delete {
             self.smart_folders_mut().remove(&name);
             if !crate::smart_folder::save(self.smart_folders_mut()) {
@@ -128,18 +150,31 @@ impl App {
                 ));
             }
         }
-        if let Some(def) = open_def {
+        if let SavedSearchTransition::Open(def) = transition {
             let mut state = FindState::from_definition(&def);
             state.index_exclusions = super::find_dialog::format_index_exclusions(
                 &state.root,
                 &self.content_index.exclusions(&state.root),
             );
-            self.find = Some(state);
-            self.saved_search_open = false;
-            return;
+            self.ui.modals.find = Some(state);
+            self.ui.modals.saved_search_open = false;
         }
-        if close {
-            self.saved_search_open = false;
-        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SavedSearchTransition, saved_search_transition};
+
+    #[test]
+    fn cancel_wins_over_saved_search_transition_in_the_same_frame() {
+        assert_eq!(
+            saved_search_transition(true, Some(7)),
+            SavedSearchTransition::Close
+        );
+        assert_eq!(
+            saved_search_transition(false, Some(7)),
+            SavedSearchTransition::Open(7)
+        );
     }
 }

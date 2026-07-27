@@ -18,7 +18,7 @@ impl App {
 
     pub(crate) fn show_history_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::History);
-        let Some(mut state) = self.history_preview.take() else {
+        let Some(mut state) = self.ui.modals.history_preview.take() else {
             return;
         };
         let t = self.colors;
@@ -228,6 +228,6 @@ impl App {
                 }
             }
         }
-        self.history_preview = Some(state);
+        self.ui.modals.history_preview = Some(state);
     }
 }

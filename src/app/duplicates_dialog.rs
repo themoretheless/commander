@@ -14,7 +14,7 @@ impl App {
             .iter()
             .map(|group| default_keep(group, policy))
             .collect();
-        self.duplicates = Some(DupState {
+        self.ui.modals.duplicates = Some(DupState {
             groups,
             keep,
             policy,
@@ -24,14 +24,14 @@ impl App {
     pub(crate) fn show_duplicates_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::Duplicates);
-        if self.duplicates.is_none() {
+        if self.ui.modals.duplicates.is_none() {
             return;
         }
         let t = self.colors;
 
         // Snapshot display data so the window body only mutates `keep`.
         let (view, delete_total) = {
-            let Some(s) = self.duplicates.as_ref() else {
+            let Some(s) = self.ui.modals.duplicates.as_ref() else {
                 return;
             };
             let view: Vec<(u64, Vec<String>)> = s
@@ -59,7 +59,7 @@ impl App {
         let mut cancel = false;
 
         {
-            let Some(s) = self.duplicates.as_mut() else {
+            let Some(s) = self.ui.modals.duplicates.as_mut() else {
                 return;
             };
             egui::Window::new("Duplicates")
@@ -203,11 +203,11 @@ impl App {
         }
 
         if cancel {
-            self.duplicates = None;
+            self.ui.modals.duplicates = None;
             return;
         }
         if let Some(p) = new_policy
-            && let Some(s) = self.duplicates.as_mut()
+            && let Some(s) = self.ui.modals.duplicates.as_mut()
         {
             s.policy = p;
             s.keep = s.groups.iter().map(|g| default_keep(g, p)).collect();
@@ -218,7 +218,7 @@ impl App {
             }
             // Every non-kept file across all groups goes to the Trash.
             let to_trash: Vec<std::path::PathBuf> = {
-                let Some(s) = self.duplicates.as_ref() else {
+                let Some(s) = self.ui.modals.duplicates.as_ref() else {
                     return;
                 };
                 s.groups
@@ -235,7 +235,7 @@ impl App {
             };
             let requested = to_trash.len();
             let trashed = self.ws.trash_paths(&to_trash);
-            self.duplicates = None;
+            self.ui.modals.duplicates = None;
 
             if requested == 0 {
                 return;

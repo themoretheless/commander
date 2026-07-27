@@ -13,7 +13,7 @@ impl crate::ui_request::UiRequestSink for AppUiRequestSink<'_, '_> {
     }
 
     fn is_modal_open(&self, modal: UiModal) -> bool {
-        self.app.is_ui_modal_open(modal)
+        self.app.ui.modals.is_open(modal)
     }
 
     fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
@@ -45,6 +45,14 @@ fn recovery_review_handoff_allowed(
         }
         _ => false,
     }
+}
+
+fn panel_activation_requested(
+    containing_ui_enabled: bool,
+    contains_pointer: bool,
+    pointer_pressed: bool,
+) -> bool {
+    containing_ui_enabled && contains_pointer && pointer_pressed
 }
 
 fn clipped_label(text: &str, max_chars: usize) -> String {
@@ -90,13 +98,13 @@ impl eframe::App for App {
         let modal_open =
             crate::accessibility::modal_trap_active(modal_was_open, self.has_modal_surface());
         let trapped = crate::accessibility::focus_order(crate::accessibility::FocusLayout {
-            toolbar_visible: !self.focus_mode,
+            toolbar_visible: !self.ui.focus_mode,
             operations_open: self.show_operations_center,
             dialog_open: modal_open,
         }) == [crate::accessibility::FocusRegion::Dialog];
         let background_order =
             crate::accessibility::focus_order(crate::accessibility::FocusLayout {
-                toolbar_visible: !self.focus_mode,
+                toolbar_visible: !self.ui.focus_mode,
                 operations_open: self.show_operations_center,
                 dialog_open: false,
             });
@@ -108,7 +116,7 @@ impl eframe::App for App {
                         self.show_operations_center(ui);
                     }
                     crate::accessibility::FocusRegion::LeftPanel => {
-                        if !self.focus_mode {
+                        if !self.ui.focus_mode {
                             self.show_shortcut_bar(ui);
                             self.show_shelf_tray(ui);
                             self.show_selection_hud(ui);
@@ -142,33 +150,28 @@ impl eframe::App for App {
 
 impl App {
     fn has_modal_surface(&self) -> bool {
-        self.ws.safe_state.is_some() || self.has_modal_surface_except_safe_state()
-    }
-
-    fn has_modal_surface_except_safe_state(&self) -> bool {
-        self.ws.active_transfer_view().is_some()
-            || self.has_modal_surface_except_safe_state_and_transfer()
+        self.ws.safe_state.is_some()
+            || self.ws.active_transfer_view().is_some()
+            || self.ws.pending_op.is_some()
+            || self.ui.modals.any_open()
     }
 
     fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
-        self.ws.pending_op.is_some()
-            || self.recovery.open
-            || self.history_preview.is_some()
-            || self.renaming.is_some()
-            || self.mask_input.is_some()
-            || self.path_input.is_some()
-            || self.recent_input.is_some()
-            || self.run_command.is_some()
-            || self.palette_input.is_some()
-            || self.batch_rename.is_some()
-            || self.sync.is_some()
-            || self.duplicates.is_some()
-            || self.diff.is_some()
-            || self.treemap.is_some()
-            || self.find.is_some()
-            || self.archive.is_some()
-            || self.saved_search_open
-            || self.collections_dialog.is_some()
+        self.ws.pending_op.is_some() || self.ui.modals.any_open()
+    }
+
+    pub(crate) fn is_modal_surface_open(
+        &self,
+        surface: crate::accessibility::ModalSurface,
+    ) -> bool {
+        match surface {
+            crate::accessibility::ModalSurface::Transfer => {
+                self.ws.active_transfer_view().is_some()
+            }
+            crate::accessibility::ModalSurface::SafeState => self.ws.safe_state.is_some(),
+            crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
+            _ => self.ui.modals.is_surface_open(surface),
+        }
     }
 
     fn can_transition_ui_request(&self, request: &UiRequest) -> bool {
@@ -222,7 +225,12 @@ impl App {
                 && input.smooth_scroll_delta == Vec2::ZERO
         }) && self.ws.active_transfer_view().is_none()
             && self.ws.pending_op.is_none()
-            && self.find.as_ref().is_none_or(|state| !state.searching);
+            && self
+                .ui
+                .modals
+                .find
+                .as_ref()
+                .is_none_or(|state| !state.searching);
         if !index_idle {
             crate::io_budget::note_foreground_activity();
         }
@@ -319,28 +327,6 @@ impl App {
         self.ws.defer_ui_requests(deferred);
     }
 
-    fn is_ui_modal_open(&self, modal: UiModal) -> bool {
-        match modal {
-            UiModal::Recovery => self.recovery.open,
-            UiModal::History => self.history_preview.is_some(),
-            UiModal::Rename => self.renaming.is_some(),
-            UiModal::BatchRename => self.batch_rename.is_some(),
-            UiModal::Sync => self.sync.is_some(),
-            UiModal::Duplicates => self.duplicates.is_some(),
-            UiModal::Diff => self.diff.is_some(),
-            UiModal::Treemap => self.treemap.is_some(),
-            UiModal::Find => self.find.is_some(),
-            UiModal::Archive => self.archive.is_some(),
-            UiModal::SavedSearch => self.saved_search_open,
-            UiModal::Collections => self.collections_dialog.is_some(),
-            UiModal::Mask => self.mask_input.is_some(),
-            UiModal::Path => self.path_input.is_some(),
-            UiModal::Recent => self.recent_input.is_some(),
-            UiModal::RunCommand => self.run_command.is_some(),
-            UiModal::Palette => self.palette_input.is_some(),
-        }
-    }
-
     fn dispatch_ui_request(&mut self, request: UiRequest, ctx: &egui::Context) {
         match request {
             UiRequest::Rename(path) => self.open_rename(path),
@@ -395,12 +381,12 @@ impl App {
             HistoryReplayMode::Undo => self.ws.preview_undo(),
             HistoryReplayMode::Redo => self.ws.preview_redo(),
         };
-        self.history_preview = preview.map(|preview| HistoryPreviewState {
+        self.ui.modals.history_preview = preview.map(|preview| HistoryPreviewState {
             mode,
             preview,
             error: None,
         });
-        if self.history_preview.is_some() {
+        if self.ui.modals.history_preview.is_some() {
             return;
         }
         match mode {
@@ -647,21 +633,21 @@ impl App {
     }
 
     fn update_focus_mode(&mut self, ctx: &egui::Context) {
-        if !self.focus_mode {
+        if !self.ui.focus_mode {
             return;
         }
         let escape_requested =
             self.take_escape_request(crate::accessibility::EscapeRoute::FocusMode);
         let exit_focus = ctx.input(|i| {
             crate::focus_mode::should_exit(
-                self.focus_started_at,
+                self.ui.focus_started_at,
                 i.time,
                 i.pointer.delta().length_sq(),
                 escape_requested,
             )
         });
         if exit_focus {
-            self.focus_mode = false;
+            self.ui.focus_mode = false;
         }
     }
 
@@ -687,8 +673,8 @@ impl App {
             QuickAction::FindFiles => self.ws.execute(crate::command::Command::BeginFind),
             QuickAction::RecentFolders => self.ws.execute(crate::command::Command::BeginRecent),
             QuickAction::FocusMode => {
-                self.focus_mode = true;
-                self.focus_started_at = ctx.input(|i| i.time);
+                self.ui.focus_mode = true;
+                self.ui.focus_started_at = ctx.input(|i| i.time);
             }
         }
     }
@@ -1090,8 +1076,11 @@ impl App {
             .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
-                if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
-                {
+                if panel_activation_requested(
+                    ui.is_enabled(),
+                    ui.rect_contains_pointer(ui.max_rect()),
+                    ctx.input(|i| i.pointer.any_pressed()),
+                ) {
                     self.ws.active = ActivePanel::Left;
                 }
                 Self::render_panel(
@@ -1159,9 +1148,11 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
                 ui.push_id(crate::accessibility::FocusRegion::RightPanel.id(), |ui| {
-                    if ui.rect_contains_pointer(ui.max_rect())
-                        && ctx.input(|i| i.pointer.any_pressed())
-                    {
+                    if panel_activation_requested(
+                        ui.is_enabled(),
+                        ui.rect_contains_pointer(ui.max_rect()),
+                        ctx.input(|i| i.pointer.any_pressed()),
+                    ) {
                         self.ws.active = ActivePanel::Right;
                     }
                     Self::render_panel(
@@ -1312,12 +1303,12 @@ impl App {
 
     /// Floating capsule showing the current type-ahead buffer.
     fn show_type_ahead_overlay(&mut self, ctx: &egui::Context) {
-        let Some((buffer, last)) = &self.type_ahead else {
+        let Some((buffer, last)) = &self.ui.type_ahead else {
             return;
         };
         let now = ctx.input(|i| i.time);
         if now - last > 1.5 {
-            self.type_ahead = None;
+            self.ui.type_ahead = None;
             return;
         }
         let t = self.colors;
@@ -1477,7 +1468,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::recovery_review_handoff_allowed;
+    use super::{panel_activation_requested, recovery_review_handoff_allowed};
+
+    #[test]
+    fn disabled_background_cannot_activate_a_panel() {
+        assert!(!panel_activation_requested(false, true, true));
+        assert!(!panel_activation_requested(true, false, true));
+        assert!(!panel_activation_requested(true, true, false));
+        assert!(panel_activation_requested(true, true, true));
+    }
 
     #[test]
     fn safe_state_handoff_allows_its_retained_error_transfer_only() {

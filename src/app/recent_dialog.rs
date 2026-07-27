@@ -5,14 +5,14 @@ use super::*;
 
 impl App {
     pub(crate) fn open_recent(&mut self, ctx: &egui::Context) {
-        self.recent_input = Some(String::new());
+        self.ui.modals.recent_input = Some(String::new());
         Self::mark_modal_opened(ctx, UiModal::Recent);
     }
 
     pub(crate) fn show_recent_dialog(&mut self, ctx: &egui::Context) {
         let just_opened = Self::take_modal_opened(ctx, UiModal::Recent);
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recent);
-        let Some(buffer) = &mut self.recent_input else {
+        let Some(buffer) = &mut self.ui.modals.recent_input else {
             return;
         };
         let t = self.colors;
@@ -114,11 +114,11 @@ impl App {
         self.recent_order = order;
 
         if cancel {
-            self.recent_input = None;
+            self.ui.modals.recent_input = None;
             return;
         }
         if let Some(path) = go {
-            self.recent_input = None;
+            self.ui.modals.recent_input = None;
             self.ws.active_panel().navigate_to(path);
         }
     }

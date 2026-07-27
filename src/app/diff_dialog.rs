@@ -50,7 +50,7 @@ impl App {
                         Some("One or both files are binary, too large, or unreadable.".to_string()),
                     ),
                 };
-                self.diff = Some(DiffState {
+                self.ui.modals.diff = Some(DiffState {
                     name_a: name(&a),
                     name_b: name(&b),
                     lines,
@@ -62,7 +62,7 @@ impl App {
 
     pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Diff);
-        let Some(state) = &self.diff else {
+        let Some(state) = &self.ui.modals.diff else {
             return;
         };
         let t = self.colors;
@@ -157,7 +157,7 @@ impl App {
             });
 
         if close {
-            self.diff = None;
+            self.ui.modals.diff = None;
         }
     }
 }

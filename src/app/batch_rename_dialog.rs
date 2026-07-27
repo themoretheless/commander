@@ -72,7 +72,7 @@ impl App {
             return;
         };
         let scroll_nonce = self.issue_transient_nonce();
-        self.batch_rename = Some(BatchRenameState {
+        self.ui.modals.batch_rename = Some(BatchRenameState {
             context,
             find: String::new(),
             replace: String::new(),
@@ -94,7 +94,7 @@ impl App {
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::BatchRename,
         ));
-        let Some(state) = &mut self.batch_rename else {
+        let Some(state) = &mut self.ui.modals.batch_rename else {
             return;
         };
         let t = self.colors;
@@ -311,13 +311,13 @@ impl App {
             });
 
         if cancel {
-            self.batch_rename = None;
+            self.ui.modals.batch_rename = None;
             return;
         }
         if let Some((rule, context)) = commit {
             match self.ws.apply_batch_rename_in(&context, &rule) {
                 Ok(n) => {
-                    self.batch_rename = None;
+                    self.ui.modals.batch_rename = None;
                     if n > 0 {
                         let now = ctx.input(|i| i.time);
                         self.toasts.push(crate::toasts::Toast::new(
@@ -351,7 +351,7 @@ impl App {
                         false,
                         now,
                     ));
-                    if let Some(s) = &mut self.batch_rename {
+                    if let Some(s) = &mut self.ui.modals.batch_rename {
                         s.error = Some(msg);
                     }
                 }

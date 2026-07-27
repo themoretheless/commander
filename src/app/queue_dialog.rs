@@ -627,7 +627,7 @@ impl App {
         }
         self.recovery.select(operation_id);
         self.recovery.detail = detail;
-        self.recovery.open = true;
+        self.ui.modals.recovery_open = true;
     }
 }
 

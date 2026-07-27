@@ -26,28 +26,6 @@ fn prioritized_modal(
     top_open_modal(open).or(first_pending)
 }
 
-fn modal_surface(modal: UiModal) -> ModalSurface {
-    match modal {
-        UiModal::Recovery => ModalSurface::Recovery,
-        UiModal::History => ModalSurface::History,
-        UiModal::Rename => ModalSurface::Rename,
-        UiModal::BatchRename => ModalSurface::BatchRename,
-        UiModal::Sync => ModalSurface::Sync,
-        UiModal::Duplicates => ModalSurface::Duplicates,
-        UiModal::Diff => ModalSurface::Diff,
-        UiModal::Treemap => ModalSurface::Treemap,
-        UiModal::Find => ModalSurface::Find,
-        UiModal::Archive => ModalSurface::Archive,
-        UiModal::SavedSearch => ModalSurface::SavedSearch,
-        UiModal::Collections => ModalSurface::Collections,
-        UiModal::Mask => ModalSurface::Mask,
-        UiModal::Path => ModalSurface::Path,
-        UiModal::Recent => ModalSurface::Recent,
-        UiModal::RunCommand => ModalSurface::RunCommand,
-        UiModal::Palette => ModalSurface::Palette,
-    }
-}
-
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
         let contract = self.ui_contract(ctx);
@@ -55,8 +33,8 @@ impl App {
             contract.keyboard,
             KeyboardRoute::TextInput(_) | KeyboardRoute::Modal(_)
         ) {
-            self.type_ahead = None;
-            self.chord = None;
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
             return;
         }
         let presses = ctx.input(Self::collect_presses);
@@ -75,8 +53,8 @@ impl App {
                     self.push_key_feedback(ctx, "Wait for the active transfer to finish");
                 }
             }
-            self.type_ahead = None;
-            self.chord = None;
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
             return;
         }
         for cmd in map_keys(&presses) {
@@ -86,8 +64,8 @@ impl App {
             }
         }
         if self.ws.has_any_pending_ui_modal() {
-            self.type_ahead = None;
-            self.chord = None;
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
             return;
         }
         let claimed = self.handle_chords(ctx);
@@ -95,32 +73,8 @@ impl App {
     }
 
     pub(crate) fn ui_contract(&self, ctx: &egui::Context) -> UiContract {
-        let first_pending = self.ws.first_pending_ui_modal().map(modal_surface);
-        let modal = prioritized_modal(
-            |surface| match surface {
-                ModalSurface::Transfer => self.ws.active_transfer_view().is_some(),
-                ModalSurface::SafeState => self.ws.safe_state.is_some(),
-                ModalSurface::Recovery => self.recovery.open,
-                ModalSurface::History => self.history_preview.is_some(),
-                ModalSurface::Confirmation => self.ws.pending_op.is_some(),
-                ModalSurface::Rename => self.renaming.is_some(),
-                ModalSurface::BatchRename => self.batch_rename.is_some(),
-                ModalSurface::Sync => self.sync.is_some(),
-                ModalSurface::Duplicates => self.duplicates.is_some(),
-                ModalSurface::Diff => self.diff.is_some(),
-                ModalSurface::Treemap => self.treemap.is_some(),
-                ModalSurface::Find => self.find.is_some(),
-                ModalSurface::Archive => self.archive.is_some(),
-                ModalSurface::SavedSearch => self.saved_search_open,
-                ModalSurface::Collections => self.collections_dialog.is_some(),
-                ModalSurface::Mask => self.mask_input.is_some(),
-                ModalSurface::Path => self.path_input.is_some(),
-                ModalSurface::Recent => self.recent_input.is_some(),
-                ModalSurface::RunCommand => self.run_command.is_some(),
-                ModalSurface::Palette => self.palette_input.is_some(),
-            },
-            first_pending,
-        );
+        let first_pending = self.ws.first_pending_ui_modal().map(UiModal::surface);
+        let modal = prioritized_modal(|surface| self.is_modal_surface_open(surface), first_pending);
         let active_left = self.ws.active == ActivePanel::Left;
         let active_preview_open = if active_left {
             self.ws.left.preview.is_some()
@@ -131,12 +85,12 @@ impl App {
             text_input: text_input_state(ctx),
             modal,
             active_preview_open,
-            focus_mode: self.focus_mode,
+            focus_mode: self.ui.focus_mode,
         })
     }
 
     pub(crate) fn capture_escape_request(&mut self, ctx: &egui::Context) {
-        self.escape_request = if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        self.ui.escape_request = if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.ui_contract(ctx).escape
         } else {
             EscapeRoute::None
@@ -144,7 +98,7 @@ impl App {
     }
 
     pub(crate) fn take_escape_request(&mut self, owner: EscapeRoute) -> bool {
-        consume_escape_route(&mut self.escape_request, owner)
+        consume_escape_route(&mut self.ui.escape_request, owner)
     }
 
     pub(crate) fn take_modal_escape(&mut self, owner: ModalSurface) -> bool {
@@ -187,10 +141,10 @@ impl App {
     fn handle_chords(&mut self, ctx: &egui::Context) -> char {
         const CHORD_IDLE: f64 = 1.0;
         let now = ctx.input(|i| i.time);
-        if let Some((_, started)) = self.chord
+        if let Some((_, started)) = self.ui.chord
             && now - started > CHORD_IDLE
         {
-            self.chord = None;
+            self.ui.chord = None;
         }
 
         let (g, s, j, k, plain) = ctx.input(|i| {
@@ -206,8 +160,8 @@ impl App {
             return '\0';
         }
 
-        if let Some((leader, _)) = self.chord {
-            self.chord = None;
+        if let Some((leader, _)) = self.ui.chord {
+            self.ui.chord = None;
             return match (leader, g, s) {
                 ('g', true, _) => {
                     self.ws.execute(Command::CursorHome);
@@ -222,28 +176,30 @@ impl App {
             };
         }
         if g {
-            self.chord = Some(('g', now));
+            self.ui.chord = Some(('g', now));
             return 'g';
         }
         if s {
-            self.chord = Some(('s', now));
+            self.ui.chord = Some(('s', now));
             return 's';
         }
 
         if j || k {
             let count_mode = self
+                .ui
                 .type_ahead
                 .as_ref()
                 .map(|(buf, _)| buf.chars().all(|c| c.is_ascii_digit()))
                 .unwrap_or(true);
             if count_mode {
                 let count: i32 = self
+                    .ui
                     .type_ahead
                     .as_ref()
                     .and_then(|(buf, _)| buf.parse().ok())
                     .filter(|n| *n > 0)
                     .unwrap_or(1);
-                self.type_ahead = None;
+                self.ui.type_ahead = None;
                 self.ws
                     .execute(Command::CursorMove(if j { count } else { -count }));
                 return if j { 'j' } else { 'k' };
@@ -273,22 +229,22 @@ impl App {
         let typed: String = typed.chars().filter(|&c| c != claimed).collect();
 
         // Expire a stale buffer.
-        if let Some((_, last)) = &self.type_ahead
+        if let Some((_, last)) = &self.ui.type_ahead
             && now - last > IDLE
         {
-            self.type_ahead = None;
+            self.ui.type_ahead = None;
         }
         if typed.is_empty() {
             return;
         }
-        let buffer = match &mut self.type_ahead {
+        let buffer = match &mut self.ui.type_ahead {
             Some((b, t)) => {
                 b.push_str(&typed);
                 *t = now;
                 b.clone()
             }
             None => {
-                self.type_ahead = Some((typed.clone(), now));
+                self.ui.type_ahead = Some((typed.clone(), now));
                 typed
             }
         };
@@ -409,7 +365,7 @@ mod tests {
         queue.emit(UiRequest::Palette);
         let modal = prioritized_modal(
             |surface| surface == ModalSurface::Palette,
-            queue.first_pending_modal().map(modal_surface),
+            queue.first_pending_modal().map(UiModal::surface),
         );
 
         assert_eq!(modal, Some(ModalSurface::Palette));
@@ -420,7 +376,7 @@ mod tests {
         let mut queue = crate::ui_request::UiRequestQueue::default();
         queue.emit(UiRequest::Recent);
         queue.emit(UiRequest::Palette);
-        let modal = prioritized_modal(|_| false, queue.first_pending_modal().map(modal_surface));
+        let modal = prioritized_modal(|_| false, queue.first_pending_modal().map(UiModal::surface));
 
         assert_eq!(modal, Some(ModalSurface::Recent));
         assert_eq!(
@@ -470,7 +426,7 @@ mod tests {
 
         let before_dispatch = prioritized_modal(
             |surface| matches!(surface, ModalSurface::SafeState | ModalSurface::Transfer),
-            queue.first_pending_modal().map(modal_surface),
+            queue.first_pending_modal().map(UiModal::surface),
         );
         assert_eq!(before_dispatch, Some(ModalSurface::SafeState));
 
@@ -483,7 +439,7 @@ mod tests {
                 ModalSurface::Transfer => sink.retained_transfer_open,
                 _ => false,
             },
-            queue.first_pending_modal().map(modal_surface),
+            queue.first_pending_modal().map(UiModal::surface),
         );
 
         assert_eq!(after_dispatch, Some(ModalSurface::Recovery));

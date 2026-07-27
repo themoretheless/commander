@@ -12,7 +12,7 @@ impl App {
             collection,
             std::sync::Arc::new(move || repaint.request_repaint()),
         );
-        if let Some(state) = self.collections_dialog.as_mut() {
+        if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
             state.selected = Some(name.to_string());
             state.rows.clear();
             state.run = Some(run);
@@ -27,6 +27,8 @@ impl App {
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(run) = self
+            .ui
+            .modals
             .collections_dialog
             .as_ref()
             .and_then(|state| state.run.as_ref())
@@ -42,7 +44,7 @@ impl App {
                 }
             }
         }
-        if let Some(state) = self.collections_dialog.as_mut() {
+        if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
             for event in events {
                 match event {
                     crate::collections::ViewEvent::Batch(rows) => state.rows.extend(rows),
@@ -75,7 +77,7 @@ impl App {
             .items
             .first()
             .map(|collection| collection.name.clone());
-        self.collections_dialog = Some(CollectionsDialogState {
+        self.ui.modals.collections_dialog = Some(CollectionsDialogState {
             selected: selected.clone(),
             ..Default::default()
         });
@@ -85,7 +87,13 @@ impl App {
     }
 
     pub(crate) fn show_collections_dialog(&mut self, ctx: &egui::Context) {
-        if self.collections_dialog.is_none() {
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::Collections);
+        if self.ui.modals.collections_dialog.is_none() {
+            return;
+        }
+        if super::ui_state::modal_close_requested(true, escape_requested) {
+            self.ui.modals.collections_dialog = None;
             return;
         }
         self.poll_collection_view();
@@ -104,7 +112,7 @@ impl App {
         let mut reveal = None;
 
         {
-            let state = self.collections_dialog.as_mut().unwrap();
+            let state = self.ui.modals.collections_dialog.as_mut().unwrap();
             egui::Window::new("Project collections")
                 .open(&mut window_open)
                 .collapsible(false)
@@ -278,13 +286,13 @@ impl App {
                 });
         }
 
-        if !window_open {
-            self.collections_dialog = None;
+        if super::ui_state::modal_close_requested(window_open, false) {
+            self.ui.modals.collections_dialog = None;
             return;
         }
         if add {
             let (name, roots) = {
-                let state = self.collections_dialog.as_ref().unwrap();
+                let state = self.ui.modals.collections_dialog.as_ref().unwrap();
                 let mut roots = Vec::new();
                 if state.include_left {
                     roots.push(self.ws.left.current_path.clone());
@@ -298,13 +306,13 @@ impl App {
             let previous = self.project_collections.clone();
             if self.project_collections.add(collection) {
                 if crate::collections::save(&self.project_collections) {
-                    if let Some(state) = self.collections_dialog.as_mut() {
+                    if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
                         state.name.clear();
                     }
                     self.start_collection_view(ctx, &name);
                 } else {
                     self.project_collections = previous;
-                    if let Some(state) = self.collections_dialog.as_mut() {
+                    if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
                         state.error = Some("Could not save project collections".to_string());
                     }
                 }
@@ -312,6 +320,8 @@ impl App {
         }
         if let Some(name) = delete {
             let deleting_selected = self
+                .ui
+                .modals
                 .collections_dialog
                 .as_ref()
                 .is_some_and(|state| state.selected.as_deref() == Some(name.as_str()));
@@ -319,7 +329,7 @@ impl App {
             self.project_collections.remove(&name);
             if !crate::collections::save(&self.project_collections) {
                 self.project_collections = previous;
-                if let Some(state) = self.collections_dialog.as_mut() {
+                if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
                     state.error = Some("Could not save project collections".to_string());
                 }
             } else if deleting_selected {
@@ -330,7 +340,7 @@ impl App {
                     .map(|collection| collection.name.clone());
                 if let Some(next) = next {
                     self.start_collection_view(ctx, &next);
-                } else if let Some(state) = self.collections_dialog.as_mut() {
+                } else if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
                     state.selected = None;
                     state.rows.clear();
                     state.run = None;

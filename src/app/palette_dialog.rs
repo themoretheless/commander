@@ -6,21 +6,21 @@ use super::*;
 
 impl App {
     pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
-        self.palette_input = Some(String::new());
+        self.ui.modals.palette_input = Some(String::new());
         Self::mark_modal_opened(ctx, UiModal::Palette);
     }
 
     pub(crate) fn show_palette_dialog(&mut self, ctx: &egui::Context) {
         let just_opened = Self::take_modal_opened(ctx, UiModal::Palette);
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Palette);
-        if self.palette_input.is_none() {
+        if self.ui.modals.palette_input.is_none() {
             return;
         }
         let t = self.colors;
 
         // Rank from the query at frame start (owned, so editing the buffer
         // below does not conflict with reading the usage history).
-        let query = self.palette_input.clone().unwrap();
+        let query = self.ui.modals.palette_input.clone().unwrap();
         let matches = crate::command::rank(&query, &self.palette_usage, self.palette_tick);
         let command_context = self.ws.command_context();
         let availabilities: Vec<crate::command::CommandAvailability> = matches
@@ -34,7 +34,7 @@ impl App {
             .iter()
             .map(|m| self.palette_command_preview(m.command))
             .collect();
-        let buffer = self.palette_input.as_mut().unwrap();
+        let buffer = self.ui.modals.palette_input.as_mut().unwrap();
         let mut run: Option<(&'static str, crate::command::Command)> = None;
         let mut cancel = false;
 
@@ -193,12 +193,12 @@ impl App {
             });
 
         if cancel {
-            self.palette_input = None;
+            self.ui.modals.palette_input = None;
             return;
         }
         if let Some((label, cmd)) = run {
             // Close the palette first; the command may open another dialog.
-            self.palette_input = None;
+            self.ui.modals.palette_input = None;
             // Record the run so it ranks higher next time.
             self.palette_tick += 1;
             self.palette_usage.record(label, self.palette_tick);

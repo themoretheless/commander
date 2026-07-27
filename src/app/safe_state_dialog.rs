@@ -8,7 +8,7 @@ fn review_recovery_request(operation_id: &crate::operation::OperationId) -> UiRe
 
 impl App {
     pub(crate) fn show_safe_state_dialog(&mut self, ctx: &egui::Context) {
-        if self.recovery.open {
+        if self.ui.modals.recovery_open {
             return;
         }
         let Some(state) = self.ws.safe_state.clone() else {
