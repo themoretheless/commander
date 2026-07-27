@@ -188,6 +188,7 @@ pub struct FailureNotice {
     pub operation_id: OperationId,
     pub summary: SubmittedSummary,
     pub errors: Vec<String>,
+    pub failures: Vec<crate::operation::ClassifiedFailure>,
     pub created_at_millis: u64,
 }
 
@@ -383,12 +384,14 @@ mod tests {
             operation_id: operation_id.clone(),
             summary: summary.clone(),
             errors: vec!["first".to_string()],
+            failures: Vec::new(),
             created_at_millis: 1,
         });
         inbox.upsert(FailureNotice {
             operation_id: operation_id.clone(),
             summary,
             errors: vec!["new".to_string(), "second".to_string()],
+            failures: Vec::new(),
             created_at_millis: 2,
         });
         assert_eq!(inbox.notices().len(), 1);

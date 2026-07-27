@@ -27,7 +27,8 @@ impl crate::ui_request::UiRequestSink for AppUiRequestSink<'_, '_> {
 
 fn recovery_review_handoff_allowed(
     safe_state: Option<&crate::operation::SafeState>,
-    active_transfer: Option<&crate::transfer::TransferProgress>,
+    active_operation_id: Option<&crate::operation::OperationId>,
+    active_progress: Option<&crate::transfer::TransferProgress>,
     unrelated_modal_open: bool,
     requested_operation: &crate::operation::OperationId,
 ) -> bool {
@@ -37,11 +38,13 @@ fn recovery_review_handoff_allowed(
         return false;
     }
 
-    active_transfer.is_none_or(|progress| {
-        progress.finished
-            && !progress.errors.is_empty()
-            && progress.operation_id.as_ref() == Some(requested_operation)
-    })
+    match (active_operation_id, active_progress) {
+        (None, None) => true,
+        (Some(operation_id), Some(progress)) => {
+            operation_id == requested_operation && progress.finished && !progress.errors.is_empty()
+        }
+        _ => false,
+    }
 }
 
 fn clipped_label(text: &str, max_chars: usize) -> String {
@@ -143,7 +146,7 @@ impl App {
     }
 
     fn has_modal_surface_except_safe_state(&self) -> bool {
-        self.ws.active_transfer().is_some()
+        self.ws.active_transfer_view().is_some()
             || self.has_modal_surface_except_safe_state_and_transfer()
     }
 
@@ -172,13 +175,14 @@ impl App {
         let UiRequest::ReviewRecovery(operation_id) = request else {
             return false;
         };
-        let active_transfer = self
-            .ws
-            .active_transfer()
-            .map(|state| crate::lock_util::recover(state));
+        let active_transfer = self.ws.active_transfer_view();
+        let active_progress = active_transfer
+            .as_ref()
+            .map(|view| crate::lock_util::recover(&view.progress));
         recovery_review_handoff_allowed(
             self.ws.safe_state.as_ref(),
-            active_transfer.as_deref(),
+            active_transfer.as_ref().map(|view| &view.operation_id),
+            active_progress.as_deref(),
             self.has_modal_surface_except_safe_state_and_transfer(),
             operation_id,
         )
@@ -216,7 +220,7 @@ impl App {
             input.events.is_empty()
                 && !input.pointer.any_down()
                 && input.smooth_scroll_delta == Vec2::ZERO
-        }) && self.ws.active_transfer().is_none()
+        }) && self.ws.active_transfer_view().is_none()
             && self.ws.pending_op.is_none()
             && self.find.as_ref().is_none_or(|state| !state.searching);
         if !index_idle {
@@ -270,10 +274,14 @@ impl App {
             let c = ctx.clone();
             // poll_transfer drains the next queued transfer (two-way sync second
             // pass, or any op queued behind the active one) via this notify.
-            if self.ws.poll_transfer(move || c.request_repaint()) {
+            let outcome = self.ws.poll_transfer(move || c.request_repaint());
+            let now = ctx.input(|input| input.time);
+            if let Some(report) = outcome.terminal {
+                self.capture_terminal_report(report, (now * 1_000.0) as u64);
+            }
+            if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
                 // log a receipt (jump-back + the same live undo affordance).
-                let now = ctx.input(|i| i.time);
                 if let Some(a) = self.ws.stack.peek_undo() {
                     self.toasts.push(crate::toasts::Toast::new(
                         format!("{} {} item(s)", a.verb(), a.item_count()),
@@ -1487,20 +1495,33 @@ mod tests {
 
         assert!(recovery_review_handoff_allowed(
             Some(&safe_state),
+            Some(&operation_id),
             Some(&transfer),
             false,
             &operation_id,
         ));
         assert!(!recovery_review_handoff_allowed(
             Some(&safe_state),
+            Some(&operation_id),
             Some(&transfer),
             true,
             &operation_id,
         ));
 
         transfer.operation_id = Some(crate::operation::OperationId("other".to_string()));
+        assert!(
+            recovery_review_handoff_allowed(
+                Some(&safe_state),
+                Some(&operation_id),
+                Some(&transfer),
+                false,
+                &operation_id,
+            ),
+            "handoff trusts the controller's canonical identity"
+        );
         assert!(!recovery_review_handoff_allowed(
             Some(&safe_state),
+            Some(&crate::operation::OperationId("other".to_string())),
             Some(&transfer),
             false,
             &operation_id,

@@ -14,6 +14,7 @@ use crate::panel::{self, FileEntry, PanelState, PreviewContent};
 use crate::scan::{self, FlatList};
 use crate::transfer::{
     self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferSpec,
+    TransferState,
 };
 use crate::ui_request::{UiModal, UiRequest};
 
@@ -134,6 +135,36 @@ pub struct DeleteOutcome {
 pub struct ShelfDrainOutcome {
     pub started: usize,
     pub unavailable: usize,
+}
+
+#[derive(Clone)]
+pub struct ActiveTransferView {
+    pub operation_id: crate::operation::OperationId,
+    pub submitted: crate::operation_view::SubmittedSummary,
+    pub progress: TransferState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferTerminalState {
+    Done,
+    Failed,
+    Cancelled,
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferTerminalReport {
+    pub operation_id: crate::operation::OperationId,
+    pub submitted: crate::operation_view::SubmittedSummary,
+    pub terminal: TransferTerminalState,
+    pub errors: Vec<String>,
+    pub failures: Vec<crate::operation::ClassifiedFailure>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransferPollOutcome {
+    pub undo_recorded: bool,
+    pub terminal: Option<TransferTerminalReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -466,7 +497,7 @@ impl Workspace {
             })
         };
 
-        let active_transfer = self.active_transfer().is_some();
+        let active_transfer = self.active_transfer_view().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let pending_operation = self.pending_op.is_some();
         let safe_state = self.mutations_blocked();
@@ -551,7 +582,7 @@ impl Workspace {
 
         let safe_state = self.mutations_blocked();
         let pending_operation = self.pending_op.is_some();
-        let active_transfer = self.active_transfer().is_some();
+        let active_transfer = self.active_transfer_view().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let (left_read_only, right_read_only) = self.pane_read_only();
         let (active_read_only, inactive_read_only) = match self.active {
@@ -1269,6 +1300,8 @@ impl Workspace {
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
+            before_terminal_publish: None,
+            #[cfg(test)]
             journal_enabled: false,
         };
         self.enqueue_only(spec, undo);
@@ -1519,6 +1552,8 @@ impl Workspace {
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
+            before_terminal_publish: None,
+            #[cfg(test)]
             journal_enabled: false,
         };
         self.enqueue_with_history(spec, history);
@@ -1734,6 +1769,8 @@ impl Workspace {
             rollback_cleanup: Some(folder),
             #[cfg(test)]
             before_commit: None,
+            #[cfg(test)]
+            before_terminal_publish: None,
             #[cfg(test)]
             journal_enabled: false,
         };
@@ -2281,6 +2318,8 @@ impl Workspace {
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
+            before_terminal_publish: None,
+            #[cfg(test)]
             journal_enabled: false,
         };
         self.enqueue_only(spec, None);
@@ -2522,6 +2561,7 @@ mod tests {
     use crate::testutil::TempDir;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Barrier, mpsc};
 
     fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
         let mut ws = Workspace::with_opener(
@@ -2551,6 +2591,7 @@ mod tests {
             post_success: None,
             rollback_cleanup: None,
             before_commit: None,
+            before_terminal_publish: None,
             journal_enabled: false,
         }
     }
@@ -2629,6 +2670,180 @@ mod tests {
                 "queue drain timed out"
             );
         }
+    }
+
+    #[test]
+    fn terminal_publication_waits_for_journal_finalization() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let source = left.file("boundary.txt", "boundary");
+        let entry =
+            FileEntry::from_meta(source.clone(), &std::fs::symlink_metadata(&source).unwrap())
+                .unwrap();
+        let operation_id = crate::operation::OperationId::new();
+        let mut spec = test_transfer_spec(&operation_id.0, right.path());
+        spec.kind = TransferKind::Copy;
+        spec.expectations =
+            transfer::capture_expectations(std::slice::from_ref(&entry), right.path());
+        spec.entries = vec![entry];
+        spec.journal_enabled = true;
+
+        let barrier = Arc::new(Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        spec.before_terminal_publish = Some(Arc::new(move || {
+            let _ = entered_tx.send(());
+            worker_barrier.wait();
+        }));
+
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let mut ws = workspace(&left, &right);
+        ws.enqueue_with_history(spec, transfer_queue::HistoryIntent::None);
+        ws.pump_queue_with_workload(workload.handle(), || {});
+        let progress = ws
+            .active_transfer_view()
+            .expect("boundary transfer active")
+            .progress;
+        let runner = workload.clone();
+        let worker = std::thread::spawn(move || {
+            assert!(runner.run_next());
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker reached terminal publication barrier");
+
+        let before = ws.poll_transfer(|| {});
+        let journal_is_terminal = crate::operation_journal::operation(&operation_id)
+            .map(|operation| operation.status.is_terminal())
+            .unwrap_or(false);
+        let progress_is_terminal = crate::lock_util::recover(&progress).finished;
+        barrier.wait();
+        worker.join().expect("deterministic worker");
+
+        assert!(journal_is_terminal, "journal finalized before the barrier");
+        assert!(!progress_is_terminal, "finished leaked before finalization");
+        assert!(before.terminal.is_none(), "poll detached a live worker");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !crate::lock_util::recover(&progress).finished {
+            assert!(std::time::Instant::now() < deadline, "transfer timed out");
+            std::thread::yield_now();
+        }
+        assert!(ws.poll_transfer(|| {}).terminal.is_some());
+    }
+
+    #[test]
+    fn cancelled_and_stopped_errors_emit_one_canonical_terminal_report() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&left, &right);
+
+        for (operation, stopped, expected) in [
+            ("cancelled-report", false, TransferTerminalState::Cancelled),
+            ("stopped-report", true, TransferTerminalState::Stopped),
+        ] {
+            let progress = ws.launch_test_transfer(
+                test_transfer_spec(operation, right.path()),
+                transfer_queue::HistoryIntent::None,
+            );
+            {
+                let mut progress = crate::lock_util::recover(&progress);
+                progress.finished = true;
+                progress.cancelled = !stopped;
+                progress.stopped = stopped;
+                progress.errors.push("terminal error".to_string());
+                progress
+                    .failures
+                    .push(crate::operation::ClassifiedFailure::message(
+                        crate::operation::FailureClass::Blocked,
+                        None,
+                        "terminal error",
+                    ));
+            }
+
+            let outcome = ws.poll_transfer(|| {});
+            let report = outcome.terminal.expect("terminal report");
+            assert_eq!(report.operation_id.0, operation);
+            assert_eq!(report.terminal, expected);
+            assert_eq!(report.errors, ["terminal error"]);
+            assert_eq!(report.failures.len(), 1);
+            assert!(ws.active_transfer_view().is_none());
+            assert!(
+                ws.poll_transfer(|| {}).terminal.is_none(),
+                "terminal report must be exactly once"
+            );
+        }
+    }
+
+    #[test]
+    fn panicking_transfer_finishes_in_needs_review_without_wedging_workspace() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let source = left.file("panic.txt", "panic boundary");
+        let entry =
+            FileEntry::from_meta(source.clone(), &std::fs::symlink_metadata(&source).unwrap())
+                .unwrap();
+        let operation_id = crate::operation::OperationId::new();
+        let mut spec = test_transfer_spec(&operation_id.0, right.path());
+        spec.kind = TransferKind::Copy;
+        spec.expectations =
+            transfer::capture_expectations(std::slice::from_ref(&entry), right.path());
+        spec.entries = vec![entry];
+        spec.journal_enabled = true;
+        spec.before_commit = Some(Arc::new(|_, _| panic!("injected worker panic")));
+
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let notify_count = Arc::clone(&notifications);
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let mut ws = workspace(&left, &right);
+        ws.enqueue_with_history(spec, transfer_queue::HistoryIntent::None);
+        ws.pump_queue_with_workload(workload.handle(), move || {
+            notify_count.fetch_add(1, Ordering::SeqCst);
+        });
+        let progress = ws
+            .active_transfer_view()
+            .expect("panic transfer active")
+            .progress;
+        assert!(workload.run_next(), "panic worker was admitted");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !crate::lock_util::recover(&progress).finished {
+            assert!(std::time::Instant::now() < deadline, "panic path wedged");
+            std::thread::yield_now();
+        }
+
+        let state = crate::lock_util::recover(&progress);
+        assert!(state.failures.iter().any(|failure| {
+            failure.class == crate::operation::FailureClass::IntegrityUncertain
+                && failure.message.contains("panicked")
+        }));
+        drop(state);
+        assert!(notifications.load(Ordering::SeqCst) > 0);
+        assert_eq!(
+            crate::operation_journal::operation(&operation_id)
+                .expect("panic journal")
+                .status,
+            crate::operation_journal::OperationStatus::NeedsReview
+        );
+
+        let outcome = ws.poll_transfer(|| {});
+        assert!(outcome.terminal.is_none(), "panic error remains reviewable");
+        assert_eq!(
+            ws.safe_state.as_ref().map(|state| &state.operation_id),
+            Some(&operation_id)
+        );
+        ws.acknowledge_safe_state();
+        let report = ws
+            .try_dismiss_transfer(|| {})
+            .expect("reviewed panic can be dismissed");
+        assert_eq!(report.operation_id, operation_id);
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.class == crate::operation::FailureClass::IntegrityUncertain)
+        );
+        assert!(ws.active_transfer_view().is_none());
     }
 
     #[test]
@@ -3797,7 +4012,10 @@ mod tests {
                 ));
         }
 
-        assert!(!ws.poll_transfer(|| {}), "errored transfer stays visible");
+        assert!(
+            ws.poll_transfer(|| {}).terminal.is_none(),
+            "errored transfer stays visible"
+        );
         let safe = ws.safe_state.as_ref().expect("safe state raised");
         assert_eq!(safe.operation_id.0, "uncertain-op");
         assert_eq!(safe.paths, vec![affected]);
@@ -3807,7 +4025,7 @@ mod tests {
 
         ws.acknowledge_safe_state();
         assert!(
-            !ws.poll_transfer(|| {}),
+            ws.poll_transfer(|| {}).terminal.is_none(),
             "review token prevents a reopen loop"
         );
         assert!(ws.safe_state.is_none());
@@ -3847,7 +4065,7 @@ mod tests {
                 ));
         }
 
-        assert!(!ws.poll_transfer(|| {}));
+        assert!(ws.poll_transfer(|| {}).terminal.is_none());
         assert!(ws.safe_state.is_some());
         assert_eq!(
             ws.unfinished_queue_count(),

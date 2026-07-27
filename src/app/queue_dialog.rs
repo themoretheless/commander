@@ -5,6 +5,22 @@
 use super::*;
 use crate::opqueue::JobState;
 
+fn terminal_failure_notice(
+    report: crate::workspace::TransferTerminalReport,
+    created_at_millis: u64,
+) -> Option<crate::operation_view::FailureNotice> {
+    if report.errors.is_empty() {
+        return None;
+    }
+    Some(crate::operation_view::FailureNotice {
+        operation_id: report.operation_id,
+        summary: report.submitted,
+        errors: report.errors,
+        failures: report.failures,
+        created_at_millis,
+    })
+}
+
 impl App {
     pub(crate) fn toggle_queue_panel(&mut self) {
         if self.show_operations_center && self.operations_tab == OperationsTab::Queue {
@@ -29,25 +45,41 @@ impl App {
     }
 
     pub(crate) fn capture_operation_failures(&mut self, ctx: &egui::Context) {
-        let failed = self.ws.active_transfer().and_then(|state| {
-            let progress = crate::lock_util::recover(state);
+        let failed = self.ws.active_transfer_view().and_then(|active| {
+            let progress = crate::lock_util::recover(&active.progress);
             if !progress.finished || progress.errors.is_empty() {
                 return None;
             }
             Some(crate::operation_view::FailureNotice {
-                operation_id: progress.operation_id.clone()?,
-                summary: progress.submitted.clone()?,
+                operation_id: active.operation_id,
+                summary: active.submitted,
                 errors: progress.errors.clone(),
+                failures: progress.failures.clone(),
                 created_at_millis: (ctx.input(|input| input.time) * 1_000.0) as u64,
             })
         });
-        if let Some(notice) = failed
-            && self.failure_notice_seen.insert(notice.operation_id.clone())
-        {
-            self.operation_failures.upsert(notice);
-            self.show_operations_center = true;
-            self.operations_tab = OperationsTab::Errors;
+        if let Some(notice) = failed {
+            self.ingest_failure_notice(notice);
         }
+    }
+
+    pub(crate) fn capture_terminal_report(
+        &mut self,
+        report: crate::workspace::TransferTerminalReport,
+        created_at_millis: u64,
+    ) {
+        if let Some(notice) = terminal_failure_notice(report, created_at_millis) {
+            self.ingest_failure_notice(notice);
+        }
+    }
+
+    fn ingest_failure_notice(&mut self, notice: crate::operation_view::FailureNotice) {
+        if !self.failure_notice_seen.insert(notice.operation_id.clone()) {
+            return;
+        }
+        self.operation_failures.upsert(notice);
+        self.show_operations_center = true;
+        self.operations_tab = OperationsTab::Errors;
     }
 
     pub(crate) fn show_operations_center(&mut self, ui: &mut egui::Ui) {
@@ -159,8 +191,8 @@ impl App {
     fn show_operations_queue(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
         let rows = self.ws.queue_snapshot();
-        let running = self.ws.active_transfer().map(|state| {
-            let progress = crate::lock_util::recover(state);
+        let running = self.ws.active_transfer_view().map(|active| {
+            let progress = crate::lock_util::recover(&active.progress);
             (progress.phase, progress.pause_reason.clone())
         });
         if rows.is_empty() {
@@ -447,9 +479,10 @@ impl App {
             }
         });
         if let Some(operation_id) = view {
-            let active = self.ws.active_transfer().is_some_and(|state| {
-                crate::lock_util::recover(state).operation_id.as_ref() == Some(&operation_id)
-            });
+            let active = self
+                .ws
+                .active_transfer_view()
+                .is_some_and(|active| active.operation_id == operation_id);
             if active {
                 self.show_operations_center = false;
             } else {
@@ -586,5 +619,38 @@ impl App {
         self.recovery.select(operation_id);
         self.recovery.detail = detail;
         self.recovery.open = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terminal_failure_notice;
+
+    #[test]
+    fn auto_retired_terminal_report_becomes_a_complete_failure_notice() {
+        let operation_id = crate::operation::OperationId("auto-retired".to_string());
+        let failure = crate::operation::ClassifiedFailure::message(
+            crate::operation::FailureClass::Blocked,
+            None,
+            "stopped with an error",
+        );
+        let report = crate::workspace::TransferTerminalReport {
+            operation_id: operation_id.clone(),
+            submitted: crate::operation_view::SubmittedSummary::capture(
+                "Copy",
+                &[std::path::PathBuf::from("/source/file")],
+                std::path::PathBuf::from("/target"),
+            ),
+            terminal: crate::workspace::TransferTerminalState::Stopped,
+            errors: vec!["stopped with an error".to_string()],
+            failures: vec![failure.clone()],
+        };
+
+        let notice = terminal_failure_notice(report, 42).expect("failure notice");
+
+        assert_eq!(notice.operation_id, operation_id);
+        assert_eq!(notice.errors, ["stopped with an error"]);
+        assert_eq!(notice.failures, [failure]);
+        assert_eq!(notice.created_at_millis, 42);
     }
 }

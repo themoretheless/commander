@@ -4,9 +4,10 @@ use super::*;
 
 impl App {
     pub(crate) fn show_transfer_dialog(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.ws.active_transfer().cloned() else {
+        let Some(active) = self.ws.active_transfer_view() else {
             return;
         };
+        let state = active.progress;
         let _latency =
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::OperationDialog);
         let t = self.colors;
@@ -315,7 +316,14 @@ impl App {
                         // just clearing active_transfer would strand the job
                         // Running and wedge the queue.
                         let c = ctx.clone();
-                        self.ws.dismiss_transfer(move || c.request_repaint());
+                        if let Ok(report) =
+                            self.ws.try_dismiss_transfer(move || c.request_repaint())
+                        {
+                            self.capture_terminal_report(
+                                report,
+                                (ctx.input(|input| input.time) * 1_000.0) as u64,
+                            );
+                        }
                     }
                 } else {
                     ui.horizontal(|ui| {

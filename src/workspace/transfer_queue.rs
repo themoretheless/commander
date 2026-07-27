@@ -8,7 +8,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use super::{Workspace, faithfully_undoable};
+use super::{
+    ActiveTransferView, TransferTerminalReport, TransferTerminalState, Workspace,
+    faithfully_undoable,
+};
 use crate::operation::{ClassifiedFailure, FailureClass, OperationId, SafeState};
 use crate::opqueue::{JobId, JobKind, JobState, Queue};
 use crate::transfer::{self, TransferKind, TransferProgress, TransferSpec, TransferState};
@@ -56,6 +59,7 @@ impl QueuedJob {
 struct ActiveTransfer {
     job_id: JobId,
     operation_id: OperationId,
+    submitted: crate::operation_view::SubmittedSummary,
     progress: TransferState,
     history: HistoryIntent,
     identity_failure: Option<ClassifiedFailure>,
@@ -81,13 +85,6 @@ pub(super) enum LaunchOutcome {
     NoRunnableJob,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TerminalState {
-    Done,
-    Failed,
-    Cancelled,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum HistoryOutcome {
     None,
@@ -103,7 +100,7 @@ pub(super) enum HistoryOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RetirementOutcome {
-    pub terminal: TerminalState,
+    pub report: TransferTerminalReport,
     pub history: HistoryOutcome,
 }
 
@@ -114,11 +111,12 @@ pub(super) struct PollOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DismissRejection {
+pub(crate) enum DismissRejection {
     NoActive,
     JobMismatch,
     NotFinished,
     NotRetainedError,
+    InvariantViolation,
 }
 
 struct PreparedLaunch {
@@ -208,12 +206,13 @@ impl TransferQueueController {
         // Establish the canonical identity before the worker can publish its
         // first update. None is never a valid active-operation identity.
         initial_progress.operation_id = Some(operation_id.clone());
-        initial_progress.submitted = Some(job.submitted);
+        initial_progress.submitted = Some(job.submitted.clone());
         let progress = Arc::new(Mutex::new(initial_progress));
         self.reviewed_safe_operation = None;
         self.active = Some(ActiveTransfer {
             job_id,
             operation_id: operation_id.clone(),
+            submitted: job.submitted,
             progress: Arc::clone(&progress),
             history: job.history,
             identity_failure: None,
@@ -250,8 +249,33 @@ impl TransferQueueController {
         }
     }
 
+    #[cfg(test)]
+    fn launch_with_workload(
+        &mut self,
+        blocked: bool,
+        workload: crate::workload::WorkloadHandle,
+        notify: impl Fn() + Send + 'static,
+    ) -> LaunchOutcome {
+        let prepared = match self.prepare_launch(blocked) {
+            Ok(prepared) => prepared,
+            Err(outcome) => return outcome,
+        };
+        let outcome = prepared.outcome.clone();
+        transfer::spawn_transfer_with_workload(workload, prepared.spec, prepared.progress, notify);
+        outcome
+    }
+
+    #[cfg(test)]
     pub(super) fn active_progress(&self) -> Option<&TransferState> {
         self.active.as_ref().map(|active| &active.progress)
+    }
+
+    pub(super) fn active_view(&self) -> Option<ActiveTransferView> {
+        self.active.as_ref().map(|active| ActiveTransferView {
+            operation_id: active.operation_id.clone(),
+            submitted: active.submitted.clone(),
+            progress: Arc::clone(&active.progress),
+        })
     }
 
     pub(super) fn active_job_id(&self) -> Option<JobId> {
@@ -300,11 +324,13 @@ impl TransferQueueController {
                 "Transfer identity mismatch: expected {}, observed {observed}",
                 active.operation_id.0
             );
-            active.identity_failure = Some(ClassifiedFailure::message(
-                FailureClass::IntegrityUncertain,
-                None,
-                message,
-            ));
+            let failure =
+                ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, message);
+            progress
+                .errors
+                .push(format!("Operation: {}", failure.message));
+            progress.failures.push(failure.clone());
+            active.identity_failure = Some(failure);
             // A live worker with uncertain identity must not accept more work.
             progress.request_cancel();
         }
@@ -355,6 +381,21 @@ impl TransferQueueController {
         }
     }
 
+    fn latch_integrity_failure(&mut self, failure: ClassifiedFailure) {
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        if active.identity_failure.is_none() {
+            let mut progress = crate::lock_util::recover(&active.progress);
+            progress
+                .errors
+                .push(format!("Operation: {}", failure.message));
+            progress.failures.push(failure.clone());
+            progress.request_cancel();
+            active.identity_failure = Some(failure);
+        }
+    }
+
     fn history_outcome(
         history: HistoryIntent,
         clean: bool,
@@ -376,23 +417,53 @@ impl TransferQueueController {
 
     fn retire(
         &mut self,
-        terminal: TerminalState,
-        clean: bool,
-        placements: Vec<(PathBuf, PathBuf)>,
-    ) -> RetirementOutcome {
+        terminal: TransferTerminalState,
+        snapshot: ProgressSnapshot,
+    ) -> Result<RetirementOutcome, ClassifiedFailure> {
+        let active_ref = self
+            .active
+            .as_ref()
+            .expect("retirement requires an active transfer");
+        if !self
+            .queue
+            .get(active_ref.job_id)
+            .is_some_and(|job| job.state == JobState::Running)
+        {
+            return Err(ClassifiedFailure::message(
+                FailureClass::IntegrityUncertain,
+                None,
+                "Active transfer is not bound to its Running queue row",
+            ));
+        }
         let active = self
             .active
             .take()
             .expect("retirement requires an active transfer");
         let transitioned = match terminal {
-            TerminalState::Done => self.queue.complete(active.job_id),
-            TerminalState::Failed => self.queue.fail(active.job_id),
-            TerminalState::Cancelled => self.queue.cancel(active.job_id),
+            TransferTerminalState::Done => self.queue.complete(active.job_id),
+            TransferTerminalState::Failed => self.queue.fail(active.job_id),
+            TransferTerminalState::Cancelled | TransferTerminalState::Stopped => {
+                self.queue.cancel(active.job_id)
+            }
         };
-        debug_assert!(transitioned, "active transfer must own the Running row");
-        let history = Self::history_outcome(active.history, clean, placements);
+        if !transitioned {
+            self.active = Some(active);
+            return Err(ClassifiedFailure::message(
+                FailureClass::IntegrityUncertain,
+                None,
+                "Running queue row rejected its terminal transition",
+            ));
+        }
+        let history = Self::history_outcome(active.history, snapshot.clean(), snapshot.placements);
+        let report = TransferTerminalReport {
+            operation_id: active.operation_id,
+            submitted: active.submitted,
+            terminal,
+            errors: snapshot.errors,
+            failures: snapshot.failures,
+        };
         self.queue.clear_finished();
-        RetirementOutcome { terminal, history }
+        Ok(RetirementOutcome { report, history })
     }
 
     pub(super) fn poll(&mut self) -> PollOutcome {
@@ -421,9 +492,11 @@ impl TransferQueueController {
             })
         });
         if let Some(failure) = identity_failure {
-            let safe_state = (self.reviewed_safe_operation.as_ref() != Some(&operation_id))
-                .then(|| Self::safe_state_for(operation_id, vec![failure]))
-                .flatten();
+            self.latch_integrity_failure(failure.clone());
+            let safe_state = (snapshot.finished
+                && self.reviewed_safe_operation.as_ref() != Some(&operation_id))
+            .then(|| Self::safe_state_for(operation_id, vec![failure]))
+            .flatten();
             self.cancel_waiting();
             return PollOutcome {
                 safe_state,
@@ -438,13 +511,17 @@ impl TransferQueueController {
             .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
             .cloned()
             .collect::<Vec<_>>();
-        let safe_state = if integrity_failures.is_empty()
+        if !integrity_failures.is_empty() {
+            self.request_cancel();
+            self.cancel_waiting();
+        }
+        let safe_state = if !snapshot.finished
+            || integrity_failures.is_empty()
             || self.reviewed_safe_operation.as_ref() == Some(&operation_id)
         {
             None
         } else {
-            self.cancel_waiting();
-            Self::safe_state_for(operation_id, integrity_failures)
+            Self::safe_state_for(operation_id.clone(), integrity_failures)
         };
 
         if !snapshot.closes_automatically() {
@@ -454,19 +531,41 @@ impl TransferQueueController {
             };
         }
 
-        let clean = snapshot.clean();
-        let terminal = if snapshot.cancelled || snapshot.stopped {
+        let terminal = if snapshot.stopped {
             self.cancel_waiting();
-            TerminalState::Cancelled
+            TransferTerminalState::Stopped
+        } else if snapshot.cancelled {
+            self.cancel_waiting();
+            TransferTerminalState::Cancelled
         } else if snapshot.errors.is_empty() {
-            TerminalState::Done
+            TransferTerminalState::Done
         } else {
-            TerminalState::Failed
+            TransferTerminalState::Failed
         };
-        let retirement = self.retire(terminal, clean, snapshot.placements);
-        PollOutcome {
-            safe_state,
-            retirement: Some(retirement),
+        let finished = snapshot.finished;
+        match self.retire(terminal, snapshot) {
+            Ok(retirement) => PollOutcome {
+                safe_state,
+                retirement: Some(retirement),
+            },
+            Err(failure) => {
+                if let Some(active) = self.active.as_mut() {
+                    let mut progress = crate::lock_util::recover(&active.progress);
+                    progress
+                        .errors
+                        .push(format!("Operation: {}", failure.message));
+                    progress.failures.push(failure.clone());
+                    progress.request_cancel();
+                    active.identity_failure = Some(failure.clone());
+                }
+                self.cancel_waiting();
+                PollOutcome {
+                    safe_state: finished
+                        .then(|| Self::safe_state_for(operation_id, vec![failure]))
+                        .flatten(),
+                    retirement: None,
+                }
+            }
         }
     }
 
@@ -484,8 +583,18 @@ impl TransferQueueController {
         {
             return Err(DismissRejection::NotRetainedError);
         }
+        let snapshot = ProgressSnapshot {
+            operation_id: progress.operation_id.clone(),
+            finished: progress.finished,
+            cancelled: progress.cancelled,
+            stopped: progress.stopped,
+            errors: progress.errors.clone(),
+            failures: progress.failures.clone(),
+            placements: progress.placements.clone(),
+        };
         drop(progress);
-        Ok(self.retire(TerminalState::Failed, false, Vec::new()))
+        self.retire(TransferTerminalState::Failed, snapshot)
+            .map_err(|_| DismissRejection::InvariantViolation)
     }
 
     pub(super) fn acknowledge_safe_state(&mut self, operation_id: OperationId) {
@@ -585,8 +694,13 @@ impl Workspace {
         self.transfers.launch(self.mutations_blocked(), notify);
     }
 
+    #[cfg(test)]
     pub fn active_transfer(&self) -> Option<&TransferState> {
         self.transfers.active_progress()
+    }
+
+    pub fn active_transfer_view(&self) -> Option<ActiveTransferView> {
+        self.transfers.active_view()
     }
 
     pub fn queued_count(&self) -> usize {
@@ -650,7 +764,10 @@ impl Workspace {
     }
 
     /// Poll the active worker and apply each terminal/history outcome once.
-    pub fn poll_transfer(&mut self, notify: impl Fn() + Send + 'static) -> bool {
+    pub fn poll_transfer(
+        &mut self,
+        notify: impl Fn() + Send + 'static,
+    ) -> super::TransferPollOutcome {
         let outcome = self.transfers.poll();
         if self.safe_state.is_none()
             && let Some(safe_state) = outcome.safe_state
@@ -658,7 +775,7 @@ impl Workspace {
             self.safe_state = Some(safe_state);
         }
         let Some(retirement) = outcome.retirement else {
-            return false;
+            return super::TransferPollOutcome::default();
         };
         self.left.refresh();
         self.right.refresh();
@@ -666,7 +783,10 @@ impl Workspace {
         // History and safe-state outcomes are committed before another worker
         // may observe the queue.
         self.pump_queue(notify);
-        raised
+        super::TransferPollOutcome {
+            undo_recorded: raised,
+            terminal: Some(retirement.report),
+        }
     }
 
     pub fn cancel_pending_transfers(&mut self) {
@@ -674,17 +794,24 @@ impl Workspace {
     }
 
     /// Dismiss only the exact active job when it is a retained terminal error.
+    #[cfg(test)]
     pub fn dismiss_transfer(&mut self, notify: impl Fn() + Send + 'static) {
+        let _ = self.try_dismiss_transfer(notify);
+    }
+
+    pub(crate) fn try_dismiss_transfer(
+        &mut self,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<super::TransferTerminalReport, DismissRejection> {
         let Some(job_id) = self.transfers.active_job_id() else {
-            return;
+            return Err(DismissRejection::NoActive);
         };
-        let Ok(retirement) = self.transfers.dismiss(job_id) else {
-            return;
-        };
+        let retirement = self.transfers.dismiss(job_id)?;
         self.left.refresh();
         self.right.refresh();
         self.apply_history_outcome(retirement.history);
         self.pump_queue(notify);
+        Ok(retirement.report)
     }
 
     pub fn queue_snapshot(&self) -> Vec<super::QueueRow> {
@@ -737,6 +864,16 @@ impl Workspace {
     pub(super) fn transfer_group_ids(&self) -> Vec<crate::operation::OperationGroupId> {
         self.transfers.group_ids()
     }
+
+    #[cfg(test)]
+    pub(super) fn pump_queue_with_workload(
+        &mut self,
+        workload: crate::workload::WorkloadHandle,
+        notify: impl Fn() + Send + 'static,
+    ) -> LaunchOutcome {
+        self.transfers
+            .launch_with_workload(self.mutations_blocked(), workload, notify)
+    }
 }
 
 #[cfg(test)]
@@ -761,6 +898,7 @@ mod tests {
             post_success: None,
             rollback_cleanup: None,
             before_commit: None,
+            before_terminal_publish: None,
             journal_enabled: false,
         }
     }
@@ -846,7 +984,7 @@ mod tests {
         assert_eq!(controller.active_job_id(), Some(active_id));
 
         let retired = controller.dismiss(active_id).expect("matching dismiss");
-        assert_eq!(retired.terminal, TerminalState::Failed);
+        assert_eq!(retired.report.terminal, TransferTerminalState::Failed);
         assert!(controller.active_progress().is_none());
     }
 
@@ -859,20 +997,28 @@ mod tests {
         {
             let mut progress = crate::lock_util::recover(&progress);
             progress.operation_id = Some(OperationId("foreign-operation".to_string()));
-            progress.finished = true;
         }
 
-        let outcome = controller.poll();
+        let live = controller.poll();
 
-        assert!(outcome.retirement.is_none());
-        let safe_state = outcome.safe_state.expect("identity safe state");
-        assert_eq!(safe_state.operation_id.0, "expected-operation");
-        assert!(safe_state.reason.contains("foreign-operation"));
-        assert_eq!(controller.active_job_id(), Some(active_id));
+        assert!(live.retirement.is_none());
+        assert!(
+            live.safe_state.is_none(),
+            "a live worker cannot enter review"
+        );
+        assert!(crate::lock_util::recover(&progress).cancelled);
         assert_eq!(
             controller.queue.get(tail_id).map(|job| job.state),
             Some(JobState::Cancelled)
         );
+
+        crate::lock_util::recover(&progress).finished = true;
+        let terminal = controller.poll();
+        assert!(terminal.retirement.is_none());
+        let safe_state = terminal.safe_state.expect("terminal identity safe state");
+        assert_eq!(safe_state.operation_id.0, "expected-operation");
+        assert!(safe_state.reason.contains("foreign-operation"));
+        assert_eq!(controller.active_job_id(), Some(active_id));
         assert_eq!(
             controller.dismiss(tail_id),
             Err(DismissRejection::JobMismatch)
@@ -881,8 +1027,9 @@ mod tests {
             controller
                 .dismiss(active_id)
                 .expect("exact active dismiss")
+                .report
                 .terminal,
-            TerminalState::Failed
+            TransferTerminalState::Failed
         );
     }
 
@@ -896,7 +1043,6 @@ mod tests {
         let (_, progress) = launch(&mut controller);
         {
             let mut progress = crate::lock_util::recover(&progress);
-            progress.finished = true;
             progress.errors.push("placement uncertain".to_string());
             progress.failures.push(ClassifiedFailure::message(
                 FailureClass::IntegrityUncertain,
@@ -905,10 +1051,11 @@ mod tests {
             ));
         }
 
-        let outcome = controller.poll();
+        let live = controller.poll();
 
-        assert!(outcome.safe_state.is_some());
-        assert!(outcome.retirement.is_none());
+        assert!(live.safe_state.is_none());
+        assert!(live.retirement.is_none());
+        assert!(crate::lock_util::recover(&progress).cancelled);
         assert_eq!(
             controller.queue.get(pending_id).map(|job| job.state),
             Some(JobState::Cancelled)
@@ -917,6 +1064,12 @@ mod tests {
             controller.queue.get(paused_id).map(|job| job.state),
             Some(JobState::Cancelled)
         );
+
+        crate::lock_util::recover(&progress).finished = true;
+        let terminal = controller.poll();
+        assert!(terminal.safe_state.is_some());
+        assert!(terminal.retirement.is_some());
+        assert!(controller.queue.jobs().is_empty());
     }
 
     #[test]
@@ -959,7 +1112,7 @@ mod tests {
         controller.request_cancel();
         let retirement = controller.poll().retirement.expect("clean retirement");
 
-        assert_eq!(retirement.terminal, TerminalState::Done);
+        assert_eq!(retirement.report.terminal, TransferTerminalState::Done);
         assert_eq!(
             retirement.history,
             HistoryOutcome::Commit(HistoryDirection::Undo)

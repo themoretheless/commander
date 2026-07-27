@@ -98,7 +98,7 @@ impl App {
         let first_pending = self.ws.first_pending_ui_modal().map(modal_surface);
         let modal = prioritized_modal(
             |surface| match surface {
-                ModalSurface::Transfer => self.ws.active_transfer().is_some(),
+                ModalSurface::Transfer => self.ws.active_transfer_view().is_some(),
                 ModalSurface::SafeState => self.ws.safe_state.is_some(),
                 ModalSurface::Recovery => self.recovery.open,
                 ModalSurface::History => self.history_preview.is_some(),

@@ -543,11 +543,15 @@ pub struct TransferSpec {
     #[cfg(test)]
     pub before_commit: Option<BeforeCommitHook>,
     #[cfg(test)]
+    pub before_terminal_publish: Option<BeforeTerminalPublishHook>,
+    #[cfg(test)]
     pub journal_enabled: bool,
 }
 
 #[cfg(test)]
 pub type BeforeCommitHook = Arc<dyn Fn(&Path, &Path) + Send + Sync>;
+#[cfg(test)]
+pub type BeforeTerminalPublishHook = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Debug)]
 pub struct TransferExpectation {
@@ -813,7 +817,149 @@ pub fn total_bytes(entries: &[FileEntry]) -> u64 {
 ///
 /// `notify` is invoked whenever visible progress changed; the UI passes a
 /// repaint request here, keeping this module free of egui types.
+#[derive(Clone)]
+struct TerminalContext {
+    operation_id: OperationId,
+    target: PathBuf,
+    #[cfg(test)]
+    before_publish: Option<BeforeTerminalPublishHook>,
+}
+
+impl TerminalContext {
+    fn capture(spec: &TransferSpec) -> Self {
+        Self {
+            operation_id: spec.operation_id.clone(),
+            target: spec.target.clone(),
+            #[cfg(test)]
+            before_publish: spec.before_terminal_publish.clone(),
+        }
+    }
+}
+
+struct PanicTerminalGuard<'a, N: Fn()> {
+    terminal: TerminalContext,
+    progress: &'a TransferState,
+    notify: &'a N,
+    journal_enabled: bool,
+    journal_started: bool,
+    armed: bool,
+}
+
+impl<'a, N: Fn()> PanicTerminalGuard<'a, N> {
+    fn new(
+        terminal: TerminalContext,
+        progress: &'a TransferState,
+        notify: &'a N,
+        journal_enabled: bool,
+    ) -> Self {
+        Self {
+            terminal,
+            progress,
+            notify,
+            journal_enabled,
+            journal_started: false,
+            armed: true,
+        }
+    }
+
+    fn journal_started(&mut self) {
+        self.journal_started = true;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<N: Fn()> Drop for PanicTerminalGuard<'_, N> {
+    fn drop(&mut self) {
+        if !self.armed || !std::thread::panicking() {
+            return;
+        }
+        record_failure(
+            self.progress,
+            "Operation",
+            ClassifiedFailure::message(
+                FailureClass::IntegrityUncertain,
+                Some(self.terminal.target.clone()),
+                "transfer worker panicked before completing finalization",
+            ),
+        );
+        prepare_terminal_progress(self.progress);
+        if self.journal_enabled && self.journal_started {
+            let journal_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::operation_journal::finish(
+                    &self.terminal.operation_id,
+                    crate::operation_journal::OperationStatus::NeedsReview,
+                )
+            }));
+            match journal_result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => record_journal_error(
+                    self.progress,
+                    "Operation",
+                    Some(self.terminal.target.clone()),
+                    error,
+                ),
+                Err(_) => record_journal_error(
+                    self.progress,
+                    "Operation",
+                    Some(self.terminal.target.clone()),
+                    "operation journal finalization panicked",
+                ),
+            }
+        }
+        publish_terminal_progress(self.progress);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.notify)()));
+    }
+}
+
+fn finalize_and_publish(
+    terminal: &TerminalContext,
+    progress: &TransferState,
+    journal_enabled: bool,
+    status: crate::operation_journal::OperationStatus,
+) {
+    prepare_terminal_progress(progress);
+    if journal_enabled
+        && let Err(error) = crate::operation_journal::finish(&terminal.operation_id, status)
+    {
+        record_journal_error(progress, "Operation", Some(terminal.target.clone()), error);
+    }
+    run_before_terminal_publish(terminal);
+    publish_terminal_progress(progress);
+}
+
+#[cfg(test)]
+fn run_before_terminal_publish(terminal: &TerminalContext) {
+    if let Some(hook) = &terminal.before_publish {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_before_terminal_publish(_terminal: &TerminalContext) {}
+
 pub fn spawn_transfer(
+    spec: TransferSpec,
+    progress: TransferState,
+    notify: impl Fn() + Send + 'static,
+) {
+    spawn_transfer_on(crate::workload::global_handle(), spec, progress, notify);
+}
+
+#[cfg(test)]
+pub(crate) fn spawn_transfer_with_workload(
+    workload: crate::workload::WorkloadHandle,
+    spec: TransferSpec,
+    progress: TransferState,
+    notify: impl Fn() + Send + 'static,
+) {
+    spawn_transfer_on(workload, spec, progress, notify);
+}
+
+fn spawn_transfer_on(
+    workload: crate::workload::WorkloadHandle,
     spec: TransferSpec,
     progress: TransferState,
     notify: impl Fn() + Send + 'static,
@@ -847,6 +993,9 @@ pub fn spawn_transfer(
             state.group_id = spec.group_id.clone();
             state.set_phase(crate::operation_view::OperationPhase::Scan);
         }
+        let terminal = TerminalContext::capture(&spec);
+        let mut terminal_guard =
+            PanicTerminalGuard::new(terminal.clone(), &progress, &notify, journal_enabled);
         notify();
         let total_bytes = spec.entries.iter().map(entry_size).sum();
         {
@@ -871,11 +1020,15 @@ pub fn spawn_transfer(
             state.adaptive_concurrency = tuning.concurrency;
             state.bandwidth_limit = resource_rule.max_bytes_per_second;
         }
-        if journal_enabled && let Err(error) = crate::operation_journal::begin(&spec) {
-            record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
-            finish_progress(&progress);
-            notify();
-            return;
+        if journal_enabled {
+            if let Err(error) = crate::operation_journal::begin(&spec) {
+                record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
+                finish_progress(&progress);
+                terminal_guard.disarm();
+                notify();
+                return;
+            }
+            terminal_guard.journal_started();
         }
         if let Err(error) = wait_for_mount(&target_mount, "Destination volume", &progress, &notify)
         {
@@ -884,13 +1037,13 @@ pub fn spawn_transfer(
                 "Operation",
                 ClassifiedFailure::io(Some(spec.target.clone()), "mount unavailable", &error),
             );
-            finish_progress(&progress);
-            if journal_enabled {
-                let _ = crate::operation_journal::finish(
-                    &spec.operation_id,
-                    crate::operation_journal::OperationStatus::Failed,
-                );
-            }
+            finalize_and_publish(
+                &terminal,
+                &progress,
+                journal_enabled,
+                crate::operation_journal::OperationStatus::Failed,
+            );
+            terminal_guard.disarm();
             notify();
             return;
         }
@@ -1750,33 +1903,30 @@ pub fn spawn_transfer(
             &progress,
         );
         run_post_success(spec.post_success.as_ref(), &progress);
-        finish_progress(&progress);
-        if journal_enabled {
-            let status = {
-                let state = crate::lock_util::recover(&progress);
-                if failure_rollback == FailureRollback::Complete {
-                    crate::operation_journal::OperationStatus::RolledBack
-                } else if state
-                    .failures
-                    .iter()
-                    .any(|failure| failure.class == FailureClass::IntegrityUncertain)
-                {
-                    crate::operation_journal::OperationStatus::NeedsReview
-                } else if state.cancelled || state.stopped {
-                    crate::operation_journal::OperationStatus::Stopped
-                } else if !state.errors.is_empty() {
-                    crate::operation_journal::OperationStatus::Failed
-                } else {
-                    crate::operation_journal::OperationStatus::Completed
-                }
-            };
-            if let Err(error) = crate::operation_journal::finish(&spec.operation_id, status) {
-                record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
+        prepare_terminal_progress(&progress);
+        let status = {
+            let state = crate::lock_util::recover(&progress);
+            if failure_rollback == FailureRollback::Complete {
+                crate::operation_journal::OperationStatus::RolledBack
+            } else if state
+                .failures
+                .iter()
+                .any(|failure| failure.class == FailureClass::IntegrityUncertain)
+            {
+                crate::operation_journal::OperationStatus::NeedsReview
+            } else if state.cancelled || state.stopped {
+                crate::operation_journal::OperationStatus::Stopped
+            } else if !state.errors.is_empty() {
+                crate::operation_journal::OperationStatus::Failed
+            } else {
+                crate::operation_journal::OperationStatus::Completed
             }
-        }
+        };
+        finalize_and_publish(&terminal, &progress, journal_enabled, status);
+        terminal_guard.disarm();
         notify();
     };
-    let task = crate::workload::submit(task_spec, worker);
+    let task = workload.submit(task_spec, worker);
     match task {
         Ok(task) => {
             crate::lock_util::recover(&progress).scheduler_task = Some(task);
@@ -1965,6 +2115,13 @@ fn run_failure_rollback(
 /// entry was committed is too late to cancel anything; treating that as a
 /// cancelled Move would discard its valid undo action.
 fn finish_progress(progress: &TransferState) {
+    prepare_terminal_progress(progress);
+    publish_terminal_progress(progress);
+}
+
+/// Normalize late cancellation and stop requests before deriving the durable
+/// journal status. This deliberately does not expose a terminal snapshot.
+fn prepare_terminal_progress(progress: &TransferState) {
     let mut s = crate::lock_util::recover(progress);
     if s.files_done == s.files_total {
         s.cancelled = false;
@@ -1973,6 +2130,13 @@ fn finish_progress(progress: &TransferState) {
     } else if s.stop_requested {
         s.stopped = true;
     }
+    s.set_phase(crate::operation_view::OperationPhase::Finalize);
+}
+
+/// The only terminal publication point. Durable finalization and any failure
+/// recording must complete before this is called.
+fn publish_terminal_progress(progress: &TransferState) {
+    let mut s = crate::lock_util::recover(progress);
     s.set_phase(crate::operation_view::OperationPhase::Finalize);
     s.finished = true;
     s.scheduler_task = None;
@@ -2693,6 +2857,7 @@ mod tests {
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
+            before_terminal_publish: None,
             journal_enabled: false,
         });
 
@@ -2721,6 +2886,7 @@ mod tests {
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
+            before_terminal_publish: None,
             journal_enabled: false,
         });
 
@@ -2750,6 +2916,7 @@ mod tests {
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             before_commit: None,
+            before_terminal_publish: None,
             journal_enabled: false,
         });
 
@@ -2786,6 +2953,7 @@ mod tests {
             post_success: None,
             rollback_cleanup: None,
             before_commit: None,
+            before_terminal_publish: None,
             journal_enabled: false,
         }
     }
