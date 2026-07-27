@@ -139,6 +139,7 @@ pub struct ShelfDrainOutcome {
 
 #[derive(Clone)]
 pub struct ActiveTransferView {
+    pub attempt_id: crate::operation::TransferAttemptId,
     pub operation_id: crate::operation::OperationId,
     pub submitted: crate::operation_view::SubmittedSummary,
     pub progress: TransferState,
@@ -154,6 +155,7 @@ pub enum TransferTerminalState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransferTerminalReport {
+    pub attempt_id: crate::operation::TransferAttemptId,
     pub operation_id: crate::operation::OperationId,
     pub submitted: crate::operation_view::SubmittedSummary,
     pub terminal: TransferTerminalState,
@@ -2776,6 +2778,47 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_an_admitted_queued_transfer_reports_once_without_running_work() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let mut ws = workspace(&left, &right);
+        ws.enqueue_with_history(
+            test_transfer_spec("queued-cancel", right.path()),
+            transfer_queue::HistoryIntent::None,
+        );
+        ws.pump_queue_with_workload(workload.handle(), || {});
+        let progress = ws
+            .active_transfer_view()
+            .expect("queued transfer is controller-active")
+            .progress;
+
+        ws.cancel_transfer();
+
+        let state = crate::lock_util::recover(&progress);
+        assert!(state.finished);
+        assert!(state.cancelled);
+        assert!(state.errors.is_empty());
+        drop(state);
+        assert!(!workload.run_next(), "cancelled queued work never executes");
+        assert_eq!(workload.stats().queued, 0);
+
+        let report = ws
+            .poll_transfer(|| {})
+            .terminal
+            .expect("cancelled terminal report");
+        assert_eq!(report.operation_id.0, "queued-cancel");
+        assert_eq!(report.terminal, TransferTerminalState::Cancelled);
+        assert!(report.errors.is_empty());
+        assert!(ws.active_transfer_view().is_none());
+        assert!(
+            ws.poll_transfer(|| {}).terminal.is_none(),
+            "cancelled report is emitted exactly once"
+        );
+    }
+
+    #[test]
     fn panicking_transfer_finishes_in_needs_review_without_wedging_workspace() {
         let (left, right) = (TempDir::new(), TempDir::new());
         let source = left.file("panic.txt", "panic boundary");
@@ -4078,6 +4121,76 @@ mod tests {
             .find(|row| row.id == paused_id)
             .unwrap();
         assert_eq!(paused_tail.state, crate::opqueue::JobState::Cancelled);
+    }
+
+    #[test]
+    fn direct_dismiss_requires_review_and_cancels_waiting_tail_before_poll() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&left, &right);
+        let progress = ws.launch_test_transfer(
+            test_transfer_spec("dismiss-review-active", right.path()),
+            transfer_queue::HistoryIntent::None,
+        );
+        ws.enqueue_with_history(
+            test_transfer_spec("dismiss-review-pending", right.path()),
+            transfer_queue::HistoryIntent::None,
+        );
+        let pending_id = ws.queue_snapshot().last().expect("pending tail").id;
+        ws.enqueue_with_history(
+            test_transfer_spec("dismiss-review-paused", right.path()),
+            transfer_queue::HistoryIntent::None,
+        );
+        let paused_id = ws.queue_snapshot().last().expect("paused tail").id;
+        ws.queue_pause(paused_id);
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.operation_id = Some(crate::operation::OperationId(
+                "foreign-progress-identity".to_string(),
+            ));
+            state.finished = true;
+            state.errors.push("retained error".to_string());
+        }
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let rejected_notifications = Arc::clone(&notifications);
+
+        let rejection = ws
+            .try_dismiss_transfer(move || {
+                rejected_notifications.fetch_add(1, Ordering::SeqCst);
+            })
+            .expect_err("unreviewed integrity failure cannot be dismissed");
+        let transfer_queue::DismissRejection::ReviewRequired(safe_state) = rejection else {
+            panic!("expected review-required rejection");
+        };
+
+        assert_eq!(safe_state.operation_id.0, "dismiss-review-active");
+        assert!(safe_state.reason.contains("foreign-progress-identity"));
+        assert_eq!(
+            ws.safe_state.as_ref().map(|state| &state.operation_id),
+            Some(&safe_state.operation_id)
+        );
+        assert!(ws.active_transfer_view().is_some());
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            0,
+            "dismiss did not pump"
+        );
+        for tail_id in [pending_id, paused_id] {
+            assert_eq!(
+                ws.queue_snapshot()
+                    .into_iter()
+                    .find(|row| row.id == tail_id)
+                    .map(|row| row.state),
+                Some(crate::opqueue::JobState::Cancelled)
+            );
+        }
+
+        ws.acknowledge_safe_state();
+        let report = ws
+            .try_dismiss_transfer(|| {})
+            .expect("exact review allows the repeated dismiss");
+        assert_eq!(report.operation_id.0, "dismiss-review-active");
+        assert!(ws.active_transfer_view().is_none());
+        assert!(ws.queue_snapshot().is_empty());
     }
 
     #[test]

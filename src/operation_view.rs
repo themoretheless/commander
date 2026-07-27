@@ -185,6 +185,7 @@ fn path_label(path: &Path) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailureNotice {
+    pub attempt_id: crate::operation::TransferAttemptId,
     pub operation_id: OperationId,
     pub summary: SubmittedSummary,
     pub errors: Vec<String>,
@@ -215,7 +216,7 @@ impl FailureInbox {
         if let Some(existing) = self
             .notices
             .iter_mut()
-            .find(|existing| existing.operation_id == notice.operation_id)
+            .find(|existing| existing.attempt_id == notice.attempt_id)
         {
             *existing = notice;
             return;
@@ -224,10 +225,10 @@ impl FailureInbox {
         self.notices.truncate(Self::MAX_NOTICES);
     }
 
-    pub fn dismiss(&mut self, operation_id: &OperationId) -> bool {
+    pub fn dismiss(&mut self, attempt_id: crate::operation::TransferAttemptId) -> bool {
         let before = self.notices.len();
         self.notices
-            .retain(|notice| &notice.operation_id != operation_id);
+            .retain(|notice| notice.attempt_id != attempt_id);
         self.notices.len() != before
     }
 
@@ -372,8 +373,10 @@ mod tests {
     }
 
     #[test]
-    fn failure_inbox_upserts_and_requires_explicit_dismissal() {
+    fn failure_inbox_deduplicates_an_attempt_but_keeps_retries_of_the_same_operation() {
         let operation_id = OperationId("op-1".to_string());
+        let first_attempt = crate::operation::TransferAttemptId::new();
+        let retry_attempt = crate::operation::TransferAttemptId::new();
         let summary = SubmittedSummary::capture(
             "Copy",
             &[PathBuf::from("/source/a")],
@@ -381,6 +384,7 @@ mod tests {
         );
         let mut inbox = FailureInbox::default();
         inbox.upsert(FailureNotice {
+            attempt_id: first_attempt,
             operation_id: operation_id.clone(),
             summary: summary.clone(),
             errors: vec!["first".to_string()],
@@ -388,16 +392,29 @@ mod tests {
             created_at_millis: 1,
         });
         inbox.upsert(FailureNotice {
+            attempt_id: first_attempt,
             operation_id: operation_id.clone(),
-            summary,
+            summary: summary.clone(),
             errors: vec!["new".to_string(), "second".to_string()],
             failures: Vec::new(),
             created_at_millis: 2,
         });
         assert_eq!(inbox.notices().len(), 1);
         assert_eq!(inbox.notices()[0].title(), "2 errors");
-        assert!(inbox.dismiss(&operation_id));
-        assert!(inbox.is_empty());
+        inbox.upsert(FailureNotice {
+            attempt_id: retry_attempt,
+            operation_id,
+            summary,
+            errors: vec!["retry failed".to_string()],
+            failures: Vec::new(),
+            created_at_millis: 3,
+        });
+        assert_eq!(inbox.notices().len(), 2);
+        assert_eq!(inbox.notices()[0].attempt_id, retry_attempt);
+
+        assert!(inbox.dismiss(first_attempt));
+        assert_eq!(inbox.notices().len(), 1);
+        assert_eq!(inbox.notices()[0].attempt_id, retry_attempt);
     }
 
     #[test]

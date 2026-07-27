@@ -74,7 +74,7 @@ pub struct App {
     pub(crate) operations_tab: OperationsTab,
     pub(crate) operations_search: String,
     pub(crate) operation_failures: crate::operation_view::FailureInbox,
-    pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::OperationId>,
+    pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::TransferAttemptId>,
     /// One-shot dense work mode: chrome is hidden until pointer movement/Esc.
     pub(crate) focus_mode: bool,
     pub(crate) focus_started_at: f64,

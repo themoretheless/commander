@@ -44,6 +44,7 @@ impl HistoryIntent {
 /// One transfer waiting in (or running from) the queue.
 #[derive(Clone)]
 pub(super) struct QueuedJob {
+    attempt_id: crate::operation::TransferAttemptId,
     spec: TransferSpec,
     history: HistoryIntent,
     submitted: crate::operation_view::SubmittedSummary,
@@ -58,6 +59,7 @@ impl QueuedJob {
 
 struct ActiveTransfer {
     job_id: JobId,
+    attempt_id: crate::operation::TransferAttemptId,
     operation_id: OperationId,
     submitted: crate::operation_view::SubmittedSummary,
     progress: TransferState,
@@ -110,12 +112,13 @@ pub(super) struct PollOutcome {
     pub retirement: Option<RetirementOutcome>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DismissRejection {
     NoActive,
     JobMismatch,
     NotFinished,
     NotRetainedError,
+    ReviewRequired(SafeState),
     InvariantViolation,
 }
 
@@ -178,6 +181,7 @@ impl TransferQueueController {
         self.queue.enqueue(
             kind,
             QueuedJob {
+                attempt_id: crate::operation::TransferAttemptId::new(),
                 spec,
                 history,
                 submitted,
@@ -211,6 +215,7 @@ impl TransferQueueController {
         self.reviewed_safe_operation = None;
         self.active = Some(ActiveTransfer {
             job_id,
+            attempt_id: job.attempt_id,
             operation_id: operation_id.clone(),
             submitted: job.submitted,
             progress: Arc::clone(&progress),
@@ -272,6 +277,7 @@ impl TransferQueueController {
 
     pub(super) fn active_view(&self) -> Option<ActiveTransferView> {
         self.active.as_ref().map(|active| ActiveTransferView {
+            attempt_id: active.attempt_id,
             operation_id: active.operation_id.clone(),
             submitted: active.submitted.clone(),
             progress: Arc::clone(&active.progress),
@@ -300,7 +306,7 @@ impl TransferQueueController {
 
     pub(super) fn request_cancel(&mut self) {
         if let Some(active) = &self.active {
-            crate::lock_util::recover(&active.progress).request_cancel();
+            transfer::request_cancel(&active.progress);
         }
     }
 
@@ -311,42 +317,48 @@ impl TransferQueueController {
     }
 
     fn snapshot_active(&mut self) -> Option<ProgressSnapshot> {
-        let active = self.active.as_mut()?;
-        let mut progress = crate::lock_util::recover(&active.progress);
-        if progress.operation_id.as_ref() != Some(&active.operation_id)
-            && active.identity_failure.is_none()
-        {
-            let observed = progress
-                .operation_id
-                .as_ref()
-                .map_or_else(|| "<missing>".to_string(), |id| id.0.clone());
-            let message = format!(
-                "Transfer identity mismatch: expected {}, observed {observed}",
-                active.operation_id.0
-            );
-            let failure =
-                ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, message);
-            progress
-                .errors
-                .push(format!("Operation: {}", failure.message));
-            progress.failures.push(failure.clone());
-            active.identity_failure = Some(failure);
-            // A live worker with uncertain identity must not accept more work.
-            progress.request_cancel();
+        let mut should_cancel = false;
+        let snapshot = {
+            let active = self.active.as_mut()?;
+            let mut progress = crate::lock_util::recover(&active.progress);
+            if progress.operation_id.as_ref() != Some(&active.operation_id)
+                && active.identity_failure.is_none()
+            {
+                let observed = progress
+                    .operation_id
+                    .as_ref()
+                    .map_or_else(|| "<missing>".to_string(), |id| id.0.clone());
+                let message = format!(
+                    "Transfer identity mismatch: expected {}, observed {observed}",
+                    active.operation_id.0
+                );
+                let failure =
+                    ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, message);
+                progress
+                    .errors
+                    .push(format!("Operation: {}", failure.message));
+                progress.failures.push(failure.clone());
+                active.identity_failure = Some(failure);
+                should_cancel = true;
+            }
+            ProgressSnapshot {
+                operation_id: progress.operation_id.clone(),
+                finished: progress.finished,
+                cancelled: progress.cancelled,
+                stopped: progress.stopped,
+                errors: progress.errors.clone(),
+                failures: progress.failures.clone(),
+                placements: if progress.finished {
+                    progress.placements.clone()
+                } else {
+                    Vec::new()
+                },
+            }
+        };
+        if should_cancel && let Some(active) = &self.active {
+            transfer::request_cancel(&active.progress);
         }
-        Some(ProgressSnapshot {
-            operation_id: progress.operation_id.clone(),
-            finished: progress.finished,
-            cancelled: progress.cancelled,
-            stopped: progress.stopped,
-            errors: progress.errors.clone(),
-            failures: progress.failures.clone(),
-            placements: if progress.finished {
-                progress.placements.clone()
-            } else {
-                Vec::new()
-            },
-        })
+        Some(snapshot)
     }
 
     fn safe_state_for(
@@ -382,17 +394,24 @@ impl TransferQueueController {
     }
 
     fn latch_integrity_failure(&mut self, failure: ClassifiedFailure) {
-        let Some(active) = self.active.as_mut() else {
-            return;
+        let progress_to_cancel = {
+            let Some(active) = self.active.as_mut() else {
+                return;
+            };
+            if active.identity_failure.is_none() {
+                let mut progress = crate::lock_util::recover(&active.progress);
+                progress
+                    .errors
+                    .push(format!("Operation: {}", failure.message));
+                progress.failures.push(failure.clone());
+                active.identity_failure = Some(failure);
+                Some(Arc::clone(&active.progress))
+            } else {
+                None
+            }
         };
-        if active.identity_failure.is_none() {
-            let mut progress = crate::lock_util::recover(&active.progress);
-            progress
-                .errors
-                .push(format!("Operation: {}", failure.message));
-            progress.failures.push(failure.clone());
-            progress.request_cancel();
-            active.identity_failure = Some(failure);
+        if let Some(progress) = progress_to_cancel {
+            transfer::request_cancel(&progress);
         }
     }
 
@@ -456,6 +475,7 @@ impl TransferQueueController {
         }
         let history = Self::history_outcome(active.history, snapshot.clean(), snapshot.placements);
         let report = TransferTerminalReport {
+            attempt_id: active.attempt_id,
             operation_id: active.operation_id,
             submitted: active.submitted,
             terminal,
@@ -555,9 +575,9 @@ impl TransferQueueController {
                         .errors
                         .push(format!("Operation: {}", failure.message));
                     progress.failures.push(failure.clone());
-                    progress.request_cancel();
                     active.identity_failure = Some(failure.clone());
                 }
+                self.request_cancel();
                 self.cancel_waiting();
                 PollOutcome {
                     safe_state: finished
@@ -570,29 +590,42 @@ impl TransferQueueController {
     }
 
     pub(super) fn dismiss(&mut self, job_id: JobId) -> Result<RetirementOutcome, DismissRejection> {
-        let active = self.active.as_ref().ok_or(DismissRejection::NoActive)?;
-        if active.job_id != job_id {
+        let active_job_id = self
+            .active
+            .as_ref()
+            .map(|active| active.job_id)
+            .ok_or(DismissRejection::NoActive)?;
+        if active_job_id != job_id {
             return Err(DismissRejection::JobMismatch);
         }
-        let progress = crate::lock_util::recover(&active.progress);
-        if !progress.finished {
+        let snapshot = self.snapshot_active().ok_or(DismissRejection::NoActive)?;
+        if !snapshot.finished {
             return Err(DismissRejection::NotFinished);
         }
+        let active = self
+            .active
+            .as_ref()
+            .expect("snapshot preserves the active transfer");
+        let operation_id = active.operation_id.clone();
+        let review_failures = snapshot
+            .failures
+            .iter()
+            .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_review_failures = !review_failures.is_empty();
+        if has_review_failures && self.reviewed_safe_operation.as_ref() != Some(&operation_id) {
+            self.cancel_waiting();
+            let safe_state = Self::safe_state_for(operation_id, review_failures)
+                .expect("an integrity failure always creates safe state");
+            return Err(DismissRejection::ReviewRequired(safe_state));
+        }
         if active.identity_failure.is_none()
-            && (progress.errors.is_empty() || progress.cancelled || progress.stopped)
+            && !has_review_failures
+            && (snapshot.errors.is_empty() || snapshot.cancelled || snapshot.stopped)
         {
             return Err(DismissRejection::NotRetainedError);
         }
-        let snapshot = ProgressSnapshot {
-            operation_id: progress.operation_id.clone(),
-            finished: progress.finished,
-            cancelled: progress.cancelled,
-            stopped: progress.stopped,
-            errors: progress.errors.clone(),
-            failures: progress.failures.clone(),
-            placements: progress.placements.clone(),
-        };
-        drop(progress);
         self.retire(TransferTerminalState::Failed, snapshot)
             .map_err(|_| DismissRejection::InvariantViolation)
     }
@@ -806,7 +839,16 @@ impl Workspace {
         let Some(job_id) = self.transfers.active_job_id() else {
             return Err(DismissRejection::NoActive);
         };
-        let retirement = self.transfers.dismiss(job_id)?;
+        let retirement = match self.transfers.dismiss(job_id) {
+            Ok(retirement) => retirement,
+            Err(DismissRejection::ReviewRequired(safe_state)) => {
+                if self.safe_state.is_none() {
+                    self.safe_state = Some(safe_state.clone());
+                }
+                return Err(DismissRejection::ReviewRequired(safe_state));
+            }
+            Err(rejection) => return Err(rejection),
+        };
         self.left.refresh();
         self.right.refresh();
         self.apply_history_outcome(retirement.history);
@@ -1018,6 +1060,7 @@ mod tests {
         let safe_state = terminal.safe_state.expect("terminal identity safe state");
         assert_eq!(safe_state.operation_id.0, "expected-operation");
         assert!(safe_state.reason.contains("foreign-operation"));
+        controller.acknowledge_safe_state(safe_state.operation_id);
         assert_eq!(controller.active_job_id(), Some(active_id));
         assert_eq!(
             controller.dismiss(tail_id),
@@ -1124,6 +1167,10 @@ mod tests {
         let mut controller = TransferQueueController::default();
         let first_id = controller.enqueue(spec("retry-operation"), HistoryIntent::None);
         let (_, first) = launch(&mut controller);
+        let first_attempt = controller
+            .active_view()
+            .expect("first active view")
+            .attempt_id;
         {
             let mut progress = crate::lock_util::recover(&first);
             progress.finished = true;
@@ -1137,10 +1184,19 @@ mod tests {
         assert!(controller.poll().safe_state.is_some());
         controller.acknowledge_safe_state(OperationId("retry-operation".to_string()));
         assert!(controller.poll().safe_state.is_none());
-        controller.dismiss(first_id).expect("dismiss first attempt");
+        let first_report = controller
+            .dismiss(first_id)
+            .expect("dismiss first attempt")
+            .report;
+        assert_eq!(first_report.attempt_id, first_attempt);
 
         controller.enqueue(spec("retry-operation"), HistoryIntent::None);
         let (_, second) = launch(&mut controller);
+        let retry_attempt = controller
+            .active_view()
+            .expect("retry active view")
+            .attempt_id;
+        assert_ne!(first_attempt, retry_attempt);
         {
             let mut progress = crate::lock_util::recover(&second);
             progress.finished = true;

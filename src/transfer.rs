@@ -143,9 +143,6 @@ impl TransferProgress {
             return;
         }
         self.cancelled = true;
-        if let Some(task) = &self.scheduler_task {
-            task.cancel();
-        }
     }
 
     pub fn request_stop(&mut self) {
@@ -251,6 +248,21 @@ impl TransferProgress {
         if self.speed_samples.len() > 120 {
             self.speed_samples.remove(0);
         }
+    }
+}
+
+pub(crate) fn request_cancel(progress: &TransferState) {
+    let task = {
+        let mut state = crate::lock_util::recover(progress);
+        state.request_cancel();
+        if state.finished {
+            None
+        } else {
+            state.scheduler_task.clone()
+        }
+    };
+    if let Some(task) = task {
+        task.cancel();
     }
 }
 
@@ -970,6 +982,10 @@ fn spawn_transfer_on(
     let worker_progress = Arc::clone(&progress);
     let notify = Arc::new(Mutex::new(notify));
     let worker_notify = Arc::clone(&notify);
+    let abandoned_progress = Arc::clone(&progress);
+    let abandoned_notify = Arc::clone(&notify);
+    let abandoned_operation_id = spec.operation_id.clone();
+    let abandoned_target = task_root.clone();
     let task_spec = crate::workload::TaskSpec::new(
         crate::workload::TaskKind::Transfer,
         task_root.clone(),
@@ -1926,10 +1942,40 @@ fn spawn_transfer_on(
         terminal_guard.disarm();
         notify();
     };
-    let task = workload.submit(task_spec, worker);
+    let on_abandoned = move |reason: crate::workload::AbandonReason| {
+        let record_abandonment = {
+            let mut state = crate::lock_util::recover(&abandoned_progress);
+            if state.finished {
+                return;
+            }
+            state.operation_id = Some(abandoned_operation_id);
+            !state.cancelled
+        };
+        if record_abandonment {
+            record_failure(
+                &abandoned_progress,
+                "Operation",
+                ClassifiedFailure::message(
+                    FailureClass::Retryable,
+                    Some(abandoned_target),
+                    format!("workload abandoned transfer before execution: {reason}"),
+                ),
+            );
+            finish_progress(&abandoned_progress);
+        } else {
+            // No entry began execution, so this is not the late-cancel case
+            // normalized by `finish_progress`, even for an empty transfer.
+            publish_terminal_progress(&abandoned_progress);
+        }
+        (crate::lock_util::recover(&abandoned_notify))();
+    };
+    let task = workload.submit_with_abandonment(task_spec, worker, on_abandoned);
     match task {
         Ok(task) => {
-            crate::lock_util::recover(&progress).scheduler_task = Some(task);
+            let mut state = crate::lock_util::recover(&progress);
+            if !state.finished {
+                state.scheduler_task = Some(task);
+            }
         }
         Err(error) => {
             record_failure(

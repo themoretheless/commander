@@ -5,6 +5,13 @@
 use super::*;
 use crate::opqueue::JobState;
 
+fn mark_failure_notice_seen(
+    seen: &mut std::collections::HashSet<crate::operation::TransferAttemptId>,
+    attempt_id: crate::operation::TransferAttemptId,
+) -> bool {
+    seen.insert(attempt_id)
+}
+
 fn terminal_failure_notice(
     report: crate::workspace::TransferTerminalReport,
     created_at_millis: u64,
@@ -13,6 +20,7 @@ fn terminal_failure_notice(
         return None;
     }
     Some(crate::operation_view::FailureNotice {
+        attempt_id: report.attempt_id,
         operation_id: report.operation_id,
         summary: report.submitted,
         errors: report.errors,
@@ -51,6 +59,7 @@ impl App {
                 return None;
             }
             Some(crate::operation_view::FailureNotice {
+                attempt_id: active.attempt_id,
                 operation_id: active.operation_id,
                 summary: active.submitted,
                 errors: progress.errors.clone(),
@@ -74,7 +83,7 @@ impl App {
     }
 
     fn ingest_failure_notice(&mut self, notice: crate::operation_view::FailureNotice) {
-        if !self.failure_notice_seen.insert(notice.operation_id.clone()) {
+        if !mark_failure_notice_seen(&mut self.failure_notice_seen, notice.attempt_id) {
             return;
         }
         self.operation_failures.upsert(notice);
@@ -470,7 +479,7 @@ impl App {
                         rollback = Some(notice.operation_id.clone());
                     }
                     if ui.small_button("Dismiss").clicked() {
-                        dismiss = Some(notice.operation_id.clone());
+                        dismiss = Some(notice.attempt_id);
                     }
                 });
                 ui.add_space(7.0);
@@ -498,8 +507,8 @@ impl App {
         if undo {
             self.ws.execute(crate::command::Command::Undo);
         }
-        if let Some(operation_id) = dismiss {
-            self.operation_failures.dismiss(&operation_id);
+        if let Some(attempt_id) = dismiss {
+            self.operation_failures.dismiss(attempt_id);
         }
     }
 
@@ -624,17 +633,19 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::terminal_failure_notice;
+    use super::{mark_failure_notice_seen, terminal_failure_notice};
 
     #[test]
     fn auto_retired_terminal_report_becomes_a_complete_failure_notice() {
         let operation_id = crate::operation::OperationId("auto-retired".to_string());
+        let attempt_id = crate::operation::TransferAttemptId::new();
         let failure = crate::operation::ClassifiedFailure::message(
             crate::operation::FailureClass::Blocked,
             None,
             "stopped with an error",
         );
         let report = crate::workspace::TransferTerminalReport {
+            attempt_id,
             operation_id: operation_id.clone(),
             submitted: crate::operation_view::SubmittedSummary::capture(
                 "Copy",
@@ -648,9 +659,22 @@ mod tests {
 
         let notice = terminal_failure_notice(report, 42).expect("failure notice");
 
+        assert_eq!(notice.attempt_id, attempt_id);
         assert_eq!(notice.operation_id, operation_id);
         assert_eq!(notice.errors, ["stopped with an error"]);
         assert_eq!(notice.failures, [failure]);
         assert_eq!(notice.created_at_millis, 42);
+    }
+
+    #[test]
+    fn live_notice_capture_is_once_per_attempt_not_once_per_operation() {
+        let first_attempt = crate::operation::TransferAttemptId::new();
+        let retry_attempt = crate::operation::TransferAttemptId::new();
+        let mut seen = std::collections::HashSet::new();
+
+        assert!(mark_failure_notice_seen(&mut seen, first_attempt));
+        assert!(!mark_failure_notice_seen(&mut seen, first_attempt));
+        assert!(mark_failure_notice_seen(&mut seen, retry_attempt));
+        assert_eq!(seen.len(), 2);
     }
 }

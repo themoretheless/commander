@@ -7,6 +7,7 @@ impl App {
         let Some(active) = self.ws.active_transfer_view() else {
             return;
         };
+        let submitted = Some(active.submitted);
         let state = active.progress;
         let _latency =
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::OperationDialog);
@@ -22,7 +23,6 @@ impl App {
         let speed = s.speed_bps();
         let eta = s.phase_eta_secs();
         let phase = s.phase;
-        let submitted = s.submitted.clone();
         let current_file = s.current_file.clone();
         let current_file_copied = s.current_file_copied;
         let current_file_size = s.current_file_size;
