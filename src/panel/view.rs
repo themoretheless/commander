@@ -1,0 +1,231 @@
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use super::{FacetSet, SortColumn, SortOrder};
+
+const DEFAULT_VIEW_MEMORY_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ViewConfig {
+    pub sort_col: SortColumn,
+    pub sort_order: SortOrder,
+    pub show_hidden: bool,
+    pub folders_first: bool,
+    pub natural_name_sort: bool,
+    pub density: crate::density::Density,
+}
+
+impl Default for ViewConfig {
+    fn default() -> Self {
+        Self {
+            sort_col: SortColumn::Name,
+            sort_order: SortOrder::Asc,
+            show_hidden: false,
+            folders_first: true,
+            natural_name_sort: true,
+            density: crate::density::Density::default(),
+        }
+    }
+}
+
+/// A directory's complete remembered view, including transient filters and
+/// scroll focus. Keeping this in one value avoids restoring a half-old view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewSettings {
+    pub config: ViewConfig,
+    pub search_query: String,
+    pub facets: FacetSet,
+    pub cursor_path: Option<PathBuf>,
+    pub scroll_anchor: usize,
+}
+
+pub(super) struct ViewState {
+    config: ViewConfig,
+    search_query: String,
+    facets: FacetSet,
+    remembered: HashMap<PathBuf, ViewSettings>,
+    recency: VecDeque<PathBuf>,
+    capacity: usize,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_VIEW_MEMORY_CAPACITY)
+    }
+}
+
+impl ViewState {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            config: ViewConfig::default(),
+            search_query: String::new(),
+            facets: FacetSet::default(),
+            remembered: HashMap::new(),
+            recency: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    pub(super) fn config(&self) -> ViewConfig {
+        self.config
+    }
+
+    pub(super) fn replace_config(&mut self, config: ViewConfig) {
+        self.config = config;
+    }
+
+    pub(super) fn sort_col(&self) -> SortColumn {
+        self.config.sort_col
+    }
+
+    pub(super) fn sort_order(&self) -> SortOrder {
+        self.config.sort_order
+    }
+
+    pub(super) fn toggle_sort(&mut self, column: SortColumn) {
+        if self.config.sort_col == column {
+            self.config.sort_order = match self.config.sort_order {
+                SortOrder::Asc => SortOrder::Desc,
+                SortOrder::Desc => SortOrder::Asc,
+            };
+        } else {
+            self.config.sort_col = column;
+            self.config.sort_order = SortOrder::Asc;
+        }
+    }
+
+    pub(super) fn reverse_sort(&mut self) {
+        self.config.sort_order = match self.config.sort_order {
+            SortOrder::Asc => SortOrder::Desc,
+            SortOrder::Desc => SortOrder::Asc,
+        };
+    }
+
+    pub(super) fn show_hidden(&self) -> bool {
+        self.config.show_hidden
+    }
+
+    pub(super) fn toggle_hidden(&mut self) {
+        self.config.show_hidden = !self.config.show_hidden;
+    }
+
+    pub(super) fn folders_first(&self) -> bool {
+        self.config.folders_first
+    }
+
+    pub(super) fn toggle_folders_first(&mut self) {
+        self.config.folders_first = !self.config.folders_first;
+    }
+
+    pub(super) fn natural_name_sort(&self) -> bool {
+        self.config.natural_name_sort
+    }
+
+    pub(super) fn toggle_natural_sort(&mut self) {
+        self.config.natural_name_sort = !self.config.natural_name_sort;
+    }
+
+    pub(super) fn density(&self) -> crate::density::Density {
+        self.config.density
+    }
+
+    pub(super) fn set_density(&mut self, density: crate::density::Density) {
+        self.config.density = density;
+    }
+
+    pub(super) fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    pub(super) fn set_search_query(&mut self, query: impl Into<String>) {
+        self.search_query = query.into();
+    }
+
+    pub(super) fn facets(&self) -> FacetSet {
+        self.facets
+    }
+
+    pub(super) fn facets_mut(&mut self) -> &mut FacetSet {
+        &mut self.facets
+    }
+
+    pub(super) fn clear_filters(&mut self) {
+        self.search_query.clear();
+        self.facets = FacetSet::default();
+    }
+
+    pub(super) fn remember(&mut self, path: &Path, settings: ViewSettings) {
+        if self.capacity == 0 {
+            return;
+        }
+        self.recency.retain(|candidate| candidate != path);
+        self.recency.push_back(path.to_path_buf());
+        self.remembered.insert(path.to_path_buf(), settings);
+        while self.remembered.len() > self.capacity {
+            if let Some(oldest) = self.recency.pop_front() {
+                self.remembered.remove(&oldest);
+            }
+        }
+    }
+
+    pub(super) fn restore(&mut self, path: &Path) -> Option<ViewSettings> {
+        let settings = self.remembered.get(path)?.clone();
+        self.recency.retain(|candidate| candidate != path);
+        self.recency.push_back(path.to_path_buf());
+        self.config = settings.config;
+        self.search_query = settings.search_query.clone();
+        self.facets = settings.facets;
+        Some(settings)
+    }
+
+    #[cfg(test)]
+    fn remembered_len(&self) -> usize {
+        self.remembered.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(label: &str) -> ViewSettings {
+        ViewSettings {
+            config: ViewConfig::default(),
+            search_query: label.to_string(),
+            facets: FacetSet::default(),
+            cursor_path: None,
+            scroll_anchor: 0,
+        }
+    }
+
+    #[test]
+    fn memory_is_bounded_and_recent_reads_refresh_recency() {
+        let mut state = ViewState::with_capacity(2);
+        state.remember(Path::new("/a"), settings("a"));
+        state.remember(Path::new("/b"), settings("b"));
+        assert_eq!(state.restore(Path::new("/a")).unwrap().search_query, "a");
+        state.remember(Path::new("/c"), settings("c"));
+
+        assert_eq!(state.remembered_len(), 2);
+        assert!(state.restore(Path::new("/b")).is_none());
+        assert_eq!(state.restore(Path::new("/a")).unwrap().search_query, "a");
+        assert_eq!(state.restore(Path::new("/c")).unwrap().search_query, "c");
+    }
+
+    #[test]
+    fn remembered_filter_is_restored_with_config() {
+        let mut state = ViewState::default();
+        let mut remembered = settings("report");
+        remembered.facets.kind = Some(super::super::KindFacet::Docs);
+        remembered.config.show_hidden = true;
+        state.remember(Path::new("/docs"), remembered);
+
+        let restored = state.restore(Path::new("/docs")).unwrap();
+        assert_eq!(state.search_query(), "report");
+        assert_eq!(state.facets().kind, Some(super::super::KindFacet::Docs));
+        assert!(state.show_hidden());
+        assert_eq!(restored.scroll_anchor, 0);
+    }
+}

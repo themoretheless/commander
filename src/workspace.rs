@@ -956,7 +956,7 @@ impl Workspace {
             )),
             Command::CycleDensity => {
                 let panel = self.active_panel();
-                panel.density = crate::density::cycle(panel.density, 1);
+                panel.set_density(crate::density::cycle(panel.density(), 1));
             }
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self
@@ -1004,7 +1004,7 @@ impl Workspace {
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
-                panel.show_hidden = !panel.show_hidden;
+                panel.toggle_hidden();
                 panel.refresh();
             }
             Command::ToggleFoldersFirst => self.active_panel().toggle_folders_first(),
@@ -2206,8 +2206,8 @@ impl Workspace {
         crate::sync_guard::build_plan(
             &self.left.current_path,
             &self.right.current_path,
-            self.left.show_hidden,
-            self.right.show_hidden,
+            self.left.show_hidden(),
+            self.right.show_hidden(),
             policy,
         )
     }
@@ -2777,7 +2777,7 @@ mod tests {
         assert_eq!(action_bar.selected_entries, 1);
         assert!(action_bar.can_transfer_into_cursor_folder);
 
-        ws.left.search_query = "does-not-match".to_string();
+        ws.left.set_search_query("does-not-match");
         let filtered = ws.command_context();
         assert_eq!(filtered.visible_entries, 0);
         assert_eq!(filtered.selected_entries, 0);
@@ -4772,7 +4772,7 @@ mod tests {
         ws.left.refresh();
         ws.right.refresh();
         // Narrow the active view to just "alpha".
-        ws.left.search_query = "alpha".to_string();
+        ws.left.set_search_query("alpha");
 
         ws.execute(Command::SelectDiffering);
         // Only the visible differing entry is selected; the filtered-out

@@ -8,7 +8,7 @@ impl App {
         t: &ThemeColors,
     ) -> Option<PathBuf> {
         let active_path = self.ws.active_panel_ref().current_path.clone();
-        let show_hidden = self.ws.active_panel_ref().show_hidden;
+        let show_hidden = self.ws.active_panel_ref().show_hidden();
 
         // Favorites rail: bookmarked directories with their quick-jump slots,
         // above the filesystem tree. Clicking one navigates the active panel.

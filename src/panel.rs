@@ -10,6 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
+mod view;
+
+use view::ViewState;
+pub use view::{ViewConfig, ViewSettings};
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct VolumePathKey {
     path: PathBuf,
@@ -1673,23 +1678,6 @@ pub struct FolderOverview {
     pub oldest: Option<(String, SystemTime)>,
 }
 
-/// A directory's sort/filter/hidden/density settings, remembered per path so
-/// returning to a directory restores how it was last left. In-memory only:
-/// scoped to the running session, not persisted across restarts (unlike the
-/// current directory's own settings, which the session file already saves).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ViewSettings {
-    pub sort_col: SortColumn,
-    pub sort_order: SortOrder,
-    pub show_hidden: bool,
-    pub folders_first: bool,
-    pub natural_name_sort: bool,
-    pub facets: FacetSet,
-    pub density: crate::density::Density,
-    pub cursor_path: Option<PathBuf>,
-    pub scroll_anchor: usize,
-}
-
 /// A non-parent cursor row no longer exists in the filtered view. This should
 /// be prevented by [`PanelState::ensure_cursor_valid`], but remains explicit at
 /// file-operation call sites so a future invariant regression cannot silently
@@ -1724,24 +1712,7 @@ pub struct PanelState {
     /// Per-pane directory history (back/forward); a vim-style jump trail that
     /// truncates its forward tail on a new navigation.
     pub history: crate::jumplist::JumpList,
-    pub search_query: String,
-    /// Active quick-filter facets, ANDed with the substring filter.
-    pub facets: FacetSet,
-    pub sort_col: SortColumn,
-    pub sort_order: SortOrder,
-    /// Pin folders to the top of the listing (classic dual-pane default).
-    pub folders_first: bool,
-    /// Natural numeric name ordering (`file2` < `file10`); off = plain A-Z.
-    pub natural_name_sort: bool,
-    pub show_hidden: bool,
-    /// List density tier (row sizes). Restored from and saved to the
-    /// session, and remembered per directory in `view_memory` like the
-    /// other view fields above.
-    pub density: crate::density::Density,
-    /// Sort/filter/hidden/density settings remembered per visited
-    /// directory (session-lifetime only), keyed by that directory's path.
-    /// Applied by `navigate_to` when returning to a remembered directory.
-    pub view_memory: HashMap<PathBuf, ViewSettings>,
+    view: ViewState,
     pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
     /// Identity and cancellation source for the newest metadata scan.
@@ -1794,15 +1765,7 @@ impl PanelState {
                 h.push(path);
                 h
             },
-            search_query: String::new(),
-            facets: FacetSet::default(),
-            sort_col: SortColumn::Name,
-            sort_order: SortOrder::Asc,
-            folders_first: true,
-            natural_name_sort: true,
-            show_hidden: false,
-            density: crate::density::Density::default(),
-            view_memory: HashMap::new(),
+            view: ViewState::default(),
             dir_sizes: Arc::new(Mutex::new(HashMap::new())),
             dir_counts: Arc::new(Mutex::new(HashMap::new())),
             dir_scan_epoch: Arc::new(Mutex::new(Arc::new(ScanEpoch::new()))),
@@ -1843,6 +1806,56 @@ impl PanelState {
         self.notify.is_some()
     }
 
+    pub fn view_config(&self) -> ViewConfig {
+        self.view.config()
+    }
+
+    pub fn restore_view_config(&mut self, config: ViewConfig) {
+        self.view.replace_config(config);
+    }
+
+    pub fn search_query(&self) -> &str {
+        self.view.search_query()
+    }
+
+    pub fn set_search_query(&mut self, query: impl Into<String>) {
+        self.view.set_search_query(query);
+        self.ensure_cursor_valid();
+    }
+
+    pub fn facets(&self) -> FacetSet {
+        self.view.facets()
+    }
+
+    pub fn set_facets(&mut self, facets: FacetSet) {
+        *self.view.facets_mut() = facets;
+        self.ensure_cursor_valid();
+    }
+
+    pub fn sort_column(&self) -> SortColumn {
+        self.view.sort_col()
+    }
+
+    pub fn sort_order(&self) -> SortOrder {
+        self.view.sort_order()
+    }
+
+    pub fn show_hidden(&self) -> bool {
+        self.view.show_hidden()
+    }
+
+    pub fn toggle_hidden(&mut self) {
+        self.view.toggle_hidden();
+    }
+
+    pub fn density(&self) -> crate::density::Density {
+        self.view.density()
+    }
+
+    pub fn set_density(&mut self, density: crate::density::Density) {
+        self.view.set_density(density);
+    }
+
     pub fn watcher_active(&self) -> bool {
         self.watcher.is_some()
     }
@@ -1866,7 +1879,7 @@ impl PanelState {
             None
         };
 
-        self.entries = Self::read_dir(&self.current_path, self.show_hidden);
+        self.entries = Self::read_dir(&self.current_path, self.view.show_hidden());
         self.dir_status = classify_dir(&self.current_path, self.entries.is_empty());
         self.sort_entries();
 
@@ -2295,10 +2308,10 @@ impl PanelState {
     }
 
     pub fn sort_entries(&mut self) {
-        let col = self.sort_col;
-        let order = self.sort_order;
-        let folders_first = self.folders_first;
-        let natural = self.natural_name_sort;
+        let col = self.view.sort_col();
+        let order = self.view.sort_order();
+        let folders_first = self.view.folders_first();
+        let natural = self.view.natural_name_sort();
 
         self.entries.sort_by(|a, b| {
             // Folders pinned to the top, unless that grouping is turned off.
@@ -2340,13 +2353,13 @@ impl PanelState {
 
     /// Toggle pinning folders to the top, then re-sort in place.
     pub fn toggle_folders_first(&mut self) {
-        self.folders_first = !self.folders_first;
+        self.view.toggle_folders_first();
         self.sort_entries();
     }
 
     /// Toggle natural vs plain A-Z name ordering, then re-sort in place.
     pub fn toggle_natural_sort(&mut self) {
-        self.natural_name_sort = !self.natural_name_sort;
+        self.view.toggle_natural_sort();
         self.sort_entries();
     }
 
@@ -2363,13 +2376,9 @@ impl PanelState {
 
     fn snapshot_view_settings(&self) -> ViewSettings {
         ViewSettings {
-            sort_col: self.sort_col,
-            sort_order: self.sort_order,
-            show_hidden: self.show_hidden,
-            folders_first: self.folders_first,
-            natural_name_sort: self.natural_name_sort,
-            facets: self.facets,
-            density: self.density,
+            config: self.view.config(),
+            search_query: self.view.search_query().to_string(),
+            facets: self.view.facets(),
             cursor_path: self
                 .cursor
                 .checked_sub(1)
@@ -2382,28 +2391,23 @@ impl PanelState {
     /// Remember the current directory's view settings under its own path.
     fn stash_view_settings(&mut self) {
         let settings = self.snapshot_view_settings();
-        self.view_memory.insert(self.current_path.clone(), settings);
+        self.view.remember(&self.current_path, settings);
     }
 
     /// Apply the current directory's remembered view settings, if any.
     /// Leaves everything unchanged (carrying over whatever was already
     /// active) when this directory has never been visited this session.
     fn restore_view_settings(&mut self) -> Option<(Option<PathBuf>, usize)> {
-        let s = self.view_memory.get(&self.current_path)?.clone();
-        self.sort_col = s.sort_col;
-        self.sort_order = s.sort_order;
-        self.show_hidden = s.show_hidden;
-        self.folders_first = s.folders_first;
-        self.natural_name_sort = s.natural_name_sort;
-        self.facets = s.facets;
-        self.density = s.density;
+        let s = self.view.restore(&self.current_path)?;
         Some((s.cursor_path, s.scroll_anchor))
     }
 
     fn load_remembered_path(&mut self, path: PathBuf) {
         self.current_path = path;
-        self.search_query.clear();
         let remembered = self.restore_view_settings();
+        if remembered.is_none() {
+            self.view.clear_filters();
+        }
         if let Some((_, scroll_anchor)) = &remembered {
             self.scroll_anchor = *scroll_anchor;
         }
@@ -2548,10 +2552,7 @@ impl PanelState {
 
     /// Flip the current sort order (ascending <-> descending) and re-sort.
     pub fn reverse_sort(&mut self) {
-        self.sort_order = match self.sort_order {
-            SortOrder::Asc => SortOrder::Desc,
-            SortOrder::Desc => SortOrder::Asc,
-        };
+        self.view.reverse_sort();
         self.sort_entries();
     }
 
@@ -2672,10 +2673,10 @@ impl PanelState {
     /// entries runs only when something actually changed.
     fn ensure_filter_cache(&self) {
         let mut cache = self.filter_cache.borrow_mut();
-        let query = self.search_query.trim();
+        let query = self.view.search_query().trim();
         if cache.generation == self.entries_gen
             && cache.query == query
-            && cache.facets == self.facets
+            && cache.facets == self.view.facets()
         {
             return;
         }
@@ -2683,13 +2684,13 @@ impl PanelState {
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FilterResponse);
         cache.generation = self.entries_gen;
         cache.query = query.to_string();
-        cache.facets = self.facets;
+        cache.facets = self.view.facets();
         cache.indices.clear();
 
         // Fuzzy subsequence match (shared with the command palette), so "scn"
         // narrows to "scanner.rs". This is more permissive than a substring
         // filter; the sort order is left untouched (we narrow, never reorder).
-        let facets = self.facets;
+        let facets = self.view.facets();
         let no_facets = facets.is_empty();
         let now = SystemTime::now();
         cache.indices.extend(
@@ -2720,8 +2721,7 @@ impl PanelState {
 
     /// Clear both text and facet filters as one invariant-preserving action.
     pub fn clear_filters(&mut self) {
-        self.search_query.clear();
-        self.facets = FacetSet::default();
+        self.view.clear_filters();
         self.ensure_cursor_valid();
     }
 
@@ -2965,15 +2965,7 @@ impl PanelState {
     }
 
     pub fn set_sort(&mut self, col: SortColumn) {
-        if self.sort_col == col {
-            self.sort_order = match self.sort_order {
-                SortOrder::Asc => SortOrder::Desc,
-                SortOrder::Desc => SortOrder::Asc,
-            };
-        } else {
-            self.sort_col = col;
-            self.sort_order = SortOrder::Asc;
-        }
+        self.view.toggle_sort(col);
         self.sort_entries();
     }
 
@@ -3003,8 +2995,8 @@ impl PanelState {
     }
 
     pub fn sort_indicator(&self, col: SortColumn) -> &str {
-        if self.sort_col == col {
-            match self.sort_order {
+        if self.view.sort_col() == col {
+            match self.view.sort_order() {
                 SortOrder::Asc => " ▲",
                 SortOrder::Desc => " ▼",
             }
@@ -3273,7 +3265,7 @@ mod tests {
             entry("Cargo.toml", false, 1),
             entry("main.rs", false, 1),
         ]);
-        p.search_query = "CARGO".to_string();
+        p.set_search_query("CARGO");
         let names: Vec<&str> = p
             .filtered_entries()
             .iter()
@@ -3288,8 +3280,8 @@ mod tests {
             entry("Cargo.toml", false, 1),
             entry("main.rs", false, 1),
         ]);
-        p.search_query = "   ".to_string();
-        assert!(!filter_is_active(&p.search_query, &p.facets));
+        p.set_search_query("   ");
+        assert!(!filter_is_active(p.search_query(), &p.facets()));
         assert_eq!(p.filtered_count(), 2);
     }
 
@@ -3301,7 +3293,7 @@ mod tests {
             entry("notes.txt", false, 1),
         ]);
         // "scn" is a subsequence of scanner.rs only (substring would miss it).
-        p.search_query = "scn".to_string();
+        p.set_search_query("scn");
         let names: Vec<&str> = p
             .filtered_entries()
             .iter()
@@ -3310,11 +3302,11 @@ mod tests {
         assert_eq!(names, vec!["scanner.rs"]);
 
         // Empty query shows everything.
-        p.search_query.clear();
+        p.set_search_query("");
         assert_eq!(p.filtered_count(), 3);
 
         // A non-subsequence excludes every row.
-        p.search_query = "zzz".to_string();
+        p.set_search_query("zzz");
         assert_eq!(p.filtered_count(), 0);
     }
 
@@ -3378,7 +3370,7 @@ mod tests {
         let album = p.entries[1].path.clone();
         let zebra = p.entries[2].path.clone();
         p.selected.insert(zebra.clone());
-        p.search_query = "al".to_string();
+        p.set_search_query("al");
 
         p.select_all();
         assert!(p.selected.contains(&alpha));
@@ -3405,7 +3397,7 @@ mod tests {
         p.selected.insert(alpha.clone());
         p.selected.insert(zebra.clone());
         // Filter to the "al" rows; zebra is now hidden from the view.
-        p.search_query = "al".to_string();
+        p.set_search_query("al");
         p.invert_selection();
         assert!(!p.selected.contains(&alpha), "visible+selected -> cleared");
         assert!(
@@ -3433,7 +3425,7 @@ mod tests {
     fn sorting_reclamps_a_cursor_after_the_filter_changes() {
         let mut p = panel_with(vec![entry("alpha", false, 1), entry("beta", false, 1)]);
         p.cursor = 2;
-        p.search_query = "alpha".to_string();
+        p.set_search_query("alpha");
 
         p.sort_entries();
 
@@ -3560,38 +3552,47 @@ mod tests {
 
         let mut p = PanelState::new(downloads.clone());
         p.refresh();
-        p.sort_col = SortColumn::Size;
-        p.sort_order = SortOrder::Desc;
-        p.show_hidden = true;
-        p.density = crate::density::Density::Compact;
+        let mut config = p.view_config();
+        config.sort_col = SortColumn::Size;
+        config.sort_order = SortOrder::Desc;
+        config.show_hidden = true;
+        config.density = crate::density::Density::Compact;
+        p.restore_view_config(config);
+        p.set_search_query("download-filter");
 
         // "docs" has never been visited: like before per-folder memory
         // existed, its view carries over from wherever we came from.
         p.navigate_to(docs.clone());
-        assert_eq!(p.sort_col, SortColumn::Size);
-        assert_eq!(p.sort_order, SortOrder::Desc);
-        assert!(p.show_hidden);
-        assert_eq!(p.density, crate::density::Density::Compact);
+        assert_eq!(p.sort_column(), SortColumn::Size);
+        assert_eq!(p.sort_order(), SortOrder::Desc);
+        assert!(p.show_hidden());
+        assert_eq!(p.density(), crate::density::Density::Compact);
+        assert_eq!(p.search_query(), "");
 
         // Now give "docs" its own, different view.
-        p.sort_col = SortColumn::Extension;
-        p.sort_order = SortOrder::Asc;
-        p.show_hidden = false;
-        p.density = crate::density::Density::Spacious;
+        let mut config = p.view_config();
+        config.sort_col = SortColumn::Extension;
+        config.sort_order = SortOrder::Asc;
+        config.show_hidden = false;
+        config.density = crate::density::Density::Spacious;
+        p.restore_view_config(config);
+        p.set_search_query("docs-filter");
 
         // Back to "downloads": its own remembered view returns, not "docs"'s.
         p.navigate_to(downloads.clone());
-        assert_eq!(p.sort_col, SortColumn::Size);
-        assert_eq!(p.sort_order, SortOrder::Desc);
-        assert!(p.show_hidden);
-        assert_eq!(p.density, crate::density::Density::Compact);
+        assert_eq!(p.sort_column(), SortColumn::Size);
+        assert_eq!(p.sort_order(), SortOrder::Desc);
+        assert!(p.show_hidden());
+        assert_eq!(p.density(), crate::density::Density::Compact);
+        assert_eq!(p.search_query(), "download-filter");
 
         // And "docs" kept its own distinct view too.
         p.navigate_to(docs);
-        assert_eq!(p.sort_col, SortColumn::Extension);
-        assert_eq!(p.sort_order, SortOrder::Asc);
-        assert!(!p.show_hidden);
-        assert_eq!(p.density, crate::density::Density::Spacious);
+        assert_eq!(p.sort_column(), SortColumn::Extension);
+        assert_eq!(p.sort_order(), SortOrder::Asc);
+        assert!(!p.show_hidden());
+        assert_eq!(p.density(), crate::density::Density::Spacious);
+        assert_eq!(p.search_query(), "docs-filter");
     }
 
     #[test]
@@ -3869,10 +3870,10 @@ mod tests {
         for e in &mut p.entries {
             e.extension = e.name.rsplit('.').next().unwrap().to_lowercase();
         }
-        p.facets = FacetSet {
+        p.set_facets(FacetSet {
             kind: Some(KindFacet::Images),
             ..Default::default()
-        };
+        });
         let names: Vec<&str> = p
             .filtered_entries()
             .iter()
@@ -4023,7 +4024,7 @@ mod tests {
         assert_eq!(p.filtered_count(), 2);
 
         // Query change invalidates the cache.
-        p.search_query = "al".to_string();
+        p.set_search_query("al");
         assert_eq!(p.filtered_count(), 1);
         assert_eq!(p.filtered_get(0).unwrap().name, "alpha");
 
@@ -4046,7 +4047,7 @@ mod tests {
             entry("skip.rs", false, 1),
             entry("keeper.txt", false, 1),
         ]);
-        p.search_query = "keep".to_string();
+        p.set_search_query("keep");
         let idx = p.filtered_indices();
         assert_eq!(idx.len(), 2);
         for i in idx {

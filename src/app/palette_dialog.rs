@@ -266,14 +266,14 @@ impl App {
             Command::SelectSameNamed => format!("against {inactive_path}"),
             Command::BeginSelectMask => "glob selection".to_string(),
             Command::ToggleHidden => {
-                if active.show_hidden {
+                if active.show_hidden() {
                     "currently on".to_string()
                 } else {
                     "currently off".to_string()
                 }
             }
             Command::CycleDensity => {
-                let next = crate::density::cycle(active.density, 1);
+                let next = crate::density::cycle(active.density(), 1);
                 format!("next: {}", crate::density::label(next))
             }
             Command::TogglePreview => "opposite panel preview".to_string(),

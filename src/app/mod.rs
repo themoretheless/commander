@@ -554,18 +554,22 @@ impl App {
             } else {
                 ActivePanel::Right
             };
-            ws.left.sort_col = s.left_sort_col;
-            ws.left.sort_order = s.left_sort_order;
-            ws.left.show_hidden = s.left_hidden;
-            ws.left.folders_first = s.left_folders_first;
-            ws.left.natural_name_sort = s.left_natural_sort;
-            ws.left.density = s.left_density;
-            ws.right.sort_col = s.right_sort_col;
-            ws.right.sort_order = s.right_sort_order;
-            ws.right.show_hidden = s.right_hidden;
-            ws.right.folders_first = s.right_folders_first;
-            ws.right.natural_name_sort = s.right_natural_sort;
-            ws.right.density = s.right_density;
+            ws.left.restore_view_config(crate::panel::ViewConfig {
+                sort_col: s.left_sort_col,
+                sort_order: s.left_sort_order,
+                show_hidden: s.left_hidden,
+                folders_first: s.left_folders_first,
+                natural_name_sort: s.left_natural_sort,
+                density: s.left_density,
+            });
+            ws.right.restore_view_config(crate::panel::ViewConfig {
+                sort_col: s.right_sort_col,
+                sort_order: s.right_sort_order,
+                show_hidden: s.right_hidden,
+                folders_first: s.right_folders_first,
+                natural_name_sort: s.right_natural_sort,
+                density: s.right_density,
+            });
             ws.durability_profile = s.durability_profile;
             ws.version_retention = s.version_retention;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
@@ -673,6 +677,8 @@ impl App {
     /// Snapshot the current state into a persistable [`Session`].
     fn to_session(&self) -> crate::session::Session {
         let (recent_paths, recent_stats) = crate::panel::visit_snapshot();
+        let left_view = self.ws.left.view_config();
+        let right_view = self.ws.right.view_config();
         crate::session::Session {
             left_path: self.ws.left.current_path.clone(),
             right_path: self.ws.right.current_path.clone(),
@@ -683,18 +689,18 @@ impl App {
             tree_width: self.tree_width,
             show_size_bars: self.show_size_bars,
             show_compare: self.show_compare,
-            left_sort_col: self.ws.left.sort_col,
-            left_sort_order: self.ws.left.sort_order,
-            left_hidden: self.ws.left.show_hidden,
-            right_sort_col: self.ws.right.sort_col,
-            right_sort_order: self.ws.right.sort_order,
-            right_hidden: self.ws.right.show_hidden,
-            left_folders_first: self.ws.left.folders_first,
-            left_natural_sort: self.ws.left.natural_name_sort,
-            right_folders_first: self.ws.right.folders_first,
-            right_natural_sort: self.ws.right.natural_name_sort,
-            left_density: self.ws.left.density,
-            right_density: self.ws.right.density,
+            left_sort_col: left_view.sort_col,
+            left_sort_order: left_view.sort_order,
+            left_hidden: left_view.show_hidden,
+            right_sort_col: right_view.sort_col,
+            right_sort_order: right_view.sort_order,
+            right_hidden: right_view.show_hidden,
+            left_folders_first: left_view.folders_first,
+            left_natural_sort: left_view.natural_name_sort,
+            right_folders_first: right_view.folders_first,
+            right_natural_sort: right_view.natural_name_sort,
+            left_density: left_view.density,
+            right_density: right_view.density,
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
             recent_paths,

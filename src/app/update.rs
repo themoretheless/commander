@@ -631,7 +631,7 @@ impl App {
                                     format!(
                                         "Rows {}",
                                         crate::density::short_label(
-                                            self.ws.active_panel_ref().density
+                                            self.ws.active_panel_ref().density()
                                         )
                                     ),
                                     true,
@@ -641,7 +641,7 @@ impl App {
                                 chip(
                                     ui,
                                     "Hidden".to_string(),
-                                    self.ws.active_panel_ref().show_hidden,
+                                    self.ws.active_panel_ref().show_hidden(),
                                 );
                                 if !self.ws.shelf.is_empty() {
                                     chip(ui, format!("Shelf {}", self.ws.shelf.len()), true);
@@ -702,7 +702,7 @@ impl App {
         crate::quick_actions::QuickActionContext {
             selected_count: active.selected.len(),
             shelf_count: self.ws.shelf.len(),
-            has_filters: crate::panel::filter_is_active(&active.search_query, &active.facets),
+            has_filters: crate::panel::filter_is_active(active.search_query(), &active.facets()),
         }
     }
 
@@ -756,7 +756,7 @@ impl App {
     fn save_active_filter_as_smart_folder(&mut self, ctx: &egui::Context) {
         let (name, root, query) = {
             let active = self.ws.active_panel_ref();
-            let query = crate::query::from_panel_filter(&active.search_query, &active.facets);
+            let query = crate::query::from_panel_filter(active.search_query(), &active.facets());
             if query.predicates.is_empty() {
                 return;
             }
@@ -766,10 +766,10 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| active.current_path.display().to_string());
-            let descriptor = if active.search_query.trim().is_empty() {
-                format!("{} facet(s)", active.facets.active_count())
+            let descriptor = if active.search_query().trim().is_empty() {
+                format!("{} facet(s)", active.facets().active_count())
             } else {
-                active.search_query.trim().to_string()
+                active.search_query().trim().to_string()
             };
             (
                 format!(
@@ -1050,8 +1050,8 @@ impl App {
         } else {
             (false, close_active_preview)
         };
-        let left_metrics = crate::density::metrics(self.ws.left.density);
-        let right_metrics = crate::density::metrics(self.ws.right.density);
+        let left_metrics = crate::density::metrics(self.ws.left.density());
+        let right_metrics = crate::density::metrics(self.ws.right.density());
         let drag_source = if !self.ws.left.drag_entries.is_empty() {
             Some(ActivePanel::Left)
         } else if !self.ws.right.drag_entries.is_empty() {

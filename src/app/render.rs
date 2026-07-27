@@ -119,7 +119,8 @@ fn render_text_preview(
 impl App {
     /// A row of toggleable quick-filter chips under the filter box.
     fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) -> bool {
-        let before = panel.facets;
+        let before = panel.facets();
+        let mut facets = before;
         Frame::NONE
             .fill(Color32::TRANSPARENT)
             .inner_margin(Margin {
@@ -148,7 +149,7 @@ impl App {
                         .clicked()
                     };
 
-                    let f = &mut panel.facets;
+                    let f = &mut facets;
                     // Kind chips (mutually exclusive: clicking the active one clears it).
                     for (label, kind) in [
                         ("Folders", KindFacet::Folders),
@@ -224,7 +225,12 @@ impl App {
                     }
                 });
             });
-        panel.facets != before
+        if facets != before {
+            panel.set_facets(facets);
+            true
+        } else {
+            false
+        }
     }
 
     /// Render one file panel and return deferred UI effects after its borrows
@@ -485,13 +491,14 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            let text_filter_active = !panel.search_query.trim().is_empty();
+                            let mut query = panel.search_query().to_string();
+                            let text_filter_active = !query.trim().is_empty();
                             let clear_width = if text_filter_active { 30.0 } else { 0.0 };
                             let input_width = (ui.available_width() - clear_width).max(80.0);
                             filter_changed |= ui
                                 .add_sized(
                                     Vec2::new(input_width, 26.0),
-                                    egui::TextEdit::singleline(&mut panel.search_query)
+                                    egui::TextEdit::singleline(&mut query)
                                         .hint_text("\u{1f50d} Filter\u{2026}")
                                         .desired_width(f32::INFINITY)
                                         .margin(egui::vec2(8.0, 4.0)),
@@ -512,8 +519,11 @@ impl App {
                                     .on_hover_text("Clear filter")
                                     .clicked()
                             {
-                                panel.search_query.clear();
+                                query.clear();
                                 filter_changed = true;
+                            }
+                            if query != panel.search_query() {
+                                panel.set_search_query(query);
                             }
                         });
                     });

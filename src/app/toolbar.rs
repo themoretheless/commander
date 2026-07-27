@@ -227,7 +227,7 @@ impl App {
                         }
 
                         // Hidden files toggle
-                        let active_hidden = self.ws.active_panel_ref().show_hidden;
+                        let active_hidden = self.ws.active_panel_ref().show_hidden();
                         let hidden_icon = if active_hidden {
                             "\u{1f441}"
                         } else {
@@ -251,7 +251,7 @@ impl App {
                         }
 
                         // Density cycle (active panel)
-                        let density = self.ws.active_panel_ref().density;
+                        let density = self.ws.active_panel_ref().density();
                         let density_label = crate::density::short_label(density);
                         if ui
                             .add(
@@ -269,7 +269,9 @@ impl App {
                             ))
                             .clicked()
                         {
-                            self.ws.active_panel().density = crate::density::cycle(density, 1);
+                            self.ws
+                                .active_panel()
+                                .set_density(crate::density::cycle(density, 1));
                         }
 
                         // Size-bars toggle
@@ -459,19 +461,21 @@ impl App {
                         }
 
                         ui.separator();
-                        let mut show_hidden = self.ws.active_panel_ref().show_hidden;
+                        let mut show_hidden = self.ws.active_panel_ref().show_hidden();
                         if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
                             self.toggle_active_hidden();
                         }
                         if ui
                             .button(format!(
                                 "Row density: {}",
-                                crate::density::label(self.ws.active_panel_ref().density)
+                                crate::density::label(self.ws.active_panel_ref().density())
                             ))
                             .clicked()
                         {
-                            let density = self.ws.active_panel_ref().density;
-                            self.ws.active_panel().density = crate::density::cycle(density, 1);
+                            let density = self.ws.active_panel_ref().density();
+                            self.ws
+                                .active_panel()
+                                .set_density(crate::density::cycle(density, 1));
                         }
                         ui.checkbox(&mut self.show_size_bars, "Show size bars");
                         ui.checkbox(&mut self.show_compare, "Compare panels");
@@ -518,7 +522,7 @@ impl App {
 
     fn toggle_active_hidden(&mut self) {
         let panel = self.ws.active_panel();
-        panel.show_hidden = !panel.show_hidden;
+        panel.toggle_hidden();
         panel.refresh();
     }
 

@@ -10,8 +10,8 @@ impl App {
         let policy = SyncPolicy::TwoWay;
         let left_dir = self.ws.left.current_path.clone();
         let right_dir = self.ws.right.current_path.clone();
-        let left_show_hidden = self.ws.left.show_hidden;
-        let right_show_hidden = self.ws.right.show_hidden;
+        let left_show_hidden = self.ws.left.show_hidden();
+        let right_show_hidden = self.ws.right.show_hidden();
         let guard = self.ws.sync_guard_policy.clone();
         let marker_input = guard
             .health_marker

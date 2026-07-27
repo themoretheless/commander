@@ -614,11 +614,11 @@ mod tests {
         let mut filter_generation = 0_u64;
         let filter_response = probe(31, || {
             filter_generation = filter_generation.saturating_add(1);
-            panel.search_query = if filter_generation.is_multiple_of(2) {
+            panel.set_search_query(if filter_generation.is_multiple_of(2) {
                 "file-1".to_string()
             } else {
                 "missing".to_string()
-            };
+            });
             std::hint::black_box(panel.filtered_count());
         });
         let profile = crate::volume_profile::profile(&root);

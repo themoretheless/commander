@@ -78,14 +78,14 @@ impl App {
                 let filtered = panel.filtered_indices();
                 // Active filter query, for highlighting matched characters in
                 // each visible row. Trimmed to match panel filtering semantics.
-                let query = panel.search_query.trim().to_string();
+                let query = panel.search_query().trim().to_string();
 
                 if filtered.is_empty() {
                     use crate::panel::DirStatus;
                     // Distinguish a filtered-to-nothing list, a truly empty
                     // folder, and an unreadable/vanished one.
                     let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
-                        if crate::panel::filter_is_active(&panel.search_query, &panel.facets) {
+                        if crate::panel::filter_is_active(panel.search_query(), &panel.facets()) {
                             (
                                 "\u{1f50d}",
                                 "No matches",
@@ -650,7 +650,7 @@ impl App {
                     // One pass for the folder total plus its largest/oldest entry.
                     let overview = panel.folder_overview();
                     let filters_active =
-                        crate::panel::filter_is_active(&panel.search_query, &panel.facets);
+                        crate::panel::filter_is_active(panel.search_query(), &panel.facets());
                     let count_prefix = if filters_active {
                         format!("{shown} of {total} items")
                     } else {
@@ -662,7 +662,7 @@ impl App {
                     };
                     ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
                     if filters_active {
-                        let active_count = panel.facets.active_count();
+                        let active_count = panel.facets().active_count();
                         let filter_label = if active_count > 0 {
                             format!("  |  Filters {active_count}")
                         } else {
@@ -748,7 +748,7 @@ impl App {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let hidden_label = if panel.show_hidden {
+                        let hidden_label = if panel.show_hidden() {
                             "Hidden: ON"
                         } else {
                             "Hidden: OFF"
