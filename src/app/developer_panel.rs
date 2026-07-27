@@ -20,7 +20,7 @@ fn budget_state(latency: crate::measurement::LatencyPercentiles, hard_p95_ms: f6
 }
 
 impl App {
-    pub(crate) fn show_developer_panel(&mut self, ctx: &egui::Context) {
+    pub(crate) fn show_developer_panel(&mut self, ctx: &egui::Context, input_enabled: bool) {
         if !self.show_developer_panel {
             return;
         }
@@ -57,6 +57,7 @@ impl App {
 
         egui::Window::new("Developer diagnostics")
             .open(&mut open)
+            .enabled(input_enabled)
             .default_size(Vec2::new(width, height))
             .min_width(320.0)
             .max_width(560.0)
@@ -454,7 +455,9 @@ impl App {
                     }
                 });
             });
-        self.show_developer_panel = open;
+        if input_enabled {
+            self.show_developer_panel = open;
+        }
     }
 
     fn diagnostic_paths(&self) -> [PathBuf; 2] {

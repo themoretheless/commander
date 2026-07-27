@@ -2447,7 +2447,7 @@ impl Workspace {
             || self.pending_op.is_some()
             || self.mutations_blocked()
         {
-            self.clear_drag_state();
+            self.cancel_drag();
             return;
         }
         let Some((paths, target)) = self.take_drop_plan() else {
@@ -2565,7 +2565,7 @@ impl Workspace {
         Some((paths, target?))
     }
 
-    fn clear_drag_state(&mut self) {
+    pub(crate) fn cancel_drag(&mut self) {
         self.left.drag_entries.clear();
         self.right.drag_entries.clear();
         self.left.drop_target = None;
@@ -5326,6 +5326,23 @@ mod tests {
         );
         assert!(!r.path().join("a.txt").exists());
         assert!(ws.left.drag_entries.is_empty());
+    }
+
+    #[test]
+    fn cancel_drag_clears_both_sources_and_targets() {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.left.drag_entries = vec![l.path().join("left.txt")];
+        ws.right.drag_entries = vec![r.path().join("right.txt")];
+        ws.left.drop_target = Some(l.path().join("left-target"));
+        ws.right.drop_target = Some(r.path().join("right-target"));
+
+        ws.cancel_drag();
+
+        assert!(ws.left.drag_entries.is_empty());
+        assert!(ws.right.drag_entries.is_empty());
+        assert!(ws.left.drop_target.is_none());
+        assert!(ws.right.drop_target.is_none());
     }
 
     #[test]

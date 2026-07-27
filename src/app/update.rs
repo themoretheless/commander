@@ -47,12 +47,57 @@ fn recovery_review_handoff_allowed(
     }
 }
 
-fn panel_activation_requested(
-    containing_ui_enabled: bool,
-    contains_pointer: bool,
-    pointer_pressed: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameInputPolicy {
+    trapped: bool,
+    background_enabled: bool,
+}
+
+impl FrameInputPolicy {
+    fn resolve(containing_ui_enabled: bool, modal_was_open: bool, modal_is_open: bool) -> Self {
+        let trapped = crate::accessibility::modal_trap_active(modal_was_open, modal_is_open);
+        Self {
+            trapped,
+            background_enabled: containing_ui_enabled && !trapped,
+        }
+    }
+
+    fn trapped(self) -> bool {
+        self.trapped
+    }
+
+    fn background_enabled(self) -> bool {
+        self.background_enabled
+    }
+
+    fn allows_raw_input(self, containing_ui_enabled: bool, requested: bool) -> bool {
+        self.background_enabled && containing_ui_enabled && requested
+    }
+
+    fn allows_drop_target(self, containing_ui_enabled: bool, requested: bool) -> bool {
+        self.allows_raw_input(containing_ui_enabled, requested)
+    }
+
+    fn allows_drop_execution(self, pointer_released: bool) -> bool {
+        self.background_enabled && pointer_released
+    }
+
+    fn allows_divider_reset(self, containing_ui_enabled: bool, double_clicked: bool) -> bool {
+        self.allows_raw_input(containing_ui_enabled, double_clicked)
+    }
+
+    fn clear_stale_drag(self) -> bool {
+        self.trapped
+    }
+}
+
+fn any_modal_surface_open(
+    safe_state_open: bool,
+    transfer_open: bool,
+    confirmation_open: bool,
+    app_modal_open: bool,
 ) -> bool {
-    containing_ui_enabled && contains_pointer && pointer_pressed
+    safe_state_open || transfer_open || confirmation_open || app_modal_open
 }
 
 fn clipped_label(text: &str, max_chars: usize) -> String {
@@ -95,20 +140,25 @@ impl eframe::App for App {
         self.show_palette_dialog(&ctx);
         // Keep the background disabled on the close frame too, so the pointer
         // release that dismissed a modal cannot click through into a file row.
-        let modal_open =
-            crate::accessibility::modal_trap_active(modal_was_open, self.has_modal_surface());
+        let input_policy =
+            FrameInputPolicy::resolve(ui.is_enabled(), modal_was_open, self.has_modal_surface());
+        let modal_open = input_policy.trapped();
         let trapped = crate::accessibility::focus_order(crate::accessibility::FocusLayout {
             toolbar_visible: !self.ui.focus_mode,
             operations_open: self.show_operations_center,
             dialog_open: modal_open,
         }) == [crate::accessibility::FocusRegion::Dialog];
+        debug_assert_eq!(trapped, input_policy.trapped());
+        if input_policy.clear_stale_drag() {
+            self.ws.cancel_drag();
+        }
         let background_order =
             crate::accessibility::focus_order(crate::accessibility::FocusLayout {
                 toolbar_visible: !self.ui.focus_mode,
                 operations_open: self.show_operations_center,
                 dialog_open: false,
             });
-        ui.add_enabled_ui(!trapped, |ui| {
+        ui.add_enabled_ui(input_policy.background_enabled(), |ui| {
             for region in background_order {
                 match region {
                     crate::accessibility::FocusRegion::Toolbar => self.show_toolbar_panel(ui),
@@ -121,7 +171,7 @@ impl eframe::App for App {
                             self.show_shelf_tray(ui);
                             self.show_selection_hud(ui);
                         }
-                        self.show_main_area(ui);
+                        self.show_main_area(ui, input_policy);
                     }
                     crate::accessibility::FocusRegion::RightPanel
                     | crate::accessibility::FocusRegion::Dialog => {}
@@ -129,10 +179,10 @@ impl eframe::App for App {
             }
         });
         self.show_drag_overlay(&ctx);
-        self.show_type_ahead_overlay(&ctx);
-        self.show_toasts(&ctx);
-        self.show_developer_panel(&ctx);
-        self.handle_drop(&ctx);
+        self.show_type_ahead_overlay(&ctx, input_policy.background_enabled());
+        self.show_toasts(&ctx, input_policy.background_enabled());
+        self.show_developer_panel(&ctx, input_policy.background_enabled());
+        self.handle_drop(&ctx, input_policy);
     }
 
     /// eframe calls this on exit and on its auto-save interval; persist our
@@ -150,10 +200,12 @@ impl eframe::App for App {
 
 impl App {
     fn has_modal_surface(&self) -> bool {
-        self.ws.safe_state.is_some()
-            || self.ws.active_transfer_view().is_some()
-            || self.ws.pending_op.is_some()
-            || self.ui.modals.any_open()
+        any_modal_surface_open(
+            self.ws.safe_state.is_some(),
+            self.ws.active_transfer_view().is_some(),
+            self.ws.pending_op.is_some(),
+            self.ui.modals.any_open(),
+        )
     }
 
     fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
@@ -964,9 +1016,10 @@ impl App {
     }
 
     /// Tree sidebar plus the two file panels with the resizable divider.
-    fn show_main_area(&mut self, ui: &mut egui::Ui) {
+    fn show_main_area(&mut self, ui: &mut egui::Ui, input_policy: FrameInputPolicy) {
         let ctx = ui.ctx().clone();
         let t = self.colors;
+        let containing_ui_enabled = ui.is_enabled();
         let active_left = self.ws.active == ActivePanel::Left;
         let close_active_preview =
             self.take_escape_request(crate::accessibility::EscapeRoute::ActivePreview);
@@ -984,7 +1037,7 @@ impl App {
         } else {
             None
         };
-        let dragging = drag_source.is_some();
+        let dragging = input_policy.allows_raw_input(containing_ui_enabled, drag_source.is_some());
         // Side surfaces have already carved their space from this Ui. Base
         // pane geometry on the remaining width so panels never overlap them.
         let window_width = ui.available_width();
@@ -1076,10 +1129,10 @@ impl App {
             .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
-                if panel_activation_requested(
+                if input_policy.allows_raw_input(
                     ui.is_enabled(),
-                    ui.rect_contains_pointer(ui.max_rect()),
-                    ctx.input(|i| i.pointer.any_pressed()),
+                    ui.rect_contains_pointer(ui.max_rect())
+                        && ctx.input(|i| i.pointer.any_pressed()),
                 ) {
                     self.ws.active = ActivePanel::Left;
                 }
@@ -1104,11 +1157,13 @@ impl App {
         tree_toggle |= left_outcome.tree_toggle;
 
         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
-        if dragging
-            && drag_source != Some(ActivePanel::Left)
-            && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
-            && self.ws.left.drop_target.is_none()
-        {
+        if input_policy.allows_drop_target(
+            containing_ui_enabled,
+            dragging
+                && drag_source != Some(ActivePanel::Left)
+                && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
+                && self.ws.left.drop_target.is_none(),
+        ) {
             self.ws.left.drop_target = Some(self.ws.left.current_path.clone());
         }
         if self.ws.left.drop_target.is_some() {
@@ -1136,7 +1191,7 @@ impl App {
                     false
                 }
             });
-            if double_clicked {
+            if input_policy.allows_divider_reset(containing_ui_enabled, double_clicked) {
                 ctx.data_mut(|d| {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
                 });
@@ -1148,10 +1203,10 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
                 ui.push_id(crate::accessibility::FocusRegion::RightPanel.id(), |ui| {
-                    if panel_activation_requested(
+                    if input_policy.allows_raw_input(
                         ui.is_enabled(),
-                        ui.rect_contains_pointer(ui.max_rect()),
-                        ctx.input(|i| i.pointer.any_pressed()),
+                        ui.rect_contains_pointer(ui.max_rect())
+                            && ctx.input(|i| i.pointer.any_pressed()),
                     ) {
                         self.ws.active = ActivePanel::Right;
                     }
@@ -1181,11 +1236,13 @@ impl App {
         self.apply_context_menu_effect(ActivePanel::Left, left_outcome.context_menu, &ctx);
         self.apply_context_menu_effect(ActivePanel::Right, right_outcome.context_menu, &ctx);
 
-        if dragging
-            && drag_source != Some(ActivePanel::Right)
-            && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
-            && self.ws.right.drop_target.is_none()
-        {
+        if input_policy.allows_drop_target(
+            containing_ui_enabled,
+            dragging
+                && drag_source != Some(ActivePanel::Right)
+                && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
+                && self.ws.right.drop_target.is_none(),
+        ) {
             self.ws.right.drop_target = Some(self.ws.right.current_path.clone());
         }
         if self.ws.right.drop_target.is_some() {
@@ -1302,13 +1359,15 @@ impl App {
     }
 
     /// Floating capsule showing the current type-ahead buffer.
-    fn show_type_ahead_overlay(&mut self, ctx: &egui::Context) {
+    fn show_type_ahead_overlay(&mut self, ctx: &egui::Context, allow_state_updates: bool) {
         let Some((buffer, last)) = &self.ui.type_ahead else {
             return;
         };
         let now = ctx.input(|i| i.time);
         if now - last > 1.5 {
-            self.ui.type_ahead = None;
+            if allow_state_updates {
+                self.ui.type_ahead = None;
+            }
             return;
         }
         let t = self.colors;
@@ -1336,7 +1395,7 @@ impl App {
 
     /// Bottom-right stack of operation toasts, each with a hairline countdown
     /// and an inline Undo on undoable ops.
-    fn show_toasts(&mut self, ctx: &egui::Context) {
+    fn show_toasts(&mut self, ctx: &egui::Context, input_enabled: bool) {
         if self.toasts.is_empty() {
             return;
         }
@@ -1387,6 +1446,7 @@ impl App {
             egui::Area::new(egui::Id::new(("toast", toast.id())))
                 .fixed_pos(egui::pos2(stack.x, y))
                 .order(egui::Order::Tooltip)
+                .enabled(input_enabled)
                 .show(ctx, |ui| {
                     egui::Frame::popup(ui.style())
                         .fill(t.bg_card)
@@ -1435,7 +1495,7 @@ impl App {
                         });
                 });
         }
-        if undo {
+        if input_enabled && undo {
             self.ws.execute(crate::command::Command::Undo);
         }
         let repaint_ms = if self.accessibility_preferences.reduced_motion {
@@ -1447,8 +1507,8 @@ impl App {
     }
 
     /// On mouse release, move dragged files into the hovered directory.
-    fn handle_drop(&mut self, ctx: &egui::Context) {
-        if !ctx.input(|i| i.pointer.any_released()) {
+    fn handle_drop(&mut self, ctx: &egui::Context, input_policy: FrameInputPolicy) {
+        if !input_policy.allows_drop_execution(ctx.input(|i| i.pointer.any_released())) {
             return;
         }
         let ctx2 = ctx.clone();
@@ -1468,14 +1528,56 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{panel_activation_requested, recovery_review_handoff_allowed};
+    use super::{FrameInputPolicy, any_modal_surface_open, recovery_review_handoff_allowed};
 
     #[test]
     fn disabled_background_cannot_activate_a_panel() {
-        assert!(!panel_activation_requested(false, true, true));
-        assert!(!panel_activation_requested(true, false, true));
-        assert!(!panel_activation_requested(true, true, false));
-        assert!(panel_activation_requested(true, true, true));
+        let policy = FrameInputPolicy::resolve(true, false, false);
+        assert!(!policy.allows_raw_input(false, true));
+        assert!(!policy.allows_raw_input(true, false));
+        assert!(policy.allows_raw_input(true, true));
+    }
+
+    #[test]
+    fn trapped_frame_never_targets_or_executes_a_drop_and_clears_stale_drag() {
+        for policy in [
+            FrameInputPolicy::resolve(true, false, true),
+            FrameInputPolicy::resolve(true, true, false),
+        ] {
+            assert!(policy.trapped());
+            assert!(!policy.allows_drop_target(true, true));
+            assert!(!policy.allows_drop_execution(true));
+            assert!(policy.clear_stale_drag());
+        }
+    }
+
+    #[test]
+    fn untrapped_frame_preserves_drop_and_divider_input() {
+        let policy = FrameInputPolicy::resolve(true, false, false);
+        assert!(!policy.trapped());
+        assert!(policy.allows_drop_target(true, true));
+        assert!(policy.allows_drop_execution(true));
+        assert!(policy.allows_divider_reset(true, true));
+        assert!(!policy.clear_stale_drag());
+    }
+
+    #[test]
+    fn trapped_frame_blocks_divider_and_auxiliary_actions() {
+        let policy = FrameInputPolicy::resolve(true, true, false);
+        assert!(!policy.allows_divider_reset(true, true));
+        assert!(!policy.background_enabled());
+    }
+
+    #[test]
+    fn safe_state_and_transfer_surfaces_both_activate_the_frame_trap() {
+        for modal_is_open in [
+            any_modal_surface_open(true, false, false, false),
+            any_modal_surface_open(false, true, false, false),
+        ] {
+            let policy = FrameInputPolicy::resolve(true, false, modal_is_open);
+            assert!(policy.trapped());
+            assert!(!policy.allows_drop_execution(true));
+        }
     }
 
     #[test]
