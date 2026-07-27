@@ -490,10 +490,27 @@ fn copy_file_delta(
         crate::delta_copy::DeltaMode::Fixed => CheckpointLayout::DeltaFixed,
         crate::delta_copy::DeltaMode::ContentDefined => CheckpointLayout::DeltaCdc,
     };
+    if let Some(checkpoint) = context.resume {
+        let expected = checkpoint.content_digest.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Delta checkpoint has no content proof",
+            )
+        })?;
+        if prefix_digest(source, checkpoint.offset)? != expected
+            || prefix_digest(destination, checkpoint.offset)? != expected
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Delta checkpoint content proof does not match source and staging",
+            ));
+        }
+    }
     let resume_offset = context.resume.map(|checkpoint| checkpoint.offset);
     let journal = context.journal;
-    let mut checkpoint =
-        |offset| persist_delta_checkpoint(source, destination, offset, layout, journal);
+    let mut checkpoint = |offset, content_digest| {
+        persist_delta_checkpoint(source, destination, offset, layout, content_digest, journal)
+    };
     crate::delta_copy::copy_file(
         crate::delta_copy::DeltaRequest {
             source,
@@ -514,6 +531,7 @@ fn persist_delta_checkpoint(
     destination: &Path,
     offset: u64,
     layout: CheckpointLayout,
+    content_digest: [u8; 32],
     journal: JournalStep<'_>,
 ) -> std::io::Result<()> {
     if !journal.enabled {
@@ -525,7 +543,7 @@ fn persist_delta_checkpoint(
         source: PathIdentity::observe_deep(source)?,
         partial: PathIdentity::observe_deep(destination)?,
         layout,
-        content_digest: None,
+        content_digest: Some(content_digest),
     };
     crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
         .map_err(std::io::Error::other)
@@ -602,8 +620,7 @@ pub struct ResumeCheckpoint {
     pub partial: PathIdentity,
     #[serde(default)]
     pub layout: CheckpointLayout,
-    /// BLAKE3 of the first `offset` bytes for Prefix checkpoints. Delta
-    /// checkpoints have their own block-level proofs and leave this empty.
+    /// BLAKE3 of the first `offset` bytes for every resumable layout.
     #[serde(default)]
     pub content_digest: Option<[u8; 32]>,
 }

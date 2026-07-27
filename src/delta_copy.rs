@@ -42,6 +42,96 @@ pub struct DeltaStats {
     pub written_bytes: u64,
 }
 
+struct CheckpointDigests {
+    source: blake3::Hasher,
+    destination: blake3::Hasher,
+    verified_offset: u64,
+}
+
+impl CheckpointDigests {
+    fn new(source: &Path, destination: &Path, offset: u64) -> std::io::Result<Self> {
+        let mut digests = Self {
+            source: blake3::Hasher::new(),
+            destination: blake3::Hasher::new(),
+            verified_offset: 0,
+        };
+        hash_range_into(source, 0, offset, &mut digests.source)?;
+        hash_range_into(destination, 0, offset, &mut digests.destination)?;
+        if digests.source.finalize() != digests.destination.finalize() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delta checkpoint prefix differs between source and staging",
+            ));
+        }
+        digests.verified_offset = offset;
+        Ok(digests)
+    }
+
+    fn update_source(&mut self, bytes: &[u8]) {
+        self.source.update(bytes);
+    }
+
+    fn checkpoint(
+        &mut self,
+        destination: &Path,
+        offset: u64,
+        verify_complete: bool,
+    ) -> std::io::Result<[u8; 32]> {
+        if offset < self.verified_offset {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delta checkpoint offset moved backwards",
+            ));
+        }
+        if verify_complete {
+            self.destination = blake3::Hasher::new();
+            hash_range_into(destination, 0, offset, &mut self.destination)?;
+        } else {
+            hash_range_into(
+                destination,
+                self.verified_offset,
+                offset,
+                &mut self.destination,
+            )?;
+        }
+        let source = *self.source.clone().finalize().as_bytes();
+        if source != *self.destination.clone().finalize().as_bytes() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delta staging bytes differ from the processed source prefix",
+            ));
+        }
+        self.verified_offset = offset;
+        Ok(source)
+    }
+}
+
+struct CheckpointWriter<'a> {
+    digests: &'a mut CheckpointDigests,
+    publish: &'a mut dyn FnMut(u64, [u8; 32]) -> std::io::Result<()>,
+}
+
+impl CheckpointWriter<'_> {
+    fn publish_initial(&mut self) -> std::io::Result<()> {
+        let digest = *self.digests.source.clone().finalize().as_bytes();
+        (self.publish)(0, digest)
+    }
+
+    fn sync(
+        &mut self,
+        destination: &std::fs::File,
+        destination_path: &Path,
+        offset: u64,
+        verify_complete: bool,
+    ) -> std::io::Result<()> {
+        destination.sync_data()?;
+        let digest = self
+            .digests
+            .checkpoint(destination_path, offset, verify_complete)?;
+        (self.publish)(offset, digest)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct DeltaRequest<'a> {
     pub source: &'a Path,
@@ -88,7 +178,7 @@ fn similar_sizes(left: u64, right: u64) -> bool {
 
 pub fn copy_file(
     request: DeltaRequest<'_>,
-    checkpoint: &mut dyn FnMut(u64) -> std::io::Result<()>,
+    checkpoint: &mut dyn FnMut(u64, [u8; 32]) -> std::io::Result<()>,
 ) -> std::io::Result<DeltaStats> {
     let result = copy_file_inner(&request, checkpoint);
     if let Err(error) = &result
@@ -102,7 +192,7 @@ pub fn copy_file(
 
 fn copy_file_inner(
     request: &DeltaRequest<'_>,
-    checkpoint: &mut dyn FnMut(u64) -> std::io::Result<()>,
+    checkpoint: &mut dyn FnMut(u64, [u8; 32]) -> std::io::Result<()>,
 ) -> std::io::Result<DeltaStats> {
     let DeltaRequest {
         source,
@@ -128,12 +218,19 @@ fn copy_file_inner(
         let destination = std::fs::OpenOptions::new().write(true).open(destination)?;
         destination.set_len(source_size)?;
         destination.sync_data()?;
-        checkpoint(0)?;
     } else if destination.metadata()?.len() != source_size {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "delta staging size changed after checkpoint",
         ));
+    }
+    let mut digests = CheckpointDigests::new(source, destination, start_offset)?;
+    let mut checkpoints = CheckpointWriter {
+        digests: &mut digests,
+        publish: checkpoint,
+    };
+    if resume_offset.is_none() {
+        checkpoints.publish_initial()?;
     }
     initialize_progress(state, source, source_size, base_bytes, start_offset);
     let stats = match mode {
@@ -144,7 +241,7 @@ fn copy_file_inner(
             state,
             base_bytes,
             start_offset,
-            checkpoint,
+            &mut checkpoints,
         )?,
         DeltaMode::ContentDefined => copy_content_defined(
             source,
@@ -153,15 +250,14 @@ fn copy_file_inner(
             state,
             base_bytes,
             start_offset,
-            checkpoint,
+            &mut checkpoints,
         )?,
     };
     if let Ok(metadata) = source.metadata() {
         std::fs::set_permissions(destination, metadata.permissions())?;
     }
     let destination = std::fs::OpenOptions::new().write(true).open(destination)?;
-    destination.sync_data()?;
-    checkpoint(source_size)?;
+    checkpoints.sync(&destination, request.destination, source_size, true)?;
     Ok(stats)
 }
 
@@ -191,7 +287,7 @@ fn copy_fixed(
     state: &TransferState,
     base_bytes: u64,
     start_offset: u64,
-    checkpoint: &mut dyn FnMut(u64) -> std::io::Result<()>,
+    checkpoints: &mut CheckpointWriter<'_>,
 ) -> std::io::Result<DeltaStats> {
     let source_size = source.metadata()?.len();
     if !start_offset.is_multiple_of(FIXED_BLOCK_SIZE as u64) && start_offset != source_size {
@@ -202,6 +298,7 @@ fn copy_fixed(
     }
     let mut source = std::fs::File::open(source)?;
     let mut basis = std::fs::File::open(basis)?;
+    let destination_path = destination;
     let mut destination = std::fs::OpenOptions::new().write(true).open(destination)?;
     source.seek(SeekFrom::Start(start_offset))?;
     basis.seek(SeekFrom::Start(start_offset))?;
@@ -214,13 +311,14 @@ fn copy_fixed(
     let mut checkpoint_at = next_checkpoint(start_offset);
     loop {
         if is_cancelled(state) {
-            sync_checkpoint(&destination, stats.logical_bytes, checkpoint)?;
+            checkpoints.sync(&destination, destination_path, stats.logical_bytes, false)?;
             return Err(interrupted());
         }
         let read = source.read(&mut source_buffer)?;
         if read == 0 {
             break;
         }
+        checkpoints.digests.update_source(&source_buffer[..read]);
         let basis_read = read_up_to(&mut basis, &mut basis_buffer[..read])?;
         if basis_read == read && source_buffer[..read] == basis_buffer[..read] {
             stats.reused_bytes = stats.reused_bytes.saturating_add(read as u64);
@@ -233,7 +331,7 @@ fn copy_fixed(
         stats.logical_bytes = stats.logical_bytes.saturating_add(read as u64);
         update_progress(state, base_bytes, stats);
         if stats.logical_bytes >= checkpoint_at {
-            sync_checkpoint(&destination, stats.logical_bytes, checkpoint)?;
+            checkpoints.sync(&destination, destination_path, stats.logical_bytes, false)?;
             checkpoint_at = next_checkpoint(stats.logical_bytes);
         }
     }
@@ -253,7 +351,7 @@ fn copy_content_defined(
     state: &TransferState,
     base_bytes: u64,
     start_offset: u64,
-    checkpoint: &mut dyn FnMut(u64) -> std::io::Result<()>,
+    checkpoints: &mut CheckpointWriter<'_>,
 ) -> std::io::Result<DeltaStats> {
     let mut index: HashMap<ChunkKey, Vec<u64>> = HashMap::new();
     let basis_source = std::fs::File::open(basis)?;
@@ -274,6 +372,7 @@ fn copy_content_defined(
     }
 
     let mut basis = std::fs::File::open(basis)?;
+    let destination_path = destination;
     let mut destination = std::fs::OpenOptions::new().write(true).open(destination)?;
     let source = std::fs::File::open(source)?;
     let mut basis_buffer = Vec::with_capacity(CDC_MAX_CHUNK);
@@ -285,7 +384,7 @@ fn copy_content_defined(
     for chunk in fastcdc::v2020::StreamCDC::new(source, CDC_MIN_CHUNK, CDC_AVG_CHUNK, CDC_MAX_CHUNK)
     {
         if is_cancelled(state) {
-            sync_checkpoint(&destination, stats.logical_bytes, checkpoint)?;
+            checkpoints.sync(&destination, destination_path, stats.logical_bytes, false)?;
             return Err(interrupted());
         }
         let chunk = chunk.map_err(std::io::Error::other)?;
@@ -299,6 +398,7 @@ fn copy_content_defined(
                 "CDC checkpoint is not chunk-aligned",
             ));
         }
+        checkpoints.digests.update_source(&chunk.data);
         let key = chunk_key(&chunk.data);
         let matched = matching_basis_chunk(
             &mut basis,
@@ -322,7 +422,7 @@ fn copy_content_defined(
         stats.logical_bytes = chunk_end;
         update_progress(state, base_bytes, stats);
         if stats.logical_bytes >= checkpoint_at {
-            sync_checkpoint(&destination, stats.logical_bytes, checkpoint)?;
+            checkpoints.sync(&destination, destination_path, stats.logical_bytes, false)?;
             checkpoint_at = next_checkpoint(stats.logical_bytes);
         }
     }
@@ -378,13 +478,36 @@ fn next_checkpoint(offset: u64) -> u64 {
     offset.saturating_add(CHECKPOINT_INTERVAL)
 }
 
-fn sync_checkpoint(
-    destination: &std::fs::File,
-    offset: u64,
-    checkpoint: &mut dyn FnMut(u64) -> std::io::Result<()>,
+fn hash_range_into(
+    path: &Path,
+    start: u64,
+    end: u64,
+    hasher: &mut blake3::Hasher,
 ) -> std::io::Result<()> {
-    destination.sync_data()?;
-    checkpoint(offset)
+    if end < start {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "hash range ends before it starts",
+        ));
+    }
+    let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+    file.seek(SeekFrom::Start(start))?;
+    let mut remaining = end - start;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))
+            .expect("bounded hash chunk fits usize");
+        let read = file.read(&mut buffer[..limit])?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "delta checkpoint content is shorter than its offset",
+            ));
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(())
 }
 
 fn update_progress(state: &TransferState, base_bytes: u64, stats: DeltaStats) {
@@ -460,7 +583,7 @@ mod tests {
                 allow_clone_seed: true,
                 resume_offset: None,
             },
-            &mut |_| Ok(()),
+            &mut |_, _| Ok(()),
         )
         .unwrap();
 
@@ -498,7 +621,7 @@ mod tests {
                 allow_clone_seed: true,
                 resume_offset: Some(FIXED_BLOCK_SIZE as u64),
             },
-            &mut |offset| {
+            &mut |offset, _| {
                 checkpoints.push(offset);
                 Ok(())
             },
@@ -531,7 +654,7 @@ mod tests {
                 allow_clone_seed: true,
                 resume_offset: None,
             },
-            &mut |offset| {
+            &mut |offset, _| {
                 checkpoints.push(offset);
                 cancel_state.lock().unwrap().cancelled = true;
                 Ok(())
@@ -575,7 +698,7 @@ mod tests {
                 allow_clone_seed: true,
                 resume_offset: None,
             },
-            &mut |_| Ok(()),
+            &mut |_, _| Ok(()),
         )
         .unwrap();
 

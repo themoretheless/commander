@@ -332,6 +332,7 @@ mod tests {
                 checkpoint: None,
                 fast_path: Some(crate::transfer_tuning::FastPath::Native),
                 replacement: None,
+                rollback: None,
                 rollback_quarantine: None,
                 status: StepStatus::Failed,
                 attempts: 2,

@@ -220,6 +220,11 @@ pub struct OperationStep {
     #[serde(default)]
     pub replacement: Option<ReplacementBackup>,
     #[serde(default)]
+    pub rollback: Option<RollbackReceipt>,
+    /// Schema-4 compatibility for journals written before rollback gained an
+    /// explicit state machine. It is folded into `rollback` while loading and
+    /// never populated by new writes.
+    #[serde(default)]
     pub rollback_quarantine: Option<PathBuf>,
     pub status: StepStatus,
     pub attempts: u32,
@@ -240,6 +245,27 @@ pub struct ReplacementBackup {
     pub original: PathIdentity,
     pub replacement: PathIdentity,
     pub phase: ReplacementPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum RollbackPhase {
+    Prepared,
+    EffectDetached,
+    PrimaryReversed,
+    DestinationRestored,
+    Complete,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RollbackReceipt {
+    pub quarantine: PathBuf,
+    pub phase: RollbackPhase,
+    #[serde(default)]
+    pub version: Option<crate::version_store::VersionRecord>,
+    #[serde(default)]
+    pub version_identity: Option<PathIdentity>,
+    #[serde(default)]
+    pub restored_destination: Option<PathIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -407,20 +433,35 @@ fn now_secs() -> u64 {
 
 fn migrate_and_validate(mut journal: Journal) -> Result<Journal, String> {
     let source_schema = journal.schema;
-    if source_schema < JOURNAL_SCHEMA {
-        for operation in &mut journal.operations {
-            let unproved_prefix = operation.steps.iter().any(|step| {
-                step.checkpoint.as_ref().is_some_and(|checkpoint| {
-                    checkpoint.layout == crate::transfer::CheckpointLayout::Prefix
-                        && checkpoint.content_digest.is_none()
-                })
-            });
-            let unproved_container = operation.rollback_cleanup.is_some()
-                && operation.rollback_cleanup_identity.is_none();
-            if operation.status.recoverable() && (unproved_prefix || unproved_container) {
+    for operation in &mut journal.operations {
+        for step in &mut operation.steps {
+            if step.rollback.is_none()
+                && let Some(quarantine) = step.rollback_quarantine.take()
+            {
+                step.rollback = Some(RollbackReceipt {
+                    quarantine,
+                    phase: RollbackPhase::Prepared,
+                    version: None,
+                    version_identity: None,
+                    restored_destination: None,
+                });
                 operation.status = OperationStatus::NeedsReview;
             }
         }
+        if source_schema < JOURNAL_SCHEMA {
+            let unproved_checkpoint = operation.steps.iter().any(|step| {
+                step.checkpoint
+                    .as_ref()
+                    .is_some_and(|checkpoint| checkpoint.content_digest.is_none())
+            });
+            let unproved_container = operation.rollback_cleanup.is_some()
+                && operation.rollback_cleanup_identity.is_none();
+            if unproved_checkpoint || unproved_container {
+                operation.status = OperationStatus::NeedsReview;
+            }
+        }
+    }
+    if source_schema < JOURNAL_SCHEMA {
         journal.schema = JOURNAL_SCHEMA;
     }
     validate_journal(&journal)?;
@@ -490,6 +531,7 @@ fn validate_journal(journal: &Journal) -> Result<(), String> {
                 || operation.steps.iter().any(|step| {
                     !matches!(step.status, StepStatus::Completed | StepStatus::Skipped)
                         || step.replacement.is_some()
+                        || step.rollback.is_some()
                         || step.rollback_quarantine.is_some()
                 }))
         {
@@ -502,6 +544,10 @@ fn validate_journal(journal: &Journal) -> Result<(), String> {
             && (operation.rollback_cleanup_quarantine.is_some()
                 || operation.steps.iter().any(|step| {
                     matches!(step.status, StepStatus::Running | StepStatus::Completed)
+                        || step
+                            .rollback
+                            .as_ref()
+                            .is_some_and(|receipt| receipt.phase != RollbackPhase::Complete)
                         || step.rollback_quarantine.is_some()
                 }))
         {
@@ -539,7 +585,7 @@ fn validate_step(operation: &OperationRecord, step: &OperationStep) -> Result<()
     }
 
     if matches!(step.status, StepStatus::Completed | StepStatus::RolledBack)
-        && (step.landing.is_none() || step.destination_after.is_none() || step.fast_path.is_none())
+        && (step.landing.is_none() || step.destination_after.is_none())
     {
         return Err(format!(
             "Operation {} step {} is completed without a terminal proof",
@@ -564,12 +610,9 @@ fn validate_step(operation: &OperationRecord, step: &OperationStep) -> Result<()
                 operation.id.0, step.key.0
             ));
         }
-        if checkpoint.layout == crate::transfer::CheckpointLayout::Prefix
-            && checkpoint.content_digest.is_none()
-            && operation.status != OperationStatus::NeedsReview
-        {
+        if checkpoint.content_digest.is_none() && operation.status != OperationStatus::NeedsReview {
             return Err(format!(
-                "Operation {} step {} has a legacy Prefix checkpoint without content proof",
+                "Operation {} step {} has a legacy checkpoint without content proof",
                 operation.id.0, step.key.0
             ));
         }
@@ -584,6 +627,70 @@ fn validate_step(operation: &OperationRecord, step: &OperationStep) -> Result<()
             "Operation {} step {} has an invalid overwrite proof",
             operation.id.0, step.key.0
         ));
+    }
+    if step.rollback_quarantine.is_some() {
+        return Err(format!(
+            "Operation {} step {} contains an unmigrated rollback quarantine",
+            operation.id.0, step.key.0
+        ));
+    }
+    if let Some(receipt) = &step.rollback {
+        if step.status != StepStatus::Completed && step.status != StepStatus::RolledBack {
+            return Err(format!(
+                "Operation {} step {} has rollback state outside an applied effect",
+                operation.id.0, step.key.0
+            ));
+        }
+        if receipt.quarantine == effect_path(step)
+            || receipt.quarantine == step.source
+            || receipt.version.as_ref().is_some_and(|version| {
+                version.key != step.key || version.original != effect_path(step)
+            })
+            || receipt.version_identity.as_ref().is_some_and(|identity| {
+                receipt
+                    .version
+                    .as_ref()
+                    .is_none_or(|version| identity.path != version.stored)
+            })
+            || receipt
+                .restored_destination
+                .as_ref()
+                .is_some_and(|identity| identity.path != effect_path(step))
+        {
+            return Err(format!(
+                "Operation {} step {} has an invalid rollback receipt",
+                operation.id.0, step.key.0
+            ));
+        }
+        let replaces_existing = step
+            .destination_before
+            .as_ref()
+            .is_some_and(|identity| identity.exists);
+        if replaces_existing
+            && receipt.phase >= RollbackPhase::EffectDetached
+            && (receipt.version.is_none() || receipt.version_identity.is_none())
+        {
+            return Err(format!(
+                "Operation {} step {} detached an overwrite without a durable version receipt",
+                operation.id.0, step.key.0
+            ));
+        }
+        if (replaces_existing
+            && receipt.phase >= RollbackPhase::DestinationRestored
+            && receipt.restored_destination.is_none())
+            || (!replaces_existing && receipt.restored_destination.is_some())
+        {
+            return Err(format!(
+                "Operation {} step {} claims an invalid destination restore",
+                operation.id.0, step.key.0
+            ));
+        }
+        if receipt.phase == RollbackPhase::Complete && step.status != StepStatus::RolledBack {
+            return Err(format!(
+                "Operation {} step {} has a terminal rollback receipt before rollback completion",
+                operation.id.0, step.key.0
+            ));
+        }
     }
     Ok(())
 }
@@ -810,6 +917,7 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                     checkpoint: None,
                     fast_path: None,
                     replacement: None,
+                    rollback: None,
                     rollback_quarantine: None,
                     status: StepStatus::Planned,
                     attempts: 0,
@@ -1212,12 +1320,31 @@ pub fn mark_rolled_back(operation_id: &OperationId, key: &IdempotencyKey) -> Res
             OperationStatus::Completed,
         ],
         |step| {
+            let required_phase = if step
+                .destination_before
+                .as_ref()
+                .is_some_and(|identity| identity.exists)
+            {
+                RollbackPhase::DestinationRestored
+            } else {
+                RollbackPhase::PrimaryReversed
+            };
+            let receipt = step
+                .rollback
+                .as_mut()
+                .ok_or_else(|| "Rollback completion has no durable receipt".to_string())?;
+            if receipt.phase < required_phase {
+                return Err(format!(
+                    "Rollback completion arrived before its filesystem proof for step {}",
+                    step.key.0
+                ));
+            }
+            receipt.phase = RollbackPhase::Complete;
             step.status = step
                 .status
                 .transition(StepEvent::RollBack)
                 .map_err(|error| error.to_string())?;
             step.checkpoint = None;
-            step.rollback_quarantine = None;
             step.failure = None;
             Ok(())
         },
@@ -1248,7 +1375,10 @@ pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(),
             for step in &operation.steps {
                 match step.status {
                     StepStatus::Completed => {
-                        if step.replacement.is_some() || step.rollback_quarantine.is_some() {
+                        if step.replacement.is_some()
+                            || step.rollback.is_some()
+                            || step.rollback_quarantine.is_some()
+                        {
                             return Err(format!(
                                 "Operation step {} still has unreconciled filesystem state",
                                 step.key.0
@@ -1269,6 +1399,10 @@ pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(),
         if status == OperationStatus::RolledBack
             && operation.steps.iter().any(|step| {
                 matches!(step.status, StepStatus::Running | StepStatus::Completed)
+                    || step
+                        .rollback
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.phase != RollbackPhase::Complete)
                     || step.rollback_quarantine.is_some()
             })
         {
@@ -1614,23 +1748,21 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
             staging.display()
         ));
     }
-    if checkpoint.layout == crate::transfer::CheckpointLayout::Prefix {
-        let expected = checkpoint.content_digest.ok_or_else(|| {
-            format!(
-                "Recovery Prefix checkpoint has no content proof; inspect manually: {}",
-                staging.display()
-            )
-        })?;
-        let partial_digest = crate::transfer::prefix_digest(staging, checkpoint.offset)
-            .map_err(|error| format!("Could not hash recovery staging: {error}"))?;
-        let source_digest = crate::transfer::prefix_digest(&step.source, checkpoint.offset)
-            .map_err(|error| format!("Could not hash recovery source: {error}"))?;
-        if partial_digest != expected || source_digest != expected {
-            return Err(format!(
-                "Recovery Prefix checkpoint bytes changed after proof: {}",
-                staging.display()
-            ));
-        }
+    let expected = checkpoint.content_digest.ok_or_else(|| {
+        format!(
+            "Recovery checkpoint has no content proof; inspect manually: {}",
+            staging.display()
+        )
+    })?;
+    let partial_digest = crate::transfer::prefix_digest(staging, checkpoint.offset)
+        .map_err(|error| format!("Could not hash recovery staging: {error}"))?;
+    let source_digest = crate::transfer::prefix_digest(&step.source, checkpoint.offset)
+        .map_err(|error| format!("Could not hash recovery source: {error}"))?;
+    if partial_digest != expected || source_digest != expected {
+        return Err(format!(
+            "Recovery checkpoint bytes changed after proof: {}",
+            staging.display()
+        ));
     }
     Ok(Some(checkpoint.clone()))
 }
@@ -1789,12 +1921,43 @@ fn remove_expected_path(path: &Path, expected: &PathIdentity) -> Result<(), Stri
         .map_err(|error| format!("Could not sync quarantined removal: {error}"))
 }
 
-fn prepare_rollback_quarantine(
+fn rollback_version_receipt(
+    step: &OperationStep,
+    effect: &Path,
+) -> Result<Option<(crate::version_store::VersionRecord, PathIdentity)>, String> {
+    if !step
+        .destination_before
+        .as_ref()
+        .is_some_and(|identity| identity.exists)
+    {
+        return Ok(None);
+    }
+    let version = crate::version_store::record_for_key(&step.key)
+        .ok_or_else(|| "Replaced destination has no local version".to_string())?;
+    if version.key != step.key || version.original != effect {
+        return Err("Replaced destination version is bound to another journal step".to_string());
+    }
+    let identity = PathIdentity::observe_deep(&version.stored)
+        .map_err(|error| format!("Could not prove rollback version: {error}"))?;
+    if !identity.exists {
+        return Err("Replaced destination version is missing".to_string());
+    }
+    Ok(Some((version, identity)))
+}
+
+fn prepare_rollback_receipt(
     operation_id: &OperationId,
     key: &IdempotencyKey,
     effect: &Path,
-) -> Result<PathBuf, String> {
+) -> Result<RollbackReceipt, String> {
     let proposed = quarantine_path(effect);
+    let record = operation(operation_id)?;
+    let step = record
+        .steps
+        .iter()
+        .find(|step| &step.key == key)
+        .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+    let version = rollback_version_receipt(step, effect)?;
     mutate(|journal| {
         let operation = journal
             .operations
@@ -1825,13 +1988,171 @@ fn prepare_rollback_quarantine(
                 key.0
             ));
         }
-        if let Some(existing) = &step.rollback_quarantine {
+        if let Some(existing) = &mut step.rollback {
+            if existing.version.is_none()
+                && let Some((version, identity)) = &version
+            {
+                existing.version = Some(version.clone());
+                existing.version_identity = Some(identity.clone());
+            }
             return Ok(existing.clone());
         }
-        step.rollback_quarantine = Some(proposed.clone());
+        let (version, version_identity) =
+            version.clone().map_or((None, None), |(version, identity)| {
+                (Some(version), Some(identity))
+            });
+        let receipt = RollbackReceipt {
+            quarantine: proposed,
+            phase: RollbackPhase::Prepared,
+            version,
+            version_identity,
+            restored_destination: None,
+        };
+        step.rollback = Some(receipt.clone());
         operation.updated_at_secs = now_secs();
-        Ok(proposed)
+        Ok(receipt)
     })
+}
+
+fn record_rollback_phase(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    phase: RollbackPhase,
+    restored_destination: Option<PathIdentity>,
+) -> Result<RollbackReceipt, String> {
+    update_step(
+        operation_id,
+        key,
+        &[
+            OperationStatus::Running,
+            OperationStatus::Stopped,
+            OperationStatus::Failed,
+            OperationStatus::NeedsReview,
+        ],
+        |step| {
+            let receipt = step
+                .rollback
+                .as_mut()
+                .ok_or_else(|| "Rollback phase has no durable receipt".to_string())?;
+            if phase < receipt.phase {
+                return Ok(());
+            }
+            if let Some(restored) = restored_destination {
+                if let Some(existing) = &receipt.restored_destination
+                    && !existing.same_binding(&restored)
+                {
+                    return Err(
+                        "Rollback destination restore conflicts with its immutable proof"
+                            .to_string(),
+                    );
+                }
+                receipt.restored_destination = Some(restored);
+            }
+            receipt.phase = phase;
+            Ok(())
+        },
+    )?;
+    operation(operation_id)?
+        .steps
+        .into_iter()
+        .find(|step| step.key == *key)
+        .and_then(|step| step.rollback)
+        .ok_or_else(|| "Rollback receipt disappeared after phase update".to_string())
+}
+
+fn receipt_version_is_current(receipt: &RollbackReceipt) -> Result<(), String> {
+    let Some(version) = &receipt.version else {
+        return Ok(());
+    };
+    let expected = receipt
+        .version_identity
+        .as_ref()
+        .ok_or_else(|| "Rollback version has no immutable identity".to_string())?;
+    let current = PathIdentity::observe_deep(&version.stored)
+        .map_err(|error| format!("Could not recheck rollback version: {error}"))?;
+    if !expected.same_binding(&current) {
+        return Err(format!(
+            "Rollback version changed before restore: {}",
+            version.stored.display()
+        ));
+    }
+    Ok(())
+}
+
+fn observe_detached_effect(
+    path: &Path,
+    expected: &PathIdentity,
+) -> Result<Option<PathIdentity>, String> {
+    let current = PathIdentity::observe_deep(path)
+        .map_err(|error| format!("Could not inspect detached rollback effect: {error}"))?;
+    if !current.exists {
+        return Ok(None);
+    }
+    if !expected.same_object(&current) || !expected.same_version(&current) {
+        return Err(format!(
+            "Rollback quarantine contains a foreign or changed object: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(current))
+}
+
+fn remove_detached_effect(path: &Path, expected: &PathIdentity) -> Result<(), String> {
+    if observe_detached_effect(path, expected)?.is_none() {
+        return Ok(());
+    }
+    remove_path(path)?;
+    crate::fs_util::sync_parent_namespace(path)
+        .map_err(|error| format!("Could not sync rollback effect removal: {error}"))
+}
+
+fn restore_previous_destination(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    effect: &Path,
+    mut receipt: RollbackReceipt,
+) -> Result<RollbackReceipt, String> {
+    receipt_version_is_current(&receipt)?;
+    let version = receipt
+        .version
+        .as_ref()
+        .ok_or_else(|| "Rollback overwrite has no durable version receipt".to_string())?;
+    let current = PathIdentity::observe_deep(effect)
+        .map_err(|error| format!("Could not inspect rollback destination: {error}"))?;
+    if current.exists {
+        if let Some(expected) = &receipt.restored_destination {
+            if !expected.same_binding(&current) {
+                return Err(format!(
+                    "Restored rollback destination changed: {}",
+                    effect.display()
+                ));
+            }
+        } else if !crate::version_store::paths_equal(&version.stored, effect) {
+            return Err(format!(
+                "Rollback destination was repopulated with foreign data: {}",
+                effect.display()
+            ));
+        }
+    } else {
+        crate::version_store::restore(version)?;
+        crate::fs_util::sync_parent_namespace(effect)
+            .map_err(|error| format!("Could not sync restored destination: {error}"))?;
+    }
+    if !crate::version_store::paths_equal(&version.stored, effect) {
+        return Err(format!(
+            "Rollback destination does not match its preserved version: {}",
+            effect.display()
+        ));
+    }
+    let restored = PathIdentity::observe_deep(effect)
+        .map_err(|error| format!("Could not prove restored destination: {error}"))?;
+    receipt = record_rollback_phase(
+        operation_id,
+        key,
+        RollbackPhase::DestinationRestored,
+        Some(restored),
+    )?;
+    Ok(receipt)
 }
 
 fn rollback_step(
@@ -1844,88 +2165,120 @@ fn rollback_step(
         .destination_after
         .as_ref()
         .ok_or_else(|| "Completed rollback step has no effect proof".to_string())?;
-    let quarantine = prepare_rollback_quarantine(operation_id, &step.key, effect)?;
-    let quarantine_identity = match PathIdentity::observe_deep(&quarantine) {
-        Ok(identity) if expected.same_object(&identity) => Some(identity),
-        Ok(identity) if identity.exists => {
-            return Err(format!(
-                "Rollback quarantine contains a foreign object: {}",
-                quarantine.display()
-            ));
-        }
-        Ok(_) | Err(_) => None,
-    };
+    let replaces_existing = step
+        .destination_before
+        .as_ref()
+        .is_some_and(|identity| identity.exists);
+    let mut receipt = prepare_rollback_receipt(operation_id, &step.key, effect)?;
+    receipt_version_is_current(&receipt)?;
 
-    if quarantine_identity.is_none() {
-        let current_effect = PathIdentity::observe_deep(effect)
-            .map_err(|error| format!("Could not inspect rollback effect: {error}"))?;
-        if current_effect.exists {
-            if !expected.same_binding(&current_effect) {
-                return Err(format!(
-                    "Completed effect changed before rollback: {}",
-                    effect.display()
-                ));
-            }
-            detach_expected_path(effect, expected, &quarantine)?;
-        } else if record.kind == TransferKind::Move {
-            let source = PathIdentity::observe_deep(&step.source)
-                .map_err(|error| format!("Could not inspect rollback source: {error}"))?;
-            if expected.same_object(&source) {
-                return Ok(());
-            }
-            return Err(format!(
-                "Rollback effect is absent from both landing and source: {}",
-                effect.display()
-            ));
-        } else if let Some(before) = &step.destination_before {
-            let current = PathIdentity::observe_deep(effect)
-                .map_err(|error| format!("Could not inspect rollback destination: {error}"))?;
-            if before.exists && before.same_binding(&current) {
-                return Ok(());
-            }
-            if !before.exists && !current.exists {
-                return Ok(());
-            }
-            return Err(format!(
-                "Rollback destination has an unproved state: {}",
-                effect.display()
-            ));
-        }
+    let quarantined = observe_detached_effect(&receipt.quarantine, expected)?;
+    let current_effect = PathIdentity::observe_deep(effect)
+        .map_err(|error| format!("Could not inspect rollback effect: {error}"))?;
+    let source = (record.kind == TransferKind::Move)
+        .then(|| PathIdentity::observe_deep(&step.source))
+        .transpose()
+        .map_err(|error| format!("Could not inspect rollback source: {error}"))?;
+    let replacement_at_effect = expected.same_binding(&current_effect);
+    let replacement_at_source = source
+        .as_ref()
+        .is_some_and(|source| expected.same_object(source) && expected.same_version(source));
+
+    if quarantined.is_none() && replacement_at_effect {
+        detach_expected_path(effect, expected, &receipt.quarantine)?;
+        receipt =
+            record_rollback_phase(operation_id, &step.key, RollbackPhase::EffectDetached, None)?;
+    } else if quarantined.is_some() && receipt.phase < RollbackPhase::EffectDetached {
+        receipt =
+            record_rollback_phase(operation_id, &step.key, RollbackPhase::EffectDetached, None)?;
+    } else if current_effect.exists
+        && !replacement_at_effect
+        && receipt
+            .restored_destination
+            .as_ref()
+            .is_none_or(|restored| !restored.same_binding(&current_effect))
+        && receipt
+            .version
+            .as_ref()
+            .is_none_or(|version| !crate::version_store::paths_equal(&version.stored, effect))
+    {
+        return Err(format!(
+            "Completed effect changed before rollback: {}",
+            effect.display()
+        ));
     }
 
     if record.kind == TransferKind::Move {
-        crate::native_copy::rename_noreplace(&quarantine, &step.source)
-            .map_err(|error| error.to_string())?;
-        crate::fs_util::sync_parent_namespace(&step.source)
-            .map_err(|error| format!("Could not sync restored source: {error}"))?;
-        if step
-            .destination_before
-            .as_ref()
-            .is_some_and(|identity| identity.exists)
-        {
-            let version = crate::version_store::record_for_key(&step.key)
-                .ok_or_else(|| "Replaced destination has no local version".to_string())?;
-            crate::version_store::restore(&version)?;
-            crate::fs_util::sync_parent_namespace(effect)
-                .map_err(|error| format!("Could not sync restored destination: {error}"))?;
+        if !replacement_at_source {
+            let quarantine =
+                observe_detached_effect(&receipt.quarantine, expected)?.ok_or_else(|| {
+                    format!(
+                        "Rollback effect is absent from landing, quarantine, and source: {}",
+                        effect.display()
+                    )
+                })?;
+            let current_source = PathIdentity::observe_deep(&step.source)
+                .map_err(|error| format!("Could not recheck rollback source: {error}"))?;
+            if current_source.exists {
+                return Err(format!(
+                    "Rollback source was repopulated before restore: {}",
+                    step.source.display()
+                ));
+            }
+            if !expected.same_object(&quarantine) || !expected.same_version(&quarantine) {
+                return Err(
+                    "Rollback quarantine no longer contains the completed effect".to_string(),
+                );
+            }
+            crate::native_copy::rename_noreplace(&receipt.quarantine, &step.source)
+                .map_err(|error| error.to_string())?;
+            crate::fs_util::sync_parent_namespace(&step.source)
+                .map_err(|error| format!("Could not sync restored source: {error}"))?;
+            crate::fs_util::sync_parent_namespace(&receipt.quarantine)
+                .map_err(|error| format!("Could not sync detached rollback namespace: {error}"))?;
         }
-        return Ok(());
+        receipt = record_rollback_phase(
+            operation_id,
+            &step.key,
+            RollbackPhase::PrimaryReversed,
+            None,
+        )?;
+    } else if !replaces_existing {
+        remove_detached_effect(&receipt.quarantine, expected)?;
+        if PathIdentity::observe_deep(effect)
+            .map_err(|error| format!("Could not verify removed copy: {error}"))?
+            .exists
+        {
+            return Err(format!(
+                "Rollback copy destination was repopulated: {}",
+                effect.display()
+            ));
+        }
+        receipt = record_rollback_phase(
+            operation_id,
+            &step.key,
+            RollbackPhase::PrimaryReversed,
+            None,
+        )?;
     }
 
-    if step
-        .destination_before
-        .as_ref()
-        .is_some_and(|identity| identity.exists)
-    {
-        let version = crate::version_store::record_for_key(&step.key)
-            .ok_or_else(|| "Replaced destination has no local version".to_string())?;
-        remove_expected_path(&quarantine, expected)?;
-        crate::version_store::restore(&version)?;
-        crate::fs_util::sync_parent_namespace(effect)
-            .map_err(|error| format!("Could not sync restored destination: {error}"))
-    } else {
-        remove_expected_path(&quarantine, expected)
+    if replaces_existing {
+        receipt = restore_previous_destination(operation_id, &step.key, effect, receipt)?;
+        if record.kind == TransferKind::Copy {
+            remove_detached_effect(&receipt.quarantine, expected)?;
+        }
     }
+
+    if receipt.phase
+        < if replaces_existing {
+            RollbackPhase::DestinationRestored
+        } else {
+            RollbackPhase::PrimaryReversed
+        }
+    {
+        return Err("Rollback filesystem effects were not durably proven".to_string());
+    }
+    Ok(())
 }
 
 fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
@@ -2076,7 +2429,7 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
         .filter(|step| step.status == StepStatus::Completed)
     {
         let effect = effect_path(step);
-        if step.rollback_quarantine.is_none() {
+        if step.rollback.is_none() {
             match completed_effect_is_current(operation_id, &step.key) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -2146,8 +2499,10 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
             if let Some(replacement) = &step.replacement {
                 referenced.insert(replacement.path.clone());
             }
-            if let Some(quarantine) = &step.rollback_quarantine {
-                referenced.insert(quarantine.clone());
+            if let Some(receipt) = &step.rollback
+                && receipt.phase != RollbackPhase::Complete
+            {
+                referenced.insert(receipt.quarantine.clone());
             }
             for path in [
                 Some(&step.source),
@@ -2157,7 +2512,10 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
                 step.replacement
                     .as_ref()
                     .map(|replacement| &replacement.path),
-                step.rollback_quarantine.as_ref(),
+                step.rollback
+                    .as_ref()
+                    .filter(|receipt| receipt.phase != RollbackPhase::Complete)
+                    .map(|receipt| &receipt.quarantine),
             ]
             .into_iter()
             .flatten()
@@ -2176,10 +2534,13 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
         .filter(|operation| {
             operation.status.recoverable()
                 || operation.rollback_cleanup_quarantine.is_some()
-                || operation
-                    .steps
-                    .iter()
-                    .any(|step| step.replacement.is_some() || step.rollback_quarantine.is_some())
+                || operation.steps.iter().any(|step| {
+                    step.replacement.is_some()
+                        || step
+                            .rollback
+                            .as_ref()
+                            .is_some_and(|receipt| receipt.phase != RollbackPhase::Complete)
+                })
         })
         .collect::<Vec<_>>();
     operations.sort_by_key(|operation| std::cmp::Reverse(operation.updated_at_secs));
@@ -2395,6 +2756,7 @@ mod tests {
                 checkpoint: None,
                 fast_path: None,
                 replacement: None,
+                rollback: None,
                 rollback_quarantine: None,
                 status,
                 attempts: 1,
@@ -2428,6 +2790,99 @@ mod tests {
             before_terminal_publish: None,
             journal_enabled: true,
         }
+    }
+
+    fn remove_object_field(value: &mut serde_json::Value, field: &str) {
+        value.as_object_mut().unwrap().remove(field);
+    }
+
+    fn strip_schema_2_fields(value: &mut serde_json::Value) {
+        let operations = value
+            .get_mut("operations")
+            .and_then(serde_json::Value::as_array_mut)
+            .unwrap();
+        for operation in operations {
+            for field in [
+                "version_retention",
+                "name_policy",
+                "symlink_policy",
+                "post_success",
+                "rollback_cleanup",
+                "rollback_cleanup_identity",
+                "rollback_cleanup_quarantine",
+            ] {
+                remove_object_field(operation, field);
+            }
+            for step in operation
+                .get_mut("steps")
+                .and_then(serde_json::Value::as_array_mut)
+                .unwrap()
+            {
+                for field in [
+                    "checkpoint",
+                    "fast_path",
+                    "replacement",
+                    "rollback",
+                    "rollback_quarantine",
+                ] {
+                    remove_object_field(step, field);
+                }
+            }
+        }
+    }
+
+    fn completed_overwrite(
+        temp: &TempDir,
+        label: &str,
+        kind: TransferKind,
+    ) -> (OperationId, IdempotencyKey, PathBuf, PathBuf, PathIdentity) {
+        let _target = temp.dir(&format!("{label}-target"));
+        let source = temp.file(&format!("{label}-source.txt"), "new bytes");
+        let destination = temp.file(&format!("{label}-target/item.txt"), "old bytes");
+        let mut record = incomplete_record(&source, &destination, StepStatus::Completed);
+        record.id = OperationId(format!("{label}-operation"));
+        record.kind = kind;
+        record.status = OperationStatus::NeedsReview;
+        let key = IdempotencyKey(format!("{label}-step"));
+        record.steps[0].key = key.clone();
+
+        crate::version_store::preserve_with_policy(
+            &destination,
+            &record.id,
+            key.clone(),
+            crate::operation::VersionRetentionPolicy::Forever,
+        )
+        .unwrap();
+        std::fs::remove_file(&destination).unwrap();
+        if kind == TransferKind::Move {
+            std::fs::rename(&source, &destination).unwrap();
+        } else {
+            std::fs::write(&destination, "new bytes").unwrap();
+        }
+        let completed = PathIdentity::observe_deep(&destination).unwrap();
+        record.steps[0].landing = Some(destination.clone());
+        record.steps[0].landing_before = record.steps[0].destination_before.clone();
+        record.steps[0].destination_after = Some(completed.clone());
+        record.steps[0].fast_path = Some(if kind == TransferKind::Move {
+            crate::transfer_tuning::FastPath::Rename
+        } else {
+            crate::transfer_tuning::FastPath::Buffered
+        });
+        save_at(
+            &journal_path(),
+            &Journal {
+                operations: vec![record],
+                ..Journal::default()
+            },
+        )
+        .unwrap();
+        (
+            OperationId(format!("{label}-operation")),
+            key,
+            source,
+            destination,
+            completed,
+        )
     }
 
     #[test]
@@ -2498,6 +2953,91 @@ mod tests {
         let path = temp.path().join("journal.json");
         std::fs::write(&path, r#"{"schema":99,"operations":[]}"#).unwrap();
         assert!(load_at(&path).unwrap_err().contains("Unsupported"));
+    }
+
+    #[test]
+    fn schema_2_completed_record_without_fast_path_does_not_block_upgrade() {
+        let temp = TempDir::new();
+        let path = temp.path().join("schema-2.json");
+        let source = temp.file("source.txt", "source");
+        let destination = temp.file("destination.txt", "completed");
+        let mut record = incomplete_record(&source, &destination, StepStatus::Completed);
+        record.status = OperationStatus::Completed;
+        record.steps[0].landing = Some(destination.clone());
+        record.steps[0].destination_after = Some(PathIdentity::observe_deep(&destination).unwrap());
+        record.steps[0].fast_path = None;
+        let mut value = serde_json::to_value(Journal {
+            schema: 2,
+            operations: vec![record],
+        })
+        .unwrap();
+        strip_schema_2_fields(&mut value);
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let loaded = load_at(&path).unwrap();
+
+        assert_eq!(loaded.schema, JOURNAL_SCHEMA);
+        assert_eq!(loaded.operations[0].status, OperationStatus::Completed);
+        assert_eq!(loaded.operations[0].steps[0].status, StepStatus::Completed);
+        assert!(loaded.operations[0].steps[0].fast_path.is_none());
+    }
+
+    #[test]
+    fn schema_3_terminal_legacy_containers_become_reviewable_without_blocking_load() {
+        let temp = TempDir::new();
+        let path = temp.path().join("schema-3.json");
+        let source = temp.file("source.txt", "source");
+        let destination = temp.file("destination.txt", "completed");
+        let cleanup = temp.dir("legacy-container");
+        let mut completed = incomplete_record(&source, &destination, StepStatus::Completed);
+        completed.id = OperationId("legacy-completed".to_string());
+        completed.status = OperationStatus::Completed;
+        completed.rollback_cleanup = Some(cleanup.clone());
+        completed.steps[0].landing = Some(destination.clone());
+        completed.steps[0].destination_after =
+            Some(PathIdentity::observe_deep(&destination).unwrap());
+        completed.steps[0].fast_path = Some(crate::transfer_tuning::FastPath::Buffered);
+
+        let mut rolled_back = completed.clone();
+        rolled_back.id = OperationId("legacy-rolled-back".to_string());
+        rolled_back.steps[0].key = IdempotencyKey("legacy-rolled-back-step".to_string());
+        rolled_back.status = OperationStatus::RolledBack;
+        rolled_back.steps[0].status = StepStatus::RolledBack;
+
+        let mut value = serde_json::to_value(Journal {
+            schema: 3,
+            operations: vec![completed, rolled_back],
+        })
+        .unwrap();
+        for operation in value
+            .get_mut("operations")
+            .and_then(serde_json::Value::as_array_mut)
+            .unwrap()
+        {
+            for field in ["rollback_cleanup_identity", "rollback_cleanup_quarantine"] {
+                remove_object_field(operation, field);
+            }
+            for step in operation
+                .get_mut("steps")
+                .and_then(serde_json::Value::as_array_mut)
+                .unwrap()
+            {
+                for field in ["replacement", "rollback", "rollback_quarantine"] {
+                    remove_object_field(step, field);
+                }
+            }
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let loaded = load_at(&path).unwrap();
+
+        assert_eq!(loaded.operations.len(), 2);
+        assert!(
+            loaded
+                .operations
+                .iter()
+                .all(|operation| operation.status == OperationStatus::NeedsReview)
+        );
     }
 
     #[test]
@@ -2873,8 +3413,9 @@ mod tests {
             .destination_after
             .clone()
             .unwrap();
-        let quarantine =
-            prepare_rollback_quarantine(&spec.operation_id, &key, &destination).unwrap();
+        let quarantine = prepare_rollback_receipt(&spec.operation_id, &key, &destination)
+            .unwrap()
+            .quarantine;
         detach_expected_path(&destination, &expected, &quarantine).unwrap();
         assert!(!destination.exists());
         assert!(quarantine.exists());
@@ -2890,6 +3431,83 @@ mod tests {
         let record = operation(&spec.operation_id).unwrap();
         assert_eq!(record.status, OperationStatus::RolledBack);
         assert_eq!(record.steps[0].status, StepStatus::RolledBack);
+        assert_eq!(
+            record.steps[0]
+                .rollback
+                .as_ref()
+                .map(|receipt| receipt.phase),
+            Some(RollbackPhase::Complete)
+        );
+    }
+
+    #[test]
+    fn copy_overwrite_restart_restores_destination_after_legacy_disposal_window() {
+        let temp = TempDir::new();
+        let _journal = use_test_journal(temp.path().join("copy-journal.json"));
+        let _versions = crate::version_store::use_test_versions_dir(temp.dir("copy-versions"));
+        let (operation_id, key, source, destination, completed) =
+            completed_overwrite(&temp, "copy-crash", TransferKind::Copy);
+        let receipt = prepare_rollback_receipt(&operation_id, &key, &destination).unwrap();
+        detach_expected_path(&destination, &completed, &receipt.quarantine).unwrap();
+        record_rollback_phase(&operation_id, &key, RollbackPhase::EffectDetached, None).unwrap();
+
+        // Reproduce the old unsafe ordering: the replacement disappeared
+        // before the preserved destination was restored, then the process died.
+        remove_detached_effect(&receipt.quarantine, &completed).unwrap();
+        assert!(!destination.exists());
+
+        let plan = rollback(&operation_id).unwrap();
+
+        assert!(plan.remaining.is_empty(), "{:?}", plan.remaining);
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "old bytes");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "new bytes");
+        let record = operation(&operation_id).unwrap();
+        assert_eq!(record.status, OperationStatus::RolledBack);
+        let receipt = record.steps[0].rollback.as_ref().unwrap();
+        assert_eq!(receipt.phase, RollbackPhase::Complete);
+        assert!(
+            receipt
+                .restored_destination
+                .as_ref()
+                .unwrap()
+                .same_binding(&PathIdentity::observe_deep(&destination).unwrap())
+        );
+    }
+
+    #[test]
+    fn move_overwrite_restart_restores_destination_after_source_was_moved_back() {
+        let temp = TempDir::new();
+        let _journal = use_test_journal(temp.path().join("move-journal.json"));
+        let _versions = crate::version_store::use_test_versions_dir(temp.dir("move-versions"));
+        let (operation_id, key, source, destination, completed) =
+            completed_overwrite(&temp, "move-crash", TransferKind::Move);
+        let receipt = prepare_rollback_receipt(&operation_id, &key, &destination).unwrap();
+        detach_expected_path(&destination, &completed, &receipt.quarantine).unwrap();
+        record_rollback_phase(&operation_id, &key, RollbackPhase::EffectDetached, None).unwrap();
+        crate::native_copy::rename_noreplace(&receipt.quarantine, &source).unwrap();
+        crate::fs_util::sync_parent_namespace(&source).unwrap();
+        crate::fs_util::sync_parent_namespace(&receipt.quarantine).unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "new bytes");
+
+        // Restart while the durable phase still says EffectDetached. Recovery
+        // must infer the source receipt and still restore the old destination.
+        let plan = rollback(&operation_id).unwrap();
+
+        assert!(plan.remaining.is_empty(), "{:?}", plan.remaining);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "new bytes");
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "old bytes");
+        let record = operation(&operation_id).unwrap();
+        assert_eq!(record.status, OperationStatus::RolledBack);
+        let receipt = record.steps[0].rollback.as_ref().unwrap();
+        assert_eq!(receipt.phase, RollbackPhase::Complete);
+        assert!(
+            receipt
+                .restored_destination
+                .as_ref()
+                .unwrap()
+                .same_binding(&PathIdentity::observe_deep(&destination).unwrap())
+        );
     }
 
     #[test]
@@ -2906,7 +3524,7 @@ mod tests {
             source: PathIdentity::observe_deep(&source).unwrap(),
             partial: PathIdentity::observe_deep(&staging).unwrap(),
             layout: crate::transfer::CheckpointLayout::DeltaFixed,
-            content_digest: None,
+            content_digest: Some(crate::transfer::prefix_digest(&staging, 0).unwrap()),
         });
 
         let spec = build_resume_spec_from(record).unwrap();
@@ -2917,6 +3535,30 @@ mod tests {
             checkpoint.layout,
             crate::transfer::CheckpointLayout::DeltaFixed
         );
+    }
+
+    #[test]
+    fn delta_checkpoint_rejects_processed_prefix_tampering() {
+        let temp = TempDir::new();
+        let source = temp.file("source-delta-proof.txt", "source contents");
+        let destination = temp.path().join("destination-delta-proof.txt");
+        let staging = temp.file(".destination-delta-proof.cmdr-tmp.0", "source contents");
+        let offset = staging.metadata().unwrap().len();
+        let mut record = incomplete_record(&source, &destination, StepStatus::Running);
+        record.steps[0].staging = Some(staging.clone());
+        record.steps[0].checkpoint = Some(ResumeCheckpoint {
+            staging: staging.clone(),
+            offset,
+            source: PathIdentity::observe_deep(&source).unwrap(),
+            partial: PathIdentity::observe_deep(&staging).unwrap(),
+            layout: crate::transfer::CheckpointLayout::DeltaFixed,
+            content_digest: Some(crate::transfer::prefix_digest(&staging, offset).unwrap()),
+        });
+
+        std::fs::write(&staging, "xxxxxx contents").unwrap();
+
+        let error = build_resume_spec_from(record).err().unwrap();
+        assert!(error.contains("bytes changed"), "{error}");
     }
 
     #[test]

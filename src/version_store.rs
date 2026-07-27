@@ -6,6 +6,32 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+thread_local! {
+    static TEST_VERSIONS_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestVersionsDirGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for TestVersionsDirGuard {
+    fn drop(&mut self) {
+        TEST_VERSIONS_DIR.with(|directory| {
+            *directory.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn use_test_versions_dir(path: PathBuf) -> TestVersionsDirGuard {
+    let previous = TEST_VERSIONS_DIR.with(|directory| directory.borrow_mut().replace(path));
+    TestVersionsDirGuard { previous }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionRecord {
     pub operation_id: OperationId,
@@ -211,6 +237,10 @@ pub fn record_for_key(key: &IdempotencyKey) -> Option<VersionRecord> {
 }
 
 fn versions_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_VERSIONS_DIR.with(|directory| directory.borrow().clone()) {
+        return path;
+    }
     crate::fs_util::config_dir().join("versions")
 }
 
