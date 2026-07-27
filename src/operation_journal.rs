@@ -884,6 +884,8 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         post_success: record.post_success,
         rollback_cleanup: record.rollback_cleanup,
         #[cfg(test)]
+        mount_wait_override: None,
+        #[cfg(test)]
         before_commit: None,
         #[cfg(test)]
         before_post_success: None,

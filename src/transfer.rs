@@ -562,6 +562,8 @@ pub struct TransferSpec {
     /// after every completed effect has been rolled back out of it.
     pub rollback_cleanup: Option<PathBuf>,
     #[cfg(test)]
+    pub mount_wait_override: Option<Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>>,
+    #[cfg(test)]
     pub before_commit: Option<BeforeCommitHook>,
     #[cfg(test)]
     pub before_post_success: Option<BeforePostSuccessHook>,
@@ -686,37 +688,74 @@ fn reset_for_retry(progress: &TransferState, completed_bytes: u64, old_size: u64
     state.requeued_files += 1;
 }
 
+enum MountWaitError {
+    Interrupted,
+    Unavailable(std::io::Error),
+}
+
+fn interruption_requested(
+    scheduler_cancel: &crate::workload::CancellationToken,
+    progress: &TransferState,
+) -> bool {
+    let mut state = crate::lock_util::recover(progress);
+    if scheduler_cancel.is_cancelled() {
+        state.cancelled = true;
+    }
+    if state.stop_requested {
+        state.stopped = true;
+    }
+    state.cancelled || state.stop_requested
+}
+
 fn wait_for_mount(
     guard: &crate::mount_guard::MountGuard,
     label: &str,
     progress: &TransferState,
+    scheduler_cancel: &crate::workload::CancellationToken,
+    wait_override: Option<&(dyn Fn() -> std::io::Result<()> + Send + Sync)>,
     notify: &impl Fn(),
-) -> std::io::Result<()> {
-    if guard.check() == crate::mount_guard::MountAvailability::Available {
-        return Ok(());
-    }
-    {
-        let mut state = crate::lock_util::recover(progress);
-        let reason = crate::operation_view::PauseReason::MountDisconnected {
-            label: label.to_string(),
-            timeout_secs: guard.policy.timeout_ms / 1_000,
-        };
-        state.waiting_reason = Some(reason.label());
-        state.pause_reason = Some(reason);
-    }
-    notify();
-    let result = guard.wait_until_available(|| {
+) -> Result<(), MountWaitError> {
+    let result = if let Some(wait) = wait_override {
+        wait()
+    } else if guard.check() == crate::mount_guard::MountAvailability::Available {
+        Ok(())
+    } else {
+        {
+            let mut state = crate::lock_util::recover(progress);
+            let reason = crate::operation_view::PauseReason::MountDisconnected {
+                label: label.to_string(),
+                timeout_secs: guard.policy.timeout_ms / 1_000,
+            };
+            state.waiting_reason = Some(reason.label());
+            state.pause_reason = Some(reason);
+        }
         notify();
-        let state = crate::lock_util::recover(progress);
-        !state.cancelled && !state.stop_requested
-    });
-    {
-        let mut state = crate::lock_util::recover(progress);
-        state.waiting_reason = None;
-        state.pause_reason = None;
+        let result = guard.wait_until_available(|| {
+            notify();
+            !interruption_requested(scheduler_cancel, progress)
+        });
+        {
+            let mut state = crate::lock_util::recover(progress);
+            state.waiting_reason = None;
+            state.pause_reason = None;
+        }
+        notify();
+        result
+    };
+
+    match result {
+        Ok(()) if interruption_requested(scheduler_cancel, progress) => {
+            Err(MountWaitError::Interrupted)
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::Interrupted
+                && interruption_requested(scheduler_cancel, progress) =>
+        {
+            Err(MountWaitError::Interrupted)
+        }
+        Ok(()) => Ok(()),
+        Err(error) => Err(MountWaitError::Unavailable(error)),
     }
-    notify();
-    result
 }
 
 fn is_disconnect_error(error: &std::io::Error) -> bool {
@@ -1031,6 +1070,16 @@ fn spawn_transfer_on(
     let worker = move |scheduler_cancel: crate::workload::CancellationToken| {
         let progress = worker_progress;
         let notify = || (crate::lock_util::recover(&worker_notify))();
+        let mount_wait_override: Option<Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>> = {
+            #[cfg(test)]
+            {
+                spec.mount_wait_override.clone()
+            }
+            #[cfg(not(test))]
+            {
+                None
+            }
+        };
         if scheduler_cancel.is_cancelled() {
             crate::lock_util::recover(&progress).cancelled = true;
             finish_progress(&progress, FinalizationOutcome::NotReached);
@@ -1081,23 +1130,44 @@ fn spawn_transfer_on(
             }
             terminal_guard.journal_started();
         }
-        if let Err(error) = wait_for_mount(&target_mount, "Destination volume", &progress, &notify)
-        {
-            record_failure(
-                &progress,
-                "Operation",
-                ClassifiedFailure::io(Some(spec.target.clone()), "mount unavailable", &error),
-            );
-            prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
-            finalize_and_publish(
-                &terminal,
-                &progress,
-                journal_enabled,
-                crate::operation_journal::OperationStatus::Failed,
-            );
-            terminal_guard.disarm();
-            notify();
-            return;
+        match wait_for_mount(
+            &target_mount,
+            "Destination volume",
+            &progress,
+            &scheduler_cancel,
+            mount_wait_override.as_deref(),
+            &notify,
+        ) {
+            Ok(()) => {}
+            Err(MountWaitError::Interrupted) => {
+                prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
+                finalize_and_publish(
+                    &terminal,
+                    &progress,
+                    journal_enabled,
+                    crate::operation_journal::OperationStatus::Stopped,
+                );
+                terminal_guard.disarm();
+                notify();
+                return;
+            }
+            Err(MountWaitError::Unavailable(error)) => {
+                record_failure(
+                    &progress,
+                    "Operation",
+                    ClassifiedFailure::io(Some(spec.target.clone()), "mount unavailable", &error),
+                );
+                prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
+                finalize_and_publish(
+                    &terminal,
+                    &progress,
+                    journal_enabled,
+                    crate::operation_journal::OperationStatus::Failed,
+                );
+                terminal_guard.disarm();
+                notify();
+                return;
+            }
         }
         while resource_rule.is_quiet_now() {
             let should_stop = {
@@ -1173,23 +1243,32 @@ fn spawn_transfer_on(
                 }
             }
 
-            if let Err(error) =
-                wait_for_mount(&target_mount, "Destination volume", &progress, &notify)
-            {
-                complete_without_copy(
-                    &progress,
-                    &mut base_bytes,
-                    this_size,
-                    &entry.name,
-                    Some(ClassifiedFailure::io(
-                        Some(spec.target.clone()),
-                        "mount unavailable",
-                        &error,
-                    )),
-                    Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                    &notify,
-                );
-                continue;
+            match wait_for_mount(
+                &target_mount,
+                "Destination volume",
+                &progress,
+                &scheduler_cancel,
+                mount_wait_override.as_deref(),
+                &notify,
+            ) {
+                Ok(()) => {}
+                Err(MountWaitError::Interrupted) => break 'work,
+                Err(MountWaitError::Unavailable(error)) => {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        Some(ClassifiedFailure::io(
+                            Some(spec.target.clone()),
+                            "mount unavailable",
+                            &error,
+                        )),
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                        &notify,
+                    );
+                    continue;
+                }
             }
 
             if journal_enabled {
@@ -1551,6 +1630,8 @@ fn spawn_transfer_on(
                             &target_mount,
                             "Destination volume",
                             &progress,
+                            &scheduler_cancel,
+                            mount_wait_override.as_deref(),
                             &notify,
                         ) {
                             Ok(()) => {
@@ -1579,7 +1660,13 @@ fn spawn_transfer_on(
                                 notify();
                                 continue 'work;
                             }
-                            Err(wait_error) => record_failure(
+                            Err(MountWaitError::Interrupted) => {
+                                if !resumable_partial {
+                                    let _ = undo_placement(&copy_target, &entry.path, renamed);
+                                }
+                                break 'work;
+                            }
+                            Err(MountWaitError::Unavailable(wait_error)) => record_failure(
                                 &progress,
                                 &entry.name,
                                 ClassifiedFailure::io(
@@ -2983,6 +3070,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
+            mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
             before_terminal_publish: None,
@@ -3013,6 +3101,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
+            mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
             before_terminal_publish: None,
@@ -3044,6 +3133,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
+            mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
             before_terminal_publish: None,
@@ -3082,6 +3172,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: None,
+            mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
             before_terminal_publish: None,

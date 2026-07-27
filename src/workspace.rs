@@ -1300,6 +1300,8 @@ impl Workspace {
             post_success: None,
             rollback_cleanup: None,
             #[cfg(test)]
+            mount_wait_override: None,
+            #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
             before_post_success: None,
@@ -1554,6 +1556,8 @@ impl Workspace {
             post_success,
             rollback_cleanup,
             #[cfg(test)]
+            mount_wait_override: None,
+            #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
             before_post_success: None,
@@ -1773,6 +1777,8 @@ impl Workspace {
             symlink_policy: self.symlink_policy,
             post_success: None,
             rollback_cleanup: Some(folder),
+            #[cfg(test)]
+            mount_wait_override: None,
             #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
@@ -2324,6 +2330,8 @@ impl Workspace {
             post_success: None,
             rollback_cleanup: None,
             #[cfg(test)]
+            mount_wait_override: None,
+            #[cfg(test)]
             before_commit: None,
             #[cfg(test)]
             before_post_success: None,
@@ -2600,11 +2608,138 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: None,
+            mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
             before_terminal_publish: None,
             journal_enabled: false,
         }
+    }
+
+    fn assert_mount_wait_interruption(label: &str, cancel: bool, reconnect_wins: bool) {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let source = left.file("mount-race.txt", "payload");
+        let entry =
+            FileEntry::from_meta(source.clone(), &std::fs::symlink_metadata(&source).unwrap())
+                .unwrap();
+        let operation_id = crate::operation::OperationId::new();
+        let mut spec = test_transfer_spec(&operation_id.0, right.path());
+        spec.kind = TransferKind::Copy;
+        spec.entries = vec![entry.clone()];
+        spec.expectations =
+            transfer::capture_expectations(std::slice::from_ref(&entry), right.path());
+        spec.journal_enabled = true;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let wait_calls = Arc::clone(&calls);
+        let barrier = Arc::new(Barrier::new(2));
+        let wait_barrier = Arc::clone(&barrier);
+        let (waiting_tx, waiting_rx) = mpsc::sync_channel(1);
+        spec.mount_wait_override = Some(Arc::new(move || {
+            match wait_calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(()), // initial operation-level mount check
+                1 => {
+                    let _ = waiting_tx.send(());
+                    wait_barrier.wait();
+                    if reconnect_wins {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "user interrupted deterministic mount wait",
+                        ))
+                    }
+                }
+                call => panic!("unexpected mount wait call {call}"),
+            }
+        }));
+
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let mut ws = workspace(&left, &right);
+        ws.enqueue_with_history(spec, transfer_queue::HistoryIntent::None);
+        ws.pump_queue_with_workload(workload.handle(), || {});
+        let progress = ws
+            .active_transfer_view()
+            .expect("mount-wait transfer is active")
+            .progress;
+        let runner = workload.clone();
+        let worker = std::thread::spawn(move || {
+            assert!(runner.run_next());
+        });
+        waiting_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker reached per-entry mount wait");
+
+        if cancel {
+            ws.cancel_transfer();
+        } else {
+            ws.stop_transfer_after_current();
+        }
+        barrier.wait();
+        worker.join().expect("deterministic worker");
+
+        let state = crate::lock_util::recover(&progress);
+        assert!(state.finished, "{label}");
+        assert_eq!(state.cancelled, cancel, "{label}");
+        assert_eq!(state.stopped, !cancel, "{label}");
+        assert_eq!(state.files_done, 0, "{label}");
+        assert_eq!(state.copied_bytes, 0, "{label}");
+        assert!(state.errors.is_empty(), "{label}: {:?}", state.errors);
+        assert!(state.failures.is_empty(), "{label}: {:?}", state.failures);
+        drop(state);
+
+        assert!(source.is_file(), "{label}: source was mutated");
+        assert!(
+            !right.path().join("mount-race.txt").exists(),
+            "{label}: destination was mutated"
+        );
+        let operation =
+            crate::operation_journal::operation(&operation_id).expect("interrupted journal");
+        assert_eq!(
+            operation.status,
+            crate::operation_journal::OperationStatus::Stopped,
+            "{label}"
+        );
+        assert_eq!(operation.steps.len(), 1, "{label}");
+        assert_eq!(
+            operation.steps[0].status,
+            crate::operation_journal::StepStatus::Planned,
+            "{label}"
+        );
+        assert_eq!(operation.steps[0].attempts, 0, "{label}");
+        assert!(operation.steps[0].failure.is_none(), "{label}");
+
+        let report = ws
+            .poll_transfer(|| {})
+            .terminal
+            .expect("interrupted terminal report");
+        assert_eq!(
+            report.terminal,
+            if cancel {
+                TransferTerminalState::Cancelled
+            } else {
+                TransferTerminalState::Stopped
+            },
+            "{label}"
+        );
+        assert!(
+            ws.poll_transfer(|| {}).terminal.is_none(),
+            "{label}: terminal report repeated"
+        );
+    }
+
+    #[test]
+    fn mount_reconnect_does_not_beat_cancel_or_stop() {
+        assert_mount_wait_interruption("cancel after reconnect", true, true);
+        assert_mount_wait_interruption("stop after reconnect", false, true);
+    }
+
+    #[test]
+    fn user_interrupted_mount_wait_does_not_complete_or_fail_step() {
+        assert_mount_wait_interruption("cancelled Interrupted", true, false);
+        assert_mount_wait_interruption("stopped Interrupted", false, false);
     }
 
     #[test]
