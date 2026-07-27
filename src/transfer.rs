@@ -525,6 +525,7 @@ fn persist_delta_checkpoint(
         source: PathIdentity::observe_deep(source)?,
         partial: PathIdentity::observe_deep(destination)?,
         layout,
+        content_digest: None,
     };
     crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
         .map_err(std::io::Error::other)
@@ -561,6 +562,9 @@ pub struct TransferSpec {
     /// A container created specifically for this operation and removable only
     /// after every completed effect has been rolled back out of it.
     pub rollback_cleanup: Option<PathBuf>,
+    /// Stable ownership proof captured immediately after the operation created
+    /// `rollback_cleanup`. Legacy path-only cleanup must fail closed.
+    pub rollback_cleanup_identity: Option<PathIdentity>,
     #[cfg(test)]
     pub mount_wait_override: Option<Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>>,
     #[cfg(test)]
@@ -598,6 +602,10 @@ pub struct ResumeCheckpoint {
     pub partial: PathIdentity,
     #[serde(default)]
     pub layout: CheckpointLayout,
+    /// BLAKE3 of the first `offset` bytes for Prefix checkpoints. Delta
+    /// checkpoints have their own block-level proofs and leave this empty.
+    #[serde(default)]
+    pub content_digest: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1894,9 +1902,19 @@ fn spawn_transfer_on(
                 };
                 let placement = version_result.and_then(|()| {
                     if replace_existing {
-                        swap_into_place(&copy_target, &landing)
+                        swap_into_place(
+                            &copy_target,
+                            &landing,
+                            JournalStep {
+                                operation_id: &spec.operation_id,
+                                key: &work_item.key,
+                                enabled: journal_enabled,
+                            },
+                        )
                     } else {
-                        crate::native_copy::rename_noreplace(&copy_target, &landing).map(|()| None)
+                        crate::native_copy::rename_noreplace(&copy_target, &landing)?;
+                        fs_util::sync_parent_namespace(&landing)?;
+                        Ok(None)
                     }
                 });
                 match placement {
@@ -1961,6 +1979,22 @@ fn spawn_transfer_on(
                         FailureClass::IntegrityUncertain,
                         Some(entry.path.clone()),
                         format!("destination is complete but source cleanup failed: {error}"),
+                    ),
+                );
+            }
+            if is_move
+                && placed
+                && let Err(error) = fs_util::sync_parent_namespace(&entry.path)
+            {
+                record_failure(
+                    &progress,
+                    &entry.name,
+                    ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        Some(entry.path.clone()),
+                        format!(
+                            "destination is placed but source namespace could not be synced: {error}"
+                        ),
                     ),
                 );
             }
@@ -2140,13 +2174,11 @@ fn run_post_success(
     }
 
     let PostTransferAction::RemoveEmptyDir(path) = action;
-    let result = std::fs::remove_dir(path).or_else(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Ok(())
-        } else {
-            Err(e)
-        }
-    });
+    let result = match std::fs::remove_dir(path) {
+        Ok(()) => fs_util::sync_parent_namespace(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    };
     match result {
         Ok(()) => PostSuccessOutcome::Succeeded,
         Err(error) => {
@@ -2189,6 +2221,32 @@ fn run_failure_rollback(
         }
         state.placements.clone()
     };
+    if journal_enabled {
+        return match crate::operation_journal::rollback(operation_id) {
+            Ok(plan) if plan.remaining.is_empty() => {
+                crate::lock_util::recover(progress).placements.clear();
+                FailureRollback::Complete
+            }
+            Ok(plan) => {
+                for item in plan.remaining {
+                    record_failure(
+                        progress,
+                        &item.path.display().to_string(),
+                        ClassifiedFailure::message(
+                            FailureClass::IntegrityUncertain,
+                            Some(item.path),
+                            item.action,
+                        ),
+                    );
+                }
+                FailureRollback::Incomplete
+            }
+            Err(error) => {
+                record_journal_error(progress, "Rollback", Some(container.clone()), error);
+                FailureRollback::Incomplete
+            }
+        };
+    }
     let journal_steps = journal_enabled
         .then(|| crate::operation_journal::operation(operation_id).ok())
         .flatten()
@@ -2405,24 +2463,65 @@ fn undo_placement(staged: &Path, source: &Path, was_renamed: bool) -> Option<Str
 /// Replace `dest` with the freshly-staged `staged`: move the existing `dest`
 /// to a backup, rename `staged` into place, then drop the backup. Restores
 /// the original on failure, so an interrupted overwrite never loses data.
-fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<Option<String>> {
+fn swap_into_place(
+    staged: &Path,
+    dest: &Path,
+    journal: JournalStep<'_>,
+) -> std::io::Result<Option<String>> {
     if !fs_util::path_is_taken(dest) {
-        return crate::native_copy::rename_noreplace(staged, dest).map(|()| None);
+        crate::native_copy::rename_noreplace(staged, dest)?;
+        fs_util::sync_parent_namespace(dest)?;
+        return Ok(None);
     }
     let backup = staging_path(dest);
-    std::fs::rename(dest, &backup)?;
-    match std::fs::rename(staged, dest) {
-        Ok(()) => Ok(cleanup_path(&backup).err().map(|error| {
+    if journal.enabled {
+        let prepared = crate::operation_journal::prepare_replacement(
+            journal.operation_id,
+            journal.key,
+            staged,
+            dest,
+            &backup,
+        )
+        .map_err(std::io::Error::other)?;
+        if prepared.phase == crate::operation_journal::ReplacementPhase::Prepared {
+            crate::native_copy::rename_noreplace(dest, &prepared.path)?;
+            fs_util::sync_parent_namespace(dest)?;
+            crate::operation_journal::mark_replacement_backed_up(journal.operation_id, journal.key)
+                .map_err(std::io::Error::other)?;
+        }
+        let current = crate::operation_journal::operation(journal.operation_id)
+            .map_err(std::io::Error::other)?
+            .steps
+            .into_iter()
+            .find(|step| step.key == *journal.key)
+            .and_then(|step| step.replacement)
+            .ok_or_else(|| std::io::Error::other("overwrite proof disappeared"))?;
+        if current.phase == crate::operation_journal::ReplacementPhase::OriginalBackedUp {
+            crate::native_copy::rename_noreplace(staged, dest)?;
+            fs_util::sync_parent_namespace(dest)?;
+            crate::operation_journal::mark_replacement_placed(journal.operation_id, journal.key)
+                .map_err(std::io::Error::other)?;
+        }
+        return Ok(None);
+    }
+
+    crate::native_copy::rename_noreplace(dest, &backup)?;
+    fs_util::sync_parent_namespace(dest)?;
+    match crate::native_copy::rename_noreplace(staged, dest) {
+        Ok(()) => {
+            fs_util::sync_parent_namespace(dest)?;
+            Ok(cleanup_path(&backup).err().map(|error| {
             format!(
                 "destination is complete but old destination cleanup failed; preserved at {}: {error}",
                 backup.display()
             )
-        })),
+            }))
+        }
         Err(e) => {
             // Put the original back. If even that fails, the original now
             // lives only at the hidden backup path; name it in the error so
             // it can be recovered rather than vanishing silently.
-            if std::fs::rename(&backup, dest).is_err() {
+            if crate::native_copy::rename_noreplace(&backup, dest).is_err() {
                 return Err(std::io::Error::other(format!(
                     "{e}; original preserved at {}",
                     backup.display()
@@ -2600,6 +2699,24 @@ fn copy_file_buffered_inner(
             "invalid transfer checkpoint",
         ));
     }
+    let mut content_hasher = blake3::Hasher::new();
+    if let Some(checkpoint) = resume {
+        let expected = checkpoint.content_digest.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Prefix checkpoint has no content proof",
+            )
+        })?;
+        hash_prefix_into(src, offset, &mut content_hasher)?;
+        if *content_hasher.clone().finalize().as_bytes() != expected
+            || prefix_digest(dst, offset)? != expected
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Prefix checkpoint content proof does not match source and staging",
+            ));
+        }
+    }
 
     // Init per-file progress
     {
@@ -2647,7 +2764,7 @@ fn copy_file_buffered_inner(
             let s = crate::lock_util::recover(state);
             if s.cancelled {
                 drop(s);
-                persist_checkpoint(src, dst, copied, &mut writer, journal)?;
+                persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
                     "cancelled",
@@ -2660,9 +2777,10 @@ fn copy_file_buffered_inner(
             break;
         }
         writer.write_all(&buf[..n])?;
+        content_hasher.update(&buf[..n]);
         copied = copied.saturating_add(n as u64);
         if let Err(error) = limiter.consume(n, || crate::lock_util::recover(state).cancelled) {
-            persist_checkpoint(src, dst, copied, &mut writer, journal)?;
+            persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
             return Err(error);
         }
 
@@ -2673,11 +2791,11 @@ fn copy_file_buffered_inner(
             s.maybe_sample();
         }
         if copied >= next_checkpoint {
-            persist_checkpoint(src, dst, copied, &mut writer, journal)?;
+            persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
             next_checkpoint = copied.saturating_add(CHECKPOINT_INTERVAL);
         }
     }
-    persist_checkpoint(src, dst, copied, &mut writer, journal)?;
+    persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
     // Apply the source's permissions only after the contents are complete, so
     // a concurrent reader never sees a partial file already wearing its final
     // (possibly executable) mode.
@@ -2692,6 +2810,7 @@ fn persist_checkpoint(
     dst: &Path,
     offset: u64,
     writer: &mut std::io::BufWriter<std::fs::File>,
+    content_hasher: &blake3::Hasher,
     journal: Option<JournalStep<'_>>,
 ) -> std::io::Result<()> {
     writer.flush()?;
@@ -2707,9 +2826,36 @@ fn persist_checkpoint(
         source,
         partial,
         layout: CheckpointLayout::Prefix,
+        content_digest: Some(*content_hasher.clone().finalize().as_bytes()),
     };
     crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
         .map_err(std::io::Error::other)
+}
+
+pub(crate) fn prefix_digest(path: &Path, offset: u64) -> std::io::Result<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new();
+    hash_prefix_into(path, offset, &mut hasher)?;
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn hash_prefix_into(path: &Path, offset: u64, hasher: &mut blake3::Hasher) -> std::io::Result<()> {
+    let mut file = std::io::BufReader::with_capacity(COPY_BUF_SIZE, std::fs::File::open(path)?);
+    let mut remaining = offset;
+    let mut buffer = vec![0_u8; COPY_BUF_SIZE];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))
+            .expect("bounded prefix chunk fits usize");
+        let read = file.read(&mut buffer[..limit])?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "checkpoint content is shorter than its verified offset",
+            ));
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(())
 }
 
 fn copy_dir_buffered_parallel(
@@ -3070,6 +3216,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
@@ -3101,6 +3248,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
@@ -3133,6 +3281,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
@@ -3172,6 +3321,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             mount_wait_override: None,
             before_commit: None,
             before_post_success: None,
@@ -3243,6 +3393,7 @@ mod tests {
             source: PathIdentity::observe_deep(&source).unwrap(),
             partial: PathIdentity::observe_deep(&staging).unwrap(),
             layout: CheckpointLayout::Prefix,
+            content_digest: Some(prefix_digest(&staging, offset as u64).unwrap()),
         };
         std::fs::OpenOptions::new()
             .append(true)
@@ -3583,6 +3734,48 @@ mod tests {
             "new contents"
         );
         assert!(s.errors.is_empty());
+    }
+
+    #[test]
+    fn production_transfer_completes_and_cleans_a_journaled_overwrite() {
+        let (src, dst, journal_root) = (TempDir::new(), TempDir::new(), TempDir::new());
+        let source = src.file("a.txt", "new contents");
+        dst.file("a.txt", "old contents");
+        let _journal = crate::operation_journal::use_test_journal(
+            journal_root.path().join("operation-journal.json"),
+        );
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&source)],
+            dst.path(),
+            vec!["a.txt".to_string()],
+            OverwritePolicy::OverwriteAll,
+        );
+        request.journal_enabled = true;
+        let operation_id = request.operation_id.clone();
+
+        let state = run(request);
+
+        assert!(state.failures.is_empty(), "{:?}", state.failures);
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "new contents"
+        );
+        let record = crate::operation_journal::operation(&operation_id).unwrap();
+        assert_eq!(
+            record.status,
+            crate::operation_journal::OperationStatus::Completed
+        );
+        assert_eq!(
+            record.steps[0].status,
+            crate::operation_journal::StepStatus::Completed
+        );
+        assert!(record.steps[0].replacement.is_none());
+        assert!(std::fs::read_dir(dst.path()).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            !name.contains(".cmdr-tmp.") && !name.contains(".cmdr-quarantine.")
+        }));
     }
 
     #[test]

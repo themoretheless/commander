@@ -30,6 +30,21 @@ pub fn write_atomic(path: &Path, contents: &str) -> bool {
     true
 }
 
+/// Flush a pathname mutation in `path`'s parent directory before a durable
+/// journal record is allowed to claim that the mutation survived a crash.
+pub fn sync_parent_namespace(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(())
+    }
+}
+
 /// Total size in bytes of all files under `path` (parallel walk).
 pub fn dir_size_recursive(path: &Path) -> u64 {
     jwalk::WalkDir::new(path)

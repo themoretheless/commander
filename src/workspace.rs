@@ -1299,6 +1299,7 @@ impl Workspace {
             symlink_policy: t.symlink_policy,
             post_success: None,
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             #[cfg(test)]
             mount_wait_override: None,
             #[cfg(test)]
@@ -1540,6 +1541,9 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) {
         let expectations = transfer::capture_expectations(&entries, &dest_dir);
+        let rollback_cleanup_identity = rollback_cleanup
+            .as_ref()
+            .and_then(|path| crate::path_identity::PathIdentity::observe_deep(path).ok());
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
             group_id: None,
@@ -1555,6 +1559,7 @@ impl Workspace {
             symlink_policy: self.symlink_policy,
             post_success,
             rollback_cleanup,
+            rollback_cleanup_identity,
             #[cfg(test)]
             mount_wait_override: None,
             #[cfg(test)]
@@ -1762,6 +1767,8 @@ impl Workspace {
             pairs: move_pairs(&entries, &folder),
         };
         let expectations = transfer::capture_expectations(&entries, &folder);
+        let rollback_cleanup_identity =
+            crate::path_identity::PathIdentity::observe_deep(&folder).ok();
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
             group_id: None,
@@ -1777,6 +1784,7 @@ impl Workspace {
             symlink_policy: self.symlink_policy,
             post_success: None,
             rollback_cleanup: Some(folder),
+            rollback_cleanup_identity,
             #[cfg(test)]
             mount_wait_override: None,
             #[cfg(test)]
@@ -2329,6 +2337,7 @@ impl Workspace {
             symlink_policy: self.symlink_policy,
             post_success: None,
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             #[cfg(test)]
             mount_wait_override: None,
             #[cfg(test)]
@@ -2608,6 +2617,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             mount_wait_override: None,
             before_commit: None,
             before_post_success: None,

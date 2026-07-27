@@ -939,6 +939,7 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: None,
+            rollback_cleanup_identity: None,
             mount_wait_override: None,
             before_commit: None,
             before_post_success: None,

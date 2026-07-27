@@ -82,6 +82,30 @@ impl PathIdentity {
         }
     }
 
+    /// Compare both the pathname binding and the observed object version.
+    ///
+    /// `same_version` deliberately ignores the path so an object can be
+    /// followed across a rename. Journal contracts that refer to a particular
+    /// namespace entry must use this stricter comparison instead.
+    pub fn same_binding(&self, other: &Self) -> bool {
+        self.path == other.path && self.same_version(other)
+    }
+
+    /// Prove that two observations refer to the same filesystem object even
+    /// when it has been atomically renamed to a quarantine path.
+    pub fn same_object(&self, other: &Self) -> bool {
+        if !self.exists || !other.exists || self.kind != other.kind {
+            return false;
+        }
+        match (
+            self.volume.zip(self.file_id),
+            other.volume.zip(other.file_id),
+        ) {
+            (Some(expected), Some(current)) => expected == current,
+            _ => self.same_version(other),
+        }
+    }
+
     fn same_metadata(&self, other: &Self) -> bool {
         self.exists == other.exists
             && self.kind == other.kind
