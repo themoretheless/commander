@@ -101,6 +101,31 @@ fn test_transfer_spec(operation_id: &str, target: &Path) -> TransferSpec {
     }
 }
 
+fn interrupt_history_replay(
+    workspace: &mut Workspace,
+    operation_id: &crate::operation::OperationId,
+    target: &Path,
+    placements: Vec<(PathBuf, PathBuf)>,
+) {
+    workspace.record_history_for_test(crate::undo::Action::Rename {
+        from: target.join("history-old"),
+        to: target.join("history-new"),
+    });
+    let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    let progress = workspace.launch_test_transfer(
+        test_transfer_spec(&operation_id.0, target),
+        transfer_queue::HistoryIntent::replay(replay.reservation),
+    );
+    {
+        let mut progress = crate::lock_util::recover(&progress);
+        progress.finished = true;
+        progress.errors.push("interrupted replay".to_string());
+        progress.placements = placements;
+    }
+    assert!(workspace.poll_transfer(|| {}).terminal.is_none());
+    workspace.dismiss_transfer(|| {});
+}
+
 fn assert_mount_wait_interruption(label: &str, cancel: bool, reconnect_wins: bool) {
     let (left, right) = (TempDir::new(), TempDir::new());
     let source = left.file("mount-race.txt", "payload");
@@ -3058,6 +3083,54 @@ fn batch_rename_undo_surfaces_a_failed_rename() {
 }
 
 #[test]
+fn failed_batch_rename_rollback_enters_safe_state_without_advancing_history() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let mut names = ["a", "b"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<std::collections::HashSet<_>>();
+    let map = vec![
+        ("a".to_string(), "x".to_string()),
+        ("b".to_string(), "y".to_string()),
+    ];
+    let existing = names.clone();
+    let error = Workspace::apply_rename_order_using(left.path(), &map, &existing, |from, to| {
+        if (from, to) == ("b", "y") {
+            return Err("forward failure");
+        }
+        if (from, to) == ("x", "a") {
+            return Err("rollback failure");
+        }
+        assert!(names.remove(from));
+        names.insert(to.to_string());
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(error.integrity_uncertain);
+    assert_eq!(
+        names,
+        ["x", "b"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<std::collections::HashSet<_>>()
+    );
+
+    let mut workspace = workspace(&left, &right);
+    workspace.record_history_for_test(crate::undo::Action::BatchRename {
+        dir: left.path().to_path_buf(),
+        pairs: map,
+    });
+    let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    workspace.latch_rename_execution_error(&error);
+    workspace.undo.abort_immediate(replay.reservation).unwrap();
+
+    assert!(workspace.can_undo());
+    assert!(!workspace.can_redo());
+    assert!(workspace.safe_state.is_some());
+    assert!(workspace.mutations_blocked());
+}
+
+#[test]
 fn blocked_undo_keeps_the_history_pointer_unchanged() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let original = l.path().join("old.txt");
@@ -3086,7 +3159,7 @@ fn async_history_transition_commits_only_for_a_clean_worker() {
     let undo = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
     let clean = ws.launch_test_transfer(
         test_transfer_spec("clean-undo", r.path()),
-        transfer_queue::HistoryIntent::replay(undo.reservation, None),
+        transfer_queue::HistoryIntent::replay(undo.reservation),
     );
     crate::lock_util::recover(&clean).finished = true;
 
@@ -3099,7 +3172,7 @@ fn async_history_transition_commits_only_for_a_clean_worker() {
     let redo = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Redo);
     let failed = ws.launch_test_transfer(
         test_transfer_spec("failed-redo", r.path()),
-        transfer_queue::HistoryIntent::replay(redo.reservation, Some(replay_folder.clone())),
+        transfer_queue::HistoryIntent::replay(redo.reservation),
     );
     {
         let mut progress = crate::lock_util::recover(&failed);
@@ -3111,9 +3184,204 @@ fn async_history_transition_commits_only_for_a_clean_worker() {
     assert!(!ws.can_undo(), "failed redo was not committed");
     assert!(ws.can_redo());
     assert!(
-        !replay_folder.exists(),
-        "empty container created by failed replay was left behind"
+        replay_folder.exists(),
+        "history settlement must not remove a folder by path without executor ownership proof"
     );
+}
+
+#[test]
+fn partial_async_replay_enters_recovery_state_without_advancing_or_unlocking_history() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let operation_id = crate::operation::OperationId("partial-history-replay".to_string());
+    let source = left.path().join("source.txt");
+    let landing = right.path().join("source.txt");
+    let mut workspace = workspace(&left, &right);
+
+    interrupt_history_replay(
+        &mut workspace,
+        &operation_id,
+        right.path(),
+        vec![(source, landing)],
+    );
+
+    assert!(workspace.can_undo());
+    assert!(!workspace.can_redo());
+    assert!(workspace.mutations_blocked());
+    let safe_state = workspace
+        .safe_state
+        .as_ref()
+        .expect("partial replay must require recovery");
+    assert_eq!(safe_state.operation_id, operation_id);
+    assert!(safe_state.reason.contains("resume or roll back"));
+
+    workspace.acknowledge_safe_state();
+    assert!(
+        workspace.mutations_blocked(),
+        "review acknowledgement must not discard an interrupted replay"
+    );
+}
+
+#[test]
+fn cancelling_a_waiting_replay_aborts_only_its_bound_reservation() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let mut workspace = workspace(&left, &right);
+    workspace.record_history_for_test(crate::undo::Action::Rename {
+        from: left.path().join("old.txt"),
+        to: left.path().join("new.txt"),
+    });
+    let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    workspace
+        .enqueue_bound_replay(
+            test_transfer_spec("waiting-history-replay", right.path()),
+            transfer_queue::HistoryIntent::replay(replay.reservation),
+        )
+        .unwrap();
+    let job_id = workspace.queue_snapshot()[0].id;
+    workspace.queue_pause(job_id);
+
+    workspace.queue_cancel(job_id);
+
+    assert!(workspace.can_undo());
+    assert!(!workspace.can_redo());
+    assert!(!workspace.mutations_blocked());
+    assert!(workspace.queue_snapshot().is_empty());
+}
+
+#[test]
+fn matching_paused_replay_can_resume_while_ordinary_mutations_remain_blocked() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let mut workspace = workspace(&left, &right);
+    workspace.record_history_for_test(crate::undo::Action::Rename {
+        from: left.path().join("old.txt"),
+        to: left.path().join("new.txt"),
+    });
+    let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    workspace
+        .enqueue_bound_replay(
+            test_transfer_spec("paused-history-replay", right.path()),
+            transfer_queue::HistoryIntent::replay(replay.reservation),
+        )
+        .unwrap();
+    let job_id = workspace.queue_snapshot()[0].id;
+    workspace.queue_pause(job_id);
+
+    workspace.queue_resume(job_id, || {});
+
+    assert_eq!(
+        workspace
+            .active_transfer_view()
+            .map(|view| view.operation_id),
+        Some(crate::operation::OperationId(
+            "paused-history-replay".to_string()
+        ))
+    );
+}
+
+#[test]
+fn journal_resume_keeps_the_original_replay_reservation_until_clean_completion() {
+    let journal = TempDir::new();
+    let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let source = left.file("resume.txt", "payload");
+    let destination = right.path().join("resume.txt");
+    let entry =
+        FileEntry::from_meta(source.clone(), &std::fs::symlink_metadata(&source).unwrap()).unwrap();
+    let operation_id = crate::operation::OperationId("history-resume".to_string());
+    let mut spec = test_transfer_spec(&operation_id.0, right.path());
+    spec.entries = vec![entry.clone()];
+    spec.expectations = transfer::capture_expectations(std::slice::from_ref(&entry), right.path());
+    crate::operation_journal::begin(&spec).unwrap();
+    crate::operation_journal::finish(
+        &operation_id,
+        crate::operation_journal::OperationStatus::Stopped,
+    )
+    .unwrap();
+    let mut workspace = workspace(&left, &right);
+    interrupt_history_replay(
+        &mut workspace,
+        &operation_id,
+        right.path(),
+        vec![(source.clone(), destination.clone())],
+    );
+
+    assert_eq!(workspace.resume_recovery(&operation_id, || {}), Ok(1));
+    let progress = workspace
+        .active_transfer_view()
+        .expect("recovery replay should start")
+        .progress;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !crate::lock_util::recover(&progress).finished {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "recovery replay did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    workspace.poll_transfer(|| {});
+
+    assert!(!workspace.can_undo());
+    assert!(workspace.can_redo());
+    assert!(!workspace.mutations_blocked());
+    assert!(!source.exists());
+    assert!(destination.exists());
+}
+
+#[test]
+fn journal_rollback_aborts_interrupted_replay_without_advancing_the_cursor() {
+    let journal = TempDir::new();
+    let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let source = left.file("rollback.txt", "payload");
+    let destination = right.path().join("rollback.txt");
+    let entry =
+        FileEntry::from_meta(source.clone(), &std::fs::symlink_metadata(&source).unwrap()).unwrap();
+    let operation_id = crate::operation::OperationId("history-rollback".to_string());
+    let mut spec = test_transfer_spec(&operation_id.0, right.path());
+    spec.entries = vec![entry.clone()];
+    spec.expectations = transfer::capture_expectations(std::slice::from_ref(&entry), right.path());
+    crate::operation_journal::begin(&spec).unwrap();
+    let key = crate::operation_journal::operation(&operation_id)
+        .unwrap()
+        .steps[0]
+        .key
+        .clone();
+    crate::operation_journal::mark_running(
+        &operation_id,
+        &key,
+        &right.path().join(".rollback-staging"),
+        &destination,
+        crate::path_identity::PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    crate::native_copy::rename_noreplace(&source, &destination).unwrap();
+    crate::operation_journal::mark_completed(
+        &operation_id,
+        &key,
+        &destination,
+        crate::transfer_tuning::FastPath::Rename,
+    )
+    .unwrap();
+    crate::operation_journal::finish(
+        &operation_id,
+        crate::operation_journal::OperationStatus::Failed,
+    )
+    .unwrap();
+    let mut workspace = workspace(&left, &right);
+    interrupt_history_replay(
+        &mut workspace,
+        &operation_id,
+        right.path(),
+        vec![(source.clone(), destination.clone())],
+    );
+
+    let plan = workspace.rollback_recovery(&operation_id).unwrap();
+
+    assert!(plan.remaining.is_empty());
+    assert!(workspace.can_undo());
+    assert!(!workspace.can_redo());
+    assert!(!workspace.mutations_blocked());
+    assert!(source.exists());
+    assert!(!destination.exists());
 }
 
 #[test]
@@ -3129,7 +3397,7 @@ fn filesystem_mutation_is_blocked_before_disk_while_async_replay_is_reserved() {
     let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
     let _active = workspace.launch_test_transfer(
         test_transfer_spec("pending-history-replay", right.path()),
-        transfer_queue::HistoryIntent::replay(replay.reservation, None),
+        transfer_queue::HistoryIntent::replay(replay.reservation),
     );
 
     let error = workspace
@@ -3160,18 +3428,13 @@ fn foreign_async_replay_completion_enters_safe_state_without_advancing_history()
             to: right.path().join("foreign-new.txt"),
         })
         .unwrap();
-    let first_foreign_replay = foreign
-        .begin(crate::undo::ReplayDirection::Undo)
-        .unwrap()
-        .unwrap();
-    foreign.abort(first_foreign_replay.reservation).unwrap();
     let foreign_replay = foreign
         .begin(crate::undo::ReplayDirection::Undo)
         .unwrap()
         .unwrap();
-    let active = workspace.launch_test_transfer(
+    let active = workspace.launch_unbound_test_transfer(
         test_transfer_spec("foreign-history-outcome", right.path()),
-        transfer_queue::HistoryIntent::replay(foreign_replay.reservation, None),
+        transfer_queue::HistoryIntent::replay(foreign_replay.reservation),
     );
     crate::lock_util::recover(&active).finished = true;
 

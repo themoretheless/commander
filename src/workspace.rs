@@ -273,6 +273,37 @@ enum ActionExecution {
     Started,
 }
 
+#[derive(Debug)]
+struct RenameExecutionError {
+    message: String,
+    integrity_uncertain: bool,
+    paths: Vec<PathBuf>,
+}
+
+impl RenameExecutionError {
+    fn unchanged(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            integrity_uncertain: false,
+            paths: Vec::new(),
+        }
+    }
+
+    fn uncertain(message: impl Into<String>, paths: Vec<PathBuf>) -> Self {
+        Self {
+            message: message.into(),
+            integrity_uncertain: true,
+            paths,
+        }
+    }
+}
+
+impl std::fmt::Display for RenameExecutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 struct CommandCapabilityCache {
     left_path: PathBuf,
     right_path: PathBuf,
@@ -1268,10 +1299,18 @@ impl Workspace {
         if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before resuming recovery".to_string());
         }
+        let replay = self
+            .undo
+            .interrupted_reservation_for(operation_id)
+            .map_err(|error| error.to_string())?;
         let spec = crate::operation_journal::build_resume_spec(operation_id)?;
         let count = spec.entries.len();
         self.acknowledge_safe_state();
-        self.enqueue_only(spec, None);
+        if let Some(reservation) = replay {
+            self.enqueue_bound_replay(spec, transfer_queue::HistoryIntent::recovery(reservation))?;
+        } else {
+            self.enqueue_only(spec, None);
+        }
         self.pump_queue(notify);
         Ok(count)
     }
@@ -1289,9 +1328,22 @@ impl Workspace {
         if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before rolling back recovery".to_string());
         }
+        let replay = self
+            .undo
+            .interrupted_reservation_for(operation_id)
+            .map_err(|error| error.to_string())?;
         crate::operation_journal::repair_plan(operation_id)?;
-        self.acknowledge_safe_state();
         let plan = crate::operation_journal::rollback(operation_id)?;
+        if plan.remaining.is_empty() {
+            if let Some(reservation) = replay {
+                self.undo
+                    .abort_interrupted(reservation, operation_id)
+                    .map_err(|error| self.history_invariant_error(error))?;
+            }
+            self.acknowledge_safe_state();
+        } else if replay.is_some() {
+            self.latch_interrupted_replay(operation_id.clone());
+        }
         self.left.refresh();
         self.right.refresh();
         Ok(plan)
@@ -1713,7 +1765,7 @@ impl Workspace {
         reservation: crate::undo::ReplayReservation,
     ) {
         self.undo
-            .commit(reservation)
+            .commit_immediate(reservation)
             .expect("test history replay commit");
     }
 
@@ -1813,10 +1865,10 @@ impl Workspace {
         match self.execute_action(action, reservation, notify) {
             Ok(ActionExecution::Completed) => self
                 .undo
-                .commit(reservation)
+                .commit_immediate(reservation)
                 .map_err(|error| self.history_invariant_error(error)),
             Ok(ActionExecution::Started) => Ok(()),
-            Err(execution_error) => match self.undo.abort(reservation) {
+            Err(execution_error) => match self.undo.abort_immediate(reservation) {
                 Ok(()) => Err(execution_error),
                 Err(history_error) => Err(format!(
                     "{execution_error}; {}",
@@ -1842,6 +1894,27 @@ impl Workspace {
             });
         }
         reason
+    }
+
+    fn latch_rename_execution_error(&mut self, error: &RenameExecutionError) {
+        if !error.integrity_uncertain || self.safe_state.is_some() {
+            return;
+        }
+        let reason = format!(
+            "Rename rollback did not restore the original namespace: {}",
+            error.message
+        );
+        let failure = crate::operation::ClassifiedFailure::message(
+            crate::operation::FailureClass::IntegrityUncertain,
+            error.paths.first().cloned(),
+            reason.clone(),
+        );
+        self.safe_state = Some(crate::operation::SafeState {
+            operation_id: crate::operation::OperationId::new(),
+            reason,
+            paths: error.paths.clone(),
+            failures: vec![failure],
+        });
     }
 
     /// Execute `action` forward against the filesystem. Used by undo (with an
@@ -1871,7 +1944,7 @@ impl Workspace {
                     sources,
                     dest_dir,
                     None,
-                    transfer_queue::HistoryIntent::replay(reservation, None),
+                    transfer_queue::HistoryIntent::replay(reservation),
                     notify,
                 )
                 .map(|started| {
@@ -1890,15 +1963,25 @@ impl Workspace {
                 let result = Self::apply_rename_order(&dir, &pairs, &existing);
                 self.left.refresh();
                 self.right.refresh();
+                if let Err(error) = &result {
+                    self.latch_rename_execution_error(error);
+                }
                 // A failed rename undo/redo leaves the filesystem out of step
                 // with the stack: surface it rather than swallowing the error.
-                result.map(|_| ActionExecution::Completed)
+                result
+                    .map(|_| ActionExecution::Completed)
+                    .map_err(|error| error.to_string())
             }
             crate::undo::Action::Rename { from, to } => {
                 let result = Self::rename_path_no_clobber(&from, &to);
                 self.left.refresh();
                 self.right.refresh();
-                result.map(|_| ActionExecution::Completed)
+                if let Err(error) = &result {
+                    self.latch_rename_execution_error(error);
+                }
+                result
+                    .map(|_| ActionExecution::Completed)
+                    .map_err(|error| error.to_string())
             }
             crate::undo::Action::Gather { folder, pairs } => {
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
@@ -1913,9 +1996,9 @@ impl Workspace {
                     folder.clone(),
                     None,
                     Some(folder.clone()),
-                    transfer_queue::HistoryIntent::replay(reservation, Some(folder.clone())),
+                    transfer_queue::HistoryIntent::replay(reservation),
                     notify,
-                );
+                )?;
                 Ok(ActionExecution::Started)
             }
             crate::undo::Action::Ungather { folder, pairs } => {
@@ -1931,7 +2014,7 @@ impl Workspace {
                     sources,
                     dest_dir,
                     Some(PostTransferAction::RemoveEmptyDir(folder)),
-                    transfer_queue::HistoryIntent::replay(reservation, None),
+                    transfer_queue::HistoryIntent::replay(reservation),
                     notify,
                 )
                 .map(|started| {
@@ -1965,10 +2048,18 @@ impl Workspace {
         rollback_cleanup: Option<PathBuf>,
         history: transfer_queue::HistoryIntent,
         notify: impl Fn() + Send + 'static,
-    ) {
+    ) -> Result<(), String> {
         let rollback_cleanup_identity = rollback_cleanup
             .as_ref()
-            .and_then(|path| crate::path_identity::PathIdentity::observe_deep(path).ok());
+            .map(|path| {
+                crate::path_identity::PathIdentity::observe_deep(path).map_err(|error| {
+                    format!(
+                        "Could not prove replay-owned folder {}: {error}",
+                        path.display()
+                    )
+                })
+            })
+            .transpose()?;
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
             group_id: None,
@@ -1997,8 +2088,9 @@ impl Workspace {
             #[cfg(test)]
             journal_enabled: false,
         };
-        self.enqueue_with_history(spec, history);
+        self.enqueue_bound_replay(spec, history)?;
         self.pump_queue(notify);
+        Ok(())
     }
 
     /// Move the files at `sources` into `dest_dir` without recording a new undo
@@ -2016,7 +2108,7 @@ impl Workspace {
         if entries.is_empty() {
             return Ok(false);
         }
-        self.enqueue_silent_move(entries, dest_dir, post_success, None, history, notify);
+        self.enqueue_silent_move(entries, dest_dir, post_success, None, history, notify)?;
         Ok(true)
     }
 
@@ -2054,14 +2146,36 @@ impl Workspace {
         dir: &Path,
         map: &[(String, String)],
         existing: &std::collections::HashSet<String>,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, RenameExecutionError> {
+        Self::apply_rename_order_using(dir, map, existing, |from, to| {
+            crate::native_copy::rename_noreplace(&dir.join(from), &dir.join(to))
+        })
+    }
+
+    fn apply_rename_order_using<E: std::fmt::Display>(
+        dir: &Path,
+        map: &[(String, String)],
+        existing: &std::collections::HashSet<String>,
+        rename: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<usize, RenameExecutionError> {
         use crate::rename_order::{RenameOrder, apply_steps, safe_rename_order};
         match safe_rename_order(map, existing) {
-            RenameOrder::Conflict(why) => Err(why),
-            RenameOrder::Steps(steps) => apply_steps(&steps, |from, to| {
-                crate::native_copy::rename_noreplace(&dir.join(from), &dir.join(to))
-            })
-            .map_err(|e| e.to_string()),
+            RenameOrder::Conflict(why) => Err(RenameExecutionError::unchanged(why)),
+            RenameOrder::Steps(steps) => apply_steps(&steps, rename).map_err(|error| {
+                let message = error.to_string();
+                if error.rollback_failures.is_empty() {
+                    RenameExecutionError::unchanged(message)
+                } else {
+                    let mut paths = error
+                        .rollback_failures
+                        .iter()
+                        .flat_map(|failure| [dir.join(&failure.from), dir.join(&failure.to)])
+                        .collect::<Vec<_>>();
+                    paths.sort();
+                    paths.dedup();
+                    RenameExecutionError::uncertain(message, paths)
+                }
+            }),
         }
     }
 
@@ -2197,7 +2311,7 @@ impl Workspace {
     /// changes stage through a temporary name and roll back if the second move
     /// fails, preserving the recovery path in a composite error if rollback
     /// itself also fails.
-    fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), String> {
+    fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecutionError> {
         if from == to {
             return Ok(());
         }
@@ -2210,22 +2324,29 @@ impl Workspace {
             None => false,
         };
         if dest_meta.is_some() && !same_file {
-            return Err("Name already in use".into());
+            return Err(RenameExecutionError::unchanged("Name already in use"));
         }
         if !same_file {
-            return crate::native_copy::rename_noreplace(from, to).map_err(|e| e.to_string());
+            return crate::native_copy::rename_noreplace(from, to)
+                .map_err(|error| RenameExecutionError::unchanged(error.to_string()));
         }
 
-        let parent = to.parent().ok_or("Path has no parent")?;
+        let parent = to
+            .parent()
+            .ok_or_else(|| RenameExecutionError::unchanged("Path has no parent"))?;
         let tmp = crate::fs_util::first_available(|i| parent.join(format!(".cmdr-rename.{i}")));
-        crate::native_copy::rename_noreplace(from, &tmp).map_err(|e| e.to_string())?;
+        crate::native_copy::rename_noreplace(from, &tmp)
+            .map_err(|error| RenameExecutionError::unchanged(error.to_string()))?;
         match crate::native_copy::rename_noreplace(&tmp, to) {
             Ok(()) => Ok(()),
             Err(rename_error) => match crate::native_copy::rename_noreplace(&tmp, from) {
-                Ok(()) => Err(rename_error.to_string()),
-                Err(rollback_error) => Err(format!(
-                    "{rename_error}; rollback failed: {rollback_error}; file preserved at {}",
-                    tmp.display()
+                Ok(()) => Err(RenameExecutionError::unchanged(rename_error.to_string())),
+                Err(rollback_error) => Err(RenameExecutionError::uncertain(
+                    format!(
+                        "{rename_error}; rollback failed: {rollback_error}; file preserved at {}",
+                        tmp.display()
+                    ),
+                    vec![from.to_path_buf(), to.to_path_buf(), tmp],
                 )),
             },
         }
@@ -2252,7 +2373,10 @@ impl Workspace {
             .parent()
             .map(|p| p.join(new_name))
             .ok_or("Path has no parent")?;
-        Self::rename_path_no_clobber(old, &dest)?;
+        if let Err(error) = Self::rename_path_no_clobber(old, &dest) {
+            self.latch_rename_execution_error(&error);
+            return Err(error.to_string());
+        }
         self.undo
             .record(crate::undo::Action::Rename {
                 from: old.to_path_buf(),
@@ -2329,7 +2453,8 @@ impl Workspace {
 
         let done = match Self::apply_rename_order(&dir, &changes, &existing) {
             Ok(done) => done,
-            Err(e) => {
+            Err(error) => {
+                self.latch_rename_execution_error(&error);
                 let panel = match context.panel {
                     ActivePanel::Left => &mut self.left,
                     ActivePanel::Right => &mut self.right,
@@ -2337,7 +2462,7 @@ impl Workspace {
                 if panel.current_path == context.dir {
                     panel.refresh();
                 }
-                return Err(e);
+                return Err(error.to_string());
             }
         };
         // Record the batch as one undoable unit (Cmd+Z reverts the whole run).

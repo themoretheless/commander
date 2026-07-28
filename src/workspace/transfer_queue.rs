@@ -22,18 +22,22 @@ pub(super) enum HistoryIntent {
     Record(crate::undo::Action),
     Replay {
         reservation: crate::undo::ReplayReservation,
-        cleanup_on_failure: Option<PathBuf>,
+        continuation: bool,
     },
 }
 
 impl HistoryIntent {
-    pub(super) fn replay(
-        reservation: crate::undo::ReplayReservation,
-        cleanup_on_failure: Option<PathBuf>,
-    ) -> Self {
+    pub(super) fn replay(reservation: crate::undo::ReplayReservation) -> Self {
         Self::Replay {
             reservation,
-            cleanup_on_failure,
+            continuation: false,
+        }
+    }
+
+    pub(super) fn recovery(reservation: crate::undo::ReplayReservation) -> Self {
+        Self::Replay {
+            reservation,
+            continuation: true,
         }
     }
 
@@ -45,6 +49,13 @@ impl HistoryIntent {
                 ..
             } if *queued == reservation
         )
+    }
+
+    fn replay_reservation(&self) -> Option<crate::undo::ReplayReservation> {
+        match self {
+            Self::Replay { reservation, .. } => Some(*reservation),
+            Self::None | Self::Record(_) => None,
+        }
     }
 }
 
@@ -102,15 +113,19 @@ pub(super) enum HistoryOutcome {
         placements: Vec<(PathBuf, PathBuf)>,
     },
     Commit(crate::undo::ReplayReservation),
-    AbortReplay {
-        reservation: crate::undo::ReplayReservation,
-        cleanup_on_failure: Option<PathBuf>,
-    },
+    AbortReplay(crate::undo::ReplayReservation),
+    InterruptReplay(crate::undo::ReplayReservation),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RetirementOutcome {
     pub report: TransferTerminalReport,
+    pub history: HistoryOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct HistorySettlement {
+    pub operation_id: OperationId,
     pub history: HistoryOutcome,
 }
 
@@ -204,6 +219,16 @@ impl TransferQueueController {
         self.queue
             .runnable()
             .and_then(|job_id| self.queue.get(job_id))
+            .is_some_and(|job| job.spec.history.matches_replay(reservation))
+    }
+
+    pub(super) fn job_replay_matches(
+        &self,
+        job_id: JobId,
+        reservation: crate::undo::ReplayReservation,
+    ) -> bool {
+        self.queue
+            .get(job_id)
             .is_some_and(|job| job.spec.history.matches_replay(reservation))
     }
 
@@ -406,7 +431,7 @@ impl TransferQueueController {
             .queue
             .jobs()
             .iter()
-            .filter(|job| job.state.is_waiting())
+            .filter(|job| job.state.is_waiting() && job.spec.history.replay_reservation().is_none())
             .map(|job| job.id)
             .collect::<Vec<_>>();
         for job_id in waiting {
@@ -440,6 +465,7 @@ impl TransferQueueController {
         history: HistoryIntent,
         clean: bool,
         placements: Vec<(PathBuf, PathBuf)>,
+        integrity_uncertain: bool,
     ) -> HistoryOutcome {
         match (history, clean) {
             (HistoryIntent::None, _) => HistoryOutcome::None,
@@ -451,14 +477,15 @@ impl TransferQueueController {
             (
                 HistoryIntent::Replay {
                     reservation,
-                    cleanup_on_failure,
-                    ..
+                    continuation,
                 },
                 false,
-            ) => HistoryOutcome::AbortReplay {
-                reservation,
-                cleanup_on_failure,
-            },
+            ) if continuation || !placements.is_empty() || integrity_uncertain => {
+                HistoryOutcome::InterruptReplay(reservation)
+            }
+            (HistoryIntent::Replay { reservation, .. }, false) => {
+                HistoryOutcome::AbortReplay(reservation)
+            }
         }
     }
 
@@ -501,7 +528,16 @@ impl TransferQueueController {
                 "Running queue row rejected its terminal transition",
             ));
         }
-        let history = Self::history_outcome(active.history, snapshot.clean(), snapshot.placements);
+        let integrity_uncertain = snapshot
+            .failures
+            .iter()
+            .any(|failure| failure.class == FailureClass::IntegrityUncertain);
+        let history = Self::history_outcome(
+            active.history,
+            snapshot.clean(),
+            snapshot.placements,
+            integrity_uncertain,
+        );
         let report = TransferTerminalReport {
             attempt_id: active.attempt_id,
             operation_id: active.operation_id,
@@ -662,9 +698,20 @@ impl TransferQueueController {
         self.reviewed_safe_operation = Some(operation_id);
     }
 
-    pub(super) fn cancel_pending(&mut self) {
-        self.cancel_waiting();
+    pub(super) fn cancel_pending(&mut self) -> Vec<HistorySettlement> {
+        let waiting = self
+            .queue
+            .jobs()
+            .iter()
+            .filter(|job| job.state.is_waiting())
+            .map(|job| job.id)
+            .collect::<Vec<_>>();
+        let settlements = waiting
+            .into_iter()
+            .filter_map(|job_id| self.cancel_waiting_job(job_id))
+            .collect();
         self.queue.clear_finished();
+        settlements
     }
 
     pub(super) fn snapshot(&self) -> Vec<QueueRow> {
@@ -710,17 +757,35 @@ impl TransferQueueController {
         self.queue.reorder(job_id, to);
     }
 
-    pub(super) fn cancel(&mut self, job_id: JobId) {
+    pub(super) fn cancel(&mut self, job_id: JobId) -> Option<HistorySettlement> {
         if self.active_job_id() == Some(job_id) {
             self.request_cancel();
+            None
         } else {
-            self.queue.cancel(job_id);
+            let settlement = self.cancel_waiting_job(job_id);
             self.queue.clear_finished();
+            settlement
         }
     }
 
     pub(super) fn clear_finished(&mut self) {
         self.queue.clear_finished();
+    }
+
+    fn cancel_waiting_job(&mut self, job_id: JobId) -> Option<HistorySettlement> {
+        let job = self.queue.get(job_id)?;
+        if !job.state.is_waiting() {
+            return None;
+        }
+        let operation_id = job.spec.spec.operation_id.clone();
+        let history = job.spec.history.clone();
+        if !self.queue.cancel(job_id) {
+            return None;
+        }
+        Some(HistorySettlement {
+            operation_id,
+            history: Self::history_outcome(history, false, Vec::new(), false),
+        })
     }
 
     #[cfg(test)]
@@ -747,17 +812,47 @@ impl Workspace {
         self.transfers.enqueue(spec, history);
     }
 
+    #[cfg(test)]
     pub(super) fn enqueue_with_history(&mut self, spec: TransferSpec, history: HistoryIntent) {
+        assert!(
+            history.replay_reservation().is_none(),
+            "history replay must be bound through enqueue_bound_replay"
+        );
         self.transfers.enqueue(spec, history);
     }
 
-    pub(super) fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
-        let blocked = self.safe_state.is_some()
+    pub(super) fn enqueue_bound_replay(
+        &mut self,
+        spec: TransferSpec,
+        history: HistoryIntent,
+    ) -> Result<(), String> {
+        if self.safe_state.is_some() || self.deletes.is_active() {
+            return Err("history replay cannot bind while another mutation gate is active".into());
+        }
+        if self.has_unfinished_transfer_work() {
+            return Err("history replay cannot bind while transfer work is unfinished".into());
+        }
+        let reservation = history
+            .replay_reservation()
+            .ok_or_else(|| "bound replay enqueue requires a replay reservation".to_string())?;
+        self.undo
+            .bind_execution(reservation, &spec.operation_id)
+            .map_err(|error| self.history_invariant_error(error))?;
+        self.transfers.enqueue(spec, history);
+        Ok(())
+    }
+
+    fn transfer_launch_blocked(&self) -> bool {
+        self.safe_state.is_some()
             || self.deletes.is_active()
             || self
                 .undo
                 .pending_reservation()
-                .is_some_and(|reservation| !self.transfers.runnable_replay_matches(reservation));
+                .is_some_and(|reservation| !self.transfers.runnable_replay_matches(reservation))
+    }
+
+    pub(super) fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
+        let blocked = self.transfer_launch_blocked();
         self.transfers.launch(blocked, notify);
     }
 
@@ -837,28 +932,47 @@ impl Workspace {
                 }
             }
             HistoryOutcome::Commit(reservation) => {
-                if let Err(error) = self.undo.commit(reservation) {
+                if let Err(error) = self.undo.commit_execution(reservation, &operation_id) {
                     self.latch_history_error(operation_id, error);
                 }
                 false
             }
-            HistoryOutcome::AbortReplay {
-                reservation,
-                cleanup_on_failure,
-            } => {
-                match self.undo.abort(reservation) {
-                    Ok(()) => {
-                        if let Some(folder) = cleanup_on_failure {
-                            // Only an empty replay-owned container is safe to remove.
-                            let _ = std::fs::remove_dir(folder);
-                        }
-                    }
-                    Err(error) => {
-                        self.latch_history_error(operation_id, error);
-                    }
+            HistoryOutcome::AbortReplay(reservation) => {
+                if let Err(error) = self.undo.abort_execution(reservation, &operation_id) {
+                    self.latch_history_error(operation_id, error);
                 }
                 false
             }
+            HistoryOutcome::InterruptReplay(reservation) => {
+                match self.undo.interrupt_execution(reservation, &operation_id) {
+                    Ok(()) => self.latch_interrupted_replay(operation_id),
+                    Err(error) => self.latch_history_error(operation_id, error),
+                }
+                false
+            }
+        }
+    }
+
+    pub(super) fn latch_interrupted_replay(&mut self, operation_id: OperationId) {
+        if self.safe_state.is_some() {
+            return;
+        }
+        let reason = "History replay stopped after filesystem effects; resume or roll back the \
+                      matching recovery operation before other mutations"
+            .to_string();
+        let failure =
+            ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, reason.clone());
+        self.safe_state = Some(SafeState {
+            operation_id,
+            reason,
+            paths: Vec::new(),
+            failures: vec![failure],
+        });
+    }
+
+    fn apply_history_settlements(&mut self, settlements: Vec<HistorySettlement>) {
+        for settlement in settlements {
+            self.apply_history_outcome(settlement.history, settlement.operation_id);
         }
     }
 
@@ -890,7 +1004,8 @@ impl Workspace {
     }
 
     pub fn cancel_pending_transfers(&mut self) {
-        self.transfers.cancel_pending();
+        let settlements = self.transfers.cancel_pending();
+        self.apply_history_settlements(settlements);
     }
 
     /// Dismiss only the exact active job when it is a retained terminal error.
@@ -932,7 +1047,14 @@ impl Workspace {
     }
 
     pub fn queue_resume(&mut self, id: JobId, notify: impl Fn() + Send + 'static) {
-        if self.mutation_commits_blocked() {
+        let matching_replay = self
+            .undo
+            .pending_reservation()
+            .is_some_and(|reservation| self.transfers.job_replay_matches(id, reservation));
+        if self.safe_state.is_some()
+            || self.deletes.is_active()
+            || (self.undo.has_pending_replay() && !matching_replay)
+        {
             return;
         }
         if self.transfers.resume(id) {
@@ -949,7 +1071,9 @@ impl Workspace {
     }
 
     pub fn queue_cancel(&mut self, id: JobId) {
-        self.transfers.cancel(id);
+        if let Some(settlement) = self.transfers.cancel(id) {
+            self.apply_history_settlements(vec![settlement]);
+        }
     }
 
     pub fn queue_clear_finished(&mut self) {
@@ -962,6 +1086,11 @@ impl Workspace {
         spec: TransferSpec,
         history: HistoryIntent,
     ) -> TransferState {
+        if let Some(reservation) = history.replay_reservation() {
+            self.undo
+                .bind_execution(reservation, &spec.operation_id)
+                .expect("test replay must bind to its operation");
+        }
         self.transfers.enqueue(spec, history);
         assert!(matches!(
             self.transfers.launch_without_worker(false),
@@ -970,6 +1099,24 @@ impl Workspace {
         self.active_transfer()
             .cloned()
             .expect("test transfer should be active")
+    }
+
+    /// Inject a corrupt queue/history association for fail-closed tests. This is
+    /// intentionally unavailable outside test builds.
+    #[cfg(test)]
+    pub(super) fn launch_unbound_test_transfer(
+        &mut self,
+        spec: TransferSpec,
+        history: HistoryIntent,
+    ) -> TransferState {
+        self.transfers.enqueue(spec, history);
+        assert!(matches!(
+            self.transfers.launch_without_worker(false),
+            LaunchOutcome::Started { .. }
+        ));
+        self.active_transfer()
+            .cloned()
+            .expect("corrupt test transfer should be active")
     }
 
     #[cfg(test)]
@@ -983,8 +1130,9 @@ impl Workspace {
         workload: crate::workload::WorkloadHandle,
         notify: impl Fn() + Send + 'static,
     ) -> LaunchOutcome {
+        let blocked = self.transfer_launch_blocked();
         self.transfers
-            .launch_with_workload(self.mutation_commits_blocked(), workload, notify)
+            .launch_with_workload(blocked, workload, notify)
     }
 }
 
@@ -1046,7 +1194,9 @@ mod tests {
                 .begin(crate::undo::ReplayDirection::Undo)
                 .expect("begin undo")
                 .expect("undo plan");
-            center.commit(undo.reservation).expect("commit undo");
+            center
+                .commit_immediate(undo.reservation)
+                .expect("commit undo");
         }
         center
             .begin(direction)
@@ -1244,10 +1394,7 @@ mod tests {
     fn late_cancel_does_not_demote_a_clean_replay_completion() {
         let mut controller = TransferQueueController::default();
         let reservation = replay_reservation(crate::undo::ReplayDirection::Undo);
-        controller.enqueue(
-            spec("late-cancel"),
-            HistoryIntent::replay(reservation, None),
-        );
+        controller.enqueue(spec("late-cancel"), HistoryIntent::replay(reservation));
         let (_, progress) = launch(&mut controller);
         crate::lock_util::recover(&progress).finished = true;
 
@@ -1308,12 +1455,12 @@ mod tests {
     }
 
     #[test]
-    fn replay_commits_on_clean_and_aborts_with_cleanup_on_failure() {
+    fn replay_commits_on_clean_and_aborts_before_any_filesystem_effect() {
         let mut clean = TransferQueueController::default();
         let clean_reservation = replay_reservation(crate::undo::ReplayDirection::Undo);
         clean.enqueue(
             spec("clean-replay"),
-            HistoryIntent::replay(clean_reservation, None),
+            HistoryIntent::replay(clean_reservation),
         );
         let (_, progress) = launch(&mut clean);
         crate::lock_util::recover(&progress).finished = true;
@@ -1322,12 +1469,11 @@ mod tests {
             HistoryOutcome::Commit(clean_reservation)
         );
 
-        let cleanup = PathBuf::from("/tmp/replay-cleanup");
         let mut failed = TransferQueueController::default();
         let failed_reservation = replay_reservation(crate::undo::ReplayDirection::Redo);
         let failed_id = failed.enqueue(
             spec("failed-replay"),
-            HistoryIntent::replay(failed_reservation, Some(cleanup.clone())),
+            HistoryIntent::replay(failed_reservation),
         );
         let (_, progress) = launch(&mut failed);
         {
@@ -1341,10 +1487,81 @@ mod tests {
                 .dismiss(failed_id)
                 .expect("dismiss failed replay")
                 .history,
-            HistoryOutcome::AbortReplay {
-                reservation: failed_reservation,
-                cleanup_on_failure: Some(cleanup),
-            }
+            HistoryOutcome::AbortReplay(failed_reservation)
+        );
+    }
+
+    #[test]
+    fn partial_and_recovery_failures_interrupt_instead_of_discarding_replay() {
+        let partial_reservation = replay_reservation(crate::undo::ReplayDirection::Undo);
+        let mut partial = TransferQueueController::default();
+        let partial_id = partial.enqueue(
+            spec("partial-replay"),
+            HistoryIntent::replay(partial_reservation),
+        );
+        let (_, progress) = launch(&mut partial);
+        {
+            let mut progress = crate::lock_util::recover(&progress);
+            progress.finished = true;
+            progress.errors.push("failed after placement".to_string());
+            progress
+                .placements
+                .push((PathBuf::from("/source"), PathBuf::from("/landing")));
+        }
+        assert!(partial.poll().retirement.is_none());
+        assert_eq!(
+            partial
+                .dismiss(partial_id)
+                .expect("dismiss partial replay")
+                .history,
+            HistoryOutcome::InterruptReplay(partial_reservation)
+        );
+
+        let recovery_reservation = replay_reservation(crate::undo::ReplayDirection::Redo);
+        let mut recovery = TransferQueueController::default();
+        let recovery_id = recovery.enqueue(
+            spec("recovery-replay"),
+            HistoryIntent::recovery(recovery_reservation),
+        );
+        let (_, progress) = launch(&mut recovery);
+        {
+            let mut progress = crate::lock_util::recover(&progress);
+            progress.finished = true;
+            progress
+                .errors
+                .push("retry failed before new effects".to_string());
+        }
+        assert!(recovery.poll().retirement.is_none());
+        assert_eq!(
+            recovery
+                .dismiss(recovery_id)
+                .expect("dismiss failed recovery replay")
+                .history,
+            HistoryOutcome::InterruptReplay(recovery_reservation)
+        );
+    }
+
+    #[test]
+    fn cancelling_waiting_recovery_preserves_interrupted_reservation() {
+        let reservation = replay_reservation(crate::undo::ReplayDirection::Undo);
+        let mut controller = TransferQueueController::default();
+        let job_id = controller.enqueue(
+            spec("waiting-recovery"),
+            HistoryIntent::recovery(reservation),
+        );
+        controller.pause(job_id);
+
+        let settlement = controller
+            .cancel(job_id)
+            .expect("waiting recovery cancellation must settle history");
+
+        assert_eq!(
+            settlement.history,
+            HistoryOutcome::InterruptReplay(reservation)
+        );
+        assert_eq!(
+            settlement.operation_id,
+            OperationId("waiting-recovery".to_string())
         );
     }
 }
