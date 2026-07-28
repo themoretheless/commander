@@ -675,7 +675,7 @@ impl App {
             seed.accessibility_preferences,
         );
         cc.egui_ctx.set_zoom_factor(seed.ui_scale);
-        let persistence = crate::persistence::fs_persist();
+        let persistence = crate::persistence::ephemeral_persist();
         let ws = Workspace::with_ports_and_bookmarks(
             seed.left,
             seed.right,

@@ -391,6 +391,16 @@ mod tests {
 
         assert!(save_at(&persist, &path, &loaded.store, &mut loaded.gate).is_ok());
         assert_eq!(loaded.gate.status(), LoadStatus::Current);
+        let quarantine = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|candidate| {
+                candidate
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(".recovered-"))
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(quarantine).unwrap(), original);
         let reloaded = load_at(&persist, &path);
         assert_eq!(reloaded.gate.status(), LoadStatus::Current);
         assert_eq!(reloaded.store, loaded.store);

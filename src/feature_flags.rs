@@ -8,7 +8,8 @@ use std::sync::{Mutex, OnceLock};
 
 const SCHEMA: u32 = 1;
 const STORE: crate::persistence::StoreSpec =
-    crate::persistence::StoreSpec::new("commander.feature_flags", 1, 1024 * 1024);
+    crate::persistence::StoreSpec::new("commander.feature_flags", 1, 1024 * 1024)
+        .allow_legacy_schema_marker();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -301,6 +302,31 @@ fn effective_mask(store: &FeatureStore, environment_killed_mask: u8) -> u8 {
     })
 }
 
+fn apply_update(
+    state: &mut LoadedFeatureStore,
+    persist: &dyn crate::persistence::Persist,
+    path: &Path,
+    change: impl FnOnce(&mut FeaturePolicy),
+    feature: RiskyFeature,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::JsonSaveError> {
+    if state.blocked {
+        return Err(crate::persistence::JsonSaveError::Blocked(
+            state.gate.status(),
+        ));
+    }
+    let previous = state.store.clone();
+    change(state.store.policies.entry(feature).or_default());
+    state.store.normalize();
+    let store = state.store.clone();
+    match save_at_with(persist, path, &store, &mut state.gate) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            state.store = previous;
+            Err(error)
+        }
+    }
+}
+
 pub fn snapshot(feature: RiskyFeature) -> FeatureSnapshot {
     let controls = runtime_controls();
     crate::lock_util::recover(&controls.state).store.snapshot(
@@ -330,18 +356,12 @@ pub fn enabled(feature: RiskyFeature) -> bool {
 fn update(feature: RiskyFeature, change: impl FnOnce(&mut FeaturePolicy)) -> bool {
     let controls = runtime_controls();
     let mut state = crate::lock_util::recover(&controls.state);
-    if state.blocked {
-        return false;
-    }
-    let previous = state.store.clone();
-    change(state.store.policies.entry(feature).or_default());
-    state.store.normalize();
-    let store = state.store.clone();
-    match save_at_with(
+    match apply_update(
+        &mut state,
         controls.persistence.as_ref(),
         &feature_path(),
-        &store,
-        &mut state.gate,
+        change,
+        feature,
     ) {
         Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
             controls.enabled_mask.store(
@@ -359,7 +379,6 @@ fn update(feature: RiskyFeature, change: impl FnOnce(&mut FeaturePolicy)) -> boo
             true
         }
         Err(error) => {
-            state.store = previous;
             crate::persistence::record_json_save_failure("Feature flags", &error);
             false
         }
@@ -378,6 +397,46 @@ pub fn set_rollout_percent(feature: RiskyFeature, percent: u8) -> bool {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Copy)]
+    enum CommitMode {
+        Reject,
+        Weak,
+    }
+
+    struct ScriptedPersist {
+        commits: AtomicUsize,
+        mode: CommitMode,
+    }
+
+    impl crate::persistence::Persist for ScriptedPersist {
+        fn read(
+            &self,
+            _path: &Path,
+            _max_bytes: usize,
+        ) -> Result<crate::persistence::ReadOutcome, crate::persistence::ReadFailure> {
+            Ok(crate::persistence::ReadOutcome::Missing)
+        }
+
+        fn commit(
+            &self,
+            _path: &Path,
+            _bytes: &[u8],
+            _expected: crate::persistence::ExpectedRevision,
+        ) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::PreCommitError>
+        {
+            self.commits.fetch_add(1, Ordering::Relaxed);
+            match self.mode {
+                CommitMode::Reject => Err(crate::persistence::PreCommitError::Conflict),
+                CommitMode::Weak => Ok(
+                    crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(
+                        std::io::Error::other("injected sync failure"),
+                    ),
+                ),
+            }
+        }
+    }
 
     #[test]
     fn cohort_buckets_are_stable_and_bounded() {
@@ -464,6 +523,28 @@ mod tests {
     }
 
     #[test]
+    fn legacy_inner_schema_loads_without_rewriting_the_store() {
+        let temp = TempDir::new();
+        let path = temp.file(
+            "features.json",
+            r#"{"schema":1,"cohort":41,"policies":{"content_index":{"killed":true,"rollout_percent":0}}}"#,
+        );
+        let original = std::fs::read(&path).unwrap();
+
+        let loaded = load_at_with(&crate::persistence::FsPersist::default(), &path);
+
+        assert!(!loaded.blocked);
+        assert_eq!(loaded.gate.status(), crate::persistence::LoadStatus::Legacy);
+        assert!(
+            !loaded
+                .store
+                .snapshot(RiskyFeature::ContentIndex, false)
+                .enabled
+        );
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
     fn corrupt_store_fails_closed_and_cannot_overwrite_the_source() {
         let temp = TempDir::new();
         let path = temp.file("features.json", "{not-json");
@@ -519,5 +600,126 @@ mod tests {
                 .all(|feature| !loaded.store.snapshot(feature, false).enabled)
         );
         assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn wrong_store_and_future_inner_schema_both_fail_closed() {
+        let temp = TempDir::new();
+        let path = temp.path().join("features.json");
+        let cases = [
+            br#"{
+              "format":"commander.persist",
+              "store":"commander.session",
+              "schema":1,
+              "generation":1,
+              "payload":{}
+            }"#
+            .as_slice(),
+            br#"{
+              "format":"commander.persist",
+              "store":"commander.feature_flags",
+              "schema":1,
+              "generation":1,
+              "payload":{"schema":99,"cohort":1,"policies":{}}
+            }"#
+            .as_slice(),
+        ];
+        for bytes in cases {
+            std::fs::write(&path, bytes).unwrap();
+            let loaded = load_at_with(&crate::persistence::FsPersist::default(), &path);
+            assert!(loaded.blocked);
+            assert!(
+                RiskyFeature::ALL
+                    .into_iter()
+                    .all(|feature| !loaded.store.snapshot(feature, false).enabled)
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn failed_update_rolls_back_memory_and_weak_commit_applies_once() {
+        let original = FeatureStore::new(7);
+        let mut rejected = LoadedFeatureStore {
+            store: original.clone(),
+            gate: crate::persistence::StoreGate::missing(),
+            blocked: false,
+        };
+        let reject = ScriptedPersist {
+            commits: AtomicUsize::new(0),
+            mode: CommitMode::Reject,
+        };
+        let result = apply_update(
+            &mut rejected,
+            &reject,
+            Path::new("features.json"),
+            |policy| policy.killed = true,
+            RiskyFeature::ContentIndex,
+        );
+        assert!(result.is_err());
+        assert_eq!(rejected.store, original);
+        assert_eq!(reject.commits.load(Ordering::Relaxed), 1);
+
+        let weak = ScriptedPersist {
+            commits: AtomicUsize::new(0),
+            mode: CommitMode::Weak,
+        };
+        let mut committed = LoadedFeatureStore {
+            store: FeatureStore::new(7),
+            gate: crate::persistence::StoreGate::missing(),
+            blocked: false,
+        };
+        let result = apply_update(
+            &mut committed,
+            &weak,
+            Path::new("features.json"),
+            |policy| policy.killed = true,
+            RiskyFeature::ContentIndex,
+        );
+        assert!(matches!(
+            result,
+            Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(_))
+        ));
+        assert!(
+            committed
+                .store
+                .policies
+                .get(&RiskyFeature::ContentIndex)
+                .unwrap()
+                .killed
+        );
+        assert_eq!(weak.commits.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            committed.gate.status(),
+            crate::persistence::LoadStatus::Current
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_symlink_store_fails_closed_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new();
+        let target = temp.file("target.json", r#"{"schema":1,"cohort":1,"policies":{}}"#);
+        let path = temp.path().join("features.json");
+        symlink(&target, &path).unwrap();
+
+        let loaded = load_at_with(&crate::persistence::FsPersist::default(), &path);
+
+        assert!(loaded.blocked);
+        assert_eq!(
+            loaded.gate.status(),
+            crate::persistence::LoadStatus::Unreadable
+        );
+        assert!(
+            RiskyFeature::ALL
+                .into_iter()
+                .all(|feature| !loaded.store.snapshot(feature, false).enabled)
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            br#"{"schema":1,"cohort":1,"policies":{}}"#
+        );
     }
 }

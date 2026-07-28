@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 const LEGACY_JSON_MAX_BYTES: usize = 8 * 1024 * 1024;
 const ENVELOPE_FORMAT: &str = "commander.persist";
@@ -63,6 +63,7 @@ impl fmt::Display for SaveStage {
 #[derive(Debug)]
 pub enum PreCommitError {
     Serialize(serde_json::Error),
+    Conflict,
     /// `cleanup` preserves a second failure without hiding the primary error.
     Io {
         stage: SaveStage,
@@ -74,14 +75,14 @@ pub enum PreCommitError {
 impl PreCommitError {
     pub fn stage(&self) -> Option<SaveStage> {
         match self {
-            Self::Serialize(_) => None,
+            Self::Serialize(_) | Self::Conflict => None,
             Self::Io { stage, .. } => Some(*stage),
         }
     }
 
     pub fn cleanup(&self) -> Option<&io::Error> {
         match self {
-            Self::Serialize(_) => None,
+            Self::Serialize(_) | Self::Conflict => None,
             Self::Io { cleanup, .. } => cleanup.as_ref(),
         }
     }
@@ -122,10 +123,34 @@ impl std::error::Error for ReadFailure {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Revision {
+    len: u64,
+    digest: [u8; 32],
+}
+
+impl Revision {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            digest: *blake3::hash(bytes).as_bytes(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExpectedRevision {
+    Missing,
+    Exact(Revision),
+    /// Compatibility mode for stores whose owner explicitly accepts
+    /// serialized last-writer-wins updates.
+    Any,
+}
+
 #[derive(Debug)]
 pub enum ReadOutcome {
     Missing,
-    Present { bytes: Vec<u8> },
+    Present { bytes: Vec<u8>, revision: Revision },
 }
 
 /// Byte-level persistence boundary. Serialization, schema migration, and
@@ -133,37 +158,142 @@ pub enum ReadOutcome {
 pub trait Persist: Send + Sync {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure>;
 
-    fn commit(&self, path: &Path, bytes: &[u8]) -> Result<AtomicWriteOutcome, PreCommitError>;
+    fn commit(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        expected: ExpectedRevision,
+    ) -> Result<AtomicWriteOutcome, PreCommitError>;
 }
 
 #[derive(Default)]
 pub struct FsPersist {
-    path_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    _instance: (),
 }
 
-impl FsPersist {
-    fn path_lock(&self, path: &Path) -> Arc<Mutex<()>> {
-        crate::lock_util::recover(&self.path_locks)
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+fn normalized_lock_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => {
+                normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR));
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            std::path::Component::Normal(component) => normalized.push(component),
+        }
     }
+    if let (Some(parent), Some(file_name)) = (normalized.parent(), normalized.file_name())
+        && let Ok(canonical_parent) = std::fs::canonicalize(parent)
+    {
+        return canonical_parent.join(file_name);
+    }
+    normalized
+}
+
+fn path_locks() -> &'static Mutex<HashMap<PathBuf, Weak<Mutex<()>>>> {
+    static PATH_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    PATH_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn path_lock(path: &Path) -> Arc<Mutex<()>> {
+    let mut locks = crate::lock_util::recover(path_locks());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let key = normalized_lock_path(path);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
 }
 
 impl Persist for FsPersist {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure> {
+        let path_lock = path_lock(path);
+        let _guard = crate::lock_util::recover(&path_lock);
         read_file_bounded(path, max_bytes)
     }
 
-    fn commit(&self, path: &Path, bytes: &[u8]) -> Result<AtomicWriteOutcome, PreCommitError> {
-        let path_lock = self.path_lock(path);
+    fn commit(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        expected: ExpectedRevision,
+    ) -> Result<AtomicWriteOutcome, PreCommitError> {
+        let path_lock = path_lock(path);
         let _guard = crate::lock_util::recover(&path_lock);
+        verify_expected_revision(path, &expected)?;
         write_bytes_atomic_with(path, bytes, &StdFsOps)
     }
 }
 
 pub fn fs_persist() -> Arc<dyn Persist> {
     Arc::new(FsPersist::default())
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+#[derive(Default)]
+pub struct EphemeralPersist {
+    files: Mutex<HashMap<PathBuf, Vec<u8>>>,
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+impl Persist for EphemeralPersist {
+    fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure> {
+        let files = crate::lock_util::recover(&self.files);
+        let Some(bytes) = files.get(path) else {
+            return Ok(ReadOutcome::Missing);
+        };
+        if bytes.len() > max_bytes {
+            return Err(read_failure(
+                ReadFailureKind::TooLarge,
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ephemeral persistence target exceeds its byte limit",
+                ),
+            ));
+        }
+        Ok(ReadOutcome::Present {
+            bytes: bytes.clone(),
+            revision: Revision::from_bytes(bytes),
+        })
+    }
+
+    fn commit(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        expected: ExpectedRevision,
+    ) -> Result<AtomicWriteOutcome, PreCommitError> {
+        let mut files = crate::lock_util::recover(&self.files);
+        let current = files.get(path).map(|bytes| Revision::from_bytes(bytes));
+        let matches = match expected {
+            ExpectedRevision::Missing => current.is_none(),
+            ExpectedRevision::Exact(expected) => current.as_ref() == Some(&expected),
+            ExpectedRevision::Any => true,
+        };
+        if !matches {
+            return Err(PreCommitError::Conflict);
+        }
+        files.insert(path.to_path_buf(), bytes.to_vec());
+        Ok(AtomicWriteOutcome::Durable)
+    }
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+pub fn ephemeral_persist() -> Arc<dyn Persist> {
+    Arc::new(EphemeralPersist::default())
 }
 
 fn default_fs_persist() -> &'static FsPersist {
@@ -234,7 +364,30 @@ fn read_file_bounded(path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadF
             ),
         ));
     }
-    Ok(ReadOutcome::Present { bytes })
+    let revision = Revision::from_bytes(&bytes);
+    Ok(ReadOutcome::Present { bytes, revision })
+}
+
+fn verify_expected_revision(
+    path: &Path,
+    expected: &ExpectedRevision,
+) -> Result<(), PreCommitError> {
+    match expected {
+        ExpectedRevision::Any => Ok(()),
+        ExpectedRevision::Missing => match read_file_bounded(path, 0) {
+            Ok(ReadOutcome::Missing) => Ok(()),
+            Ok(ReadOutcome::Present { .. }) | Err(_) => Err(PreCommitError::Conflict),
+        },
+        ExpectedRevision::Exact(expected) => {
+            let Ok(max_bytes) = usize::try_from(expected.len) else {
+                return Err(PreCommitError::Conflict);
+            };
+            match read_file_bounded(path, max_bytes) {
+                Ok(ReadOutcome::Present { revision, .. }) if revision == *expected => Ok(()),
+                _ => Err(PreCommitError::Conflict),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,6 +411,8 @@ pub enum SaveIntent {
 pub struct StoreGate {
     status: LoadStatus,
     generation: u64,
+    expected: ExpectedRevision,
+    recovered_source: Option<Vec<u8>>,
 }
 
 impl StoreGate {
@@ -265,6 +420,8 @@ impl StoreGate {
         Self {
             status: LoadStatus::Missing,
             generation: 0,
+            expected: ExpectedRevision::Missing,
+            recovered_source: None,
         }
     }
 
@@ -278,6 +435,15 @@ impl StoreGate {
             LoadStatus::Corrupt | LoadStatus::FutureVersion | LoadStatus::Unreadable
         ));
         self.status = status;
+    }
+
+    pub(crate) fn mark_recovered(&mut self) {
+        if matches!(
+            self.status,
+            LoadStatus::Legacy | LoadStatus::Current | LoadStatus::Recovered
+        ) {
+            self.status = LoadStatus::Recovered;
+        }
     }
 
     fn allows(&self, intent: SaveIntent) -> bool {
@@ -295,6 +461,7 @@ pub struct StoreSpec {
     pub store: &'static str,
     pub schema: u32,
     pub max_bytes: usize,
+    legacy_schema_marker: bool,
 }
 
 impl StoreSpec {
@@ -304,7 +471,13 @@ impl StoreSpec {
             store,
             schema,
             max_bytes,
+            legacy_schema_marker: false,
         }
+    }
+
+    pub const fn allow_legacy_schema_marker(mut self) -> Self {
+        self.legacy_schema_marker = true;
+        self
     }
 }
 
@@ -317,6 +490,8 @@ pub struct LoadedJson<T> {
 #[derive(Debug)]
 pub enum JsonSaveError {
     Blocked(LoadStatus),
+    GenerationExhausted,
+    RecoveryPreservation,
     PreCommit(PreCommitError),
 }
 
@@ -329,8 +504,14 @@ struct Envelope<'a, T> {
     payload: &'a T,
 }
 
-fn loaded_without_value(status: LoadStatus) -> LoadedJson<serde_json::Value> {
-    LoadedJson {
+struct LoadedRaw {
+    value: Option<serde_json::Value>,
+    gate: StoreGate,
+    source_bytes: Option<Vec<u8>>,
+}
+
+fn loaded_without_value(status: LoadStatus, expected: ExpectedRevision) -> LoadedRaw {
+    LoadedRaw {
         value: None,
         gate: if status == LoadStatus::Missing {
             StoreGate::missing()
@@ -338,39 +519,47 @@ fn loaded_without_value(status: LoadStatus) -> LoadedJson<serde_json::Value> {
             StoreGate {
                 status,
                 generation: 0,
+                expected,
+                recovered_source: None,
             }
         },
+        source_bytes: None,
     }
 }
 
-fn load_raw_envelope(
-    persist: &dyn Persist,
-    path: &Path,
-    spec: StoreSpec,
-) -> LoadedJson<serde_json::Value> {
-    let bytes = match persist.read(path, spec.max_bytes) {
-        Ok(ReadOutcome::Missing) => return loaded_without_value(LoadStatus::Missing),
-        Ok(ReadOutcome::Present { bytes }) => bytes,
-        Err(_) => return loaded_without_value(LoadStatus::Unreadable),
+fn load_raw_envelope(persist: &dyn Persist, path: &Path, spec: StoreSpec) -> LoadedRaw {
+    let (bytes, revision) = match persist.read(path, spec.max_bytes) {
+        Ok(ReadOutcome::Missing) => {
+            return loaded_without_value(LoadStatus::Missing, ExpectedRevision::Missing);
+        }
+        Ok(ReadOutcome::Present { bytes, revision }) => (bytes, revision),
+        Err(_) => {
+            return loaded_without_value(LoadStatus::Unreadable, ExpectedRevision::Any);
+        }
     };
+    let expected = ExpectedRevision::Exact(revision);
     let root = match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(root) => root,
-        Err(_) => return loaded_without_value(LoadStatus::Corrupt),
+        Err(_) => return loaded_without_value(LoadStatus::Corrupt, expected),
     };
     let Some(object) = root.as_object() else {
-        return loaded_without_value(LoadStatus::Corrupt);
+        return loaded_without_value(LoadStatus::Corrupt, expected);
     };
     let envelope_candidate = object.contains_key("format")
         || object.contains_key("store")
+        || (object.contains_key("schema") && !spec.legacy_schema_marker)
         || object.contains_key("payload")
         || object.contains_key("generation");
     if !envelope_candidate {
-        return LoadedJson {
+        return LoadedRaw {
             value: Some(root),
             gate: StoreGate {
                 status: LoadStatus::Legacy,
                 generation: 0,
+                expected,
+                recovered_source: None,
             },
+            source_bytes: Some(bytes),
         };
     }
 
@@ -382,26 +571,29 @@ fn load_raw_envelope(
         .and_then(|schema| u32::try_from(schema).ok());
     let generation = object.get("generation").and_then(serde_json::Value::as_u64);
     if format != Some(spec.format) || store != Some(spec.store) {
-        return loaded_without_value(LoadStatus::Corrupt);
+        return loaded_without_value(LoadStatus::Corrupt, expected);
     }
     let Some(schema) = schema else {
-        return loaded_without_value(LoadStatus::Corrupt);
+        return loaded_without_value(LoadStatus::Corrupt, expected);
     };
     if schema > spec.schema {
-        return loaded_without_value(LoadStatus::FutureVersion);
+        return loaded_without_value(LoadStatus::FutureVersion, expected);
     }
     if schema != spec.schema {
-        return loaded_without_value(LoadStatus::Corrupt);
+        return loaded_without_value(LoadStatus::Corrupt, expected);
     }
     let (Some(generation), Some(payload)) = (generation, object.get("payload")) else {
-        return loaded_without_value(LoadStatus::Corrupt);
+        return loaded_without_value(LoadStatus::Corrupt, expected);
     };
-    LoadedJson {
+    LoadedRaw {
         value: Some(payload.clone()),
         gate: StoreGate {
             status: LoadStatus::Current,
             generation,
+            expected,
+            recovered_source: None,
         },
+        source_bytes: Some(bytes),
     }
 }
 
@@ -422,16 +614,13 @@ pub fn load_enveloped<T: DeserializeOwned>(
             value: Some(value),
             gate: raw.gate,
         },
-        Err(_) => loaded_without_value(LoadStatus::Corrupt).map_value(),
-    }
-}
-
-impl LoadedJson<serde_json::Value> {
-    fn map_value<T>(self) -> LoadedJson<T> {
-        LoadedJson {
+        Err(_) => LoadedJson {
             value: None,
-            gate: self.gate,
-        }
+            gate: StoreGate {
+                status: LoadStatus::Corrupt,
+                ..raw.gate
+            },
+        },
     }
 }
 
@@ -452,13 +641,20 @@ pub fn load_enveloped_items<T: DeserializeOwned>(
             let mut gate = raw.gate;
             if decoded.rejected > 0 {
                 gate.status = LoadStatus::Recovered;
+                gate.recovered_source = raw.source_bytes;
             }
             LoadedJson {
                 value: Some(decoded),
                 gate,
             }
         }
-        Err(_) => loaded_without_value(LoadStatus::Corrupt).map_value(),
+        Err(_) => LoadedJson {
+            value: None,
+            gate: StoreGate {
+                status: LoadStatus::Corrupt,
+                ..raw.gate
+            },
+        },
     }
 }
 
@@ -473,7 +669,10 @@ pub fn save_enveloped<T: Serialize>(
     if !gate.allows(intent) {
         return Err(JsonSaveError::Blocked(gate.status));
     }
-    let generation = gate.generation.saturating_add(1);
+    let generation = gate
+        .generation
+        .checked_add(1)
+        .ok_or(JsonSaveError::GenerationExhausted)?;
     let envelope = Envelope {
         format: spec.format,
         store: spec.store,
@@ -484,12 +683,54 @@ pub fn save_enveloped<T: Serialize>(
     let bytes = serde_json::to_vec_pretty(&envelope)
         .map_err(PreCommitError::Serialize)
         .map_err(JsonSaveError::PreCommit)?;
+    preserve_recovered_source(persist, path, spec.max_bytes, gate)?;
     let outcome = persist
-        .commit(path, &bytes)
+        .commit(path, &bytes, gate.expected.clone())
         .map_err(JsonSaveError::PreCommit)?;
     gate.status = LoadStatus::Current;
     gate.generation = generation;
+    gate.expected = ExpectedRevision::Exact(Revision::from_bytes(&bytes));
     Ok(outcome)
+}
+
+fn preserve_recovered_source(
+    persist: &dyn Persist,
+    path: &Path,
+    max_bytes: usize,
+    gate: &mut StoreGate,
+) -> Result<(), JsonSaveError> {
+    let Some(source) = gate.recovered_source.as_ref() else {
+        return Ok(());
+    };
+    let file_name = path
+        .file_name()
+        .ok_or(JsonSaveError::RecoveryPreservation)?;
+    let digest = blake3::hash(source);
+    let mut quarantine_name = OsString::from(".");
+    quarantine_name.push(file_name);
+    quarantine_name.push(".recovered-");
+    quarantine_name.push(&digest.to_hex()[..16]);
+    quarantine_name.push(".json");
+    let quarantine = path.with_file_name(quarantine_name);
+    let expected = match persist.read(&quarantine, max_bytes) {
+        Ok(ReadOutcome::Missing) => ExpectedRevision::Missing,
+        Ok(ReadOutcome::Present { bytes, revision }) if bytes == *source => {
+            ExpectedRevision::Exact(revision)
+        }
+        Ok(ReadOutcome::Present { .. }) | Err(_) => {
+            return Err(JsonSaveError::RecoveryPreservation);
+        }
+    };
+    match persist
+        .commit(&quarantine, source, expected)
+        .map_err(JsonSaveError::PreCommit)?
+    {
+        AtomicWriteOutcome::Durable => {
+            gate.recovered_source = None;
+            Ok(())
+        }
+        AtomicWriteOutcome::CommittedButNotDurable(_) => Err(JsonSaveError::RecoveryPreservation),
+    }
 }
 
 trait FsOps {
@@ -553,12 +794,22 @@ impl FsOps for StdFsOps {}
 /// target. Concurrent writers in this process are serialized per pathname.
 /// The port remains last-writer-wins and does not promise a multi-file
 /// transaction or cross-process compare-and-swap.
+/// Compatibility facade for stores that keep their schema and concurrency
+/// policy outside [`Persist`]. Versioned stores should use `save_enveloped`
+/// so stale snapshots are rejected.
 pub fn save_json_atomic<T: Serialize>(
     path: &Path,
     value: &T,
 ) -> Result<AtomicWriteOutcome, PreCommitError> {
     let bytes = serde_json::to_vec_pretty(value).map_err(PreCommitError::Serialize)?;
-    default_fs_persist().commit(path, &bytes)
+    commit_bytes_atomic(path, &bytes)
+}
+
+pub(crate) fn commit_bytes_atomic(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<AtomicWriteOutcome, PreCommitError> {
+    default_fs_persist().commit(path, bytes, ExpectedRevision::Any)
 }
 
 #[cfg(test)]
@@ -695,7 +946,7 @@ enum LoadFailure {
 fn read_target(path: &Path) -> Result<Option<String>, LoadFailure> {
     match default_fs_persist().read(path, LEGACY_JSON_MAX_BYTES) {
         Ok(ReadOutcome::Missing) => Ok(None),
-        Ok(ReadOutcome::Present { bytes }) => String::from_utf8(bytes)
+        Ok(ReadOutcome::Present { bytes, .. }) => String::from_utf8(bytes)
             .map(Some)
             .map_err(|_| LoadFailure::Io),
         Err(failure) if failure.kind == ReadFailureKind::Symlink => Err(LoadFailure::Symlink),
@@ -744,11 +995,14 @@ pub(crate) fn record_unreadable(store: &'static str) {
 }
 
 pub fn record_save_failure(store: &'static str, error: &PreCommitError) {
-    let stage = error
-        .stage()
-        .map_or("serialize value".to_string(), |stage| stage.to_string());
+    let stage = match error {
+        PreCommitError::Serialize(_) => "serialize value".to_string(),
+        PreCommitError::Conflict => "validate the loaded revision".to_string(),
+        PreCommitError::Io { stage, .. } => stage.to_string(),
+    };
     let reason = match error {
         PreCommitError::Serialize(source) => format!("{:?}", source.classify()),
+        PreCommitError::Conflict => "stale snapshot".to_string(),
         PreCommitError::Io { source, .. } => format!("{:?}", source.kind()),
     };
     let cleanup = error
@@ -765,6 +1019,14 @@ pub fn record_save_failure(store: &'static str, error: &PreCommitError) {
 pub fn record_json_save_failure(store: &'static str, error: &JsonSaveError) {
     match error {
         JsonSaveError::PreCommit(error) => record_save_failure(store, error),
+        JsonSaveError::GenerationExhausted | JsonSaveError::RecoveryPreservation => {
+            let mut health = crate::lock_util::recover(health_state());
+            health.save_failures = health.save_failures.saturating_add(1);
+            health.last_issue = Some(format!(
+                "{store}: save blocked to preserve the authoritative source data"
+            ));
+            publish_issue(&mut health);
+        }
         JsonSaveError::Blocked(status) => {
             let mut health = crate::lock_util::recover(health_state());
             health.save_failures = health.save_failures.saturating_add(1);
@@ -926,12 +1188,28 @@ mod tests {
                     io::Error::new(io::ErrorKind::InvalidData, "fake value is oversized"),
                 ));
             }
-            Ok(ReadOutcome::Present { bytes })
+            let revision = Revision::from_bytes(&bytes);
+            Ok(ReadOutcome::Present { bytes, revision })
         }
 
-        fn commit(&self, _path: &Path, bytes: &[u8]) -> Result<AtomicWriteOutcome, PreCommitError> {
+        fn commit(
+            &self,
+            _path: &Path,
+            bytes: &[u8],
+            expected: ExpectedRevision,
+        ) -> Result<AtomicWriteOutcome, PreCommitError> {
             self.commits.fetch_add(1, Ordering::Relaxed);
-            *crate::lock_util::recover(&self.bytes) = Some(bytes.to_vec());
+            let mut current = crate::lock_util::recover(&self.bytes);
+            let revision = current.as_deref().map(Revision::from_bytes);
+            let matches = match expected {
+                ExpectedRevision::Missing => current.is_none(),
+                ExpectedRevision::Exact(expected) => revision.as_ref() == Some(&expected),
+                ExpectedRevision::Any => true,
+            };
+            if !matches {
+                return Err(PreCommitError::Conflict);
+            }
+            *current = Some(bytes.to_vec());
             if self.committed_not_durable {
                 Ok(AtomicWriteOutcome::CommittedButNotDurable(
                     io::Error::other("injected directory sync failure"),
@@ -1050,6 +1328,10 @@ mod tests {
                     .as_slice(),
                 LoadStatus::FutureVersion,
             ),
+            (
+                br#"{"schema":1,"name":"legacy-looking","count":1}"#.as_slice(),
+                LoadStatus::Corrupt,
+            ),
         ];
         for (bytes, expected) in cases {
             let persist = MemoryPersist::new(Some(bytes.to_vec()));
@@ -1119,6 +1401,158 @@ mod tests {
             Some(value)
         );
         assert_eq!(persist.commits.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stale_store_gate_cannot_overwrite_a_newer_snapshot() {
+        let temp = TempDir::new();
+        let path = temp.path().join("state.json");
+        let persist = FsPersist::default();
+        let mut initial_gate = StoreGate::missing();
+        save_enveloped(
+            &persist,
+            &path,
+            TEST_STORE,
+            &Item {
+                name: "initial".to_string(),
+                count: 1,
+            },
+            &mut initial_gate,
+            SaveIntent::Explicit,
+        )
+        .unwrap();
+        let mut first = load_enveloped::<Item>(&persist, &path, TEST_STORE).gate;
+        let mut stale = load_enveloped::<Item>(&persist, &path, TEST_STORE).gate;
+
+        save_enveloped(
+            &persist,
+            &path,
+            TEST_STORE,
+            &Item {
+                name: "newer".to_string(),
+                count: 2,
+            },
+            &mut first,
+            SaveIntent::Explicit,
+        )
+        .unwrap();
+        let result = save_enveloped(
+            &FsPersist::default(),
+            &path,
+            TEST_STORE,
+            &Item {
+                name: "stale".to_string(),
+                count: 3,
+            },
+            &mut stale,
+            SaveIntent::Explicit,
+        );
+
+        assert!(matches!(
+            result,
+            Err(JsonSaveError::PreCommit(PreCommitError::Conflict))
+        ));
+        assert_eq!(
+            load_enveloped::<Item>(&persist, &path, TEST_STORE)
+                .value
+                .unwrap()
+                .name,
+            "newer"
+        );
+    }
+
+    #[test]
+    fn generation_overflow_fails_before_port_io() {
+        let persist = MemoryPersist::new(None);
+        let mut gate = StoreGate {
+            status: LoadStatus::Current,
+            generation: u64::MAX,
+            expected: ExpectedRevision::Any,
+            recovered_source: None,
+        };
+        let result = save_enveloped(
+            &persist,
+            Path::new("memory.json"),
+            TEST_STORE,
+            &Item {
+                name: "overflow".to_string(),
+                count: 1,
+            },
+            &mut gate,
+            SaveIntent::Explicit,
+        );
+        assert!(matches!(result, Err(JsonSaveError::GenerationExhausted)));
+        assert_eq!(persist.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(persist.commits.load(Ordering::Relaxed), 0);
+        assert_eq!(gate.generation, u64::MAX);
+    }
+
+    #[test]
+    fn recovered_item_save_preserves_the_original_raw_store() {
+        let temp = TempDir::new();
+        let path = temp.file(
+            "items.json",
+            r#"{"items":[{"name":"valid","count":1},{"name":"rejected","count":"many"}]}"#,
+        );
+        let original = std::fs::read(&path).unwrap();
+        let persist = FsPersist::default();
+        let mut loaded = load_enveloped_items::<Item>(&persist, &path, TEST_STORE);
+        assert_eq!(loaded.gate.status(), LoadStatus::Recovered);
+        let decoded = loaded.value.take().unwrap();
+
+        save_enveloped(
+            &persist,
+            &path,
+            TEST_STORE,
+            &decoded.items,
+            &mut loaded.gate,
+            SaveIntent::Explicit,
+        )
+        .unwrap();
+
+        let quarantine = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|candidate| {
+                candidate
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(".recovered-"))
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(quarantine).unwrap(), original);
+        assert_eq!(loaded.gate.status(), LoadStatus::Current);
+    }
+
+    #[test]
+    fn global_path_lock_registry_reclaims_unused_entries() {
+        let baseline_lock = path_lock(Path::new("baseline"));
+        let baseline = crate::lock_util::recover(path_locks()).len();
+        drop(baseline_lock);
+        for index in 0..512 {
+            drop(path_lock(Path::new(&format!("transient-{index}"))));
+        }
+        let survivor = path_lock(Path::new("survivor"));
+        let retained = crate::lock_util::recover(path_locks()).len();
+        assert!(retained <= baseline.saturating_add(1));
+        drop(survivor);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_symlink_aliases_share_the_same_in_process_lock() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new();
+        let real_parent = temp.dir("real");
+        let alias_parent = temp.path().join("alias");
+        symlink(&real_parent, &alias_parent).unwrap();
+        let real = real_parent.join("state.json");
+        let alias = alias_parent.join("state.json");
+
+        let real_lock = path_lock(&real);
+        let alias_lock = path_lock(&alias);
+
+        assert!(Arc::ptr_eq(&real_lock, &alias_lock));
     }
 
     #[test]
@@ -1297,7 +1731,9 @@ mod tests {
             workers.push(std::thread::spawn(move || {
                 let bytes = format!(r#"{{"writer":{index},"payload":"complete"}}"#);
                 barrier.wait();
-                persist.commit(&path, bytes.as_bytes()).unwrap();
+                persist
+                    .commit(&path, bytes.as_bytes(), ExpectedRevision::Any)
+                    .unwrap();
             }));
         }
         barrier.wait();

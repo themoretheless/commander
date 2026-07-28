@@ -48,6 +48,8 @@ pub struct VersionRecord {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct VersionManifest {
     records: Vec<VersionRecord>,
+    #[serde(default)]
+    identities: std::collections::BTreeMap<String, PathIdentity>,
 }
 
 struct LoadedManifest {
@@ -146,10 +148,32 @@ fn preserve_at_inner(
         return Ok(None);
     }
     let persist = manifest_persist();
+    let _manifest_guard = crate::lock_util::recover(manifest_transaction());
     let loaded = load_manifest_with(persist, root);
     if loaded.blocked {
         return Err(version_failure(
             "Version manifest is unreadable or incompatible; preservation is blocked",
+        ));
+    }
+    if let Some(existing) = loaded
+        .manifest
+        .records
+        .iter()
+        .find(|record| record.key == key)
+    {
+        if existing.operation_id == *operation_id
+            && existing.original == path
+            && validate_record(
+                root,
+                existing,
+                loaded.manifest.identities.get(&existing.key.0),
+            )
+            .is_ok()
+        {
+            return Ok(Some(existing.clone()));
+        }
+        return Err(version_failure(
+            "Version key is already bound to a different authoritative record",
         ));
     }
     let stored = record_path(root, operation_id, &key, path);
@@ -158,23 +182,43 @@ fn preserve_at_inner(
             "Generated version path escaped the configured versions root",
         ));
     }
-    if let Some(parent) = stored.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            version_failure(format!(
-                "Could not create version directory {}: {error}",
-                parent.display()
-            ))
-        })?;
+    if crate::fs_util::path_is_taken(&stored) {
+        return Err(version_failure(
+            "Generated version path is occupied by untracked data",
+        ));
     }
-    if let Err(error) = copy_path(path, &stored) {
-        let _ = remove_path(&stored);
+    if let Some(parent) = stored.parent() {
+        ensure_version_parent(root, parent).map_err(version_failure)?;
+    }
+    let copy_receipt = match copy_path_tracked(path, &stored) {
+        Ok(receipt) => receipt,
+        Err(failure) => {
+            if let Some(identity) = failure.destination_identity.as_ref() {
+                remove_path_if_object_matches(&stored, identity);
+            }
+            return Err(version_failure(format!(
+                "Could not preserve {} at {}: {}",
+                path.display(),
+                stored.display(),
+                failure.error
+            )));
+        }
+    };
+    let Some(created_shallow) = copy_receipt.destination_identity else {
         return Err(version_failure(format!(
-            "Could not preserve {} at {}: {error}",
-            path.display(),
+            "Could not bind the new version {}",
             stored.display()
         )));
-    }
+    };
+    let created_identity = PathIdentity::observe_deep(&stored).map_err(|error| {
+        remove_path_if_object_matches(&stored, &created_shallow);
+        version_failure(format!(
+            "Could not bind the new version {}: {error}",
+            stored.display()
+        ))
+    })?;
     let after = PathIdentity::observe(path).map_err(|error| {
+        remove_path_if_identity_matches(&stored, &created_identity);
         let mut failure = crate::ports::NativeFailure::from_io(&error);
         failure.message = format!(
             "Could not recheck {} after versioning: {}",
@@ -184,7 +228,7 @@ fn preserve_at_inner(
         failure
     })?;
     if !before.same_version(&after) || !paths_equal(path, &stored) {
-        let _ = remove_path(&stored);
+        remove_path_if_identity_matches(&stored, &created_identity);
         return Err(crate::ports::NativeFailure {
             kind: crate::ports::NativeFailureKind::Stale,
             message: format!(
@@ -194,7 +238,7 @@ fn preserve_at_inner(
         });
     }
     if let Err(message) = validate_stored_path(root, &stored) {
-        let _ = remove_path(&stored);
+        remove_path_if_identity_matches(&stored, &created_identity);
         return Err(version_failure(message));
     }
 
@@ -207,19 +251,12 @@ fn preserve_at_inner(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs()),
     };
-    let _manifest_guard = crate::lock_util::recover(manifest_transaction());
-    let mut loaded = load_manifest_with(persist, root);
-    if loaded.blocked {
-        let _ = remove_path(&stored);
-        return Err(version_failure(
-            "Version manifest changed to an unreadable or incompatible state",
-        ));
-    }
+    let mut loaded = loaded;
+    loaded.manifest.records.push(record.clone());
     loaded
         .manifest
-        .records
-        .retain(|existing| existing.key != record.key);
-    loaded.manifest.records.push(record.clone());
+        .identities
+        .insert(record.key.0.clone(), created_identity.clone());
     match save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate) {
         Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
             prune_manifest(
@@ -235,7 +272,7 @@ fn preserve_at_inner(
             crate::persistence::record_durability_warning("Version manifest", &error);
         }
         Err(error) => {
-            let _ = remove_path(&stored);
+            remove_path_if_identity_matches(&stored, &created_identity);
             crate::persistence::record_json_save_failure("Version manifest", &error);
             return Err(version_failure("Could not save version manifest"));
         }
@@ -277,19 +314,37 @@ pub(crate) fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(
     if authoritative != *record {
         return Err("Version record changed before discard".to_string());
     }
-    validate_stored_path(root, &authoritative.stored)?;
+    let authoritative_receipt = loaded
+        .manifest
+        .identities
+        .get(&authoritative.key.0)
+        .cloned();
+    validate_record(root, &authoritative, authoritative_receipt.as_ref())?;
+    let stored_identity = PathIdentity::observe_deep(&authoritative.stored)
+        .map_err(|error| format!("Could not bind rejected version before discard: {error}"))?;
     loaded
         .manifest
         .records
         .retain(|candidate| candidate.key != record.key);
+    loaded.manifest.identities.remove(&record.key.0);
     match save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => remove_path(&authoritative.stored)
-            .map_err(|error| {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
+            validate_stored_path(root, &authoritative.stored)?;
+            let current = PathIdentity::observe_deep(&authoritative.stored)
+                .map_err(|error| format!("Could not revalidate rejected version: {error}"))?;
+            if !stored_identity.same_binding(&current) {
+                return Err(
+                    "Rejected version changed after manifest commit; payload was retained"
+                        .to_string(),
+                );
+            }
+            remove_path(&authoritative.stored).map_err(|error| {
                 format!(
                     "Could not remove rejected version {}: {error}",
                     authoritative.stored.display()
                 )
-            }),
+            })
+        }
         Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
             crate::persistence::record_durability_warning("Version manifest", &error);
             Ok(())
@@ -356,7 +411,30 @@ fn prune_manifest(
     if expired.is_empty() {
         return;
     }
-    let pruned = VersionManifest { records: retained };
+    let mut expired_identities = Vec::with_capacity(expired.len());
+    for record in &expired {
+        if validate_record(root, record, manifest.identities.get(&record.key.0)).is_err() {
+            return;
+        }
+        let Ok(identity) = PathIdentity::observe_deep(&record.stored) else {
+            return;
+        };
+        expired_identities.push(identity);
+    }
+    let retained_keys = retained
+        .iter()
+        .map(|record| record.key.0.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let identities = manifest
+        .identities
+        .iter()
+        .filter(|(key, _)| retained_keys.contains(*key))
+        .map(|(key, identity)| (key.clone(), identity.clone()))
+        .collect();
+    let pruned = VersionManifest {
+        records: retained,
+        identities,
+    };
     // Publish the manifest before deleting data. A failed policy update keeps
     // extra recovery data; it never leaves a manifest pointing at a deleted
     // version.
@@ -371,8 +449,14 @@ fn prune_manifest(
             return;
         }
     }
-    for record in expired {
+    for (record, expected) in expired.into_iter().zip(expired_identities) {
         if validate_stored_path(root, &record.stored).is_err() {
+            continue;
+        }
+        let Ok(current) = PathIdentity::observe_deep(&record.stored) else {
+            continue;
+        };
+        if !expected.same_binding(&current) {
             continue;
         }
         let _ = remove_path(&record.stored);
@@ -394,6 +478,7 @@ pub fn restore(record: &VersionRecord) -> Result<(), String> {
 }
 
 fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
+    let _manifest_guard = crate::lock_util::recover(manifest_transaction());
     if crate::fs_util::path_is_taken(&record.original) {
         return Err(format!(
             "Restore destination is occupied: {}",
@@ -414,11 +499,41 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
     else {
         return Err("Version record is not present in the authoritative manifest".to_string());
     };
-    validate_stored_path(root, &authoritative.stored)?;
-    copy_path(&authoritative.stored, &authoritative.original)
-        .map_err(|error| format!("Could not restore {}: {error}", record.original.display()))?;
-    if !paths_equal(&authoritative.stored, &authoritative.original) {
-        let _ = remove_path(&authoritative.original);
+    validate_record(
+        root,
+        authoritative,
+        loaded.manifest.identities.get(&authoritative.key.0),
+    )?;
+    let stored_identity = PathIdentity::observe_deep(&authoritative.stored)
+        .map_err(|error| format!("Could not bind stored version before restore: {error}"))?;
+    if crate::fs_util::path_is_taken(&authoritative.original) {
+        return Err(format!(
+            "Restore destination is occupied: {}",
+            authoritative.original.display()
+        ));
+    }
+    let restore_receipt = match copy_path_tracked(&authoritative.stored, &authoritative.original) {
+        Ok(receipt) => receipt,
+        Err(failure) => {
+            if let Some(identity) = failure.destination_identity.as_ref() {
+                remove_path_if_object_matches(&authoritative.original, identity);
+            }
+            return Err(format!(
+                "Could not restore {}: {}",
+                record.original.display(),
+                failure.error
+            ));
+        }
+    };
+    let stored_after = PathIdentity::observe_deep(&authoritative.stored);
+    let stored_changed = match stored_after {
+        Ok(current) => !stored_identity.same_binding(&current),
+        Err(_) => true,
+    };
+    if stored_changed || !paths_equal(&authoritative.stored, &authoritative.original) {
+        if let Some(identity) = restore_receipt.destination_identity.as_ref() {
+            remove_path_if_object_matches(&authoritative.original, identity);
+        }
         return Err(format!(
             "Restored version failed verification: {}",
             authoritative.original.display()
@@ -556,11 +671,145 @@ fn validate_stored_path(root: &Path, stored: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn manifest_paths_are_valid(root: &Path, manifest: &VersionManifest) -> bool {
+fn ensure_version_parent(root: &Path, parent: &Path) -> Result<(), String> {
+    if !normalized_absolute(parent).is_some_and(|parent| {
+        normalized_absolute(root).is_some_and(|root| parent.starts_with(root))
+    }) {
+        return Err("Version directory escapes the versions root".to_string());
+    }
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err("Versions root is not a trusted directory".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(root).map_err(|error| {
+                format!("Could not create versions root {}: {error}", root.display())
+            })?;
+        }
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect versions root {}: {error}",
+                root.display()
+            ));
+        }
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|error| format!("Could not verify versions root {}: {error}", root.display()))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err("Versions root is not a trusted directory".to_string());
+    }
+    let relative = parent
+        .strip_prefix(root)
+        .map_err(|_| "Version directory is outside the versions root".to_string())?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err("Version directory contains an unsafe component".to_string());
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "Version directory component is not trusted: {}",
+                    current.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current).map_err(|error| {
+                    format!(
+                        "Could not create version directory {}: {error}",
+                        current.display()
+                    )
+                })?;
+                let metadata = fs::symlink_metadata(&current).map_err(|error| {
+                    format!(
+                        "Could not verify version directory {}: {error}",
+                        current.display()
+                    )
+                })?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!(
+                        "Version directory component is not trusted: {}",
+                        current.display()
+                    ));
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect version directory {}: {error}",
+                    current.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_record(
+    root: &Path,
+    record: &VersionRecord,
+    expected_identity: Option<&PathIdentity>,
+) -> Result<(), String> {
+    let expected = record_path(root, &record.operation_id, &record.key, &record.original);
+    if normalized_absolute(&expected) != normalized_absolute(&record.stored) {
+        return Err("Version record path does not match its authoritative key".to_string());
+    }
+    validate_stored_path(root, &record.stored)?;
+    let expected_identity =
+        expected_identity.ok_or_else(|| "Version record has no payload identity".to_string())?;
+    let current = PathIdentity::observe_deep(&record.stored)
+        .map_err(|_| "Stored version identity could not be verified".to_string())?;
+    if !expected_identity.same_binding(&current) {
+        return Err("Stored version changed after it was recorded".to_string());
+    }
+    Ok(())
+}
+
+fn validate_manifest(root: &Path, manifest: &mut VersionManifest) -> Result<bool, ()> {
     let mut paths = std::collections::HashSet::new();
-    manifest.records.iter().all(|record| {
-        paths.insert(record.stored.clone()) && validate_stored_path(root, &record.stored).is_ok()
-    })
+    let mut keys = std::collections::HashSet::new();
+    let mut recovered = false;
+    for record in &manifest.records {
+        if !keys.insert(record.key.clone()) || !paths.insert(record.stored.clone()) {
+            return Err(());
+        }
+        let expected = record_path(root, &record.operation_id, &record.key, &record.original);
+        if normalized_absolute(&expected) != normalized_absolute(&record.stored)
+            || validate_stored_path(root, &record.stored).is_err()
+        {
+            return Err(());
+        }
+        let current = PathIdentity::observe_deep(&record.stored).map_err(|_| ())?;
+        match manifest.identities.get(&record.key.0) {
+            Some(expected) if expected.same_binding(&current) => {}
+            Some(_) => return Err(()),
+            None => {
+                manifest.identities.insert(record.key.0.clone(), current);
+                recovered = true;
+            }
+        }
+    }
+    if manifest.identities.len() != manifest.records.len() {
+        return Err(());
+    }
+    Ok(recovered)
+}
+
+fn remove_path_if_identity_matches(path: &Path, expected: &PathIdentity) {
+    if let Ok(current) = PathIdentity::observe_deep(path)
+        && expected.same_binding(&current)
+    {
+        let _ = remove_path(path);
+    }
+}
+
+fn remove_path_if_object_matches(path: &Path, expected: &PathIdentity) {
+    if let Ok(current) = PathIdentity::observe(path)
+        && current.path == expected.path
+        && expected.same_object(&current)
+    {
+        let _ = remove_path(path);
+    }
 }
 
 fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) -> LoadedManifest {
@@ -577,13 +826,16 @@ fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) ->
             | crate::persistence::LoadStatus::FutureVersion
             | crate::persistence::LoadStatus::Unreadable
     );
-    let manifest = loaded.value.unwrap_or_default();
-    if !blocked
-        && status != crate::persistence::LoadStatus::Missing
-        && !manifest_paths_are_valid(root, &manifest)
-    {
-        gate.block(crate::persistence::LoadStatus::Corrupt);
-        blocked = true;
+    let mut manifest = loaded.value.unwrap_or_default();
+    if !blocked && status != crate::persistence::LoadStatus::Missing {
+        match validate_manifest(root, &mut manifest) {
+            Ok(true) => gate.mark_recovered(),
+            Ok(false) => {}
+            Err(()) => {
+                gate.block(crate::persistence::LoadStatus::Corrupt);
+                blocked = true;
+            }
+        }
     }
     if blocked {
         crate::persistence::record_unreadable("Version manifest");
@@ -616,52 +868,94 @@ fn save_manifest_with(
     )
 }
 
-fn copy_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+struct CopyPathFailure {
+    error: std::io::Error,
+    destination_identity: Option<Box<PathIdentity>>,
+}
+
+struct CopyPathReceipt {
+    destination_identity: Option<PathIdentity>,
+}
+
+fn copy_path_tracked(
+    source: &Path,
+    destination: &Path,
+) -> Result<CopyPathReceipt, CopyPathFailure> {
     enum Task {
         Copy(PathBuf, PathBuf),
         SetPermissions(PathBuf, fs::Permissions),
     }
 
+    let root_destination = destination.to_path_buf();
+    let mut destination_identity = None;
     let mut tasks = vec![Task::Copy(source.to_path_buf(), destination.to_path_buf())];
-    while let Some(task) = tasks.pop() {
-        match task {
-            Task::SetPermissions(path, permissions) => {
-                fs::set_permissions(path, permissions)?;
-            }
-            Task::Copy(source, destination) => {
-                let metadata = fs::symlink_metadata(&source)?;
-                if metadata.file_type().is_symlink() {
-                    let target = fs::read_link(&source)?;
-                    create_symlink(&target, &destination, source.is_dir())?;
-                    continue;
+    let result = (|| {
+        while let Some(task) = tasks.pop() {
+            match task {
+                Task::SetPermissions(path, permissions) => {
+                    fs::set_permissions(path, permissions)?;
                 }
-                if metadata.is_dir() {
-                    fs::create_dir(&destination)?;
-                    tasks.push(Task::SetPermissions(
-                        destination.clone(),
-                        metadata.permissions(),
-                    ));
-                    let mut children = fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
-                    children.sort_by_key(|entry| entry.file_name());
-                    for entry in children.into_iter().rev() {
-                        tasks.push(Task::Copy(
-                            entry.path(),
-                            destination.join(entry.file_name()),
-                        ));
+                Task::Copy(source, destination) => {
+                    let metadata = fs::symlink_metadata(&source)?;
+                    if metadata.file_type().is_symlink() {
+                        let target = fs::read_link(&source)?;
+                        create_symlink(&target, &destination, source.is_dir())?;
+                        if destination == root_destination {
+                            destination_identity = PathIdentity::observe(&destination).ok();
+                        }
+                        continue;
                     }
-                    continue;
+                    if metadata.is_dir() {
+                        fs::create_dir(&destination)?;
+                        if destination == root_destination {
+                            destination_identity = PathIdentity::observe(&destination).ok();
+                        }
+                        tasks.push(Task::SetPermissions(
+                            destination.clone(),
+                            metadata.permissions(),
+                        ));
+                        let mut children = fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
+                        children.sort_by_key(|entry| entry.file_name());
+                        for entry in children.into_iter().rev() {
+                            tasks.push(Task::Copy(
+                                entry.path(),
+                                destination.join(entry.file_name()),
+                            ));
+                        }
+                        continue;
+                    }
+                    let mut options = fs::OpenOptions::new();
+                    options.write(true).create_new(true);
+                    let mut input = fs::File::open(&source)?;
+                    let mut output = options.open(&destination)?;
+                    if destination == root_destination {
+                        destination_identity = PathIdentity::observe(&destination).ok();
+                    }
+                    std::io::copy(&mut input, &mut output)?;
+                    output.sync_all()?;
+                    fs::set_permissions(destination, metadata.permissions())?;
                 }
-                let mut options = fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                let mut input = fs::File::open(&source)?;
-                let mut output = options.open(&destination)?;
-                std::io::copy(&mut input, &mut output)?;
-                output.sync_all()?;
-                fs::set_permissions(destination, metadata.permissions())?;
             }
         }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(CopyPathReceipt {
+            destination_identity,
+        }),
+        Err(error) => Err(CopyPathFailure {
+            error,
+            destination_identity: destination_identity.map(Box::new),
+        }),
     }
-    Ok(())
+}
+
+#[cfg(test)]
+fn copy_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    match copy_path_tracked(source, destination) {
+        Ok(_) => Ok(()),
+        Err(failure) => Err(failure.error),
+    }
 }
 
 pub fn paths_equal(left: &Path, right: &Path) -> bool {
@@ -849,6 +1143,129 @@ mod tests {
     }
 
     #[test]
+    fn repeated_same_key_preserve_keeps_the_authoritative_payload() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "authoritative");
+        let operation = OperationId("same-key".to_string());
+        let key = operation.step_key(0, &original);
+        let first = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            key.clone(),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        std::fs::write(&original, "newer source").unwrap();
+
+        let replay = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            key,
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(replay, first);
+        assert_eq!(
+            std::fs::read_to_string(&first.stored).unwrap(),
+            "authoritative"
+        );
+        assert_eq!(load_manifest(&versions).records, vec![first]);
+    }
+
+    #[test]
+    fn replaced_version_payload_blocks_restore_and_discard() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "authoritative");
+        let operation = OperationId("replaced-payload".to_string());
+        let record = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Compact,
+        )
+        .unwrap()
+        .unwrap();
+        let replacement = temp.file("replacement.txt", "substituted!!");
+        std::fs::rename(replacement, &record.stored).unwrap();
+        std::fs::remove_file(&original).unwrap();
+
+        let loaded = load_manifest_with(manifest_persist(), &versions);
+
+        assert!(loaded.blocked);
+        assert!(restore_at(&versions, &record).is_err());
+        assert!(discard_record_at(&versions, &record).is_err());
+        assert!(record.stored.exists());
+        assert!(!original.exists());
+    }
+
+    #[test]
+    fn legacy_manifest_recovers_identity_receipts_without_write_on_load() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "authoritative");
+        let operation = OperationId("legacy-receipt".to_string());
+        let record = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        let legacy = serde_json::to_vec_pretty(&VersionManifest {
+            records: vec![record],
+            identities: Default::default(),
+        })
+        .unwrap();
+        std::fs::write(manifest_path(&versions), &legacy).unwrap();
+
+        let loaded = load_manifest_with(manifest_persist(), &versions);
+
+        assert!(!loaded.blocked);
+        assert_eq!(
+            loaded.gate.status(),
+            crate::persistence::LoadStatus::Recovered
+        );
+        assert_eq!(loaded.manifest.identities.len(), 1);
+        assert_eq!(std::fs::read(manifest_path(&versions)).unwrap(), legacy);
+    }
+
+    #[test]
+    fn stale_forged_record_cannot_restore_or_discard_authoritative_data() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "authoritative");
+        let operation = OperationId("stale-record".to_string());
+        let record = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        let mut forged = record.clone();
+        forged.created_at_secs = forged.created_at_secs.saturating_add(1);
+        std::fs::remove_file(&original).unwrap();
+
+        assert!(restore_at(&versions, &forged).is_err());
+        assert!(discard_record_at(&versions, &forged).is_err());
+        assert!(!original.exists());
+        assert!(record.stored.exists());
+        assert_eq!(load_manifest(&versions).records, vec![record]);
+    }
+
+    #[test]
     fn expected_binding_rejects_replacement_without_publishing_a_version() {
         let temp = TempDir::new();
         let versions = temp.path().join("versions");
@@ -1015,6 +1432,7 @@ mod tests {
         };
         let legacy = VersionManifest {
             records: vec![record.clone()],
+            identities: Default::default(),
         };
         std::fs::write(
             manifest_path(&versions),
@@ -1028,6 +1446,68 @@ mod tests {
         assert!(restore_at(&versions, &record).is_err());
         assert_eq!(std::fs::read_to_string(external).unwrap(), "protected");
         assert!(!original.exists());
+    }
+
+    #[test]
+    fn manifest_cannot_rebind_a_record_to_an_internal_control_file() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let path = manifest_path(&versions);
+        let record = VersionRecord {
+            operation_id: OperationId("control-file".to_string()),
+            key: IdempotencyKey("control-key".to_string()),
+            original: temp.path().join("restore.txt"),
+            stored: path.clone(),
+            created_at_secs: 1,
+        };
+        let bytes = serde_json::to_vec_pretty(&VersionManifest {
+            records: vec![record.clone()],
+            identities: Default::default(),
+        })
+        .unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(discard_record_at(&versions, &record).is_err());
+        assert!(restore_at(&versions, &record).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn duplicate_manifest_keys_fail_closed_without_deleting_payloads() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let original = temp.path().join("restore.txt");
+        let key = IdempotencyKey("duplicate-key".to_string());
+        let make_record = |operation: &str| {
+            let operation_id = OperationId(operation.to_string());
+            let stored = record_path(&versions, &operation_id, &key, &original);
+            std::fs::create_dir_all(stored.parent().unwrap()).unwrap();
+            std::fs::write(&stored, operation).unwrap();
+            VersionRecord {
+                operation_id,
+                key: key.clone(),
+                original: original.clone(),
+                stored,
+                created_at_secs: 1,
+            }
+        };
+        let first = make_record("first");
+        let second = make_record("second");
+        std::fs::write(
+            manifest_path(&versions),
+            serde_json::to_vec_pretty(&VersionManifest {
+                records: vec![first.clone(), second.clone()],
+                identities: Default::default(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(discard_record_at(&versions, &first).is_err());
+        assert!(first.stored.exists());
+        assert!(second.stored.exists());
     }
 
     #[cfg(unix)]
@@ -1051,6 +1531,7 @@ mod tests {
             manifest_path(&versions),
             serde_json::to_vec_pretty(&VersionManifest {
                 records: vec![record.clone()],
+                identities: Default::default(),
             })
             .unwrap(),
         )
@@ -1059,5 +1540,30 @@ mod tests {
         assert!(load_manifest_with(manifest_persist(), &versions).blocked);
         assert!(discard_record_at(&versions, &record).is_err());
         assert_eq!(std::fs::read_to_string(payload).unwrap(), "protected");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserve_rejects_symlink_ancestry_before_copying_payload() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let external = temp.dir("external");
+        let original = temp.file("source.txt", "private");
+        let operation = OperationId("linked-operation".to_string());
+        symlink(&external, versions.join(&operation.0)).unwrap();
+
+        let result = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(&external).unwrap().count(), 0);
+        assert!(!manifest_path(&versions).exists());
     }
 }

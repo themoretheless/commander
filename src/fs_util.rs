@@ -17,34 +17,70 @@ pub(crate) fn storage_root_override() -> Option<&'static Path> {
 /// The app's config directory (created if missing), where persisted state
 /// (session, smart folders) lives. Falls back to the cache dir, then `/tmp`.
 pub fn config_dir() -> PathBuf {
-    let dir = storage_root_override().map_or_else(
+    let preferred = storage_root_override().map_or_else(
         || {
             dirs::config_dir()
                 .or_else(dirs::cache_dir)
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .unwrap_or_else(std::env::temp_dir)
                 .join("commander")
         },
         |root| root.join("config"),
     );
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+    if let Some(dir) = ensure_private_directory(&preferred) {
+        return dir;
+    }
+    #[cfg(unix)]
+    let fallback = std::env::temp_dir().join(format!(
+        "commander-{}",
+        // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+        unsafe { libc::geteuid() }
+    ));
+    #[cfg(not(unix))]
+    let fallback = std::env::temp_dir().join(format!("commander-{}", std::process::id()));
+    if let Some(dir) = ensure_private_directory(&fallback) {
+        return dir;
+    }
+    #[cfg(unix)]
+    {
+        PathBuf::from("/dev/null/commander")
+    }
+    #[cfg(not(unix))]
+    {
+        fallback
+    }
+}
+
+fn ensure_private_directory(path: &Path) -> Option<PathBuf> {
+    std::fs::create_dir_all(path).ok()?;
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return None;
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).ok()?;
+    }
+    Some(path.to_path_buf())
 }
 
 /// Atomically write `contents` to `path`: write a sibling temp file, then
 /// rename it over the destination, so a crash or concurrent reader mid-write
 /// never sees a truncated file. Best-effort; returns whether it succeeded.
 pub fn write_atomic(path: &Path, contents: &str) -> bool {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    if std::fs::write(&tmp, contents).is_err() {
-        return false;
+    match crate::persistence::commit_bytes_atomic(path, contents.as_bytes()) {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => true,
+        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            crate::persistence::record_durability_warning("Legacy store", &error);
+            true
+        }
+        Err(_) => false,
     }
-    if std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp); // do not leave a stray temp behind
-        return false;
-    }
-    true
 }
 
 /// Flush a pathname mutation in `path`'s parent directory before a durable
@@ -513,6 +549,28 @@ mod tests {
         let mut temp = path.as_os_str().to_owned();
         temp.push(".tmp");
         assert!(!Path::new(&temp).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_directory_rejects_symlinks_and_uses_owner_only_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let tmp = TempDir::new();
+        let directory = tmp.path().join("private");
+        assert_eq!(
+            ensure_private_directory(&directory).as_deref(),
+            Some(directory.as_path())
+        );
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let target = tmp.dir("target");
+        let link = tmp.path().join("link");
+        symlink(target, &link).unwrap();
+        assert!(ensure_private_directory(&link).is_none());
     }
 
     #[test]

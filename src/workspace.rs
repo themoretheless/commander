@@ -446,7 +446,7 @@ impl Workspace {
             [crate::panel::ViewConfig::default(); 2],
             trash,
             free_space,
-            crate::persistence::fs_persist(),
+            crate::persistence::ephemeral_persist(),
         )
     }
 

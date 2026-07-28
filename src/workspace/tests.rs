@@ -28,13 +28,15 @@ impl crate::persistence::Persist for InjectedPersistence {
     ) -> Result<crate::persistence::ReadOutcome, crate::persistence::ReadFailure> {
         let bytes = self.bytes.lock().unwrap().clone();
         assert!(bytes.len() <= max_bytes);
-        Ok(crate::persistence::ReadOutcome::Present { bytes })
+        let revision = crate::persistence::Revision::from_bytes(&bytes);
+        Ok(crate::persistence::ReadOutcome::Present { bytes, revision })
     }
 
     fn commit(
         &self,
         _path: &Path,
         bytes: &[u8],
+        _expected: crate::persistence::ExpectedRevision,
     ) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::PreCommitError> {
         self.commits.fetch_add(1, Ordering::Relaxed);
         *self.bytes.lock().unwrap() = bytes.to_vec();
