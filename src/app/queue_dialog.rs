@@ -82,7 +82,7 @@ impl App {
         }
     }
 
-    fn ingest_failure_notice(&mut self, notice: crate::operation_view::FailureNotice) {
+    pub(crate) fn ingest_failure_notice(&mut self, notice: crate::operation_view::FailureNotice) {
         if !mark_failure_notice_seen(&mut self.failure_notice_seen, notice.attempt_id) {
             return;
         }

@@ -54,7 +54,7 @@ pub fn dir_size_recursive(path: &Path) -> u64 {
         .filter_map(|e| e.metadata().ok())
         .filter(|m| !m.is_dir())
         .map(|m| m.len())
-        .sum()
+        .fold(0_u64, u64::saturating_add)
 }
 
 /// Recursively copy a directory tree into a new destination. Directory
@@ -235,44 +235,6 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
     Ok(dest)
 }
 
-/// Free space in bytes on the volume containing `path`. A direct filesystem
-/// query avoids spawning and waiting for `df` on the UI path.
-#[cfg(unix)]
-pub fn free_space(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: `path` is NUL-terminated and `stats` points to writable storage
-    // that is read only after statvfs reports success.
-    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    let stats = unsafe { stats.assume_init() };
-    (stats.f_bavail as u64).checked_mul(stats.f_frsize)
-}
-
-#[cfg(not(unix))]
-pub fn free_space(_path: &Path) -> Option<u64> {
-    None
-}
-
-/// Whether two paths live on the same filesystem (so a move is an instant
-/// rename needing no extra space).
-#[cfg(unix)]
-pub fn same_volume(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev(),
-        _ => false,
-    }
-}
-
-#[cfg(not(unix))]
-pub fn same_volume(_a: &Path, _b: &Path) -> bool {
-    false
-}
-
 /// How a planned transfer consumes space on the target volume, which decides
 /// how much of `need` it actually writes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -281,9 +243,6 @@ pub enum OpClass {
     /// a cross-volume move copies to the target first, so it needs the full
     /// size there until the source is removed.
     Move { same_volume: bool },
-    /// An APFS clone (a same-volume copy on a clone-capable volume): near-zero
-    /// extra space until the copy diverges from its original.
-    Clone,
     /// A byte copy (cross-volume, or a same-volume copy without clone support):
     /// needs the full size on the target.
     Copy,
@@ -292,6 +251,9 @@ pub enum OpClass {
 /// Whether a planned transfer fits on the target volume.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpaceVerdict {
+    /// The probe has not completed or the platform could not establish free
+    /// space. Callers may continue under policy, but must not label this Fits.
+    Indeterminate,
     /// Comfortably fits.
     Fits,
     /// Fits, but only by dipping into the safety reserve.
@@ -304,10 +266,9 @@ pub enum SpaceVerdict {
 /// `free` bytes on the target, after subtracting `reclaim` (bytes freed by
 /// overwriting existing destinations) and keeping a `reserve` safety margin.
 ///
-/// A same-volume move and a clone need ~0; a cross-volume move and a plain copy
-/// need the full size. `free == None` (the free space could not be read) is
-/// treated as non-blocking ([`SpaceVerdict::Fits`]) rather than falsely
-/// refusing the operation.
+/// A same-volume move needs ~0. Copies, including clone attempts, reserve the
+/// full logical size because the native clone may fall back to a byte copy.
+/// `free == None` is explicitly indeterminate rather than falsely labeled Fits.
 pub fn space_verdict(
     need: u64,
     free: Option<u64>,
@@ -316,18 +277,24 @@ pub fn space_verdict(
     reserve: u64,
 ) -> SpaceVerdict {
     let need_eff = match class {
-        OpClass::Move { same_volume: true } | OpClass::Clone => 0,
+        OpClass::Move { same_volume: true } => 0,
         OpClass::Move { same_volume: false } | OpClass::Copy => need,
     };
     let need_eff = need_eff.saturating_sub(reclaim);
     let Some(free) = free else {
-        return SpaceVerdict::Fits;
+        return SpaceVerdict::Indeterminate;
     };
+    if need_eff == 0 {
+        return SpaceVerdict::Fits;
+    }
     if need_eff > free {
         SpaceVerdict::WontFit {
             short_by: need_eff - free,
         }
-    } else if need_eff.saturating_add(reserve) > free {
+    } else if need_eff
+        .checked_add(reserve)
+        .is_none_or(|with_reserve| with_reserve > free)
+    {
         SpaceVerdict::Tight
     } else {
         SpaceVerdict::Fits
@@ -536,13 +503,11 @@ mod tests {
         use OpClass::*;
         use SpaceVerdict::*;
 
-        // Same-volume move and clone need ~0, so they fit even when the size
-        // dwarfs free space.
+        // A same-volume move needs ~0, so it fits even when size dwarfs free.
         assert_eq!(
             space_verdict(1_000, Some(10), Move { same_volume: true }, 0, 0),
             Fits
         );
-        assert_eq!(space_verdict(1_000, Some(10), Clone, 0, 0), Fits);
 
         // Cross-volume move and plain copy need the full size.
         assert_eq!(
@@ -570,28 +535,18 @@ mod tests {
             Fits,
             "exact fit with no reserve is Fits, not WontFit"
         );
-
-        // Unknown free space never blocks.
-        assert_eq!(space_verdict(u64::MAX, None, Copy, 0, 0), Fits);
-    }
-
-    #[test]
-    fn free_space_uses_the_containing_filesystem() {
-        let tmp = TempDir::new();
-        assert!(free_space(tmp.path()).is_some_and(|bytes| bytes > 0));
         assert_eq!(
-            free_space(Path::new("/definitely/not/present/commander")),
-            None
+            space_verdict(u64::MAX, Some(u64::MAX), Copy, 0, 1),
+            Tight,
+            "reserve overflow cannot be mislabeled Fits"
         );
-    }
 
-    #[test]
-    fn same_volume_true_within_one_filesystem() {
-        let tmp = TempDir::new();
-        let a = tmp.file("a.txt", "x");
-        let b = tmp.dir("sub");
-        // Both live under the same temp dir, hence the same device.
-        assert!(same_volume(&a, &b));
+        // Unknown free space is non-blocking policy, but never mislabeled Fits.
+        assert_eq!(space_verdict(u64::MAX, None, Copy, 0, 0), Indeterminate);
+        assert_eq!(
+            space_verdict(u64::MAX, None, Move { same_volume: true }, 0, 0),
+            Indeterminate
+        );
     }
 
     #[test]

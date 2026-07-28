@@ -597,11 +597,7 @@ mod tests {
         let root = temp.path().to_path_buf();
 
         let startup = probe(9, || {
-            let workspace = crate::workspace::Workspace::with_opener(
-                root.clone(),
-                root.clone(),
-                Box::new(|_| {}),
-            );
+            let workspace = crate::workspace::Workspace::new(root.clone(), root.clone());
             std::hint::black_box(workspace.active);
         });
         let first_listing = probe(9, || {

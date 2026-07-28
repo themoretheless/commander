@@ -552,6 +552,7 @@ mod tests {
             name_lower: name.to_lowercase(),
             name,
             path: path.to_path_buf(),
+            identity: crate::panel::ListingIdentity::Unavailable,
             is_dir,
             size,
             extension: String::new(),

@@ -7,7 +7,163 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_TEXT_PREVIEW_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFailureKind {
+    Denied,
+    NotFound,
+    ReadOnly,
+    Busy,
+    Stale,
+    Cancelled,
+    Unsupported,
+    InvalidInput,
+    Overflow,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeFailure {
+    pub kind: NativeFailureKind,
+    pub message: String,
+}
+
+impl NativeFailure {
+    pub fn from_io(error: &std::io::Error) -> Self {
+        use std::io::ErrorKind;
+        let kind = match error.kind() {
+            ErrorKind::PermissionDenied => NativeFailureKind::Denied,
+            ErrorKind::NotFound => NativeFailureKind::NotFound,
+            ErrorKind::ReadOnlyFilesystem => NativeFailureKind::ReadOnly,
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => NativeFailureKind::Busy,
+            ErrorKind::Interrupted => NativeFailureKind::Cancelled,
+            ErrorKind::InvalidInput | ErrorKind::InvalidFilename => NativeFailureKind::InvalidInput,
+            ErrorKind::Unsupported => NativeFailureKind::Unsupported,
+            _ => NativeFailureKind::Unknown,
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            kind: NativeFailureKind::Unsupported,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipboardOutcome {
+    Committed,
+    Submitted,
+    Unsupported(NativeFailure),
+    Failed(NativeFailure),
+}
+
+/// Main-thread clipboard boundary. Native pasteboards are intentionally not
+/// exposed as `Send`/`Sync`.
+pub trait ClipboardPort {
+    fn write_text(&self, text: &str) -> ClipboardOutcome;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenRequest {
+    OpenPath(PathBuf),
+    Reveal(PathBuf),
+}
+
+impl OpenRequest {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::OpenPath(path) | Self::Reveal(path) => path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenOutcome {
+    Accepted,
+    Unsupported(NativeFailure),
+    Failed(NativeFailure),
+}
+
+/// Main-thread application-launch boundary.
+pub trait OpenerPort {
+    fn open(&self, request: &OpenRequest) -> OpenOutcome;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrashTarget {
+    pub path: PathBuf,
+    pub expected: crate::path_identity::PathIdentity,
+}
+
+/// One ordered item in a Trash batch. A listing that could not capture a
+/// lexical binding contributes a typed failure without invoking the adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrashBatchItem {
+    Ready(TrashTarget),
+    CaptureFailed {
+        path: PathBuf,
+        failure: NativeFailure,
+    },
+}
+
+impl TrashBatchItem {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Ready(target) => &target.path,
+            Self::CaptureFailed { path, .. } => path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrashItemOutcome {
+    Trashed,
+    Missing,
+    StaleBinding,
+    Unsupported(NativeFailure),
+    Failed(NativeFailure),
+}
+
+pub trait TrashPort: Send + Sync {
+    fn move_to_trash(&self, target: &TrashTarget) -> TrashItemOutcome;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpacePrecision {
+    Exact,
+    SaturatedLowerBound,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpaceProbeOutcome {
+    Known {
+        bytes: u64,
+        precision: SpacePrecision,
+    },
+    Unknown(NativeFailure),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VolumeRelation {
+    Same,
+    Different,
+    Unknown(NativeFailure),
+}
+
+pub trait FreeSpacePort: Send + Sync {
+    fn probe(&self, path: &Path) -> SpaceProbeOutcome;
+    fn volume_relation(&self, source: &Path, target: &Path) -> VolumeRelation;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextMenuCommand {
+    OpenWith,
+    QuickLook,
+    GetInfo,
     Duplicate,
     Compress,
     MoveToTrash,
@@ -26,6 +182,10 @@ pub enum ContextMenuFailure {
 pub enum ContextMenuResult {
     Dismissed,
     RefreshRequested,
+    OpenRequested,
+    RevealRequested,
+    CopyPathRequested,
+    MoveToTrashRequested,
     Unsupported { reason: String },
     Failed(ContextMenuFailure),
 }

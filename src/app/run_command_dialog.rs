@@ -246,9 +246,9 @@ impl App {
                 return;
             }
             let now = ctx.input(|i| i.time);
-            if self.ws.mutations_blocked() {
+            if let Some(reason) = self.ws.mutation_block_reason("running a command") {
                 self.toasts.push(crate::toasts::Toast::new(
-                    "Safe-state review required",
+                    reason,
                     crate::toasts::ToastKind::Error,
                     false,
                     now,
@@ -293,6 +293,7 @@ mod tests {
             name_lower: name.to_lowercase(),
             name,
             path,
+            identity: crate::panel::ListingIdentity::Unavailable,
             is_dir: false,
             size: 1,
             extension: "txt".to_string(),

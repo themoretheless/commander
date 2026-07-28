@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod delete;
+mod space_probe;
 mod transfer_queue;
 
 pub use transfer_queue::QueueRow;
@@ -12,9 +14,10 @@ pub use transfer_queue::QueueRow;
 use crate::command::Command;
 use crate::panel::{self, FileEntry, PanelState, PreviewContent};
 use crate::scan::{self, FlatList};
+#[cfg(test)]
+use crate::transfer;
 use crate::transfer::{
-    self, CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferSpec,
-    TransferState,
+    CopyMethod, OverwritePolicy, PostTransferAction, TransferKind, TransferSpec, TransferState,
 };
 use crate::ui_request::{UiModal, UiRequest};
 
@@ -58,48 +61,99 @@ pub struct PendingTransfer {
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     pub filesystem: Box<crate::filesystem_policy::OperationPreflight>,
     pub flat: FlatList,
-    /// Bytes the operation needs (recursive total of the entries).
-    pub need_bytes: u64,
-    /// Free bytes on the target volume (None if it could not be read).
-    pub free_bytes: Option<u64>,
-    /// Source and target are on the same volume (a move is then instant).
-    pub same_volume: bool,
+    /// One generation-bound snapshot produced off the UI thread. Size, free
+    /// space, and volume relation are never mixed across different plans.
+    pub space: TransferSpaceState,
+    /// Conflict-free drag/drop preserves its immediate-run UX, but only after
+    /// the background preflight has published a trustworthy size snapshot.
+    pub start_when_ready: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferSpaceState {
+    Pending {
+        generation: u64,
+    },
+    Ready {
+        generation: u64,
+        need_bytes: u64,
+        free: crate::ports::SpaceProbeOutcome,
+        relation: crate::ports::VolumeRelation,
+    },
+    Failed {
+        generation: u64,
+        failure: crate::ports::NativeFailure,
+        free: crate::ports::SpaceProbeOutcome,
+        relation: crate::ports::VolumeRelation,
+    },
 }
 
 impl PendingTransfer {
-    /// Classify how this operation consumes target space: a same-volume move is
-    /// an instant rename, a same-volume Native copy is an APFS clone (both need
-    /// ~0), while a cross-volume transfer or a buffered same-volume copy writes
-    /// the full size.
+    /// A same-volume move is an instant rename. Every copy reserves its full
+    /// logical size because a native clone attempt may fall back to byte copy.
     fn op_class(&self) -> crate::fs_util::OpClass {
         use crate::fs_util::OpClass;
         match self.kind {
             TransferKind::Move => OpClass::Move {
-                same_volume: self.same_volume,
+                same_volume: matches!(
+                    self.space,
+                    TransferSpaceState::Ready {
+                        relation: crate::ports::VolumeRelation::Same,
+                        ..
+                    }
+                ),
             },
-            TransferKind::Copy => {
-                if self.same_volume && self.method == CopyMethod::Native {
-                    OpClass::Clone
-                } else {
-                    OpClass::Copy
-                }
+            TransferKind::Copy => OpClass::Copy,
+        }
+    }
+
+    pub fn space_verdict(&self) -> crate::fs_util::SpaceVerdict {
+        let TransferSpaceState::Ready {
+            need_bytes, free, ..
+        } = &self.space
+        else {
+            return crate::fs_util::SpaceVerdict::Indeterminate;
+        };
+        let free = match free {
+            crate::ports::SpaceProbeOutcome::Known { bytes, .. } => Some(*bytes),
+            crate::ports::SpaceProbeOutcome::Unknown(_) => None,
+        };
+        crate::fs_util::space_verdict(*need_bytes, free, self.op_class(), 0, 0)
+    }
+
+    pub fn needs_no_space(&self) -> bool {
+        matches!(
+            self.op_class(),
+            crate::fs_util::OpClass::Move { same_volume: true }
+        )
+    }
+
+    pub fn space_ready(&self) -> bool {
+        matches!(self.space, TransferSpaceState::Ready { .. })
+    }
+
+    pub fn need_bytes(&self) -> Option<u64> {
+        match self.space {
+            TransferSpaceState::Pending { .. } => None,
+            TransferSpaceState::Ready { need_bytes, .. } => Some(need_bytes),
+            TransferSpaceState::Failed { .. } => None,
+        }
+    }
+
+    pub fn free_space(&self) -> Option<&crate::ports::SpaceProbeOutcome> {
+        match &self.space {
+            TransferSpaceState::Pending { .. } => None,
+            TransferSpaceState::Ready { free, .. } | TransferSpaceState::Failed { free, .. } => {
+                Some(free)
             }
         }
     }
 
-    /// Space verdict driving the will-it-fit guard. (No overwrite reclaim or
-    /// safety reserve is applied yet; both are supported by the pure core.)
-    pub fn space_verdict(&self) -> crate::fs_util::SpaceVerdict {
-        crate::fs_util::space_verdict(self.need_bytes, self.free_bytes, self.op_class(), 0, 0)
-    }
-
-    /// True when the operation needs no meaningful extra space on the target
-    /// (a same-volume move, or a same-volume clone).
-    pub fn needs_no_space(&self) -> bool {
-        matches!(
-            self.op_class(),
-            crate::fs_util::OpClass::Move { same_volume: true } | crate::fs_util::OpClass::Clone
-        )
+    pub fn space_failure(&self) -> Option<&crate::ports::NativeFailure> {
+        match &self.space {
+            TransferSpaceState::Failed { failure, .. } => Some(failure),
+            TransferSpaceState::Pending { .. } | TransferSpaceState::Ready { .. } => None,
+        }
     }
 
     /// True when the operation cannot fit on the target volume.
@@ -111,22 +165,57 @@ impl PendingTransfer {
     }
 }
 
+fn should_auto_start_after_preflight(transfer: &PendingTransfer) -> bool {
+    transfer.start_when_ready
+        && (transfer.needs_no_space()
+            || matches!(
+                transfer.space_verdict(),
+                crate::fs_util::SpaceVerdict::Fits | crate::fs_util::SpaceVerdict::Tight
+            ))
+}
+
 /// Pending file operation awaiting user confirmation.
 pub enum PendingOp {
     Transfer(PendingTransfer),
     Delete {
         entries: Vec<FileEntry>,
+        targets: Vec<crate::ports::TrashBatchItem>,
         flat: FlatList,
     },
 }
 
-/// How a delete-to-Trash turned out, so the UI can confirm it and flag any
-/// entries that could not be removed instead of failing silently.
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeleteOrigin {
+    Confirmation,
+    Duplicates,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteItemResult {
+    pub path: PathBuf,
+    pub outcome: crate::ports::TrashItemOutcome,
+}
+
+/// Ordered, per-path result of one background delete batch.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DeleteOutcome {
+    pub attempt_id: crate::operation::TransferAttemptId,
+    pub operation_id: crate::operation::OperationId,
+    pub submitted: crate::operation_view::SubmittedSummary,
+    pub origin: DeleteOrigin,
+    pub items: Vec<DeleteItemResult>,
     pub trashed: usize,
     pub failed: usize,
     pub failures: Vec<crate::operation::ClassifiedFailure>,
+    /// The worker stopped without a terminal report, so some mutations may
+    /// have committed even though no per-path success could be confirmed.
+    pub indeterminate: bool,
+}
+
+impl DeleteOutcome {
+    pub fn refresh_required(&self) -> bool {
+        self.trashed > 0
+    }
 }
 
 /// How a shelf drain turned out: how many copies started, and how many items
@@ -206,12 +295,12 @@ pub struct Workspace {
     /// Atomic owner of the transfer queue, active worker, and per-job history
     /// intent. Workspace applies only the controller's typed outcomes.
     transfers: transfer_queue::TransferQueueController,
+    space_probes: space_probe::SpaceProbeController,
+    free_space_port: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    deletes: delete::DeleteController,
     /// Undo/redo history of reversible operations (moves, batch renames).
     pub stack: crate::undo::UndoStack,
     command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
-    /// Opens a file in an external application. Injected so tests don't
-    /// launch real programs; the UI also routes double-clicks through it.
-    pub opener: Box<dyn Fn(&Path)>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -233,27 +322,6 @@ fn faithfully_undoable(placements: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, Pat
         .into_iter()
         .filter(|(src, dst)| src.file_name() == dst.file_name())
         .collect()
-}
-
-/// Compute (need bytes, free bytes on target, same-volume) for a transfer,
-/// used to drive the will-it-fit guard in the confirmation dialog.
-fn fit_stats(
-    entries: &[FileEntry],
-    target: &Path,
-    _kind: TransferKind,
-) -> (u64, Option<u64>, bool) {
-    let need = transfer::total_bytes(entries);
-    let free = crate::fs_util::free_space(target);
-    // "Same volume" must hold for EVERY source, not just the first: a mixed
-    // selection straddling volumes cannot take the no-extra-space move path, so
-    // one cross-volume entry makes the whole batch cross-volume for the guard.
-    let same = !entries.is_empty()
-        && entries.iter().all(|e| {
-            e.path
-                .parent()
-                .is_some_and(|src| crate::fs_util::same_volume(src, target))
-        });
-    (need, free, same)
 }
 
 fn filesystem_preflight(
@@ -278,6 +346,38 @@ fn filesystem_preflight(
             std::fs::metadata(target).is_ok(),
         ),
     })
+}
+
+pub(crate) fn trash_batch_item_from_listing(
+    path: PathBuf,
+    identity: &crate::panel::ListingIdentity,
+) -> crate::ports::TrashBatchItem {
+    match identity {
+        crate::panel::ListingIdentity::Captured(expected) => {
+            crate::ports::TrashBatchItem::Ready(crate::ports::TrashTarget {
+                path,
+                expected: expected.clone(),
+            })
+        }
+        crate::panel::ListingIdentity::CaptureFailed(failure) => {
+            crate::ports::TrashBatchItem::CaptureFailed {
+                path,
+                failure: failure.clone(),
+            }
+        }
+        crate::panel::ListingIdentity::Unavailable => crate::ports::TrashBatchItem::CaptureFailed {
+            path,
+            failure: crate::ports::NativeFailure {
+                kind: crate::ports::NativeFailureKind::Unsupported,
+                message: "the visible listing did not capture a lexical filesystem identity"
+                    .to_string(),
+            },
+        },
+    }
+}
+
+fn trash_batch_item(entry: &FileEntry) -> crate::ports::TrashBatchItem {
+    trash_batch_item_from_listing(entry.path.clone(), &entry.identity)
 }
 
 /// Resolve a typed path for go-to-path (Cmd+L): trim, expand a leading `~`
@@ -324,17 +424,22 @@ pub fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), String> 
 }
 
 impl Workspace {
+    #[cfg(test)]
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
-        Self::with_opener(
+        Self::with_ports(
             left,
             right,
-            Box::new(|p| {
-                let _ = open::that(p);
-            }),
+            std::sync::Arc::new(TestTrashPort),
+            std::sync::Arc::new(TestFreeSpacePort),
         )
     }
 
-    pub fn with_opener(left: PathBuf, right: PathBuf, opener: Box<dyn Fn(&Path)>) -> Self {
+    pub fn with_ports(
+        left: PathBuf,
+        right: PathBuf,
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    ) -> Self {
         Workspace {
             left: PanelState::new(left),
             right: PanelState::new(right),
@@ -351,9 +456,11 @@ impl Workspace {
             bookmarks: crate::bookmarks::load(),
             selection_stash: std::collections::HashSet::new(),
             transfers: transfer_queue::TransferQueueController::default(),
+            space_probes: space_probe::SpaceProbeController::default(),
+            free_space_port: free_space,
+            deletes: delete::DeleteController::new(trash),
             stack: crate::undo::UndoStack::default(),
             command_capabilities: std::cell::RefCell::new(None),
-            opener,
         }
     }
 
@@ -499,7 +606,8 @@ impl Workspace {
         let active_transfer = self.active_transfer_view().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let pending_operation = self.pending_op.is_some();
-        let safe_state = self.mutations_blocked();
+        let safe_state = self.safe_state.is_some();
+        let active_mutation = self.deletes.is_active();
         let (left_read_only, right_read_only) = self.pane_read_only();
         let (active_read_only, inactive_read_only) = match self.active {
             ActivePanel::Left => (left_read_only, right_read_only),
@@ -507,7 +615,7 @@ impl Workspace {
         };
         let can_transfer_into_cursor_folder = !transfer_queue_busy
             && !pending_operation
-            && !safe_state
+            && !self.mutations_blocked()
             && cursor.is_some_and(|target| target.is_dir)
             && has_transfer_source;
 
@@ -549,6 +657,7 @@ impl Workspace {
             preview_open: inactive.preview.is_some(),
             info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
             safe_state,
+            active_mutation,
             pending_operation,
             active_transfer,
             transfer_queue_busy,
@@ -576,7 +685,8 @@ impl Workspace {
             });
         }
 
-        let safe_state = self.mutations_blocked();
+        let safe_state = self.safe_state.is_some();
+        let active_mutation = self.deletes.is_active();
         let pending_operation = self.pending_op.is_some();
         let active_transfer = self.active_transfer_view().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
@@ -599,7 +709,7 @@ impl Workspace {
             can_go_up: active.current_path.parent().is_some(),
             can_go_back: active.can_go_back(),
             can_go_forward: active.can_go_forward(),
-            can_transfer_into_cursor_folder: !safe_state
+            can_transfer_into_cursor_folder: !self.mutations_blocked()
                 && !pending_operation
                 && !transfer_queue_busy
                 && cursor.is_some_and(|target| target.is_dir)
@@ -609,6 +719,7 @@ impl Workspace {
             preview_open: self.inactive_panel().preview.is_some(),
             info_open: matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))),
             safe_state,
+            active_mutation,
             pending_operation,
             active_transfer,
             transfer_queue_busy,
@@ -739,7 +850,7 @@ impl Workspace {
     // ── Command dispatch ────────────────────────────────────────────────
 
     pub fn execute(&mut self, cmd: Command) {
-        if self.mutations_blocked() && cmd.mutates_filesystem() {
+        if self.mutation_commits_blocked() && cmd.mutates_filesystem() {
             return;
         }
         match cmd {
@@ -825,7 +936,9 @@ impl Workspace {
                     } else if crate::archive::is_supported(&entry.path) {
                         self.emit_ui_request(UiRequest::Archive(entry.path));
                     } else {
-                        (self.opener)(&entry.path);
+                        self.emit_ui_request(UiRequest::OpenExternal(
+                            crate::ports::OpenRequest::OpenPath(entry.path),
+                        ));
                     }
                 }
             }
@@ -1044,7 +1157,7 @@ impl Workspace {
     /// Copy/Move may queue behind an active transfer, but must never replace an
     /// operation that is already waiting for confirmation.
     pub fn can_request_transfer(&self) -> bool {
-        self.pending_op.is_none() && !self.mutations_blocked()
+        self.pending_op.is_none() && !self.mutation_commits_blocked()
     }
 
     /// Delete is not queue-backed, so it is available only while no operation
@@ -1052,11 +1165,38 @@ impl Workspace {
     pub fn can_request_delete(&self) -> bool {
         self.pending_op.is_none()
             && !self.has_unfinished_transfer_work()
-            && !self.mutations_blocked()
+            && !self.mutation_commits_blocked()
     }
 
+    /// One fail-closed gate for every filesystem mutation entry point.
+    /// Callers that present a reason should use [`Self::mutation_block_reason`]
+    /// so recovery review and ordinary background activity remain distinct.
     pub fn mutations_blocked(&self) -> bool {
-        self.safe_state.is_some()
+        self.safe_state.is_some() || self.deletes.is_active()
+    }
+
+    pub fn delete_active(&self) -> bool {
+        self.deletes.is_active()
+    }
+
+    pub fn delete_activity_count(&self) -> Option<usize> {
+        self.deletes.activity_count()
+    }
+
+    fn mutation_commits_blocked(&self) -> bool {
+        self.mutations_blocked()
+    }
+
+    pub fn mutation_block_reason(&self, action: &str) -> Option<String> {
+        if self.safe_state.is_some() {
+            Some(format!("Safe-state review is required before {action}"))
+        } else if self.deletes.is_active() {
+            Some(format!(
+                "Wait for the current Trash operation before {action}"
+            ))
+        } else {
+            None
+        }
     }
 
     fn ensure_matching_recovery_review(
@@ -1087,6 +1227,11 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) -> Result<usize, String> {
         self.ensure_matching_recovery_review(operation_id)?;
+        if self.deletes.is_active() {
+            return Err(
+                "Wait for the current Trash operation before resuming recovery".to_string(),
+            );
+        }
         if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before resuming recovery".to_string());
         }
@@ -1103,6 +1248,11 @@ impl Workspace {
         operation_id: &crate::operation::OperationId,
     ) -> Result<crate::operation_journal::RepairPlan, String> {
         self.ensure_matching_recovery_review(operation_id)?;
+        if self.deletes.is_active() {
+            return Err(
+                "Wait for the current Trash operation before rolling back recovery".to_string(),
+            );
+        }
         if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before rolling back recovery".to_string());
         }
@@ -1118,10 +1268,8 @@ impl Workspace {
         &mut self,
         orphan: &crate::operation_journal::OrphanStaging,
     ) -> Result<(), String> {
-        if self.mutations_blocked() {
-            return Err(
-                "Complete the current integrity review before cleaning staging".to_string(),
-            );
+        if let Some(reason) = self.mutation_block_reason("cleaning staging") {
+            return Err(reason);
         }
         if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before cleaning staging".to_string());
@@ -1143,10 +1291,20 @@ impl Workspace {
         if entries.is_empty() {
             return;
         }
-        let flat = scan::spawn_scan(entries.clone());
+        let flat = scan::pending_flat_list();
         let conflicts = scan::find_conflicts(&entries, &target);
-        let expectations = transfer::capture_expectations(&entries, &target);
-        let (need_bytes, free_bytes, same_volume) = fit_stats(&entries, &target, kind);
+        let wake = self.active_panel_ref().notify_callback();
+        let generation = self.start_space_probe(
+            entries.clone(),
+            target.clone(),
+            flat.clone(),
+            self.symlink_policy,
+            move || {
+                if let Some(wake) = &wake {
+                    wake();
+                }
+            },
+        );
         let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
         let policy = match self.name_policy.collision {
             crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
@@ -1156,7 +1314,7 @@ impl Workspace {
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
-            expectations,
+            expectations: Vec::new(),
             target,
             conflicts,
             policy,
@@ -1167,10 +1325,81 @@ impl Workspace {
             symlink_policy: self.symlink_policy,
             filesystem,
             flat,
-            need_bytes,
-            free_bytes,
-            same_volume,
+            space: TransferSpaceState::Pending { generation },
+            start_when_ready: false,
         }));
+    }
+
+    fn start_space_probe(
+        &mut self,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        flat: FlatList,
+        symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+        notify: impl Fn() + Send + 'static,
+    ) -> u64 {
+        let port = std::sync::Arc::clone(&self.free_space_port);
+        self.space_probes
+            .start(entries, target, flat, symlink_policy, port, notify)
+    }
+
+    /// Publish one complete preflight snapshot. Reports only bind to the exact
+    /// pending target and generation that launched them.
+    pub fn poll_space_probe(&mut self, notify: impl Fn() + Send + 'static) {
+        let Some(report) = self.space_probes.poll() else {
+            return;
+        };
+        self.apply_space_probe(report, notify);
+    }
+
+    fn apply_space_probe(
+        &mut self,
+        report: space_probe::SpaceProbeReport,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        let mut start_when_ready = false;
+        if let Some(PendingOp::Transfer(transfer)) = &mut self.pending_op {
+            let matches_binding = matches!(
+                transfer.space,
+                TransferSpaceState::Pending { generation }
+                    if generation == report.generation && transfer.target == report.target
+            );
+            if matches_binding {
+                let (space, expectations) = match (report.need_bytes, report.expectations) {
+                    (Ok(need_bytes), Ok(expectations)) => (
+                        TransferSpaceState::Ready {
+                            generation: report.generation,
+                            need_bytes,
+                            free: report.free,
+                            relation: report.relation,
+                        },
+                        Some(expectations),
+                    ),
+                    (Err(failure), _) | (_, Err(failure)) => (
+                        TransferSpaceState::Failed {
+                            generation: report.generation,
+                            failure,
+                            free: report.free,
+                            relation: report.relation,
+                        },
+                        None,
+                    ),
+                };
+                transfer.expectations = expectations.unwrap_or_default();
+                transfer.space = space;
+                start_when_ready = should_auto_start_after_preflight(transfer);
+            }
+        }
+        if start_when_ready {
+            self.start_transfer(notify);
+        }
+    }
+
+    #[cfg(test)]
+    fn finish_space_probe(&mut self) {
+        if let Some(report) = self.space_probes.finish() {
+            self.apply_space_probe(report, || {});
+        }
     }
 
     /// Rich conflict list for the pending Copy/Move: source entries whose name
@@ -1207,27 +1436,73 @@ impl Workspace {
     /// `true` if anything remains to transfer.
     pub fn resolve_pending_conflicts(&mut self, policy: crate::conflict::RelationPolicy) -> bool {
         let conflicts = self.pending_conflicts();
-        let Some(PendingOp::Transfer(tr)) = &mut self.pending_op else {
-            return false;
+        let (entries, target, flat, symlink_policy) = {
+            let Some(PendingOp::Transfer(tr)) = &mut self.pending_op else {
+                return false;
+            };
+            let res = crate::conflict::resolve(&tr.entries, &conflicts, policy);
+            let keep: std::collections::HashSet<PathBuf> = res.keep.into_iter().collect();
+            tr.entries.retain(|entry| keep.contains(&entry.path));
+            tr.expectations.clear();
+            tr.policy = match res.decision {
+                crate::conflict::Decision::Overwrite => OverwritePolicy::OverwriteAll,
+                crate::conflict::Decision::KeepBoth => OverwritePolicy::KeepBoth,
+                crate::conflict::Decision::Skip => OverwritePolicy::SkipAll,
+            };
+            // Choosing a conflict policy is the user's confirmation. The
+            // generation-bound preflight may finish later; it auto-starts only
+            // for a proven space verdict.
+            tr.start_when_ready = true;
+            tr.conflicts = scan::find_conflicts(&tr.entries, &tr.target);
+            tr.flat = scan::pending_flat_list();
+            if tr.entries.is_empty() {
+                return false;
+            }
+            (
+                tr.entries.clone(),
+                tr.target.clone(),
+                tr.flat.clone(),
+                tr.symlink_policy,
+            )
         };
-        let res = crate::conflict::resolve(&tr.entries, &conflicts, policy);
-        let keep: std::collections::HashSet<PathBuf> = res.keep.into_iter().collect();
-        let retained = tr
-            .entries
-            .drain(..)
-            .zip(tr.expectations.drain(..))
-            .filter(|(entry, _)| keep.contains(&entry.path))
-            .collect::<Vec<_>>();
-        (tr.entries, tr.expectations) = retained.into_iter().unzip();
-        tr.policy = match res.decision {
-            crate::conflict::Decision::Overwrite => OverwritePolicy::OverwriteAll,
-            crate::conflict::Decision::KeepBoth => OverwritePolicy::KeepBoth,
-            crate::conflict::Decision::Skip => OverwritePolicy::SkipAll,
+        let wake = self.active_panel_ref().notify_callback();
+        let generation = self.start_space_probe(entries, target, flat, symlink_policy, move || {
+            if let Some(wake) = &wake {
+                wake();
+            }
+        });
+        if let Some(PendingOp::Transfer(tr)) = &mut self.pending_op {
+            tr.space = TransferSpaceState::Pending { generation };
+        }
+        true
+    }
+
+    pub fn set_pending_symlink_policy(
+        &mut self,
+        policy: crate::filesystem_policy::SymlinkPolicy,
+        notify: impl Fn() + Send + 'static,
+    ) -> bool {
+        let (entries, target, flat) = {
+            let Some(PendingOp::Transfer(transfer)) = &mut self.pending_op else {
+                return false;
+            };
+            if transfer.symlink_policy == policy {
+                return false;
+            }
+            transfer.symlink_policy = policy;
+            transfer.expectations.clear();
+            transfer.flat = scan::pending_flat_list();
+            (
+                transfer.entries.clone(),
+                transfer.target.clone(),
+                transfer.flat.clone(),
+            )
         };
-        tr.need_bytes = transfer::total_bytes(&tr.entries);
-        tr.conflicts = scan::find_conflicts(&tr.entries, &tr.target);
-        tr.flat = scan::spawn_scan(tr.entries.clone());
-        !tr.entries.is_empty()
+        let generation = self.start_space_probe(entries, target, flat, policy, notify);
+        if let Some(PendingOp::Transfer(transfer)) = &mut self.pending_op {
+            transfer.space = TransferSpaceState::Pending { generation };
+        }
+        true
     }
 
     pub fn request_delete(&mut self) {
@@ -1237,17 +1512,57 @@ impl Workspace {
         let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
             return;
         };
-        if !entries.is_empty() {
-            let flat = scan::spawn_scan(entries.clone());
-            self.pending_op = Some(PendingOp::Delete { entries, flat });
+        self.request_delete_entries(entries);
+    }
+
+    pub fn request_context_delete(&mut self, panel: ActivePanel, path: &Path) {
+        if !self.can_request_delete() {
+            return;
         }
+        self.active = panel;
+        let source = self.active_panel_ref();
+        let entries = if source.is_selected(path) {
+            source.selected_or_cursor().unwrap_or_default()
+        } else {
+            source
+                .entries()
+                .iter()
+                .find(|entry| entry.path == path)
+                .cloned()
+                .into_iter()
+                .collect()
+        };
+        self.request_delete_entries(entries);
+    }
+
+    fn request_delete_entries(&mut self, entries: Vec<FileEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+        let targets = entries.iter().map(trash_batch_item).collect();
+        let flat = scan::spawn_scan(entries.clone());
+        self.pending_op = Some(PendingOp::Delete {
+            entries,
+            targets,
+            flat,
+        });
     }
 
     /// Start background copy/move with progress tracking.
     /// `notify` is invoked when visible progress changes (UI passes a
     /// repaint request).
     pub fn start_transfer(&mut self, notify: impl Fn() + Send + 'static) {
-        if self.mutations_blocked() {
+        if self.mutation_commits_blocked() {
+            return;
+        }
+        let ready = matches!(
+            &self.pending_op,
+            Some(PendingOp::Transfer(transfer))
+                if transfer.space_ready()
+                    && transfer.expectations.len() == transfer.entries.len()
+                    && !transfer.overflows()
+        );
+        if !ready {
             return;
         }
         let Some(PendingOp::Transfer(t)) = self.pending_op.take() else {
@@ -1257,6 +1572,7 @@ impl Workspace {
         self.version_retention = t.version_retention;
         self.name_policy = t.name_policy;
         self.symlink_policy = t.symlink_policy;
+        let preflight_bytes = t.need_bytes();
         // A Move is undoable, promoted onto the history stack when it finishes
         // cleanly (see `poll_transfer`); a Copy records no history.
         let undo = if t.kind == TransferKind::Move {
@@ -1279,6 +1595,7 @@ impl Workspace {
             version_retention: t.version_retention,
             name_policy: t.name_policy,
             symlink_policy: t.symlink_policy,
+            preflight_bytes,
             post_success: None,
             rollback_cleanup: None,
             rollback_cleanup_identity: None,
@@ -1327,8 +1644,8 @@ impl Workspace {
     }
 
     pub(crate) fn history_replay_blocker(&self) -> Option<String> {
-        if self.mutations_blocked() {
-            return Some("Safe-state review is required before history replay".to_string());
+        if let Some(reason) = self.mutation_block_reason("history replay") {
+            return Some(reason);
         }
         if self.has_unfinished_transfer_work() {
             return Some("Wait for the transfer queue before replaying history".to_string());
@@ -1522,7 +1839,6 @@ impl Workspace {
         history: transfer_queue::HistoryIntent,
         notify: impl Fn() + Send + 'static,
     ) {
-        let expectations = transfer::capture_expectations(&entries, &dest_dir);
         let rollback_cleanup_identity = rollback_cleanup
             .as_ref()
             .and_then(|path| crate::path_identity::PathIdentity::observe_deep(path).ok());
@@ -1531,7 +1847,7 @@ impl Workspace {
             group_id: None,
             kind: TransferKind::Move,
             entries,
-            expectations,
+            expectations: Vec::new(),
             target: dest_dir,
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
@@ -1539,6 +1855,7 @@ impl Workspace {
             version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
+            preflight_bytes: None,
             post_success,
             rollback_cleanup,
             rollback_cleanup_identity,
@@ -1621,83 +1938,38 @@ impl Workspace {
         }
     }
 
-    /// Move every entry to the Trash under the selected durability policy.
-    fn exec_delete_with_profile(
-        entries: &[FileEntry],
-        durability: crate::operation::DurabilityProfile,
-        retention: crate::operation::VersionRetentionPolicy,
-    ) -> DeleteOutcome {
-        let mut outcome = DeleteOutcome::default();
-        let operation_id = crate::operation::OperationId::new();
-        for (index, entry) in entries.iter().enumerate() {
-            if durability.keeps_versions()
-                && let Err(message) = crate::version_store::preserve_with_policy(
-                    &entry.path,
-                    &operation_id,
-                    operation_id.step_key(index, &entry.path),
-                    retention,
-                )
-            {
-                outcome.failed += 1;
-                outcome
-                    .failures
-                    .push(crate::operation::ClassifiedFailure::message(
-                        crate::operation::FailureClass::IntegrityUncertain,
-                        Some(entry.path.clone()),
-                        message,
-                    ));
-                continue;
-            }
-            if trash::delete(&entry.path).is_ok() {
-                outcome.trashed += 1;
-            } else {
-                outcome.failed += 1;
-                outcome
-                    .failures
-                    .push(crate::operation::ClassifiedFailure::message(
-                        crate::operation::FailureClass::Blocked,
-                        Some(entry.path.clone()),
-                        "could not move item to Trash",
-                    ));
-            }
-        }
-        outcome
-    }
-
-    /// Confirm the pending op. Returns `Some` only for a Delete (the synchronous
-    /// op), so the caller can raise a result toast; a Transfer reports its own
-    /// outcome asynchronously through [`poll_transfer`](Self::poll_transfer).
-    pub fn confirm_pending_op(
-        &mut self,
-        notify: impl Fn() + Send + 'static,
-    ) -> Option<DeleteOutcome> {
-        if self.mutations_blocked() {
-            return None;
+    /// Confirm the pending op. Both transfers and deletes report completion
+    /// asynchronously through their controller poll methods.
+    pub fn confirm_pending_op(&mut self, notify: impl Fn() + Send + 'static) -> bool {
+        if self.mutation_commits_blocked() {
+            return false;
         }
         match &self.pending_op {
             Some(PendingOp::Delete { .. }) => {
-                if let Some(PendingOp::Delete { entries, .. }) = self.pending_op.take() {
-                    let outcome = Self::exec_delete_with_profile(
-                        &entries,
+                if self.has_unfinished_transfer_work() || self.deletes.is_active() {
+                    return false;
+                }
+                if let Some(PendingOp::Delete { targets, .. }) = self.pending_op.take() {
+                    return self.deletes.start(
+                        targets,
+                        DeleteOrigin::Confirmation,
                         self.durability_profile,
                         self.version_retention,
+                        notify,
                     );
-                    self.left.refresh();
-                    self.right.refresh();
-                    return Some(outcome);
                 }
-                None
+                false
             }
             Some(PendingOp::Transfer(_)) => {
                 self.start_transfer(notify);
-                None
+                self.pending_op.is_none()
             }
-            None => None,
+            None => false,
         }
     }
 
     pub fn create_dir(&mut self) {
-        if self.mutations_blocked() {
+        if self.mutation_commits_blocked() {
             return;
         }
         let base = self.active_panel_ref().current_path.clone();
@@ -1719,7 +1991,7 @@ impl Workspace {
     /// (queued through the transfer pipeline, so it takes the same-volume rename
     /// fast path). A no-op on an empty selection or if the folder can't be made.
     pub fn gather_into_folder(&mut self, notify: impl Fn() + Send + 'static) {
-        if self.mutations_blocked() {
+        if self.mutation_commits_blocked() {
             return;
         }
         let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
@@ -1748,7 +2020,6 @@ impl Workspace {
             folder: folder.clone(),
             pairs: move_pairs(&entries, &folder),
         };
-        let expectations = transfer::capture_expectations(&entries, &folder);
         let rollback_cleanup_identity =
             crate::path_identity::PathIdentity::observe_deep(&folder).ok();
         let spec = TransferSpec {
@@ -1756,7 +2027,7 @@ impl Workspace {
             group_id: None,
             kind: TransferKind::Move,
             entries,
-            expectations,
+            expectations: Vec::new(),
             target: folder.clone(),
             policy: OverwritePolicy::Ask,
             method: CopyMethod::Native,
@@ -1764,6 +2035,7 @@ impl Workspace {
             version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
+            preflight_bytes: None,
             post_success: None,
             rollback_cleanup: Some(folder),
             rollback_cleanup_identity,
@@ -1835,8 +2107,8 @@ impl Workspace {
     /// Rename `old` to `new_name` in the same directory. A no-op (unchanged
     /// name) succeeds silently. Successful changes are recorded for undo/redo.
     pub fn commit_rename(&mut self, old: &Path, new_name: &str) -> Result<(), String> {
-        if self.mutations_blocked() {
-            return Err("Safe-state review is required before rename".to_string());
+        if let Some(reason) = self.mutation_block_reason("rename") {
+            return Err(reason);
         }
         let new_name = new_name.trim();
         let old_name = old
@@ -1897,8 +2169,8 @@ impl Workspace {
         context: &BatchRenameContext,
         rule: &crate::rename::RenameRule,
     ) -> Result<usize, String> {
-        if self.mutations_blocked() {
-            return Err("Safe-state review is required before batch rename".to_string());
+        if let Some(reason) = self.mutation_block_reason("batch rename") {
+            return Err(reason);
         }
         if context.targets.is_empty() {
             return Err("Nothing selected to rename".into());
@@ -1983,6 +2255,7 @@ impl Workspace {
             if let Some(hash) = crate::fs_util::content_hash(&f.path) {
                 keys.push(crate::dedup::FileKey {
                     path: f.path.clone(),
+                    identity: f.identity.clone(),
                     size: f.size,
                     hash,
                     modified: f.modified,
@@ -2018,21 +2291,45 @@ impl Workspace {
             .collect()
     }
 
-    /// Move `paths` to the Trash and refresh both panels. Not yet undoable
-    /// here (recoverable from the Trash). Returns how many were trashed.
-    pub fn trash_paths(&mut self, paths: &[PathBuf]) -> usize {
-        if self.mutations_blocked() {
-            return 0;
+    pub fn trash_entries(
+        &mut self,
+        items: Vec<crate::ports::TrashBatchItem>,
+        notify: impl Fn() + Send + 'static,
+    ) -> bool {
+        if items.is_empty()
+            || self.mutation_commits_blocked()
+            || self.has_unfinished_transfer_work()
+            || self.deletes.is_active()
+            || self.pending_op.is_some()
+        {
+            return false;
         }
-        let mut n = 0;
-        for p in paths {
-            if trash::delete(p).is_ok() {
-                n += 1;
-            }
+        self.deletes.start(
+            items,
+            DeleteOrigin::Duplicates,
+            self.durability_profile,
+            self.version_retention,
+            notify,
+        )
+    }
+
+    pub fn poll_delete(&mut self) -> Option<DeleteOutcome> {
+        let outcome = self.deletes.poll()?;
+        if outcome.refresh_required() {
+            self.left.refresh();
+            self.right.refresh();
         }
-        self.left.refresh();
-        self.right.refresh();
-        n
+        Some(outcome)
+    }
+
+    #[cfg(test)]
+    fn finish_delete(&mut self) -> Option<DeleteOutcome> {
+        let outcome = self.deletes.finish()?;
+        if outcome.refresh_required() {
+            self.left.refresh();
+            self.right.refresh();
+        }
+        Some(outcome)
     }
 
     // ── Disk usage treemap ──────────────────────────────────────────────
@@ -2121,7 +2418,9 @@ impl Workspace {
     /// longer be read are kept on the shelf (not silently discarded), and the
     /// outcome reports both how many copies started and how many were left.
     pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
-        if self.shelf.is_empty() || self.has_unfinished_transfer_work() || self.mutations_blocked()
+        if self.shelf.is_empty()
+            || self.has_unfinished_transfer_work()
+            || self.mutation_commits_blocked()
         {
             return ShelfDrainOutcome::default();
         }
@@ -2205,6 +2504,9 @@ impl Workspace {
         right_dir: &Path,
         notify: impl Fn() + Send + 'static,
     ) {
+        if self.mutation_commits_blocked() {
+            return;
+        }
         self.enqueue_sync_between(actions, left_dir, right_dir, notify);
     }
 
@@ -2215,8 +2517,8 @@ impl Workspace {
         plan: crate::sync_guard::GuardedPlan<'_>,
         notify: impl Fn() + Send + 'static,
     ) -> Result<crate::sync_guard::Assessment, String> {
-        if self.mutations_blocked() {
-            return Err("Safe-state review is required before synchronization".to_string());
+        if let Some(reason) = self.mutation_block_reason("synchronization") {
+            return Err(reason);
         }
         let assessment = crate::sync_guard::validate(&plan)?;
         self.sync_guard_policy = plan.guard.clone();
@@ -2298,13 +2600,12 @@ impl Workspace {
         if entries.is_empty() {
             return;
         }
-        let expectations = transfer::capture_expectations(&entries, &target);
         let spec = TransferSpec {
             operation_id: crate::operation::OperationId::new(),
             group_id,
             kind: TransferKind::Copy,
             entries,
-            expectations,
+            expectations: Vec::new(),
             target,
             policy,
             method: CopyMethod::Native,
@@ -2312,6 +2613,7 @@ impl Workspace {
             version_retention: self.version_retention,
             name_policy: self.name_policy,
             symlink_policy: self.symlink_policy,
+            preflight_bytes: None,
             post_success: None,
             rollback_cleanup: None,
             rollback_cleanup_identity: None,
@@ -2421,7 +2723,7 @@ impl Workspace {
         // never stack a second operation over the first.
         if self.has_unfinished_transfer_work()
             || self.pending_op.is_some()
-            || self.mutations_blocked()
+            || self.mutation_commits_blocked()
         {
             self.cancel_drag();
             return;
@@ -2440,20 +2742,25 @@ impl Workspace {
             return;
         }
         let conflicts = scan::find_conflicts(&entries, &target);
-        let flat = scan::spawn_scan(entries.clone());
+        let flat = scan::pending_flat_list();
         let policy = match self.name_policy.collision {
             crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
             crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
             crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
         };
         let has_conflicts = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
-        let (need_bytes, free_bytes, same_volume) = fit_stats(&entries, &target, kind);
-        let expectations = transfer::capture_expectations(&entries, &target);
+        let generation = self.start_space_probe(
+            entries.clone(),
+            target.clone(),
+            flat.clone(),
+            self.symlink_policy,
+            notify,
+        );
         let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
-            expectations,
+            expectations: Vec::new(),
             target,
             conflicts,
             policy,
@@ -2464,15 +2771,9 @@ impl Workspace {
             symlink_policy: self.symlink_policy,
             filesystem,
             flat,
-            need_bytes,
-            free_bytes,
-            same_volume,
+            space: TransferSpaceState::Pending { generation },
+            start_when_ready: !has_conflicts,
         }));
-        // No conflicts: run the move straight away. Conflicts: leave the
-        // pending op for the confirmation dialog to resolve.
-        if !has_conflicts {
-            self.start_transfer(notify);
-        }
     }
 
     /// Keyboard equivalent of dropping the active selection onto the folder
@@ -2485,7 +2786,7 @@ impl Workspace {
     ) {
         if self.has_unfinished_transfer_work()
             || self.pending_op.is_some()
-            || self.mutations_blocked()
+            || self.mutation_commits_blocked()
         {
             return;
         }
@@ -2547,19 +2848,109 @@ impl Workspace {
 }
 
 #[cfg(test)]
+struct TestTrashPort;
+
+#[cfg(test)]
+impl crate::ports::TrashPort for TestTrashPort {
+    fn move_to_trash(&self, _target: &crate::ports::TrashTarget) -> crate::ports::TrashItemOutcome {
+        crate::ports::TrashItemOutcome::Trashed
+    }
+}
+
+#[cfg(test)]
+struct TestFreeSpacePort;
+
+#[cfg(test)]
+impl crate::ports::FreeSpacePort for TestFreeSpacePort {
+    fn probe(&self, _path: &Path) -> crate::ports::SpaceProbeOutcome {
+        crate::ports::SpaceProbeOutcome::Known {
+            bytes: u64::MAX,
+            precision: crate::ports::SpacePrecision::Exact,
+        }
+    }
+
+    fn volume_relation(&self, _source: &Path, _target: &Path) -> crate::ports::VolumeRelation {
+        crate::ports::VolumeRelation::Same
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Barrier, mpsc};
+    use std::sync::{Barrier, Mutex, mpsc};
 
-    fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
-        let mut ws = Workspace::with_opener(
+    struct ScriptedTrashPort {
+        outcomes: Mutex<VecDeque<crate::ports::TrashItemOutcome>>,
+        calls: Mutex<Vec<PathBuf>>,
+    }
+
+    struct FixedFreeSpacePort {
+        outcome: crate::ports::SpaceProbeOutcome,
+        relation: crate::ports::VolumeRelation,
+    }
+
+    impl crate::ports::FreeSpacePort for FixedFreeSpacePort {
+        fn probe(&self, _path: &Path) -> crate::ports::SpaceProbeOutcome {
+            self.outcome.clone()
+        }
+
+        fn volume_relation(&self, _source: &Path, _target: &Path) -> crate::ports::VolumeRelation {
+            self.relation.clone()
+        }
+    }
+
+    impl ScriptedTrashPort {
+        fn new(outcomes: impl IntoIterator<Item = crate::ports::TrashItemOutcome>) -> Self {
+            Self {
+                outcomes: Mutex::new(outcomes.into_iter().collect()),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl crate::ports::TrashPort for ScriptedTrashPort {
+        fn move_to_trash(
+            &self,
+            target: &crate::ports::TrashTarget,
+        ) -> crate::ports::TrashItemOutcome {
+            self.calls.lock().unwrap().push(target.path.clone());
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted Trash outcome")
+        }
+    }
+
+    fn ready_trash_item(path: &Path) -> crate::ports::TrashBatchItem {
+        crate::ports::TrashBatchItem::Ready(crate::ports::TrashTarget {
+            path: path.to_path_buf(),
+            expected: crate::path_identity::PathIdentity::observe(path).unwrap(),
+        })
+    }
+
+    fn workspace_with_trash(
+        left: &TempDir,
+        right: &TempDir,
+        trash: Arc<ScriptedTrashPort>,
+    ) -> Workspace {
+        let mut workspace = Workspace::with_ports(
             left.path().to_path_buf(),
             right.path().to_path_buf(),
-            Box::new(|_| {}),
+            trash,
+            Arc::new(TestFreeSpacePort),
         );
+        workspace.left.refresh();
+        workspace.right.refresh();
+        workspace
+    }
+
+    fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
+        let mut ws = Workspace::new(left.path().to_path_buf(), right.path().to_path_buf());
         ws.left.refresh();
         ws.right.refresh();
         ws
@@ -2579,6 +2970,7 @@ mod tests {
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
             post_success: None,
             rollback_cleanup: None,
             rollback_cleanup_identity: None,
@@ -2768,6 +3160,12 @@ mod tests {
     }
 
     fn wait_transfer(ws: &mut Workspace) {
+        if ws.active_transfer().is_none() && matches!(ws.pending_op, Some(PendingOp::Transfer(_))) {
+            ws.finish_space_probe();
+            if ws.active_transfer().is_none() {
+                ws.start_transfer(|| {});
+            }
+        }
         let state = ws
             .active_transfer()
             .cloned()
@@ -2784,7 +3182,9 @@ mod tests {
     /// queued behind it, polling between each.
     fn drain_transfers(ws: &mut Workspace) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while ws.active_transfer().is_some() {
+        while ws.active_transfer().is_some()
+            || matches!(ws.pending_op, Some(PendingOp::Transfer(_)))
+        {
             wait_transfer(ws);
             assert!(
                 std::time::Instant::now() < deadline,
@@ -3463,38 +3863,27 @@ mod tests {
     }
 
     #[test]
-    fn activate_file_calls_opener() {
+    fn activate_file_emits_typed_open_intent() {
         let (l, r) = (TempDir::new(), TempDir::new());
-        l.file("a.txt", "x");
-        let opened = Arc::new(AtomicUsize::new(0));
-        let opened2 = opened.clone();
-        let mut ws = Workspace::with_opener(
-            l.path().to_path_buf(),
-            r.path().to_path_buf(),
-            Box::new(move |_| {
-                opened2.fetch_add(1, Ordering::Relaxed);
-            }),
-        );
+        let path = l.file("a.txt", "x");
+        let mut ws = Workspace::new(l.path().to_path_buf(), r.path().to_path_buf());
         ws.left.refresh();
 
         ws.left.set_cursor(1);
         ws.execute(Command::Activate);
-        assert_eq!(opened.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            ws.pending_ui_requests(),
+            vec![UiRequest::OpenExternal(
+                crate::ports::OpenRequest::OpenPath(path)
+            )]
+        );
     }
 
     #[test]
     fn activate_zip_requests_the_read_only_archive_browser() {
         let (left, right) = (TempDir::new(), TempDir::new());
         let archive = left.file("bundle.zip", "placeholder");
-        let opened = Arc::new(AtomicUsize::new(0));
-        let opened_copy = Arc::clone(&opened);
-        let mut workspace = Workspace::with_opener(
-            left.path().to_path_buf(),
-            right.path().to_path_buf(),
-            Box::new(move |_| {
-                opened_copy.fetch_add(1, Ordering::Relaxed);
-            }),
-        );
+        let mut workspace = Workspace::new(left.path().to_path_buf(), right.path().to_path_buf());
         workspace.left.refresh();
 
         workspace.left.set_cursor(1);
@@ -3504,7 +3893,6 @@ mod tests {
             workspace.pending_ui_requests(),
             vec![UiRequest::Archive(archive)]
         );
-        assert_eq!(opened.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -3517,6 +3905,7 @@ mod tests {
         ws.execute(Command::RequestCopy);
         assert!(matches!(ws.pending_op, Some(PendingOp::Transfer(_))));
 
+        ws.finish_space_probe();
         ws.confirm_pending_op(|| {});
         wait_transfer(&mut ws);
 
@@ -3534,6 +3923,7 @@ mod tests {
 
         ws.left.set_cursor(1);
         ws.execute(Command::RequestMove);
+        ws.finish_space_probe();
         ws.confirm_pending_op(|| {});
         wait_transfer(&mut ws);
 
@@ -3559,6 +3949,123 @@ mod tests {
             }
             _ => panic!("expected a pending delete"),
         }
+    }
+
+    #[test]
+    fn context_menu_trash_routes_through_confirmation_and_background_port() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let path = left.file("a.txt", "x");
+        let trash = Arc::new(ScriptedTrashPort::new([
+            crate::ports::TrashItemOutcome::Trashed,
+        ]));
+        let mut workspace = workspace_with_trash(&left, &right, Arc::clone(&trash));
+
+        workspace.request_context_delete(ActivePanel::Left, &path);
+        assert!(matches!(
+            workspace.pending_op,
+            Some(PendingOp::Delete { .. })
+        ));
+        assert!(trash.calls.lock().unwrap().is_empty());
+
+        assert!(workspace.confirm_pending_op(|| {}));
+        let outcome = workspace.finish_delete().expect("delete outcome");
+        assert_eq!(outcome.trashed, 1);
+        assert_eq!(*trash.calls.lock().unwrap(), [path]);
+    }
+
+    #[test]
+    fn delete_uses_visible_listing_identity_and_rejects_a_replacement() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let path = left.file("a.txt", "old");
+        let trash = Arc::new(ScriptedTrashPort::new([
+            crate::ports::TrashItemOutcome::Trashed,
+        ]));
+        let mut workspace = workspace_with_trash(&left, &right, Arc::clone(&trash));
+        workspace.left.set_cursor(1);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "replacement object").unwrap();
+        workspace.request_delete();
+        assert!(workspace.confirm_pending_op(|| {}));
+        let outcome = workspace.finish_delete().expect("delete outcome");
+
+        assert_eq!(
+            outcome.items[0].outcome,
+            crate::ports::TrashItemOutcome::StaleBinding
+        );
+        assert!(trash.calls.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "replacement object");
+    }
+
+    #[test]
+    fn safe_state_and_busy_queue_never_call_the_trash_port() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let path = left.file("a.txt", "x");
+        let trash = Arc::new(ScriptedTrashPort::new([
+            crate::ports::TrashItemOutcome::Trashed,
+        ]));
+        let mut workspace = workspace_with_trash(&left, &right, Arc::clone(&trash));
+        workspace.safe_state = Some(crate::operation::SafeState {
+            operation_id: crate::operation::OperationId("blocked-delete".to_string()),
+            reason: "review required".to_string(),
+            paths: vec![path.clone()],
+            failures: Vec::new(),
+        });
+        assert!(!workspace.trash_entries(vec![ready_trash_item(&path)], || {}));
+
+        workspace.safe_state = None;
+        workspace.launch_test_transfer(
+            test_transfer_spec("busy-delete", right.path()),
+            transfer_queue::HistoryIntent::None,
+        );
+        assert!(!workspace.trash_entries(vec![ready_trash_item(&path)], || {}));
+        assert!(trash.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_delete_batch_does_not_request_panel_refresh() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let path = left.file("a.txt", "x");
+        let trash = Arc::new(ScriptedTrashPort::new([
+            crate::ports::TrashItemOutcome::Failed(crate::ports::NativeFailure {
+                kind: crate::ports::NativeFailureKind::Denied,
+                message: "denied".to_string(),
+            }),
+        ]));
+        let mut workspace = workspace_with_trash(&left, &right, trash);
+
+        assert!(workspace.trash_entries(vec![ready_trash_item(&path)], || {}));
+        let outcome = workspace.finish_delete().expect("delete outcome");
+        assert_eq!(outcome.trashed, 0);
+        assert_eq!(outcome.failed, 1);
+        assert!(!outcome.refresh_required());
+    }
+
+    #[test]
+    fn active_delete_blocks_other_mutation_commits_until_retirement() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let path = left.file("a.txt", "x");
+        let trash = Arc::new(ScriptedTrashPort::new([
+            crate::ports::TrashItemOutcome::Trashed,
+        ]));
+        let mut workspace = workspace_with_trash(&left, &right, trash);
+        workspace.left.set_cursor(1);
+        workspace.request_delete();
+        assert!(workspace.confirm_pending_op(|| {}));
+
+        assert!(workspace.delete_active());
+        assert!(workspace.mutations_blocked());
+        assert_eq!(workspace.delete_activity_count(), Some(1));
+        let context = workspace.command_context();
+        assert!(context.active_mutation);
+        assert!(!context.safe_state);
+        workspace.create_dir();
+        assert!(!left.path().join("New Folder").exists());
+        let rename = workspace.commit_rename(&path, "renamed.txt");
+        assert!(rename.unwrap_err().contains("Trash operation"));
+
+        workspace.finish_delete().expect("delete retirement");
+        assert!(!workspace.delete_active());
     }
 
     #[test]
@@ -4814,6 +5321,7 @@ mod tests {
         ws.left.set_cursor(1);
 
         ws.execute(Command::RequestMove);
+        ws.finish_space_probe();
         ws.confirm_pending_op(|| {});
         wait_transfer(&mut ws);
         assert!(!f.exists(), "move removed the source");
@@ -4868,24 +5376,45 @@ mod tests {
 
     #[test]
     fn pending_transfer_overflow_logic() {
-        let mk = |kind, method, need, free, same| PendingTransfer {
-            kind,
-            entries: vec![],
-            expectations: vec![],
-            target: PathBuf::from("/t"),
-            conflicts: vec![],
-            policy: OverwritePolicy::Ask,
-            method,
-            durability: crate::operation::DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            filesystem: filesystem_preflight(&[], Path::new("/"), Default::default()),
-            flat: scan::spawn_scan(vec![]),
-            need_bytes: need,
-            free_bytes: free,
-            same_volume: same,
-        };
+        let mk =
+            |kind: TransferKind, method: CopyMethod, need: u64, free: Option<u64>, same: bool| {
+                PendingTransfer {
+                    kind,
+                    entries: vec![],
+                    expectations: vec![],
+                    target: PathBuf::from("/t"),
+                    conflicts: vec![],
+                    policy: OverwritePolicy::Ask,
+                    method,
+                    durability: crate::operation::DurabilityProfile::Fast,
+                    version_retention: crate::operation::VersionRetentionPolicy::default(),
+                    name_policy: crate::filesystem_policy::NamePolicy::default(),
+                    symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+                    filesystem: filesystem_preflight(&[], Path::new("/"), Default::default()),
+                    flat: scan::pending_flat_list(),
+                    space: TransferSpaceState::Ready {
+                        generation: 1,
+                        need_bytes: need,
+                        free: free.map_or_else(
+                            || {
+                                crate::ports::SpaceProbeOutcome::Unknown(
+                                    crate::ports::NativeFailure::unsupported("probe unavailable"),
+                                )
+                            },
+                            |bytes| crate::ports::SpaceProbeOutcome::Known {
+                                bytes,
+                                precision: crate::ports::SpacePrecision::Exact,
+                            },
+                        ),
+                        relation: if same {
+                            crate::ports::VolumeRelation::Same
+                        } else {
+                            crate::ports::VolumeRelation::Different
+                        },
+                    },
+                    start_when_ready: false,
+                }
+            };
         use CopyMethod::{Buffered, Native};
         // Cross-volume copy needing more than free overflows.
         assert!(mk(TransferKind::Copy, Native, 100, Some(50), false).overflows());
@@ -4895,19 +5424,34 @@ mod tests {
         assert!(!mk(TransferKind::Move, Native, 100, Some(50), true).overflows());
         // Cross-volume move behaves like copy.
         assert!(mk(TransferKind::Move, Native, 100, Some(50), false).overflows());
-        // Unknown free space: don't block.
+        // Unknown free space is non-blocking but explicitly indeterminate.
         assert!(!mk(TransferKind::Copy, Native, 100, None, false).overflows());
+        assert_eq!(
+            mk(TransferKind::Copy, Native, 100, None, false).space_verdict(),
+            crate::fs_util::SpaceVerdict::Indeterminate
+        );
 
-        // Same-volume Native copy is an APFS clone: ~0 extra space, so it fits
-        // even when the size dwarfs free (the bug the preflight fixes).
+        // Native copy budgets its full logical size because clonefile may fall
+        // back to a byte copy.
         let clone = mk(TransferKind::Copy, Native, 1_000, Some(10), true);
-        assert!(!clone.overflows());
-        assert!(clone.needs_no_space());
+        assert!(clone.overflows());
+        assert!(!clone.needs_no_space());
         // A same-volume BUFFERED copy writes every byte, so it can overflow.
         assert!(mk(TransferKind::Copy, Buffered, 1_000, Some(10), true).overflows());
         assert!(!mk(TransferKind::Copy, Buffered, 1_000, Some(10), true).needs_no_space());
         // A same-volume move needs no space regardless of method.
         assert!(mk(TransferKind::Move, Native, 1_000, Some(10), true).needs_no_space());
+        assert_eq!(
+            mk(TransferKind::Move, Native, 1_000, None, true).space_verdict(),
+            crate::fs_util::SpaceVerdict::Indeterminate
+        );
+        let mut same_volume_move = mk(TransferKind::Move, Native, 1_000, None, true);
+        same_volume_move.start_when_ready = true;
+        assert!(should_auto_start_after_preflight(&same_volume_move));
+
+        let mut unknown_copy = mk(TransferKind::Copy, Native, 1_000, None, false);
+        unknown_copy.start_when_ready = true;
+        assert!(!should_auto_start_after_preflight(&unknown_copy));
     }
 
     #[test]
@@ -4924,8 +5468,16 @@ mod tests {
             panic!("copy should be pending");
         };
         tr.method = CopyMethod::Buffered;
-        tr.free_bytes = Some(10);
-        assert_eq!(tr.need_bytes, 110);
+        tr.space = TransferSpaceState::Ready {
+            generation: 1,
+            need_bytes: 110,
+            free: crate::ports::SpaceProbeOutcome::Known {
+                bytes: 10,
+                precision: crate::ports::SpacePrecision::Exact,
+            },
+            relation: crate::ports::VolumeRelation::Different,
+        };
+        assert_eq!(tr.need_bytes(), Some(110));
         assert!(tr.overflows());
 
         assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
@@ -4934,9 +5486,212 @@ mod tests {
         };
         assert_eq!(tr.entries.len(), 1);
         assert_eq!(tr.entries[0].path, fresh);
-        assert_eq!(tr.need_bytes, 10);
+        assert!(matches!(tr.space, TransferSpaceState::Pending { .. }));
         assert!(tr.conflicts.is_empty());
-        assert!(!tr.overflows());
+    }
+
+    #[test]
+    fn transfer_confirmation_waits_for_one_complete_background_resource_snapshot() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let directory = left.dir("folder");
+        left.file("folder/nested.bin", "1234567");
+        let file = left.file("plain.bin", "12345");
+        let mut workspace = workspace(&left, &right);
+        workspace
+            .left
+            .extend_selection([directory.clone(), file.clone()]);
+        workspace.request_copy();
+
+        let generation = match &workspace.pending_op {
+            Some(PendingOp::Transfer(transfer)) => {
+                assert!(!transfer.space_ready());
+                assert!(transfer.expectations.is_empty());
+                match transfer.space {
+                    TransferSpaceState::Pending { generation } => generation,
+                    TransferSpaceState::Ready { .. } | TransferSpaceState::Failed { .. } => {
+                        unreachable!()
+                    }
+                }
+            }
+            _ => panic!("copy should be pending"),
+        };
+        assert!(!workspace.confirm_pending_op(|| {}));
+        assert!(matches!(workspace.pending_op, Some(PendingOp::Transfer(_))));
+
+        workspace.finish_space_probe();
+        let Some(PendingOp::Transfer(transfer)) = &workspace.pending_op else {
+            panic!("copy should remain pending after preflight");
+        };
+        assert!(transfer.space_ready());
+        assert_eq!(transfer.need_bytes(), Some(12));
+        assert_eq!(transfer.expectations.len(), transfer.entries.len());
+        assert!(matches!(
+            transfer.space,
+            TransferSpaceState::Ready {
+                generation: ready_generation,
+                ..
+            } if ready_generation == generation
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changing_symlink_policy_restarts_the_bound_size_snapshot() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        left.file("target/value.bin", "1234567");
+        let link = left.path().join("linked");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        let mut workspace = Workspace::with_ports(
+            left.path().to_path_buf(),
+            right.path().to_path_buf(),
+            Arc::new(TestTrashPort),
+            Arc::new(FixedFreeSpacePort {
+                outcome: crate::ports::SpaceProbeOutcome::Known {
+                    bytes: u64::MAX,
+                    precision: crate::ports::SpacePrecision::Exact,
+                },
+                relation: crate::ports::VolumeRelation::Different,
+            }),
+        );
+        workspace.left.refresh();
+        workspace.right.refresh();
+        workspace.left.select_path(link);
+        workspace.request_copy();
+        workspace.finish_space_probe();
+
+        let previous_generation = match &workspace.pending_op {
+            Some(PendingOp::Transfer(PendingTransfer {
+                space: TransferSpaceState::Ready { generation, .. },
+                ..
+            })) => *generation,
+            _ => panic!("initial preflight should be ready"),
+        };
+        assert!(workspace.set_pending_symlink_policy(
+            crate::filesystem_policy::SymlinkPolicy::Follow,
+            || {},
+        ));
+        assert!(matches!(
+            &workspace.pending_op,
+            Some(PendingOp::Transfer(PendingTransfer {
+                space: TransferSpaceState::Pending { generation },
+                ..
+            })) if *generation != previous_generation
+        ));
+
+        workspace.finish_space_probe();
+        let Some(PendingOp::Transfer(transfer)) = &workspace.pending_op else {
+            panic!("updated preflight should remain pending confirmation");
+        };
+        assert_eq!(transfer.need_bytes(), Some(7));
+    }
+
+    #[test]
+    fn stale_space_report_cannot_bind_to_a_newer_pending_plan() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        left.file("value.txt", "123");
+        let mut workspace = workspace(&left, &right);
+        workspace.left.set_cursor(1);
+        workspace.request_copy();
+        let (generation, target) = match &workspace.pending_op {
+            Some(PendingOp::Transfer(transfer)) => match transfer.space {
+                TransferSpaceState::Pending { generation } => (generation, transfer.target.clone()),
+                TransferSpaceState::Ready { .. } | TransferSpaceState::Failed { .. } => {
+                    unreachable!()
+                }
+            },
+            _ => panic!("copy should be pending"),
+        };
+
+        workspace.apply_space_probe(
+            space_probe::SpaceProbeReport {
+                generation: generation.saturating_add(1),
+                target,
+                need_bytes: Ok(0),
+                expectations: Ok(Vec::new()),
+                free: crate::ports::SpaceProbeOutcome::Known {
+                    bytes: u64::MAX,
+                    precision: crate::ports::SpacePrecision::Exact,
+                },
+                relation: crate::ports::VolumeRelation::Same,
+            },
+            || {},
+        );
+
+        assert!(matches!(
+            &workspace.pending_op,
+            Some(PendingOp::Transfer(PendingTransfer {
+                space: TransferSpaceState::Pending {
+                    generation: retained
+                },
+                ..
+            })) if *retained == generation
+        ));
+        workspace.finish_space_probe();
+    }
+
+    #[test]
+    fn unknown_free_space_is_ready_but_never_fits() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        left.file("value.txt", "123");
+        let mut workspace = Workspace::with_ports(
+            left.path().to_path_buf(),
+            right.path().to_path_buf(),
+            Arc::new(TestTrashPort),
+            Arc::new(FixedFreeSpacePort {
+                outcome: crate::ports::SpaceProbeOutcome::Unknown(
+                    crate::ports::NativeFailure::unsupported("probe unavailable"),
+                ),
+                relation: crate::ports::VolumeRelation::Different,
+            }),
+        );
+        workspace.left.refresh();
+        workspace.right.refresh();
+        workspace.left.set_cursor(1);
+        workspace.request_copy();
+        workspace.finish_space_probe();
+
+        let Some(PendingOp::Transfer(transfer)) = &workspace.pending_op else {
+            panic!("copy should be pending");
+        };
+        assert!(transfer.space_ready());
+        assert_eq!(
+            transfer.space_verdict(),
+            crate::fs_util::SpaceVerdict::Indeterminate
+        );
+        assert!(!transfer.overflows());
+    }
+
+    #[test]
+    fn conflict_free_drag_does_not_auto_start_with_unknown_space() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let file = left.file("value.txt", "123");
+        let mut workspace = Workspace::with_ports(
+            left.path().to_path_buf(),
+            right.path().to_path_buf(),
+            Arc::new(TestTrashPort),
+            Arc::new(FixedFreeSpacePort {
+                outcome: crate::ports::SpaceProbeOutcome::Unknown(
+                    crate::ports::NativeFailure::unsupported("probe unavailable"),
+                ),
+                relation: crate::ports::VolumeRelation::Different,
+            }),
+        );
+        workspace.left.refresh();
+        workspace.right.refresh();
+        workspace.left.drag_entries = vec![file];
+        workspace.right.drop_target = Some(right.path().to_path_buf());
+
+        workspace.drop_dragged(|| {});
+        workspace.finish_space_probe();
+
+        assert!(workspace.active_transfer().is_none());
+        let Some(PendingOp::Transfer(transfer)) = &workspace.pending_op else {
+            panic!("indeterminate drag should remain pending");
+        };
+        assert_eq!(
+            transfer.space_verdict(),
+            crate::fs_util::SpaceVerdict::Indeterminate
+        );
     }
 
     #[test]

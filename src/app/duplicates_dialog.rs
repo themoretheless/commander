@@ -217,7 +217,7 @@ impl App {
                 return;
             }
             // Every non-kept file across all groups goes to the Trash.
-            let to_trash: Vec<std::path::PathBuf> = {
+            let to_trash: Vec<crate::ports::TrashBatchItem> = {
                 let Some(s) = self.ui.modals.duplicates.as_ref() else {
                     return;
                 };
@@ -229,37 +229,26 @@ impl App {
                             .iter()
                             .enumerate()
                             .filter(move |(fi, _)| *fi != keep)
-                            .map(|(_, f)| f.path.clone())
+                            .map(|(_, file)| {
+                                crate::workspace::trash_batch_item_from_listing(
+                                    file.path.clone(),
+                                    &file.identity,
+                                )
+                            })
                     })
                     .collect()
             };
             let requested = to_trash.len();
-            let trashed = self.ws.trash_paths(&to_trash);
-            self.ui.modals.duplicates = None;
-
             if requested == 0 {
                 return;
             }
-            let now = ctx.input(|i| i.time);
-            let item = |n: usize| if n == 1 { "duplicate" } else { "duplicates" };
-            let (message, kind) = if trashed == requested {
-                (
-                    format!("Moved {} {} to Trash", trashed, item(trashed)),
-                    crate::toasts::ToastKind::Success,
-                )
-            } else {
-                (
-                    format!(
-                        "Moved {} of {} {} to Trash",
-                        trashed,
-                        requested,
-                        item(requested)
-                    ),
-                    crate::toasts::ToastKind::Error,
-                )
-            };
-            self.toasts
-                .push(crate::toasts::Toast::new(message, kind, false, now));
+            let repaint = ctx.clone();
+            if self
+                .ws
+                .trash_entries(to_trash, move || repaint.request_repaint())
+            {
+                self.ui.modals.duplicates = None;
+            }
         }
     }
 }

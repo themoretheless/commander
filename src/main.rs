@@ -33,6 +33,7 @@ mod lock_util;
 pub mod measurement;
 mod mount_guard;
 mod native_copy;
+mod native_effect;
 mod native_menu;
 mod operation;
 mod operation_journal;
@@ -109,7 +110,24 @@ fn main() -> eframe::Result<()> {
                     "could not construct the main-thread AppKit adapter: {error:?}"
                 ))
             })?;
-            Ok(Box::new(app::App::new(cc, std::rc::Rc::new(context_menu))))
+            let clipboard = native_effect::MacOsClipboard::new().map_err(|error| {
+                std::io::Error::other(format!(
+                    "could not construct the main-thread clipboard adapter: {error:?}"
+                ))
+            })?;
+            let opener = native_effect::MacOsOpener::new().map_err(|error| {
+                std::io::Error::other(format!(
+                    "could not construct the main-thread opener adapter: {error:?}"
+                ))
+            })?;
+            Ok(Box::new(app::App::new(
+                cc,
+                std::rc::Rc::new(context_menu),
+                std::rc::Rc::new(clipboard),
+                std::rc::Rc::new(opener),
+                std::sync::Arc::new(native_effect::NativeTrash),
+                std::sync::Arc::new(native_effect::NativeFreeSpace),
+            )))
         }),
     )
 }

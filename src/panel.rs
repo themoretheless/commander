@@ -1036,11 +1036,21 @@ pub fn classify_dir(path: &Path, is_empty: bool) -> DirStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListingIdentity {
+    Captured(crate::path_identity::PathIdentity),
+    CaptureFailed(crate::ports::NativeFailure),
+    Unavailable,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileEntry {
     pub name: String,
     pub name_lower: String,
     pub path: PathBuf,
+    /// Lexical filesystem binding captured with the listing the user sees.
+    /// Operations must not re-observe it synchronously on the UI thread.
+    pub identity: ListingIdentity,
     pub is_dir: bool,
     pub size: u64,
     pub extension: String,
@@ -1078,6 +1088,10 @@ impl FileEntry {
         Some(FileEntry {
             name,
             name_lower,
+            identity: ListingIdentity::Captured(crate::path_identity::PathIdentity::from_metadata(
+                path.clone(),
+                meta,
+            )),
             path,
             is_dir,
             size,
@@ -1647,6 +1661,10 @@ impl PanelState {
         self.watcher.has_notify()
     }
 
+    pub(crate) fn notify_callback(&self) -> Option<Notify> {
+        self.watcher.notify()
+    }
+
     pub fn entries(&self) -> &[FileEntry] {
         self.listing.entries()
     }
@@ -1983,15 +2001,35 @@ impl PanelState {
             {
                 continue;
             }
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
                 Err(_) => {
                     complete = false;
                     continue;
                 }
             };
-            match FileEntry::from_meta(path, &metadata) {
-                Some(entry) => result.push(entry),
+            let lexical = entry
+                .metadata()
+                .map_err(|error| crate::ports::NativeFailure::from_io(&error));
+            let followed = file_type
+                .is_symlink()
+                .then(|| fs::metadata(&path).ok())
+                .flatten();
+            let display_metadata = followed.as_ref().or_else(|| lexical.as_ref().ok());
+            let Some(display_metadata) = display_metadata else {
+                complete = false;
+                continue;
+            };
+            match FileEntry::from_meta(path.clone(), display_metadata) {
+                Some(mut file_entry) => {
+                    file_entry.identity = match lexical {
+                        Ok(metadata) => ListingIdentity::Captured(
+                            crate::path_identity::PathIdentity::from_metadata(path, &metadata),
+                        ),
+                        Err(failure) => ListingIdentity::CaptureFailed(failure),
+                    };
+                    result.push(file_entry);
+                }
                 None => complete = false,
             }
         }
@@ -2597,6 +2635,7 @@ mod tests {
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from(format!("/test/{name}")),
+            identity: ListingIdentity::Unavailable,
             is_dir,
             size,
             extension: String::new(),
@@ -2608,6 +2647,40 @@ mod tests {
                 format_size(size)
             },
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_keeps_symlinks_lexically_bound_without_losing_directory_ux() {
+        let temp = TempDir::new();
+        temp.dir("target");
+        std::os::unix::fs::symlink("target", temp.path().join("folder-link")).unwrap();
+        std::os::unix::fs::symlink("missing", temp.path().join("broken-link")).unwrap();
+
+        let DirectoryRead::Complete(entries) = PanelState::read_dir(temp.path(), true) else {
+            panic!("symlink listing should be complete");
+        };
+        let folder = entries
+            .iter()
+            .find(|entry| entry.name == "folder-link")
+            .expect("directory symlink");
+        assert!(folder.is_dir, "working directory links remain navigable");
+        assert!(matches!(
+            &folder.identity,
+            ListingIdentity::Captured(identity)
+                if identity.kind == Some(crate::path_identity::PathKind::Symlink)
+        ));
+
+        let broken = entries
+            .iter()
+            .find(|entry| entry.name == "broken-link")
+            .expect("broken symlink");
+        assert!(!broken.is_dir);
+        assert!(matches!(
+            &broken.identity,
+            ListingIdentity::Captured(identity)
+                if identity.kind == Some(crate::path_identity::PathKind::Symlink)
+        ));
     }
 
     fn panel_with(entries: Vec<FileEntry>) -> PanelState {

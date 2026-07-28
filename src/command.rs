@@ -226,6 +226,7 @@ pub struct CommandContext {
     pub preview_open: bool,
     pub info_open: bool,
     pub safe_state: bool,
+    pub active_mutation: bool,
     pub pending_operation: bool,
     pub active_transfer: bool,
     pub transfer_queue_busy: bool,
@@ -256,6 +257,7 @@ impl CommandAvailability {
 }
 
 const SAFE_STATE_REASON: &str = "Review the interrupted operation first";
+const ACTIVE_MUTATION_REASON: &str = "Wait for the current file operation to finish";
 const PENDING_REASON: &str = "Finish or cancel the current confirmation";
 const QUEUE_REASON: &str = "Wait for the transfer queue to finish";
 const PICK_REASON: &str = "Select or highlight at least one item";
@@ -299,7 +301,13 @@ pub enum CommandPredicate {
 impl CommandPredicate {
     fn failure(self, context: &CommandContext) -> Option<&'static str> {
         let (met, reason) = match self {
-            Self::MutationsAllowed => (!context.safe_state, SAFE_STATE_REASON),
+            Self::MutationsAllowed => {
+                if context.safe_state {
+                    (false, SAFE_STATE_REASON)
+                } else {
+                    (!context.active_mutation, ACTIVE_MUTATION_REASON)
+                }
+            }
             Self::ConfirmationClosed => (!context.pending_operation, PENDING_REASON),
             Self::TransferQueueIdle => (!context.transfer_queue_busy, QUEUE_REASON),
             Self::HasPickedEntry => (context.picked_entries > 0, PICK_REASON),
@@ -1099,6 +1107,13 @@ mod tests {
 
         context.safe_state = false;
         context.pending_operation = false;
+        context.active_mutation = true;
+        assert_eq!(
+            availability(Command::RequestCopy, &context).reason,
+            Some(ACTIVE_MUTATION_REASON)
+        );
+
+        context.active_mutation = false;
         context.active_transfer = true;
         context.transfer_queue_busy = true;
         assert!(

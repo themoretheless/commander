@@ -11,7 +11,7 @@ impl App {
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
         context_menu: &dyn crate::ports::ContextMenuPort,
-        opener: &dyn Fn(&std::path::Path),
+        opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
     ) -> Option<crate::provider_runtime::ContextMenuUiEffect> {
@@ -118,7 +118,9 @@ impl App {
                             ui.add_space(8.0);
                             if ui.button(label).clicked() {
                                 match kind {
-                                    "finder" => opener(&panel.current_path),
+                                    "finder" => opener(crate::ports::OpenRequest::Reveal(
+                                        panel.current_path.clone(),
+                                    )),
                                     "up" => panel.go_up(),
                                     "clear_filters" => {
                                         panel.clear_filters();
@@ -615,7 +617,7 @@ impl App {
                     panel.drop_target = Some(target);
                 }
                 if let Some(path) = open_path {
-                    opener(&path);
+                    opener(crate::ports::OpenRequest::OpenPath(path));
                 }
                 if let Some(path) = navigate_to {
                     panel.navigate_to(path);

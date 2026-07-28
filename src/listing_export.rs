@@ -83,6 +83,7 @@ mod tests {
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from(format!("/x/{name}")),
+            identity: crate::panel::ListingIdentity::Unavailable,
             is_dir: false,
             size,
             extension: String::new(),

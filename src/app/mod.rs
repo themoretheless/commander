@@ -50,6 +50,8 @@ pub struct App {
     pub(crate) ui: ui_state::UiState,
     /// Main-thread-owned desktop integration injected by the composition root.
     pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+    pub(crate) clipboard: Rc<dyn crate::ports::ClipboardPort>,
+    pub(crate) opener: Rc<dyn crate::ports::OpenerPort>,
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
@@ -497,6 +499,10 @@ impl App {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+        clipboard: Rc<dyn crate::ports::ClipboardPort>,
+        opener: Rc<dyn crate::ports::OpenerPort>,
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
     ) -> Self {
         let mut startup = crate::measurement::StartupTrace::start();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -542,7 +548,7 @@ impl App {
             .as_ref()
             .map(|s| s.sanitized_paths(&home))
             .unwrap_or_else(|| (home.clone(), home.clone()));
-        let mut ws = Workspace::new(left, right);
+        let mut ws = Workspace::with_ports(left, right, trash, free_space);
 
         let ui_scale =
             crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
@@ -589,6 +595,8 @@ impl App {
             ws,
             ui: ui_state::UiState::default(),
             context_menu,
+            clipboard,
+            opener,
             ui_scale,
             theme_mode: mode,
             colors: ThemeColors::for_preferences(mode, accessibility_preferences),
@@ -715,56 +723,11 @@ impl App {
         }
     }
 
-    /// Confirm the pending operation; progress wakes the UI via repaint.
-    /// A Delete reports its outcome synchronously, so confirm it with a toast
-    /// (and flag anything the Trash refused) rather than letting it vanish
-    /// without acknowledgement.
+    /// Confirm the pending operation; all filesystem work completes through
+    /// background controller polling.
     pub(crate) fn confirm_pending_op(&mut self, ctx: &egui::Context) {
         let ctx2 = ctx.clone();
-        if let Some(outcome) = self.ws.confirm_pending_op(move || ctx2.request_repaint()) {
-            let now = ctx.input(|i| i.time);
-            let item = |n: usize| if n == 1 { "item" } else { "items" };
-            let (message, kind) = if outcome.failed == 0 {
-                (
-                    format!(
-                        "Moved {} {} to Trash",
-                        outcome.trashed,
-                        item(outcome.trashed)
-                    ),
-                    crate::toasts::ToastKind::Success,
-                )
-            } else if outcome.trashed == 0 {
-                (
-                    format!(
-                        "Could not delete {} {}",
-                        outcome.failed,
-                        item(outcome.failed)
-                    ),
-                    crate::toasts::ToastKind::Error,
-                )
-            } else {
-                (
-                    format!(
-                        "Moved {} to Trash, {} failed",
-                        outcome.trashed, outcome.failed
-                    ),
-                    crate::toasts::ToastKind::Error,
-                )
-            };
-            self.toasts
-                .push(crate::toasts::Toast::new(message, kind, false, now));
-            if outcome.trashed > 0 {
-                self.receipts.push(crate::receipts::Receipt {
-                    verb: "Deleted",
-                    item_count: outcome.trashed,
-                    timestamp: now,
-                    jump_to: self.ws.active_panel_ref().current_path.clone(),
-                    // No undo path for a delete in this app today; jump-back
-                    // still gets you to where it happened.
-                    undo_action: None,
-                });
-            }
-        }
+        self.ws.confirm_pending_op(move || ctx2.request_repaint());
     }
 
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {

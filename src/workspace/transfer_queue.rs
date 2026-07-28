@@ -206,7 +206,10 @@ impl TransferQueueController {
             .spec
             .clone();
         let operation_id = job.spec.operation_id.clone();
-        let mut initial_progress = TransferProgress::unknown(job.spec.entries.len());
+        let mut initial_progress = job.spec.preflight_bytes.map_or_else(
+            || TransferProgress::unknown(job.spec.entries.len()),
+            |bytes| TransferProgress::new(bytes, job.spec.entries.len()),
+        );
         // Establish the canonical identity before the worker can publish its
         // first update. None is never a valid active-operation identity.
         initial_progress.operation_id = Some(operation_id.clone());
@@ -724,7 +727,8 @@ impl Workspace {
     }
 
     pub(super) fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
-        self.transfers.launch(self.mutations_blocked(), notify);
+        self.transfers
+            .launch(self.mutation_commits_blocked(), notify);
     }
 
     #[cfg(test)]
@@ -865,6 +869,9 @@ impl Workspace {
     }
 
     pub fn queue_resume(&mut self, id: JobId, notify: impl Fn() + Send + 'static) {
+        if self.mutation_commits_blocked() {
+            return;
+        }
         if self.transfers.resume(id) {
             self.pump_queue(notify);
         }
@@ -914,7 +921,7 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) -> LaunchOutcome {
         self.transfers
-            .launch_with_workload(self.mutations_blocked(), workload, notify)
+            .launch_with_workload(self.mutation_commits_blocked(), workload, notify)
     }
 }
 
@@ -937,6 +944,7 @@ mod tests {
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
             post_success: None,
             rollback_cleanup: None,
             rollback_cleanup_identity: None,

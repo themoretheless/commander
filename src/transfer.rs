@@ -576,6 +576,10 @@ pub struct TransferSpec {
     pub version_retention: crate::operation::VersionRetentionPolicy,
     pub name_policy: crate::filesystem_policy::NamePolicy,
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    /// Exact logical size published by a completed confirmation preflight.
+    /// Queue/recovery callers without that snapshot leave this unset and the
+    /// worker computes it off the UI thread.
+    pub preflight_bytes: Option<u64>,
     pub post_success: Option<PostTransferAction>,
     /// A container created specifically for this operation and removable only
     /// after every completed effect has been rolled back out of it.
@@ -602,7 +606,7 @@ pub type BeforePostSuccessHook = Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 pub type BeforeTerminalPublishHook = Arc<dyn Fn() + Send + Sync>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransferExpectation {
     pub key: Option<crate::operation::IdempotencyKey>,
     pub source: Result<PathIdentity, String>,
@@ -890,6 +894,17 @@ fn journal_enabled(_spec: &TransferSpec) -> bool {
 
 /// Size of one entry: its byte length, or the recursive size of a directory.
 fn entry_size(entry: &FileEntry) -> u64 {
+    if let crate::panel::ListingIdentity::Captured(identity) = &entry.identity {
+        return match identity.kind {
+            Some(crate::path_identity::PathKind::Directory) => {
+                fs_util::dir_size_recursive(&entry.path)
+            }
+            Some(crate::path_identity::PathKind::File)
+            | Some(crate::path_identity::PathKind::Other)
+            | None => identity.size,
+            Some(crate::path_identity::PathKind::Symlink) => 0,
+        };
+    }
     if entry.is_dir {
         fs_util::dir_size_recursive(&entry.path)
     } else {
@@ -898,8 +913,21 @@ fn entry_size(entry: &FileEntry) -> u64 {
 }
 
 /// Total bytes for all entries (recursively for dirs).
+#[cfg(test)]
 pub fn total_bytes(entries: &[FileEntry]) -> u64 {
-    entries.iter().map(entry_size).sum()
+    entries
+        .iter()
+        .map(entry_size)
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn planned_total_bytes(spec: &TransferSpec) -> u64 {
+    spec.preflight_bytes.unwrap_or_else(|| {
+        spec.entries
+            .iter()
+            .map(entry_size)
+            .fold(0_u64, u64::saturating_add)
+    })
 }
 
 /// Run the transfer on a background thread.
@@ -1093,6 +1121,7 @@ fn spawn_transfer_on(
     .priority(crate::workload::Priority::Critical)
     .estimated_bytes(64 * 1024 * 1024);
     let worker = move |scheduler_cancel: crate::workload::CancellationToken| {
+        let mut spec = spec;
         let progress = worker_progress;
         let notify = || (crate::lock_util::recover(&worker_notify))();
         let mount_wait_override: Option<Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>> = {
@@ -1122,7 +1151,7 @@ fn spawn_transfer_on(
         let mut terminal_guard =
             PanicTerminalGuard::new(terminal.clone(), &progress, &notify, journal_enabled);
         notify();
-        let total_bytes = spec.entries.iter().map(entry_size).sum();
+        let total_bytes = planned_total_bytes(&spec);
         {
             let mut state = crate::lock_util::recover(&progress);
             state.total_bytes = total_bytes;
@@ -1130,6 +1159,9 @@ fn spawn_transfer_on(
             state.set_phase(crate::operation_view::OperationPhase::Plan);
         }
         notify();
+        if spec.expectations.len() != spec.entries.len() {
+            spec.expectations = capture_expectations(&spec.entries, &spec.target);
+        }
         let target_profile = crate::volume_profile::profile(&spec.target);
         let target_mount = crate::mount_guard::MountGuard::capture(
             &spec.target,
@@ -1218,11 +1250,7 @@ fn spawn_transfer_on(
         }
         let is_move = spec.kind == TransferKind::Move;
         let mut base_bytes: u64 = 0;
-        let expectations = if spec.expectations.len() == spec.entries.len() {
-            spec.expectations
-        } else {
-            capture_expectations(&spec.entries, &spec.target)
-        };
+        let expectations = spec.expectations;
         let mut work = spec
             .entries
             .into_iter()
@@ -1572,35 +1600,10 @@ fn spawn_transfer_on(
                 continue;
             }
 
-            // Same-volume moves are an instant, atomic rename instead of a
-            // copy-then-delete: no transient duplication, no walk-and-copy of
-            // every byte, and no second pass to remove the source. The copy
-            // path is reserved for cross-volume moves and all copies.
-            let renamed = is_move
-                && !(source_before.kind == Some(crate::path_identity::PathKind::Symlink)
-                    && spec.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Follow)
-                && entry
-                    .path
-                    .parent()
-                    .is_some_and(|p| fs_util::same_volume(p, &spec.target));
-
             let attempt_base = base_bytes;
             let attempt_started = std::time::Instant::now();
             let attempt_tuning = crate::transfer_tuning::snapshot(&target_profile);
-            let result = if renamed {
-                rename_entry(
-                    &entry.path,
-                    &copy_target,
-                    &entry,
-                    this_size,
-                    &progress,
-                    base_bytes,
-                )
-                .map(|bytes| CopyOutcome {
-                    bytes,
-                    fast_path: crate::transfer_tuning::FastPath::Rename,
-                })
-            } else {
+            let copy_entry = || {
                 spec.method.copy_entry(
                     &entry.path,
                     entry.is_dir,
@@ -1621,6 +1624,37 @@ fn spawn_transfer_on(
                         },
                     },
                 )
+            };
+            // A move first attempts the atomic rename itself. `EXDEV` is the
+            // authoritative cross-volume result and falls back to the normal
+            // copy pipeline without a separate device-id OS read.
+            let try_rename = is_move
+                && !(source_before.kind == Some(crate::path_identity::PathKind::Symlink)
+                    && spec.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Follow);
+            let mut renamed = false;
+            let result = if try_rename {
+                match rename_entry(
+                    &entry.path,
+                    &copy_target,
+                    &entry,
+                    this_size,
+                    &progress,
+                    base_bytes,
+                ) {
+                    Ok(bytes) => {
+                        renamed = true;
+                        Ok(CopyOutcome {
+                            bytes,
+                            fast_path: crate::transfer_tuning::FastPath::Rename,
+                        })
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                        copy_entry()
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                copy_entry()
             };
             crate::transfer_tuning::record(
                 &target_profile,
@@ -3231,6 +3265,7 @@ mod tests {
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             rollback_cleanup_identity: None,
@@ -3263,6 +3298,7 @@ mod tests {
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             rollback_cleanup_identity: None,
@@ -3296,6 +3332,7 @@ mod tests {
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
             rollback_cleanup: None,
             rollback_cleanup_identity: None,
@@ -3336,6 +3373,7 @@ mod tests {
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
             post_success: None,
             rollback_cleanup: None,
             rollback_cleanup_identity: None,
@@ -3964,6 +4002,24 @@ mod tests {
 
         let entries = vec![entry_for(&f), entry_for(&d)];
         assert_eq!(total_bytes(&entries), 8);
+    }
+
+    #[test]
+    fn confirmed_preflight_size_is_reused_by_the_worker_plan() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let directory = source.dir("folder");
+        source.file("folder/value.bin", "123");
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Native,
+            vec![entry_for(&directory)],
+            target.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        request.preflight_bytes = Some(987_654);
+
+        assert_eq!(planned_total_bytes(&request), 987_654);
     }
 
     #[test]

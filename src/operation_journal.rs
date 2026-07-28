@@ -419,9 +419,20 @@ fn acquire_store_lock(path: &Path) -> Result<StoreLock, String> {
 
 fn journal_path() -> PathBuf {
     #[cfg(test)]
-    if let Some(path) = crate::lock_util::recover(&TEST_JOURNAL_PATH).clone() {
-        return path;
+    {
+        if let Some(path) = crate::lock_util::recover(&TEST_JOURNAL_PATH).clone() {
+            return path;
+        }
+        static DEFAULT_TEST_JOURNAL_PATH: OnceLock<PathBuf> = OnceLock::new();
+        DEFAULT_TEST_JOURNAL_PATH
+            .get_or_init(|| {
+                std::env::temp_dir()
+                    .join(format!("commander-test-journal-{}", std::process::id()))
+                    .join("operation-journal.json")
+            })
+            .clone()
     }
+    #[cfg(not(test))]
     crate::fs_util::config_dir().join("operation-journal.json")
 }
 
@@ -1677,6 +1688,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         version_retention: record.version_retention,
         name_policy: record.name_policy,
         symlink_policy: record.symlink_policy,
+        preflight_bytes: None,
         post_success: record.post_success,
         rollback_cleanup: record.rollback_cleanup,
         rollback_cleanup_identity: record.rollback_cleanup_identity,
@@ -2781,6 +2793,7 @@ mod tests {
             version_retention: crate::operation::VersionRetentionPolicy::Recent,
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
             post_success: None,
             rollback_cleanup: None,
             rollback_cleanup_identity: None,

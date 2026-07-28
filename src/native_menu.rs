@@ -43,29 +43,51 @@ fn record_action_result<T, E: std::fmt::Display>(
     command: ContextMenuCommand,
     result: Result<T, E>,
 ) {
+    set_menu_result(reduce_action_result(command, result));
+}
+
+fn reduce_action_result<T, E: std::fmt::Display>(
+    command: ContextMenuCommand,
+    result: Result<T, E>,
+) -> ContextMenuResult {
     match result {
-        Ok(_) => set_menu_result(ContextMenuResult::RefreshRequested),
-        Err(error) => set_menu_result(ContextMenuResult::Failed(ContextMenuFailure::Action {
+        Ok(_) => ContextMenuResult::RefreshRequested,
+        Err(error) => ContextMenuResult::Failed(ContextMenuFailure::Action {
             command,
             message: error.to_string(),
-        })),
+        }),
     }
+}
+
+fn record_launch_result<T, E: std::fmt::Display>(
+    command: ContextMenuCommand,
+    result: Result<T, E>,
+) {
+    set_menu_result(reduce_launch_result(command, result));
+}
+
+fn reduce_launch_result<T, E: std::fmt::Display>(
+    command: ContextMenuCommand,
+    result: Result<T, E>,
+) -> ContextMenuResult {
+    match result {
+        Ok(_) => ContextMenuResult::Dismissed,
+        Err(error) => ContextMenuResult::Failed(ContextMenuFailure::Action {
+            command,
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn record_action_failure(command: ContextMenuCommand, message: impl Into<String>) {
+    set_menu_result(ContextMenuResult::Failed(ContextMenuFailure::Action {
+        command,
+        message: message.into(),
+    }));
 }
 
 fn is_main_thread() -> bool {
     unsafe { msg_send![class!(NSThread), isMainThread] }
-}
-
-fn escape_for_applescript_literal(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
 }
 
 unsafe fn add_item(menu: *mut Object, title: &str, target: *mut Object, action: Sel) {
@@ -98,64 +120,89 @@ fn ensure_class() -> bool {
         };
 
         extern "C" fn action_open(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| {
-                let _ = open::that(p);
-            });
+            set_menu_result(ContextMenuResult::OpenRequested);
         }
 
         extern "C" fn action_open_with(_: &Object, _: Sel, sender: *mut Object) {
             if sender.is_null() {
+                record_action_failure(
+                    ContextMenuCommand::OpenWith,
+                    "the selected application was unavailable",
+                );
                 return;
             }
             unsafe {
                 let app_url: *mut Object = msg_send![sender, representedObject];
                 if app_url.is_null() {
+                    record_action_failure(
+                        ContextMenuCommand::OpenWith,
+                        "the selected application URL was unavailable",
+                    );
                     return;
                 }
                 let app_path_obj: *mut Object = msg_send![app_url, path];
                 if app_path_obj.is_null() {
+                    record_action_failure(
+                        ContextMenuCommand::OpenWith,
+                        "the selected application path was unavailable",
+                    );
                     return;
                 }
                 let utf8: *const std::os::raw::c_char = msg_send![app_path_obj, UTF8String];
                 if utf8.is_null() {
+                    record_action_failure(
+                        ContextMenuCommand::OpenWith,
+                        "the selected application path could not be represented",
+                    );
                     return;
                 }
-                let app_path = std::ffi::CStr::from_ptr(utf8)
-                    .to_string_lossy()
-                    .to_string();
+                let app_path = std::ffi::CStr::from_ptr(utf8).to_string_lossy().to_string();
                 MENU_PATH.with(|p| {
                     let path = p.borrow();
-                    let _ = std::process::Command::new("open")
-                        .arg("-a")
-                        .arg(&app_path)
-                        .arg(path.as_os_str())
-                        .spawn();
+                    record_launch_result(
+                        ContextMenuCommand::OpenWith,
+                        std::process::Command::new("open")
+                            .arg("-a")
+                            .arg(&app_path)
+                            .arg(path.as_os_str())
+                            .spawn(),
+                    );
                 });
             }
         }
 
         extern "C" fn action_quick_look(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                let _ = std::process::Command::new("qlmanage")
-                    .arg("-p")
-                    .arg(p)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+                record_launch_result(
+                    ContextMenuCommand::QuickLook,
+                    std::process::Command::new("qlmanage")
+                        .arg("-p")
+                        .arg(p)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn(),
+                );
             });
         }
 
         extern "C" fn action_get_info(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                let path = escape_for_applescript_literal(&p.display().to_string());
-                let script = format!(
-                    "tell application \"Finder\" to open information window of (POSIX file \"{}\" as alias)",
-                    path
+                record_launch_result(
+                    ContextMenuCommand::GetInfo,
+                    std::process::Command::new("osascript")
+                        .arg("-e")
+                        .arg("on run argv")
+                        .arg("-e")
+                        .arg(
+                            "tell application \"Finder\" to open information window of \
+                             (POSIX file (item 1 of argv) as alias)",
+                        )
+                        .arg("-e")
+                        .arg("end run")
+                        .arg("--")
+                        .arg(p)
+                        .spawn(),
                 );
-                let _ = std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(&script)
-                    .spawn();
             });
         }
 
@@ -167,7 +214,7 @@ fn ensure_class() -> bool {
 
         extern "C" fn action_compress(_: &Object, _: Sel, _: *mut Object) {
             with_path(|p| {
-                record_action_result(
+                record_launch_result(
                     ContextMenuCommand::Compress,
                     crate::fs_util::compress_to_zip(p),
                 );
@@ -175,25 +222,15 @@ fn ensure_class() -> bool {
         }
 
         extern "C" fn action_copy_path(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| unsafe {
-                let pb: *mut Object = msg_send![class!(NSPasteboard), generalPasteboard];
-                let _: () = msg_send![pb, clearContents];
-                let s = nsstring(&p.display().to_string());
-                let arr: *mut Object = msg_send![class!(NSArray), arrayWithObject: s];
-                let _: bool = msg_send![pb, writeObjects: arr];
-            });
+            set_menu_result(ContextMenuResult::CopyPathRequested);
         }
 
         extern "C" fn action_show_in_finder(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| {
-                let _ = std::process::Command::new("open").arg("-R").arg(p).spawn();
-            });
+            set_menu_result(ContextMenuResult::RevealRequested);
         }
 
         extern "C" fn action_trash(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| {
-                record_action_result(ContextMenuCommand::MoveToTrash, trash::delete(p));
-            });
+            set_menu_result(ContextMenuResult::MoveToTrashRequested);
         }
 
         extern "C" fn action_toggle_tag(_: &Object, _: Sel, sender: *mut Object) {
@@ -209,8 +246,7 @@ fn ensure_class() -> bool {
                 MENU_PATH.with(|p| {
                     let path = p.borrow();
                     let path_ns = nsstring(&path.display().to_string());
-                    let url: *mut Object =
-                        msg_send![class!(NSURL), fileURLWithPath: path_ns];
+                    let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
 
                     unsafe extern "C" {
                         static NSURLTagNamesKey: *mut Object;
@@ -227,17 +263,14 @@ fn ensure_class() -> bool {
                     ];
 
                     // Collect existing tags, toggling the selected one
-                    let new_arr: *mut Object =
-                        msg_send![class!(NSMutableArray), array];
+                    let new_arr: *mut Object = msg_send![class!(NSMutableArray), array];
                     let mut found = false;
 
                     if !tags_val.is_null() {
                         let count: usize = msg_send![tags_val, count];
                         for i in 0..count {
-                            let t: *mut Object =
-                                msg_send![tags_val, objectAtIndex: i];
-                            let eq: bool =
-                                msg_send![t, isEqualToString: tag_name];
+                            let t: *mut Object = msg_send![tags_val, objectAtIndex: i];
+                            let eq: bool = msg_send![t, isEqualToString: tag_name];
                             if eq {
                                 found = true; // skip = remove
                             } else {
@@ -271,10 +304,8 @@ fn ensure_class() -> bool {
                 MENU_PATH.with(|p| {
                     let path = p.borrow();
                     let path_ns = nsstring(&path.display().to_string());
-                    let url: *mut Object =
-                        msg_send![class!(NSURL), fileURLWithPath: path_ns];
-                    let items: *mut Object =
-                        msg_send![class!(NSArray), arrayWithObject: url];
+                    let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
+                    let items: *mut Object = msg_send![class!(NSArray), arrayWithObject: url];
                     let _: () = msg_send![service, performWithItems: items];
                 });
             }
@@ -639,56 +670,52 @@ fn show_native(path: &Path) -> ContextMenuResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextMenuCommand, ContextMenuFailure, ContextMenuResult, escape_for_applescript_literal,
-        record_action_result, set_menu_result, take_menu_result,
+        ContextMenuCommand, ContextMenuFailure, ContextMenuResult, reduce_action_result,
+        reduce_launch_result,
     };
 
     #[test]
-    fn applescript_literal_escape_leaves_safe_paths_alone() {
+    fn accepted_non_mutating_launch_does_not_request_refresh() {
         assert_eq!(
-            escape_for_applescript_literal("/Users/me/Documents/report.txt"),
-            "/Users/me/Documents/report.txt"
-        );
-    }
-
-    #[test]
-    fn applescript_literal_escape_quotes_and_backslashes() {
-        assert_eq!(
-            escape_for_applescript_literal(r#"/tmp/a "quoted" \ path"#),
-            r#"/tmp/a \"quoted\" \\ path"#
+            reduce_launch_result(ContextMenuCommand::QuickLook, Ok::<(), std::io::Error>(())),
+            ContextMenuResult::Dismissed
         );
     }
 
     #[test]
     fn successful_mutating_actions_request_refresh() {
-        for command in [
-            ContextMenuCommand::Duplicate,
-            ContextMenuCommand::Compress,
-            ContextMenuCommand::MoveToTrash,
-        ] {
-            set_menu_result(ContextMenuResult::Dismissed);
-            record_action_result(command, Ok::<(), std::io::Error>(()));
-            assert_eq!(take_menu_result(), ContextMenuResult::RefreshRequested);
-        }
+        assert_eq!(
+            reduce_action_result(ContextMenuCommand::Duplicate, Ok::<(), std::io::Error>(())),
+            ContextMenuResult::RefreshRequested
+        );
+    }
+
+    #[test]
+    fn accepted_compression_spawn_does_not_request_refresh() {
+        assert_eq!(
+            reduce_launch_result(ContextMenuCommand::Compress, Ok::<(), std::io::Error>(())),
+            ContextMenuResult::Dismissed
+        );
     }
 
     #[test]
     fn failed_mutating_actions_preserve_their_errors_without_refresh() {
         for command in [
+            ContextMenuCommand::OpenWith,
+            ContextMenuCommand::QuickLook,
+            ContextMenuCommand::GetInfo,
             ContextMenuCommand::Duplicate,
             ContextMenuCommand::Compress,
             ContextMenuCommand::MoveToTrash,
         ] {
-            set_menu_result(ContextMenuResult::Dismissed);
-            record_action_result(
-                command,
-                Err::<(), _>(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "permission denied",
-                )),
-            );
             assert_eq!(
-                take_menu_result(),
+                reduce_action_result(
+                    command,
+                    Err::<(), _>(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "permission denied",
+                    )),
+                ),
                 ContextMenuResult::Failed(ContextMenuFailure::Action {
                     command,
                     message: "permission denied".to_string(),

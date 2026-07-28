@@ -53,6 +53,7 @@ pub(crate) enum UiRequest {
     OperationHistory,
     OpenRecoveryCenter,
     ReviewRecovery(crate::operation::OperationId),
+    OpenExternal(crate::ports::OpenRequest),
     CopyPaths(PathStyle),
     CopyText { text: String, label: String },
     Redo,
@@ -84,6 +85,7 @@ impl UiRequest {
             | Self::ToggleQueuePanel
             | Self::OperationHistory
             | Self::OpenRecoveryCenter
+            | Self::OpenExternal(_)
             | Self::CopyPaths(_)
             | Self::CopyText { .. }
             | Self::DrainShelf => None,

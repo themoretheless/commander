@@ -323,6 +323,7 @@ impl ArchiveProvider {
                     name_lower: name.to_lowercase(),
                     name,
                     path: virtual_path.clone(),
+                    identity: crate::panel::ListingIdentity::Unavailable,
                     is_dir: member.member.is_dir,
                     size: if member.member.is_dir {
                         0
@@ -1149,6 +1150,7 @@ mod tests {
                 .map(|extension| extension.to_string_lossy().to_lowercase())
                 .unwrap_or_default(),
             path,
+            identity: crate::panel::ListingIdentity::Unavailable,
             is_dir: false,
             size,
             modified: None,

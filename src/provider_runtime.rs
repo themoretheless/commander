@@ -17,17 +17,35 @@ pub enum ContextMenuNoticeLevel {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuUiEffect {
-    RefreshPanel,
+    RefreshPanels,
+    Open(crate::ports::OpenRequest),
+    CopyPath(PathBuf),
+    MoveToTrash(PathBuf),
     Notice {
         level: ContextMenuNoticeLevel,
         message: String,
     },
 }
 
-pub fn reduce_context_menu_result(result: ContextMenuResult) -> Option<ContextMenuUiEffect> {
+pub fn reduce_context_menu_result(
+    result: ContextMenuResult,
+    path: &Path,
+) -> Option<ContextMenuUiEffect> {
     match result {
         ContextMenuResult::Dismissed => None,
-        ContextMenuResult::RefreshRequested => Some(ContextMenuUiEffect::RefreshPanel),
+        ContextMenuResult::RefreshRequested => Some(ContextMenuUiEffect::RefreshPanels),
+        ContextMenuResult::OpenRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::OpenPath(path.to_path_buf()),
+        )),
+        ContextMenuResult::RevealRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::Reveal(path.to_path_buf()),
+        )),
+        ContextMenuResult::CopyPathRequested => {
+            Some(ContextMenuUiEffect::CopyPath(path.to_path_buf()))
+        }
+        ContextMenuResult::MoveToTrashRequested => {
+            Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
+        }
         ContextMenuResult::Unsupported { reason } => Some(ContextMenuUiEffect::Notice {
             level: ContextMenuNoticeLevel::Info,
             message: format!("Context menu unavailable: {reason}"),
@@ -40,6 +58,9 @@ pub fn reduce_context_menu_result(result: ContextMenuResult) -> Option<ContextMe
         }
         ContextMenuResult::Failed(ContextMenuFailure::Action { command, message }) => {
             let action = match command {
+                ContextMenuCommand::OpenWith => "open item with the selected application",
+                ContextMenuCommand::QuickLook => "preview item",
+                ContextMenuCommand::GetInfo => "show item information",
                 ContextMenuCommand::Duplicate => "duplicate item",
                 ContextMenuCommand::Compress => "start compression",
                 ContextMenuCommand::MoveToTrash => "move item to Trash",
@@ -56,7 +77,7 @@ pub fn request_context_menu(
     port: &dyn ContextMenuPort,
     path: &Path,
 ) -> Option<ContextMenuUiEffect> {
-    reduce_context_menu_result(port.show_context_menu(path))
+    reduce_context_menu_result(port.show_context_menu(path), path)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -518,7 +539,7 @@ mod tests {
         let path = Path::new("/tmp/example");
         assert_eq!(
             request_context_menu(&port, path),
-            Some(ContextMenuUiEffect::RefreshPanel)
+            Some(ContextMenuUiEffect::RefreshPanels)
         );
         assert_eq!(port.calls.get(), 1);
         assert_eq!(port.path.borrow().as_deref(), Some(path));
@@ -547,10 +568,13 @@ mod tests {
             (ContextMenuCommand::MoveToTrash, "move item to Trash"),
         ] {
             assert_eq!(
-                reduce_context_menu_result(ContextMenuResult::Failed(ContextMenuFailure::Action {
-                    command,
-                    message: "permission denied".to_string(),
-                })),
+                reduce_context_menu_result(
+                    ContextMenuResult::Failed(ContextMenuFailure::Action {
+                        command,
+                        message: "permission denied".to_string(),
+                    }),
+                    Path::new("/tmp/example")
+                ),
                 Some(ContextMenuUiEffect::Notice {
                     level: ContextMenuNoticeLevel::Error,
                     message: format!("Could not {action}: permission denied"),
@@ -558,9 +582,10 @@ mod tests {
             );
         }
         assert_eq!(
-            reduce_context_menu_result(ContextMenuResult::Failed(
-                ContextMenuFailure::MainThreadRequired
-            )),
+            reduce_context_menu_result(
+                ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired),
+                Path::new("/tmp/example")
+            ),
             Some(ContextMenuUiEffect::Notice {
                 level: ContextMenuNoticeLevel::Error,
                 message: "Context menu must run on the main thread".to_string(),
@@ -571,8 +596,17 @@ mod tests {
     #[test]
     fn dismissed_context_menu_has_no_ui_effect() {
         assert_eq!(
-            reduce_context_menu_result(ContextMenuResult::Dismissed),
+            reduce_context_menu_result(ContextMenuResult::Dismissed, Path::new("/tmp/example")),
             None
+        );
+    }
+
+    #[test]
+    fn context_menu_trash_is_a_policy_intent_not_a_mutation_result() {
+        let path = Path::new("/tmp/example");
+        assert_eq!(
+            reduce_context_menu_result(ContextMenuResult::MoveToTrashRequested, path),
+            Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
         );
     }
 

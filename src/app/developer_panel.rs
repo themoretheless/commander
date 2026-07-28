@@ -54,6 +54,7 @@ impl App {
         let width = 480.0_f32.min((screen.width() - 32.0).max(320.0));
         let height = 680.0_f32.min((screen.height() - 32.0).max(360.0));
         let mut open = self.show_developer_panel;
+        let mut reveal = None;
 
         egui::Window::new("Developer diagnostics")
             .open(&mut open)
@@ -438,7 +439,7 @@ impl App {
                             if let Some(path) = &notice.path
                                 && ui.button("Show in Finder").clicked()
                             {
-                                let _ = open::that(path.parent().unwrap_or(path));
+                                reveal = Some(path.clone());
                             }
                         });
                         if let Some(path) = &notice.path {
@@ -457,6 +458,9 @@ impl App {
             });
         if input_enabled {
             self.show_developer_panel = open;
+        }
+        if let Some(path) = reveal {
+            self.open_external(crate::ports::OpenRequest::Reveal(path), ctx);
         }
     }
 

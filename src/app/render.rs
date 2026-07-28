@@ -251,7 +251,7 @@ impl App {
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
         context_menu: &dyn crate::ports::ContextMenuPort,
-        opener: &dyn Fn(&std::path::Path),
+        opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
     ) -> PanelRenderOutcome {

@@ -115,7 +115,7 @@ impl PathIdentity {
             && self.modified_nanos == other.modified_nanos
     }
 
-    fn from_metadata(path: PathBuf, metadata: &std::fs::Metadata) -> Self {
+    pub(crate) fn from_metadata(path: PathBuf, metadata: &std::fs::Metadata) -> Self {
         let file_type = metadata.file_type();
         let kind = if file_type.is_file() {
             PathKind::File

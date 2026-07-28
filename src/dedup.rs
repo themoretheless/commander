@@ -11,6 +11,7 @@ use std::time::SystemTime;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FileKey {
     pub path: PathBuf,
+    pub identity: crate::panel::ListingIdentity,
     pub size: u64,
     pub hash: u64,
     pub modified: Option<SystemTime>,
@@ -96,6 +97,7 @@ mod tests {
     fn key(path: &str, size: u64, hash: u64, secs: Option<u64>) -> FileKey {
         FileKey {
             path: PathBuf::from(path),
+            identity: crate::panel::ListingIdentity::Unavailable,
             size,
             hash,
             modified: secs.map(|s| UNIX_EPOCH + Duration::from_secs(s)),

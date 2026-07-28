@@ -240,6 +240,7 @@ mod tests {
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from("/test").join(name),
+            identity: crate::panel::ListingIdentity::Unavailable,
             is_dir: false,
             size: 1,
             extension: String::new(),

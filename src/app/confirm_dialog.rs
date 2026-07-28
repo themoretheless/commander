@@ -4,6 +4,23 @@ use super::*;
 use crate::scan::FlatFileEntry;
 use crate::transfer::OverwritePolicy;
 
+fn unavailable_space_message(failure: Option<&crate::ports::NativeFailure>) -> String {
+    match failure {
+        Some(failure) => format!(
+            "Available space could not be verified: {}. You can continue.",
+            failure.message
+        ),
+        None => "Available space could not be verified. You can continue.".to_string(),
+    }
+}
+
+fn unavailable_size_message(failure: &crate::ports::NativeFailure) -> String {
+    format!(
+        "Transfer size could not be verified: {}. Confirmation is unavailable.",
+        failure.message
+    )
+}
+
 impl App {
     pub(crate) fn show_confirm_dialog(&mut self, ctx: &egui::Context) {
         let t = self.colors;
@@ -41,7 +58,7 @@ impl App {
                         tr.flat.clone(),
                     )
                 }
-                PendingOp::Delete { entries, flat } => (
+                PendingOp::Delete { entries, flat, .. } => (
                     "Delete",
                     "Move to Trash",
                     t.accent_red,
@@ -53,19 +70,22 @@ impl App {
                 ),
             };
 
-        // Will-it-fit snapshot (None for delete): (overflow, need, free, no_extra_space).
-        // `no_extra_space` is true for a same-volume move (instant rename) and a
-        // same-volume clone, neither of which writes the full size.
-        let fit: Option<(bool, u64, Option<u64>, bool)> = match &self.ws.pending_op {
+        // One generation-bound resource snapshot. Pending disables confirmation;
+        // Unknown is non-blocking only after the worker has published the full
+        // logical size and is always presented as an explicit warning.
+        let fit = match &self.ws.pending_op {
             Some(PendingOp::Transfer(tr)) => Some((
+                tr.space_ready(),
                 tr.overflows(),
-                tr.need_bytes,
-                tr.free_bytes,
+                tr.need_bytes(),
+                tr.free_space().cloned(),
                 tr.needs_no_space(),
+                tr.space_failure().cloned(),
             )),
             _ => None,
         };
-        let overflow = fit.map(|f| f.0).unwrap_or(false);
+        let resource_ready = fit.as_ref().is_none_or(|fit| fit.0);
+        let overflow = fit.as_ref().is_some_and(|fit| fit.1);
         let preflight_blocked = matches!(
             &self.ws.pending_op,
             Some(PendingOp::Transfer(transfer))
@@ -213,36 +233,58 @@ impl App {
                 }
 
                 // Will-it-fit guard.
-                if let Some((over, need, free, no_extra_space)) = fit {
+                if let Some((ready, over, need, free, no_extra_space, size_failure)) = &fit {
                     ui.add_space(2.0);
-                    let (msg, color) = if no_extra_space {
+                    let (msg, color) = if let Some(failure) = size_failure {
+                        (unavailable_size_message(failure), t.accent_red)
+                    } else if !ready {
+                        (
+                            "Calculating size and available space...".to_string(),
+                            t.text_muted,
+                        )
+                    } else if *no_extra_space {
                         ("No extra space needed (same volume)".to_string(), t.accent)
-                    } else if let Some(free) = free {
-                        if over {
+                    } else if let (
+                        Some(need),
+                        Some(crate::ports::SpaceProbeOutcome::Known {
+                            bytes: free,
+                            precision,
+                        }),
+                    ) = (need, free)
+                    {
+                        let approximate =
+                            matches!(precision, crate::ports::SpacePrecision::SaturatedLowerBound);
+                        if *over {
                             (
                                 format!(
                                     "Not enough space: needs {} more than {} free",
-                                    format_size(need.saturating_sub(free)),
-                                    format_size(free)
+                                    format_size(need.saturating_sub(*free)),
+                                    format_size(*free)
                                 ),
                                 t.accent_red,
                             )
                         } else {
-                            (
+                            let message = if approximate {
+                                format!(
+                                    "Fits: {} into at least {} free",
+                                    format_size(*need),
+                                    format_size(*free)
+                                )
+                            } else {
                                 format!(
                                     "Fits: {} into {} free",
-                                    format_size(need),
-                                    format_size(free)
-                                ),
-                                t.accent,
-                            )
+                                    format_size(*need),
+                                    format_size(*free)
+                                )
+                            };
+                            (message, t.accent)
                         }
+                    } else if let Some(crate::ports::SpaceProbeOutcome::Unknown(failure)) = free {
+                        (unavailable_space_message(Some(failure)), t.accent_warning)
                     } else {
-                        (String::new(), t.text_muted)
+                        (unavailable_space_message(None), t.accent_warning)
                     };
-                    if !msg.is_empty() {
-                        ui.label(egui::RichText::new(msg).size(11.0).color(color));
-                    }
+                    ui.label(egui::RichText::new(msg).size(11.0).color(color));
                 }
 
                 // Conflict resolution: per-collision detail + relation policies.
@@ -376,7 +418,10 @@ impl App {
                         ui.add_space(8.0);
                         if ui
                             .add_enabled(
-                                !overflow && !preflight_blocked && !mutations_blocked,
+                                resource_ready
+                                    && !overflow
+                                    && !preflight_blocked
+                                    && !mutations_blocked,
                                 egui::Button::new(
                                     egui::RichText::new(action_label)
                                         .size(13.0)
@@ -396,6 +441,7 @@ impl App {
                     self.dismiss_pending_op(ctx);
                 }
                 if !has_conflicts
+                    && resource_ready
                     && !overflow
                     && !preflight_blocked
                     && !mutations_blocked
@@ -602,6 +648,7 @@ impl App {
             return;
         };
         let previous_form = transfer.name_policy.normalization;
+        let previous_symlinks = transfer.symlink_policy;
         let mut collision = transfer.name_policy.collision;
         let mut symlinks = transfer.symlink_policy;
 
@@ -728,7 +775,11 @@ impl App {
                 crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
             };
         }
-        transfer.symlink_policy = symlinks;
+        if symlinks != previous_symlinks {
+            let repaint = ui.ctx().clone();
+            self.ws
+                .set_pending_symlink_policy(symlinks, move || repaint.request_repaint());
+        }
     }
 
     fn resource_policy_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors) {
@@ -1126,5 +1177,33 @@ fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) -> &'sta
             end_hour: 6,
         }) => "Quiet 00:00-06:00",
         Some(_) => "Custom quiet hours",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{unavailable_size_message, unavailable_space_message};
+
+    #[test]
+    fn unknown_space_is_presented_as_a_non_blocking_warning_not_fits() {
+        let failure = crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Unsupported,
+            message: "probe unavailable".to_string(),
+        };
+        let message = unavailable_space_message(Some(&failure));
+        assert!(message.contains("could not be verified"));
+        assert!(message.contains("You can continue"));
+        assert!(!message.contains("Fits"));
+    }
+
+    #[test]
+    fn unknown_transfer_size_is_blocking_and_explained() {
+        let failure = crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Unknown,
+            message: "directory changed while scanning".to_string(),
+        };
+        let message = unavailable_size_message(&failure);
+        assert!(message.contains("could not be verified"));
+        assert!(message.contains("Confirmation is unavailable"));
     }
 }
