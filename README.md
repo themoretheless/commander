@@ -309,6 +309,38 @@ dispatcher and the `app` module remains the egui adapter. Main-thread AppKit
 context-menu behavior and background workload admission are injected through
 narrow handles rather than reached through UI-global state.
 
+### Architecture checkpoint
+
+The ordered SOLID/DRY pass completed these ownership boundaries:
+
+- `TransferQueueController`, `DeleteController`, and `SpaceProbeController`
+  own their asynchronous lifecycle state; `Workspace` applies typed outcomes.
+- `UiState` owns transient input and all dialog/modal buffers while
+  `UiRequestQueue` preserves non-modal and modal FIFO ordering.
+- `ListingState` owns rows, checked revision, and filter-cache invalidation;
+  `ViewState` owns private `ViewConfig` plus bounded per-folder memory.
+  Selection, watcher, size index, and pure sorting are separate panel owners.
+- `operation_journal` validates stable path identity, legal state transitions,
+  restart/migration proofs, and rollback/recovery behavior under injected
+  side-effect failures.
+- Clipboard, opener, Trash, free-space, and native context-menu behavior use
+  typed ports. AppKit selectors return invocation-bound intents and perform no
+  filesystem or process effects while the menu is tracking.
+- The large workspace integration suite lives in `workspace/tests.rs`;
+  pathname parsing/validation lives in its own typed module.
+
+The full serial suite currently passes 878 tests with three intentional
+manual/performance harnesses ignored. The remaining high-value architecture
+work is narrower: extract undo/history application from `Workspace`, split the
+large transfer executor by backend, and introduce the final shared persistence
+port/versioned envelope.
+
+The same checkpoint reduced the locked dependency graph from 559 to 516 crates
+by enabling only the image decoders Commander uses. `cargo audit` reports no
+known vulnerabilities. Its sole remaining warning is the unmaintained
+`ttf-parser` pulled by the Linux Wayland/winit stack; removing it locally would
+mean dropping Wayland support, so it is tracked as an upstream migration.
+
 ### Native visual QA
 
 The `visual-qa` feature runs the real native eframe/Glow framebuffer path against a

@@ -16,12 +16,13 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: more than 60 focused modules and 869
-unit tests sit under a thin presentation layer. The broad suite passes 866;
-three manual/performance harnesses are intentionally ignored there, and the
+That split is real and worth protecting: more than 60 focused modules and 881
+tests sit under a thin presentation layer. The broad suite passes 878; three
+manual/performance harnesses are intentionally ignored there, and the
 single-threaded performance timing gate is run separately. The largest debt is
-still concentrated in three oversized core files, but core-to-UI signalling is
-now a typed, FIFO boundary rather than a field-level flag bus.
+still concentrated in the `panel`, `workspace`, and `transfer` facades, but
+their mutable state is now split behind owned controllers and core-to-UI
+signalling is a typed FIFO boundary rather than a field-level flag bus.
 
 ### External-research constraints (2026-07-14, revalidated 2026-07-18)
 
@@ -43,12 +44,14 @@ target architecture without changing the current migration order:
    selection, and mark states. Pointer-only actions have keyboard equivalents.
 
 These constraints reinforce, rather than replace, the shipped `ViewConfig`,
-the planned `TransferCenter`/`UndoCenter`, and remaining injected ports. The typed queue
-portion is now shipped as `ui_request::UiRequestQueue`; historical roadmap
-references to an Effect bus describe that completed migration. The
-`G044` has an owner in `volume_profile`; `path_identity` supplies the core of
-`G057`. `ports`/`provider_runtime`, `workload`, and the journal transition
-machines own `G081-G090`. `measurement`, `benchmark_fixture`,
+`TransferQueueController`, `UiState`, journal proof model, and injected native
+effect ports. The remaining architectural work is narrower: an `UndoCenter`,
+a persistence port/shared envelope, and smaller execution facades. The typed
+queue portion is shipped as `ui_request::UiRequestQueue`; historical roadmap
+references to an Effect bus describe that completed migration. `G044` has an
+owner in `volume_profile`; `path_identity` supplies the core of `G057`.
+`ports`/`provider_runtime`, `workload`, and the journal transition machines own
+`G081-G090`. `measurement`, `benchmark_fixture`,
 `capability_diagnostic`, `support_bundle`, `feature_flags`, and `klm` own
 `G091-G100` without adding policy to `Workspace`.
 
@@ -65,21 +68,25 @@ longer-term module migration order below.
 
 Grouped by the bounded context each module really belongs to:
 
-- **Navigation / panel state**: `panel` (the `PanelState` god object: entries,
-  cursor, selection, sort, filter, history, watcher, dir-size index),
-  `watcher_policy` (backend/depth/coalescing choice), `watcher_health`
-  (path-free backend/recovery/batch counters), `jumplist`, `crumbs`, `scan`,
-  `collections`, `tree_overview`.
+- **Navigation / panel state**: `PanelState` is the public coordination facade
+  over `panel::listing` (rows, status, checked revision, filter cache),
+  `panel::view` (private-field `ViewConfig`, filters, bounded per-folder
+  memory), `panel::sort`, `panel::selection`, `panel::watcher`, and
+  `panel::size_index`. `watcher_policy`, `watcher_health`, `jumplist`,
+  `crumbs`, `scan`, `collections`, and `tree_overview` own adjacent policy.
 - **Discovery / search**: `query` is the canonical grammar, `search` owns
   cancellable generations and provider composition, `content_index` owns the
   optional root-scoped snapshot, and `archive` provides bounded ZIP browsing
   and member search. `fuzzy`, `image_cache`, and `io_budget` are shared
   mechanisms, not UI policies.
-- **Workspace / coordination**: `workspace` (the second god object: two panels,
-  undo, pending ops, compare/sync glue, and drop handling),
-  `workspace::transfer_queue` (queue admission, sequencing, cancellation and
-  retirement), `ui_request` (the toolkit-independent FIFO intent boundary),
-  `command` (the `Command` enum + key mapping and typed
+- **Workspace / coordination**: `workspace` composes two panels, pending
+  operations, undo/history, compare/sync/drop glue, and typed controllers:
+  `workspace::transfer_queue` owns queue admission, active-worker identity,
+  sequencing, cancellation, safe-state publication and retirement;
+  `workspace::delete` and `workspace::space_probe` own their asynchronous
+  lifecycles. The 109 workspace integration tests live in
+  `workspace/tests.rs`. `ui_request` is the toolkit-independent FIFO intent
+  boundary; `command` owns the `Command` enum + key mapping and typed
   composable predicates over pure `CommandContext` snapshots used by every
   action surface).
 - **Selection / comparison**: `compare` (cross-pane classification + selection
@@ -98,8 +105,10 @@ Grouped by the bounded context each module really belongs to:
   `rename`, `rename_order`, `sync`, and `shelf` remain adjacent operation
   helpers.
 - **Capability / workload boundaries**: `ports` defines narrow preview,
-  search, filesystem, hashing, and main-thread context-menu contracts;
-  `provider_runtime` enforces lazy
+  search, filesystem, hashing, clipboard, opener, Trash, free-space, and
+  main-thread context-menu contracts. `native_effect` contains the real macOS
+  adapters; native-menu callbacks produce invocation-bound typed intents and
+  defer side effects until AppKit tracking ends. `provider_runtime` enforces lazy
   capability activation, startup budgets, and out-of-process optional
   providers; `workload` owns priority, quotas, cancellation, backpressure,
   immutable snapshots, generation rejection, and scheduler telemetry;
@@ -121,8 +130,9 @@ Grouped by the bounded context each module really belongs to:
 
 ### UI adapter (`app/`, egui)
 
-`app/mod.rs` owns the `App` struct (presentation state: theme, zoom, image
-cache, tree widget, and transient dialog buffers). Per-frame orchestration
+`app/mod.rs` owns the `App` presentation shell (theme, zoom, image cache, tree
+widget, and operation surfaces). `app::ui_state::UiState` owns transient input,
+modal buffers, modal FIFO state, and Escape ownership. Per-frame orchestration
 lives in `app/update.rs`, including the single `UiRequest` snapshot drain;
 input translation lives in `app/keys.rs`; one file per
 dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
@@ -139,14 +149,14 @@ policy.
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 4,866 | God object plus a large colocated test module; queue lifecycle is extracted |
-| `src/panel.rs` | 4,761 | God object; `PanelState` mixes listing, view, selection, watcher, and cache concerns |
-| `src/transfer.rs` | 3,839 | Coordinator still contains buffered/sparse tree mechanics |
-| `src/operation_journal.rs` | 1,747 | Durable state, transition machines, recovery, rollback, and tests |
-| `src/search.rs` | 1,496 | Provider composition and a large fixture suite |
-| `src/app/update.rs` | 1,509 | Per-frame hub; owns the typed request dispatcher and rendering orchestration |
+| `src/transfer.rs` | 4,851 | Largest production facade; staging, commit and copy backends still need a narrower executor boundary |
+| `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
+| `src/operation_journal.rs` | 3,974 | Durable transitions, proof validation, migration, recovery and fault-oriented tests |
+| `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the 2,925-line production facade |
+| `src/workspace.rs` | 2,925 | Two-panel orchestration; queue/delete/space state lives in owned controllers |
+| `src/app/update.rs` | 2,118 | Per-frame hub and typed request dispatcher; dialog buffers live in `UiState` |
 
-## Agent/critic remediation pass (2026-07-21)
+## Agent/critic remediation sequence (2026-07-21 to 2026-07-28)
 
 Each architectural concern was implemented by a scoped agent and reviewed by
 an independent critic. P0-P2 findings were corrected and re-reviewed before a
@@ -154,20 +164,21 @@ track was accepted; one unsafe journal patch was rejected rather than merged.
 
 | Track | Result | Remaining boundary |
 | --- | --- | --- |
-| Workspace decomposition | accepted after paused-queue P1/P2 fixes | `transfer_queue` is still an `impl Workspace`; extract a controller returning typed retirement outcomes |
-| Typed UI request queue | accepted after Recovery handoff and FIFO Escape fixes | `App` still owns many dialog buffers; a later `UiState` extraction is separate work |
-| Operation journal/rollback rewrite | rejected, not integrated | identity revalidation and crash-safe proof need a fresh design pass |
-| Panel size/cache pipeline | accepted | continue splitting listing/view/watcher ownership out of `PanelState` |
+| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, and `SpaceProbeController` own lifecycle state; an `UndoCenter` remains |
+| Typed UI request queue + `UiState` | accepted | FIFO/modal/Escape ownership and dialog buffers are centralized; `App` retains presentation-only state |
+| Operation journal/recovery proof model | accepted after a fresh redesign | stable path identities, explicit transitions, migration validation, restart/fault/model tests; UI repair decisions remain explicit |
+| Panel ownership split | accepted | listing/view/sort/selection/watcher/size owners are separate; the public coordination facade is still large |
 | Async text preview | accepted after timeout, identity, and worker-retirement fixes | retain the isolated one-worker executor and 256 KiB text budget |
 | Atomic persistence/session save | accepted | callers must keep distinguishing pre-commit failure from committed-not-durable |
 | Workload dependency injection | accepted | migrate remaining global-runtime consumers incrementally |
 | Dialog/UI UX contracts | accepted | keep modal Escape and opening snapshots centralized |
-| Headless UI/accessibility contract | accepted | screenshot-level layout QA remains outside the unit suite |
-| macOS context-menu port | accepted | Clipboard, Trash, opener, and free-space probing still need equivalent ports |
+| Native visual/accessibility QA | accepted | strict running-app Glow capture is a CI gate; AppKit popup pixels, VoiceOver and multi-monitor placement remain manual |
+| Native effect ports and context menu | accepted | Clipboard, Trash, opener and free-space are injected; pure menu intents are invocation-bound; a general persistence port remains |
 
-The rejected journal track is intentionally absent from the worktree. This is
-part of the safety contract: a large patch is not progress if its identity and
-rollback invariants cannot be demonstrated.
+The first journal attempt was intentionally rejected. The later implementation
+landed only after stable identity, transition, restart and side-effect fault
+proofs were explicit. That sequence remains the safety contract: a large patch
+is not progress until its recovery invariants are demonstrated.
 
 ### Research milestone 1 (G001-G050)
 
@@ -312,8 +323,7 @@ that direction without forcing a high-risk rewrite of the working core.
 
 ## The core <-> UI boundary today
 
-Three mechanisms connect the core to the shell, in descending order of how much
-coupling they create:
+Three mechanisms connect the core to the shell:
 
 1. **Command dispatch (clean).** `app/keys.rs` translates egui events into
    toolkit-independent `KeyPress`es, `command::map_keys` maps them to
@@ -329,20 +339,24 @@ coupling they create:
    operation identity payloads. The core knows the intent catalogue, but not
    egui types, dialog buffers, validation, or rendering.
 
-3. **Public-field mutation (encapsulation leak).** `PanelState` exposes 25+
-   `pub` fields; the UI mutates `selected`, `cursor`, `sort_col`, `facets`,
-   `show_hidden` directly. No invariant (cursor in range, `selected` subset of
-   entries, sort order consistent with the listing) can be guaranteed.
+3. **Typed native effects (clean at the OS edge).** The shell owns
+   main-thread-only context-menu, clipboard and opener ports; `Workspace` owns
+   thread-safe Trash and free-space ports. Native callbacks return typed
+   selections/outcomes, and the app reduces those outcomes only after the
+   native tracking call returns. The remaining leak is smaller: a few
+   navigation/drag fields are still exposed by the `PanelState` facade even
+   though listing, view, selection, watcher and size invariants are private.
 
 ## Known structural debt
 
-- **Two god objects.** `Workspace` has ~10 responsibilities (panels, transfer
-  queue + pump, undo, pending-op confirm, compare/sync glue, batch rename,
-  duplicate finding, treemap, drop). `PanelState` interleaves four: data
-  (`entries`), view config (`sort_col`/`sort_order`/`folders_first`/
-  `natural_name_sort`/`show_hidden`), view state (`cursor`/`selected`/
-  `search_query`), and async plumbing (`Arc<Mutex<HashMap>>` dir indices,
-  `AtomicBool` refresh flag, fs watcher).
+- **Two oversized coordination facades remain.** `Workspace` still coordinates
+  panels, pending operations, undo, compare/sync, batch rename and drop glue,
+  but queue, delete and free-space state now live in owned controllers and its
+  tests are out of the production file. `PanelState` still exposes a broad
+  method surface, but listing/revision/filter cache, view config/memory,
+  selection, watcher, and size index are separate owners. The next useful
+  reductions are an `UndoCenter` and smaller command/file-operation facades,
+  not another state-field shuffle.
 - **One oversized operation coordinator.** `transfer` still owns manifest
   iteration, staging/commit, buffered and sparse traversal, progress mutation,
   journal calls, and cleanup policy. `delta_copy`, `operation_journal`,
@@ -354,26 +368,26 @@ coupling they create:
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
   presentation state in `app`; do not let the enum grow dialog implementation
   details.
-- **Remaining OS port gaps.** Preview/filesystem/hash providers and the macOS
-  context menu now sit behind narrow typed ports; the AppKit adapter is
-  main-thread-owned and its result is reduced to a UI effect. `Workspace` still
-  injects `opener: Box<dyn Fn(&Path)>`, while Clipboard, Trash, persistence and
-  free-space probing are called inline, so those paths are not fully isolated
-  from real side-effects. The same gap is security-relevant, not just a
-  testability one: `native_menu`'s
-  "Get Info" action hand-builds an AppleScript string and shells out to
-  `osascript`. The audit's #1/D12 AppleScript-injection finding is now
-  fixed in `native_menu.rs` by escaping double quotes and backslashes before
-  interpolation. Mutating context-menu actions now report structured success or
-  failure; other native side-effects still need the same treatment.
-- **Async intermixed with view state** on `PanelState`, which prevents the
-  panel from being cloned or snapshot-tested. The [audit](audit.md) found
-  concrete bugs in exactly this plumbing: a clear/spawn race in the dir-size
-  index, a redundant nested rayon `install()` (round-4 #26), a stale watcher
-  callback after navigation, and two unbounded caches that never evict
-  (`walk_log`, `dir_size_cache`) - the first three are below the round-4 cut on
-  severity but still open. Extracting a `DirIndex` / `BackgroundScan` owner
-  fixes all of them at once.
+- **The remaining OS boundary is persistence, not desktop actions.** Preview,
+  filesystem, hash, context-menu, Clipboard, Trash, opener and free-space calls
+  now sit behind narrow typed ports/adapters. Native menu callbacks cannot
+  mutate files or launch services while AppKit is tracking; invocation and
+  target identity are revalidated before a deferred effect. Persistence has
+  typed pre-commit/committed-not-durable outcomes and atomic helpers, but the
+  stores do not yet share one injected `Persist` port/versioned envelope.
+- **Supply-chain policy still needs a checked-in owner.** The lockfile has no
+  known RustSec vulnerabilities after upgrading `crossbeam-epoch`,
+  `wayland-scanner`, `quick-xml`, and the `zbus_xml` chain. Narrow image decoder
+  features removed 43 unused crates and the unmaintained `paste` dependency.
+  `ttf-parser` remains an unmaintained transitive dependency of the Linux
+  Wayland/winit stack with no lockfile-only replacement; keep monitoring its
+  upstream migration and add an explicit `cargo-deny` license/advisory policy.
+- **Panel async ownership is split but the facade is not yet small.**
+  `DirectoryWatcherState` and `SizeIndex` own generation, binding, retry and
+  bounded-cache state; `ListingState` owns rows and filter invalidation.
+  `PanelState` intentionally coordinates their atomic publication. Future work
+  should extract coherent operations such as navigation/drag or expose a
+  snapshot reducer, rather than moving their fields back together.
 - **The comparison bounded context is directory-blind.** `sync::compare`,
   `compare::classify_entry`, and `conflict::detect` all classify entries using
   only `FileEntry.size`/`modified`, and every directory's `size` is hardcoded
@@ -388,13 +402,13 @@ coupling they create:
   partial recovery or warning (audit round-4 #31). A shared `load_lenient<T>`
   helper (or promoting this into the `Persist` port planned in A7) would fix
   all four at once instead of one at a time.
-- **The audited dialog target-context bugs are closed, but dialogs remain
-  non-modal.** Every dialog is still a plain `egui::Window` (zero `egui::Modal`
-  usage), yet the three unsafe live-state reads now have explicit owners:
-  `BatchRenameContext` captures panel/directory/targets, `RenameState` captures
-  path/siblings, and `TreemapSnapshot` keeps its directory beside its rows.
-  The remaining structural work is the `UiState`/Effect extraction (A5), not
-  another round of ad-hoc target fields.
+- **Dialog buffers are centralized, while visual modality remains an egui
+  composition contract.** `UiState` owns every transient modal buffer and the
+  FIFO/Escape router; opening contexts capture panel/directory/path identity.
+  Dialogs are still rendered as `egui::Window`, so focus trapping, stacking
+  and background disabling remain explicit application policy. Headless tests
+  cover ownership and the running-app visual gate covers the real frame; native
+  VoiceOver navigation remains a release check.
 - **`undo::Action` still does not cover every filesystem mutation.** `Move`,
   `BatchRename`, path-stable `Rename`, and typed `Gather`/`Ungather` are now
   undoable. Gather folder cleanup is a transfer-owned post-success action:
@@ -505,29 +519,34 @@ Target shape:
   adapters and drained once in `app/update.rs`. Dialog `open_*` methods own the
   one-shot focus edge, payload modals retain identity, and modal handoffs are
   tested through the same dispatcher engine production uses.
-- **`UiState`.** Group the ~20 transient dialog buffers out of `App` into a
-  dedicated state struct, shrinking the `App` god object.
+- **`UiState` (shipped).** Transient input, all dialog buffers, modal ownership
+  and Escape routing live in `app::ui_state`; `App` keeps presentation and
+  service handles.
 - **`ViewConfig` value object (shipped).** Its fields are private, panel
   transitions are the only mutation surface, persisted fields cross one
   `session` bridge, and the initial config is seeded before the first listing.
   Pure comparison lives in `panel::sort`; `ListingState` alone owns row order,
   revision, and the revision-keyed filter cache.
-- **Services out of `Workspace`.** `TransferCenter` (queue + pump + poll +
-  cancel + dismiss) and `UndoCenter` (stack + perform); `compare` is already
-  extracted.
-- **Ports.** Define `Clipboard`, `Trash`, `Persist` traits and inject them like
-  `opener`, so the core names capabilities, not concrete crates, and returns a
-  structured `OpOutcome` the UI renders uniformly.
+- **Services out of `Workspace` (partial).** `TransferQueueController` owns
+  queue + active worker + poll/cancel/dismiss/retirement state and returns
+  typed outcomes; `compare` is extracted. `UndoCenter` remains the next
+  coherent service boundary.
+- **Ports (desktop effects shipped, persistence remaining).** Clipboard,
+  Trash, opener, free-space and context-menu capabilities are injected and
+  return structured outcomes. A shared `Persist` port/versioned envelope is
+  the remaining port.
 - **Bounded contexts as modules.** Navigation, Selection, Comparison (done),
   Transfer/ops, View, Persistence each own their types and tests; no core file
   exceeds ~600 lines.
 
 ### SOLID/DRY module decomposition (design pass, 3 critique+refine iterations)
 
-The bullets above name the target pieces (Effect bus, `UiState`, `ViewConfig`,
-`TransferCenter`/`UndoCenter`, ports); this section is the detailed map of how
-`workspace.rs` and `panel.rs` actually get carved into them, plus everything else
-worth splitting at the same time. It came out of a dedicated design pass: 3
+The bullets above name the target pieces. The section below is the dated design
+map that guided the work; current-status annotations and the module map above
+are authoritative when the old line ranges or proposed API differ from shipped
+code. In particular, do not reintroduce the superseded `&mut entries_gen`
+design or convert `workspace.rs` to `workspace/mod.rs` mechanically. The plan
+came out of a dedicated design pass: 3
 independent architects drafted a decomposition from different angles (bounded-
 context/DDD, strict single-responsibility, minimal-risk-incremental), one pass
 synthesized the best of each, then 3 rounds of adversarial critique (SOLID-
@@ -539,9 +558,9 @@ originally being split incompletely across two modules; a discarded
 the AppleScript call site is a static `extern "C"` ObjC callback, not a
 trait-object call site).
 
-**75 target modules**, averaging ~93 lines each (vs. `workspace.rs`'s
-~3013 and `panel.rs`'s ~2557 today) - small enough to review one commit at a
-time. The table below (grouped by area) is the reviewable summary of each
+The original target was **75 modules** averaging ~93 lines. Those historical
+estimates are sizing evidence, not current line counts. The table below
+(grouped by area) is the reviewable summary of each
 module's responsibility and dependencies; the responsibility text is trimmed
 for the table, and the exact `movesFrom` line ranges in the current files are
 given inline in the numbered **migration steps** further down (each step names
