@@ -311,16 +311,14 @@ narrow handles rather than reached through UI-global state.
 
 ### Native visual QA
 
-The `visual-qa` feature runs the real native eframe/WGPU renderer against a
+The `visual-qa` feature runs the real native eframe/Glow framebuffer path against a
 temporary, deterministic workspace. It does not load the session, recovery
 inventory, bookmarks, collections, content-index settings, or user storage;
 clipboard, opener, Trash, free-space, and context-menu effects are recording
-fakes. Run each scenario in its own main-thread process:
+fakes. Run the strict CI scenario in its own main-thread process:
 
 ```sh
-for scenario in desktop_base minimum_window zoom_200_accessible confirmation_owner; do
-  cargo run --features visual-qa -- --visual-qa "$scenario" --output target/visual-qa
-done
+cargo run --features visual-qa -- --visual-qa desktop_base --output target/visual-qa
 ```
 
 Each scenario always writes `manifest.json` and `capabilities.json` under
@@ -329,8 +327,12 @@ Checks cover framebuffer dimensions, alpha/nonblank/color diversity, finite
 in-viewport pane and dialog geometry, pane non-overlap, modal ownership,
 disabled modal background, and zero native-effect calls. `--allow-skip`
 converts only an unavailable native GUI/readback capability into an explicit
-`skipped_capability_unavailable` artifact; validation and app-construction failures
-still fail.
+`skipped_capability_unavailable` artifact for local diagnostics; validation,
+timeout, and app-construction failures still fail. CI runs the verified
+`desktop_base` capture and deliberately omits `--allow-skip`, so an unavailable
+or skipped framebuffer cannot produce a green job. The additional
+`minimum_window`, `zoom_200_accessible`, and `confirmation_owner` scenarios
+remain explicit local probes until their layout-specific checks are stabilized.
 
 The pure native-menu contract tests stable item IDs, order, separators,
 enabled state, submenus, key-equivalent metadata, accessibility labels, and
@@ -339,6 +341,13 @@ run later through the context-menu port. Pixel capture of AppKit's separate
 popup window, VoiceOver speech/navigation, and 1x/2x multi-monitor placement
 remain manual checks because they require Screen Recording, Accessibility
 permission, and an interactive WindowServer session.
+
+The production WGPU presentation path remains in the normal application. It is
+not used for automated readback: on the tested Metal host, eframe 0.35 queued
+`ViewportCommand::Screenshot` but did not deliver `Event::Screenshot` without
+external device polling, while polling outside the renderer's event-loop
+ownership could hang. Such a timeout is classified as a capture failure, never
+as an unsupported capability.
 
 Manual release check:
 

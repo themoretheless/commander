@@ -2,10 +2,11 @@ mod model;
 
 use crate::ports::{
     ContextMenuAction, ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult,
+    ContextMenuTarget,
 };
 use model::{
-    DynamicMenuEntries, MenuIntent, MenuInvocation, MenuItemState, MenuNode, MenuSelection,
-    build_invocation, selection_result,
+    DynamicMenuEntries, MenuInvocation, MenuItemState, MenuNode, MenuSelection, build_invocation,
+    selection_result,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, NO, Object, Sel, YES};
@@ -28,7 +29,7 @@ struct NSPoint {
 struct HandlerState {
     invocation_id: u64,
     bound_target: PathBuf,
-    intents: Vec<(model::MenuItemId, MenuIntent)>,
+    item_ids: Vec<model::MenuItemId>,
     selection: Option<MenuSelection>,
 }
 
@@ -36,21 +37,23 @@ impl HandlerState {
     fn new(invocation: &MenuInvocation) -> Self {
         Self {
             invocation_id: invocation.id,
-            bound_target: invocation.bound_target.clone(),
-            intents: Vec::new(),
+            bound_target: invocation.bound_target.path.clone(),
+            item_ids: Vec::new(),
             selection: None,
         }
     }
 
     fn select(&mut self, index: usize) {
-        let Some((item_id, intent)) = self.intents.get(index).cloned() else {
+        if self.selection.is_some() {
+            return;
+        }
+        let Some(item_id) = self.item_ids.get(index).cloned() else {
             return;
         };
         self.selection = Some(MenuSelection {
             invocation_id: self.invocation_id,
             bound_target: self.bound_target.clone(),
             item_id,
-            intent,
         });
     }
 }
@@ -242,9 +245,9 @@ unsafe fn render_menu(
                             let _: () = msg_send![menu_item, setAccessibilityLabel: label];
                         }
                     }
-                    if let Some(intent) = &item.intent {
-                        let index = state.intents.len();
-                        state.intents.push((item.id.clone(), intent.clone()));
+                    if item.intent.is_some() {
+                        let index = state.item_ids.len();
+                        state.item_ids.push(item.id.clone());
                         let represented: *mut Object =
                             msg_send![class!(NSNumber), numberWithUnsignedInteger: index];
                         let _: () = msg_send![menu_item, setRepresentedObject: represented];
@@ -340,7 +343,7 @@ unsafe fn read_tags(path: &Path) -> Result<BTreeSet<String>, String> {
     Ok(tags)
 }
 
-unsafe fn share_services(path: &Path) -> Vec<String> {
+unsafe fn share_services(path: &Path) -> Vec<(String, String)> {
     let Some(url) = (unsafe { file_url(path) }) else {
         return Vec::new();
     };
@@ -350,15 +353,18 @@ unsafe fn share_services(path: &Path) -> Vec<String> {
         return Vec::new();
     }
     let count: usize = msg_send![services, count];
-    let mut titles = Vec::with_capacity(count);
+    let mut entries = Vec::with_capacity(count);
     for index in 0..count {
         let service: *mut Object = msg_send![services, objectAtIndex: index];
         let title: *mut Object = msg_send![service, title];
-        if let Some(title) = unsafe { string_from_nsstring(title) } {
-            titles.push(title);
+        let name: *mut Object = msg_send![service, name];
+        if let (Some(title), Some(name)) = (unsafe { string_from_nsstring(title) }, unsafe {
+            string_from_nsstring(name)
+        }) {
+            entries.push((title, name));
         }
     }
-    titles
+    entries
 }
 
 unsafe fn dynamic_entries(path: &Path) -> DynamicMenuEntries {
@@ -407,22 +413,39 @@ impl ContextMenuPort for MacOsContextMenu {
         if !is_main_thread() {
             return ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired);
         }
-        match action {
-            ContextMenuAction::Duplicate(path) => reduce_action_result(
-                ContextMenuCommand::Duplicate,
-                crate::fs_util::duplicate(path),
-            ),
-            ContextMenuAction::Compress(path) => reduce_launch_result(
-                ContextMenuCommand::Compress,
-                crate::fs_util::compress_to_zip(path),
-            ),
-            ContextMenuAction::ToggleTag { path, tag } => {
-                reduce_action_result(ContextMenuCommand::ToggleTag, toggle_tag(path, tag))
-            }
-            ContextMenuAction::Share { path, service } => {
-                reduce_launch_result(ContextMenuCommand::Share, perform_share(path, service))
-            }
+        if let Err(failure) = validate_action_target(action.target()) {
+            return ContextMenuResult::Failed(failure);
         }
+        match action {
+            ContextMenuAction::Duplicate(target) => reduce_action_result(
+                ContextMenuCommand::Duplicate,
+                crate::fs_util::duplicate(&target.path),
+            ),
+            ContextMenuAction::Compress(target) => reduce_launch_result(
+                ContextMenuCommand::Compress,
+                crate::fs_util::compress_to_zip(&target.path),
+            ),
+            ContextMenuAction::ToggleTag { target, tag } => {
+                reduce_action_result(ContextMenuCommand::ToggleTag, toggle_tag(&target.path, tag))
+            }
+            ContextMenuAction::Share { target, service } => reduce_launch_result(
+                ContextMenuCommand::Share,
+                perform_share(&target.path, service),
+            ),
+        }
+    }
+}
+
+fn validate_action_target(target: &ContextMenuTarget) -> Result<(), ContextMenuFailure> {
+    let current = crate::path_identity::PathIdentity::observe(&target.path).map_err(|error| {
+        ContextMenuFailure::TargetUnavailable {
+            message: error.to_string(),
+        }
+    })?;
+    if target.expected.same_binding(&current) {
+        Ok(())
+    } else {
+        Err(ContextMenuFailure::StaleInvocation)
     }
 }
 
@@ -443,9 +466,25 @@ fn show_native(path: &Path) -> ContextMenuResult {
 
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let expected = match crate::path_identity::PathIdentity::observe(path) {
+            Ok(identity) if identity.exists => identity,
+            Ok(_) => {
+                let _: () = msg_send![pool, drain];
+                return ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation);
+            }
+            Err(error) => {
+                let _: () = msg_send![pool, drain];
+                return ContextMenuResult::Failed(ContextMenuFailure::TargetUnavailable {
+                    message: error.to_string(),
+                });
+            }
+        };
         let invocation = build_invocation(
             next_invocation_id(),
-            path.to_path_buf(),
+            ContextMenuTarget {
+                path: path.to_path_buf(),
+                expected,
+            },
             &display_name(path),
             dynamic_entries(path),
         );
@@ -552,7 +591,7 @@ fn toggle_tag(path: &Path, tag: &str) -> Result<(), String> {
     }
 }
 
-fn perform_share(path: &Path, expected_title: &str) -> Result<(), String> {
+fn perform_share(path: &Path, expected_name: &str) -> Result<(), String> {
     unsafe {
         let Some(url) = file_url(path) else {
             return Err("the target path could not be represented by NSURL".to_string());
@@ -566,14 +605,14 @@ fn perform_share(path: &Path, expected_title: &str) -> Result<(), String> {
         let count: usize = msg_send![services, count];
         for index in 0..count {
             let service: *mut Object = msg_send![services, objectAtIndex: index];
-            let title: *mut Object = msg_send![service, title];
-            if string_from_nsstring(title).as_deref() == Some(expected_title) {
+            let name: *mut Object = msg_send![service, name];
+            if string_from_nsstring(name).as_deref() == Some(expected_name) {
                 let _: () = msg_send![service, performWithItems: items];
                 return Ok(());
             }
         }
         Err(format!(
-            "the selected sharing service \"{expected_title}\" is no longer available"
+            "the selected sharing service \"{expected_name}\" is no longer available"
         ))
     }
 }

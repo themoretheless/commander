@@ -871,13 +871,14 @@ The default suite includes three explicit ignores, including the separately
 executed single-threaded CI performance gate. Headless egui/AccessKit tests
 exercise text-focus and IME suppression, modal priority, FIFO pending
 ownership, one-shot Escape routing, and the SafeState-to-Recovery transition
-frame. A feature-gated native QA process adds four real eframe/WGPU framebuffer
-scenarios: 1280x760 dark desktop, 900x500 light minimum window, 900x500 at 200%
-with high contrast/reduced motion, and confirmation-modal ownership. Every
-process uses a temporary storage root and fake native ports, always writes
-capability/manifest JSON and writes PNG when framebuffer readback is available,
-then checks frame diversity, geometry, pane separation, modal stacking policy,
-and absence of native effects.
+frame. A feature-gated native QA process provides four eframe/Glow framebuffer
+scenarios. The strict CI gate is the verified 1280x760 dark desktop capture;
+the minimum-window, 200% accessible, and confirmation-modal variants remain
+local diagnostic probes while their layout-specific checks are stabilized.
+Every process uses a temporary storage root and fake native ports, always
+writes capability/manifest JSON and writes PNG when framebuffer readback is
+available, then checks frame diversity, geometry, pane separation, modal
+stacking policy, and absence of native effects.
 
 The native context menu is a declarative `MenuInvocation` tree with stable item
 IDs and an invocation-bound target. AppKit renders that model with
@@ -891,3 +892,7 @@ pathname bytes through NSURL filesystem representations.
 The automated framebuffer excludes AppKit's separate popup and window chrome.
 Popup pixels/tracking geometry, VoiceOver speech/navigation, and multi-monitor
 1x/2x placement remain an explicit permission-bound manual matrix.
+The shipping renderer remains WGPU; its eframe 0.35 Metal screenshot readback
+is a manual boundary because external `Device::poll` attempts can deadlock the
+renderer/event-loop ownership. A missing screenshot event is a test failure,
+not a capability skip.

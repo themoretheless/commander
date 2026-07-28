@@ -1253,6 +1253,17 @@ impl App {
         let Some(effect) = effect else {
             return;
         };
+        let effect = match effect {
+            crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
+                let path = action.path().to_path_buf();
+                let result = self.context_menu.perform_deferred_action(&action);
+                crate::provider_runtime::reduce_deferred_context_menu_result(result, &path)
+            }
+            terminal => Some(terminal),
+        };
+        let Some(effect) = effect else {
+            return;
+        };
         match effect {
             crate::provider_runtime::ContextMenuUiEffect::RefreshPanels => {
                 self.ws.left.refresh();
@@ -1273,17 +1284,16 @@ impl App {
                 self.ws.request_context_delete(panel, &path);
             }
             crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
-                let path = action.path().to_path_buf();
-                let result = self.context_menu.perform_deferred_action(&action);
-                let next = crate::provider_runtime::reduce_context_menu_result(result, &path);
-                debug_assert!(
-                    !matches!(
-                        next,
-                        Some(crate::provider_runtime::ContextMenuUiEffect::Perform(_))
+                let now = ctx.input(|input| input.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!(
+                        "Could not {:?}: nested context-menu actions are not allowed",
+                        action.command()
                     ),
-                    "a deferred native-menu action must produce a terminal result"
-                );
-                self.apply_context_menu_effect(panel, next, ctx);
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
             }
             crate::provider_runtime::ContextMenuUiEffect::Notice { level, message } => {
                 let kind = match level {
@@ -1437,10 +1447,10 @@ impl App {
             });
         let left_outcome = left_resp.inner;
         #[cfg(feature = "visual-qa")]
-        crate::visual_qa::record_rect(
+        crate::visual_qa::record_response(
             &ctx,
             crate::visual_qa::ProbeId::LeftPane,
-            left_resp.response.rect,
+            &left_resp.response,
         );
         tree_toggle |= left_outcome.tree_toggle;
 
@@ -1520,10 +1530,10 @@ impl App {
             });
         let right_outcome = right_resp.inner;
         #[cfg(feature = "visual-qa")]
-        crate::visual_qa::record_rect(
+        crate::visual_qa::record_response(
             &ctx,
             crate::visual_qa::ProbeId::RightPane,
-            right_resp.response.rect,
+            &right_resp.response,
         );
         tree_toggle |= right_outcome.tree_toggle;
 

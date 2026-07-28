@@ -184,6 +184,10 @@ pub enum ContextMenuCommand {
 pub enum ContextMenuFailure {
     MainThreadRequired,
     StaleInvocation,
+    InvalidSelection,
+    TargetUnavailable {
+        message: String,
+    },
     Action {
         command: ContextMenuCommand,
         message: String,
@@ -191,18 +195,37 @@ pub enum ContextMenuFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextMenuTarget {
+    pub path: PathBuf,
+    pub expected: crate::path_identity::PathIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuAction {
-    Duplicate(PathBuf),
-    Compress(PathBuf),
-    ToggleTag { path: PathBuf, tag: String },
-    Share { path: PathBuf, service: String },
+    Duplicate(ContextMenuTarget),
+    Compress(ContextMenuTarget),
+    ToggleTag {
+        target: ContextMenuTarget,
+        tag: String,
+    },
+    Share {
+        target: ContextMenuTarget,
+        service: String,
+    },
 }
 
 impl ContextMenuAction {
     pub fn path(&self) -> &Path {
         match self {
-            Self::Duplicate(path) | Self::Compress(path) => path,
-            Self::ToggleTag { path, .. } | Self::Share { path, .. } => path,
+            Self::Duplicate(target) | Self::Compress(target) => &target.path,
+            Self::ToggleTag { target, .. } | Self::Share { target, .. } => &target.path,
+        }
+    }
+
+    pub fn target(&self) -> &ContextMenuTarget {
+        match self {
+            Self::Duplicate(target) | Self::Compress(target) => target,
+            Self::ToggleTag { target, .. } | Self::Share { target, .. } => target,
         }
     }
 

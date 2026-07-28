@@ -1,4 +1,4 @@
-use crate::ports::{ContextMenuAction, ContextMenuFailure, ContextMenuResult};
+use crate::ports::{ContextMenuAction, ContextMenuFailure, ContextMenuResult, ContextMenuTarget};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -147,7 +147,7 @@ pub enum MenuNode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuInvocation {
     pub id: u64,
-    pub bound_target: PathBuf,
+    pub bound_target: ContextMenuTarget,
     pub tree: Vec<MenuNode>,
 }
 
@@ -156,7 +156,6 @@ pub struct MenuSelection {
     pub invocation_id: u64,
     pub bound_target: PathBuf,
     pub item_id: MenuItemId,
-    pub intent: MenuIntent,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -164,7 +163,8 @@ pub struct DynamicMenuEntries {
     pub open_with: Vec<(String, PathBuf)>,
     pub applied_tags: BTreeSet<String>,
     pub tags_available: bool,
-    pub share_services: Vec<String>,
+    /// Localized title plus the stable AppKit service name.
+    pub share_services: Vec<(String, String)>,
 }
 
 fn clipped_name(name: &str, max_chars: usize) -> String {
@@ -177,7 +177,7 @@ fn clipped_name(name: &str, max_chars: usize) -> String {
 
 pub fn build_invocation(
     id: u64,
-    target: PathBuf,
+    target: ContextMenuTarget,
     display_name: &str,
     mut dynamic: DynamicMenuEntries,
 ) -> MenuInvocation {
@@ -224,16 +224,16 @@ pub fn build_invocation(
         .share_services
         .into_iter()
         .enumerate()
-        .map(|(index, service)| {
+        .map(|(index, (title, service))| {
             MenuNode::Item(MenuItem::action(
                 MenuItemId::ShareService(index),
-                service.clone(),
+                title,
                 true,
                 MenuIntent::Share { service },
             ))
         })
         .collect::<Vec<_>>();
-    let target_available = target.exists();
+    let target_available = target.expected.exists;
     let compress_title = format!("Compress \"{}\"", clipped_name(display_name, 42));
 
     let tree = vec![
@@ -317,6 +317,35 @@ pub fn build_invocation(
     }
 }
 
+fn selected_item<'a>(nodes: &'a [MenuNode], selected: &MenuItemId) -> Option<&'a MenuItem> {
+    fn visit<'a>(
+        nodes: &'a [MenuNode],
+        selected: &MenuItemId,
+        found: &mut Option<&'a MenuItem>,
+        duplicate: &mut bool,
+    ) {
+        for node in nodes {
+            let MenuNode::Item(item) = node else {
+                continue;
+            };
+            if &item.id == selected && found.replace(item).is_some() {
+                *duplicate = true;
+            }
+            visit(&item.children, selected, found, duplicate);
+        }
+    }
+
+    let mut found = None;
+    let mut duplicate = false;
+    visit(nodes, selected, &mut found, &mut duplicate);
+    (!duplicate).then_some(found).flatten()
+}
+
+fn target_binding_is_current(target: &ContextMenuTarget) -> bool {
+    crate::path_identity::PathIdentity::observe(&target.path)
+        .is_ok_and(|current| target.expected.same_binding(&current))
+}
+
 pub fn selection_result(
     invocation: &MenuInvocation,
     selection: Option<MenuSelection>,
@@ -324,12 +353,25 @@ pub fn selection_result(
     let Some(selection) = selection else {
         return ContextMenuResult::Dismissed;
     };
-    if selection.invocation_id != invocation.id || selection.bound_target != invocation.bound_target
+    if selection.invocation_id != invocation.id
+        || selection.bound_target != invocation.bound_target.path
     {
         return ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation);
     }
+    let Some(item) = selected_item(&invocation.tree, &selection.item_id) else {
+        return ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection);
+    };
+    if !item.enabled {
+        return ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection);
+    }
+    let Some(intent) = item.intent.clone() else {
+        return ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection);
+    };
+    if !target_binding_is_current(&invocation.bound_target) {
+        return ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation);
+    }
     let target = invocation.bound_target.clone();
-    match selection.intent {
+    match intent {
         MenuIntent::Open => ContextMenuResult::OpenRequested,
         MenuIntent::OpenWith { application } => {
             ContextMenuResult::OpenWithRequested { application }
@@ -337,10 +379,7 @@ pub fn selection_result(
         MenuIntent::QuickLook => ContextMenuResult::QuickLookRequested,
         MenuIntent::GetInfo => ContextMenuResult::GetInfoRequested,
         MenuIntent::ToggleTag { tag } => {
-            ContextMenuResult::DeferredActionRequested(ContextMenuAction::ToggleTag {
-                path: target,
-                tag,
-            })
+            ContextMenuResult::DeferredActionRequested(ContextMenuAction::ToggleTag { target, tag })
         }
         MenuIntent::Duplicate => {
             ContextMenuResult::DeferredActionRequested(ContextMenuAction::Duplicate(target))
@@ -350,10 +389,7 @@ pub fn selection_result(
         }
         MenuIntent::CopyPath => ContextMenuResult::CopyPathRequested,
         MenuIntent::Share { service } => {
-            ContextMenuResult::DeferredActionRequested(ContextMenuAction::Share {
-                path: target,
-                service,
-            })
+            ContextMenuResult::DeferredActionRequested(ContextMenuAction::Share { target, service })
         }
         MenuIntent::Reveal => ContextMenuResult::RevealRequested,
         MenuIntent::MoveToTrash => ContextMenuResult::MoveToTrashRequested,
@@ -365,9 +401,14 @@ mod tests {
     use super::*;
 
     fn fixture() -> MenuInvocation {
+        let path = std::env::current_dir().expect("current directory");
         build_invocation(
             41,
-            std::env::current_dir().expect("current directory"),
+            ContextMenuTarget {
+                expected: crate::path_identity::PathIdentity::observe(&path)
+                    .expect("fixture identity"),
+                path,
+            },
             "a very long but readable fixture filename.txt",
             DynamicMenuEntries {
                 open_with: vec![
@@ -379,7 +420,10 @@ mod tests {
                 ],
                 applied_tags: BTreeSet::from(["Blue".to_string()]),
                 tags_available: true,
-                share_services: vec!["Mail".to_string(), "AirDrop".to_string()],
+                share_services: vec![
+                    ("Mail".to_string(), "com.apple.share.Mail".to_string()),
+                    ("AirDrop".to_string(), "com.apple.share.AirDrop".to_string()),
+                ],
             },
         )
     }
@@ -464,9 +508,8 @@ mod tests {
         let invocation = fixture();
         let selection = MenuSelection {
             invocation_id: invocation.id + 1,
-            bound_target: invocation.bound_target.clone(),
+            bound_target: invocation.bound_target.path.clone(),
             item_id: MenuItemId::Duplicate,
-            intent: MenuIntent::Duplicate,
         };
         assert_eq!(
             selection_result(&invocation, Some(selection)),
@@ -475,9 +518,8 @@ mod tests {
 
         let selected = MenuSelection {
             invocation_id: invocation.id,
-            bound_target: invocation.bound_target.clone(),
+            bound_target: invocation.bound_target.path.clone(),
             item_id: MenuItemId::Duplicate,
-            intent: MenuIntent::Duplicate,
         };
         assert_eq!(
             selection_result(&invocation, Some(selected)),
@@ -485,5 +527,81 @@ mod tests {
                 invocation.bound_target
             ))
         );
+    }
+
+    #[test]
+    fn selection_rejects_forged_and_disabled_item_ids() {
+        let invocation = fixture();
+        let forged = MenuSelection {
+            invocation_id: invocation.id,
+            bound_target: invocation.bound_target.path.clone(),
+            item_id: MenuItemId::OpenWithApplication(usize::MAX),
+        };
+        assert_eq!(
+            selection_result(&invocation, Some(forged)),
+            ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection)
+        );
+
+        let missing = PathBuf::from(format!(
+            "/tmp/commander-missing-menu-target-{}",
+            std::process::id()
+        ));
+        let disabled = build_invocation(
+            42,
+            ContextMenuTarget {
+                expected: crate::path_identity::PathIdentity::missing(&missing),
+                path: missing.clone(),
+            },
+            "missing",
+            DynamicMenuEntries::default(),
+        );
+        assert_eq!(
+            selection_result(
+                &disabled,
+                Some(MenuSelection {
+                    invocation_id: disabled.id,
+                    bound_target: missing,
+                    item_id: MenuItemId::MoveToTrash,
+                })
+            ),
+            ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection)
+        );
+    }
+
+    #[test]
+    fn selection_rejects_a_target_replaced_while_tracking() {
+        let root = std::env::temp_dir().join(format!(
+            "commander-menu-binding-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("item.txt");
+        std::fs::write(&path, "before").unwrap();
+        let invocation = build_invocation(
+            43,
+            ContextMenuTarget {
+                expected: crate::path_identity::PathIdentity::observe(&path).unwrap(),
+                path: path.clone(),
+            },
+            "item.txt",
+            DynamicMenuEntries::default(),
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "replacement with different metadata").unwrap();
+
+        assert_eq!(
+            selection_result(
+                &invocation,
+                Some(MenuSelection {
+                    invocation_id: invocation.id,
+                    bound_target: path,
+                    item_id: MenuItemId::Duplicate,
+                })
+            ),
+            ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

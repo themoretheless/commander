@@ -452,10 +452,10 @@ impl App {
             });
         #[cfg(feature = "visual-qa")]
         if let Some(response) = dialog_response {
-            crate::visual_qa::record_rect(
+            crate::visual_qa::record_response(
                 ctx,
                 crate::visual_qa::ProbeId::Confirmation,
-                response.response.rect,
+                &response.response,
             );
         }
     }

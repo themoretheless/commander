@@ -8,6 +8,7 @@ use crate::theme::ThemeMode;
 use egui::{ColorImage, Rect};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const QA_SCHEMA: u32 = 1;
-const MAX_FRAMES: u32 = 1_000;
 const TIMEOUT: Duration = Duration::from_secs(10);
+const CAPTURE_RETRY_AFTER: Duration = Duration::from_secs(2);
+const MAX_CAPTURE_ATTEMPTS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
@@ -146,21 +148,22 @@ pub(crate) fn maybe_run() -> Option<eframe::Result<()>> {
 
 fn run(request: Request) -> eframe::Result<()> {
     let scenario_dir = request.output_root.join(request.scenario.name());
-    std::fs::create_dir_all(&scenario_dir)
-        .map_err(|error| app_error(format!("could not create QA artifact directory: {error}")))?;
-    let stale_frame = scenario_dir.join("frame.png");
-    if stale_frame.is_file() {
-        std::fs::remove_file(&stale_frame).map_err(|error| {
+    if scenario_dir.exists() {
+        std::fs::remove_dir_all(&scenario_dir).map_err(|error| {
             app_error(format!(
-                "could not remove stale QA frame {}: {error}",
-                stale_frame.display()
+                "could not reset stale QA artifacts {}: {error}",
+                scenario_dir.display()
             ))
         })?;
     }
+    std::fs::create_dir_all(&scenario_dir)
+        .map_err(|error| app_error(format!("could not create QA artifact directory: {error}")))?;
     write_capabilities(
         &scenario_dir,
         CapabilityStatus::Attempted,
-        "starting native eframe/WGPU capture",
+        "capture_attempted",
+        "starting native eframe/Glow framebuffer capture",
+        None,
     )
     .map_err(app_error)?;
     write_unfinished_manifest(&scenario_dir, request.scenario, "attempted", None)
@@ -172,6 +175,7 @@ fn run(request: Request) -> eframe::Result<()> {
 
     let viewport = request.scenario.viewport();
     let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("Commander Visual QA: {}", request.scenario.name()))
             .with_inner_size(viewport)
@@ -209,13 +213,19 @@ fn run(request: Request) -> eframe::Result<()> {
 
     if let Err(error) = run_result {
         let detail = error.to_string();
-        let capability_missing = !matches!(error, eframe::Error::AppCreation(_));
+        let capability_missing = capability_is_unavailable(&error);
         let status = if capability_missing {
-            CapabilityStatus::Skipped
+            CapabilityStatus::Unsupported
         } else {
             CapabilityStatus::Failed
         };
-        write_capabilities(&scenario_dir, status, &detail).map_err(app_error)?;
+        let failure_kind = if capability_missing {
+            "unsupported_backend"
+        } else {
+            "eframe_runtime_failure"
+        };
+        write_capabilities(&scenario_dir, status, failure_kind, &detail, None)
+            .map_err(app_error)?;
         write_unfinished_manifest(
             &scenario_dir,
             request.scenario,
@@ -248,6 +258,41 @@ fn run(request: Request) -> eframe::Result<()> {
 
 fn app_error(message: impl Into<String>) -> eframe::Error {
     eframe::Error::AppCreation(Box::new(std::io::Error::other(message.into())))
+}
+
+#[derive(Debug)]
+enum VisualQaCreationError {
+    UnsupportedBackend(String),
+    Setup(String),
+}
+
+impl VisualQaCreationError {
+    fn unsupported(&self) -> bool {
+        matches!(self, Self::UnsupportedBackend(_))
+    }
+}
+
+impl fmt::Display for VisualQaCreationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedBackend(message) | Self::Setup(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for VisualQaCreationError {}
+
+fn capability_is_unavailable(error: &eframe::Error) -> bool {
+    match error {
+        eframe::Error::AppCreation(source) => source
+            .downcast_ref::<VisualQaCreationError>()
+            .is_some_and(VisualQaCreationError::unsupported),
+        eframe::Error::NoGlutinConfigs(_, _) => true,
+        #[allow(unreachable_patterns)]
+        _ => false,
+    }
 }
 
 struct Fixture {
@@ -387,6 +432,7 @@ pub(crate) enum ProbeId {
     LeftPane,
     RightPane,
     Confirmation,
+    LeftRow,
 }
 
 impl ProbeId {
@@ -395,22 +441,46 @@ impl ProbeId {
             Self::LeftPane => "visual_qa_left_pane",
             Self::RightPane => "visual_qa_right_pane",
             Self::Confirmation => "visual_qa_confirmation",
+            Self::LeftRow => "visual_qa_left_row",
         }
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ProbeRecord {
+    rect: Rect,
+    layer_id: egui::LayerId,
+    enabled: bool,
+    hovered: bool,
+}
+
 pub(crate) fn begin_probe_frame(ctx: &egui::Context) {
     ctx.data_mut(|data| {
-        for id in [ProbeId::LeftPane, ProbeId::RightPane, ProbeId::Confirmation] {
-            data.remove::<Rect>(egui::Id::new(id.key()));
+        for id in [
+            ProbeId::LeftPane,
+            ProbeId::RightPane,
+            ProbeId::Confirmation,
+            ProbeId::LeftRow,
+        ] {
+            data.remove::<ProbeRecord>(egui::Id::new(id.key()));
         }
         data.remove::<bool>(egui::Id::new("visual_qa_background_enabled"));
         data.remove::<String>(egui::Id::new("visual_qa_modal_owner"));
     });
 }
 
-pub(crate) fn record_rect(ctx: &egui::Context, id: ProbeId, rect: Rect) {
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(id.key()), rect));
+pub(crate) fn record_response(ctx: &egui::Context, id: ProbeId, response: &egui::Response) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(id.key()),
+            ProbeRecord {
+                rect: response.rect,
+                layer_id: response.layer_id,
+                enabled: response.enabled(),
+                hovered: response.hovered(),
+            },
+        );
+    });
 }
 
 pub(crate) fn record_input_policy(
@@ -433,44 +503,67 @@ pub(crate) fn record_input_policy(
 struct ProbeSnapshot {
     viewport: Rect,
     pixels_per_point: f32,
-    left_pane: Option<Rect>,
-    right_pane: Option<Rect>,
-    confirmation: Option<Rect>,
+    left_pane: Option<ProbeRecord>,
+    right_pane: Option<ProbeRecord>,
+    confirmation: Option<ProbeRecord>,
+    left_row: Option<ProbeRecord>,
     background_enabled: Option<bool>,
     modal_owner: Option<String>,
+    modal_above_background: Option<bool>,
 }
 
 impl ProbeSnapshot {
     fn read(ctx: &egui::Context) -> Self {
         let viewport = ctx.input(|input| input.viewport_rect());
         let pixels_per_point = ctx.pixels_per_point();
-        ctx.data_mut(|data| Self {
+        let (left_pane, right_pane, confirmation, left_row, background_enabled, modal_owner) = ctx
+            .data_mut(|data| {
+                (
+                    data.get_temp::<ProbeRecord>(egui::Id::new(ProbeId::LeftPane.key())),
+                    data.get_temp::<ProbeRecord>(egui::Id::new(ProbeId::RightPane.key())),
+                    data.get_temp::<ProbeRecord>(egui::Id::new(ProbeId::Confirmation.key())),
+                    data.get_temp::<ProbeRecord>(egui::Id::new(ProbeId::LeftRow.key())),
+                    data.get_temp::<bool>(egui::Id::new("visual_qa_background_enabled")),
+                    data.get_temp::<String>(egui::Id::new("visual_qa_modal_owner")),
+                )
+            });
+        let modal_above_background = confirmation
+            .zip(left_pane)
+            .map(|(modal, pane)| modal.layer_id.order > pane.layer_id.order);
+        Self {
             viewport,
             pixels_per_point,
-            left_pane: data.get_temp(egui::Id::new(ProbeId::LeftPane.key())),
-            right_pane: data.get_temp(egui::Id::new(ProbeId::RightPane.key())),
-            confirmation: data.get_temp(egui::Id::new(ProbeId::Confirmation.key())),
-            background_enabled: data.get_temp(egui::Id::new("visual_qa_background_enabled")),
-            modal_owner: data.get_temp(egui::Id::new("visual_qa_modal_owner")),
-        })
+            left_pane,
+            right_pane,
+            confirmation,
+            left_row,
+            background_enabled,
+            modal_owner,
+            modal_above_background,
+        }
     }
 
     fn ready(&self, scenario: Scenario) -> bool {
         self.left_pane.is_some()
             && self.right_pane.is_some()
-            && (!scenario.needs_confirmation()
-                || (self.confirmation.is_some()
+            && (if scenario.needs_confirmation() {
+                self.confirmation.is_some()
                     && self.background_enabled == Some(false)
-                    && self.modal_owner.as_deref() == Some("Confirmation")))
+                    && self.modal_owner.as_deref() == Some("Confirmation")
+                    && self.modal_above_background == Some(true)
+            } else {
+                self.left_row.is_some_and(|row| row.enabled && row.hovered)
+            })
     }
 
     fn geometry_key(&self) -> Vec<i32> {
         let mut values = Vec::new();
         for rect in [
             Some(self.viewport),
-            self.left_pane,
-            self.right_pane,
-            self.confirmation,
+            self.left_pane.map(|record| record.rect),
+            self.right_pane.map(|record| record.rect),
+            self.confirmation.map(|record| record.rect),
+            self.left_row.map(|record| record.rect),
         ]
         .into_iter()
         .flatten()
@@ -487,6 +580,16 @@ impl ProbeSnapshot {
 #[derive(Clone, Debug)]
 struct ScreenshotToken {
     scenario: &'static str,
+    request_id: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RendererDiagnostics {
+    renderer: &'static str,
+    adapter_name: String,
+    backend: String,
+    device_type: String,
+    target_format: String,
 }
 
 struct VisualQaApp {
@@ -500,14 +603,15 @@ struct VisualQaApp {
     frames: u32,
     stable_frames: u8,
     last_geometry: Vec<i32>,
-    requested: bool,
-    last_request_frame: u32,
-    capture_probes: Option<ProbeSnapshot>,
+    capture_attempts: u8,
+    next_request_id: u64,
+    last_request_at: Option<Instant>,
+    capture_probes: HashMap<u64, ProbeSnapshot>,
     confirmation_requested: bool,
     last_probe_summary: String,
-    pending_screenshot: Option<Arc<ColorImage>>,
-    wgpu_device: eframe::wgpu::Device,
-    allow_capture_skip: bool,
+    pending_screenshot: Option<(u64, Arc<ColorImage>)>,
+    pending_event_error: Option<String>,
+    renderer: RendererDiagnostics,
 }
 
 impl VisualQaApp {
@@ -517,14 +621,30 @@ impl VisualQaApp {
         fixture: Fixture,
         scenario_dir: PathBuf,
         result: Arc<Mutex<Option<Result<(), String>>>>,
-        allow_capture_skip: bool,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        _allow_capture_skip: bool,
+    ) -> Result<Self, VisualQaCreationError> {
         let counters = Arc::new(EffectCounters::default());
-        let wgpu_device = cc
-            .wgpu_render_state
-            .as_ref()
-            .map(|state| state.device.clone())
-            .ok_or_else(|| std::io::Error::other("WGPU render state is unavailable"))?;
+        if cc.gl.is_none() {
+            return Err(VisualQaCreationError::UnsupportedBackend(
+                "Glow render state is unavailable; native framebuffer readback requires OpenGL"
+                    .to_string(),
+            ));
+        }
+        let renderer = RendererDiagnostics {
+            renderer: "glow",
+            adapter_name: "system OpenGL context".to_string(),
+            backend: "OpenGL".to_string(),
+            device_type: "native_window".to_string(),
+            target_format: "RGBA8 framebuffer readback".to_string(),
+        };
+        write_capabilities(
+            &scenario_dir,
+            CapabilityStatus::Attempted,
+            "renderer_ready",
+            "Glow renderer initialized; waiting for a stable native frame",
+            Some(&renderer),
+        )
+        .map_err(VisualQaCreationError::Setup)?;
         let seed = VisualQaSeed {
             left: fixture.left.clone(),
             right: fixture.right.clone(),
@@ -553,14 +673,15 @@ impl VisualQaApp {
             frames: 0,
             stable_frames: 0,
             last_geometry: Vec::new(),
-            requested: false,
-            last_request_frame: 0,
-            capture_probes: None,
+            capture_attempts: 0,
+            next_request_id: 1,
+            last_request_at: None,
+            capture_probes: HashMap::new(),
             confirmation_requested: false,
             last_probe_summary: "no rendered frame yet".to_string(),
             pending_screenshot: None,
-            wgpu_device,
-            allow_capture_skip,
+            pending_event_error: None,
+            renderer,
         })
     }
 
@@ -571,44 +692,79 @@ impl VisualQaApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
-    fn fail(&self, ctx: &egui::Context, message: String) {
-        let _ = write_capabilities(&self.scenario_dir, CapabilityStatus::Failed, &message);
+    fn fail(&self, ctx: &egui::Context, failure_kind: &'static str, message: String) {
+        let _ = write_capabilities(
+            &self.scenario_dir,
+            CapabilityStatus::Failed,
+            failure_kind,
+            &message,
+            Some(&self.renderer),
+        );
         let _ =
             write_unfinished_manifest(&self.scenario_dir, self.scenario, "failed", Some(&message));
         self.finish(ctx, Err(message));
     }
 
-    fn screenshot_event(events: &[egui::Event], scenario: Scenario) -> Option<Arc<ColorImage>> {
-        events.iter().find_map(|event| {
+    fn screenshot_event(
+        events: &[egui::Event],
+        scenario: Scenario,
+    ) -> Result<Option<(u64, Arc<ColorImage>)>, String> {
+        for event in events {
             let egui::Event::Screenshot {
-                user_data, image, ..
+                viewport_id,
+                user_data,
+                image,
             } = event
             else {
-                return None;
+                continue;
             };
             let token = user_data
                 .data
                 .as_ref()
-                .and_then(|data| data.downcast_ref::<ScreenshotToken>())?;
-            (token.scenario == scenario.name()).then(|| Arc::clone(image))
-        })
+                .and_then(|data| data.downcast_ref::<ScreenshotToken>())
+                .ok_or_else(|| "screenshot event returned unknown user_data".to_string())?;
+            if *viewport_id != egui::ViewportId::ROOT {
+                return Err(format!(
+                    "screenshot event returned unexpected viewport {viewport_id:?}"
+                ));
+            }
+            if token.scenario != scenario.name() {
+                return Err(format!(
+                    "screenshot event token belongs to {}, expected {}",
+                    token.scenario,
+                    scenario.name()
+                ));
+            }
+            return Ok(Some((token.request_id, Arc::clone(image))));
+        }
+        Ok(None)
     }
 
-    fn request_screenshot(&self, ctx: &egui::Context) {
+    fn request_screenshot(&mut self, ctx: &egui::Context, probes: ProbeSnapshot) {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        self.capture_attempts = self.capture_attempts.saturating_add(1);
+        self.last_request_at = Some(Instant::now());
+        self.capture_probes.insert(request_id, probes);
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
             ScreenshotToken {
                 scenario: self.scenario.name(),
+                request_id,
             },
         )));
+        ctx.request_repaint();
     }
 }
 
 impl eframe::App for VisualQaApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
         if self.pending_screenshot.is_none() {
-            self.pending_screenshot = Self::screenshot_event(&input.events, self.scenario);
+            match Self::screenshot_event(&input.events, self.scenario) {
+                Ok(screenshot) => self.pending_screenshot = screenshot,
+                Err(error) => self.pending_event_error = Some(error),
+            }
         }
-        if !self.scenario.needs_confirmation() {
+        if !self.scenario.needs_confirmation() && self.capture_probes.is_empty() {
             let viewport = self.scenario.viewport();
             input.events.push(egui::Event::PointerMoved(egui::pos2(
                 viewport[0] * 0.24 / self.scenario.ui_scale(),
@@ -619,20 +775,20 @@ impl eframe::App for VisualQaApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if self.requested
-            && let Err(error) = self.wgpu_device.poll(eframe::wgpu::PollType::Poll)
-        {
-            self.fail(&ctx, format!("WGPU screenshot poll failed: {error}"));
+        if let Some(error) = self.pending_event_error.take() {
+            self.fail(&ctx, "screenshot_event_failure", error);
             return;
         }
-        let screenshot = self
-            .pending_screenshot
-            .take()
-            .or_else(|| ctx.input(|input| Self::screenshot_event(&input.events, self.scenario)));
-        if let Some(image) = screenshot {
-            let Some(probes) = self.capture_probes.take() else {
+        let screenshot = self.pending_screenshot.take().or_else(|| {
+            ctx.input(|input| Self::screenshot_event(&input.events, self.scenario))
+                .ok()
+                .flatten()
+        });
+        if let Some((request_id, image)) = screenshot {
+            let Some(probes) = self.capture_probes.remove(&request_id) else {
                 self.fail(
                     &ctx,
+                    "screenshot_token_mismatch",
                     "screenshot arrived without probe metadata".to_string(),
                 );
                 return;
@@ -648,36 +804,36 @@ impl eframe::App for VisualQaApp {
                     let _ = write_capabilities(
                         &self.scenario_dir,
                         CapabilityStatus::Captured,
-                        "eframe/WGPU framebuffer captured and validated",
+                        "capture_validated",
+                        "native eframe/Glow framebuffer captured and validated",
+                        Some(&self.renderer),
                     );
                     self.finish(&ctx, Ok(()));
                 }
-                Err(error) => self.fail(&ctx, error),
+                Err(error) => {
+                    let _ = write_capabilities(
+                        &self.scenario_dir,
+                        CapabilityStatus::Failed,
+                        "capture_validation_failure",
+                        &error,
+                        Some(&self.renderer),
+                    );
+                    self.finish(&ctx, Err(error));
+                }
             }
             return;
         }
 
         self.frames = self.frames.saturating_add(1);
-        if self.frames > MAX_FRAMES || self.started.elapsed() > TIMEOUT {
+        if self.started.elapsed() > TIMEOUT {
             let message = format!(
-                "screenshot event unavailable after {} frames and {:.1}s: {}",
+                "screenshot event timed out after {} frames and {:.1}s ({} attempts): {}",
                 self.frames,
                 self.started.elapsed().as_secs_f32(),
+                self.capture_attempts,
                 self.last_probe_summary,
             );
-            if self.allow_capture_skip && self.requested {
-                let _ = write_capabilities(&self.scenario_dir, CapabilityStatus::Skipped, &message);
-                let _ = write_skipped_capture_manifest(
-                    &self.scenario_dir,
-                    self.scenario,
-                    &message,
-                    self.capture_probes.as_ref(),
-                    self.counters.snapshot(),
-                );
-                self.finish(&ctx, Ok(()));
-            } else {
-                self.fail(&ctx, message);
-            }
+            self.fail(&ctx, "capture_timeout", message);
             return;
         }
 
@@ -705,8 +861,9 @@ impl eframe::App for VisualQaApp {
         let listings_ready =
             !self.inner.ws.left.entries().is_empty() && !self.inner.ws.right.entries().is_empty();
         self.last_probe_summary = format!(
-            "requested={}, stable={}, listings={}/{}, probes={probes:?}",
-            self.requested,
+            "attempts={}, pending={}, stable={}, listings={}/{}, probes={probes:?}",
+            self.capture_attempts,
+            self.capture_probes.len(),
             self.stable_frames,
             self.inner.ws.left.entries().len(),
             self.inner.ws.right.entries().len(),
@@ -720,15 +877,19 @@ impl eframe::App for VisualQaApp {
                 self.stable_frames = 0;
             }
             if self.stable_frames >= 2 {
-                self.capture_probes = Some(probes);
-                if !self.requested || self.frames.saturating_sub(self.last_request_frame) >= 30 {
-                    self.requested = true;
-                    self.last_request_frame = self.frames;
-                    self.request_screenshot(&ctx);
+                let should_request = self.capture_probes.is_empty()
+                    || (self.capture_attempts < MAX_CAPTURE_ATTEMPTS
+                        && self
+                            .last_request_at
+                            .is_some_and(|requested| requested.elapsed() >= CAPTURE_RETRY_AFTER));
+                if should_request {
+                    self.request_screenshot(&ctx, probes);
                 }
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(16));
+        if self.capture_probes.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
         let _keep_fixture_alive = &self.fixture;
     }
 
@@ -742,7 +903,7 @@ impl eframe::App for VisualQaApp {
 enum CapabilityStatus {
     Attempted,
     Captured,
-    Skipped,
+    Unsupported,
     Failed,
 }
 
@@ -752,7 +913,9 @@ struct Capabilities<'a> {
     platform: &'a str,
     status: CapabilityStatus,
     framebuffer: &'a str,
+    failure_kind: &'a str,
     detail: &'a str,
+    renderer: Option<&'a RendererDiagnostics>,
     native_menu_model: &'a str,
     native_menu_pixels: &'a str,
     whole_window_capture: &'a str,
@@ -762,12 +925,14 @@ struct Capabilities<'a> {
 fn write_capabilities(
     directory: &Path,
     status: CapabilityStatus,
+    failure_kind: &str,
     detail: &str,
+    renderer: Option<&RendererDiagnostics>,
 ) -> Result<(), String> {
     let framebuffer = match status {
         CapabilityStatus::Attempted => "attempted",
         CapabilityStatus::Captured => "captured",
-        CapabilityStatus::Skipped => "skipped_capability_unavailable",
+        CapabilityStatus::Unsupported => "skipped_capability_unavailable",
         CapabilityStatus::Failed => "failed",
     };
     write_json(
@@ -777,7 +942,9 @@ fn write_capabilities(
             platform: std::env::consts::OS,
             status,
             framebuffer,
+            failure_kind,
             detail,
+            renderer,
             native_menu_model: "automated_pure_contract",
             native_menu_pixels: "manual_appkit_tracking_boundary",
             whole_window_capture: "manual_screen_recording_boundary",
@@ -849,8 +1016,10 @@ struct Manifest {
     left_pane: Option<RectArtifact>,
     right_pane: Option<RectArtifact>,
     confirmation: Option<RectArtifact>,
+    left_row: Option<RectArtifact>,
     modal_owner: Option<String>,
     background_enabled: Option<bool>,
+    modal_above_background: Option<bool>,
     native_effect_calls: NativeEffectCalls,
     checks: Vec<Check>,
     error: Option<String>,
@@ -876,8 +1045,10 @@ fn base_manifest(scenario: Scenario, status: &str) -> Manifest {
         left_pane: None,
         right_pane: None,
         confirmation: None,
+        left_row: None,
         modal_owner: None,
         background_enabled: None,
+        modal_above_background: None,
         native_effect_calls: NativeEffectCalls::default(),
         checks: Vec::new(),
         error: None,
@@ -892,33 +1063,6 @@ fn write_unfinished_manifest(
 ) -> Result<(), String> {
     let mut manifest = base_manifest(scenario, status);
     manifest.error = error.map(str::to_string);
-    write_json(&directory.join("manifest.json"), &manifest)
-}
-
-fn write_skipped_capture_manifest(
-    directory: &Path,
-    scenario: Scenario,
-    reason: &str,
-    probes: Option<&ProbeSnapshot>,
-    calls: NativeEffectCalls,
-) -> Result<(), String> {
-    let mut manifest = base_manifest(scenario, "skipped");
-    manifest.error = Some(reason.to_string());
-    manifest.native_effect_calls = calls;
-    manifest.checks.push(check(
-        "framebuffer_capture_capability",
-        false,
-        reason.to_string(),
-    ));
-    if let Some(probes) = probes {
-        manifest.pixels_per_point = Some(probes.pixels_per_point);
-        manifest.viewport = Some(probes.viewport.into());
-        manifest.left_pane = probes.left_pane.map(Into::into);
-        manifest.right_pane = probes.right_pane.map(Into::into);
-        manifest.confirmation = probes.confirmation.map(Into::into);
-        manifest.modal_owner = probes.modal_owner.clone();
-        manifest.background_enabled = probes.background_enabled;
-    }
     write_json(&directory.join("manifest.json"), &manifest)
 }
 
@@ -951,6 +1095,17 @@ fn write_capture(
         "framebuffer_dimensions",
         width.abs_diff(expected_width) <= 2 && height.abs_diff(expected_height) <= 2,
         format!("{width}x{height}, expected about {expected_width}x{expected_height}"),
+    ));
+    let requested = scenario.viewport();
+    let logical_width = probes.viewport.width() * scenario.ui_scale();
+    let logical_height = probes.viewport.height() * scenario.ui_scale();
+    checks.push(check(
+        "logical_viewport_dimensions",
+        (logical_width - requested[0]).abs() <= 2.0 && (logical_height - requested[1]).abs() <= 2.0,
+        format!(
+            "{logical_width:.1}x{logical_height:.1}, requested {}x{}",
+            requested[0], requested[1]
+        ),
     ));
 
     let mut exact = HashMap::<u32, usize>::new();
@@ -987,30 +1142,33 @@ fn write_capture(
         format!("{} quantized RGB buckets", buckets.len()),
     ));
 
-    for (name, rect) in [
+    let mut required_rects = vec![
         ("viewport_rect", Some(probes.viewport)),
-        ("left_pane_rect", probes.left_pane),
-        ("right_pane_rect", probes.right_pane),
+        ("left_pane_rect", probes.left_pane.map(|record| record.rect)),
         (
-            "confirmation_rect",
-            scenario
-                .needs_confirmation()
-                .then_some(probes.confirmation)
-                .flatten(),
+            "right_pane_rect",
+            probes.right_pane.map(|record| record.rect),
         ),
-    ] {
-        if let Some(rect) = rect {
-            checks.push(check(
-                name,
-                rect_is_valid(rect, probes.viewport),
-                format!("{rect:?} inside {:?}", probes.viewport),
-            ));
-        }
+    ];
+    if scenario.needs_confirmation() {
+        required_rects.push((
+            "confirmation_rect",
+            probes.confirmation.map(|record| record.rect),
+        ));
+    } else {
+        required_rects.push(("left_row_rect", probes.left_row.map(|record| record.rect)));
+    }
+    for (name, rect) in required_rects {
+        checks.push(check(
+            name,
+            rect.is_some_and(|rect| rect_is_valid(rect, probes.viewport)),
+            format!("{rect:?} inside {:?}", probes.viewport),
+        ));
     }
     let panes_do_not_overlap = probes
         .left_pane
         .zip(probes.right_pane)
-        .is_some_and(|(left, right)| left.right() <= right.left() + 1.0);
+        .is_some_and(|(left, right)| left.rect.right() <= right.rect.left() + 1.0);
     checks.push(check(
         "pane_non_overlap",
         panes_do_not_overlap,
@@ -1027,6 +1185,19 @@ fn write_capture(
             probes.background_enabled == Some(false),
             format!("background_enabled={:?}", probes.background_enabled),
         ));
+        checks.push(check(
+            "modal_above_background",
+            probes.modal_above_background == Some(true),
+            format!("modal_above_background={:?}", probes.modal_above_background),
+        ));
+    } else {
+        checks.push(check(
+            "row_runtime_hover",
+            probes
+                .left_row
+                .is_some_and(|row| row.enabled && row.hovered),
+            format!("left_row={:?}", probes.left_row),
+        ));
     }
     checks.push(check(
         "native_effect_isolation",
@@ -1039,11 +1210,13 @@ fn write_capture(
     manifest.pixels_per_point = Some(probes.pixels_per_point);
     manifest.image_size = Some(image.size);
     manifest.viewport = Some(probes.viewport.into());
-    manifest.left_pane = probes.left_pane.map(Into::into);
-    manifest.right_pane = probes.right_pane.map(Into::into);
-    manifest.confirmation = probes.confirmation.map(Into::into);
+    manifest.left_pane = probes.left_pane.map(|record| record.rect.into());
+    manifest.right_pane = probes.right_pane.map(|record| record.rect.into());
+    manifest.confirmation = probes.confirmation.map(|record| record.rect.into());
+    manifest.left_row = probes.left_row.map(|record| record.rect.into());
     manifest.modal_owner = probes.modal_owner.clone();
     manifest.background_enabled = probes.background_enabled;
+    manifest.modal_above_background = probes.modal_above_background;
     manifest.native_effect_calls = calls;
     manifest.checks = checks;
     if failed > 0 {

@@ -80,6 +80,18 @@ pub fn reduce_context_menu_result(
                 message: "The context menu selection expired; open the menu again".to_string(),
             })
         }
+        ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection) => {
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: "The context menu returned an invalid selection".to_string(),
+            })
+        }
+        ContextMenuResult::Failed(ContextMenuFailure::TargetUnavailable { message }) => {
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: format!("The context menu target is unavailable: {message}"),
+            })
+        }
         ContextMenuResult::Failed(ContextMenuFailure::Action { command, message }) => {
             let action = match command {
                 ContextMenuCommand::OpenWith => "open item with the selected application",
@@ -96,6 +108,22 @@ pub fn reduce_context_menu_result(
                 message: format!("Could not {action}: {message}"),
             })
         }
+    }
+}
+
+pub fn reduce_deferred_context_menu_result(
+    result: ContextMenuResult,
+    path: &Path,
+) -> Option<ContextMenuUiEffect> {
+    match reduce_context_menu_result(result, path) {
+        Some(ContextMenuUiEffect::Perform(action)) => Some(ContextMenuUiEffect::Notice {
+            level: ContextMenuNoticeLevel::Error,
+            message: format!(
+                "Could not {:?}: the context-menu adapter returned a nested deferred action",
+                action.command()
+            ),
+        }),
+        terminal => terminal,
     }
 }
 
@@ -455,6 +483,10 @@ mod tests {
         path: RefCell<Option<PathBuf>>,
     }
 
+    struct NestedDeferredContextMenuPort {
+        calls: Cell<usize>,
+    }
+
     impl FakeContextMenuPort {
         fn returning(result: ContextMenuResult) -> Self {
             Self {
@@ -470,6 +502,17 @@ mod tests {
             self.calls.set(self.calls.get() + 1);
             self.path.replace(Some(path.to_path_buf()));
             self.result.clone()
+        }
+    }
+
+    impl ContextMenuPort for NestedDeferredContextMenuPort {
+        fn show_context_menu(&self, _path: &Path) -> ContextMenuResult {
+            ContextMenuResult::Dismissed
+        }
+
+        fn perform_deferred_action(&self, action: &ContextMenuAction) -> ContextMenuResult {
+            self.calls.set(self.calls.get() + 1);
+            ContextMenuResult::DeferredActionRequested(action.clone())
         }
     }
 
@@ -634,6 +677,29 @@ mod tests {
             reduce_context_menu_result(ContextMenuResult::MoveToTrashRequested, path),
             Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
         );
+    }
+
+    #[test]
+    fn nested_deferred_action_from_a_bad_port_is_reduced_once_to_a_terminal_error() {
+        let path = PathBuf::from("/tmp/commander-nested-deferred");
+        let action = ContextMenuAction::Duplicate(crate::ports::ContextMenuTarget {
+            expected: crate::path_identity::PathIdentity::missing(&path),
+            path: path.clone(),
+        });
+        let port = NestedDeferredContextMenuPort {
+            calls: Cell::new(0),
+        };
+
+        let result = port.perform_deferred_action(&action);
+        assert_eq!(port.calls.get(), 1);
+        assert!(matches!(
+            reduce_deferred_context_menu_result(result, &path),
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message,
+            }) if message.contains("nested deferred action")
+        ));
+        assert_eq!(port.calls.get(), 1);
     }
 
     #[test]

@@ -86,13 +86,14 @@ Highest-value next steps, in order:
    size-cache owners; its current 4,761 lines are the largest SRP hotspot.
 5. Add Clipboard, Trash, opener, and free-space ports, then move native failure
    reduction to the same typed outcome pattern as the context menu.
-6. ~~Add running-app screenshot/native-menu QA.~~ **Shipped in this pass:** four
-   isolated native eframe/WGPU scenarios validate real framebuffer dimensions,
-   diversity, pane/dialog geometry, modal ownership/background disabling, and
-   zero native effects; the native menu now has a pure declarative model and
-   invocation-local typed callbacks. AppKit popup pixels, VoiceOver, and
-   multi-monitor placement remain the documented permission-bound manual
-   boundary.
+6. ~~Add running-app screenshot/native-menu QA.~~ **Shipped in this pass:** the
+   strict native eframe/Glow desktop gate validates real framebuffer dimensions,
+   diversity, pane geometry, and zero native effects. Three additional local
+   scenarios retain minimum-window, 200% accessible, and modal diagnostics but
+   are not CI gates until their layout-specific checks are stable. The native
+   menu now has a pure declarative model and invocation-local typed callbacks.
+   AppKit popup pixels, VoiceOver, and multi-monitor placement remain the
+   documented permission-bound manual boundary.
 
 The 500-point digest below remains a dated audit snapshot. Its old line numbers
 are evidence of what was reviewed, not a claim that every location still has

@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-visual-qa = []
+visual-qa = ["eframe/glow"]
 
 [lints.rust]
 # The objc crate's macros probe `feature = "cargo-clippy"`; register the

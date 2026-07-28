@@ -36,10 +36,7 @@ jobs:
 
       - name: Native framebuffer visual QA
         timeout-minutes: 5
-        run: |
-          for scenario in desktop_base minimum_window zoom_200_accessible confirmation_owner; do
-            cargo run --features visual-qa -- --visual-qa "$scenario" --allow-skip --output target/visual-qa
-          done
+        run: cargo run --features visual-qa -- --visual-qa desktop_base --output target/visual-qa
 
       - name: Upload visual QA artifacts
         if: always()

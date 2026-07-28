@@ -304,6 +304,14 @@ impl App {
                             node.set_expanded(expanded);
                         }
                     });
+                    #[cfg(feature = "visual-qa")]
+                    if panel_side == "left" && row_resp.hovered() {
+                        crate::visual_qa::record_response(
+                            ui.ctx(),
+                            crate::visual_qa::ProbeId::LeftRow,
+                            &row_resp,
+                        );
+                    }
 
                     // Scroll to cursor row when navigating with keyboard
                     if is_cursor && scroll_pending {
