@@ -433,6 +433,7 @@ impl Workspace {
         )
     }
 
+    #[cfg(feature = "visual-qa")]
     pub(crate) fn with_ports_and_bookmarks(
         left: PathBuf,
         right: PathBuf,

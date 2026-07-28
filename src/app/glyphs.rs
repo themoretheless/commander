@@ -13,6 +13,7 @@ pub(crate) enum PaintedGlyph {
     NavigationTriangle,
 }
 
+#[cfg(any(test, feature = "visual-qa"))]
 impl PaintedGlyph {
     pub(crate) const REQUIRED_CAPTURE: [Self; 6] = [
         Self::BreadcrumbChevron,

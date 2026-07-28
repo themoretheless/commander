@@ -450,6 +450,8 @@ impl App {
                     self.confirm_pending_op(ctx);
                 }
             });
+        #[cfg(not(feature = "visual-qa"))]
+        let _ = dialog_response;
         #[cfg(feature = "visual-qa")]
         if let Some(response) = dialog_response {
             crate::visual_qa::record_response(
