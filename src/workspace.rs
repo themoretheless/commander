@@ -307,8 +307,8 @@ pub struct Workspace {
     space_probes: space_probe::SpaceProbeController,
     free_space_port: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
     deletes: delete::DeleteController,
-    /// Undo/redo history of reversible operations (moves, batch renames).
-    pub stack: crate::undo::UndoStack,
+    /// Sole owner of reversible-operation history and replay reservations.
+    undo: crate::undo::UndoCenter,
     command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
 }
 
@@ -479,7 +479,7 @@ impl Workspace {
             space_probes: space_probe::SpaceProbeController::default(),
             free_space_port: free_space,
             deletes: delete::DeleteController::new(trash),
-            stack: crate::undo::UndoStack::default(),
+            undo: crate::undo::UndoCenter::default(),
             command_capabilities: std::cell::RefCell::new(None),
         }
     }
@@ -672,8 +672,8 @@ impl Workspace {
             can_go_forward: active.can_go_forward(),
             can_diff,
             can_transfer_into_cursor_folder,
-            can_undo: self.stack.can_undo(),
-            can_redo: self.stack.can_redo(),
+            can_undo: self.can_undo(),
+            can_redo: self.can_redo(),
             preview_open: inactive.preview.is_some(),
             info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
             safe_state,
@@ -734,8 +734,8 @@ impl Workspace {
                 && !transfer_queue_busy
                 && cursor.is_some_and(|target| target.is_dir)
                 && has_transfer_source,
-            can_undo: self.stack.can_undo(),
-            can_redo: self.stack.can_redo(),
+            can_undo: self.can_undo(),
+            can_redo: self.can_redo(),
             preview_open: self.inactive_panel().preview.is_some(),
             info_open: matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))),
             safe_state,
@@ -1191,7 +1191,7 @@ impl Workspace {
     /// Callers that present a reason should use [`Self::mutation_block_reason`]
     /// so recovery review and ordinary background activity remain distinct.
     pub fn mutations_blocked(&self) -> bool {
-        self.safe_state.is_some() || self.deletes.is_active()
+        self.safe_state.is_some() || self.deletes.is_active() || self.undo.has_pending_replay()
     }
 
     pub fn delete_active(&self) -> bool {
@@ -1222,6 +1222,10 @@ impl Workspace {
         } else if self.deletes.is_active() {
             Some(format!(
                 "Wait for the current Trash operation before {action}"
+            ))
+        } else if self.undo.has_pending_replay() {
+            Some(format!(
+                "Wait for the current history replay before {action}"
             ))
         } else {
             None
@@ -1664,19 +1668,57 @@ impl Workspace {
     /// Undo the most recent reversible action (Cmd+Z): execute its inverse and
     /// move it onto the redo stack only after the filesystem commit succeeds.
     pub fn preview_undo(&self) -> Option<crate::undo::ReplayPreview> {
-        self.stack
-            .peek_undo_inverse()
+        self.undo
+            .preview_undo_action()
             .map(|action| crate::undo::preview(&action))
     }
 
     pub fn preview_redo(&self) -> Option<crate::undo::ReplayPreview> {
-        self.stack
-            .peek_redo_action()
+        self.undo
+            .preview_redo_action()
             .map(|action| crate::undo::preview(&action))
     }
 
+    pub fn can_undo(&self) -> bool {
+        self.undo.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undo.can_redo()
+    }
+
+    pub fn top_undo_action(&self) -> Option<&crate::undo::Action> {
+        self.undo.top_undo()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_history_for_test(&mut self, action: crate::undo::Action) {
+        self.undo.record(action).expect("test history record");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_history_replay_for_test(
+        &mut self,
+        direction: crate::undo::ReplayDirection,
+    ) -> crate::undo::ReplayPlan {
+        self.undo
+            .begin(direction)
+            .expect("test history replay begin")
+            .expect("test history replay plan")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_history_replay_for_test(
+        &mut self,
+        reservation: crate::undo::ReplayReservation,
+    ) {
+        self.undo
+            .commit(reservation)
+            .expect("test history replay commit");
+    }
+
     pub fn redo_unavailable_reason(&self) -> Option<String> {
-        self.stack.redo_invalidation().map(|invalidation| {
+        self.undo.redo_invalidation().map(|invalidation| {
             format!(
                 "Redo was invalidated by {} after {} undone action{}",
                 invalidation.caused_by,
@@ -1733,17 +1775,11 @@ impl Workspace {
 
     pub fn perform_undo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
         self.ensure_history_replay_ready()?;
-        let Some(inverse) = self.stack.peek_undo_inverse() else {
+        let Some(preview) = self.preview_undo() else {
             return Ok(());
         };
-        Self::replay_preflight(&crate::undo::preview(&inverse))?;
-        match self.execute_action(inverse, transfer_queue::HistoryDirection::Undo, notify)? {
-            ActionExecution::Completed => {
-                self.stack.commit_undo();
-            }
-            ActionExecution::Started => {}
-        }
-        Ok(())
+        Self::replay_preflight(&preview)?;
+        self.perform_history_replay(crate::undo::ReplayDirection::Undo, notify)
     }
 
     /// Redo the most recently undone action (Cmd+Shift+Z): re-apply it and move
@@ -1751,26 +1787,70 @@ impl Workspace {
     /// [`perform_undo`].
     pub fn perform_redo(&mut self, notify: impl Fn() + Send + 'static) -> Result<(), String> {
         self.ensure_history_replay_ready()?;
-        let Some(action) = self.stack.peek_redo_action() else {
+        let Some(preview) = self.preview_redo() else {
             return self.redo_unavailable_reason().map_or(Ok(()), Err);
         };
-        Self::replay_preflight(&crate::undo::preview(&action))?;
-        match self.execute_action(action, transfer_queue::HistoryDirection::Redo, notify)? {
-            ActionExecution::Completed => {
-                self.stack.commit_redo();
-            }
-            ActionExecution::Started => {}
+        Self::replay_preflight(&preview)?;
+        self.perform_history_replay(crate::undo::ReplayDirection::Redo, notify)
+    }
+
+    fn perform_history_replay(
+        &mut self,
+        direction: crate::undo::ReplayDirection,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<(), String> {
+        let Some(plan) = self
+            .undo
+            .begin(direction)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
+        };
+        let crate::undo::ReplayPlan {
+            action,
+            reservation,
+        } = plan;
+        match self.execute_action(action, reservation, notify) {
+            Ok(ActionExecution::Completed) => self
+                .undo
+                .commit(reservation)
+                .map_err(|error| self.history_invariant_error(error)),
+            Ok(ActionExecution::Started) => Ok(()),
+            Err(execution_error) => match self.undo.abort(reservation) {
+                Ok(()) => Err(execution_error),
+                Err(history_error) => Err(format!(
+                    "{execution_error}; {}",
+                    self.history_invariant_error(history_error)
+                )),
+            },
         }
-        Ok(())
+    }
+
+    fn history_invariant_error(&mut self, error: crate::undo::HistoryError) -> String {
+        let reason = format!("History settlement failed: {error}");
+        if self.safe_state.is_none() {
+            let failure = crate::operation::ClassifiedFailure::message(
+                crate::operation::FailureClass::IntegrityUncertain,
+                None,
+                reason.clone(),
+            );
+            self.safe_state = Some(crate::operation::SafeState {
+                operation_id: crate::operation::OperationId::new(),
+                reason: reason.clone(),
+                paths: Vec::new(),
+                failures: vec![failure],
+            });
+        }
+        reason
     }
 
     /// Execute `action` forward against the filesystem. Used by undo (with an
     /// inverted action) and redo (with the original). It records no new history
-    /// of its own: the stack was already shuffled by `undo`/`redo`.
+    /// of its own; the matching reservation settles only after execution.
     fn execute_action(
         &mut self,
         action: crate::undo::Action,
-        direction: transfer_queue::HistoryDirection,
+        reservation: crate::undo::ReplayReservation,
         notify: impl Fn() + Send + 'static,
     ) -> Result<ActionExecution, String> {
         Self::replay_preflight(&crate::undo::preview(&action))?;
@@ -1791,7 +1871,7 @@ impl Workspace {
                     sources,
                     dest_dir,
                     None,
-                    transfer_queue::HistoryIntent::replay(direction, None),
+                    transfer_queue::HistoryIntent::replay(reservation, None),
                     notify,
                 )
                 .map(|started| {
@@ -1833,7 +1913,7 @@ impl Workspace {
                     folder.clone(),
                     None,
                     Some(folder.clone()),
-                    transfer_queue::HistoryIntent::replay(direction, Some(folder.clone())),
+                    transfer_queue::HistoryIntent::replay(reservation, Some(folder.clone())),
                     notify,
                 );
                 Ok(ActionExecution::Started)
@@ -1851,7 +1931,7 @@ impl Workspace {
                     sources,
                     dest_dir,
                     Some(PostTransferAction::RemoveEmptyDir(folder)),
-                    transfer_queue::HistoryIntent::replay(direction, None),
+                    transfer_queue::HistoryIntent::replay(reservation, None),
                     notify,
                 )
                 .map(|started| {
@@ -1921,9 +2001,9 @@ impl Workspace {
         self.pump_queue(notify);
     }
 
-    /// Move the files at `sources` into `dest_dir` without recording undo
-    /// history (the caller already updated the stack). One source dir, one
-    /// dest dir, matching how user moves are shaped.
+    /// Move the files at `sources` into `dest_dir` without recording a new undo
+    /// entry. One source dir, one destination dir, matching how user moves are
+    /// shaped.
     fn start_move_silent(
         &mut self,
         sources: Vec<PathBuf>,
@@ -2173,10 +2253,12 @@ impl Workspace {
             .map(|p| p.join(new_name))
             .ok_or("Path has no parent")?;
         Self::rename_path_no_clobber(old, &dest)?;
-        self.stack.push(crate::undo::Action::Rename {
-            from: old.to_path_buf(),
-            to: dest,
-        });
+        self.undo
+            .record(crate::undo::Action::Rename {
+                from: old.to_path_buf(),
+                to: dest,
+            })
+            .map_err(|error| self.history_invariant_error(error))?;
         self.left.refresh();
         self.right.refresh();
         Ok(())
@@ -2260,10 +2342,12 @@ impl Workspace {
         };
         // Record the batch as one undoable unit (Cmd+Z reverts the whole run).
         if done > 0 {
-            self.stack.push(crate::undo::Action::BatchRename {
-                dir,
-                pairs: changes,
-            });
+            self.undo
+                .record(crate::undo::Action::BatchRename {
+                    dir,
+                    pairs: changes,
+                })
+                .map_err(|error| self.history_invariant_error(error))?;
         }
         let panel = match context.panel {
             ActivePanel::Left => &mut self.left,

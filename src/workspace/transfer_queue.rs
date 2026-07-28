@@ -16,28 +16,35 @@ use crate::operation::{ClassifiedFailure, FailureClass, OperationId, SafeState};
 use crate::opqueue::{JobId, JobKind, JobState, Queue};
 use crate::transfer::{self, TransferKind, TransferProgress, TransferSpec, TransferState};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum HistoryDirection {
-    Undo,
-    Redo,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum HistoryIntent {
     None,
     Record(crate::undo::Action),
     Replay {
-        direction: HistoryDirection,
+        reservation: crate::undo::ReplayReservation,
         cleanup_on_failure: Option<PathBuf>,
     },
 }
 
 impl HistoryIntent {
-    pub(super) fn replay(direction: HistoryDirection, cleanup_on_failure: Option<PathBuf>) -> Self {
+    pub(super) fn replay(
+        reservation: crate::undo::ReplayReservation,
+        cleanup_on_failure: Option<PathBuf>,
+    ) -> Self {
         Self::Replay {
-            direction,
+            reservation,
             cleanup_on_failure,
         }
+    }
+
+    fn matches_replay(&self, reservation: crate::undo::ReplayReservation) -> bool {
+        matches!(
+            self,
+            Self::Replay {
+                reservation: queued,
+                ..
+            } if *queued == reservation
+        )
     }
 }
 
@@ -94,8 +101,9 @@ pub(super) enum HistoryOutcome {
         action: crate::undo::Action,
         placements: Vec<(PathBuf, PathBuf)>,
     },
-    Commit(HistoryDirection),
+    Commit(crate::undo::ReplayReservation),
     AbortReplay {
+        reservation: crate::undo::ReplayReservation,
         cleanup_on_failure: Option<PathBuf>,
     },
 }
@@ -187,6 +195,16 @@ impl TransferQueueController {
                 submitted,
             },
         )
+    }
+
+    pub(super) fn runnable_replay_matches(
+        &self,
+        reservation: crate::undo::ReplayReservation,
+    ) -> bool {
+        self.queue
+            .runnable()
+            .and_then(|job_id| self.queue.get(job_id))
+            .is_some_and(|job| job.spec.history.matches_replay(reservation))
     }
 
     fn prepare_launch(&mut self, blocked: bool) -> Result<PreparedLaunch, LaunchOutcome> {
@@ -427,13 +445,20 @@ impl TransferQueueController {
             (HistoryIntent::None, _) => HistoryOutcome::None,
             (HistoryIntent::Record(action), true) => HistoryOutcome::Record { action, placements },
             (HistoryIntent::Record(_), false) => HistoryOutcome::None,
-            (HistoryIntent::Replay { direction, .. }, true) => HistoryOutcome::Commit(direction),
+            (HistoryIntent::Replay { reservation, .. }, true) => {
+                HistoryOutcome::Commit(reservation)
+            }
             (
                 HistoryIntent::Replay {
-                    cleanup_on_failure, ..
+                    reservation,
+                    cleanup_on_failure,
+                    ..
                 },
                 false,
-            ) => HistoryOutcome::AbortReplay { cleanup_on_failure },
+            ) => HistoryOutcome::AbortReplay {
+                reservation,
+                cleanup_on_failure,
+            },
         }
     }
 
@@ -727,8 +752,13 @@ impl Workspace {
     }
 
     pub(super) fn pump_queue(&mut self, notify: impl Fn() + Send + 'static) {
-        self.transfers
-            .launch(self.mutation_commits_blocked(), notify);
+        let blocked = self.safe_state.is_some()
+            || self.deletes.is_active()
+            || self
+                .undo
+                .pending_reservation()
+                .is_some_and(|reservation| !self.transfers.runnable_replay_matches(reservation));
+        self.transfers.launch(blocked, notify);
     }
 
     #[cfg(test)]
@@ -761,7 +791,26 @@ impl Workspace {
         self.transfers.request_stop();
     }
 
-    fn apply_history_outcome(&mut self, outcome: HistoryOutcome) -> bool {
+    fn latch_history_error(&mut self, operation_id: OperationId, error: crate::undo::HistoryError) {
+        if self.safe_state.is_some() {
+            return;
+        }
+        let reason = format!("History settlement failed: {error}");
+        let failure =
+            ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, reason.clone());
+        self.safe_state = Some(SafeState {
+            operation_id,
+            reason,
+            paths: Vec::new(),
+            failures: vec![failure],
+        });
+    }
+
+    fn apply_history_outcome(
+        &mut self,
+        outcome: HistoryOutcome,
+        operation_id: OperationId,
+    ) -> bool {
         match outcome {
             HistoryOutcome::None => false,
             HistoryOutcome::Record { action, placements } => {
@@ -778,22 +827,35 @@ impl Workspace {
                 if action.item_count() == 0 {
                     false
                 } else {
-                    self.stack.push(action);
-                    true
+                    match self.undo.record(action) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            self.latch_history_error(operation_id, error);
+                            false
+                        }
+                    }
                 }
             }
-            HistoryOutcome::Commit(HistoryDirection::Undo) => {
-                self.stack.commit_undo();
+            HistoryOutcome::Commit(reservation) => {
+                if let Err(error) = self.undo.commit(reservation) {
+                    self.latch_history_error(operation_id, error);
+                }
                 false
             }
-            HistoryOutcome::Commit(HistoryDirection::Redo) => {
-                self.stack.commit_redo();
-                false
-            }
-            HistoryOutcome::AbortReplay { cleanup_on_failure } => {
-                if let Some(folder) = cleanup_on_failure {
-                    // Only an empty replay-owned container is safe to remove.
-                    let _ = std::fs::remove_dir(folder);
+            HistoryOutcome::AbortReplay {
+                reservation,
+                cleanup_on_failure,
+            } => {
+                match self.undo.abort(reservation) {
+                    Ok(()) => {
+                        if let Some(folder) = cleanup_on_failure {
+                            // Only an empty replay-owned container is safe to remove.
+                            let _ = std::fs::remove_dir(folder);
+                        }
+                    }
+                    Err(error) => {
+                        self.latch_history_error(operation_id, error);
+                    }
                 }
                 false
             }
@@ -816,7 +878,8 @@ impl Workspace {
         };
         self.left.refresh();
         self.right.refresh();
-        let raised = self.apply_history_outcome(retirement.history);
+        let raised =
+            self.apply_history_outcome(retirement.history, retirement.report.operation_id.clone());
         // History and safe-state outcomes are committed before another worker
         // may observe the queue.
         self.pump_queue(notify);
@@ -855,7 +918,7 @@ impl Workspace {
         };
         self.left.refresh();
         self.right.refresh();
-        self.apply_history_outcome(retirement.history);
+        self.apply_history_outcome(retirement.history, retirement.report.operation_id.clone());
         self.pump_queue(notify);
         Ok(retirement.report)
     }
@@ -966,6 +1029,30 @@ mod tests {
             .cloned()
             .expect("active progress");
         (job_id, progress)
+    }
+
+    fn replay_reservation(
+        direction: crate::undo::ReplayDirection,
+    ) -> crate::undo::ReplayReservation {
+        let mut center = crate::undo::UndoCenter::default();
+        center
+            .record(crate::undo::Action::Rename {
+                from: PathBuf::from("/old"),
+                to: PathBuf::from("/new"),
+            })
+            .expect("seed history");
+        if direction == crate::undo::ReplayDirection::Redo {
+            let undo = center
+                .begin(crate::undo::ReplayDirection::Undo)
+                .expect("begin undo")
+                .expect("undo plan");
+            center.commit(undo.reservation).expect("commit undo");
+        }
+        center
+            .begin(direction)
+            .expect("begin replay")
+            .expect("replay plan")
+            .reservation
     }
 
     #[test]
@@ -1156,9 +1243,10 @@ mod tests {
     #[test]
     fn late_cancel_does_not_demote_a_clean_replay_completion() {
         let mut controller = TransferQueueController::default();
+        let reservation = replay_reservation(crate::undo::ReplayDirection::Undo);
         controller.enqueue(
             spec("late-cancel"),
-            HistoryIntent::replay(HistoryDirection::Undo, None),
+            HistoryIntent::replay(reservation, None),
         );
         let (_, progress) = launch(&mut controller);
         crate::lock_util::recover(&progress).finished = true;
@@ -1167,10 +1255,7 @@ mod tests {
         let retirement = controller.poll().retirement.expect("clean retirement");
 
         assert_eq!(retirement.report.terminal, TransferTerminalState::Done);
-        assert_eq!(
-            retirement.history,
-            HistoryOutcome::Commit(HistoryDirection::Undo)
-        );
+        assert_eq!(retirement.history, HistoryOutcome::Commit(reservation));
     }
 
     #[test]
@@ -1225,22 +1310,24 @@ mod tests {
     #[test]
     fn replay_commits_on_clean_and_aborts_with_cleanup_on_failure() {
         let mut clean = TransferQueueController::default();
+        let clean_reservation = replay_reservation(crate::undo::ReplayDirection::Undo);
         clean.enqueue(
             spec("clean-replay"),
-            HistoryIntent::replay(HistoryDirection::Undo, None),
+            HistoryIntent::replay(clean_reservation, None),
         );
         let (_, progress) = launch(&mut clean);
         crate::lock_util::recover(&progress).finished = true;
         assert_eq!(
             clean.poll().retirement.expect("clean retirement").history,
-            HistoryOutcome::Commit(HistoryDirection::Undo)
+            HistoryOutcome::Commit(clean_reservation)
         );
 
         let cleanup = PathBuf::from("/tmp/replay-cleanup");
         let mut failed = TransferQueueController::default();
+        let failed_reservation = replay_reservation(crate::undo::ReplayDirection::Redo);
         let failed_id = failed.enqueue(
             spec("failed-replay"),
-            HistoryIntent::replay(HistoryDirection::Redo, Some(cleanup.clone())),
+            HistoryIntent::replay(failed_reservation, Some(cleanup.clone())),
         );
         let (_, progress) = launch(&mut failed);
         {
@@ -1255,6 +1342,7 @@ mod tests {
                 .expect("dismiss failed replay")
                 .history,
             HistoryOutcome::AbortReplay {
+                reservation: failed_reservation,
                 cleanup_on_failure: Some(cleanup),
             }
         );

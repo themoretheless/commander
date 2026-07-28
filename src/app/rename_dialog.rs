@@ -155,7 +155,7 @@ impl App {
                             true,
                             now,
                         ));
-                        if let Some(action) = self.ws.stack.peek_undo().cloned()
+                        if let Some(action) = self.ws.top_undo_action().cloned()
                             && let Some(jump_to) = action.jump_to()
                         {
                             self.receipts.push(crate::receipts::Receipt {

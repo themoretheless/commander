@@ -329,7 +329,7 @@ impl App {
                         // apply_batch_rename just pushed this run onto the
                         // undo stack; reuse it for the receipt so the undo
                         // affordance stays exactly in sync with Cmd+Z.
-                        if let Some(a) = self.ws.stack.peek_undo()
+                        if let Some(a) = self.ws.top_undo_action()
                             && let Some(jump_to) = a.jump_to()
                         {
                             self.receipts.push(crate::receipts::Receipt {

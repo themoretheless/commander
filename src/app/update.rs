@@ -501,7 +501,7 @@ impl App {
             if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
                 // log a receipt (jump-back + the same live undo affordance).
-                if let Some(a) = self.ws.stack.peek_undo() {
+                if let Some(a) = self.ws.top_undo_action() {
                     self.toasts.push(crate::toasts::Toast::new(
                         format!("{} {} item(s)", a.verb(), a.item_count()),
                         crate::toasts::ToastKind::Success,

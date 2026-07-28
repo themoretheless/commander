@@ -373,7 +373,7 @@ impl App {
             return;
         }
         let now = ui.input(|input| input.time);
-        let top = self.ws.stack.peek_undo().cloned();
+        let top = self.ws.top_undo_action().cloned();
         let mut jump = None;
         let mut undo = false;
         egui::ScrollArea::vertical().show(ui, |ui| {
