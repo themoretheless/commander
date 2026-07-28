@@ -1184,7 +1184,7 @@ pub fn mark_replacement_backed_up(
         }
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not prove overwrite backup: {error}"))?;
-        if !replacement.original.same_object(&backup) {
+        if !replacement.original.same_version(&backup) {
             return Err("Overwrite backup does not contain the proven original object".to_string());
         }
         let destination = PathIdentity::observe(&replacement.original.path)
@@ -1214,12 +1214,12 @@ pub fn mark_replacement_placed(
         }
         let destination = PathIdentity::observe_deep(&replacement.original.path)
             .map_err(|error| format!("Could not prove overwrite placement: {error}"))?;
-        if !replacement.replacement.same_object(&destination) {
+        if !replacement.replacement.same_version(&destination) {
             return Err("Overwrite destination is not the proven staged object".to_string());
         }
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not recheck overwrite backup: {error}"))?;
-        if !replacement.original.same_object(&backup) {
+        if !replacement.original.same_version(&backup) {
             return Err("Overwrite original changed in its backup location".to_string());
         }
         replacement.phase = ReplacementPhase::ReplacementPlaced;
@@ -1298,7 +1298,7 @@ pub fn mark_completed(
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))?;
         if backup.exists {
-            if !replacement.original.same_object(&backup) {
+            if !replacement.original.same_version(&backup) {
                 return Err(
                     "Overwrite backup was replaced before cleanup; foreign data was preserved"
                         .to_string(),
@@ -1570,14 +1570,14 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
             .map_err(|error| format!("Could not inspect interrupted overwrite: {error}"))?;
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not inspect interrupted overwrite backup: {error}"))?;
-        if destination.exists && replacement.replacement.same_object(&destination) {
+        if destination.exists && replacement.replacement.same_version(&destination) {
             return Err(format!(
                 "Overwrite placement completed before its terminal proof; original is preserved at {} and requires review",
                 replacement.path.display()
             ));
         }
         if backup.exists {
-            if !replacement.original.same_object(&backup) {
+            if !replacement.original.same_version(&backup) {
                 return Err(format!(
                     "Interrupted overwrite backup changed and requires review: {}",
                     replacement.path.display()
@@ -1996,9 +1996,9 @@ fn detach_expected_path(
         .map_err(|error| format!("Could not quarantine {}: {error}", path.display()))?;
     crate::fs_util::sync_parent_namespace(path)
         .map_err(|error| format!("Could not sync quarantine rename: {error}"))?;
-    let moved = PathIdentity::observe_deep(quarantine)
+    let moved = observe_with_expected_depth(quarantine, expected)
         .map_err(|error| format!("Could not prove quarantined object: {error}"))?;
-    if expected.same_object(&moved) {
+    if expected.same_version(&moved) {
         return Ok(quarantine.to_path_buf());
     }
 
@@ -3560,6 +3560,48 @@ mod tests {
             resumed.expectations[0].resume.as_ref().unwrap().offset,
             offset
         );
+    }
+
+    #[test]
+    fn overwrite_backup_proof_rejects_same_inode_content_tampering() {
+        let temp = TempDir::new();
+        let _journal = use_test_journal(temp.path().join("journal.json"));
+        let target = temp.dir("target");
+        let source = temp.file("source.txt", "new bytes");
+        let destination = temp.file("target/source.txt", "old bytes");
+        let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
+        let entry =
+            FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+        let spec = transfer_spec("overwrite-tamper", vec![entry], &target);
+        begin(&spec).unwrap();
+        let key = step_key(&spec, 0, &destination);
+        let destination_before = PathIdentity::observe_deep(&destination).unwrap();
+        mark_running(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            destination_before.clone(),
+        )
+        .unwrap();
+        let backup = target.join(".source.txt.cmdr-tmp.backup");
+        prepare_replacement(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            &backup,
+            &destination_before,
+        )
+        .unwrap();
+        crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
+        std::fs::write(&backup, "tampered").unwrap();
+
+        let error = mark_replacement_backed_up(&spec.operation_id, &key).unwrap_err();
+
+        assert!(error.contains("proven original"), "{error}");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "tampered");
+        assert!(!destination.exists());
     }
 
     #[test]

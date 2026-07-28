@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::{CheckpointLayout, CopyMethod, ResumeCheckpoint, TransferState};
 use crate::filesystem_policy::SymlinkPolicy;
+use crate::operation::DurabilityProfile;
 use crate::path_identity::PathIdentity;
 use crate::transfer_tuning::{FastPath, TuningSnapshot, VolumeRule};
 use crate::volume_profile::VolumeProfile;
@@ -55,7 +56,7 @@ impl BackendPlanner {
             ));
         }
         if !input.is_dir
-            && !input.bandwidth_limited
+            && (resume_delta.is_some() || !input.bandwidth_limited)
             && let (Some(source_size), Some(basis_size)) = (input.source_size, input.basis_size)
         {
             let mode = resume_delta.or_else(|| {
@@ -83,6 +84,7 @@ impl BackendPlanner {
             || input.symlink_policy != SymlinkPolicy::Preserve;
         if !input.is_dir
             && input.resume_layout.is_none()
+            && !force_resumable
             && input.sparse_capable
             && input.source_is_sparse
         {
@@ -97,11 +99,12 @@ impl BackendPlanner {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct StageRequest<'a> {
     pub source: &'a Path,
     pub is_dir: bool,
     pub staging: &'a Path,
-    pub progress: &'a TransferState,
+    pub progress: &'a BackendProgress,
     pub base_bytes: u64,
     pub profile: &'a VolumeProfile,
     pub rule: VolumeRule,
@@ -109,6 +112,33 @@ pub(super) struct StageRequest<'a> {
     pub basis: Option<&'a Path>,
     pub resume: Option<&'a ResumeCheckpoint>,
     pub symlink_policy: SymlinkPolicy,
+    pub durability: DurabilityProfile,
+}
+
+pub(super) struct BackendProgress {
+    state: TransferState,
+}
+
+impl BackendProgress {
+    pub(super) fn new(state: TransferState) -> Self {
+        Self { state }
+    }
+
+    fn state(&self) -> &TransferState {
+        &self.state
+    }
+
+    #[cfg(test)]
+    pub(super) fn complete_file(&self, base_bytes: u64, bytes: u64) {
+        let mut progress = crate::lock_util::recover(&self.state);
+        progress.current_file_copied = bytes;
+        progress.copied_bytes = base_bytes.saturating_add(bytes);
+    }
+
+    #[cfg(test)]
+    pub(super) fn request_cancel(&self) {
+        crate::lock_util::recover(&self.state).request_cancel();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +146,7 @@ pub(super) struct StageReceipt {
     pub bytes: u64,
     pub fast_path: FastPath,
     pub artifact: PathIdentity,
+    pub durable: bool,
 }
 
 pub(super) trait CheckpointSink {
@@ -237,7 +268,7 @@ impl NativeCloneBackend for ProductionNativeClone {
                 crate::native_copy::copy_dir_native(
                     request.source,
                     request.staging,
-                    request.progress,
+                    request.progress.state(),
                     request.base_bytes,
                 )?,
                 FastPath::Native,
@@ -246,7 +277,7 @@ impl NativeCloneBackend for ProductionNativeClone {
             let outcome = crate::native_copy::copy_file_native(
                 request.source,
                 request.staging,
-                request.progress,
+                request.progress.state(),
                 request.base_bytes,
                 request.profile.capabilities.clone,
             )?;
@@ -259,7 +290,7 @@ impl NativeCloneBackend for ProductionNativeClone {
                 },
             )
         };
-        receipt(request.staging, bytes, fast_path)
+        receipt(request.staging, bytes, fast_path, request.durability)
     }
 }
 
@@ -317,14 +348,19 @@ impl DeltaBackend for ProductionDelta {
                 basis,
                 destination: staging,
                 mode,
-                state: request.progress,
+                state: request.progress.state(),
                 base_bytes: request.base_bytes,
                 allow_clone_seed: request.profile.capabilities.clone,
                 resume_offset,
             },
             &mut publish,
         )?;
-        receipt(staging, stats.logical_bytes, mode.fast_path())
+        receipt(
+            staging,
+            stats.logical_bytes,
+            mode.fast_path(),
+            request.durability,
+        )
     }
 }
 
@@ -336,10 +372,10 @@ impl SparseBackend for ProductionSparse {
         let bytes = super::copy_file_sparse(
             request.source,
             request.staging,
-            request.progress,
+            request.progress.state(),
             &mut limiter,
         )?;
-        receipt(request.staging, bytes, FastPath::Sparse)
+        receipt(request.staging, bytes, FastPath::Sparse, request.durability)
     }
 }
 
@@ -356,7 +392,7 @@ impl BufferedBackend for ProductionBuffered {
             return match request.symlink_policy {
                 SymlinkPolicy::Preserve => {
                     super::copy_symlink(request.source, request.staging)?;
-                    receipt(request.staging, 0, FastPath::Buffered)
+                    receipt(request.staging, 0, FastPath::Buffered, request.durability)
                 }
                 SymlinkPolicy::Follow => {
                     let followed = std::fs::canonicalize(request.source)?;
@@ -387,7 +423,7 @@ impl BufferedBackend for ProductionBuffered {
                 super::copy_dir_buffered_parallel(
                     request.source,
                     request.staging,
-                    request.progress,
+                    request.progress.state(),
                     workers,
                     request.profile.capabilities.sparse,
                 )
@@ -395,7 +431,7 @@ impl BufferedBackend for ProductionBuffered {
                 super::copy_dir_buffered_with_limiter(
                     request.source,
                     request.staging,
-                    request.progress,
+                    request.progress.state(),
                     &mut limiter,
                     request.profile.capabilities.sparse,
                     request.symlink_policy,
@@ -405,11 +441,11 @@ impl BufferedBackend for ProductionBuffered {
             super::copy_file_buffered_with_limiter(
                 request.source,
                 request.staging,
-                request.progress,
+                request.progress.state(),
                 &mut limiter,
                 request.resume,
                 Some(checkpoints),
-                request.profile.capabilities.sparse,
+                false,
             )?
         };
         receipt(
@@ -420,16 +456,63 @@ impl BufferedBackend for ProductionBuffered {
             } else {
                 FastPath::Buffered
             },
+            request.durability,
         )
     }
 }
 
-fn receipt(staging: &Path, bytes: u64, fast_path: FastPath) -> std::io::Result<StageReceipt> {
+pub(super) fn receipt(
+    staging: &Path,
+    bytes: u64,
+    fast_path: FastPath,
+    durability: DurabilityProfile,
+) -> std::io::Result<StageReceipt> {
+    let before_sync = PathIdentity::observe_deep(staging)?;
+    let (artifact, durable) = if durability.verifies() {
+        sync_staged_artifact(staging)?;
+        let after_sync = PathIdentity::observe_deep(staging)?;
+        if !before_sync.same_binding(&after_sync) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "staging artifact changed while durability was established",
+            ));
+        }
+        (after_sync, true)
+    } else {
+        (before_sync, false)
+    };
     Ok(StageReceipt {
         bytes,
         fast_path,
-        artifact: PathIdentity::observe(staging)?,
+        artifact,
+        durable,
     })
+}
+
+fn sync_staged_artifact(staging: &Path) -> std::io::Result<()> {
+    let mut pending = vec![staging.to_path_buf()];
+    let mut directories = Vec::new();
+    while let Some(path) = pending.pop() {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            directories.push(path.clone());
+            let mut children = std::fs::read_dir(&path)?.collect::<Result<Vec<_>, _>>()?;
+            children.sort_by_key(|entry| entry.file_name());
+            pending.extend(children.into_iter().rev().map(|entry| entry.path()));
+        } else if metadata.is_file() {
+            std::fs::File::open(&path)?.sync_data()?;
+        }
+    }
+    for directory in directories.into_iter().rev() {
+        #[cfg(unix)]
+        std::fs::File::open(&directory)?.sync_all()?;
+        #[cfg(not(unix))]
+        let _ = directory;
+    }
+    crate::fs_util::sync_parent_namespace(staging)
 }
 
 #[cfg(test)]
@@ -500,6 +583,15 @@ mod tests {
             BackendPlanner::select(input).unwrap(),
             BackendPlan::Delta(crate::delta_copy::DeltaMode::Fixed)
         );
+        assert_eq!(
+            BackendPlanner::select(PlanInput {
+                resume_layout: Some(CheckpointLayout::DeltaFixed),
+                bandwidth_limited: true,
+                ..input
+            })
+            .unwrap(),
+            BackendPlan::Delta(crate::delta_copy::DeltaMode::Fixed)
+        );
 
         input.basis_size = None;
         input.delta_capable = false;
@@ -516,6 +608,19 @@ mod tests {
         assert_eq!(
             BackendPlanner::select(input).unwrap_err().kind(),
             std::io::ErrorKind::InvalidData
+        );
+
+        input.resume_layout = None;
+        input.source_size = Some(crate::delta_copy::DELTA_MIN_BYTES);
+        input.basis_size = None;
+        input.delta_capable = false;
+        input.source_is_sparse = true;
+        input.sparse_capable = true;
+        input.resumable_capable = true;
+        input.slow_link = true;
+        assert_eq!(
+            BackendPlanner::select(input).unwrap(),
+            BackendPlan::Buffered
         );
     }
 
