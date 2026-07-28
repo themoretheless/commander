@@ -330,6 +330,8 @@ pub struct Workspace {
     pub shelf: crate::shelf::Shelf,
     /// Persisted directory bookmarks (favorites + quick-jump slots 1..9).
     pub bookmarks: crate::bookmarks::Bookmarks,
+    persistence: std::sync::Arc<dyn crate::persistence::Persist>,
+    bookmark_gate: crate::persistence::StoreGate,
     /// A stashed selection for set-algebra combinations (union/intersect/...).
     pub selection_stash: std::collections::HashSet<PathBuf>,
     /// Atomic owner of the transfer queue, active worker, and per-job history
@@ -444,6 +446,7 @@ impl Workspace {
             [crate::panel::ViewConfig::default(); 2],
             trash,
             free_space,
+            crate::persistence::fs_persist(),
         )
     }
 
@@ -453,14 +456,17 @@ impl Workspace {
         views: [crate::panel::ViewConfig; 2],
         trash: std::sync::Arc<dyn crate::ports::TrashPort>,
         free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+        persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     ) -> Self {
+        let loaded = crate::bookmarks::load_with(persistence.as_ref());
         Self::with_ports_bookmarks_and_views(
             left,
             right,
             views,
             trash,
             free_space,
-            crate::bookmarks::load(),
+            loaded,
+            persistence,
         )
     }
 
@@ -471,6 +477,7 @@ impl Workspace {
         trash: std::sync::Arc<dyn crate::ports::TrashPort>,
         free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
         bookmarks: crate::bookmarks::Bookmarks,
+        persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     ) -> Self {
         Self::with_ports_bookmarks_and_views(
             left,
@@ -478,7 +485,11 @@ impl Workspace {
             [crate::panel::ViewConfig::default(); 2],
             trash,
             free_space,
-            bookmarks,
+            crate::bookmarks::LoadedBookmarks {
+                store: bookmarks,
+                gate: crate::persistence::StoreGate::missing(),
+            },
+            persistence,
         )
     }
 
@@ -488,7 +499,8 @@ impl Workspace {
         views: [crate::panel::ViewConfig; 2],
         trash: std::sync::Arc<dyn crate::ports::TrashPort>,
         free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
-        bookmarks: crate::bookmarks::Bookmarks,
+        bookmarks: crate::bookmarks::LoadedBookmarks,
+        persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     ) -> Self {
         let [left_view, right_view] = views;
         Workspace {
@@ -504,7 +516,9 @@ impl Workspace {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             ui_requests: crate::ui_request::UiRequestQueue::default(),
             shelf: crate::shelf::Shelf::default(),
-            bookmarks,
+            bookmarks: bookmarks.store,
+            persistence,
+            bookmark_gate: bookmarks.gate,
             selection_stash: std::collections::HashSet::new(),
             transfers: transfer_queue::TransferQueueController::default(),
             space_probes: space_probe::SpaceProbeController::default(),
@@ -512,6 +526,20 @@ impl Workspace {
             deletes: delete::DeleteController::new(trash),
             undo: crate::undo::UndoCenter::default(),
             command_capabilities: std::cell::RefCell::new(None),
+        }
+    }
+
+    fn save_bookmarks(&mut self) {
+        match crate::bookmarks::save_with(
+            self.persistence.as_ref(),
+            &self.bookmarks,
+            &mut self.bookmark_gate,
+        ) {
+            Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
+            Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+                crate::persistence::record_durability_warning("Bookmarks", &error);
+            }
+            Err(error) => crate::persistence::record_json_save_failure("Bookmarks", &error),
         }
     }
 
@@ -1013,7 +1041,7 @@ impl Workspace {
                 let dir = self.active_panel_ref().current_path.clone();
                 self.bookmark_dir(dir.clone());
                 self.bookmarks.assign_slot(&dir, n);
-                crate::bookmarks::save(&self.bookmarks);
+                self.save_bookmarks();
             }
             Command::BookmarkCurrentDir => {
                 // Toggle: bookmark the active directory, or un-bookmark it if it
@@ -1024,7 +1052,7 @@ impl Workspace {
                 } else {
                     self.bookmark_dir(dir);
                 }
-                crate::bookmarks::save(&self.bookmarks);
+                self.save_bookmarks();
             }
             Command::ToggleSelect => {
                 let panel = self.active_panel();

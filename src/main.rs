@@ -135,6 +135,7 @@ fn main() -> eframe::Result<()> {
                 std::rc::Rc::new(opener),
                 std::sync::Arc::new(native_effect::NativeTrash),
                 std::sync::Arc::new(native_effect::NativeFreeSpace),
+                persistence::fs_persist(),
             )))
         }),
     )

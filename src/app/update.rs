@@ -288,12 +288,14 @@ impl eframe::App for App {
     /// eframe calls this on exit and on its auto-save interval; persist our
     /// own session snapshot (panel paths, layout, view toggles).
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        match crate::session::save(&self.to_session()) {
+        let session = self.to_session();
+        match crate::session::save_with(self.persistence.as_ref(), &session, &mut self.session_gate)
+        {
             Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
             Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(failure)) => {
                 crate::persistence::record_durability_warning("Session", &failure);
             }
-            Err(error) => crate::persistence::record_save_failure("Session", &error),
+            Err(error) => crate::persistence::record_json_save_failure("Session", &error),
         }
     }
 }

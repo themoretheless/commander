@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 /// Highest assignable quick-jump slot (slots are 1..=9).
 pub const MAX_SLOT: u8 = 9;
+const STORE: crate::persistence::StoreSpec =
+    crate::persistence::StoreSpec::new("commander.bookmarks", 1, 4 * 1024 * 1024);
 
 /// A single bookmarked directory.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -166,26 +168,75 @@ fn store_path() -> PathBuf {
     crate::fs_util::config_dir().join("bookmarks.json")
 }
 
-/// Load the saved bookmarks, or an empty set if absent/corrupt.
-pub fn load() -> Bookmarks {
-    Bookmarks {
-        items: crate::persistence::load_item_store(&store_path(), "Bookmarks"),
+pub(crate) struct LoadedBookmarks {
+    pub store: Bookmarks,
+    pub gate: crate::persistence::StoreGate,
+}
+
+pub(crate) fn load_with(persist: &dyn crate::persistence::Persist) -> LoadedBookmarks {
+    load_at(persist, &store_path())
+}
+
+fn load_at(persist: &dyn crate::persistence::Persist, path: &Path) -> LoadedBookmarks {
+    let loaded = crate::persistence::load_enveloped_items::<Bookmark>(persist, path, STORE);
+    let items = match loaded.value {
+        Some(decoded) => {
+            if decoded.rejected > 0 {
+                crate::persistence::record_recovery(
+                    "Bookmarks",
+                    decoded.items.len(),
+                    decoded.rejected,
+                );
+            }
+            decoded.items
+        }
+        None => {
+            if matches!(
+                loaded.gate.status(),
+                crate::persistence::LoadStatus::Corrupt
+                    | crate::persistence::LoadStatus::FutureVersion
+                    | crate::persistence::LoadStatus::Unreadable
+            ) {
+                crate::persistence::record_unreadable("Bookmarks");
+            }
+            Vec::new()
+        }
+    };
+    LoadedBookmarks {
+        store: Bookmarks { items },
+        gate: loaded.gate,
     }
 }
 
-/// Save the bookmarks atomically (temp file + rename). Returns `false` if
-/// serialization or the atomic write failed, so a caller with UI access can
-/// surface the failure instead of letting it pass silently.
-pub fn save(store: &Bookmarks) -> bool {
-    match serde_json::to_string_pretty(store) {
-        Ok(json) => crate::fs_util::write_atomic(&store_path(), &json),
-        Err(_) => false,
-    }
+pub(crate) fn save_with(
+    persist: &dyn crate::persistence::Persist,
+    store: &Bookmarks,
+    gate: &mut crate::persistence::StoreGate,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::JsonSaveError> {
+    save_at(persist, &store_path(), store, gate)
+}
+
+fn save_at(
+    persist: &dyn crate::persistence::Persist,
+    path: &Path,
+    store: &Bookmarks,
+    gate: &mut crate::persistence::StoreGate,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::JsonSaveError> {
+    crate::persistence::save_enveloped(
+        persist,
+        path,
+        STORE,
+        store,
+        gate,
+        crate::persistence::SaveIntent::Explicit,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::{FsPersist, LoadStatus};
+    use crate::testutil::TempDir;
 
     fn bm() -> Bookmarks {
         let mut b = Bookmarks::default();
@@ -320,5 +371,28 @@ mod tests {
         let mut val = serde_json::json!({ "items": [ { "name": "Code", "path": "/a" } ] });
         let back: Bookmarks = serde_json::from_value(val.take()).unwrap();
         assert_eq!(back.items[0].slot, None);
+    }
+
+    #[test]
+    fn item_recovery_is_store_specific_and_explicit_save_upgrades_it() {
+        let temp = TempDir::new();
+        let path = temp.file(
+            "bookmarks.json",
+            r#"{"items":[{"name":"Code","path":"/code"},{"name":7,"path":false},{"name":"Docs","path":"/docs","slot":2}]}"#,
+        );
+        let persist = FsPersist::default();
+        let original = std::fs::read(&path).unwrap();
+
+        let mut loaded = load_at(&persist, &path);
+
+        assert_eq!(loaded.gate.status(), LoadStatus::Recovered);
+        assert_eq!(loaded.store.items.len(), 2);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        assert!(save_at(&persist, &path, &loaded.store, &mut loaded.gate).is_ok());
+        assert_eq!(loaded.gate.status(), LoadStatus::Current);
+        let reloaded = load_at(&persist, &path);
+        assert_eq!(reloaded.gate.status(), LoadStatus::Current);
+        assert_eq!(reloaded.store, loaded.store);
     }
 }

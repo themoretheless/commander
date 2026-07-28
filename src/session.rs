@@ -5,6 +5,9 @@ use crate::panel::{SortColumn, SortOrder};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+const STORE: crate::persistence::StoreSpec =
+    crate::persistence::StoreSpec::new("commander.session", 1, 8 * 1024 * 1024);
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 pub(crate) struct PersistedLeftView {
     #[serde(rename = "left_sort_col")]
@@ -177,17 +180,55 @@ fn session_path() -> PathBuf {
     crate::fs_util::config_dir().join("session.json")
 }
 
-/// Load the saved session, or None if absent/corrupt.
-pub fn load() -> Option<Session> {
-    crate::persistence::load_json(&session_path(), "Session")
+pub(crate) struct LoadedSession {
+    pub value: Option<Session>,
+    pub gate: crate::persistence::StoreGate,
 }
 
-/// Save through a unique private sibling and one atomic replace. There is no
-/// cross-process lock or CAS: concurrent session writers are last-writer-wins.
-pub fn save(
+pub(crate) fn load_with(persist: &dyn crate::persistence::Persist) -> LoadedSession {
+    load_at(persist, &session_path())
+}
+
+fn load_at(persist: &dyn crate::persistence::Persist, path: &Path) -> LoadedSession {
+    let loaded = crate::persistence::load_enveloped::<Session>(persist, path, STORE);
+    if loaded.value.is_none()
+        && matches!(
+            loaded.gate.status(),
+            crate::persistence::LoadStatus::Corrupt
+                | crate::persistence::LoadStatus::FutureVersion
+                | crate::persistence::LoadStatus::Unreadable
+        )
+    {
+        crate::persistence::record_unreadable("Session");
+    }
+    LoadedSession {
+        value: loaded.value,
+        gate: loaded.gate,
+    }
+}
+
+pub(crate) fn save_with(
+    persist: &dyn crate::persistence::Persist,
     session: &Session,
-) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::PreCommitError> {
-    crate::persistence::save_json_atomic(&session_path(), session)
+    gate: &mut crate::persistence::StoreGate,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::JsonSaveError> {
+    save_at(persist, &session_path(), session, gate)
+}
+
+fn save_at(
+    persist: &dyn crate::persistence::Persist,
+    path: &Path,
+    session: &Session,
+    gate: &mut crate::persistence::StoreGate,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::JsonSaveError> {
+    crate::persistence::save_enveloped(
+        persist,
+        path,
+        STORE,
+        session,
+        gate,
+        crate::persistence::SaveIntent::Automatic,
+    )
 }
 
 #[cfg(test)]
@@ -357,5 +398,33 @@ mod tests {
         let (l, r) = s.sanitized_paths(home.path());
         assert_eq!(l, real); // exists -> kept
         assert_eq!(r, home.path()); // missing -> home
+    }
+
+    #[test]
+    fn strict_session_rejects_partial_payload_and_blocks_automatic_save() {
+        let temp = TempDir::new();
+        let path = temp.path().join("session.json");
+        let session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut value = serde_json::to_value(&session).unwrap();
+        value["ui_scale"] = serde_json::Value::String("large".to_string());
+        let original = serde_json::to_vec_pretty(&value).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        let persist = crate::persistence::FsPersist::default();
+
+        let mut loaded = load_at(&persist, &path);
+
+        assert!(loaded.value.is_none());
+        assert_eq!(
+            loaded.gate.status(),
+            crate::persistence::LoadStatus::Corrupt
+        );
+        let result = save_at(&persist, &path, &session, &mut loaded.gate);
+        assert!(matches!(
+            result,
+            Err(crate::persistence::JsonSaveError::Blocked(
+                crate::persistence::LoadStatus::Corrupt
+            ))
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), original);
     }
 }

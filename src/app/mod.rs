@@ -53,6 +53,8 @@ pub struct App {
     pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
     pub(crate) clipboard: Rc<dyn crate::ports::ClipboardPort>,
     pub(crate) opener: Rc<dyn crate::ports::OpenerPort>,
+    pub(crate) persistence: std::sync::Arc<dyn crate::persistence::Persist>,
+    pub(crate) session_gate: crate::persistence::StoreGate,
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
@@ -514,10 +516,13 @@ impl App {
         opener: Rc<dyn crate::ports::OpenerPort>,
         trash: std::sync::Arc<dyn crate::ports::TrashPort>,
         free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+        persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     ) -> Self {
         let mut startup = crate::measurement::StartupTrace::start();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let session = crate::session::load();
+        let loaded_session = crate::session::load_with(persistence.as_ref());
+        let session_gate = loaded_session.gate;
+        let session = loaded_session.value;
         if let Some(saved) = &session {
             crate::panel::restore_visit_snapshot(&saved.recent_paths, &saved.recent_stats);
         }
@@ -563,7 +568,14 @@ impl App {
             .as_ref()
             .map(crate::session::Session::view_configs)
             .unwrap_or([crate::panel::ViewConfig::default(); 2]);
-        let mut ws = Workspace::with_ports_and_views(left, right, views, trash, free_space);
+        let mut ws = Workspace::with_ports_and_views(
+            left,
+            right,
+            views,
+            trash,
+            free_space,
+            persistence.clone(),
+        );
 
         let ui_scale =
             crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
@@ -596,6 +608,8 @@ impl App {
             context_menu,
             clipboard,
             opener,
+            persistence,
+            session_gate,
             ui_scale,
             theme_mode: mode,
             colors: ThemeColors::for_preferences(mode, accessibility_preferences),
@@ -661,12 +675,14 @@ impl App {
             seed.accessibility_preferences,
         );
         cc.egui_ctx.set_zoom_factor(seed.ui_scale);
+        let persistence = crate::persistence::fs_persist();
         let ws = Workspace::with_ports_and_bookmarks(
             seed.left,
             seed.right,
             trash,
             free_space,
             crate::bookmarks::Bookmarks::default(),
+            persistence.clone(),
         );
         Self {
             ws,
@@ -674,6 +690,8 @@ impl App {
             context_menu,
             clipboard,
             opener,
+            persistence,
+            session_gate: crate::persistence::StoreGate::missing(),
             ui_scale: seed.ui_scale,
             theme_mode: seed.theme_mode,
             colors: ThemeColors::for_preferences(seed.theme_mode, seed.accessibility_preferences),

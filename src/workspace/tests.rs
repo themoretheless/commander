@@ -15,6 +15,33 @@ struct FixedFreeSpacePort {
     relation: crate::ports::VolumeRelation,
 }
 
+struct InjectedPersistence {
+    bytes: Mutex<Vec<u8>>,
+    commits: AtomicUsize,
+}
+
+impl crate::persistence::Persist for InjectedPersistence {
+    fn read(
+        &self,
+        _path: &Path,
+        max_bytes: usize,
+    ) -> Result<crate::persistence::ReadOutcome, crate::persistence::ReadFailure> {
+        let bytes = self.bytes.lock().unwrap().clone();
+        assert!(bytes.len() <= max_bytes);
+        Ok(crate::persistence::ReadOutcome::Present { bytes })
+    }
+
+    fn commit(
+        &self,
+        _path: &Path,
+        bytes: &[u8],
+    ) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::PreCommitError> {
+        self.commits.fetch_add(1, Ordering::Relaxed);
+        *self.bytes.lock().unwrap() = bytes.to_vec();
+        Ok(crate::persistence::AtomicWriteOutcome::Durable)
+    }
+}
+
 impl crate::ports::FreeSpacePort for FixedFreeSpacePort {
     fn probe(&self, _path: &Path) -> crate::ports::SpaceProbeOutcome {
         self.outcome.clone()
@@ -73,6 +100,36 @@ fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
     ws.left.refresh();
     ws.right.refresh();
     ws
+}
+
+#[test]
+fn workspace_uses_the_injected_persistence_for_bookmark_load_and_save() {
+    let left = TempDir::new();
+    let right = TempDir::new();
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(
+            br#"{"items":[{"name":"Injected","path":"/injected","slot":3}]}"#.to_vec(),
+        ),
+        commits: AtomicUsize::new(0),
+    });
+    let mut workspace = Workspace::with_ports_and_views(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+
+    assert_eq!(workspace.bookmarks.items[0].name, "Injected");
+    workspace.bookmarks.add("Saved", "/saved");
+    workspace.save_bookmarks();
+
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    let written: serde_json::Value =
+        serde_json::from_slice(&persistence.bytes.lock().unwrap()).unwrap();
+    assert_eq!(written["store"], "commander.bookmarks");
+    assert_eq!(written["payload"]["items"].as_array().unwrap().len(), 2);
 }
 
 fn test_transfer_spec(operation_id: &str, target: &Path) -> TransferSpec {
