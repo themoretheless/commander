@@ -1,6 +1,6 @@
 #[cfg(any(test, feature = "visual-qa"))]
 use super::contract::{
-    ATTESTATION_SCHEMA, CheckEvidence, CheckStatus, ManualAttestation, ManualCase,
+    ATTESTATION_SCHEMA, AttestationMode, CheckEvidence, CheckStatus, ManualAttestation, ManualCase,
     NativeCapabilities, NativeVerdict, QaSubject, QaSubjectBinding, REQUIRED_MANUAL_CASES,
 };
 use super::contract::{DisplayTopology, PopupPlacement, PopupSize, ScreenPoint, ScreenRect};
@@ -28,17 +28,24 @@ pub fn place_popup(
         .iter()
         .filter(|display| display.frame.is_valid() && display.visible_frame.is_valid())
         .min_by(|left, right| {
-            let left_distance = if left.frame.contains(anchor) {
-                -1.0
-            } else {
-                left.frame.distance_squared(anchor)
+            let containment = |display: &DisplayTopology| {
+                if display.frame.contains_half_open(anchor) {
+                    0_u8
+                } else if display.frame.contains(anchor) {
+                    1
+                } else {
+                    2
+                }
             };
-            let right_distance = if right.frame.contains(anchor) {
-                -1.0
-            } else {
-                right.frame.distance_squared(anchor)
-            };
-            left_distance.total_cmp(&right_distance)
+            containment(left)
+                .cmp(&containment(right))
+                .then_with(|| {
+                    left.frame
+                        .distance_squared(anchor)
+                        .total_cmp(&right.frame.distance_squared(anchor))
+                })
+                .then_with(|| right.main.cmp(&left.main))
+                .then_with(|| left.id.cmp(&right.id))
         })?;
     let visible = display.visible_frame;
     if size.width > visible.width() || size.height > visible.height() {
@@ -62,6 +69,25 @@ pub fn place_popup(
 }
 
 #[cfg(any(test, feature = "visual-qa"))]
+fn valid_topology_entry(display: &DisplayTopology) -> bool {
+    display.frame.is_valid()
+        && display.visible_frame.is_valid()
+        && display.frame.contains_rect(display.visible_frame)
+        && display.backing_scale.is_finite()
+        && display.backing_scale > 0.0
+        && !display.id.trim().is_empty()
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+fn topology_ids_are_unique(displays: &[DisplayTopology]) -> bool {
+    displays.iter().enumerate().all(|(index, display)| {
+        displays[index + 1..]
+            .iter()
+            .all(|other| display.id != other.id)
+    })
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
 pub(super) fn popup_placement_matrix(
     displays: &[DisplayTopology],
     popup_size: Option<PopupSize>,
@@ -75,13 +101,15 @@ pub(super) fn popup_placement_matrix(
     if displays.is_empty() {
         return CheckEvidence::failed("popup_content_rect_matrix", "no NSScreen topology");
     }
+    if !topology_ids_are_unique(displays) {
+        return CheckEvidence::failed(
+            "popup_content_rect_matrix",
+            "NSScreen topology contains duplicate display identifiers",
+        );
+    }
     let mut samples = 0_usize;
     for display in displays {
-        if !display.frame.is_valid()
-            || !display.visible_frame.is_valid()
-            || !display.backing_scale.is_finite()
-            || display.backing_scale < 1.0
-        {
+        if !valid_topology_entry(display) {
             return CheckEvidence::failed(
                 "popup_content_rect_matrix",
                 format!("invalid display geometry: {}", display.id),
@@ -174,6 +202,7 @@ pub(super) fn mixed_scale_topology(displays: &[DisplayTopology]) -> CheckEvidenc
 pub(super) fn attestation_template(subject: &QaSubjectBinding) -> ManualAttestation {
     ManualAttestation {
         schema: ATTESTATION_SCHEMA,
+        mode: AttestationMode::Strict,
         subject: subject.clone(),
         completed_at_unix: 0,
         reviewer: String::new(),
@@ -203,14 +232,27 @@ pub(super) fn validate_attestation(
             ),
         );
     }
+    if attestation.mode != AttestationMode::Strict {
+        return CheckEvidence::failed("manual_attestation", "attestation mode is not strict");
+    }
+    if !valid_commit(&attestation.subject.commit)
+        || !valid_digest(&attestation.subject.binary_blake3)
+        || !valid_digest(&attestation.subject.topology_fingerprint)
+    {
+        return CheckEvidence::failed(
+            "manual_attestation",
+            "subject identity has an invalid commit or digest",
+        );
+    }
     if &attestation.subject != expected {
         return CheckEvidence::failed(
             "manual_attestation",
             "commit, binary digest, or topology fingerprint does not match",
         );
     }
-    if attestation.reviewer.trim().is_empty() {
-        return CheckEvidence::blocked("manual_attestation", "reviewer is empty");
+    let reviewer = attestation.reviewer.trim();
+    if reviewer.is_empty() || reviewer.len() > 200 {
+        return CheckEvidence::failed("manual_attestation", "reviewer must contain 1 to 200 bytes");
     }
     if attestation.cases.len() != REQUIRED_MANUAL_CASES.len() {
         return CheckEvidence::failed(
@@ -238,11 +280,30 @@ pub(super) fn validate_attestation(
             .iter()
             .filter(|case| case.name == required)
             .collect::<Vec<_>>();
-        if matching.len() != 1 || matching[0].status != CheckStatus::Passed {
-            return CheckEvidence::blocked(
+        if matching.len() != 1 {
+            return CheckEvidence::failed(
                 "manual_attestation",
-                format!("{required} is missing, duplicated, or not passed"),
+                format!("{required} is missing or duplicated"),
             );
+        }
+        let case = matching[0];
+        if case.notes.trim().is_empty() || case.notes.len() > 4_096 {
+            return CheckEvidence::failed(
+                "manual_attestation",
+                format!("{required} notes must contain 1 to 4096 bytes"),
+            );
+        }
+        match case.status {
+            CheckStatus::Passed => {}
+            CheckStatus::Failed => {
+                return CheckEvidence::failed("manual_attestation", format!("{required} failed"));
+            }
+            CheckStatus::Blocked | CheckStatus::NotRun => {
+                return CheckEvidence::blocked(
+                    "manual_attestation",
+                    format!("{required} is {:?}", case.status),
+                );
+            }
         }
     }
     CheckEvidence::passed(
@@ -262,8 +323,14 @@ pub(super) fn evaluate_verdict(
     if !subject.worktree_clean {
         reasons.push("worktree is not clean".to_string());
     }
-    if subject.commit == "unknown" {
-        reasons.push("subject commit is unknown".to_string());
+    if !valid_commit(&subject.commit) {
+        reasons.push("subject commit is invalid or unknown".to_string());
+    }
+    if !valid_digest(&subject.binary_blake3) {
+        reasons.push("subject binary digest is invalid".to_string());
+    }
+    if !subject.binary_identity_verified {
+        reasons.push("on-disk executable identity does not match the running process".to_string());
     }
     if !capabilities.release_ready() {
         reasons.push("one or more native capabilities are unavailable".to_string());
@@ -283,7 +350,10 @@ pub(super) fn evaluate_verdict(
         .iter()
         .any(|check| check.status == CheckStatus::Failed)
         || attestation.status == CheckStatus::Failed
-        || subject.commit == "unknown";
+        || !valid_commit(&subject.commit)
+        || !valid_digest(&subject.binary_blake3)
+        || !subject.binary_identity_verified
+        || !subject.worktree_clean;
     (
         if hard_failure {
             NativeVerdict::Failed
@@ -292,6 +362,22 @@ pub(super) fn evaluate_verdict(
         },
         reasons,
     )
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+fn valid_commit(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -360,11 +446,87 @@ mod tests {
     }
 
     #[test]
+    fn popup_selection_is_deterministic_on_boundaries_and_fractional_scale() {
+        let topology = mixed_topology();
+        let size = PopupSize {
+            width: 200.0,
+            height: 100.0,
+        };
+        let horizontal_boundary =
+            place_popup(ScreenPoint { x: 0.0, y: 400.0 }, size, &topology).unwrap();
+        assert_eq!(horizontal_boundary.display_id, "main-2x");
+        let vertical_boundary =
+            place_popup(ScreenPoint { x: 200.0, y: 982.0 }, size, &topology).unwrap();
+        assert_eq!(vertical_boundary.display_id, "upper-2x");
+
+        let fractional = [DisplayTopology {
+            id: "fractional".to_string(),
+            main: true,
+            frame: ScreenRect::new(-800.0, -600.0, 800.0, 600.0),
+            visible_frame: ScreenRect::new(-800.0, -576.0, 800.0, 576.0),
+            backing_scale: 1.5,
+        }];
+        assert_eq!(
+            popup_placement_matrix(&fractional, Some(size)).status,
+            CheckStatus::Passed
+        );
+    }
+
+    #[test]
+    fn popup_rejects_nonfinite_zero_and_invalid_visible_frames() {
+        let topology = mixed_topology();
+        assert!(
+            place_popup(
+                ScreenPoint {
+                    x: f64::NAN,
+                    y: 10.0
+                },
+                PopupSize {
+                    width: 100.0,
+                    height: 100.0
+                },
+                &topology
+            )
+            .is_none()
+        );
+        assert!(
+            place_popup(
+                ScreenPoint { x: 10.0, y: 10.0 },
+                PopupSize {
+                    width: 0.0,
+                    height: 100.0
+                },
+                &topology
+            )
+            .is_none()
+        );
+
+        let invalid = [DisplayTopology {
+            id: "invalid".to_string(),
+            main: true,
+            frame: ScreenRect::new(0.0, 0.0, 100.0, 100.0),
+            visible_frame: ScreenRect::new(-1.0, 0.0, 100.0, 100.0),
+            backing_scale: 2.0,
+        }];
+        assert_eq!(
+            popup_placement_matrix(
+                &invalid,
+                Some(PopupSize {
+                    width: 20.0,
+                    height: 20.0
+                })
+            )
+            .status,
+            CheckStatus::Failed
+        );
+    }
+
+    #[test]
     fn attestation_is_bound_to_subject_and_freshness() {
         let binding = QaSubjectBinding {
-            commit: "abc".to_string(),
-            binary_blake3: "digest".to_string(),
-            topology_fingerprint: "topology".to_string(),
+            commit: "a".repeat(40),
+            binary_blake3: "b".repeat(64),
+            topology_fingerprint: "c".repeat(64),
         };
         let now = 1_000_000;
         let mut attestation = attestation_template(&binding);
@@ -372,11 +534,49 @@ mod tests {
         attestation.reviewer = "Release QA".to_string();
         for case in &mut attestation.cases {
             case.status = CheckStatus::Passed;
+            case.notes = "verified against the bound binary".to_string();
         }
         assert_eq!(
             validate_attestation(&attestation, &binding, now).status,
             CheckStatus::Passed
         );
+        let valid = attestation.clone();
+        let mut wrong_schema = valid.clone();
+        wrong_schema.schema += 1;
+        assert_eq!(
+            validate_attestation(&wrong_schema, &binding, now).status,
+            CheckStatus::Failed
+        );
+        let mut future = valid.clone();
+        future.completed_at_unix = now + FUTURE_CLOCK_TOLERANCE.as_secs() + 1;
+        assert_eq!(
+            validate_attestation(&future, &binding, now).status,
+            CheckStatus::Failed
+        );
+        let mut duplicate = valid.clone();
+        duplicate.cases[1] = duplicate.cases[0].clone();
+        assert_eq!(
+            validate_attestation(&duplicate, &binding, now).status,
+            CheckStatus::Failed
+        );
+        let mut empty_reviewer = valid.clone();
+        empty_reviewer.reviewer.clear();
+        assert_eq!(
+            validate_attestation(&empty_reviewer, &binding, now).status,
+            CheckStatus::Failed
+        );
+        attestation.mode = AttestationMode::Diagnostic;
+        assert_eq!(
+            validate_attestation(&attestation, &binding, now).status,
+            CheckStatus::Failed
+        );
+        attestation.mode = AttestationMode::Strict;
+        attestation.cases[0].notes.clear();
+        assert_eq!(
+            validate_attestation(&attestation, &binding, now).status,
+            CheckStatus::Failed
+        );
+        attestation.cases[0].notes = "verified".to_string();
         attestation.subject.binary_blake3 = "other".to_string();
         assert_eq!(
             validate_attestation(&attestation, &binding, now).status,
@@ -401,10 +601,34 @@ mod tests {
     }
 
     #[test]
+    fn attestation_parser_denies_unknown_fields() {
+        let binding = QaSubjectBinding {
+            commit: "a".repeat(40),
+            binary_blake3: "b".repeat(64),
+            topology_fingerprint: "c".repeat(64),
+        };
+        let mut value = serde_json::to_value(attestation_template(&binding)).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected".to_string(), serde_json::json!(true));
+        assert!(serde_json::from_value::<ManualAttestation>(value).is_err());
+
+        let mut nested = serde_json::to_value(attestation_template(&binding)).unwrap();
+        nested["subject"]["unexpected"] = serde_json::json!("no");
+        assert!(serde_json::from_value::<ManualAttestation>(nested).is_err());
+
+        let mut misspelled = serde_json::to_value(attestation_template(&binding)).unwrap();
+        misspelled["cases"][0]["status"] = serde_json::json!("pass");
+        assert!(serde_json::from_value::<ManualAttestation>(misspelled).is_err());
+    }
+
+    #[test]
     fn release_verdict_fails_closed_for_blocked_checks() {
         let subject = QaSubject {
-            commit: "abc".to_string(),
-            binary_blake3: "digest".to_string(),
+            commit: "a".repeat(40),
+            binary_blake3: "b".repeat(64),
+            binary_identity_verified: true,
             worktree_clean: true,
         };
         let capabilities = NativeCapabilities {
@@ -423,9 +647,10 @@ mod tests {
 
     #[test]
     fn release_verdict_never_accepts_a_non_passed_check() {
-        let subject = QaSubject {
-            commit: "abc".to_string(),
-            binary_blake3: "digest".to_string(),
+        let mut subject = QaSubject {
+            commit: "a".repeat(40),
+            binary_blake3: "b".repeat(64),
+            binary_identity_verified: true,
             worktree_clean: true,
         };
         let capabilities = NativeCapabilities {
@@ -450,5 +675,10 @@ mod tests {
                 expected
             );
         }
+        subject.binary_identity_verified = false;
+        assert_eq!(
+            evaluate_verdict(&capabilities, &subject, &[], &attestation).0,
+            NativeVerdict::Failed
+        );
     }
 }

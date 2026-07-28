@@ -224,6 +224,22 @@ pub fn text_input_state(ctx: &egui::Context) -> TextInputState {
     }
 }
 
+/// Consume one accessibility context-menu request for the exact row node.
+pub fn consume_show_context_menu(ctx: &egui::Context, id: egui::Id) -> bool {
+    let mut requested = false;
+    ctx.input_mut(|input| {
+        input.consume_accesskit_action_requests(id, |request| {
+            if request.action == egui::accesskit::Action::ShowContextMenu {
+                requested = true;
+                true
+            } else {
+                false
+            }
+        });
+    });
+    requested
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyboardRoute {
     Workspace,

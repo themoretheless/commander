@@ -10,23 +10,39 @@ use super::{
 };
 use crate::accessibility::{EscapeRoute, ModalSurface};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ContextMenuRequest {
-    pub(crate) panel: crate::workspace::ActivePanel,
-    pub(crate) path: std::path::PathBuf,
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ContextMenuCandidate {
+    pub(crate) target: crate::ports::ContextMenuTarget,
+    pub(crate) trigger: crate::ports::ContextMenuTrigger,
+    pub(crate) anchor: crate::ports::ContextMenuAnchor,
+    pub(crate) focus_id: egui::Id,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ContextMenuRequest {
+    pub(crate) panel: crate::workspace::ActivePanel,
+    pub(crate) invocation: crate::ports::ContextMenuInvocation,
+    pub(crate) focus_id: egui::Id,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct PendingContextMenu {
     request: ContextMenuRequest,
     render_passes_remaining: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ContextMenuPoll {
     Idle,
     AwaitingPaint,
-    Ready(ContextMenuRequest),
+    Ready(Box<ContextMenuRequest>),
+}
+
+pub(crate) const fn context_menu_owner(
+    _current: crate::workspace::ActivePanel,
+    requested: crate::workspace::ActivePanel,
+) -> crate::workspace::ActivePanel {
+    requested
 }
 
 macro_rules! slot_is_open {
@@ -180,12 +196,21 @@ impl UiState {
     pub(crate) fn queue_context_menu(
         &mut self,
         panel: crate::workspace::ActivePanel,
-        path: std::path::PathBuf,
+        invocation: crate::ports::ContextMenuInvocation,
+        focus_id: egui::Id,
     ) {
         self.pending_context_menu = Some(PendingContextMenu {
-            request: ContextMenuRequest { panel, path },
+            request: ContextMenuRequest {
+                panel,
+                invocation,
+                focus_id,
+            },
             render_passes_remaining: 1,
         });
+    }
+
+    pub(crate) fn cancel_context_menu(&mut self) {
+        self.pending_context_menu = None;
     }
 
     pub(crate) fn poll_context_menu(&mut self) -> ContextMenuPoll {
@@ -200,7 +225,7 @@ impl UiState {
             .pending_context_menu
             .take()
             .expect("pending request exists");
-        ContextMenuPoll::Ready(ready.request)
+        ContextMenuPoll::Ready(Box::new(ready.request))
     }
 }
 
@@ -265,15 +290,82 @@ mod tests {
     fn context_menu_request_waits_for_one_published_frame() {
         let mut state = UiState::default();
         let path = std::path::PathBuf::from("/tmp/context-target");
-        state.queue_context_menu(crate::workspace::ActivePanel::Right, path.clone());
+        let invocation = crate::ports::ContextMenuInvocation {
+            target: crate::ports::ContextMenuTarget {
+                expected: crate::path_identity::PathIdentity::missing(&path),
+                path,
+            },
+            trigger: crate::ports::ContextMenuTrigger::Keyboard,
+            anchor: crate::ports::ContextMenuAnchor::ViewRect(crate::ports::ContextMenuViewRect {
+                min_x: 10.0,
+                min_y: 20.0,
+                max_x: 110.0,
+                max_y: 44.0,
+                native_points_per_ui_point: 1.0,
+            }),
+        };
+        let focus_id = egui::Id::new("context-target");
+        state.queue_context_menu(
+            crate::workspace::ActivePanel::Right,
+            invocation.clone(),
+            focus_id,
+        );
         assert_eq!(state.poll_context_menu(), ContextMenuPoll::AwaitingPaint);
         assert_eq!(
             state.poll_context_menu(),
-            ContextMenuPoll::Ready(ContextMenuRequest {
+            ContextMenuPoll::Ready(Box::new(ContextMenuRequest {
                 panel: crate::workspace::ActivePanel::Right,
-                path,
-            })
+                invocation,
+                focus_id,
+            }))
         );
         assert_eq!(state.poll_context_menu(), ContextMenuPoll::Idle);
+    }
+
+    #[test]
+    fn latest_context_menu_request_wins_and_cancel_retires_it() {
+        let mut state = UiState::default();
+        let make = |path: &str| crate::ports::ContextMenuInvocation {
+            target: crate::ports::ContextMenuTarget {
+                path: path.into(),
+                expected: crate::path_identity::PathIdentity::missing(std::path::Path::new(path)),
+            },
+            trigger: crate::ports::ContextMenuTrigger::Pointer,
+            anchor: crate::ports::ContextMenuAnchor::GlobalScreen(crate::ports::ContextMenuPoint {
+                x: 1.0,
+                y: 2.0,
+            }),
+        };
+        state.queue_context_menu(
+            crate::workspace::ActivePanel::Left,
+            make("/tmp/first"),
+            egui::Id::new("first"),
+        );
+        state.queue_context_menu(
+            crate::workspace::ActivePanel::Right,
+            make("/tmp/latest"),
+            egui::Id::new("latest"),
+        );
+        assert_eq!(state.poll_context_menu(), ContextMenuPoll::AwaitingPaint);
+        state.cancel_context_menu();
+        assert_eq!(state.poll_context_menu(), ContextMenuPoll::Idle);
+    }
+
+    #[test]
+    fn inactive_panel_accessibility_request_becomes_the_context_menu_owner() {
+        assert_eq!(
+            context_menu_owner(
+                crate::workspace::ActivePanel::Left,
+                crate::workspace::ActivePanel::Right
+            ),
+            crate::workspace::ActivePanel::Right
+        );
+        assert_eq!(
+            context_menu_owner(
+                crate::workspace::ActivePanel::Right,
+                crate::workspace::ActivePanel::Left
+            ),
+            crate::workspace::ActivePanel::Left
+        );
     }
 }

@@ -1,7 +1,12 @@
 use crate::ports::{ContextMenuAction, ContextMenuFailure, ContextMenuResult, ContextMenuTarget};
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,7 +49,7 @@ impl TagColor {
 pub enum MenuItemId {
     Open,
     OpenWith,
-    OpenWithApplication(usize),
+    OpenWithApplication(String),
     QuickLook,
     GetInfo,
     Tags,
@@ -53,7 +58,7 @@ pub enum MenuItemId {
     Compress,
     CopyPath,
     Share,
-    ShareService(usize),
+    ShareService(String),
     Reveal,
     MoveToTrash,
 }
@@ -63,7 +68,9 @@ impl MenuItemId {
         let suffix = match self {
             Self::Open => "open".to_string(),
             Self::OpenWith => "open_with".to_string(),
-            Self::OpenWithApplication(index) => format!("open_with.application.{index}"),
+            Self::OpenWithApplication(identity) => {
+                format!("open_with.application.{identity}")
+            }
             Self::QuickLook => "quick_look".to_string(),
             Self::GetInfo => "get_info".to_string(),
             Self::Tags => "tags".to_string(),
@@ -72,7 +79,7 @@ impl MenuItemId {
             Self::Compress => "compress".to_string(),
             Self::CopyPath => "copy_path".to_string(),
             Self::Share => "share".to_string(),
-            Self::ShareService(index) => format!("share.service.{index}"),
+            Self::ShareService(identity) => format!("share.service.{identity}"),
             Self::Reveal => "reveal".to_string(),
             Self::MoveToTrash => "move_to_trash".to_string(),
         };
@@ -160,6 +167,17 @@ impl MenuItem {
             children,
         }
     }
+
+    fn with_key_equivalent(mut self, key: &str, command: bool) -> Self {
+        self.key_equivalent = Some(KeyEquivalent {
+            key: key.to_string(),
+            command,
+            option: false,
+            control: false,
+            shift: false,
+        });
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -193,11 +211,42 @@ pub struct DynamicMenuEntries {
 }
 
 fn clipped_name(name: &str, max_chars: usize) -> String {
-    if name.chars().count() <= max_chars {
+    let graphemes = UnicodeSegmentation::graphemes(name, true).collect::<Vec<_>>();
+    if graphemes.len() <= max_chars {
         return name.to_string();
     }
     let keep = max_chars.saturating_sub(3);
-    format!("{}...", name.chars().take(keep).collect::<String>())
+    format!("{}...", graphemes[..keep].concat())
+}
+
+fn stable_value_id(domain: &str, value: &[u8]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(value);
+    hasher.finalize().to_hex().to_string()
+}
+
+fn stable_path_id(path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        stable_value_id("commander.open-with.path.v1", path.as_os_str().as_bytes())
+    }
+    #[cfg(windows)]
+    {
+        let mut bytes = Vec::new();
+        for unit in path.as_os_str().encode_wide() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        stable_value_id("commander.open-with.path.v1", &bytes)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        stable_value_id(
+            "commander.open-with.path.v1",
+            path.to_string_lossy().as_bytes(),
+        )
+    }
 }
 
 pub fn build_invocation(
@@ -209,17 +258,23 @@ pub fn build_invocation(
     dynamic
         .open_with
         .sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-    dynamic.open_with.dedup();
+    let mut application_paths = BTreeSet::new();
+    dynamic
+        .open_with
+        .retain(|(_, path)| application_paths.insert(path.clone()));
     dynamic.share_services.sort();
-    dynamic.share_services.dedup();
+    let mut service_names = BTreeSet::new();
+    dynamic
+        .share_services
+        .retain(|(_, service)| service_names.insert(service.clone()));
 
     let open_with = dynamic
         .open_with
         .into_iter()
-        .enumerate()
-        .map(|(index, (title, application))| {
+        .map(|(title, application)| {
+            let identity = stable_path_id(&application);
             MenuNode::Item(MenuItem::action(
-                MenuItemId::OpenWithApplication(index),
+                MenuItemId::OpenWithApplication(identity),
                 title,
                 true,
                 MenuIntent::OpenWith { application },
@@ -248,10 +303,10 @@ pub fn build_invocation(
     let share = dynamic
         .share_services
         .into_iter()
-        .enumerate()
-        .map(|(index, (title, service))| {
+        .map(|(title, service)| {
+            let identity = stable_value_id("commander.share.service.v1", service.as_bytes());
             MenuNode::Item(MenuItem::action(
-                MenuItemId::ShareService(index),
+                MenuItemId::ShareService(identity),
                 title,
                 true,
                 MenuIntent::Share { service },
@@ -263,12 +318,10 @@ pub fn build_invocation(
     let compress_accessible_label = format!("Compress \"{display_name}\"");
 
     let tree = vec![
-        MenuNode::Item(MenuItem::action(
-            MenuItemId::Open,
-            "Open",
-            target_available,
-            MenuIntent::Open,
-        )),
+        MenuNode::Item(
+            MenuItem::action(MenuItemId::Open, "Open", target_available, MenuIntent::Open)
+                .with_key_equivalent("o", true),
+        ),
         MenuNode::Item(MenuItem::submenu(
             MenuItemId::OpenWith,
             "Open With",
@@ -510,8 +563,25 @@ mod tests {
         }) {
             assert!(!item.accessible_label.is_empty());
             assert!(item.accessibility_id.starts_with("commander.context_menu."));
-            assert_eq!(item.key_equivalent, None);
         }
+        let open = invocation
+            .tree
+            .iter()
+            .find_map(|node| match node {
+                MenuNode::Item(item) if item.id == MenuItemId::Open => Some(item),
+                _ => None,
+            })
+            .expect("Open");
+        assert_eq!(
+            open.key_equivalent,
+            Some(KeyEquivalent {
+                key: "o".to_string(),
+                command: true,
+                option: false,
+                control: false,
+                shift: false,
+            })
+        );
         let compress = invocation
             .tree
             .iter()
@@ -528,6 +598,32 @@ mod tests {
     }
 
     #[test]
+    fn visual_clipping_preserves_graphemes_while_accessibility_keeps_full_name() {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}";
+        let name = format!("{}{family}-a-long-suffix.txt", "a".repeat(38));
+        let path = std::env::current_dir().unwrap();
+        let invocation = build_invocation(
+            44,
+            ContextMenuTarget {
+                expected: crate::path_identity::PathIdentity::observe(&path).unwrap(),
+                path,
+            },
+            &name,
+            DynamicMenuEntries::default(),
+        );
+        let compress = invocation
+            .tree
+            .iter()
+            .find_map(|node| match node {
+                MenuNode::Item(item) if item.id == MenuItemId::Compress => Some(item),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(compress.accessible_label, format!("Compress \"{name}\""));
+        assert!(compress.title.contains(family));
+    }
+
+    #[test]
     fn dynamic_children_are_sorted_and_tag_state_is_explicit() {
         let invocation = fixture();
         let submenu = |id: MenuItemId| {
@@ -541,7 +637,7 @@ mod tests {
             &open_with[0],
             MenuNode::Item(MenuItem {
                 title,
-                id: MenuItemId::OpenWithApplication(0),
+                id: MenuItemId::OpenWithApplication(_),
                 ..
             }) if title == "Preview"
         ));
@@ -559,6 +655,64 @@ mod tests {
             &share[0],
             MenuNode::Item(MenuItem { title, .. }) if title == "AirDrop"
         ));
+    }
+
+    #[test]
+    fn dynamic_accessibility_ids_survive_unrelated_provider_insertions() {
+        let original = fixture();
+        let mut entries = DynamicMenuEntries {
+            open_with: vec![
+                (
+                    "Earlier".to_string(),
+                    PathBuf::from("/Applications/Earlier.app"),
+                ),
+                (
+                    "Preview".to_string(),
+                    PathBuf::from("/System/Applications/Preview.app"),
+                ),
+                ("Zed".to_string(), PathBuf::from("/Applications/Zed.app")),
+            ],
+            share_services: vec![
+                ("AirDrop".to_string(), "com.apple.share.AirDrop".to_string()),
+                ("Earlier".to_string(), "com.apple.share.AAA".to_string()),
+                ("Mail".to_string(), "com.apple.share.Mail".to_string()),
+            ],
+            ..DynamicMenuEntries::default()
+        };
+        entries.applied_tags.insert("Blue".to_string());
+        entries.tags_available = true;
+        let updated = build_invocation(
+            original.id,
+            original.bound_target.clone(),
+            "a very long but readable fixture filename.txt",
+            entries,
+        );
+        let dynamic_id = |invocation: &MenuInvocation, parent: MenuItemId, title: &str| {
+            invocation
+                .tree
+                .iter()
+                .find_map(|node| match node {
+                    MenuNode::Item(item) if item.id == parent => Some(&item.children),
+                    _ => None,
+                })
+                .and_then(|children| {
+                    children.iter().find_map(|node| match node {
+                        MenuNode::Item(item) if item.title == title => {
+                            Some(item.accessibility_id.clone())
+                        }
+                        _ => None,
+                    })
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            dynamic_id(&original, MenuItemId::OpenWith, "Preview"),
+            dynamic_id(&updated, MenuItemId::OpenWith, "Preview")
+        );
+        assert_eq!(
+            dynamic_id(&original, MenuItemId::Share, "AirDrop"),
+            dynamic_id(&updated, MenuItemId::Share, "AirDrop")
+        );
     }
 
     #[test]
@@ -593,7 +747,7 @@ mod tests {
         let forged = MenuSelection {
             invocation_id: invocation.id,
             bound_target: invocation.bound_target.path.clone(),
-            item_id: MenuItemId::OpenWithApplication(usize::MAX),
+            item_id: MenuItemId::OpenWithApplication("forged".to_string()),
         };
         assert_eq!(
             selection_result(&invocation, Some(forged)),

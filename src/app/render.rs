@@ -4,7 +4,7 @@ use crate::panel::{FacetSet, KindFacet};
 #[derive(Default)]
 pub(crate) struct PanelRenderOutcome {
     pub tree_toggle: bool,
-    pub context_menu_request: Option<std::path::PathBuf>,
+    pub context_menu_request: Option<ui_state::ContextMenuCandidate>,
 }
 
 #[allow(clippy::too_many_arguments)]

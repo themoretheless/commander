@@ -108,13 +108,23 @@ smoke remains green. Synchronous
 `PanelState::navigate_to` listing and the probe-to-listing TOCTOU remain
 explicitly outside this scoped change.
 
+The final native-release adversarial pass adds compile-time Git provenance,
+stale-dirty-build regressions, strict deny-unknown attestation parsing, private
+descriptor-relative artifacts, canonical topology identity, recursive 22-item
+NSMenu inspection with RAII ownership, and the exact-row AccessKit context-menu
+route. The current all-target/all-feature serial result is 979 passing with
+three intentional ignores.
+
 Highest-value next steps, in order:
 
 1. Completed: `minimum_window`, `zoom_200_accessible`, and
    `confirmation_owner` are strict CI matrix gates alongside `desktop_base`.
    Native release QA now binds actual NSMenu introspection, full popup-rectangle
-   placement, exact binary/commit/topology evidence, and a fail-closed human
+   placement, compile-time source identity, current-executable digest, canonical
+   topology evidence, private atomic artifacts, and a fail-closed human
    VoiceOver/popup/multi-monitor attestation without requesting TCC access.
+   File rows expose AccessKit `ShowContextMenu`; the queued exact-row route also
+   works from an inactive pane and publishes focus before AppKit blocks.
 2. Move `PanelState::navigate_to` listing/publication off the UI thread and
    close the probe-to-listing TOCTOU; separately design an `OsStr` plus
    volume-capability-aware naming policy for non-UTF-8, case-sensitivity and

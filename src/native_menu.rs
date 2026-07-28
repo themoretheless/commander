@@ -6,8 +6,9 @@ mod qa;
 pub(crate) use qa::native_qa_renderer_check;
 
 use crate::ports::{
-    ContextMenuAction, ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult,
-    ContextMenuTarget,
+    ContextMenuAction, ContextMenuAnchor, ContextMenuCommand, ContextMenuFailure,
+    ContextMenuInvocation as ContextMenuPresentation, ContextMenuPort, ContextMenuResult,
+    ContextMenuTarget, ContextMenuViewPoint, ContextMenuViewRect,
 };
 use model::{
     DynamicMenuEntries, MenuInvocation, MenuItemState, MenuNode, MenuSelection, build_invocation,
@@ -36,6 +37,54 @@ struct NSPoint {
 struct NSSize {
     width: f64,
     height: f64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct NSRect {
+    origin: NSPoint,
+    size: NSSize,
+}
+
+unsafe fn release_object(object: *mut Object) {
+    let _: () = unsafe { msg_send![object, release] };
+}
+
+struct OwnedObject {
+    object: *mut Object,
+    releaser: unsafe fn(*mut Object),
+}
+
+impl OwnedObject {
+    unsafe fn new(object: *mut Object) -> Option<Self> {
+        (!object.is_null()).then_some(Self {
+            object,
+            releaser: release_object,
+        })
+    }
+
+    fn as_ptr(&self) -> *mut Object {
+        self.object
+    }
+
+    fn into_raw(mut self) -> *mut Object {
+        let object = self.object;
+        self.object = std::ptr::null_mut();
+        object
+    }
+
+    #[cfg(test)]
+    unsafe fn with_releaser(object: *mut Object, releaser: unsafe fn(*mut Object)) -> Self {
+        Self { object, releaser }
+    }
+}
+
+impl Drop for OwnedObject {
+    fn drop(&mut self) {
+        if !self.object.is_null() {
+            unsafe { (self.releaser)(self.object) };
+        }
+    }
 }
 
 struct HandlerState {
@@ -197,39 +246,26 @@ unsafe fn render_menu(
     state: &mut HandlerState,
 ) -> Result<*mut Object, String> {
     let menu: *mut Object = msg_send![class!(NSMenu), new];
-    if menu.is_null() {
+    let Some(menu) = (unsafe { OwnedObject::new(menu) }) else {
         return Err("AppKit could not allocate NSMenu".to_string());
-    }
-    let _: () = msg_send![menu, setAutoenablesItems: NO];
+    };
+    let _: () = msg_send![menu.as_ptr(), setAutoenablesItems: NO];
 
     for node in nodes {
-        let result = match node {
+        match node {
             MenuNode::Separator => {
                 let separator: *mut Object = msg_send![class!(NSMenuItem), separatorItem];
-                let _: () = msg_send![menu, addItem: separator];
-                Ok(())
+                let _: () = msg_send![menu.as_ptr(), addItem: separator];
             }
             MenuNode::Item(item) => {
-                let title = match unsafe { nsstring(&item.title) } {
-                    Ok(title) => title,
-                    Err(error) => {
-                        let _: () = msg_send![menu, release];
-                        return Err(error);
-                    }
-                };
-                let key = match unsafe {
+                let title = unsafe { nsstring(&item.title) }?;
+                let key = unsafe {
                     nsstring(
                         item.key_equivalent
                             .as_ref()
                             .map_or("", |equivalent| equivalent.key.as_str()),
                     )
-                } {
-                    Ok(key) => key,
-                    Err(error) => {
-                        let _: () = msg_send![menu, release];
-                        return Err(error);
-                    }
-                };
+                }?;
                 let action = if item.intent.is_some() {
                     sel!(actionSelect:)
                 } else {
@@ -241,69 +277,58 @@ unsafe fn render_menu(
                     action: action
                     keyEquivalent: key
                 ];
-                if menu_item.is_null() {
-                    Err("AppKit could not allocate NSMenuItem".to_string())
-                } else {
-                    let _: () = msg_send![menu_item, setTarget: handler];
-                    let enabled = if item.enabled { YES } else { NO };
-                    let _: () = msg_send![menu_item, setEnabled: enabled];
-                    if item.state == MenuItemState::On {
-                        let _: () = msg_send![menu_item, setState: 1_isize];
-                    }
-                    if let Ok(label) = unsafe { nsstring(&item.accessible_label) } {
-                        let responds: bool =
-                            msg_send![menu_item, respondsToSelector: sel!(setAccessibilityLabel:)];
-                        if responds {
-                            let _: () = msg_send![menu_item, setAccessibilityLabel: label];
-                        }
-                    }
-                    if let Ok(identifier) = unsafe { nsstring(&item.accessibility_id) } {
-                        let responds: bool = msg_send![
-                            menu_item,
-                            respondsToSelector: sel!(setAccessibilityIdentifier:)
-                        ];
-                        if responds {
-                            let _: () =
-                                msg_send![menu_item, setAccessibilityIdentifier: identifier];
-                        }
-                    }
-                    let mask = item
-                        .key_equivalent
-                        .as_ref()
-                        .map_or(0, key_equivalent_modifier_mask);
-                    let _: () = msg_send![menu_item, setKeyEquivalentModifierMask: mask];
-                    if item.intent.is_some() {
-                        let index = state.item_ids.len();
-                        state.item_ids.push(item.id.clone());
-                        let represented: *mut Object =
-                            msg_send![class!(NSNumber), numberWithUnsignedInteger: index];
-                        let _: () = msg_send![menu_item, setRepresentedObject: represented];
-                    }
-                    if !item.children.is_empty() {
-                        match unsafe { render_menu(&item.children, handler, state) } {
-                            Ok(submenu) => {
-                                let _: () = msg_send![menu_item, setSubmenu: submenu];
-                                let _: () = msg_send![submenu, release];
-                            }
-                            Err(error) => {
-                                let _: () = msg_send![menu_item, release];
-                                return Err(error);
-                            }
-                        }
-                    }
-                    let _: () = msg_send![menu, addItem: menu_item];
-                    // NSMenu retains inserted items; balance alloc/init here.
-                    let _: () = msg_send![menu_item, release];
-                    Ok(())
+                let menu_item = unsafe { OwnedObject::new(menu_item) }
+                    .ok_or_else(|| "AppKit could not allocate NSMenuItem".to_string())?;
+                let _: () = msg_send![menu_item.as_ptr(), setTarget: handler];
+                let enabled = if item.enabled { YES } else { NO };
+                let _: () = msg_send![menu_item.as_ptr(), setEnabled: enabled];
+                if item.state == MenuItemState::On {
+                    let _: () = msg_send![menu_item.as_ptr(), setState: 1_isize];
                 }
+                if let Ok(label) = unsafe { nsstring(&item.accessible_label) } {
+                    let responds: bool = msg_send![
+                        menu_item.as_ptr(),
+                        respondsToSelector: sel!(setAccessibilityLabel:)
+                    ];
+                    if responds {
+                        let _: () = msg_send![menu_item.as_ptr(), setAccessibilityLabel: label];
+                    }
+                }
+                if let Ok(identifier) = unsafe { nsstring(&item.accessibility_id) } {
+                    let responds: bool = msg_send![
+                        menu_item.as_ptr(),
+                        respondsToSelector: sel!(setAccessibilityIdentifier:)
+                    ];
+                    if responds {
+                        let _: () = msg_send![
+                            menu_item.as_ptr(),
+                            setAccessibilityIdentifier: identifier
+                        ];
+                    }
+                }
+                let mask = item
+                    .key_equivalent
+                    .as_ref()
+                    .map_or(0, key_equivalent_modifier_mask);
+                let _: () = msg_send![menu_item.as_ptr(), setKeyEquivalentModifierMask: mask];
+                if item.intent.is_some() {
+                    let index = state.item_ids.len();
+                    state.item_ids.push(item.id.clone());
+                    let represented: *mut Object =
+                        msg_send![class!(NSNumber), numberWithUnsignedInteger: index];
+                    let _: () = msg_send![menu_item.as_ptr(), setRepresentedObject: represented];
+                }
+                if !item.children.is_empty() {
+                    let submenu = unsafe { render_menu(&item.children, handler, state) }?;
+                    let submenu = unsafe { OwnedObject::new(submenu) }
+                        .ok_or_else(|| "AppKit returned a null submenu".to_string())?;
+                    let _: () = msg_send![menu_item.as_ptr(), setSubmenu: submenu.as_ptr()];
+                }
+                let _: () = msg_send![menu.as_ptr(), addItem: menu_item.as_ptr()];
             }
-        };
-        if let Err(error) = result {
-            let _: () = msg_send![menu, release];
-            return Err(error);
         }
     }
-    Ok(menu)
+    Ok(menu.into_raw())
 }
 
 fn key_equivalent_modifier_mask(equivalent: &model::KeyEquivalent) -> usize {
@@ -443,8 +468,8 @@ impl MacOsContextMenu {
 }
 
 impl ContextMenuPort for MacOsContextMenu {
-    fn show_context_menu(&self, path: &Path) -> ContextMenuResult {
-        show_native(path)
+    fn show_context_menu(&self, invocation: &ContextMenuPresentation) -> ContextMenuResult {
+        show_native(invocation)
     }
 
     fn perform_deferred_action(&self, action: &ContextMenuAction) -> ContextMenuResult {
@@ -487,7 +512,88 @@ fn validate_action_target(target: &ContextMenuTarget) -> Result<(), ContextMenuF
     }
 }
 
-fn show_native(path: &Path) -> ContextMenuResult {
+fn view_anchor(rect: ContextMenuViewRect, view_height: f64) -> Option<NSPoint> {
+    if ![
+        rect.min_x,
+        rect.min_y,
+        rect.max_x,
+        rect.max_y,
+        rect.native_points_per_ui_point,
+        view_height,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || rect.max_x <= rect.min_x
+        || rect.max_y <= rect.min_y
+        || rect.native_points_per_ui_point <= 0.0
+        || view_height <= 0.0
+    {
+        return None;
+    }
+    let scale = rect.native_points_per_ui_point;
+    let inset = ((rect.max_x - rect.min_x) / 2.0).min(24.0);
+    let point = NSPoint {
+        x: (rect.min_x + inset) * scale,
+        y: view_height - rect.max_y * scale,
+    };
+    (point.x.is_finite() && point.y.is_finite()).then_some(point)
+}
+
+fn view_point_anchor(point: ContextMenuViewPoint, view_height: f64) -> Option<NSPoint> {
+    if ![
+        point.x,
+        point.y,
+        point.native_points_per_ui_point,
+        view_height,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || point.native_points_per_ui_point <= 0.0
+        || view_height <= 0.0
+    {
+        return None;
+    }
+    let converted = NSPoint {
+        x: point.x * point.native_points_per_ui_point,
+        y: view_height - point.y * point.native_points_per_ui_point,
+    };
+    (converted.x.is_finite() && converted.y.is_finite()).then_some(converted)
+}
+
+unsafe fn global_anchor(anchor: ContextMenuAnchor) -> Option<NSPoint> {
+    match anchor {
+        ContextMenuAnchor::GlobalScreen(point) if point.x.is_finite() && point.y.is_finite() => {
+            return Some(NSPoint {
+                x: point.x,
+                y: point.y,
+            });
+        }
+        ContextMenuAnchor::GlobalScreen(_) => return None,
+        ContextMenuAnchor::ViewPoint(_) | ContextMenuAnchor::ViewRect(_) => {}
+    }
+
+    let application: *mut Object = unsafe { msg_send![class!(NSApplication), sharedApplication] };
+    let window: *mut Object = unsafe { msg_send![application, keyWindow] };
+    if window.is_null() {
+        return None;
+    }
+    let view: *mut Object = unsafe { msg_send![window, contentView] };
+    if view.is_null() {
+        return None;
+    }
+    let bounds: NSRect = unsafe { msg_send![view, bounds] };
+    let point_in_view = match anchor {
+        ContextMenuAnchor::ViewPoint(point) => view_point_anchor(point, bounds.size.height)?,
+        ContextMenuAnchor::ViewRect(rect) => view_anchor(rect, bounds.size.height)?,
+        ContextMenuAnchor::GlobalScreen(_) => unreachable!(),
+    };
+    let point_in_window: NSPoint = unsafe {
+        msg_send![view, convertPoint: point_in_view toView: std::ptr::null_mut::<Object>()]
+    };
+    Some(unsafe { msg_send![window, convertPointToScreen: point_in_window] })
+}
+
+fn show_native(presentation: &ContextMenuPresentation) -> ContextMenuResult {
     if !is_main_thread() {
         return ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired);
     }
@@ -504,28 +610,20 @@ fn show_native(path: &Path) -> ContextMenuResult {
 
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-        // Capture the invocation anchor before LaunchServices, tags, or sharing
-        // service discovery can delay tracking or let the pointer cross screens.
-        let raw_location: NSPoint = msg_send![class!(NSEvent), mouseLocation];
-        let expected = match crate::path_identity::PathIdentity::observe(path) {
-            Ok(identity) if identity.exists => identity,
-            Ok(_) => {
-                let _: () = msg_send![pool, drain];
-                return ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation);
-            }
-            Err(error) => {
-                let _: () = msg_send![pool, drain];
-                return ContextMenuResult::Failed(ContextMenuFailure::TargetUnavailable {
-                    message: error.to_string(),
-                });
-            }
+        let Some(invocation_anchor) = global_anchor(presentation.anchor) else {
+            let _: () = msg_send![pool, drain];
+            return ContextMenuResult::Unsupported {
+                reason: "AppKit could not resolve the captured context-menu anchor".to_string(),
+            };
         };
+        if let Err(failure) = validate_action_target(&presentation.target) {
+            let _: () = msg_send![pool, drain];
+            return ContextMenuResult::Failed(failure);
+        }
+        let path = &presentation.target.path;
         let invocation = build_invocation(
             next_invocation_id(),
-            ContextMenuTarget {
-                path: path.to_path_buf(),
-                expected,
-            },
+            presentation.target.clone(),
             &display_name(path),
             dynamic_entries(path),
         );
@@ -554,8 +652,8 @@ fn show_native(path: &Path) -> ContextMenuResult {
         let topology = crate::native_release_qa::capture_display_topology();
         let Some(placement) = crate::native_release_qa::place_popup(
             crate::native_release_qa::ScreenPoint {
-                x: raw_location.x,
-                y: raw_location.y,
+                x: invocation_anchor.x,
+                y: invocation_anchor.y,
             },
             crate::native_release_qa::PopupSize {
                 width: menu_size.width,
@@ -689,6 +787,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn owned_object_releases_on_drop_but_not_after_transfer() {
+        static RELEASES: AtomicU64 = AtomicU64::new(0);
+
+        unsafe fn count_release(_object: *mut Object) {
+            RELEASES.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let object = std::ptr::NonNull::<Object>::dangling().as_ptr();
+        RELEASES.store(0, Ordering::Relaxed);
+        drop(unsafe { OwnedObject::with_releaser(object, count_release) });
+        assert_eq!(RELEASES.load(Ordering::Relaxed), 1);
+
+        let transferred = unsafe { OwnedObject::with_releaser(object, count_release) }.into_raw();
+        assert_eq!(transferred, object);
+        assert_eq!(RELEASES.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn owned_objects_release_every_parent_scope_on_nested_error() {
+        static RELEASES: AtomicU64 = AtomicU64::new(0);
+
+        unsafe fn count_release(_object: *mut Object) {
+            RELEASES.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn fail_like_recursive_render(
+            object: *mut Object,
+            releaser: unsafe fn(*mut Object),
+        ) -> Result<(), ()> {
+            let _menu = unsafe { OwnedObject::with_releaser(object, releaser) };
+            let _menu_item = unsafe { OwnedObject::with_releaser(object, releaser) };
+            Err(())
+        }
+
+        let object = std::ptr::NonNull::<Object>::dangling().as_ptr();
+        RELEASES.store(0, Ordering::Relaxed);
+        assert_eq!(fail_like_recursive_render(object, count_release), Err(()));
+        assert_eq!(RELEASES.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
     fn accepted_non_mutating_launch_does_not_request_refresh() {
         assert_eq!(
             reduce_launch_result(ContextMenuCommand::QuickLook, Ok::<(), std::io::Error>(())),
@@ -730,5 +869,46 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn keyboard_anchor_converts_top_left_ui_coordinates_to_appkit_points() {
+        let anchor = view_anchor(
+            ContextMenuViewRect {
+                min_x: 10.0,
+                min_y: 20.0,
+                max_x: 110.0,
+                max_y: 44.0,
+                native_points_per_ui_point: 2.0,
+            },
+            1_000.0,
+        )
+        .unwrap();
+        assert_eq!(anchor.x, 68.0);
+        assert_eq!(anchor.y, 912.0);
+        assert!(
+            view_anchor(
+                ContextMenuViewRect {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 0.0,
+                    max_y: 24.0,
+                    native_points_per_ui_point: 1.0,
+                },
+                500.0
+            )
+            .is_none()
+        );
+        let pointer = view_point_anchor(
+            ContextMenuViewPoint {
+                x: 10.0,
+                y: 20.0,
+                native_points_per_ui_point: 2.0,
+            },
+            1_000.0,
+        )
+        .unwrap();
+        assert_eq!(pointer.x, 20.0);
+        assert_eq!(pointer.y, 960.0);
     }
 }

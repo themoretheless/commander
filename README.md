@@ -350,7 +350,7 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
   retire, without growing scheduler freshness state. The dialog keeps stable
   one-line status geometry and a polite accessibility live region.
 
-The full serial suite currently passes 964 tests with three intentional
+The full serial suite currently passes 979 tests with three intentional
 manual/performance harnesses ignored. Native release QA now records automated
 checks and blocks until its permission-bound human attestation is complete.
 The next high-value architecture work is moving `PanelState::navigate_to`
@@ -406,22 +406,33 @@ cargo run --features visual-qa -- --native-release-qa diagnostic --output target
 cargo run --features visual-qa -- --native-release-qa strict --output target/native-release-qa --attestation path/to/attestation.json
 ```
 
-Diagnostic mode never opens a TCC prompt. It records the exact Git commit,
-current executable BLAKE3, worktree state, macOS build, existing WindowServer,
-Accessibility, Screen Recording, and VoiceOver capability state, full
-`NSScreen` topology, and its fingerprint. It renders the declarative menu into
-an actual `NSMenu`, then compares titles, stable accessibility identifiers,
-full labels, enabled/state/submenu/shortcut metadata and obtains the real menu
-content size. The same pure placement function used by production verifies
-that the full top-left-anchored menu rectangle fits the `visibleFrame` at the
-center and four corners of every detected display, including negative
-coordinates and mixed backing scales. Oversized menus fail instead of being
-reported as unclipped.
+Diagnostic mode never opens a TCC prompt. `build.rs` embeds the source commit
+and dirty bit while watching Git metadata plus every tracked package file.
+Runtime evidence ignores `COMMANDER_QA_COMMIT`/`GITHUB_SHA`, verifies that
+embedded identity against the exact clean source checkout, and hashes the
+current executable with BLAKE3. On macOS it additionally compares the running
+process's kernel CDHash with the strictly verified on-disk code signature, so a
+replaced `current_exe` path cannot pass as the loaded binary. It also records
+the macOS build, existing WindowServer, Accessibility, Screen Recording, and
+VoiceOver capability state, full `NSScreen` topology, and a canonical
+order-independent fingerprint. It renders the declarative menu into an actual
+`NSMenu`, then recursively compares all 22 items and separators: titles, stable
+accessibility identifiers, full labels, enabled/state/submenu/shortcut
+metadata, targets, selectors, and represented objects. The same pure placement
+function used by production verifies that the full top-left-anchored menu
+rectangle fits the `visibleFrame` at the center and four corners of every
+detected display, including negative coordinates and mixed backing scales.
+Oversized menus fail instead of being reported as unclipped.
 
 Speech quality, VoiceOver task navigation, separate AppKit popup pixels,
 Escape focus return, and real mixed-display behavior remain permission-bound
-human checks. Diagnostic output includes an exact-subject attestation template;
-the checked-in structural references are
+human checks. Diagnostic output includes an exact-subject attestation template.
+The output directory is private (`0700`), fixed-name JSON files are atomically
+replaced through a held no-follow directory descriptor, and files are `0600`;
+symlink, non-regular, oversized, corrupt, and unknown-field input fails closed.
+Evidence schema v4 and attestation schema v2 bind strict mode, commit,
+executable digest, topology, case set, reviewer, notes, and timestamp. The
+checked-in structural references are
 [`qa/native-release-attestation.schema.json`](qa/native-release-attestation.schema.json)
 and
 [`qa/native-release-attestation.template.json`](qa/native-release-attestation.template.json).
@@ -430,11 +441,11 @@ native capabilities, all automated checks, and all five human cases passed
 within seven days. Denied, blocked, `not_run`, stale, mismatched, malformed, or
 missing evidence exits nonzero.
 
-On the 2026-07-28 implementation host, actual NSMenu introspection and all 15
-full-rectangle placement probes passed on three displays (1x at negative x,
-2x main, and 2x above). Accessibility and Screen Recording were denied and
-VoiceOver was not running, so diagnostic evidence correctly reported
-`blocked`, and strict mode returned nonzero. No permission prompt was shown.
+On the 2026-07-28 implementation host, actual 22-item NSMenu introspection and
+all 15 full-rectangle placement probes passed on three displays (1x at negative
+x, 2x main, and 2x above). Accessibility and Screen Recording were denied and
+VoiceOver was not running, so evidence remained non-passing and strict mode
+returned nonzero. No permission prompt was shown.
 
 The production WGPU presentation path remains in the normal application. It is
 not used for automated readback: on the tested Metal host, eframe 0.35 queued
@@ -446,7 +457,9 @@ as an unsupported capability.
 Manual release check:
 
 - Complete the primary two-pane journey with VoiceOver.
-- Open and navigate the focused row's AppKit menu without a pointer.
+- Invoke the focused row's AccessKit `ShowContextMenu` action with
+  VoiceOver-Shift-M, including a row in the inactive pane, then navigate the
+  resulting AppKit menu without a pointer.
 - Verify separate popup pixels and all submenus at display edges.
 - Dismiss with Escape and verify focus returns to the exact row.
 - Repeat placement on the attested mixed 1x/2x topology.

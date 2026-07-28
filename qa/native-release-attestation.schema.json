@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schema",
+    "mode",
     "subject",
     "completed_at_unix",
     "reviewer",
@@ -13,7 +14,10 @@
   ],
   "properties": {
     "schema": {
-      "const": 1
+      "const": 2
+    },
+    "mode": {
+      "const": "strict"
     },
     "subject": {
       "type": "object",
@@ -26,7 +30,7 @@
       "properties": {
         "commit": {
           "type": "string",
-          "minLength": 7
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
         },
         "binary_blake3": {
           "type": "string",
@@ -43,7 +47,9 @@
       "minimum": 0
     },
     "reviewer": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
     },
     "cases": {
       "type": "array",
@@ -77,7 +83,9 @@
             ]
           },
           "notes": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
           }
         }
       }

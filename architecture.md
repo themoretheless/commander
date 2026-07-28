@@ -956,27 +956,41 @@ former thread-local path/result state, prevents callbacks from mutating files
 or launching services, balances owned AppKit menu objects, and preserves
 pathname bytes through NSURL filesystem representations.
 
-`native_release_qa` is a narrow facade over four owners: `contract` defines
+`native_release_qa` is a narrow facade over six owners: `contract` defines
 evidence types, `policy` owns pure placement/attestation/verdict rules,
-`macos_probe` reads already-granted capabilities and `NSScreen` topology, and
-`artifact` binds and writes release evidence. The production AppKit bridge
-captures the invocation point and topology before dynamic provider discovery,
-reads actual `NSMenu.size` after rendering, and asks the same pure policy for a
+`macos_probe` reads already-granted capabilities and `NSScreen` topology,
+`identity` owns compile-time build provenance plus canonical topology
+fingerprints, `secure_artifact` owns bounded no-follow reads and private atomic
+writes, and `artifact` only orchestrates evidence assembly. `build.rs` watches
+Git HEAD/index/ref and every tracked package file, so a dirty build cannot
+become an apparently clean stale binary after its source edit is reverted.
+Runtime environment commit hints are not trusted. The subject also requires
+the current process's kernel CDHash to match a strictly verified code signature
+for the exact file whose BLAKE3 is recorded.
+
+The production AppKit bridge captures the exact pointer or row anchor during
+the input frame, reads actual `NSMenu.size` after dynamic provider discovery,
+refreshes display topology at show time, and asks the same pure policy for a
 top-left placement whose complete downward-growing content rectangle fits one
-`visibleFrame`. Oversized menus fail closed. Secondary click and Shift-F10
-store the exact panel/path in `UiState`; cursor/focus is applied and painted,
-an intervening frame publishes the new AccessKit tree, and only the following
-frame may start synchronous AppKit tracking. Directory rows no longer publish
-a false `expanded=false` state.
+`visibleFrame`. Oversized menus fail closed. Secondary click, Shift-F10, and
+AccessKit `ShowContextMenu` store the exact listing identity, trigger, anchor,
+pane, and row focus in `UiState`; an AX request activates its pane and publishes
+the new cursor/focus tree before synchronous AppKit tracking. Latest-wins
+replacement, modal/window-focus cancellation, and post-tracking focus return
+are reducer contracts. Directory rows no longer publish a false
+`expanded=false` state.
 
 The automated framebuffer still excludes AppKit's separate popup and window
 chrome. Actual `NSMenu` model/renderer introspection and full-rectangle
 center/corner placement are automated without TCC. Popup pixels, VoiceOver
 speech and task navigation, Escape focus return, and real multi-monitor
 interaction are human checks bound to the exact commit, executable BLAKE3 and
-topology fingerprint. Strict policy rejects missing permissions, missing or
-stale attestation, `not_run`, mismatches and blocked checks; diagnostic mode
-records them without prompting or claiming pass.
+topology fingerprint. Strict policy rejects dirty or mismatched builds, unknown
+JSON fields, missing/duplicate/extra cases, missing permissions, empty review
+fields, stale/future attestation, `not_run`, mismatches and blocked checks.
+Diagnostic mode records them without prompting or claiming pass. Evidence and
+attestation files use private descriptor-relative atomic writes; path symlinks
+and non-regular inputs are rejected.
 The shipping renderer remains WGPU; its eframe 0.35 Metal screenshot readback
 is a manual boundary because external `Device::poll` attempts can deadlock the
 renderer/event-loop ownership. A missing screenshot event is a test failure,

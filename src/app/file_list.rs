@@ -1,5 +1,53 @@
 use super::*;
 
+fn context_menu_candidate(
+    entry: &crate::panel::FileEntry,
+    trigger: crate::ports::ContextMenuTrigger,
+    row_rect: egui::Rect,
+    response: &egui::Response,
+) -> Option<ui_state::ContextMenuCandidate> {
+    let crate::panel::ListingIdentity::Captured(expected) = &entry.identity else {
+        return None;
+    };
+    // AppKit converts this anchor through the full content view. Using the
+    // viewport origin keeps egui and AppKit coordinates aligned when a safe
+    // area changes the narrower content rect.
+    let origin = response.ctx.input(|input| input.viewport_rect().min);
+    let relative = row_rect.translate(-origin.to_vec2());
+    let scale = f64::from(response.ctx.zoom_factor());
+    let anchor = match trigger {
+        crate::ports::ContextMenuTrigger::Pointer => {
+            let point = response
+                .interact_pointer_pos()
+                .unwrap_or_else(|| row_rect.center())
+                - origin.to_vec2();
+            crate::ports::ContextMenuAnchor::ViewPoint(crate::ports::ContextMenuViewPoint {
+                x: f64::from(point.x),
+                y: f64::from(point.y),
+                native_points_per_ui_point: scale,
+            })
+        }
+        crate::ports::ContextMenuTrigger::Keyboard => {
+            crate::ports::ContextMenuAnchor::ViewRect(crate::ports::ContextMenuViewRect {
+                min_x: f64::from(relative.min.x),
+                min_y: f64::from(relative.min.y),
+                max_x: f64::from(relative.max.x),
+                max_y: f64::from(relative.max.y),
+                native_points_per_ui_point: scale,
+            })
+        }
+    };
+    Some(ui_state::ContextMenuCandidate {
+        target: crate::ports::ContextMenuTarget {
+            path: entry.path.clone(),
+            expected: expected.clone(),
+        },
+        trigger,
+        anchor,
+        focus_id: response.id,
+    })
+}
+
 impl App {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_file_list(
@@ -14,14 +62,16 @@ impl App {
         dragging: bool,
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
-    ) -> Option<std::path::PathBuf> {
-        let mut context_menu_request = (is_active
+    ) -> Option<ui_state::ContextMenuCandidate> {
+        let keyboard_context_menu_requested = is_active
             && ui.is_enabled()
+            && crate::accessibility::text_input_state(ui.ctx())
+                .mode()
+                .is_none()
             && ui
                 .ctx()
-                .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)))
-        .then(|| panel.cursor_entry().map(|entry| entry.path.clone()))
-        .flatten();
+                .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
+        let mut context_menu_request = None;
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
@@ -310,12 +360,17 @@ impl App {
                     ui.ctx().accesskit_node_builder(row_resp.id, |node| {
                         node.set_role(egui::accesskit::Role::Row);
                         node.set_selected(semantics.selected);
+                        if ui.is_enabled() {
+                            node.add_action(egui::accesskit::Action::ShowContextMenu);
+                        }
                         if let Some(expanded) = semantics.expanded {
                             node.set_expanded(expanded);
                         }
                     });
+                    let accesskit_context_menu_requested = ui.is_enabled()
+                        && crate::accessibility::consume_show_context_menu(ui.ctx(), row_resp.id);
                     #[cfg(feature = "visual-qa")]
-                    if panel_side == "left" && row_resp.hovered() {
+                    if panel_side == "left" && (is_cursor || idx == first_visible) {
                         crate::visual_qa::record_response(
                             ui.ctx(),
                             crate::visual_qa::ProbeId::LeftRow,
@@ -588,10 +643,28 @@ impl App {
                         }
                     });
 
+                    if (keyboard_context_menu_requested && is_cursor)
+                        || accesskit_context_menu_requested
+                    {
+                        row_resp.request_focus();
+                        pending_cursor = Some(row_cursor);
+                        context_menu_request = context_menu_candidate(
+                            entry,
+                            crate::ports::ContextMenuTrigger::Keyboard,
+                            full_rect,
+                            &row_resp,
+                        );
+                    }
+
                     if row_resp.secondary_clicked() {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
-                        context_menu_request = Some(entry.path.clone());
+                        context_menu_request = context_menu_candidate(
+                            entry,
+                            crate::ports::ContextMenuTrigger::Pointer,
+                            full_rect,
+                            &row_resp,
+                        );
                     }
 
                     if row_resp.double_clicked() {

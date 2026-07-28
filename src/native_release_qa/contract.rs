@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[cfg(feature = "visual-qa")]
-pub(super) const EVIDENCE_SCHEMA: u32 = 2;
+pub(super) const EVIDENCE_SCHEMA: u32 = 4;
 #[cfg(any(test, feature = "visual-qa"))]
-pub(super) const ATTESTATION_SCHEMA: u32 = 1;
+pub(super) const ATTESTATION_SCHEMA: u32 = 2;
 #[cfg(any(test, feature = "visual-qa"))]
 pub(super) const REQUIRED_MANUAL_CASES: [&str; 5] = [
     "voiceover_primary_journey",
@@ -120,6 +120,13 @@ impl ScreenRect {
             && point.y <= self.max_y
     }
 
+    pub(super) fn contains_half_open(self, point: ScreenPoint) -> bool {
+        point.x >= self.min_x
+            && point.x < self.max_x
+            && point.y >= self.min_y
+            && point.y < self.max_y
+    }
+
     pub(super) fn contains_rect(self, rect: Self) -> bool {
         rect.is_valid()
             && rect.min_x >= self.min_x
@@ -182,6 +189,7 @@ pub enum CapabilityState {
 
 #[cfg(any(test, feature = "visual-qa"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeCapabilities {
     pub window_server: CapabilityState,
     pub accessibility: CapabilityState,
@@ -215,6 +223,7 @@ pub enum CheckStatus {
 
 #[cfg(any(test, feature = "visual-qa"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckEvidence {
     pub name: String,
     pub status: CheckStatus,
@@ -256,14 +265,17 @@ pub struct NativeMenuRendererEvidence {
 
 #[cfg(any(test, feature = "visual-qa"))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QaSubject {
     pub commit: String,
     pub binary_blake3: String,
+    pub binary_identity_verified: bool,
     pub worktree_clean: bool,
 }
 
 #[cfg(any(test, feature = "visual-qa"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManualCase {
     pub name: String,
     pub status: CheckStatus,
@@ -272,8 +284,10 @@ pub struct ManualCase {
 
 #[cfg(any(test, feature = "visual-qa"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManualAttestation {
     pub schema: u32,
+    pub mode: AttestationMode,
     pub subject: QaSubjectBinding,
     pub completed_at_unix: u64,
     pub reviewer: String,
@@ -282,10 +296,19 @@ pub struct ManualAttestation {
 
 #[cfg(any(test, feature = "visual-qa"))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QaSubjectBinding {
     pub commit: String,
     pub binary_blake3: String,
     pub topology_fingerprint: String,
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttestationMode {
+    Diagnostic,
+    Strict,
 }
 
 #[cfg(any(test, feature = "visual-qa"))]

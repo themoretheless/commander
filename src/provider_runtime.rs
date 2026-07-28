@@ -129,9 +129,9 @@ pub fn reduce_deferred_context_menu_result(
 
 pub fn request_context_menu(
     port: &dyn ContextMenuPort,
-    path: &Path,
+    invocation: &crate::ports::ContextMenuInvocation,
 ) -> Option<ContextMenuUiEffect> {
-    reduce_context_menu_result(port.show_context_menu(path), path)
+    reduce_context_menu_result(port.show_context_menu(invocation), &invocation.target.path)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -498,15 +498,21 @@ mod tests {
     }
 
     impl ContextMenuPort for FakeContextMenuPort {
-        fn show_context_menu(&self, path: &Path) -> ContextMenuResult {
+        fn show_context_menu(
+            &self,
+            invocation: &crate::ports::ContextMenuInvocation,
+        ) -> ContextMenuResult {
             self.calls.set(self.calls.get() + 1);
-            self.path.replace(Some(path.to_path_buf()));
+            self.path.replace(Some(invocation.target.path.clone()));
             self.result.clone()
         }
     }
 
     impl ContextMenuPort for NestedDeferredContextMenuPort {
-        fn show_context_menu(&self, _path: &Path) -> ContextMenuResult {
+        fn show_context_menu(
+            &self,
+            _invocation: &crate::ports::ContextMenuInvocation,
+        ) -> ContextMenuResult {
             ContextMenuResult::Dismissed
         }
 
@@ -528,6 +534,23 @@ mod tests {
                 max_bytes: Some(1_000),
             },
             startup_cost_ms: cost,
+        }
+    }
+
+    fn menu_invocation(path: &Path) -> crate::ports::ContextMenuInvocation {
+        crate::ports::ContextMenuInvocation {
+            target: crate::ports::ContextMenuTarget {
+                path: path.to_path_buf(),
+                expected: crate::path_identity::PathIdentity::missing(path),
+            },
+            trigger: crate::ports::ContextMenuTrigger::Keyboard,
+            anchor: crate::ports::ContextMenuAnchor::ViewRect(crate::ports::ContextMenuViewRect {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 100.0,
+                max_y: 24.0,
+                native_points_per_ui_point: 1.0,
+            }),
         }
     }
 
@@ -606,8 +629,9 @@ mod tests {
     fn context_menu_request_uses_the_injected_main_thread_port() {
         let port = FakeContextMenuPort::returning(ContextMenuResult::RefreshRequested);
         let path = Path::new("/tmp/example");
+        let invocation = menu_invocation(path);
         assert_eq!(
-            request_context_menu(&port, path),
+            request_context_menu(&port, &invocation),
             Some(ContextMenuUiEffect::RefreshPanels)
         );
         assert_eq!(port.calls.get(), 1);
@@ -619,8 +643,9 @@ mod tests {
         let port = FakeContextMenuPort::returning(ContextMenuResult::Unsupported {
             reason: "AppKit is unavailable".to_string(),
         });
+        let invocation = menu_invocation(Path::new("/tmp/example"));
         assert_eq!(
-            request_context_menu(&port, Path::new("/tmp/example")),
+            request_context_menu(&port, &invocation),
             Some(ContextMenuUiEffect::Notice {
                 level: ContextMenuNoticeLevel::Info,
                 message: "Context menu unavailable: AppKit is unavailable".to_string(),

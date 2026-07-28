@@ -303,6 +303,10 @@ impl eframe::App for App {
 
 impl App {
     fn process_pending_context_menu(&mut self, ctx: &egui::Context) {
+        if self.has_modal_surface() || !ctx.input(|input| input.focused) {
+            self.ui.cancel_context_menu();
+            return;
+        }
         let request = match self.ui.poll_context_menu() {
             ui_state::ContextMenuPoll::Idle => return,
             ui_state::ContextMenuPoll::AwaitingPaint => {
@@ -313,10 +317,35 @@ impl App {
             }
             ui_state::ContextMenuPoll::Ready(request) => request,
         };
+        if self.ws.active != request.panel {
+            return;
+        }
         let context_menu = std::rc::Rc::clone(&self.context_menu);
-        let effect =
-            crate::provider_runtime::request_context_menu(context_menu.as_ref(), &request.path);
+        let effect = crate::provider_runtime::request_context_menu(
+            context_menu.as_ref(),
+            &request.invocation,
+        );
         self.apply_context_menu_effect(request.panel, effect, ctx);
+        if !self.has_modal_surface() {
+            ctx.memory_mut(|memory| memory.request_focus(request.focus_id));
+        }
+    }
+
+    fn queue_context_menu_candidate(
+        &mut self,
+        panel: ActivePanel,
+        candidate: ui_state::ContextMenuCandidate,
+        ctx: &egui::Context,
+    ) {
+        self.ws.active = ui_state::context_menu_owner(self.ws.active, panel);
+        let invocation = self.context_menu.prepare_context_menu(
+            candidate.target,
+            candidate.trigger,
+            candidate.anchor,
+        );
+        self.ui
+            .queue_context_menu(panel, invocation, candidate.focus_id);
+        ctx.request_repaint();
     }
 
     fn has_modal_surface(&self) -> bool {
@@ -1591,13 +1620,11 @@ impl App {
         tree_toggle |= right_outcome.tree_toggle;
 
         let pending_external_opens = external_open.into_inner();
-        if let Some(path) = left_outcome.context_menu_request {
-            self.ui.queue_context_menu(ActivePanel::Left, path);
-            ctx.request_repaint();
+        if let Some(candidate) = left_outcome.context_menu_request {
+            self.queue_context_menu_candidate(ActivePanel::Left, candidate, &ctx);
         }
-        if let Some(path) = right_outcome.context_menu_request {
-            self.ui.queue_context_menu(ActivePanel::Right, path);
-            ctx.request_repaint();
+        if let Some(candidate) = right_outcome.context_menu_request {
+            self.queue_context_menu_candidate(ActivePanel::Right, candidate, &ctx);
         }
         for request in pending_external_opens {
             self.open_external(request, &ctx);

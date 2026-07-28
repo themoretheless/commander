@@ -37,12 +37,14 @@ pub(super) fn detect_capabilities(topology: &[DisplayTopology]) -> NativeCapabil
     } else {
         CapabilityState::Denied
     };
-    let voice_over = Command::new("pgrep")
+    let voice_over = match Command::new("/usr/bin/pgrep")
         .args(["-x", "VoiceOver"])
-        .status()
-        .ok()
-        .filter(|status| status.success())
-        .map_or(CapabilityState::NotRunning, |_| CapabilityState::Available);
+        .output()
+    {
+        Ok(output) if output.status.success() => CapabilityState::Available,
+        Ok(output) if output.status.code() == Some(1) => CapabilityState::NotRunning,
+        Ok(_) | Err(_) => CapabilityState::Unavailable,
+    };
     NativeCapabilities {
         window_server: if topology.is_empty() {
             CapabilityState::Unavailable
@@ -106,6 +108,16 @@ pub fn capture_display_topology() -> Vec<DisplayTopology> {
             let visible: NSRect = msg_send![screen, visibleFrame];
             let backing_scale: f64 = msg_send![screen, backingScaleFactor];
             let main_screen: bool = !main.is_null() && msg_send![screen, isEqual: main];
+            let description: *mut Object = msg_send![screen, deviceDescription];
+            let screen_number_key: *mut Object = msg_send![
+                class!(NSString),
+                stringWithUTF8String: c"NSScreenNumber".as_ptr()
+            ];
+            let screen_number: *mut Object = if description.is_null() {
+                std::ptr::null_mut()
+            } else {
+                msg_send![description, objectForKey: screen_number_key]
+            };
             let frame = ScreenRect::new(
                 frame.origin.x,
                 frame.origin.y,
@@ -119,14 +131,12 @@ pub fn capture_display_topology() -> Vec<DisplayTopology> {
                 visible.size.height,
             );
             topology.push(DisplayTopology {
-                id: format!(
-                    "{:.0}:{:.0}:{:.0}x{:.0}@{:.2}",
-                    frame.min_x,
-                    frame.min_y,
-                    frame.max_x - frame.min_x,
-                    frame.max_y - frame.min_y,
-                    backing_scale
-                ),
+                id: if screen_number.is_null() {
+                    format!("nsscreen-fallback-{index}")
+                } else {
+                    let display_id: u32 = msg_send![screen_number, unsignedIntValue];
+                    format!("cgdisplay-{display_id}")
+                },
                 main: main_screen,
                 frame,
                 visible_frame,

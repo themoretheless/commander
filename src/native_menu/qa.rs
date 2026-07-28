@@ -19,7 +19,24 @@ pub(crate) fn native_qa_renderer_check()
         next_invocation_id(),
         ContextMenuTarget { path, expected },
         "native-menu-accessibility-label-with-a-deliberately-long-name.txt",
-        DynamicMenuEntries::default(),
+        DynamicMenuEntries {
+            open_with: vec![
+                (
+                    "Preview".to_string(),
+                    PathBuf::from("/System/Applications/Preview.app"),
+                ),
+                (
+                    "TextEdit".to_string(),
+                    PathBuf::from("/System/Applications/TextEdit.app"),
+                ),
+            ],
+            applied_tags: BTreeSet::from(["Blue".to_string()]),
+            tags_available: true,
+            share_services: vec![
+                ("AirDrop".to_string(), "com.apple.share.AirDrop".to_string()),
+                ("Mail".to_string(), "com.apple.share.Mail".to_string()),
+            ],
+        },
     );
 
     unsafe {
@@ -40,7 +57,26 @@ pub(crate) fn native_qa_renderer_check()
                 return Err(error);
             }
         };
-        let inspected = inspect_rendered_menu(&invocation.tree, menu);
+        let mut identifiers = BTreeSet::new();
+        let mut action_index = 0_usize;
+        let inspected = inspect_rendered_menu(
+            &invocation.tree,
+            menu,
+            handler,
+            &state,
+            &mut identifiers,
+            &mut action_index,
+        )
+        .and_then(|count| {
+            (action_index == state.item_ids.len())
+                .then_some(count)
+                .ok_or_else(|| {
+                    format!(
+                        "inspected {action_index} selectors but handler stores {}",
+                        state.item_ids.len()
+                    )
+                })
+        });
         let menu_size: NSSize = msg_send![menu, size];
         let popup_size = crate::native_release_qa::PopupSize {
             width: menu_size.width,
@@ -65,7 +101,14 @@ pub(crate) fn native_qa_renderer_check()
     }
 }
 
-unsafe fn inspect_rendered_menu(nodes: &[MenuNode], menu: *mut Object) -> Result<usize, String> {
+unsafe fn inspect_rendered_menu(
+    nodes: &[MenuNode],
+    menu: *mut Object,
+    handler: *mut Object,
+    state: &HandlerState,
+    identifiers: &mut BTreeSet<String>,
+    action_index: &mut usize,
+) -> Result<usize, String> {
     if menu.is_null() {
         return Err("rendered NSMenu is null".to_string());
     }
@@ -75,6 +118,10 @@ unsafe fn inspect_rendered_menu(nodes: &[MenuNode], menu: *mut Object) -> Result
             "NSMenu item count {actual_count} does not match model {}",
             nodes.len()
         ));
+    }
+    let autoenables: bool = msg_send![menu, autoenablesItems];
+    if autoenables {
+        return Err("NSMenu unexpectedly auto-enables items".to_string());
     }
     let mut inspected = 0_usize;
     for (index, node) in nodes.iter().enumerate() {
@@ -93,7 +140,7 @@ unsafe fn inspect_rendered_menu(nodes: &[MenuNode], menu: *mut Object) -> Result
                 let title: *mut Object = msg_send![actual, title];
                 let title = unsafe { string_from_nsstring(title) }.unwrap_or_default();
                 let enabled: bool = msg_send![actual, isEnabled];
-                let state: isize = msg_send![actual, state];
+                let item_state: isize = msg_send![actual, state];
                 let key: *mut Object = msg_send![actual, keyEquivalent];
                 let key = unsafe { string_from_nsstring(key) }.unwrap_or_default();
                 let mask: usize = msg_send![actual, keyEquivalentModifierMask];
@@ -101,6 +148,11 @@ unsafe fn inspect_rendered_menu(nodes: &[MenuNode], menu: *mut Object) -> Result
                 let label = unsafe { string_from_nsstring(label) }.unwrap_or_default();
                 let identifier: *mut Object = msg_send![actual, accessibilityIdentifier];
                 let identifier = unsafe { string_from_nsstring(identifier) }.unwrap_or_default();
+                if !identifiers.insert(identifier.clone()) {
+                    return Err(format!(
+                        "duplicate NSMenu accessibility identifier: {identifier:?}"
+                    ));
+                }
                 let expected_key = expected
                     .key_equivalent
                     .as_ref()
@@ -111,14 +163,41 @@ unsafe fn inspect_rendered_menu(nodes: &[MenuNode], menu: *mut Object) -> Result
                     .map_or(0, key_equivalent_modifier_mask);
                 if title != expected.title
                     || enabled != expected.enabled
-                    || (state != 0) != (expected.state == MenuItemState::On)
+                    || (item_state != 0) != (expected.state == MenuItemState::On)
                     || key != expected_key
                     || mask != expected_mask
                     || label != expected.accessible_label
                     || identifier != expected.accessibility_id
                 {
                     return Err(format!(
-                        "NSMenu item {} diverged from model (title={title:?}, id={identifier:?}, label={label:?}, enabled={enabled}, state={state}, key={key:?}, mask={mask})",
+                        "NSMenu item {} diverged from model (title={title:?}, id={identifier:?}, label={label:?}, enabled={enabled}, state={item_state}, key={key:?}, mask={mask})",
+                        expected.accessibility_id
+                    ));
+                }
+                let action: Sel = msg_send![actual, action];
+                let target: *mut Object = msg_send![actual, target];
+                let represented: *mut Object = msg_send![actual, representedObject];
+                if expected.intent.is_some() {
+                    if action != sel!(actionSelect:) || target != handler || represented.is_null() {
+                        return Err(format!(
+                            "NSMenu action binding diverged for {}",
+                            expected.accessibility_id
+                        ));
+                    }
+                    let represented_index: usize = msg_send![represented, unsignedIntegerValue];
+                    if represented_index != *action_index
+                        || state.item_ids.get(represented_index) != Some(&expected.id)
+                    {
+                        return Err(format!(
+                            "NSMenu representedObject diverged for {}",
+                            expected.accessibility_id
+                        ));
+                    }
+                    *action_index += 1;
+                } else if action != sel!(actionNoop:) || target != handler || !represented.is_null()
+                {
+                    return Err(format!(
+                        "NSMenu submenu binding diverged for {}",
                         expected.accessibility_id
                     ));
                 }
@@ -131,7 +210,16 @@ unsafe fn inspect_rendered_menu(nodes: &[MenuNode], menu: *mut Object) -> Result
                         ));
                     }
                 } else {
-                    inspected += unsafe { inspect_rendered_menu(&expected.children, submenu) }?;
+                    inspected += unsafe {
+                        inspect_rendered_menu(
+                            &expected.children,
+                            submenu,
+                            handler,
+                            state,
+                            identifiers,
+                            action_index,
+                        )
+                    }?;
                 }
                 inspected += 1;
             }

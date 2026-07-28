@@ -7,8 +7,12 @@
 #[cfg(feature = "visual-qa")]
 mod artifact;
 mod contract;
+#[cfg(feature = "visual-qa")]
+mod identity;
 mod macos_probe;
 mod policy;
+#[cfg(feature = "visual-qa")]
+mod secure_artifact;
 
 #[cfg(feature = "visual-qa")]
 pub use artifact::run;

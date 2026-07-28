@@ -200,6 +200,49 @@ pub struct ContextMenuTarget {
     pub expected: crate::path_identity::PathIdentity,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenuTrigger {
+    Pointer,
+    Keyboard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContextMenuPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContextMenuViewRect {
+    pub min_x: f64,
+    pub min_y: f64,
+    pub max_x: f64,
+    pub max_y: f64,
+    /// Native AppKit points represented by one egui coordinate unit.
+    pub native_points_per_ui_point: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContextMenuViewPoint {
+    pub x: f64,
+    pub y: f64,
+    pub native_points_per_ui_point: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContextMenuAnchor {
+    GlobalScreen(ContextMenuPoint),
+    ViewPoint(ContextMenuViewPoint),
+    ViewRect(ContextMenuViewRect),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextMenuInvocation {
+    pub target: ContextMenuTarget,
+    pub trigger: ContextMenuTrigger,
+    pub anchor: ContextMenuAnchor,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuAction {
     Duplicate(ContextMenuTarget),
@@ -258,7 +301,22 @@ pub enum ContextMenuResult {
 /// Main-thread desktop context-menu boundary. It intentionally has no
 /// `Send`/`Sync` bounds: AppKit adapters are owned and invoked by the UI thread.
 pub trait ContextMenuPort {
-    fn show_context_menu(&self, path: &Path) -> ContextMenuResult;
+    /// Capture presentation identity in the event frame, before the render
+    /// barrier or dynamic AppKit provider discovery can move the pointer.
+    fn prepare_context_menu(
+        &self,
+        target: ContextMenuTarget,
+        trigger: ContextMenuTrigger,
+        anchor: ContextMenuAnchor,
+    ) -> ContextMenuInvocation {
+        ContextMenuInvocation {
+            target,
+            trigger,
+            anchor,
+        }
+    }
+
+    fn show_context_menu(&self, invocation: &ContextMenuInvocation) -> ContextMenuResult;
 
     /// Execute a typed action only after the native selector has returned.
     ///

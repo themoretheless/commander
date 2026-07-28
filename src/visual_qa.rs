@@ -382,7 +382,10 @@ impl EffectCounters {
 struct FakeContextMenu(Arc<EffectCounters>);
 
 impl ContextMenuPort for FakeContextMenu {
-    fn show_context_menu(&self, _path: &Path) -> ContextMenuResult {
+    fn show_context_menu(
+        &self,
+        _invocation: &crate::ports::ContextMenuInvocation,
+    ) -> ContextMenuResult {
         self.0.context_menu.fetch_add(1, Ordering::Relaxed);
         ContextMenuResult::Dismissed
     }
@@ -476,6 +479,8 @@ fn required_painted_glyphs(
     crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
         .into_iter()
         .filter(move |glyph| {
+            // Compact layouts intentionally move Compare from the toolbar into
+            // the settings menu; every glyph that remains visible stays strict.
             !matches!(
                 (scenario, glyph),
                 (
@@ -819,32 +824,20 @@ impl VisualQaApp {
 }
 
 impl eframe::App for VisualQaApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         if self.pending_screenshot.is_none() {
             match Self::screenshot_event(&input.events, self.scenario) {
                 Ok(screenshot) => self.pending_screenshot = screenshot,
                 Err(error) => self.pending_event_error = Some(error),
             }
         }
-        if !self.scenario.needs_confirmation() && self.capture_probes.is_empty() {
-            let viewport = self.scenario.viewport();
-            let x_fraction = if self.scenario.show_tree() {
-                0.44
-            } else {
-                0.24
-            };
-            let y_fraction = if matches!(
-                self.scenario,
-                Scenario::MinimumWindow | Scenario::Zoom200Accessible
-            ) {
-                0.73
-            } else {
-                0.42
-            };
-            input.events.push(egui::Event::PointerMoved(egui::pos2(
-                viewport[0] * x_fraction,
-                viewport[1] * y_fraction,
-            )));
+        if !self.scenario.needs_confirmation()
+            && self.capture_probes.is_empty()
+            && let Some(row) = ProbeSnapshot::read(ctx).left_row
+        {
+            input
+                .events
+                .push(egui::Event::PointerMoved(row.rect.center()));
         }
     }
 
