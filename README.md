@@ -353,12 +353,14 @@ window remain later schema migrations or OS-hardening work.
 
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
 by enabling only the image decoders Commander uses. The checked-in
-[`deny.toml`](deny.toml) and weekly CI gate report zero known vulnerabilities
-and explicitly accept one unmaintained advisory, `RUSTSEC-2026-0192`, for
-`ttf-parser` in the Linux Wayland/winit stack. The waiver is owned by
-`@themoretheless`, reviewed by 2026-10-21, and hard-expires on 2026-10-28.
-Forty-one duplicate-crate groups remain a warning and tracked dependency debt.
-Run the same full-lockfile policy locally with:
+[`deny.toml`](deny.toml) and CI gate for pull requests, main-branch pushes, and
+a weekly refresh report zero known vulnerabilities and explicitly accept one
+unmaintained advisory, `RUSTSEC-2026-0192`, for `ttf-parser` in the Linux
+Wayland/winit stack. The waiver is owned by
+`@themoretheless`, its review is due on 2026-10-21, and it hard-expires at
+00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
+`0.20.2` before executing it. Forty-one duplicate-crate groups remain a warning
+and tracked dependency debt. Run the same full-lockfile policy locally with:
 
 ```sh
 cargo deny --all-features --locked check advisories bans licenses sources

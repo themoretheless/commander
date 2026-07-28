@@ -86,12 +86,14 @@ The accepted scope deliberately leaves the operation journal/content index,
 cross-process CAS, and descriptor-relative filesystem traversal for dedicated
 migrations.
 The following four-role pass checked in the full-lockfile `cargo-deny` policy
-and a weekly Ubuntu gate. It currently reports zero known vulnerabilities,
-accepts only the unmaintained `RUSTSEC-2026-0192` Wayland/winit `ttf-parser`
-path, and leaves 41 duplicate-crate groups visible as warning-level debt. The
-waiver owner is `@themoretheless`, its review date is 2026-10-21, and its hard
-expiry is 2026-10-28. Reproduce the policy with
-`cargo deny --all-features --locked check advisories bans licenses sources`.
+and an Ubuntu gate for pull requests, main-branch pushes, and a weekly refresh.
+It currently reports zero known vulnerabilities, accepts only the unmaintained
+`RUSTSEC-2026-0192` Wayland/winit `ttf-parser` path, and leaves 41
+duplicate-crate groups visible as warning-level debt. The waiver owner is
+`@themoretheless`, its review is due on 2026-10-21, and its hard expiry is
+00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
+`0.20.2` before running it. Reproduce the policy with the command shown in the
+README.
 
 Highest-value next steps, in order:
 

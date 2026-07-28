@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   schedule:
     - cron: "23 4 * * 1"
@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload visual QA artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: commander-visual-qa
           path: target/visual-qa
@@ -71,17 +71,52 @@ jobs:
       - name: Check advisory waiver expiry
         shell: bash
         env:
+          RUSTSEC_2026_0192_OWNER: "@themoretheless"
+          RUSTSEC_2026_0192_REVIEW: "2026-10-21"
           RUSTSEC_2026_0192_EXPIRES: "2026-10-28"
         run: |
-          if [[ "$(date -u +%F)" < "$RUSTSEC_2026_0192_EXPIRES" ]]; then
-            exit 0
+          set -euo pipefail
+          policy="owner=${RUSTSEC_2026_0192_OWNER}; review-by=${RUSTSEC_2026_0192_REVIEW}; expires=${RUSTSEC_2026_0192_EXPIRES}"
+          grep --fixed-strings --quiet -- "$policy" deny.toml || {
+            echo "::error::RUSTSEC-2026-0192 waiver metadata drifted from deny.toml"
+            exit 1
+          }
+
+          now="$(date -u +%s)"
+          review="$(date -u --date="${RUSTSEC_2026_0192_REVIEW}T00:00:00Z" +%s)"
+          expires="$(date -u --date="${RUSTSEC_2026_0192_EXPIRES}T00:00:00Z" +%s)"
+          if (( now >= expires )); then
+            echo "::error::RUSTSEC-2026-0192 waiver expired; owner ${RUSTSEC_2026_0192_OWNER}"
+            exit 1
           fi
-          echo "::error::RUSTSEC-2026-0192 waiver expired; owner @themoretheless"
-          exit 1
+
+          if (( now >= review )); then
+            echo "::warning::RUSTSEC-2026-0192 waiver review is due; owner ${RUSTSEC_2026_0192_OWNER}"
+          fi
+
+      - name: Install cargo-deny
+        shell: bash
+        env:
+          CARGO_DENY_VERSION: "0.20.2"
+          CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/cargo-deny.tar.gz"
+          install_dir="${RUNNER_TEMP}/cargo-deny"
+          asset="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          url="https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${asset}.tar.gz"
+
+          curl --fail --show-error --silent --location \
+            --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$archive" "$url"
+          echo "${CARGO_DENY_SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir --parents "$install_dir"
+          tar --extract --gzip --file "$archive" --directory "$install_dir" \
+            --strip-components=1 "${asset}/cargo-deny"
+          echo "$install_dir" >> "$GITHUB_PATH"
 
       - name: Enforce supply-chain policy
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          arguments: --all-features --locked
-          command: check
-          command-arguments: advisories bans licenses sources
+        shell: bash
+        run: |
+          test "$(cargo-deny --version)" = "cargo-deny 0.20.2"
+          cargo-deny --all-features --locked check advisories bans licenses sources

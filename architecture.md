@@ -399,11 +399,12 @@ Three mechanisms connect the core to the shell:
   wildcard requirements, and unapproved registries or Git sources. The current
   result is zero known vulnerabilities and one accepted unmaintained advisory:
   `RUSTSEC-2026-0192` for the Linux Wayland/winit `ttf-parser` path. Its owner
-  is `@themoretheless`, review date is 2026-10-21, and the CI date guard
-  hard-expires the waiver on 2026-10-28. Forty-one duplicate-crate groups stay
-  at warning severity as explicit dependency debt; there are no broad
-  duplicate skips or GPL/LGPL license allowances. Reproduce the gate with
-  `cargo deny --all-features --locked check advisories bans licenses sources`.
+  is `@themoretheless`, review is due on 2026-10-21, and the CI date guard
+  hard-expires the waiver at 00:00 UTC on 2026-10-28. The gate verifies the
+  SHA-256 of pinned `cargo-deny` version `0.20.2` before execution. Forty-one
+  duplicate-crate groups stay at warning severity as explicit dependency debt;
+  there are no broad duplicate skips or GPL/LGPL license allowances. Run the
+  same gate with the command shown in the README.
 - **Panel async ownership is split but the facade is not yet small.**
   `DirectoryWatcherState` and `SizeIndex` own generation, binding, retry and
   bounded-cache state; `ListingState` owns rows and filter invalidation.
