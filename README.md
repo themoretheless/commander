@@ -350,16 +350,16 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
   retire, without growing scheduler freshness state. The dialog keeps stable
   one-line status geometry and a polite accessibility live region.
 
-The full serial suite currently passes 957 tests with three intentional
-manual/performance harnesses ignored. The next high-value architecture work is
-closing the permission-bound VoiceOver, AppKit popup, and multi-monitor release
-checks. `PanelState::navigate_to` still performs its listing publication on the
-UI thread, and the successful path probe remains advisory across the TOCTOU
-window before that listing. Durable undo history, path-identity-bound replay,
-migration of the operation journal and content index to versioned stores,
-cross-process persistence CAS, descriptor-relative filesystem effects, and
-reconciliation of the last placement-to-journal crash window remain later
-schema migrations or OS-hardening work.
+The full serial suite currently passes 964 tests with three intentional
+manual/performance harnesses ignored. Native release QA now records automated
+checks and blocks until its permission-bound human attestation is complete.
+The next high-value architecture work is moving `PanelState::navigate_to`
+listing publication off the UI thread and closing the successful path-probe
+TOCTOU window. Durable undo history, path-identity-bound replay, migration of
+the operation journal and content index to versioned stores, cross-process
+persistence CAS, descriptor-relative filesystem effects, and reconciliation
+of the last placement-to-journal crash window remain later schema migrations
+or OS-hardening work.
 
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
 by enabling only the image decoders Commander uses. The checked-in
@@ -376,41 +376,65 @@ and tracked dependency debt. Run the same full-lockfile policy locally with:
 cargo deny --all-features --locked check advisories bans licenses sources
 ```
 
-### Native visual QA
+### Native visual and release QA
 
-The `visual-qa` feature runs the real native eframe/Glow framebuffer path against a
-temporary, deterministic workspace. It does not load the session, recovery
-inventory, bookmarks, collections, content-index settings, or user storage;
-clipboard, opener, Trash, free-space, and context-menu effects are recording
-fakes. Run the strict CI scenario in its own main-thread process:
+The `visual-qa` feature runs the real native eframe/Glow framebuffer path
+against a temporary deterministic workspace. It does not load user session or
+storage data, and every native effect is a recording fake. CI runs all four
+scenarios as independent strict matrix jobs:
 
 ```sh
 cargo run --features visual-qa -- --visual-qa desktop_base --output target/visual-qa
+cargo run --features visual-qa -- --visual-qa minimum_window --output target/visual-qa
+cargo run --features visual-qa -- --visual-qa zoom_200_accessible --output target/visual-qa
+cargo run --features visual-qa -- --visual-qa confirmation_owner --output target/visual-qa
 ```
 
-Each scenario always writes `manifest.json` and `capabilities.json` under
-`target/visual-qa/<scenario>`; a successful capture also writes `frame.png`.
-Checks cover framebuffer dimensions, alpha/nonblank/color diversity, finite
-in-viewport pane and dialog geometry, pane non-overlap, modal ownership,
-disabled modal background, zero native-effect calls, and runtime probes for
-painted breadcrumb, sorting, navigation, parent, file-type, and comparison
-glyphs. Each mandatory glyph region must contain rendered ink; the controls do
-not depend on optional font coverage. `--allow-skip`
-converts only an unavailable native GUI/readback capability into an explicit
-`skipped_capability_unavailable` artifact for local diagnostics; validation,
-timeout, and app-construction failures still fail. CI runs the verified
-`desktop_base` capture and deliberately omits `--allow-skip`, so an unavailable
-or skipped framebuffer cannot produce a green job. The additional
-`minimum_window`, `zoom_200_accessible`, and `confirmation_owner` scenarios
-remain explicit local probes until their layout-specific checks are stabilized.
+Each scenario writes `manifest.json` and `capabilities.json`; a successful
+capture also writes `frame.png`. Checks cover framebuffer content, exact
+logical viewport size, in-viewport pane/row/dialog geometry, pane separation,
+modal ownership, disabled modal background, painted glyph pixels, and zero
+native-effect calls. The 200% scenario opens an `1800x1000` native window so
+the application receives the intended `900x500` logical workspace at 2x text
+zoom. `--allow-skip` is diagnostic only; CI omits it, so unsupported capture,
+timeout, and validation failure are red.
 
-The pure native-menu contract tests stable item IDs, order, separators,
-enabled state, submenus, key-equivalent metadata, accessibility labels, and
-invocation binding. AppKit callbacks only return typed selections; mutations
-run later through the context-menu port. Pixel capture of AppKit's separate
-popup window, VoiceOver speech/navigation, and 1x/2x multi-monitor placement
-remain manual checks because they require Screen Recording, Accessibility
-permission, and an interactive WindowServer session.
+Native release evidence is a separate fail-closed path:
+
+```sh
+cargo run --features visual-qa -- --native-release-qa diagnostic --output target/native-release-qa
+cargo run --features visual-qa -- --native-release-qa strict --output target/native-release-qa --attestation path/to/attestation.json
+```
+
+Diagnostic mode never opens a TCC prompt. It records the exact Git commit,
+current executable BLAKE3, worktree state, macOS build, existing WindowServer,
+Accessibility, Screen Recording, and VoiceOver capability state, full
+`NSScreen` topology, and its fingerprint. It renders the declarative menu into
+an actual `NSMenu`, then compares titles, stable accessibility identifiers,
+full labels, enabled/state/submenu/shortcut metadata and obtains the real menu
+content size. The same pure placement function used by production verifies
+that the full top-left-anchored menu rectangle fits the `visibleFrame` at the
+center and four corners of every detected display, including negative
+coordinates and mixed backing scales. Oversized menus fail instead of being
+reported as unclipped.
+
+Speech quality, VoiceOver task navigation, separate AppKit popup pixels,
+Escape focus return, and real mixed-display behavior remain permission-bound
+human checks. Diagnostic output includes an exact-subject attestation template;
+the checked-in structural references are
+[`qa/native-release-attestation.schema.json`](qa/native-release-attestation.schema.json)
+and
+[`qa/native-release-attestation.template.json`](qa/native-release-attestation.template.json).
+Strict mode accepts only a clean exact commit/binary/topology binding, all
+native capabilities, all automated checks, and all five human cases passed
+within seven days. Denied, blocked, `not_run`, stale, mismatched, malformed, or
+missing evidence exits nonzero.
+
+On the 2026-07-28 implementation host, actual NSMenu introspection and all 15
+full-rectangle placement probes passed on three displays (1x at negative x,
+2x main, and 2x above). Accessibility and Screen Recording were denied and
+VoiceOver was not running, so diagnostic evidence correctly reported
+`blocked`, and strict mode returned nonzero. No permission prompt was shown.
 
 The production WGPU presentation path remains in the normal application. It is
 not used for automated readback: on the tested Metal host, eframe 0.35 queued
@@ -421,9 +445,11 @@ as an unsupported capability.
 
 Manual release check:
 
-- Open and dismiss the AppKit menu with Escape; no action or focus leak occurs.
-- Navigate every menu/submenu by keyboard and verify VoiceOver labels.
-- Check popup placement and clipping on 1x/2x displays and across two monitors.
+- Complete the primary two-pane journey with VoiceOver.
+- Open and navigate the focused row's AppKit menu without a pointer.
+- Verify separate popup pixels and all submenus at display edges.
+- Dismiss with Escape and verify focus returns to the exact row.
+- Repeat placement on the attested mixed 1x/2x topology.
 
 The architecture and the refactoring plan are documented in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).

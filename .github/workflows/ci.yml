@@ -39,17 +39,8 @@ jobs:
       - name: Native menu model contract
         run: cargo --locked test native_menu::model::tests -- --test-threads=1
 
-      - name: Native framebuffer visual QA
-        timeout-minutes: 5
-        run: cargo --locked run --features visual-qa -- --visual-qa desktop_base --output target/visual-qa
-
-      - name: Upload visual QA artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: commander-visual-qa
-          path: target/visual-qa
-          if-no-files-found: error
+      - name: Native release QA policy
+        run: cargo --locked test native_release_qa::policy::tests -- --test-threads=1
 
       - name: Performance budget contract
         run: cargo --locked test measurement::tests::ci_performance_budget_contract_is_complete -- --exact
@@ -59,6 +50,40 @@ jobs:
 
       - name: Workflow ergonomics
         run: cargo --locked test klm::tests::ci_core_workflows_stay_within_operator_budgets -- --exact
+
+  visual-qa:
+    if: github.event_name != 'schedule'
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - desktop_base
+          - minimum_window
+          - zoom_200_accessible
+          - confirmation_owner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Native framebuffer visual QA
+        run: cargo --locked run --features visual-qa -- --visual-qa ${{ matrix.scenario }} --output target/visual-qa
+
+      - name: Upload visual QA artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: commander-visual-qa-${{ matrix.scenario }}
+          path: target/visual-qa/${{ matrix.scenario }}
+          if-no-files-found: error
 
   supply-chain:
     runs-on: ubuntu-24.04

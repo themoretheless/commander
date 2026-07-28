@@ -183,7 +183,7 @@ track was accepted; one unsafe journal patch was rejected rather than merged.
 | Atomic persistence/session save | accepted | callers must keep distinguishing pre-commit failure from committed-not-durable |
 | Workload dependency injection | accepted | migrate remaining global-runtime consumers incrementally |
 | Dialog/UI UX contracts | accepted | keep modal Escape and opening snapshots centralized |
-| Native visual/accessibility QA | accepted | strict running-app Glow capture is a CI gate; AppKit popup pixels, VoiceOver and multi-monitor placement remain manual |
+| Native visual/accessibility QA | accepted after fail-closed hardening | four Glow scenarios are strict CI gates; actual NSMenu and full-rect topology checks are automated; popup pixels, VoiceOver and real mixed-monitor journeys require exact-subject human attestation |
 | Native effect ports and context menu | accepted | Clipboard, Trash, opener and free-space are injected; pure menu intents are invocation-bound; a general persistence port remains |
 
 The first journal attempt was intentionally rejected. The later implementation
@@ -940,13 +940,12 @@ executed single-threaded CI performance gate. Headless egui/AccessKit tests
 exercise text-focus and IME suppression, modal priority, FIFO pending
 ownership, one-shot Escape routing, and the SafeState-to-Recovery transition
 frame. A feature-gated native QA process provides four eframe/Glow framebuffer
-scenarios. The strict CI gate is the verified 1280x760 dark desktop capture;
-the minimum-window, 200% accessible, and confirmation-modal variants remain
-local diagnostic probes while their layout-specific checks are stabilized.
-Every process uses a temporary storage root and fake native ports, always
-writes capability/manifest JSON and writes PNG when framebuffer readback is
-available, then checks frame diversity, geometry, pane separation, modal
-stacking policy, and absence of native effects.
+scenarios. Desktop, minimum-window, 200% accessible, and confirmation-modal
+captures are all strict CI matrix jobs. Every process uses a temporary storage
+root and fake native ports, always writes capability/manifest JSON and writes
+PNG when framebuffer readback is available, then checks frame diversity,
+logical viewport size, geometry, pane separation, modal stacking policy,
+painted glyph pixels, and absence of native effects.
 
 The native context menu is a declarative `MenuInvocation` tree with stable item
 IDs and an invocation-bound target. AppKit renders that model with
@@ -957,9 +956,27 @@ former thread-local path/result state, prevents callbacks from mutating files
 or launching services, balances owned AppKit menu objects, and preserves
 pathname bytes through NSURL filesystem representations.
 
-The automated framebuffer excludes AppKit's separate popup and window chrome.
-Popup pixels/tracking geometry, VoiceOver speech/navigation, and multi-monitor
-1x/2x placement remain an explicit permission-bound manual matrix.
+`native_release_qa` is a narrow facade over four owners: `contract` defines
+evidence types, `policy` owns pure placement/attestation/verdict rules,
+`macos_probe` reads already-granted capabilities and `NSScreen` topology, and
+`artifact` binds and writes release evidence. The production AppKit bridge
+captures the invocation point and topology before dynamic provider discovery,
+reads actual `NSMenu.size` after rendering, and asks the same pure policy for a
+top-left placement whose complete downward-growing content rectangle fits one
+`visibleFrame`. Oversized menus fail closed. Secondary click and Shift-F10
+store the exact panel/path in `UiState`; cursor/focus is applied and painted,
+an intervening frame publishes the new AccessKit tree, and only the following
+frame may start synchronous AppKit tracking. Directory rows no longer publish
+a false `expanded=false` state.
+
+The automated framebuffer still excludes AppKit's separate popup and window
+chrome. Actual `NSMenu` model/renderer introspection and full-rectangle
+center/corner placement are automated without TCC. Popup pixels, VoiceOver
+speech and task navigation, Escape focus return, and real multi-monitor
+interaction are human checks bound to the exact commit, executable BLAKE3 and
+topology fingerprint. Strict policy rejects missing permissions, missing or
+stale attestation, `not_run`, mismatches and blocked checks; diagnostic mode
+records them without prompting or claiming pass.
 The shipping renderer remains WGPU; its eframe 0.35 Metal screenshot readback
 is a manual boundary because external `Device::poll` attempts can deadlock the
 renderer/event-loop ownership. A missing screenshot event is a test failure,

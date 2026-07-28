@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/themoretheless/commander/qa/native-release-attestation.schema.json",
+  "title": "Commander native release QA attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "subject",
+    "completed_at_unix",
+    "reviewer",
+    "cases"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "binary_blake3",
+        "topology_fingerprint"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "minLength": 7
+        },
+        "binary_blake3": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "topology_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "completed_at_unix": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reviewer": {
+      "type": "string"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "status",
+          "notes"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "voiceover_primary_journey",
+              "voiceover_context_menu",
+              "appkit_popup_pixels",
+              "popup_escape_focus_return",
+              "mixed_scale_multi_monitor_placement"
+            ]
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "blocked",
+              "not_run"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

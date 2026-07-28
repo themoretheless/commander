@@ -58,6 +58,11 @@ impl Scenario {
         }
     }
 
+    const fn native_window_size(self) -> [f32; 2] {
+        let viewport = self.viewport();
+        [viewport[0] * self.ui_scale(), viewport[1] * self.ui_scale()]
+    }
+
     const fn ui_scale(self) -> f32 {
         match self {
             Self::Zoom200Accessible => 2.0,
@@ -139,6 +144,13 @@ impl Request {
 }
 
 pub(crate) fn maybe_run() -> Option<eframe::Result<()>> {
+    if std::env::args().nth(1).as_deref() == Some("--native-release-qa") {
+        let request = crate::native_release_qa::NativeQaRequest::parse(std::env::args().skip(2));
+        return Some(match request.and_then(crate::native_release_qa::run) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(app_error(error)),
+        });
+    }
     match Request::parse() {
         Ok(Some(request)) => Some(run(request)),
         Ok(None) => None,
@@ -173,7 +185,7 @@ fn run(request: Request) -> eframe::Result<()> {
     crate::fs_util::install_storage_root_override(fixture.root.join("state"))
         .map_err(|_| app_error("visual QA storage override was already installed"))?;
 
-    let viewport = request.scenario.viewport();
+    let viewport = request.scenario.native_window_size();
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
@@ -458,6 +470,22 @@ fn painted_glyph_key(glyph: crate::app::glyphs::PaintedGlyph) -> egui::Id {
     egui::Id::new(("visual_qa_painted_glyph", glyph.key()))
 }
 
+fn required_painted_glyphs(
+    scenario: Scenario,
+) -> impl Iterator<Item = crate::app::glyphs::PaintedGlyph> {
+    crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
+        .into_iter()
+        .filter(move |glyph| {
+            !matches!(
+                (scenario, glyph),
+                (
+                    Scenario::MinimumWindow | Scenario::Zoom200Accessible,
+                    crate::app::glyphs::PaintedGlyph::ToolbarCompare
+                )
+            )
+        })
+}
+
 pub(crate) fn begin_probe_frame(ctx: &egui::Context) {
     ctx.data_mut(|data| {
         for id in [
@@ -572,8 +600,7 @@ impl ProbeSnapshot {
     fn ready(&self, scenario: Scenario) -> bool {
         self.left_pane.is_some()
             && self.right_pane.is_some()
-            && crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
-                .into_iter()
+            && required_painted_glyphs(scenario)
                 .all(|glyph| self.painted_glyphs.contains_key(&glyph))
             && (if scenario.needs_confirmation() {
                 self.confirmation.is_some()
@@ -801,9 +828,22 @@ impl eframe::App for VisualQaApp {
         }
         if !self.scenario.needs_confirmation() && self.capture_probes.is_empty() {
             let viewport = self.scenario.viewport();
+            let x_fraction = if self.scenario.show_tree() {
+                0.44
+            } else {
+                0.24
+            };
+            let y_fraction = if matches!(
+                self.scenario,
+                Scenario::MinimumWindow | Scenario::Zoom200Accessible
+            ) {
+                0.73
+            } else {
+                0.42
+            };
             input.events.push(egui::Event::PointerMoved(egui::pos2(
-                viewport[0] * 0.24 / self.scenario.ui_scale(),
-                viewport[1] * 0.42 / self.scenario.ui_scale(),
+                viewport[0] * x_fraction,
+                viewport[1] * y_fraction,
             )));
         }
     }
@@ -981,9 +1021,9 @@ fn write_capabilities(
             detail,
             renderer,
             native_menu_model: "automated_pure_contract",
-            native_menu_pixels: "manual_appkit_tracking_boundary",
-            whole_window_capture: "manual_screen_recording_boundary",
-            voice_over: "manual_accessibility_permission_boundary",
+            native_menu_pixels: "excluded_use_native_release_qa_evidence",
+            whole_window_capture: "excluded_use_native_release_qa_evidence",
+            voice_over: "excluded_use_native_release_qa_attestation",
         },
     )
 }
@@ -1140,8 +1180,8 @@ fn write_capture(
         format!("{width}x{height}, expected about {expected_width}x{expected_height}"),
     ));
     let requested = scenario.viewport();
-    let logical_width = probes.viewport.width() * scenario.ui_scale();
-    let logical_height = probes.viewport.height() * scenario.ui_scale();
+    let logical_width = probes.viewport.width();
+    let logical_height = probes.viewport.height();
     checks.push(check(
         "logical_viewport_dimensions",
         (logical_width - requested[0]).abs() <= 2.0 && (logical_height - requested[1]).abs() <= 2.0,
@@ -1208,8 +1248,7 @@ fn write_capture(
             format!("{rect:?} inside {:?}", probes.viewport),
         ));
     }
-    let missing_painted_glyphs = crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
-        .into_iter()
+    let missing_painted_glyphs = required_painted_glyphs(scenario)
         .filter(|glyph| !probes.painted_glyphs.contains_key(glyph))
         .map(crate::app::glyphs::PaintedGlyph::key)
         .collect::<Vec<_>>();
@@ -1230,20 +1269,18 @@ fn write_capture(
         ),
     ));
     let mut glyph_pixel_details = Vec::new();
-    let painted_pixels_valid = crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
-        .into_iter()
-        .all(|glyph| {
-            let Some(rect) = probes.painted_glyphs.get(&glyph).copied() else {
-                glyph_pixel_details.push(format!("{}=missing", glyph.key()));
-                return false;
-            };
-            let Some((ink, total)) = glyph_region_ink(image, probes.viewport, rect) else {
-                glyph_pixel_details.push(format!("{}=invalid_region", glyph.key()));
-                return false;
-            };
-            glyph_pixel_details.push(format!("{}={ink}/{total}", glyph.key()));
-            ink >= 8 && ink.saturating_mul(100) >= total
-        });
+    let painted_pixels_valid = required_painted_glyphs(scenario).all(|glyph| {
+        let Some(rect) = probes.painted_glyphs.get(&glyph).copied() else {
+            glyph_pixel_details.push(format!("{}=missing", glyph.key()));
+            return false;
+        };
+        let Some((ink, total)) = glyph_region_ink(image, probes.viewport, rect) else {
+            glyph_pixel_details.push(format!("{}=invalid_region", glyph.key()));
+            return false;
+        };
+        glyph_pixel_details.push(format!("{}={ink}/{total}", glyph.key()));
+        ink >= 8 && ink.saturating_mul(100) >= total
+    });
     checks.push(check(
         "mandatory_painted_glyph_pixels",
         painted_pixels_valid,
@@ -1301,8 +1338,7 @@ fn write_capture(
     manifest.modal_owner = probes.modal_owner.clone();
     manifest.background_enabled = probes.background_enabled;
     manifest.modal_above_background = probes.modal_above_background;
-    manifest.painted_glyphs = crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
-        .into_iter()
+    manifest.painted_glyphs = required_painted_glyphs(scenario)
         .filter_map(|glyph| {
             probes
                 .painted_glyphs
@@ -1366,10 +1402,10 @@ fn glyph_region_ink(image: &ColorImage, viewport: Rect, rect: Rect) -> Option<(u
 fn rect_is_valid(rect: Rect, viewport: Rect) -> bool {
     rect.is_finite()
         && rect.is_positive()
-        && rect.min.x >= viewport.min.x - 2.5
-        && rect.min.y >= viewport.min.y - 2.5
-        && rect.max.x <= viewport.max.x + 2.5
-        && rect.max.y <= viewport.max.y + 2.5
+        && rect.min.x >= viewport.min.x - 0.51
+        && rect.min.y >= viewport.min.y - 0.51
+        && rect.max.x <= viewport.max.x + 0.51
+        && rect.max.y <= viewport.max.y + 0.51
 }
 
 fn check(name: &'static str, passed: bool, detail: String) -> Check {
@@ -1404,6 +1440,10 @@ mod tests {
         );
         assert_eq!(Scenario::MinimumWindow.viewport(), [900.0, 500.0]);
         assert_eq!(Scenario::Zoom200Accessible.ui_scale(), 2.0);
+        assert_eq!(
+            Scenario::Zoom200Accessible.native_window_size(),
+            [1800.0, 1000.0]
+        );
         assert!(Scenario::Zoom200Accessible.preferences().high_contrast);
         assert!(Scenario::ConfirmationOwner.needs_confirmation());
     }

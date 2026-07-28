@@ -10,13 +10,18 @@ impl App {
         panel_side: &str,
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
-        context_menu: &dyn crate::ports::ContextMenuPort,
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
-    ) -> Option<crate::provider_runtime::ContextMenuUiEffect> {
-        let mut context_menu_effect = None;
+    ) -> Option<std::path::PathBuf> {
+        let mut context_menu_request = (is_active
+            && ui.is_enabled()
+            && ui
+                .ctx()
+                .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)))
+        .then(|| panel.cursor_entry().map(|entry| entry.path.clone()))
+        .flatten();
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
@@ -584,10 +589,9 @@ impl App {
                     });
 
                     if row_resp.secondary_clicked() {
-                        context_menu_effect = crate::provider_runtime::request_context_menu(
-                            context_menu,
-                            &entry.path,
-                        );
+                        row_resp.request_focus();
+                        pending_cursor = Some(row_cursor);
+                        context_menu_request = Some(entry.path.clone());
                     }
 
                     if row_resp.double_clicked() {
@@ -776,7 +780,7 @@ impl App {
                     });
                 });
             });
-        context_menu_effect
+        context_menu_request
     }
 
     pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {

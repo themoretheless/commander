@@ -103,17 +103,18 @@ dialog/generation/raw/lexical binding and does not register transient dialog
 roots in the scheduler generation map. Ten deterministic controller tests
 cover blocked workers, 100-edit bounds, synchronous completion, cancellation,
 admission, panic and disconnect paths, bringing the full serial all-feature
-suite to 957 passing with three intentional ignores. The isolated performance
+suite to 964 passing with three intentional ignores. The isolated performance
 smoke remains green. Synchronous
 `PanelState::navigate_to` listing and the probe-to-listing TOCTOU remain
 explicitly outside this scoped change.
 
 Highest-value next steps, in order:
 
-1. Promote `minimum_window`, `zoom_200_accessible`, and
-   `confirmation_owner` to strict visual gates after their scenario-specific
-   geometry checks stabilize; keep AppKit popup pixels, VoiceOver and
-   multi-monitor placement as permission-bound release checks.
+1. Completed: `minimum_window`, `zoom_200_accessible`, and
+   `confirmation_owner` are strict CI matrix gates alongside `desktop_base`.
+   Native release QA now binds actual NSMenu introspection, full popup-rectangle
+   placement, exact binary/commit/topology evidence, and a fail-closed human
+   VoiceOver/popup/multi-monitor attestation without requesting TCC access.
 2. Move `PanelState::navigate_to` listing/publication off the UI thread and
    close the probe-to-listing TOCTOU; separately design an `OsStr` plus
    volume-capability-aware naming policy for non-UTF-8, case-sensitivity and

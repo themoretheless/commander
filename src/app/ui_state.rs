@@ -10,6 +10,25 @@ use super::{
 };
 use crate::accessibility::{EscapeRoute, ModalSurface};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContextMenuRequest {
+    pub(crate) panel: crate::workspace::ActivePanel,
+    pub(crate) path: std::path::PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingContextMenu {
+    request: ContextMenuRequest,
+    render_passes_remaining: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ContextMenuPoll {
+    Idle,
+    AwaitingPaint,
+    Ready(ContextMenuRequest),
+}
+
 macro_rules! slot_is_open {
     ($slot:expr, option) => {
         $slot.is_some()
@@ -137,6 +156,9 @@ pub(crate) struct UiState {
     pub(crate) escape_request: EscapeRoute,
     /// Identity source for transient widget state across reopenings.
     pub(crate) transient_nonce: u64,
+    /// A render barrier between row focus mutation and synchronous AppKit
+    /// tracking. Frame B publishes paint/AccessKit; frame C may show the menu.
+    pending_context_menu: Option<PendingContextMenu>,
 }
 
 impl Default for UiState {
@@ -149,7 +171,36 @@ impl Default for UiState {
             focus_started_at: 0.0,
             escape_request: EscapeRoute::None,
             transient_nonce: 0,
+            pending_context_menu: None,
         }
+    }
+}
+
+impl UiState {
+    pub(crate) fn queue_context_menu(
+        &mut self,
+        panel: crate::workspace::ActivePanel,
+        path: std::path::PathBuf,
+    ) {
+        self.pending_context_menu = Some(PendingContextMenu {
+            request: ContextMenuRequest { panel, path },
+            render_passes_remaining: 1,
+        });
+    }
+
+    pub(crate) fn poll_context_menu(&mut self) -> ContextMenuPoll {
+        let Some(pending) = self.pending_context_menu.as_mut() else {
+            return ContextMenuPoll::Idle;
+        };
+        if pending.render_passes_remaining > 0 {
+            pending.render_passes_remaining -= 1;
+            return ContextMenuPoll::AwaitingPaint;
+        }
+        let ready = self
+            .pending_context_menu
+            .take()
+            .expect("pending request exists");
+        ContextMenuPoll::Ready(ready.request)
     }
 }
 
@@ -208,5 +259,21 @@ mod tests {
             );
             assert!(!modal_close_requested(true, false));
         }
+    }
+
+    #[test]
+    fn context_menu_request_waits_for_one_published_frame() {
+        let mut state = UiState::default();
+        let path = std::path::PathBuf::from("/tmp/context-target");
+        state.queue_context_menu(crate::workspace::ActivePanel::Right, path.clone());
+        assert_eq!(state.poll_context_menu(), ContextMenuPoll::AwaitingPaint);
+        assert_eq!(
+            state.poll_context_menu(),
+            ContextMenuPoll::Ready(ContextMenuRequest {
+                panel: crate::workspace::ActivePanel::Right,
+                path,
+            })
+        );
+        assert_eq!(state.poll_context_menu(), ContextMenuPoll::Idle);
     }
 }

@@ -206,6 +206,7 @@ impl eframe::App for App {
         crate::visual_qa::begin_probe_frame(&ctx);
         let prior_modal_ownership = ModalOwnershipSnapshot::capture(self.has_modal_surface());
         self.begin_frame(&ctx);
+        self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
         self.show_transfer_dialog(&ctx);
         self.show_delete_activity(&ctx);
@@ -301,6 +302,23 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn process_pending_context_menu(&mut self, ctx: &egui::Context) {
+        let request = match self.ui.poll_context_menu() {
+            ui_state::ContextMenuPoll::Idle => return,
+            ui_state::ContextMenuPoll::AwaitingPaint => {
+                // The rest of frame B paints and publishes the new row cursor
+                // and AccessKit tree; request frame C for native tracking.
+                ctx.request_repaint();
+                return;
+            }
+            ui_state::ContextMenuPoll::Ready(request) => request,
+        };
+        let context_menu = std::rc::Rc::clone(&self.context_menu);
+        let effect =
+            crate::provider_runtime::request_context_menu(context_menu.as_ref(), &request.path);
+        self.apply_context_menu_effect(request.panel, effect, ctx);
+    }
+
     fn has_modal_surface(&self) -> bool {
         any_modal_surface_open(
             self.ws.safe_state.is_some(),
@@ -1449,8 +1467,6 @@ impl App {
         let opener = |request: crate::ports::OpenRequest| {
             external_open.borrow_mut().push(request);
         };
-        let context_menu = std::rc::Rc::clone(&self.context_menu);
-
         // Left panel
         let pane_min = crate::accessibility::pane_min_width(remaining);
         let left_resp = egui::Panel::left(panel_id)
@@ -1477,7 +1493,6 @@ impl App {
                     self.show_tree,
                     self.show_size_bars,
                     left_compare.as_ref(),
-                    context_menu.as_ref(),
                     &opener,
                     dragging,
                     left_metrics,
@@ -1558,7 +1573,6 @@ impl App {
                         self.show_tree,
                         self.show_size_bars,
                         right_compare.as_ref(),
-                        context_menu.as_ref(),
                         &opener,
                         dragging,
                         right_metrics,
@@ -1577,8 +1591,14 @@ impl App {
         tree_toggle |= right_outcome.tree_toggle;
 
         let pending_external_opens = external_open.into_inner();
-        self.apply_context_menu_effect(ActivePanel::Left, left_outcome.context_menu, &ctx);
-        self.apply_context_menu_effect(ActivePanel::Right, right_outcome.context_menu, &ctx);
+        if let Some(path) = left_outcome.context_menu_request {
+            self.ui.queue_context_menu(ActivePanel::Left, path);
+            ctx.request_repaint();
+        }
+        if let Some(path) = right_outcome.context_menu_request {
+            self.ui.queue_context_menu(ActivePanel::Right, path);
+            ctx.request_repaint();
+        }
         for request in pending_external_opens {
             self.open_external(request, &ctx);
         }

@@ -441,7 +441,7 @@ pub fn file_row_semantics(
     selected: bool,
     marked: bool,
     cursor: bool,
-    is_directory: bool,
+    _is_directory: bool,
 ) -> FileRowSemantics {
     let mut states = Vec::new();
     if selected {
@@ -461,7 +461,9 @@ pub fn file_row_semantics(
     FileRowSemantics {
         label: format!("Name: {name}; Kind: {kind}; Size: {size}; Modified: {modified}{state}"),
         selected,
-        expanded: is_directory.then_some(false),
+        // Directory rows navigate to another listing; they do not expose an
+        // inline expand/collapse action and must not announce "collapsed".
+        expanded: None,
     }
 }
 
@@ -716,7 +718,7 @@ mod tests {
             "Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected, marked"
         );
         assert!(row.selected);
-        assert_eq!(row.expanded, Some(false));
+        assert_eq!(row.expanded, None);
     }
 
     #[test]

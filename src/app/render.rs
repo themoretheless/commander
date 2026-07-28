@@ -4,7 +4,7 @@ use crate::panel::{FacetSet, KindFacet};
 #[derive(Default)]
 pub(crate) struct PanelRenderOutcome {
     pub tree_toggle: bool,
-    pub context_menu: Option<crate::provider_runtime::ContextMenuUiEffect>,
+    pub context_menu_request: Option<std::path::PathBuf>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -250,7 +250,6 @@ impl App {
         tree_open: bool,
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
-        context_menu: &dyn crate::ports::ContextMenuPort,
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
@@ -258,7 +257,7 @@ impl App {
     ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
-        let mut context_menu_effect = None;
+        let mut context_menu_request = None;
 
         Frame::NONE
             .fill(panel_bg)
@@ -266,7 +265,6 @@ impl App {
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::ZERO)
             .show(ui, |ui| {
-                ui.set_min_size(ui.available_size());
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 10.0);
 
                 // Path bar: back/forward + breadcrumb arrows
@@ -780,25 +778,31 @@ impl App {
                 }
 
                 // File list
-                context_menu_effect = Self::render_file_list(
-                    ui,
-                    panel,
-                    is_active,
-                    t,
-                    panel_side,
-                    size_bars,
-                    compare,
-                    context_menu,
-                    opener,
-                    dragging,
-                    metrics,
-                    reduced_motion,
-                );
+                // Keep the scroll viewport inside the parent panel after the
+                // final separator stroke and egui's cursor rounding.
+                let list_size = (ui.available_size() - Vec2::new(0.0, 1.0)).max(Vec2::ZERO);
+                ui.allocate_ui_with_layout(list_size, Layout::top_down(Align::Min), |list_ui| {
+                    list_ui.set_min_size(list_size);
+                    list_ui.set_max_size(list_size);
+                    context_menu_request = Self::render_file_list(
+                        list_ui,
+                        panel,
+                        is_active,
+                        t,
+                        panel_side,
+                        size_bars,
+                        compare,
+                        opener,
+                        dragging,
+                        metrics,
+                        reduced_motion,
+                    );
+                });
             });
 
         PanelRenderOutcome {
             tree_toggle,
-            context_menu: context_menu_effect,
+            context_menu_request,
         }
     }
 }

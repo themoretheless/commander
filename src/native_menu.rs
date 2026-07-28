@@ -1,4 +1,9 @@
 mod model;
+#[cfg(feature = "visual-qa")]
+mod qa;
+
+#[cfg(feature = "visual-qa")]
+pub(crate) use qa::native_qa_renderer_check;
 
 use crate::ports::{
     ContextMenuAction, ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult,
@@ -6,7 +11,7 @@ use crate::ports::{
 };
 use model::{
     DynamicMenuEntries, MenuInvocation, MenuItemState, MenuNode, MenuSelection, build_invocation,
-    selection_result,
+    tracking_result,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, NO, Object, Sel, YES};
@@ -24,6 +29,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 struct NSPoint {
     x: f64,
     y: f64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct NSSize {
+    width: f64,
+    height: f64,
 }
 
 struct HandlerState {
@@ -245,6 +257,21 @@ unsafe fn render_menu(
                             let _: () = msg_send![menu_item, setAccessibilityLabel: label];
                         }
                     }
+                    if let Ok(identifier) = unsafe { nsstring(&item.accessibility_id) } {
+                        let responds: bool = msg_send![
+                            menu_item,
+                            respondsToSelector: sel!(setAccessibilityIdentifier:)
+                        ];
+                        if responds {
+                            let _: () =
+                                msg_send![menu_item, setAccessibilityIdentifier: identifier];
+                        }
+                    }
+                    let mask = item
+                        .key_equivalent
+                        .as_ref()
+                        .map_or(0, key_equivalent_modifier_mask);
+                    let _: () = msg_send![menu_item, setKeyEquivalentModifierMask: mask];
                     if item.intent.is_some() {
                         let index = state.item_ids.len();
                         state.item_ids.push(item.id.clone());
@@ -277,6 +304,17 @@ unsafe fn render_menu(
         }
     }
     Ok(menu)
+}
+
+fn key_equivalent_modifier_mask(equivalent: &model::KeyEquivalent) -> usize {
+    const SHIFT: usize = 1 << 17;
+    const CONTROL: usize = 1 << 18;
+    const OPTION: usize = 1 << 19;
+    const COMMAND: usize = 1 << 20;
+    (usize::from(equivalent.shift) * SHIFT)
+        | (usize::from(equivalent.control) * CONTROL)
+        | (usize::from(equivalent.option) * OPTION)
+        | (usize::from(equivalent.command) * COMMAND)
 }
 
 unsafe fn open_with_entries(path: &Path) -> Vec<(String, PathBuf)> {
@@ -466,6 +504,9 @@ fn show_native(path: &Path) -> ContextMenuResult {
 
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        // Capture the invocation anchor before LaunchServices, tags, or sharing
+        // service discovery can delay tracking or let the pointer cross screens.
+        let raw_location: NSPoint = msg_send![class!(NSEvent), mouseLocation];
         let expected = match crate::path_identity::PathIdentity::observe(path) {
             Ok(identity) if identity.exists => identity,
             Ok(_) => {
@@ -507,9 +548,35 @@ fn show_native(path: &Path) -> ContextMenuResult {
                 return ContextMenuResult::Unsupported { reason };
             }
         };
-        let location: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        let menu_size: NSSize = msg_send![menu, size];
+        // Screen layout can change while dynamic providers are queried. Keep
+        // the invocation point, but place it against the topology at show time.
+        let topology = crate::native_release_qa::capture_display_topology();
+        let Some(placement) = crate::native_release_qa::place_popup(
+            crate::native_release_qa::ScreenPoint {
+                x: raw_location.x,
+                y: raw_location.y,
+            },
+            crate::native_release_qa::PopupSize {
+                width: menu_size.width,
+                height: menu_size.height,
+            },
+            &topology,
+        ) else {
+            (*handler).set_ivar("rustState", 0_usize);
+            let _: () = msg_send![menu, release];
+            let _: () = msg_send![handler, release];
+            let _: () = msg_send![pool, drain];
+            return ContextMenuResult::Unsupported {
+                reason: "AppKit menu content does not fit any NSScreen visibleFrame".to_string(),
+            };
+        };
+        let location = NSPoint {
+            x: placement.top_left.x,
+            y: placement.top_left.y,
+        };
         let nil: *mut Object = std::ptr::null_mut();
-        let _: bool = msg_send![menu,
+        let appkit_reported_selection: bool = msg_send![menu,
             popUpMenuPositioningItem: nil
             atLocation: location
             inView: nil
@@ -519,7 +586,7 @@ fn show_native(path: &Path) -> ContextMenuResult {
         let selection = state.selection.take();
         let _: () = msg_send![menu, release];
         let _: () = msg_send![handler, release];
-        let result = selection_result(&invocation, selection);
+        let result = tracking_result(&invocation, appkit_reported_selection, selection);
         let _: () = msg_send![pool, drain];
         result
     }

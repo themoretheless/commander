@@ -297,6 +297,6 @@ fn file_row_semantics_reach_the_headless_accesskit_tree() {
         )
     );
     assert_eq!(row.is_selected(), Some(true));
-    assert_eq!(row.is_expanded(), Some(false));
+    assert_eq!(row.is_expanded(), None);
     assert!(row.supports_action(egui::accesskit::Action::Focus));
 }

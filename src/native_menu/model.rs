@@ -58,6 +58,28 @@ pub enum MenuItemId {
     MoveToTrash,
 }
 
+impl MenuItemId {
+    pub fn accessibility_id(&self) -> String {
+        let suffix = match self {
+            Self::Open => "open".to_string(),
+            Self::OpenWith => "open_with".to_string(),
+            Self::OpenWithApplication(index) => format!("open_with.application.{index}"),
+            Self::QuickLook => "quick_look".to_string(),
+            Self::GetInfo => "get_info".to_string(),
+            Self::Tags => "tags".to_string(),
+            Self::Tag(color) => format!("tag.{}", color.label().to_ascii_lowercase()),
+            Self::Duplicate => "duplicate".to_string(),
+            Self::Compress => "compress".to_string(),
+            Self::CopyPath => "copy_path".to_string(),
+            Self::Share => "share".to_string(),
+            Self::ShareService(index) => format!("share.service.{index}"),
+            Self::Reveal => "reveal".to_string(),
+            Self::MoveToTrash => "move_to_trash".to_string(),
+        };
+        format!("commander.context_menu.{suffix}")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MenuItemState {
@@ -92,6 +114,7 @@ pub enum MenuIntent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct MenuItem {
     pub id: MenuItemId,
+    pub accessibility_id: String,
     pub title: String,
     pub accessible_label: String,
     pub enabled: bool,
@@ -106,6 +129,7 @@ impl MenuItem {
     fn action(id: MenuItemId, title: impl Into<String>, enabled: bool, intent: MenuIntent) -> Self {
         let title = title.into();
         Self {
+            accessibility_id: id.accessibility_id(),
             id,
             accessible_label: title.clone(),
             title,
@@ -125,6 +149,7 @@ impl MenuItem {
     ) -> Self {
         let title = title.into();
         Self {
+            accessibility_id: id.accessibility_id(),
             id,
             accessible_label: title.clone(),
             title,
@@ -235,6 +260,7 @@ pub fn build_invocation(
         .collect::<Vec<_>>();
     let target_available = target.expected.exists;
     let compress_title = format!("Compress \"{}\"", clipped_name(display_name, 42));
+    let compress_accessible_label = format!("Compress \"{display_name}\"");
 
     let tree = vec![
         MenuNode::Item(MenuItem::action(
@@ -275,12 +301,16 @@ pub fn build_invocation(
             target_available,
             MenuIntent::Duplicate,
         )),
-        MenuNode::Item(MenuItem::action(
-            MenuItemId::Compress,
-            compress_title,
-            target_available,
-            MenuIntent::Compress,
-        )),
+        MenuNode::Item({
+            let mut item = MenuItem::action(
+                MenuItemId::Compress,
+                compress_title,
+                target_available,
+                MenuIntent::Compress,
+            );
+            item.accessible_label = compress_accessible_label;
+            item
+        }),
         MenuNode::Separator,
         MenuNode::Item(MenuItem::action(
             MenuItemId::CopyPath,
@@ -396,6 +426,20 @@ pub fn selection_result(
     }
 }
 
+pub fn tracking_result(
+    invocation: &MenuInvocation,
+    appkit_reported_selection: bool,
+    selection: Option<MenuSelection>,
+) -> ContextMenuResult {
+    match (appkit_reported_selection, selection) {
+        (false, None) => ContextMenuResult::Dismissed,
+        (true, Some(selection)) => selection_result(invocation, Some(selection)),
+        (true, None) | (false, Some(_)) => {
+            ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,8 +509,22 @@ mod tests {
             MenuNode::Separator => None,
         }) {
             assert!(!item.accessible_label.is_empty());
+            assert!(item.accessibility_id.starts_with("commander.context_menu."));
             assert_eq!(item.key_equivalent, None);
         }
+        let compress = invocation
+            .tree
+            .iter()
+            .find_map(|node| match node {
+                MenuNode::Item(item) if item.id == MenuItemId::Compress => Some(item),
+                _ => None,
+            })
+            .expect("Compress");
+        assert_eq!(
+            compress.accessible_label,
+            "Compress \"a very long but readable fixture filename.txt\""
+        );
+        assert_ne!(compress.title, compress.accessible_label);
     }
 
     #[test]
@@ -603,5 +661,30 @@ mod tests {
             ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation)
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tracking_result_distinguishes_escape_from_inconsistent_appkit_state() {
+        let invocation = fixture();
+        assert_eq!(
+            tracking_result(&invocation, false, None),
+            ContextMenuResult::Dismissed
+        );
+        assert_eq!(
+            tracking_result(&invocation, true, None),
+            ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection)
+        );
+        assert_eq!(
+            tracking_result(
+                &invocation,
+                false,
+                Some(MenuSelection {
+                    invocation_id: invocation.id,
+                    bound_target: invocation.bound_target.path.clone(),
+                    item_id: MenuItemId::CopyPath,
+                })
+            ),
+            ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection)
+        );
     }
 }
