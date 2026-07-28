@@ -292,10 +292,13 @@ impl App {
         self.ws.pending_op.is_some() || self.ws.delete_active() || self.ui.modals.any_open()
     }
 
-    fn show_delete_activity(&self, ctx: &egui::Context) {
-        let Some(count) = self.ws.delete_activity_count() else {
+    fn show_delete_activity(&mut self, ctx: &egui::Context) {
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::DeleteActivity);
+        let Some(activity) = self.ws.delete_activity() else {
             return;
         };
+        let mut cancel_requested = escape_requested;
         ctx.request_repaint_after(std::time::Duration::from_millis(125));
         egui::Window::new("Moving to Trash")
             .id(egui::Id::new("delete_activity"))
@@ -304,14 +307,42 @@ impl App {
             .resizable(false)
             .movable(false)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!(
-                        "Moving {count} {} to Trash...",
-                        if count == 1 { "item" } else { "items" }
-                    ));
-                });
+                ui.set_min_width(320.0);
+                ui.label(format!(
+                    "{} of {} {} processed",
+                    activity.completed,
+                    activity.total,
+                    if activity.total == 1 { "item" } else { "items" }
+                ));
+                let fraction = if activity.total == 0 {
+                    0.0
+                } else {
+                    activity.completed as f32 / activity.total as f32
+                };
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(ui.available_width())
+                        .show_percentage(),
+                );
+                ui.add_space(6.0);
+                if ui
+                    .add_enabled(
+                        !activity.cancel_requested,
+                        egui::Button::new(if activity.cancel_requested {
+                            "Cancelling..."
+                        } else {
+                            "Cancel"
+                        })
+                        .corner_radius(egui::CornerRadius::ZERO),
+                    )
+                    .clicked()
+                {
+                    cancel_requested = true;
+                }
             });
+        if cancel_requested {
+            self.ws.cancel_delete();
+        }
     }
 
     pub(crate) fn is_modal_surface_open(
@@ -324,6 +355,7 @@ impl App {
             }
             crate::accessibility::ModalSurface::SafeState => self.ws.safe_state.is_some(),
             crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
+            crate::accessibility::ModalSurface::DeleteActivity => self.ws.delete_active(),
             _ => self.ui.modals.is_surface_open(surface),
         }
     }
@@ -500,6 +532,15 @@ impl App {
             (
                 "Trash result is uncertain; review operation errors".to_string(),
                 crate::toasts::ToastKind::Error,
+            )
+        } else if outcome.cancelled {
+            (
+                if outcome.trashed == 0 {
+                    "Moving to Trash was cancelled".to_string()
+                } else {
+                    format!("Moved {} to Trash before cancellation", outcome.trashed)
+                },
+                crate::toasts::ToastKind::Info,
             )
         } else if outcome.failed == 0 {
             (

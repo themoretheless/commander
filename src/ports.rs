@@ -71,12 +71,19 @@ pub trait ClipboardPort {
 pub enum OpenRequest {
     OpenPath(PathBuf),
     Reveal(PathBuf),
+    OpenWith { path: PathBuf, application: PathBuf },
+    QuickLook(PathBuf),
+    GetInfo(PathBuf),
 }
 
 impl OpenRequest {
     pub fn path(&self) -> &Path {
         match self {
-            Self::OpenPath(path) | Self::Reveal(path) => path,
+            Self::OpenPath(path)
+            | Self::Reveal(path)
+            | Self::QuickLook(path)
+            | Self::GetInfo(path) => path,
+            Self::OpenWith { path, .. } => path,
         }
     }
 }
@@ -124,6 +131,8 @@ pub enum TrashItemOutcome {
     Trashed,
     Missing,
     StaleBinding,
+    Cancelled,
+    Indeterminate(NativeFailure),
     Unsupported(NativeFailure),
     Failed(NativeFailure),
 }
@@ -183,6 +192,9 @@ pub enum ContextMenuResult {
     Dismissed,
     RefreshRequested,
     OpenRequested,
+    OpenWithRequested { application: PathBuf },
+    QuickLookRequested,
+    GetInfoRequested,
     RevealRequested,
     CopyPathRequested,
     MoveToTrashRequested,

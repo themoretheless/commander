@@ -157,53 +157,18 @@ fn ensure_class() -> bool {
                     return;
                 }
                 let app_path = std::ffi::CStr::from_ptr(utf8).to_string_lossy().to_string();
-                MENU_PATH.with(|p| {
-                    let path = p.borrow();
-                    record_launch_result(
-                        ContextMenuCommand::OpenWith,
-                        std::process::Command::new("open")
-                            .arg("-a")
-                            .arg(&app_path)
-                            .arg(path.as_os_str())
-                            .spawn(),
-                    );
+                set_menu_result(ContextMenuResult::OpenWithRequested {
+                    application: PathBuf::from(app_path),
                 });
             }
         }
 
         extern "C" fn action_quick_look(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| {
-                record_launch_result(
-                    ContextMenuCommand::QuickLook,
-                    std::process::Command::new("qlmanage")
-                        .arg("-p")
-                        .arg(p)
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn(),
-                );
-            });
+            set_menu_result(ContextMenuResult::QuickLookRequested);
         }
 
         extern "C" fn action_get_info(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| {
-                record_launch_result(
-                    ContextMenuCommand::GetInfo,
-                    std::process::Command::new("osascript")
-                        .arg("-e")
-                        .arg("on run argv")
-                        .arg("-e")
-                        .arg(
-                            "tell application \"Finder\" to open information window of \
-                             (POSIX file (item 1 of argv) as alias)",
-                        )
-                        .arg("-e")
-                        .arg("end run")
-                        .arg("--")
-                        .arg(p)
-                        .spawn(),
-                );
-            });
+            set_menu_result(ContextMenuResult::GetInfoRequested);
         }
 
         extern "C" fn action_duplicate(_: &Object, _: Sel, _: *mut Object) {

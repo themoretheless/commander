@@ -95,13 +95,14 @@ impl PendingTransfer {
         use crate::fs_util::OpClass;
         match self.kind {
             TransferKind::Move => OpClass::Move {
-                same_volume: matches!(
-                    self.space,
-                    TransferSpaceState::Ready {
-                        relation: crate::ports::VolumeRelation::Same,
-                        ..
-                    }
-                ),
+                same_volume: self.symlink_policy != crate::filesystem_policy::SymlinkPolicy::Follow
+                    && matches!(
+                        self.space,
+                        TransferSpaceState::Ready {
+                            relation: crate::ports::VolumeRelation::Same,
+                            ..
+                        }
+                    ),
             },
             TransferKind::Copy => OpClass::Copy,
         }
@@ -210,12 +211,20 @@ pub struct DeleteOutcome {
     /// The worker stopped without a terminal report, so some mutations may
     /// have committed even though no per-path success could be confirmed.
     pub indeterminate: bool,
+    pub cancelled: bool,
 }
 
 impl DeleteOutcome {
     pub fn refresh_required(&self) -> bool {
         self.trashed > 0
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeleteActivity {
+    pub completed: usize,
+    pub total: usize,
+    pub cancel_requested: bool,
 }
 
 /// How a shelf drain turned out: how many copies started, and how many items
@@ -1179,8 +1188,18 @@ impl Workspace {
         self.deletes.is_active()
     }
 
-    pub fn delete_activity_count(&self) -> Option<usize> {
-        self.deletes.activity_count()
+    pub fn delete_activity(&self) -> Option<DeleteActivity> {
+        self.deletes
+            .activity()
+            .map(|(completed, total, cancel_requested)| DeleteActivity {
+                completed,
+                total,
+                cancel_requested,
+            })
+    }
+
+    pub fn cancel_delete(&self) -> bool {
+        self.deletes.cancel()
     }
 
     fn mutation_commits_blocked(&self) -> bool {
@@ -1343,6 +1362,11 @@ impl Workspace {
             .start(entries, target, flat, symlink_policy, port, notify)
     }
 
+    #[cfg(test)]
+    fn set_space_probe_before_scan(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.space_probes.set_before_scan(hook);
+    }
+
     /// Publish one complete preflight snapshot. Reports only bind to the exact
     /// pending target and generation that launched them.
     pub fn poll_space_probe(&mut self, notify: impl Fn() + Send + 'static) {
@@ -1402,6 +1426,13 @@ impl Workspace {
         }
     }
 
+    pub fn dismiss_pending_op(&mut self) {
+        if matches!(self.pending_op, Some(PendingOp::Transfer(_))) {
+            self.space_probes.cancel();
+        }
+        self.pending_op = None;
+    }
+
     /// Rich conflict list for the pending Copy/Move: source entries whose name
     /// already exists in the destination folder, with both sides' size/mtime.
     pub fn pending_conflicts(&self) -> Vec<crate::conflict::Conflict> {
@@ -1436,7 +1467,7 @@ impl Workspace {
     /// `true` if anything remains to transfer.
     pub fn resolve_pending_conflicts(&mut self, policy: crate::conflict::RelationPolicy) -> bool {
         let conflicts = self.pending_conflicts();
-        let (entries, target, flat, symlink_policy) = {
+        let resolved = {
             let Some(PendingOp::Transfer(tr)) = &mut self.pending_op else {
                 return false;
             };
@@ -1456,14 +1487,20 @@ impl Workspace {
             tr.conflicts = scan::find_conflicts(&tr.entries, &tr.target);
             tr.flat = scan::pending_flat_list();
             if tr.entries.is_empty() {
-                return false;
+                None
+            } else {
+                Some((
+                    tr.entries.clone(),
+                    tr.target.clone(),
+                    tr.flat.clone(),
+                    tr.symlink_policy,
+                ))
             }
-            (
-                tr.entries.clone(),
-                tr.target.clone(),
-                tr.flat.clone(),
-                tr.symlink_policy,
-            )
+        };
+        let Some((entries, target, flat, symlink_policy)) = resolved else {
+            self.space_probes.cancel();
+            self.pending_op = None;
+            return false;
         };
         let wake = self.active_panel_ref().notify_callback();
         let generation = self.start_space_probe(entries, target, flat, symlink_policy, move || {
@@ -4055,7 +4092,14 @@ mod tests {
 
         assert!(workspace.delete_active());
         assert!(workspace.mutations_blocked());
-        assert_eq!(workspace.delete_activity_count(), Some(1));
+        assert_eq!(
+            workspace.delete_activity(),
+            Some(DeleteActivity {
+                completed: 0,
+                total: 1,
+                cancel_requested: false,
+            })
+        );
         let context = workspace.command_context();
         assert!(context.active_mutation);
         assert!(!context.safe_state);
@@ -5439,8 +5483,15 @@ mod tests {
         // A same-volume BUFFERED copy writes every byte, so it can overflow.
         assert!(mk(TransferKind::Copy, Buffered, 1_000, Some(10), true).overflows());
         assert!(!mk(TransferKind::Copy, Buffered, 1_000, Some(10), true).needs_no_space());
-        // A same-volume move needs no space regardless of method.
+        // A normal same-volume move can rename without allocating data.
         assert!(mk(TransferKind::Move, Native, 1_000, Some(10), true).needs_no_space());
+        let mut followed_move = mk(TransferKind::Move, Native, 1_000, Some(10), true);
+        followed_move.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Follow;
+        assert!(!followed_move.needs_no_space());
+        assert!(matches!(
+            followed_move.space_verdict(),
+            crate::fs_util::SpaceVerdict::WontFit { .. }
+        ));
         assert_eq!(
             mk(TransferKind::Move, Native, 1_000, None, true).space_verdict(),
             crate::fs_util::SpaceVerdict::Indeterminate
@@ -5532,6 +5583,36 @@ mod tests {
                 ..
             } if ready_generation == generation
         ));
+    }
+
+    #[test]
+    fn replacement_before_worker_scan_fails_stale_without_starting_transfer_backend() {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let source = left.file("source.txt", "original");
+        let replacement = left.file("replacement.txt", "replacement");
+        let mut workspace = workspace(&left, &right);
+        workspace.left.extend_selection([source.clone()]);
+        let hook_source = source.clone();
+        workspace.set_space_probe_before_scan(Arc::new(move || {
+            std::fs::rename(&replacement, &hook_source).unwrap();
+        }));
+
+        workspace.request_copy();
+        workspace.finish_space_probe();
+
+        let Some(PendingOp::Transfer(transfer)) = &workspace.pending_op else {
+            panic!("stale transfer should remain pending for review");
+        };
+        assert!(matches!(
+            &transfer.space,
+            TransferSpaceState::Failed { failure, .. }
+                if failure.kind == crate::ports::NativeFailureKind::Stale
+        ));
+        assert!(transfer.expectations.is_empty());
+        assert!(!workspace.confirm_pending_op(|| {}));
+        assert!(workspace.active_transfer_view().is_none());
+        assert!(!right.path().join("source.txt").exists());
+        assert_eq!(std::fs::read_to_string(source).unwrap(), "replacement");
     }
 
     #[cfg(unix)]
@@ -6272,5 +6353,9 @@ mod tests {
         assert_eq!(ws.pending_conflicts().len(), 1);
         assert!(!ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
         assert!(file.is_file());
+        assert!(
+            ws.pending_op.is_none(),
+            "an empty conflict resolution must retire the old plan"
+        );
     }
 }

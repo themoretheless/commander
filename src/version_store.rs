@@ -46,6 +46,7 @@ struct VersionManifest {
     records: Vec<VersionRecord>,
 }
 
+#[cfg(test)]
 pub fn preserve_with_policy(
     path: &Path,
     operation_id: &OperationId,
@@ -55,6 +56,24 @@ pub fn preserve_with_policy(
     preserve_at(&versions_dir(), path, operation_id, key, retention)
 }
 
+pub fn preserve_expected_with_policy(
+    path: &Path,
+    expected: &PathIdentity,
+    operation_id: &OperationId,
+    key: IdempotencyKey,
+    retention: VersionRetentionPolicy,
+) -> Result<Option<VersionRecord>, crate::ports::NativeFailure> {
+    preserve_expected_at(
+        &versions_dir(),
+        path,
+        expected,
+        operation_id,
+        key,
+        retention,
+    )
+}
+
+#[cfg(test)]
 fn preserve_at(
     root: &Path,
     path: &Path,
@@ -62,43 +81,85 @@ fn preserve_at(
     key: IdempotencyKey,
     retention: VersionRetentionPolicy,
 ) -> Result<Option<VersionRecord>, String> {
+    preserve_at_inner(root, path, None, operation_id, key, retention)
+        .map_err(|failure| failure.message)
+}
+
+pub(crate) fn preserve_expected_at(
+    root: &Path,
+    path: &Path,
+    expected: &PathIdentity,
+    operation_id: &OperationId,
+    key: IdempotencyKey,
+    retention: VersionRetentionPolicy,
+) -> Result<Option<VersionRecord>, crate::ports::NativeFailure> {
+    preserve_at_inner(root, path, Some(expected), operation_id, key, retention)
+}
+
+fn preserve_at_inner(
+    root: &Path,
+    path: &Path,
+    expected: Option<&PathIdentity>,
+    operation_id: &OperationId,
+    key: IdempotencyKey,
+    retention: VersionRetentionPolicy,
+) -> Result<Option<VersionRecord>, crate::ports::NativeFailure> {
     let before = PathIdentity::observe(path).map_err(|error| {
-        format!(
-            "Could not inspect {} for versioning: {error}",
-            path.display()
-        )
+        let mut failure = crate::ports::NativeFailure::from_io(&error);
+        failure.message = format!(
+            "Could not inspect {} for versioning: {}",
+            path.display(),
+            failure.message
+        );
+        failure
     })?;
+    if expected.is_some_and(|expected| !expected.same_shallow_binding(&before)) {
+        return Err(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Stale,
+            message: format!(
+                "{} changed before its version could be preserved",
+                path.display()
+            ),
+        });
+    }
     if !before.exists {
         return Ok(None);
     }
     let stored = record_path(root, operation_id, &key, path);
     if let Some(parent) = stored.parent() {
         fs::create_dir_all(parent).map_err(|error| {
-            format!(
+            version_failure(format!(
                 "Could not create version directory {}: {error}",
                 parent.display()
-            )
+            ))
         })?;
     }
-    copy_path(path, &stored).map_err(|error| {
-        format!(
+    if let Err(error) = copy_path(path, &stored) {
+        let _ = remove_path(&stored);
+        return Err(version_failure(format!(
             "Could not preserve {} at {}: {error}",
             path.display(),
             stored.display()
-        )
-    })?;
+        )));
+    }
     let after = PathIdentity::observe(path).map_err(|error| {
-        format!(
-            "Could not recheck {} after versioning: {error}",
-            path.display()
-        )
+        let mut failure = crate::ports::NativeFailure::from_io(&error);
+        failure.message = format!(
+            "Could not recheck {} after versioning: {}",
+            path.display(),
+            failure.message
+        );
+        failure
     })?;
     if !before.same_version(&after) || !paths_equal(path, &stored) {
         let _ = remove_path(&stored);
-        return Err(format!(
-            "Source changed or version verification failed for {}",
-            path.display()
-        ));
+        return Err(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Stale,
+            message: format!(
+                "Source changed or version verification failed for {}",
+                path.display()
+            ),
+        });
     }
 
     let record = VersionRecord {
@@ -117,10 +178,43 @@ fn preserve_at(
     manifest.records.push(record.clone());
     if !save_manifest(root, &manifest) {
         let _ = remove_path(&stored);
-        return Err("Could not save version manifest".to_string());
+        return Err(version_failure("Could not save version manifest"));
     }
     prune_manifest(root, &manifest, retention, record.created_at_secs);
     Ok(Some(record))
+}
+
+fn version_failure(message: impl Into<String>) -> crate::ports::NativeFailure {
+    crate::ports::NativeFailure {
+        kind: crate::ports::NativeFailureKind::Unknown,
+        message: message.into(),
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub fn discard_record(record: &VersionRecord) -> Result<(), String> {
+    discard_record_at(&versions_dir(), record)
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
+    let mut manifest = load_manifest(root);
+    let previous_len = manifest.records.len();
+    manifest
+        .records
+        .retain(|candidate| candidate.key != record.key);
+    if manifest.records.len() == previous_len {
+        return Ok(());
+    }
+    if !save_manifest(root, &manifest) {
+        return Err("Could not remove rejected version from the manifest".to_string());
+    }
+    remove_path(&record.stored).map_err(|error| {
+        format!(
+            "Could not remove rejected version {}: {error}",
+            record.stored.display()
+        )
+    })
 }
 
 fn retained_records(
@@ -276,67 +370,104 @@ fn save_manifest(root: &Path, manifest: &VersionManifest) -> bool {
 }
 
 fn copy_path(source: &Path, destination: &Path) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(source)?;
-    if metadata.file_type().is_symlink() {
-        let target = fs::read_link(source)?;
-        create_symlink(&target, destination, source.is_dir())?;
-    } else if metadata.is_dir() {
-        fs::create_dir(destination)?;
-        for entry in fs::read_dir(source)? {
-            let entry = entry?;
-            copy_path(&entry.path(), &destination.join(entry.file_name()))?;
+    enum Task {
+        Copy(PathBuf, PathBuf),
+        SetPermissions(PathBuf, fs::Permissions),
+    }
+
+    let mut tasks = vec![Task::Copy(source.to_path_buf(), destination.to_path_buf())];
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::SetPermissions(path, permissions) => {
+                fs::set_permissions(path, permissions)?;
+            }
+            Task::Copy(source, destination) => {
+                let metadata = fs::symlink_metadata(&source)?;
+                if metadata.file_type().is_symlink() {
+                    let target = fs::read_link(&source)?;
+                    create_symlink(&target, &destination, source.is_dir())?;
+                    continue;
+                }
+                if metadata.is_dir() {
+                    fs::create_dir(&destination)?;
+                    tasks.push(Task::SetPermissions(
+                        destination.clone(),
+                        metadata.permissions(),
+                    ));
+                    let mut children = fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
+                    children.sort_by_key(|entry| entry.file_name());
+                    for entry in children.into_iter().rev() {
+                        tasks.push(Task::Copy(
+                            entry.path(),
+                            destination.join(entry.file_name()),
+                        ));
+                    }
+                    continue;
+                }
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                let mut input = fs::File::open(&source)?;
+                let mut output = options.open(&destination)?;
+                std::io::copy(&mut input, &mut output)?;
+                output.sync_all()?;
+                fs::set_permissions(destination, metadata.permissions())?;
+            }
         }
-        fs::set_permissions(destination, metadata.permissions())?;
-    } else {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        let mut input = fs::File::open(source)?;
-        let mut output = options.open(destination)?;
-        std::io::copy(&mut input, &mut output)?;
-        output.sync_all()?;
-        fs::set_permissions(destination, metadata.permissions())?;
     }
     Ok(())
 }
 
 pub fn paths_equal(left: &Path, right: &Path) -> bool {
-    let Ok(left_meta) = fs::symlink_metadata(left) else {
-        return false;
-    };
-    let Ok(right_meta) = fs::symlink_metadata(right) else {
-        return false;
-    };
-    if left_meta.file_type().is_symlink() || right_meta.file_type().is_symlink() {
-        return left_meta.file_type().is_symlink()
-            && right_meta.file_type().is_symlink()
-            && fs::read_link(left).ok() == fs::read_link(right).ok();
+    let mut tasks = vec![(left.to_path_buf(), right.to_path_buf())];
+    while let Some((left, right)) = tasks.pop() {
+        let Ok(left_meta) = fs::symlink_metadata(&left) else {
+            return false;
+        };
+        let Ok(right_meta) = fs::symlink_metadata(&right) else {
+            return false;
+        };
+        if left_meta.file_type().is_symlink() || right_meta.file_type().is_symlink() {
+            if !left_meta.file_type().is_symlink()
+                || !right_meta.file_type().is_symlink()
+                || fs::read_link(&left).ok() != fs::read_link(&right).ok()
+            {
+                return false;
+            }
+            continue;
+        }
+        if left_meta.is_dir() != right_meta.is_dir() {
+            return false;
+        }
+        if !left_meta.is_dir() {
+            if !crate::fs_util::files_equal(&left, &right) {
+                return false;
+            }
+            continue;
+        }
+        let Some(left_names) = directory_names(&left) else {
+            return false;
+        };
+        let Some(right_names) = directory_names(&right) else {
+            return false;
+        };
+        if left_names != right_names {
+            return false;
+        }
+        for name in left_names.into_iter().rev() {
+            tasks.push((left.join(&name), right.join(name)));
+        }
     }
-    if left_meta.is_dir() != right_meta.is_dir() {
-        return false;
-    }
-    if !left_meta.is_dir() {
-        return crate::fs_util::files_equal(left, right);
-    }
-    let mut left_names = match fs::read_dir(left) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name())
-            .collect::<Vec<_>>(),
-        Err(_) => return false,
-    };
-    let mut right_names = match fs::read_dir(right) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name())
-            .collect::<Vec<_>>(),
-        Err(_) => return false,
-    };
-    left_names.sort();
-    right_names.sort();
-    left_names == right_names
-        && left_names
-            .iter()
-            .all(|name| paths_equal(&left.join(name), &right.join(name)))
+    true
+}
+
+fn directory_names(path: &Path) -> Option<Vec<std::ffi::OsString>> {
+    let mut names = fs::read_dir(path)
+        .ok()?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    names.sort();
+    Some(names)
 }
 
 fn remove_path(path: &Path) -> std::io::Result<()> {
@@ -388,6 +519,51 @@ mod tests {
     }
 
     #[test]
+    fn version_copy_and_verification_handle_deep_trees_iteratively() {
+        let temp = TempDir::new();
+        let source = temp.dir("source");
+        let mut current = source.clone();
+        for _ in 0..128 {
+            current = current.join("d");
+            fs::create_dir(&current).unwrap();
+        }
+        fs::write(current.join("payload.bin"), "payload").unwrap();
+        let destination = temp.path().join("destination");
+
+        copy_path(&source, &destination).unwrap();
+
+        assert!(paths_equal(&source, &destination));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_version_copy_removes_partial_data_without_manifest_publication() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let source = temp.dir("source");
+        temp.file("source/a.txt", "copied first");
+        let socket = std::os::unix::net::UnixListener::bind(source.join("z.sock")).unwrap();
+        let operation = OperationId::new();
+        let key = operation.step_key(0, &source);
+        let expected = PathIdentity::observe(&source).unwrap();
+        let stored = record_path(&versions, &operation, &key, &source);
+
+        let result = preserve_expected_at(
+            &versions,
+            &source,
+            &expected,
+            &operation,
+            key,
+            VersionRetentionPolicy::Recent,
+        );
+
+        drop(socket);
+        assert!(result.is_err());
+        assert!(!stored.exists());
+        assert!(load_manifest(&versions).records.is_empty());
+    }
+
+    #[test]
     fn restore_refuses_to_clobber_an_occupied_original() {
         let temp = TempDir::new();
         let stored = temp.file("stored.txt", "old");
@@ -423,6 +599,31 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&original).unwrap(), "before");
         assert_eq!(load_manifest(&versions).records, vec![record]);
+    }
+
+    #[test]
+    fn expected_binding_rejects_replacement_without_publishing_a_version() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "before");
+        let expected = PathIdentity::observe(&original).unwrap();
+        let replacement = temp.file("replacement.txt", "after");
+        std::fs::rename(replacement, &original).unwrap();
+        let operation = OperationId("test-stale-preserve".to_string());
+
+        let failure = preserve_expected_at(
+            &versions,
+            &original,
+            &expected,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap_err();
+
+        assert_eq!(failure.kind, crate::ports::NativeFailureKind::Stale);
+        assert!(load_manifest(&versions).records.is_empty());
+        assert!(!versions.exists());
     }
 
     #[test]

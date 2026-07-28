@@ -24,6 +24,8 @@ const MAX_FLAT_ENTRIES: usize = 5000;
 pub struct TransferPreflightScan {
     pub flat: Vec<FlatFileEntry>,
     pub need_bytes: Result<u64, crate::ports::NativeFailure>,
+    pub source_identities:
+        Vec<Result<crate::path_identity::TransferSourceIdentity, crate::ports::NativeFailure>>,
 }
 
 pub fn pending_flat_list() -> FlatList {
@@ -94,23 +96,41 @@ pub fn transfer_preflight(
     entries: &[FileEntry],
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 ) -> TransferPreflightScan {
+    transfer_preflight_cancellable(entries, symlink_policy, &|| false)
+}
+
+pub(crate) fn transfer_preflight_cancellable(
+    entries: &[FileEntry],
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    cancelled: &dyn Fn() -> bool,
+) -> TransferPreflightScan {
     let mut flat = Vec::new();
     let mut truncated = false;
     let mut need_bytes = 0_u64;
     let mut failure = None;
-    let mut ancestors = std::collections::HashSet::new();
+    let mut source_identities = Vec::with_capacity(entries.len());
     for entry in entries {
-        scan_transfer_entry(
-            &entry.path,
-            &entry.name,
-            0,
+        if cancelled() {
+            let cancelled = cancelled_failure();
+            failure.get_or_insert_with(|| cancelled.clone());
+            source_identities.push(Err(cancelled));
+            continue;
+        }
+        let source = capture_listing_source(
+            entry,
             symlink_policy,
-            &mut ancestors,
             &mut flat,
             &mut truncated,
             &mut need_bytes,
             &mut failure,
+            cancelled,
         );
+        if let Err(source_failure) = &source
+            && failure.is_none()
+        {
+            failure = Some(source_failure.clone());
+        }
+        source_identities.push(source);
     }
     if truncated {
         flat.push(FlatFileEntry {
@@ -123,165 +143,370 @@ pub fn transfer_preflight(
     TransferPreflightScan {
         flat,
         need_bytes: failure.map_or(Ok(need_bytes), Err),
+        source_identities,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn scan_transfer_entry(
+/// Capture the exact source proof the transfer worker will later revalidate.
+/// This uses the same traversal as resource preflight, including followed
+/// symlink targets, but does not require a UI listing observation.
+pub(crate) fn capture_transfer_source(
     path: &Path,
-    name: &str,
-    depth: usize,
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
-    ancestors: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> Result<crate::path_identity::TransferSourceIdentity, crate::ports::NativeFailure> {
+    let mut flat = Vec::new();
+    let mut truncated = false;
+    let mut need_bytes = 0;
+    let mut failure = None;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let source = capture_source(
+        path,
+        &name,
+        symlink_policy,
+        None,
+        &mut flat,
+        &mut truncated,
+        &mut need_bytes,
+        &mut failure,
+        &|| false,
+    )?;
+    if let Some(failure) = failure {
+        Err(failure)
+    } else {
+        Ok(source)
+    }
+}
+
+fn capture_listing_source(
+    entry: &FileEntry,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     flat: &mut Vec<FlatFileEntry>,
     truncated: &mut bool,
     need_bytes: &mut u64,
     failure: &mut Option<crate::ports::NativeFailure>,
-) {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            record_scan_failure(path, error, failure);
-            return;
+    cancelled: &dyn Fn() -> bool,
+) -> Result<crate::path_identity::TransferSourceIdentity, crate::ports::NativeFailure> {
+    let expected = match &entry.identity {
+        crate::panel::ListingIdentity::Captured(identity) => identity,
+        crate::panel::ListingIdentity::CaptureFailed(failure) => return Err(failure.clone()),
+        crate::panel::ListingIdentity::Unavailable => {
+            return Err(crate::ports::NativeFailure {
+                kind: crate::ports::NativeFailureKind::Unsupported,
+                message: format!(
+                    "The visible listing did not capture an identity for {}",
+                    entry.path.display()
+                ),
+            });
         }
     };
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() {
-        return match symlink_policy {
-            crate::filesystem_policy::SymlinkPolicy::Preserve => {
-                if depth <= MAX_FLAT_DEPTH {
-                    push_transfer_preview(
-                        flat,
-                        truncated,
-                        FlatFileEntry {
-                            name: name.to_string(),
-                            size: 0,
-                            is_dir: false,
-                            depth,
-                        },
-                    );
-                }
-            }
-            crate::filesystem_policy::SymlinkPolicy::Skip => {
-                if depth <= MAX_FLAT_DEPTH {
-                    push_transfer_preview(
-                        flat,
-                        truncated,
-                        FlatFileEntry {
-                            name: name.to_string(),
-                            size: 0,
-                            is_dir: false,
-                            depth,
-                        },
-                    );
-                }
-            }
-            crate::filesystem_policy::SymlinkPolicy::Follow => {
-                let followed = match std::fs::canonicalize(path) {
-                    Ok(followed) => followed,
-                    Err(error) => {
-                        record_scan_failure(path, error, failure);
-                        return;
-                    }
-                };
-                scan_transfer_entry(
-                    &followed,
-                    name,
-                    depth,
-                    symlink_policy,
-                    ancestors,
-                    flat,
-                    truncated,
-                    need_bytes,
-                    failure,
-                );
-            }
-        };
-    }
-    let is_dir = file_type.is_dir();
-    let size = if is_dir { 0 } else { metadata.len() };
-
-    if depth <= MAX_FLAT_DEPTH {
-        push_transfer_preview(
-            flat,
-            truncated,
-            FlatFileEntry {
-                name: name.to_string(),
-                size,
-                is_dir,
-                depth,
-            },
-        );
-        if is_dir && depth == MAX_FLAT_DEPTH {
-            push_transfer_preview(
-                flat,
-                truncated,
-                FlatFileEntry {
-                    name: "...".to_string(),
-                    size: 0,
-                    is_dir: false,
-                    depth: depth + 1,
-                },
-            );
-        }
-    }
-
-    if !is_dir {
-        accumulate_logical_size(path, need_bytes, size, failure);
-        return;
-    }
-
-    let canonical = match std::fs::canonicalize(path) {
-        Ok(canonical) => canonical,
-        Err(error) => {
-            record_scan_failure(path, error, failure);
-            return;
-        }
-    };
-    if !ancestors.insert(canonical.clone()) {
-        record_scan_failure(
-            path,
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "symlink cycle detected during transfer preflight",
+    let source = capture_source(
+        &entry.path,
+        &entry.name,
+        symlink_policy,
+        Some(expected),
+        flat,
+        truncated,
+        need_bytes,
+        failure,
+        cancelled,
+    )?;
+    if !expected.same_shallow_binding(&source.lexical) {
+        return Err(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Stale,
+            message: format!(
+                "{} changed after it was shown in the listing",
+                entry.path.display()
             ),
-            failure,
-        );
-        return;
+        });
     }
-    let children = match std::fs::read_dir(path) {
-        Ok(children) => children,
-        Err(error) => {
-            ancestors.remove(&canonical);
-            record_scan_failure(path, error, failure);
-            return;
+    Ok(source)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_source(
+    path: &Path,
+    name: &str,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    expected_root: Option<&crate::path_identity::PathIdentity>,
+    flat: &mut Vec<FlatFileEntry>,
+    truncated: &mut bool,
+    need_bytes: &mut u64,
+    failure: &mut Option<crate::ports::NativeFailure>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<crate::path_identity::TransferSourceIdentity, crate::ports::NativeFailure> {
+    let bytes_before = *need_bytes;
+    struct ProofCapture {
+        path: std::path::PathBuf,
+        before: crate::path_identity::PathIdentity,
+        fingerprint: Option<crate::path_identity::TreeFingerprint>,
+        link: Option<std::path::PathBuf>,
+        identity: Option<crate::path_identity::PathIdentity>,
+    }
+
+    enum Task {
+        Visit {
+            proof: usize,
+            path: std::path::PathBuf,
+            relative: std::path::PathBuf,
+            display_name: String,
+            depth: usize,
+            metadata: Option<Box<std::fs::Metadata>>,
+        },
+        ExitDirectory(std::path::PathBuf),
+        FinishProof(usize),
+    }
+
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| classify_scan_failure(path, "inspect", error))?;
+    let before = crate::path_identity::PathIdentity::from_metadata(path.to_path_buf(), &metadata);
+    if expected_root.is_some_and(|expected| !expected.same_shallow_binding(&before)) {
+        return Err(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Stale,
+            message: format!(
+                "{} changed after it was shown in the listing",
+                path.display()
+            ),
+        });
+    }
+    let mut proofs = vec![ProofCapture {
+        path: path.to_path_buf(),
+        before,
+        fingerprint: metadata
+            .is_dir()
+            .then(crate::path_identity::TreeFingerprint::new),
+        link: None,
+        identity: None,
+    }];
+    let mut tasks = vec![
+        Task::FinishProof(0),
+        Task::Visit {
+            proof: 0,
+            path: path.to_path_buf(),
+            relative: std::path::PathBuf::new(),
+            display_name: name.to_string(),
+            depth: 0,
+            metadata: Some(Box::new(metadata)),
+        },
+    ];
+    let mut ancestors = std::collections::HashSet::new();
+    while let Some(task) = tasks.pop() {
+        if cancelled() {
+            return Err(cancelled_failure());
         }
-    };
-    let mut children = children
-        .filter_map(|entry| match entry {
-            Ok(entry) => Some(entry),
-            Err(error) => {
-                record_scan_failure(path, error, failure);
-                None
+        match task {
+            Task::FinishProof(proof) => {
+                let capture = &mut proofs[proof];
+                let after = crate::path_identity::PathIdentity::observe(&capture.path)
+                    .map_err(|error| classify_scan_failure(&capture.path, "recheck", error))?;
+                if !capture.before.same_shallow_binding(&after) {
+                    return Err(crate::ports::NativeFailure {
+                        kind: crate::ports::NativeFailureKind::Stale,
+                        message: format!(
+                            "{} changed while it was being scanned",
+                            capture.path.display()
+                        ),
+                    });
+                }
+                capture.identity = Some(match capture.fingerprint.take() {
+                    Some(fingerprint) => after.with_tree_fingerprint(fingerprint.finish()),
+                    None => after,
+                });
             }
-        })
-        .collect::<Vec<_>>();
-    children.sort_by_key(|entry| entry.file_name());
-    for child in children {
-        let child_name = child.file_name().to_string_lossy().into_owned();
-        scan_transfer_entry(
-            &child.path(),
-            &child_name,
-            depth + 1,
-            symlink_policy,
-            ancestors,
-            flat,
-            truncated,
-            need_bytes,
-            failure,
-        );
+            Task::ExitDirectory(canonical) => {
+                ancestors.remove(&canonical);
+            }
+            Task::Visit {
+                proof,
+                path,
+                relative,
+                display_name,
+                depth,
+                metadata,
+            } => {
+                let metadata = match metadata {
+                    Some(metadata) => *metadata,
+                    None => std::fs::symlink_metadata(&path)
+                        .map_err(|error| classify_scan_failure(&path, "inspect", error))?,
+                };
+                if let Some(fingerprint) = &mut proofs[proof].fingerprint {
+                    fingerprint.record(&relative, &metadata);
+                }
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    match symlink_policy {
+                        crate::filesystem_policy::SymlinkPolicy::Preserve
+                        | crate::filesystem_policy::SymlinkPolicy::Skip => {
+                            if depth <= MAX_FLAT_DEPTH {
+                                push_transfer_preview(
+                                    flat,
+                                    truncated,
+                                    FlatFileEntry {
+                                        name: display_name,
+                                        size: 0,
+                                        is_dir: false,
+                                        depth,
+                                    },
+                                );
+                            }
+                        }
+                        crate::filesystem_policy::SymlinkPolicy::Follow => {
+                            let target = std::fs::canonicalize(&path)
+                                .map_err(|error| classify_scan_failure(&path, "follow", error))?;
+                            let target_metadata =
+                                std::fs::symlink_metadata(&target).map_err(|error| {
+                                    classify_scan_failure(&target, "inspect", error)
+                                })?;
+                            let before = crate::path_identity::PathIdentity::from_metadata(
+                                target.clone(),
+                                &target_metadata,
+                            );
+                            let target_proof = proofs.len();
+                            proofs.push(ProofCapture {
+                                path: target.clone(),
+                                before,
+                                fingerprint: target_metadata
+                                    .is_dir()
+                                    .then(crate::path_identity::TreeFingerprint::new),
+                                link: Some(path),
+                                identity: None,
+                            });
+                            tasks.push(Task::FinishProof(target_proof));
+                            tasks.push(Task::Visit {
+                                proof: target_proof,
+                                path: target,
+                                relative: std::path::PathBuf::new(),
+                                display_name,
+                                depth,
+                                metadata: Some(Box::new(target_metadata)),
+                            });
+                        }
+                    }
+                    continue;
+                }
+
+                let is_dir = file_type.is_dir();
+                let size = if is_dir { 0 } else { metadata.len() };
+                if depth <= MAX_FLAT_DEPTH {
+                    push_transfer_preview(
+                        flat,
+                        truncated,
+                        FlatFileEntry {
+                            name: display_name,
+                            size,
+                            is_dir,
+                            depth,
+                        },
+                    );
+                    if is_dir && depth == MAX_FLAT_DEPTH {
+                        push_transfer_preview(
+                            flat,
+                            truncated,
+                            FlatFileEntry {
+                                name: "...".to_string(),
+                                size: 0,
+                                is_dir: false,
+                                depth: depth + 1,
+                            },
+                        );
+                    }
+                }
+                if !is_dir {
+                    accumulate_logical_size(&path, need_bytes, size, failure);
+                    continue;
+                }
+
+                let canonical = std::fs::canonicalize(&path)
+                    .map_err(|error| classify_scan_failure(&path, "resolve", error))?;
+                if !ancestors.insert(canonical.clone()) {
+                    return Err(crate::ports::NativeFailure {
+                        kind: crate::ports::NativeFailureKind::Stale,
+                        message: format!(
+                            "Could not scan {}: symlink cycle detected",
+                            path.display()
+                        ),
+                    });
+                }
+                let read_dir = std::fs::read_dir(&path)
+                    .map_err(|error| classify_scan_failure(&path, "read", error))?;
+                let mut children = Vec::new();
+                for child in read_dir {
+                    children
+                        .push(child.map_err(|error| classify_scan_failure(&path, "read", error))?);
+                }
+                children.sort_by_key(|entry| entry.file_name());
+                tasks.push(Task::ExitDirectory(canonical));
+                for child in children.into_iter().rev() {
+                    let child_name = child.file_name();
+                    tasks.push(Task::Visit {
+                        proof,
+                        path: child.path(),
+                        relative: relative.join(&child_name),
+                        display_name: child_name.to_string_lossy().into_owned(),
+                        depth: depth + 1,
+                        metadata: None,
+                    });
+                }
+            }
+        }
     }
-    ancestors.remove(&canonical);
+
+    let lexical = proofs
+        .first_mut()
+        .and_then(|proof| proof.identity.take())
+        .ok_or_else(|| crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Unknown,
+            message: format!(
+                "Transfer preflight did not finish scanning {}",
+                path.display()
+            ),
+        })?;
+    let followed = proofs
+        .into_iter()
+        .skip(1)
+        .map(|proof| {
+            let link = proof.link.ok_or_else(|| crate::ports::NativeFailure {
+                kind: crate::ports::NativeFailureKind::Unknown,
+                message: "Transfer preflight lost a followed-link binding".to_string(),
+            })?;
+            let target = proof.identity.ok_or_else(|| crate::ports::NativeFailure {
+                kind: crate::ports::NativeFailureKind::Unknown,
+                message: format!(
+                    "Transfer preflight did not finish scanning {}",
+                    proof.path.display()
+                ),
+            })?;
+            Ok(crate::path_identity::FollowedPathIdentity { link, target })
+        })
+        .collect::<Result<Vec<_>, crate::ports::NativeFailure>>()?;
+    Ok(crate::path_identity::TransferSourceIdentity {
+        lexical,
+        followed,
+        logical_bytes: need_bytes.saturating_sub(bytes_before),
+    })
+}
+
+fn cancelled_failure() -> crate::ports::NativeFailure {
+    crate::ports::NativeFailure {
+        kind: crate::ports::NativeFailureKind::Cancelled,
+        message: "Transfer preflight was cancelled".to_string(),
+    }
+}
+
+fn classify_scan_failure(
+    path: &Path,
+    action: &str,
+    error: std::io::Error,
+) -> crate::ports::NativeFailure {
+    let mut classified = crate::ports::NativeFailure::from_io(&error);
+    classified.message = format!(
+        "Could not {action} {} during transfer preflight: {}",
+        path.display(),
+        classified.message
+    );
+    classified
 }
 
 fn accumulate_logical_size(
@@ -316,19 +541,6 @@ fn push_transfer_preview(
     } else {
         *truncated = true;
     }
-}
-
-fn record_scan_failure(
-    path: &Path,
-    error: std::io::Error,
-    failure: &mut Option<crate::ports::NativeFailure>,
-) {
-    if failure.is_some() {
-        return;
-    }
-    let mut classified = crate::ports::NativeFailure::from_io(&error);
-    classified.message = format!("Could not size {}: {}", path.display(), classified.message);
-    *failure = Some(classified);
 }
 
 /// Recursively collect all files/dirs into a flat list with depth.
@@ -431,8 +643,17 @@ mod tests {
     use crate::testutil::TempDir;
 
     fn entry_for(path: &std::path::Path) -> FileEntry {
-        let meta = std::fs::metadata(path).unwrap();
-        FileEntry::from_meta(path.to_path_buf(), &meta).unwrap()
+        let lexical = std::fs::symlink_metadata(path).unwrap();
+        let display = if lexical.file_type().is_symlink() {
+            std::fs::metadata(path).unwrap()
+        } else {
+            lexical.clone()
+        };
+        let mut entry = FileEntry::from_meta(path.to_path_buf(), &display).unwrap();
+        entry.identity = crate::panel::ListingIdentity::Captured(
+            crate::path_identity::PathIdentity::from_metadata(path.to_path_buf(), &lexical),
+        );
+        entry
     }
 
     #[test]
@@ -521,6 +742,89 @@ mod tests {
         );
         assert_eq!(followed.need_bytes, Ok(7));
         assert!(followed.flat.first().is_some_and(|item| item.is_dir));
+        assert_eq!(followed.source_identities.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn followed_target_changes_invalidate_the_transfer_source_proof() {
+        let tmp = TempDir::new();
+        let target = tmp.file("target/value.bin", "first");
+        let link = tmp.path().join("linked");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        let entry = entry_for(&link);
+        let planned = transfer_preflight(
+            std::slice::from_ref(&entry),
+            crate::filesystem_policy::SymlinkPolicy::Follow,
+        )
+        .source_identities
+        .into_iter()
+        .next()
+        .unwrap()
+        .unwrap();
+
+        std::fs::write(target, "changed-content").unwrap();
+        let current =
+            capture_transfer_source(&link, crate::filesystem_policy::SymlinkPolicy::Follow)
+                .unwrap();
+
+        assert!(!planned.same_binding(&current));
+        assert_eq!(planned.followed.len(), 1);
+        assert_eq!(current.logical_bytes, 15);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_listing_root_is_rejected_before_replacement_traversal() {
+        let tmp = TempDir::new();
+        let source = tmp.file("source", "visible");
+        let entry = entry_for(&source);
+        std::fs::remove_file(&source).unwrap();
+        std::fs::create_dir(&source).unwrap();
+        std::os::unix::fs::symlink(".", source.join("cycle")).unwrap();
+
+        let scan = transfer_preflight(&[entry], crate::filesystem_policy::SymlinkPolicy::Follow);
+
+        assert!(matches!(
+            &scan.source_identities[0],
+            Err(failure) if failure.kind == crate::ports::NativeFailureKind::Stale
+        ));
+        assert!(scan.flat.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_paths_each_contribute_their_logical_copy_size() {
+        let tmp = TempDir::new();
+        let root = tmp.dir("root");
+        let first = tmp.file("root/first.bin", "12345");
+        std::fs::hard_link(first, root.join("second.bin")).unwrap();
+
+        let scan = transfer_preflight(
+            &[entry_for(&root)],
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        );
+
+        assert_eq!(scan.need_bytes, Ok(10));
+    }
+
+    #[test]
+    fn iterative_preflight_handles_deep_trees_without_recursive_stack_growth() {
+        let tmp = TempDir::new();
+        let root = tmp.dir("root");
+        let mut current = root.clone();
+        for _ in 0..128 {
+            current = current.join("d");
+            std::fs::create_dir(&current).unwrap();
+        }
+        std::fs::write(current.join("value.bin"), "x").unwrap();
+
+        let scan = transfer_preflight(
+            &[entry_for(&root)],
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        );
+
+        assert_eq!(scan.need_bytes, Ok(1));
     }
 
     #[cfg(unix)]

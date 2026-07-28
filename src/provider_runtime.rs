@@ -37,6 +37,18 @@ pub fn reduce_context_menu_result(
         ContextMenuResult::OpenRequested => Some(ContextMenuUiEffect::Open(
             crate::ports::OpenRequest::OpenPath(path.to_path_buf()),
         )),
+        ContextMenuResult::OpenWithRequested { application } => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::OpenWith {
+                path: path.to_path_buf(),
+                application,
+            },
+        )),
+        ContextMenuResult::QuickLookRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::QuickLook(path.to_path_buf()),
+        )),
+        ContextMenuResult::GetInfoRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::GetInfo(path.to_path_buf()),
+        )),
         ContextMenuResult::RevealRequested => Some(ContextMenuUiEffect::Open(
             crate::ports::OpenRequest::Reveal(path.to_path_buf()),
         )),

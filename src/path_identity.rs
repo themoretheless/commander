@@ -29,6 +29,56 @@ pub struct PathIdentity {
     pub observed_version: u64,
 }
 
+/// One immutable proof for bytes reached through `SymlinkPolicy::Follow`.
+///
+/// The lexical link itself remains part of the enclosing tree identity. This
+/// companion proof binds the canonical object whose bytes will actually be
+/// copied, including its full tree when it is a directory.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowedPathIdentity {
+    pub link: PathBuf,
+    pub target: PathIdentity,
+}
+
+/// Source proof used by transfer plans. `lexical` never follows symlinks;
+/// `followed` binds every separately traversed target in deterministic order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferSourceIdentity {
+    pub lexical: PathIdentity,
+    #[serde(default)]
+    pub followed: Vec<FollowedPathIdentity>,
+    #[serde(default)]
+    pub logical_bytes: u64,
+}
+
+impl TransferSourceIdentity {
+    pub fn same_binding(&self, other: &Self) -> bool {
+        self.lexical.same_binding(&other.lexical)
+            && self.logical_bytes == other.logical_bytes
+            && self.followed.len() == other.followed.len()
+            && self
+                .followed
+                .iter()
+                .zip(&other.followed)
+                .all(|(expected, current)| {
+                    expected.link == current.link && expected.target.same_binding(&current.target)
+                })
+    }
+
+    pub fn same_version(&self, other: &Self) -> bool {
+        self.lexical.same_version(&other.lexical)
+            && self.logical_bytes == other.logical_bytes
+            && self.followed.len() == other.followed.len()
+            && self
+                .followed
+                .iter()
+                .zip(&other.followed)
+                .all(|(expected, current)| {
+                    expected.link == current.link && expected.target.same_binding(&current.target)
+                })
+    }
+}
+
 impl PathIdentity {
     pub fn observe(path: &Path) -> std::io::Result<Self> {
         match std::fs::symlink_metadata(path) {
@@ -91,6 +141,13 @@ impl PathIdentity {
         self.path == other.path && self.same_version(other)
     }
 
+    /// Compare a lexical listing observation with another shallow observation.
+    /// Tree fingerprints are deliberately ignored so the identity captured by
+    /// a directory listing can bind the root of a later deep scan.
+    pub(crate) fn same_shallow_binding(&self, other: &Self) -> bool {
+        self.path == other.path && self.same_metadata(other)
+    }
+
     /// Prove that two observations refer to the same filesystem object even
     /// when it has been atomically renamed to a quarantine path.
     pub fn same_object(&self, other: &Self) -> bool {
@@ -106,13 +163,19 @@ impl PathIdentity {
         }
     }
 
-    fn same_metadata(&self, other: &Self) -> bool {
+    pub(crate) fn same_metadata(&self, other: &Self) -> bool {
         self.exists == other.exists
             && self.kind == other.kind
             && self.volume == other.volume
             && self.file_id == other.file_id
             && self.size == other.size
             && self.modified_nanos == other.modified_nanos
+    }
+
+    pub(crate) fn with_tree_fingerprint(mut self, fingerprint: u64) -> Self {
+        self.tree_fingerprint = Some(fingerprint);
+        self.refresh_observed_version();
+        self
     }
 
     pub(crate) fn from_metadata(path: PathBuf, metadata: &std::fs::Metadata) -> Self {
@@ -174,15 +237,22 @@ impl PathIdentity {
     }
 }
 
-fn tree_fingerprint(root: &Path) -> std::io::Result<u64> {
-    let mut hash = 0xcbf29ce484222325_u64;
-    let mut stack = vec![(PathBuf::new(), root.to_path_buf())];
-    while let Some((relative, path)) = stack.pop() {
-        let metadata = std::fs::symlink_metadata(&path)?;
-        hash_bytes(&mut hash, relative.to_string_lossy().as_bytes());
+pub(crate) struct TreeFingerprint {
+    hash: u64,
+}
+
+impl TreeFingerprint {
+    pub(crate) fn new() -> Self {
+        Self {
+            hash: 0xcbf29ce484222325_u64,
+        }
+    }
+
+    pub(crate) fn record(&mut self, relative: &Path, metadata: &std::fs::Metadata) {
+        hash_bytes(&mut self.hash, relative.to_string_lossy().as_bytes());
         let file_type = metadata.file_type();
         hash_bytes(
-            &mut hash,
+            &mut self.hash,
             &[if file_type.is_symlink() {
                 3
             } else if metadata.is_dir() {
@@ -193,16 +263,30 @@ fn tree_fingerprint(root: &Path) -> std::io::Result<u64> {
                 4
             }],
         );
-        hash_bytes(&mut hash, &metadata.len().to_le_bytes());
+        hash_bytes(&mut self.hash, &metadata.len().to_le_bytes());
         let modified = metadata
             .modified()
             .ok()
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |duration| duration.as_nanos());
-        hash_bytes(&mut hash, &modified.to_le_bytes());
-        let (volume, file_id) = native_identity(&metadata);
-        hash_bytes(&mut hash, &volume.unwrap_or_default().to_le_bytes());
-        hash_bytes(&mut hash, &file_id.unwrap_or_default().to_le_bytes());
+        hash_bytes(&mut self.hash, &modified.to_le_bytes());
+        let (volume, file_id) = native_identity(metadata);
+        hash_bytes(&mut self.hash, &volume.unwrap_or_default().to_le_bytes());
+        hash_bytes(&mut self.hash, &file_id.unwrap_or_default().to_le_bytes());
+    }
+
+    pub(crate) fn finish(self) -> u64 {
+        self.hash
+    }
+}
+
+fn tree_fingerprint(root: &Path) -> std::io::Result<u64> {
+    let mut fingerprint = TreeFingerprint::new();
+    let mut stack = vec![(PathBuf::new(), root.to_path_buf())];
+    while let Some((relative, path)) = stack.pop() {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        fingerprint.record(&relative, &metadata);
+        let file_type = metadata.file_type();
 
         if metadata.is_dir() && !file_type.is_symlink() {
             let mut children = std::fs::read_dir(&path)?.collect::<Result<Vec<_>, _>>()?;
@@ -213,7 +297,7 @@ fn tree_fingerprint(root: &Path) -> std::io::Result<u64> {
             }
         }
     }
-    Ok(hash)
+    Ok(fingerprint.finish())
 }
 
 fn hash_bytes(hash: &mut u64, bytes: &[u8]) {

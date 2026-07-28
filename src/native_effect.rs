@@ -120,6 +120,33 @@ impl OpenerPort for MacOsOpener {
                 .arg(path)
                 .spawn()
                 .map(|_| ()),
+            OpenRequest::OpenWith { path, application } => std::process::Command::new("open")
+                .arg("-a")
+                .arg(application)
+                .arg(path)
+                .spawn()
+                .map(|_| ()),
+            OpenRequest::QuickLook(path) => std::process::Command::new("qlmanage")
+                .arg("-p")
+                .arg(path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map(|_| ()),
+            OpenRequest::GetInfo(path) => std::process::Command::new("osascript")
+                .arg("-e")
+                .arg("on run argv")
+                .arg("-e")
+                .arg(
+                    "tell application \"Finder\" to open information window of \
+                     (POSIX file (item 1 of argv) as alias)",
+                )
+                .arg("-e")
+                .arg("end run")
+                .arg("--")
+                .arg(path)
+                .spawn()
+                .map(|_| ()),
         };
         match result {
             Ok(()) => OpenOutcome::Accepted,

@@ -206,6 +206,12 @@ pub struct OperationStep {
     pub source: PathBuf,
     pub destination: PathBuf,
     pub source_before: Option<PathIdentity>,
+    #[serde(default)]
+    pub source_followed: Vec<crate::path_identity::FollowedPathIdentity>,
+    #[serde(default)]
+    pub source_logical_bytes: Option<u64>,
+    #[serde(default)]
+    pub source_proof_complete: bool,
     pub destination_before: Option<PathIdentity>,
     #[serde(default)]
     pub landing: Option<PathBuf>,
@@ -594,6 +600,49 @@ fn validate_step(operation: &OperationRecord, step: &OperationStep) -> Result<()
             operation.id.0, step.key.0
         ));
     }
+    let mut reachable_roots = vec![(
+        step.source.clone(),
+        step.source_before.as_ref().is_some_and(|identity| {
+            identity.kind == Some(crate::path_identity::PathKind::Directory)
+        }),
+    )];
+    for proof in &step.source_followed {
+        if !reachable_roots.iter().any(|(root, descendants)| {
+            proof.link == *root || (*descendants && proof.link.starts_with(root))
+        }) {
+            return Err(format!(
+                "Operation {} step {} contains an unreachable followed proof",
+                operation.id.0, step.key.0
+            ));
+        }
+        if proof.target.kind == Some(crate::path_identity::PathKind::Directory) {
+            reachable_roots.push((proof.target.path.clone(), true));
+        }
+    }
+    if step.source_proof_complete
+        && (step.source_before.is_none() || step.source_logical_bytes.is_none())
+    {
+        return Err(format!(
+            "Operation {} step {} contains an incomplete source proof",
+            operation.id.0, step.key.0
+        ));
+    }
+    if !step.source_proof_complete
+        && (!step.source_followed.is_empty() || step.source_logical_bytes.is_some())
+    {
+        return Err(format!(
+            "Operation {} step {} contains unbound source proof fields",
+            operation.id.0, step.key.0
+        ));
+    }
+    if operation.symlink_policy != crate::filesystem_policy::SymlinkPolicy::Follow
+        && !step.source_followed.is_empty()
+    {
+        return Err(format!(
+            "Operation {} step {} contains followed proofs under another symlink policy",
+            operation.id.0, step.key.0
+        ));
+    }
 
     if matches!(step.status, StepStatus::Completed | StepStatus::RolledBack)
         && (step.landing.is_none() || step.destination_after.is_none())
@@ -901,9 +950,10 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
             .map(|(index, entry)| {
                 let destination = spec.target.join(&entry.name);
                 let expectation = spec.expectations.get(index);
-                let source = expectation
+                let source_proof = expectation
                     .and_then(|value| value.source.as_ref().ok())
                     .cloned();
+                let source = source_proof.as_ref().map(|proof| proof.lexical.clone());
                 let destination_before = expectation
                     .and_then(|value| value.destination.as_ref().ok())
                     .cloned();
@@ -920,6 +970,12 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                     source: entry.path.clone(),
                     destination,
                     source_before: source,
+                    source_followed: source_proof
+                        .as_ref()
+                        .map(|proof| proof.followed.clone())
+                        .unwrap_or_default(),
+                    source_logical_bytes: source_proof.as_ref().map(|proof| proof.logical_bytes),
+                    source_proof_complete: source_proof.is_some(),
                     destination_before,
                     landing: None,
                     landing_before: None,
@@ -1038,32 +1094,13 @@ pub fn mark_checkpoint(
     })
 }
 
-pub fn mark_requeued(
-    operation_id: &OperationId,
-    key: &IdempotencyKey,
-    source_before: PathIdentity,
-) -> Result<(), String> {
-    update_step(operation_id, key, &[OperationStatus::Running], |step| {
-        step.status = step
-            .status
-            .transition(StepEvent::Requeue)
-            .map_err(|error| error.to_string())?;
-        step.source_before = Some(source_before);
-        step.staging = None;
-        step.landing = None;
-        step.landing_before = None;
-        step.checkpoint = None;
-        step.fast_path = None;
-        Ok(())
-    })
-}
-
 pub fn prepare_replacement(
     operation_id: &OperationId,
     key: &IdempotencyKey,
     staged: &Path,
     destination: &Path,
     proposed_backup: &Path,
+    expected_original: &PathIdentity,
 ) -> Result<ReplacementBackup, String> {
     let original = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not prove overwrite destination: {error}"))?;
@@ -1071,6 +1108,14 @@ pub fn prepare_replacement(
         .map_err(|error| format!("Could not prove overwrite staging: {error}"))?;
     if !original.exists || !replacement.exists {
         return Err("Overwrite preparation requires both original and staged objects".to_string());
+    }
+    let expected_matches = if expected_original.tree_fingerprint.is_some() {
+        expected_original.same_binding(&original)
+    } else {
+        expected_original.same_shallow_binding(&original)
+    };
+    if !expected_matches {
+        return Err("Overwrite destination changed after conflict review".to_string());
     }
     mutate(|journal| {
         let operation = journal
@@ -1606,6 +1651,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
 
     let mut entries = Vec::new();
     let mut expectations = Vec::new();
+    let mut preflight_bytes = 0_u64;
     for step in record.steps.iter().filter(|step| {
         matches!(
             step.status,
@@ -1627,10 +1673,14 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
             .map_err(|error| format!("Could not inspect {}: {error}", step.source.display()))?;
         let entry = FileEntry::from_meta(step.source.clone(), &metadata)
             .ok_or_else(|| format!("Invalid recovery source: {}", step.source.display()))?;
-        let source = PathIdentity::observe_deep(&step.source)
-            .map_err(|error| format!("Could not re-stat recovery source: {error}"))?;
-        let destination = PathIdentity::observe_deep(&step.destination)
-            .map_err(|error| format!("Could not re-stat recovery destination: {error}"))?;
+        let source = crate::scan::capture_transfer_source(&step.source, record.symlink_policy)
+            .map_err(|failure| {
+                format!(
+                    "Could not re-stat recovery source {}: {}",
+                    step.source.display(),
+                    failure.message
+                )
+            })?;
         let source_before = step.source_before.as_ref().ok_or_else(|| {
             format!(
                 "Recovery source was never captured: {}",
@@ -1643,12 +1693,46 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
                 step.destination.display()
             )
         })?;
-        if !source_before.same_binding(&source) {
+        let destination = observe_with_expected_depth(&step.destination, destination_before)
+            .map_err(|error| format!("Could not re-stat recovery destination: {error}"))?;
+        if !source_before.same_binding(&source.lexical) {
             return Err(format!(
                 "Recovery source changed since the operation: {}",
                 step.source.display()
             ));
         }
+        let expected_source = if step.source_proof_complete {
+            let expected = crate::path_identity::TransferSourceIdentity {
+                lexical: source_before.clone(),
+                followed: step.source_followed.clone(),
+                logical_bytes: step.source_logical_bytes.ok_or_else(|| {
+                    format!(
+                        "Recovery source proof has no logical size: {}",
+                        step.source.display()
+                    )
+                })?,
+            };
+            if !expected.same_binding(&source) {
+                return Err(format!(
+                    "Recovery source bytes changed since the operation: {}",
+                    step.source.display()
+                ));
+            }
+            expected
+        } else {
+            if record.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Follow
+                && !source.followed.is_empty()
+            {
+                return Err(format!(
+                    "Legacy recovery lacks followed-target proofs for {}",
+                    step.source.display()
+                ));
+            }
+            source
+        };
+        preflight_bytes = preflight_bytes
+            .checked_add(expected_source.logical_bytes)
+            .ok_or_else(|| "Recovery source size exceeds the supported range".to_string())?;
         if !destination_before.same_binding(&destination) {
             return Err(format!(
                 "Recovery destination changed since the operation: {}",
@@ -1656,7 +1740,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
             ));
         }
         if let (Some(landing), Some(landing_before)) = (&step.landing, &step.landing_before) {
-            let current = PathIdentity::observe_deep(landing)
+            let current = observe_with_expected_depth(landing, landing_before)
                 .map_err(|error| format!("Could not re-stat recovery landing: {error}"))?;
             if !landing_before.same_binding(&current) {
                 return Err(format!(
@@ -1668,7 +1752,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         entries.push(entry);
         expectations.push(TransferExpectation {
             key: Some(step.key.clone()),
-            source: Ok(source_before.clone()),
+            source: Ok(expected_source),
             destination: Ok(destination_before.clone()),
             landing: step.landing.clone(),
             landing_before: step.landing_before.clone(),
@@ -1688,7 +1772,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         version_retention: record.version_retention,
         name_policy: record.name_policy,
         symlink_policy: record.symlink_policy,
-        preflight_bytes: None,
+        preflight_bytes: Some(preflight_bytes),
         post_success: record.post_success,
         rollback_cleanup: record.rollback_cleanup,
         rollback_cleanup_identity: record.rollback_cleanup_identity,
@@ -1703,6 +1787,17 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         #[cfg(test)]
         journal_enabled: false,
     })
+}
+
+fn observe_with_expected_depth(
+    path: &Path,
+    expected: &PathIdentity,
+) -> std::io::Result<PathIdentity> {
+    if expected.tree_fingerprint.is_some() {
+        PathIdentity::observe_deep(path)
+    } else {
+        PathIdentity::observe(path)
+    }
 }
 
 fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>, String> {
@@ -2760,6 +2855,9 @@ mod tests {
                 source: source.to_path_buf(),
                 destination: destination.to_path_buf(),
                 source_before: Some(PathIdentity::observe_deep(source).unwrap()),
+                source_followed: Vec::new(),
+                source_logical_bytes: None,
+                source_proof_complete: false,
                 destination_before: Some(PathIdentity::observe_deep(destination).unwrap()),
                 landing: None,
                 landing_before: None,
@@ -3139,6 +3237,72 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn follow_source_proof_round_trips_through_recovery() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new();
+        let journal_path = temp.path().join("journal.json");
+        let _journal = use_test_journal(journal_path);
+        let target = temp.dir("target");
+        let followed = temp.dir("followed");
+        temp.file("followed/payload.txt", "payload");
+        let nested_target = temp.dir("nested-target");
+        temp.file("nested-target/nested.txt", "nested");
+        symlink(&nested_target, followed.join("nested-link")).unwrap();
+        let source = temp.path().join("source-link");
+        symlink(&followed, &source).unwrap();
+        let entry =
+            FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+        let scan = crate::scan::transfer_preflight(
+            std::slice::from_ref(&entry),
+            crate::filesystem_policy::SymlinkPolicy::Follow,
+        );
+        let logical_bytes = scan.need_bytes.clone().unwrap();
+        let source_proof = scan.source_identities[0].as_ref().unwrap().clone();
+        let expectations = crate::transfer::expectations_from_source_identities(
+            std::slice::from_ref(&entry),
+            &target,
+            scan.source_identities,
+        )
+        .unwrap();
+        let mut spec = transfer_spec("follow-proof", vec![entry], &target);
+        spec.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Follow;
+        spec.preflight_bytes = Some(logical_bytes);
+        spec.expectations = expectations;
+
+        begin(&spec).unwrap();
+        let record = load().unwrap().operations.remove(0);
+        let step = &record.steps[0];
+        assert!(step.source_proof_complete);
+        assert_eq!(step.source_before.as_ref(), Some(&source_proof.lexical));
+        assert_eq!(step.source_followed, source_proof.followed);
+        assert_eq!(step.source_followed.len(), 2);
+        assert_eq!(step.source_logical_bytes, Some(logical_bytes));
+
+        let resumed = build_resume_spec_from(record).unwrap();
+        assert_eq!(resumed.preflight_bytes, Some(logical_bytes));
+        assert_eq!(resumed.expectations[0].source, Ok(source_proof));
+    }
+
+    #[test]
+    fn recovery_revalidates_a_shallow_directory_destination_as_shallow() {
+        let temp = TempDir::new();
+        let source = temp.file("source.txt", "source");
+        let destination = temp.dir("target/source.txt");
+        temp.file("target/source.txt/existing.txt", "existing");
+        let mut record = incomplete_record(&source, &destination, StepStatus::Planned);
+        record.steps[0].destination_before = Some(PathIdentity::observe(&destination).unwrap());
+
+        let resumed = build_resume_spec_from(record).unwrap();
+
+        assert_eq!(
+            resumed.expectations[0].destination,
+            Ok(PathIdentity::observe(&destination).unwrap())
+        );
+    }
+
     #[test]
     fn terminal_completion_proof_is_structural_immutable_and_stale_safe() {
         let temp = TempDir::new();
@@ -3359,7 +3523,15 @@ mod tests {
         )
         .unwrap();
         let backup = target.join(".source.txt.cmdr-tmp.backup");
-        prepare_replacement(&spec.operation_id, &key, &staging, &destination, &backup).unwrap();
+        prepare_replacement(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            &backup,
+            &destination_before,
+        )
+        .unwrap();
         crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
         crate::fs_util::sync_parent_namespace(&destination).unwrap();
         mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
@@ -3387,6 +3559,57 @@ mod tests {
         assert_eq!(
             resumed.expectations[0].resume.as_ref().unwrap().offset,
             offset
+        );
+    }
+
+    #[test]
+    fn overwrite_preparation_rejects_a_replacement_after_version_review() {
+        let temp = TempDir::new();
+        let journal_path = temp.path().join("journal.json");
+        let _journal = use_test_journal(journal_path);
+        let target = temp.dir("target");
+        let source = temp.file("source.txt", "new bytes");
+        let destination = temp.file("target/source.txt", "reviewed bytes");
+        let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
+        let entry =
+            FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+        let spec = transfer_spec("overwrite-stale", vec![entry], &target);
+        begin(&spec).unwrap();
+        let key = step_key(&spec, 0, &destination);
+        let expected = PathIdentity::observe(&destination).unwrap();
+        mark_running(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            expected.clone(),
+        )
+        .unwrap();
+        let replacement = temp.file("replacement.txt", "foreign replacement");
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::rename(replacement, &destination).unwrap();
+        let backup = target.join(".source.txt.cmdr-tmp.backup");
+
+        let error = prepare_replacement(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            &backup,
+            &expected,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("changed after conflict review"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "foreign replacement"
+        );
+        assert!(!backup.exists());
+        assert!(
+            operation(&spec.operation_id).unwrap().steps[0]
+                .replacement
+                .is_none()
         );
     }
 

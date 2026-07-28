@@ -454,7 +454,7 @@ impl App {
 
     /// Close the dialog and reset its per-dialog egui state.
     fn dismiss_pending_op(&mut self, ctx: &egui::Context) {
-        self.ws.pending_op = None;
+        self.ws.dismiss_pending_op();
         ctx.data_mut(|d| {
             d.remove::<f64>(egui::Id::new("pending_flow_start"));
         });
