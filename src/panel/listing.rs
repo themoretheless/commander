@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -34,6 +35,7 @@ impl FilterCache {
 }
 
 pub(super) struct ListingState {
+    binding: PathBuf,
     entries: Vec<FileEntry>,
     status: DirStatus,
     revision: ListingRevision,
@@ -42,16 +44,25 @@ pub(super) struct ListingState {
 
 impl Default for ListingState {
     fn default() -> Self {
+        Self::new(PathBuf::new())
+    }
+}
+
+impl ListingState {
+    pub(super) fn new(binding: PathBuf) -> Self {
         Self {
+            binding,
             entries: Vec::new(),
             status: DirStatus::Empty,
             revision: ListingRevision(0),
             filter_cache: RefCell::new(FilterCache::stale()),
         }
     }
-}
 
-impl ListingState {
+    pub(super) fn binding(&self) -> &Path {
+        &self.binding
+    }
+
     pub(super) fn entries(&self) -> &[FileEntry] {
         &self.entries
     }
@@ -64,21 +75,35 @@ impl ListingState {
         self.revision
     }
 
-    pub(super) fn replace(&mut self, entries: Vec<FileEntry>, status: DirStatus) {
+    pub(super) fn replace(&mut self, binding: PathBuf, entries: Vec<FileEntry>, status: DirStatus) {
+        self.binding = binding;
         self.entries = entries;
         self.status = status;
         self.bump_revision();
     }
 
-    pub(super) fn mark_incomplete(&mut self, status: DirStatus) {
+    /// Publish an incomplete read for `binding`.
+    ///
+    /// A failure for the current binding keeps its last complete snapshot.
+    /// A failure after navigation must retire the previous directory's rows
+    /// immediately so they cannot be acted on under the new breadcrumb.
+    pub(super) fn mark_incomplete(&mut self, binding: PathBuf, status: DirStatus) -> bool {
         debug_assert!(matches!(
             status,
             DirStatus::Denied | DirStatus::Gone | DirStatus::Partial
         ));
+        if self.binding != binding {
+            self.binding = binding;
+            self.entries.clear();
+            self.status = status;
+            self.bump_revision();
+            return true;
+        }
         if self.status != status {
             self.status = status;
             self.bump_revision();
         }
+        false
     }
 
     pub(super) fn resort(&mut self, sort: impl FnOnce(&mut [FileEntry])) {
@@ -148,7 +173,7 @@ impl ListingState {
         } else {
             DirStatus::Listed
         };
-        self.replace(entries, status);
+        self.replace(self.binding.clone(), entries, status);
     }
 
     #[cfg(test)]
@@ -237,6 +262,39 @@ mod tests {
         let changed = listing.filtered_snapshot_at("al", FacetSet::default(), UNIX_EPOCH);
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(&*changed, &[0, 1]);
+    }
+
+    #[test]
+    fn incomplete_read_for_same_binding_preserves_last_complete_rows() {
+        let binding = PathBuf::from("/test");
+        let mut listing = ListingState::new(binding.clone());
+        listing.replace(
+            binding.clone(),
+            vec![entry("alpha", UNIX_EPOCH)],
+            DirStatus::Listed,
+        );
+
+        assert!(!listing.mark_incomplete(binding, DirStatus::Denied));
+        assert_eq!(listing.entries().len(), 1);
+        assert_eq!(listing.status(), DirStatus::Denied);
+    }
+
+    #[test]
+    fn incomplete_read_for_new_binding_retires_rows_and_filter_snapshot() {
+        let mut listing = ListingState::new(PathBuf::from("/test"));
+        listing.replace_for_test(vec![entry("alpha", UNIX_EPOCH)]);
+        let old_revision = listing.revision();
+        let old_filter = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
+
+        assert!(listing.mark_incomplete(PathBuf::from("/missing"), DirStatus::Gone));
+
+        assert_eq!(listing.binding(), Path::new("/missing"));
+        assert!(listing.entries().is_empty());
+        assert_eq!(listing.status(), DirStatus::Gone);
+        assert_ne!(listing.revision(), old_revision);
+        let new_filter = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
+        assert!(new_filter.is_empty());
+        assert!(!Arc::ptr_eq(&old_filter, &new_filter));
     }
 
     #[test]

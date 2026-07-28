@@ -283,18 +283,25 @@ impl DirectoryWatcherState {
         })
     }
 
-    pub(super) fn acknowledge_snapshot(&mut self, ticket: Option<ReconciliationTicket>) {
+    pub(super) fn acknowledge_snapshot(
+        &mut self,
+        ticket: Option<ReconciliationTicket>,
+        listing_binding: &Path,
+    ) {
         let Some(ticket) = ticket else {
             return;
         };
-        if self.binding.as_ref() != Some(&ticket.binding) {
+        if self.binding.as_ref() != Some(&ticket.binding) || ticket.binding.path != listing_binding
+        {
             return;
         }
         self.applied_generation = self.applied_generation.max(ticket.generation);
         if self.applied_generation >= self.requested_generation {
             self.retry_reconciliation_at = None;
         }
-        if self.applied_gap_generation < self.gap_generation {
+        if ticket.generation >= self.gap_generation
+            && self.applied_gap_generation < self.gap_generation
+        {
             self.applied_gap_generation = self.gap_generation;
         }
     }
@@ -391,7 +398,7 @@ impl DirectoryWatcherState {
     fn request_reconciliation(&mut self, gap: bool) {
         self.requested_generation = self.requested_generation.wrapping_add(1);
         if gap {
-            self.gap_generation = self.gap_generation.wrapping_add(1);
+            self.gap_generation = self.requested_generation;
         }
         self.retry_reconciliation_at = None;
         if let Some(wake) = &self.notify {
@@ -490,11 +497,43 @@ mod tests {
                 direct: true,
             },
         );
-        watcher.acknowledge_snapshot(Some(snapshot.clone()));
+        watcher.acknowledge_snapshot(Some(snapshot.clone()), Path::new("/watched"));
         let outcome = watcher.poll(Path::new("/watched"));
 
         let next = outcome.ticket.expect("the racing mutation must reconcile");
         assert!(next.generation > snapshot.generation);
+    }
+
+    #[test]
+    fn snapshot_from_another_listing_binding_cannot_acknowledge_ticket() {
+        let mut watcher = DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/watched"));
+        let snapshot = watcher.snapshot_ticket().unwrap();
+
+        watcher.acknowledge_snapshot(Some(snapshot.clone()), Path::new("/other"));
+        assert!(watcher.has_pending_reconciliation_for_test());
+
+        watcher.acknowledge_snapshot(Some(snapshot), Path::new("/watched"));
+        assert!(!watcher.has_pending_reconciliation_for_test());
+    }
+
+    #[test]
+    fn snapshot_older_than_gap_generation_cannot_acknowledge_gap() {
+        let mut watcher = DirectoryWatcherState::default();
+        let binding = watcher.activate_test_binding(Path::new("/watched"));
+        let before_gap = watcher.snapshot_ticket().unwrap();
+        watcher.inject_test_message(binding, WatchMessageKind::Gap);
+        let gap = watcher.poll(Path::new("/watched"));
+        assert!(gap.recovered_gap);
+
+        watcher.acknowledge_snapshot(Some(before_gap), Path::new("/watched"));
+        assert!(
+            watcher.poll(Path::new("/watched")).recovered_gap,
+            "a pre-gap snapshot cannot confirm gap recovery"
+        );
+
+        watcher.acknowledge_snapshot(gap.ticket, Path::new("/watched"));
+        assert!(!watcher.poll(Path::new("/watched")).recovered_gap);
     }
 
     #[test]

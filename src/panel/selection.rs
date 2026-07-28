@@ -1,5 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+
+const REMEMBERED_BINDINGS_LIMIT: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -7,9 +9,19 @@ pub(super) enum Focus {
     Entry(PathBuf),
 }
 
-pub(super) struct SelectionState {
+#[derive(Default)]
+struct RememberedSelection {
     selected: HashSet<PathBuf>,
     marked: HashSet<PathBuf>,
+}
+
+pub(super) struct SelectionState {
+    binding: PathBuf,
+    has_complete_snapshot: bool,
+    selected: HashSet<PathBuf>,
+    marked: HashSet<PathBuf>,
+    remembered: HashMap<PathBuf, RememberedSelection>,
+    remembered_order: VecDeque<PathBuf>,
     focus: Focus,
     cursor_row: usize,
     scroll_to_cursor: bool,
@@ -19,9 +31,19 @@ pub(super) struct SelectionState {
 
 impl Default for SelectionState {
     fn default() -> Self {
+        Self::new(PathBuf::new())
+    }
+}
+
+impl SelectionState {
+    pub(super) fn new(binding: PathBuf) -> Self {
         Self {
+            binding,
+            has_complete_snapshot: false,
             selected: HashSet::new(),
             marked: HashSet::new(),
+            remembered: HashMap::new(),
+            remembered_order: VecDeque::new(),
             focus: Focus::Parent,
             cursor_row: 0,
             scroll_to_cursor: false,
@@ -29,9 +51,72 @@ impl Default for SelectionState {
             page_rows: 0,
         }
     }
-}
 
-impl SelectionState {
+    /// Switch the active directory without exposing remembered selections.
+    ///
+    /// Selection for the target is restored only when a complete listing is
+    /// published, so an unavailable target cannot report or act on stale rows.
+    pub(super) fn bind(&mut self, binding: &Path) -> bool {
+        if self.binding == binding {
+            return false;
+        }
+
+        self.stash_active();
+        self.binding = binding.to_path_buf();
+        self.has_complete_snapshot = false;
+        self.selected.clear();
+        self.marked.clear();
+        self.reset_position();
+        true
+    }
+
+    pub(super) fn publish_complete(&mut self, binding: &Path) {
+        self.bind(binding);
+        if self.has_complete_snapshot {
+            return;
+        }
+
+        self.remembered_order.retain(|path| path != binding);
+        let restored = self.remembered.remove(binding).unwrap_or_default();
+        self.selected = restored.selected;
+        self.marked = restored.marked;
+        self.has_complete_snapshot = true;
+    }
+
+    fn stash_active(&mut self) {
+        if !self.has_complete_snapshot {
+            return;
+        }
+
+        let binding = self.binding.clone();
+        self.remembered_order.retain(|path| path != &binding);
+        if self.selected.is_empty() && self.marked.is_empty() {
+            self.remembered.remove(&binding);
+            return;
+        }
+
+        self.remembered.insert(
+            binding.clone(),
+            RememberedSelection {
+                selected: std::mem::take(&mut self.selected),
+                marked: std::mem::take(&mut self.marked),
+            },
+        );
+        self.remembered_order.push_back(binding);
+        while self.remembered.len() > REMEMBERED_BINDINGS_LIMIT {
+            if let Some(oldest) = self.remembered_order.pop_front() {
+                self.remembered.remove(&oldest);
+            }
+        }
+    }
+
+    fn reset_position(&mut self) {
+        self.focus = Focus::Parent;
+        self.cursor_row = 0;
+        self.scroll_to_cursor = false;
+        self.scroll_anchor = 0;
+    }
+
     pub(super) fn selected(&self) -> &HashSet<PathBuf> {
         &self.selected
     }
@@ -169,5 +254,32 @@ mod tests {
 
         assert!(selection.selected().is_empty());
         assert!(selection.marked().contains(&path));
+    }
+
+    #[test]
+    fn binding_switch_hides_state_until_a_complete_snapshot_restores_it() {
+        let old_binding = PathBuf::from("/old");
+        let old_entry = old_binding.join("selected.txt");
+        let mut selection = SelectionState::new(old_binding.clone());
+        selection.publish_complete(&old_binding);
+        selection.insert_selected(old_entry.clone());
+        selection.toggle_marked(old_entry.clone());
+        selection.set_cursor(1, Some(old_entry.clone()));
+
+        assert!(selection.bind(Path::new("/unavailable")));
+        assert!(selection.selected().is_empty());
+        assert!(selection.marked().is_empty());
+        assert_eq!(selection.focus(), &Focus::Parent);
+        assert_eq!(selection.cursor(), 0);
+
+        assert!(selection.bind(&old_binding));
+        assert!(
+            selection.selected().is_empty(),
+            "returning to the path alone must not expose remembered rows"
+        );
+        selection.publish_complete(&old_binding);
+        assert!(selection.selected().contains(&old_entry));
+        assert!(selection.marked().contains(&old_entry));
+        assert_eq!(selection.focus(), &Focus::Parent);
     }
 }

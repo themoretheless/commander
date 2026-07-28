@@ -1620,8 +1620,8 @@ impl PanelState {
     pub fn new(path: PathBuf) -> Self {
         PanelState {
             current_path: path.clone(),
-            listing: ListingState::default(),
-            selection: SelectionState::default(),
+            listing: ListingState::new(path.clone()),
+            selection: SelectionState::new(path.clone()),
             preview: None,
             history: {
                 let mut h = crate::jumplist::JumpList::new();
@@ -1653,6 +1653,7 @@ impl PanelState {
 
     #[cfg(test)]
     fn replace_entries_for_test(&mut self, entries: Vec<FileEntry>) {
+        self.selection.publish_complete(&self.current_path);
         self.listing.replace_for_test(entries);
     }
 
@@ -1835,7 +1836,8 @@ impl PanelState {
         self.watcher.ensure_binding(&path);
         let ticket = self.watcher.snapshot_ticket();
         if self.reload_entries() {
-            self.watcher.acknowledge_snapshot(ticket);
+            let listing_binding = self.listing.binding().to_path_buf();
+            self.watcher.acknowledge_snapshot(ticket, &listing_binding);
             self.refresh_sizes(true);
         } else {
             self.watcher.defer_snapshot(ticket.as_ref());
@@ -1850,13 +1852,23 @@ impl PanelState {
     }
 
     fn apply_directory_read(&mut self, read: DirectoryRead) -> bool {
-        let cursor_path = self.focused_path();
-        let old_cursor = self.cursor();
+        let binding = self.current_path.clone();
+        let binding_changed = self.listing.binding() != binding;
+        let cursor_path = (!binding_changed).then(|| self.focused_path()).flatten();
+        let old_cursor = if binding_changed { 0 } else { self.cursor() };
+
+        if binding_changed {
+            self.selection.bind(&binding);
+            self.sizes.bind(&binding);
+            self.drag_entries.clear();
+            self.drop_target = None;
+        }
 
         let mut entries = match read {
             DirectoryRead::Complete(entries) => entries,
             DirectoryRead::Incomplete(status) => {
-                self.listing.mark_incomplete(status);
+                let changed = self.listing.mark_incomplete(binding, status);
+                debug_assert_eq!(changed, binding_changed);
                 return false;
             }
         };
@@ -1866,12 +1878,15 @@ impl PanelState {
             DirStatus::Listed
         };
         sort_entries_with_config(&mut entries, self.view.config());
-        self.listing.replace(entries, status);
+        self.selection.publish_complete(&binding);
+        self.listing.replace(binding, entries, status);
 
         self.selection
             .retain_present(self.listing.entries().iter().map(|entry| &entry.path));
 
-        self.restore_cursor_focus(cursor_path, old_cursor);
+        if !binding_changed {
+            self.restore_cursor_focus(cursor_path, old_cursor);
+        }
         true
     }
 
@@ -1887,7 +1902,9 @@ impl PanelState {
         }
         if let Some(ticket) = outcome.ticket {
             if self.reload_entries() {
-                self.watcher.acknowledge_snapshot(Some(ticket));
+                let listing_binding = self.listing.binding().to_path_buf();
+                self.watcher
+                    .acknowledge_snapshot(Some(ticket), &listing_binding);
                 self.refresh_sizes(true);
                 crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 return true;
@@ -2977,6 +2994,70 @@ mod tests {
         }
         panel.watcher.defer_snapshot(ticket.as_ref());
         assert!(panel.watcher.has_pending_reconciliation_for_test());
+    }
+
+    fn assert_incomplete_navigation_hides_old_binding(status: DirStatus) {
+        let old_entry = entry("keep.txt", false, 10);
+        let old_path = old_entry.path.clone();
+        let mut panel = panel_with(vec![old_entry.clone()]);
+        panel.select_path(old_path.clone());
+        panel.toggle_mark(old_path.clone());
+        panel.set_cursor(1);
+        panel.begin_drag(old_path.clone());
+        panel.drop_target = Some(PathBuf::from("/test"));
+
+        let old_listing_revision = panel.entries_gen();
+        let old_size_revision = panel.size_snapshot().revision();
+        let old_filter = panel.filtered_indices();
+        assert_eq!(panel.folder_overview().total, Some(10));
+
+        panel.current_path = PathBuf::from("/unavailable");
+        assert!(!panel.apply_directory_read(DirectoryRead::Incomplete(status)));
+
+        assert_eq!(panel.listing.binding(), Path::new("/unavailable"));
+        assert!(panel.entries().is_empty());
+        assert!(panel.filtered_indices().is_empty());
+        assert!(!Arc::ptr_eq(&old_filter, &panel.filtered_indices()));
+        assert!(panel.entries_gen() > old_listing_revision);
+        assert!(panel.size_snapshot().revision() > old_size_revision);
+        assert_eq!(
+            panel.folder_overview(),
+            FolderOverview {
+                total: Some(0),
+                largest: None,
+                oldest: None,
+            }
+        );
+        assert!(panel.selected_paths().is_empty());
+        assert!(panel.marked_paths().is_empty());
+        assert!(panel.selected_or_cursor().unwrap().is_empty());
+        assert_eq!(panel.cursor(), 0);
+        assert!(panel.cursor_entry().is_none());
+        assert!(panel.drag_entries.is_empty());
+        assert!(panel.drop_target.is_none());
+
+        panel.current_path = PathBuf::from("/test");
+        assert!(panel.apply_directory_read(DirectoryRead::Complete(vec![old_entry])));
+        assert!(panel.is_selected(&old_path));
+        assert!(panel.is_marked(&old_path));
+        let actionable = panel.selected_or_cursor().unwrap();
+        assert_eq!(actionable.len(), 1);
+        assert_eq!(actionable[0].path, old_path);
+    }
+
+    #[test]
+    fn gone_after_binding_switch_exposes_no_old_actions_and_restores_on_return() {
+        assert_incomplete_navigation_hides_old_binding(DirStatus::Gone);
+    }
+
+    #[test]
+    fn denied_after_binding_switch_exposes_no_old_actions_and_restores_on_return() {
+        assert_incomplete_navigation_hides_old_binding(DirStatus::Denied);
+    }
+
+    #[test]
+    fn partial_after_binding_switch_exposes_no_old_actions_and_restores_on_return() {
+        assert_incomplete_navigation_hides_old_binding(DirStatus::Partial);
     }
 
     #[test]
@@ -4216,9 +4297,10 @@ mod tests {
             .watcher
             .inject_current_change_for_test(created.clone());
         assert!(panel.reload_entries());
+        let listing_binding = panel.listing.binding().to_path_buf();
         panel
             .watcher
-            .acknowledge_snapshot(subscription_ticket.clone());
+            .acknowledge_snapshot(subscription_ticket.clone(), &listing_binding);
 
         assert!(panel.poll_fs_changes());
         assert!(panel.entries().iter().any(|entry| entry.path == created));
