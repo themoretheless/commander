@@ -394,13 +394,16 @@ Three mechanisms connect the core to the shell:
   feature flags and the version manifest use the boundary and fail closed.
   Cross-process CAS, descriptor-relative opens, and migration of the operation
   journal/content index remain explicit follow-ups.
-- **Supply-chain policy still needs a checked-in owner.** The lockfile has no
-  known RustSec vulnerabilities after upgrading `crossbeam-epoch`,
-  `wayland-scanner`, `quick-xml`, and the `zbus_xml` chain. Narrow image decoder
-  features removed 43 unused crates and the unmaintained `paste` dependency.
-  `ttf-parser` remains an unmaintained transitive dependency of the Linux
-  Wayland/winit stack with no lockfile-only replacement; keep monitoring its
-  upstream migration and add an explicit `cargo-deny` license/advisory policy.
+- **Supply-chain acceptance is explicit and CI-enforced.** `deny.toml` checks
+  the full all-features lockfile for advisories, yanked crates, licenses,
+  wildcard requirements, and unapproved registries or Git sources. The current
+  result is zero known vulnerabilities and one accepted unmaintained advisory:
+  `RUSTSEC-2026-0192` for the Linux Wayland/winit `ttf-parser` path. Its owner
+  is `@themoretheless`, review date is 2026-10-21, and the CI date guard
+  hard-expires the waiver on 2026-10-28. Forty-one duplicate-crate groups stay
+  at warning severity as explicit dependency debt; there are no broad
+  duplicate skips or GPL/LGPL license allowances. Reproduce the gate with
+  `cargo deny --all-features --locked check advisories bans licenses sources`.
 - **Panel async ownership is split but the facade is not yet small.**
   `DirectoryWatcherState` and `SizeIndex` own generation, binding, retry and
   bounded-cache state; `ListingState` owns rows and filter invalidation.

@@ -85,25 +85,27 @@ actions when the manifest is corrupt, incompatible, forged, or path-escaping.
 The accepted scope deliberately leaves the operation journal/content index,
 cross-process CAS, and descriptor-relative filesystem traversal for dedicated
 migrations.
+The following four-role pass checked in the full-lockfile `cargo-deny` policy
+and a weekly Ubuntu gate. It currently reports zero known vulnerabilities,
+accepts only the unmaintained `RUSTSEC-2026-0192` Wayland/winit `ttf-parser`
+path, and leaves 41 duplicate-crate groups visible as warning-level debt. The
+waiver owner is `@themoretheless`, its review date is 2026-10-21, and its hard
+expiry is 2026-10-28. Reproduce the policy with
+`cargo deny --all-features --locked check advisories bans licenses sources`.
 
 Highest-value next steps, in order:
 
-1. Check in an explicit `cargo-deny` policy and CI gate. `cargo audit` is clean
-   after the 2026-07-28 lockfile refresh and image feature reduction;
-   `ttf-parser` remains an unmaintained Wayland/winit transitive with no
-   lockfile-only replacement, so its temporary acceptance needs an owner and
-   expiry review.
-2. Move go-to-path filesystem metadata probing off the UI frame and design an
+1. Move go-to-path filesystem metadata probing off the UI frame and design an
    `OsStr` plus volume-capability-aware naming policy for non-UTF-8,
    case-sensitivity and Unicode normalization.
-3. Promote `minimum_window`, `zoom_200_accessible`, and
+2. Promote `minimum_window`, `zoom_200_accessible`, and
    `confirmation_owner` to strict visual gates after their scenario-specific
    geometry checks stabilize; keep AppKit popup pixels, VoiceOver and
    multi-monitor placement as permission-bound release checks.
-4. Reconcile the transfer journal's remaining crash window between successful
+3. Reconcile the transfer journal's remaining crash window between successful
    placement and `mark_completed`, then add descriptor-relative namespace
    effects and a streaming parallel-directory planner.
-5. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
+4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries. Their state ownership is already split; mechanical
    field moves would now make the design worse.
 

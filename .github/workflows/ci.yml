@@ -4,53 +4,84 @@ on:
   push:
     branches: [master]
   pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   check:
+    if: github.event_name != 'schedule'
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Format
-        run: cargo fmt --check
+        run: cargo --locked fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo --locked clippy --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --all-targets --all-features
+        run: cargo --locked test --all-targets --all-features
 
       - name: Native menu model contract
-        run: cargo test native_menu::model::tests -- --test-threads=1
+        run: cargo --locked test native_menu::model::tests -- --test-threads=1
 
       - name: Native framebuffer visual QA
         timeout-minutes: 5
-        run: cargo run --features visual-qa -- --visual-qa desktop_base --output target/visual-qa
+        run: cargo --locked run --features visual-qa -- --visual-qa desktop_base --output target/visual-qa
 
       - name: Upload visual QA artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: commander-visual-qa
           path: target/visual-qa
           if-no-files-found: error
 
       - name: Performance budget contract
-        run: cargo test measurement::tests::ci_performance_budget_contract_is_complete -- --exact
+        run: cargo --locked test measurement::tests::ci_performance_budget_contract_is_complete -- --exact
 
       - name: Performance smoke probes
-        run: cargo test measurement::tests::ci_runtime_smoke_probes_stay_within_budgets -- --exact --ignored --nocapture --test-threads=1
+        run: cargo --locked test measurement::tests::ci_runtime_smoke_probes_stay_within_budgets -- --exact --ignored --nocapture --test-threads=1
 
       - name: Workflow ergonomics
-        run: cargo test klm::tests::ci_core_workflows_stay_within_operator_budgets -- --exact
+        run: cargo --locked test klm::tests::ci_core_workflows_stay_within_operator_budgets -- --exact
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check advisory waiver expiry
+        shell: bash
+        env:
+          RUSTSEC_2026_0192_EXPIRES: "2026-10-28"
+        run: |
+          if [[ "$(date -u +%F)" < "$RUSTSEC_2026_0192_EXPIRES" ]]; then
+            exit 0
+          fi
+          echo "::error::RUSTSEC-2026-0192 waiver expired; owner @themoretheless"
+          exit 1
+
+      - name: Enforce supply-chain policy
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          arguments: --all-features --locked
+          command: check
+          command-arguments: advisories bans licenses sources

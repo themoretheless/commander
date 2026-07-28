@@ -345,17 +345,24 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
 
 The full serial suite currently passes 947 tests with three intentional
 manual/performance harnesses ignored. The next high-value architecture work is
-an explicit `cargo-deny` supply-chain policy and CI gate. Durable undo history,
+moving pathname metadata probing off the UI thread. Durable undo history,
 path-identity-bound replay, migration of the operation journal and content
 index to versioned stores, cross-process persistence CAS, descriptor-relative
 filesystem effects, and reconciliation of the last placement-to-journal crash
 window remain later schema migrations or OS-hardening work.
 
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
-by enabling only the image decoders Commander uses. `cargo audit` reports no
-known vulnerabilities. Its sole remaining warning is the unmaintained
-`ttf-parser` pulled by the Linux Wayland/winit stack; removing it locally would
-mean dropping Wayland support, so it is tracked as an upstream migration.
+by enabling only the image decoders Commander uses. The checked-in
+[`deny.toml`](deny.toml) and weekly CI gate report zero known vulnerabilities
+and explicitly accept one unmaintained advisory, `RUSTSEC-2026-0192`, for
+`ttf-parser` in the Linux Wayland/winit stack. The waiver is owned by
+`@themoretheless`, reviewed by 2026-10-21, and hard-expires on 2026-10-28.
+Forty-one duplicate-crate groups remain a warning and tracked dependency debt.
+Run the same full-lockfile policy locally with:
+
+```sh
+cargo deny --all-features --locked check advisories bans licenses sources
+```
 
 ### Native visual QA
 
