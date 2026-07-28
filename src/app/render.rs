@@ -298,12 +298,8 @@ impl App {
                                 Stroke::new(1.0_f32, t.border),
                                 egui::StrokeKind::Outside,
                             );
-                            ui.painter().text(
-                                back_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "\u{25c0}",
-                                egui::FontId::proportional(13.0),
-                                back_color,
+                            crate::app::glyphs::navigation_triangle(
+                                ui, back_rect, false, back_color,
                             );
                             if back_resp.clicked() && can_back {
                                 panel.go_back();
@@ -324,13 +320,7 @@ impl App {
                                 Stroke::new(1.0_f32, t.border),
                                 egui::StrokeKind::Outside,
                             );
-                            ui.painter().text(
-                                fwd_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "\u{25b6}",
-                                egui::FontId::proportional(13.0),
-                                fwd_color,
-                            );
+                            crate::app::glyphs::navigation_triangle(ui, fwd_rect, true, fwd_color);
                             if fwd_resp.clicked() && can_fwd {
                                 panel.go_forward();
                             }
@@ -412,15 +402,7 @@ impl App {
                                     .interact(Sense::click())
                             };
                             let sep = |ui: &mut egui::Ui| {
-                                Frame::NONE
-                                    .inner_margin(Margin::symmetric(3, 3))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new("\u{276f}")
-                                                .size(11.0)
-                                                .color(t.text_muted),
-                                        );
-                                    });
+                                crate::app::glyphs::breadcrumb_chevron(ui, t.text_muted);
                             };
 
                             ui.horizontal(|ui| {
@@ -564,17 +546,13 @@ impl App {
                                 );
                                 ui.add_space(4.0);
                             }
-                            let name_label =
-                                format!("Name{}", panel.sort_indicator(SortColumn::Name));
-                            if ui
-                                .label(
-                                    egui::RichText::new(name_label)
-                                        .size(11.0)
-                                        .strong()
-                                        .color(header_text),
-                                )
-                                .interact(Sense::click())
-                                .clicked()
+                            if crate::app::glyphs::sort_header(
+                                ui,
+                                "Name",
+                                panel.sort_order_for(SortColumn::Name),
+                                header_text,
+                            )
+                            .clicked()
                             {
                                 panel.set_sort(SortColumn::Name);
                             }
@@ -582,36 +560,26 @@ impl App {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(8.0);
 
-                                let mod_label = format!(
-                                    "Modified{}",
-                                    panel.sort_indicator(SortColumn::Modified)
-                                );
-                                if ui
-                                    .label(
-                                        egui::RichText::new(mod_label)
-                                            .size(11.0)
-                                            .strong()
-                                            .color(header_text),
-                                    )
-                                    .interact(Sense::click())
-                                    .clicked()
+                                if crate::app::glyphs::sort_header(
+                                    ui,
+                                    "Modified",
+                                    panel.sort_order_for(SortColumn::Modified),
+                                    header_text,
+                                )
+                                .clicked()
                                 {
                                     panel.set_sort(SortColumn::Modified);
                                 }
 
                                 ui.add_space(24.0);
 
-                                let size_label =
-                                    format!("Size{}", panel.sort_indicator(SortColumn::Size));
-                                if ui
-                                    .label(
-                                        egui::RichText::new(size_label)
-                                            .size(11.0)
-                                            .strong()
-                                            .color(header_text),
-                                    )
-                                    .interact(Sense::click())
-                                    .clicked()
+                                if crate::app::glyphs::sort_header(
+                                    ui,
+                                    "Size",
+                                    panel.sort_order_for(SortColumn::Size),
+                                    header_text,
+                                )
+                                .clicked()
                                 {
                                     panel.set_sort(SortColumn::Size);
                                 }

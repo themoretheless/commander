@@ -298,12 +298,7 @@ impl App {
                         } else {
                             t.bg_card
                         };
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new("\u{21c4}").size(14.0))
-                                    .fill(cmp_fill)
-                                    .corner_radius(crate::theme::ROUNDING_SM),
-                            )
+                        if crate::app::glyphs::toolbar_compare_button(ui, cmp_fill, t.text_primary)
                             .on_hover_text("Compare panels (highlight differences)")
                             .clicked()
                         {

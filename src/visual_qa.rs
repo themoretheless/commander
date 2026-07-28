@@ -7,7 +7,7 @@ use crate::ports::{
 use crate::theme::ThemeMode;
 use egui::{ColorImage, Rect};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -454,6 +454,10 @@ struct ProbeRecord {
     hovered: bool,
 }
 
+fn painted_glyph_key(glyph: crate::app::glyphs::PaintedGlyph) -> egui::Id {
+    egui::Id::new(("visual_qa_painted_glyph", glyph.key()))
+}
+
 pub(crate) fn begin_probe_frame(ctx: &egui::Context) {
     ctx.data_mut(|data| {
         for id in [
@@ -466,6 +470,9 @@ pub(crate) fn begin_probe_frame(ctx: &egui::Context) {
         }
         data.remove::<bool>(egui::Id::new("visual_qa_background_enabled"));
         data.remove::<String>(egui::Id::new("visual_qa_modal_owner"));
+        for glyph in crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE {
+            data.remove::<Rect>(painted_glyph_key(glyph));
+        }
     });
 }
 
@@ -481,6 +488,14 @@ pub(crate) fn record_response(ctx: &egui::Context, id: ProbeId, response: &egui:
             },
         );
     });
+}
+
+pub(crate) fn record_painted_glyph(
+    ctx: &egui::Context,
+    glyph: crate::app::glyphs::PaintedGlyph,
+    rect: Rect,
+) {
+    ctx.data_mut(|data| data.insert_temp(painted_glyph_key(glyph), rect));
 }
 
 pub(crate) fn record_input_policy(
@@ -510,6 +525,7 @@ struct ProbeSnapshot {
     background_enabled: Option<bool>,
     modal_owner: Option<String>,
     modal_above_background: Option<bool>,
+    painted_glyphs: BTreeMap<crate::app::glyphs::PaintedGlyph, Rect>,
 }
 
 impl ProbeSnapshot {
@@ -530,6 +546,15 @@ impl ProbeSnapshot {
         let modal_above_background = confirmation
             .zip(left_pane)
             .map(|(modal, pane)| modal.layer_id.order > pane.layer_id.order);
+        let painted_glyphs = ctx.data_mut(|data| {
+            crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
+                .into_iter()
+                .filter_map(|glyph| {
+                    data.get_temp::<Rect>(painted_glyph_key(glyph))
+                        .map(|rect| (glyph, rect))
+                })
+                .collect()
+        });
         Self {
             viewport,
             pixels_per_point,
@@ -540,12 +565,16 @@ impl ProbeSnapshot {
             background_enabled,
             modal_owner,
             modal_above_background,
+            painted_glyphs,
         }
     }
 
     fn ready(&self, scenario: Scenario) -> bool {
         self.left_pane.is_some()
             && self.right_pane.is_some()
+            && crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
+                .into_iter()
+                .all(|glyph| self.painted_glyphs.contains_key(&glyph))
             && (if scenario.needs_confirmation() {
                 self.confirmation.is_some()
                     && self.background_enabled == Some(false)
@@ -568,6 +597,12 @@ impl ProbeSnapshot {
         .into_iter()
         .flatten()
         {
+            values.extend(
+                [rect.min.x, rect.min.y, rect.max.x, rect.max.y]
+                    .map(|value| (value * 4.0).round() as i32),
+            );
+        }
+        for rect in self.painted_glyphs.values() {
             values.extend(
                 [rect.min.x, rect.min.y, rect.max.x, rect.max.y]
                     .map(|value| (value * 4.0).round() as i32),
@@ -973,6 +1008,12 @@ impl From<Rect> for RectArtifact {
 }
 
 #[derive(Serialize)]
+struct PaintedGlyphArtifact {
+    name: &'static str,
+    rect: RectArtifact,
+}
+
+#[derive(Serialize)]
 struct Check {
     name: &'static str,
     passed: bool,
@@ -1020,6 +1061,7 @@ struct Manifest {
     modal_owner: Option<String>,
     background_enabled: Option<bool>,
     modal_above_background: Option<bool>,
+    painted_glyphs: Vec<PaintedGlyphArtifact>,
     native_effect_calls: NativeEffectCalls,
     checks: Vec<Check>,
     error: Option<String>,
@@ -1049,6 +1091,7 @@ fn base_manifest(scenario: Scenario, status: &str) -> Manifest {
         modal_owner: None,
         background_enabled: None,
         modal_above_background: None,
+        painted_glyphs: Vec::new(),
         native_effect_calls: NativeEffectCalls::default(),
         checks: Vec::new(),
         error: None,
@@ -1165,6 +1208,47 @@ fn write_capture(
             format!("{rect:?} inside {:?}", probes.viewport),
         ));
     }
+    let missing_painted_glyphs = crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
+        .into_iter()
+        .filter(|glyph| !probes.painted_glyphs.contains_key(glyph))
+        .map(crate::app::glyphs::PaintedGlyph::key)
+        .collect::<Vec<_>>();
+    let painted_rects_valid = probes
+        .painted_glyphs
+        .values()
+        .all(|rect| rect_is_valid(*rect, probes.viewport));
+    checks.push(check(
+        "mandatory_painted_glyph_contract",
+        missing_painted_glyphs.is_empty() && painted_rects_valid,
+        format!(
+            "missing={missing_painted_glyphs:?}, rects={:?}",
+            probes
+                .painted_glyphs
+                .iter()
+                .map(|(glyph, rect)| (glyph.key(), rect))
+                .collect::<Vec<_>>()
+        ),
+    ));
+    let mut glyph_pixel_details = Vec::new();
+    let painted_pixels_valid = crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
+        .into_iter()
+        .all(|glyph| {
+            let Some(rect) = probes.painted_glyphs.get(&glyph).copied() else {
+                glyph_pixel_details.push(format!("{}=missing", glyph.key()));
+                return false;
+            };
+            let Some((ink, total)) = glyph_region_ink(image, probes.viewport, rect) else {
+                glyph_pixel_details.push(format!("{}=invalid_region", glyph.key()));
+                return false;
+            };
+            glyph_pixel_details.push(format!("{}={ink}/{total}", glyph.key()));
+            ink >= 8 && ink.saturating_mul(100) >= total
+        });
+    checks.push(check(
+        "mandatory_painted_glyph_pixels",
+        painted_pixels_valid,
+        glyph_pixel_details.join(", "),
+    ));
     let panes_do_not_overlap = probes
         .left_pane
         .zip(probes.right_pane)
@@ -1217,6 +1301,19 @@ fn write_capture(
     manifest.modal_owner = probes.modal_owner.clone();
     manifest.background_enabled = probes.background_enabled;
     manifest.modal_above_background = probes.modal_above_background;
+    manifest.painted_glyphs = crate::app::glyphs::PaintedGlyph::REQUIRED_CAPTURE
+        .into_iter()
+        .filter_map(|glyph| {
+            probes
+                .painted_glyphs
+                .get(&glyph)
+                .copied()
+                .map(|rect| PaintedGlyphArtifact {
+                    name: glyph.key(),
+                    rect: rect.into(),
+                })
+        })
+        .collect();
     manifest.native_effect_calls = calls;
     manifest.checks = checks;
     if failed > 0 {
@@ -1228,6 +1325,42 @@ fn write_capture(
     } else {
         Err(format!("{failed} visual QA checks failed"))
     }
+}
+
+fn glyph_region_ink(image: &ColorImage, viewport: Rect, rect: Rect) -> Option<(usize, usize)> {
+    if !rect_is_valid(rect, viewport) || viewport.width() <= 0.0 || viewport.height() <= 0.0 {
+        return None;
+    }
+    let [width, height] = image.size;
+    let scale_x = width as f32 / viewport.width();
+    let scale_y = height as f32 / viewport.height();
+    let x0 = ((rect.min.x - viewport.min.x) * scale_x)
+        .floor()
+        .clamp(0.0, width as f32) as usize;
+    let y0 = ((rect.min.y - viewport.min.y) * scale_y)
+        .floor()
+        .clamp(0.0, height as f32) as usize;
+    let x1 = ((rect.max.x - viewport.min.x) * scale_x)
+        .ceil()
+        .clamp(0.0, width as f32) as usize;
+    let y1 = ((rect.max.y - viewport.min.y) * scale_y)
+        .ceil()
+        .clamp(0.0, height as f32) as usize;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let mut colors = HashMap::<u32, usize>::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let [red, green, blue, alpha] = image.pixels[y * width + x].to_array();
+            *colors
+                .entry(u32::from_be_bytes([red, green, blue, alpha]))
+                .or_default() += 1;
+        }
+    }
+    let total = (x1 - x0).saturating_mul(y1 - y0);
+    let dominant = colors.values().copied().max().unwrap_or_default();
+    Some((total.saturating_sub(dominant), total))
 }
 
 fn rect_is_valid(rect: Rect, viewport: Rect) -> bool {
@@ -1290,5 +1423,18 @@ mod tests {
             Rect::from_min_max(egui::pos2(f32::NAN, 1.0), egui::pos2(2.0, 2.0)),
             viewport
         ));
+    }
+
+    #[test]
+    fn painted_glyph_probe_rejects_blank_regions_and_detects_ink() {
+        let viewport = Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(20.0, 20.0));
+        let region = Rect::from_min_max(egui::pos2(5.0, 5.0), egui::pos2(15.0, 15.0));
+        let mut image = ColorImage::filled([20, 20], egui::Color32::BLACK);
+        assert_eq!(glyph_region_ink(&image, viewport, region), Some((0, 100)));
+
+        for x in 7..13 {
+            image[(x, 10)] = egui::Color32::WHITE;
+        }
+        assert_eq!(glyph_region_ink(&image, viewport, region), Some((6, 100)));
     }
 }

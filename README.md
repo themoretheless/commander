@@ -325,7 +325,10 @@ Each scenario always writes `manifest.json` and `capabilities.json` under
 `target/visual-qa/<scenario>`; a successful capture also writes `frame.png`.
 Checks cover framebuffer dimensions, alpha/nonblank/color diversity, finite
 in-viewport pane and dialog geometry, pane non-overlap, modal ownership,
-disabled modal background, and zero native-effect calls. `--allow-skip`
+disabled modal background, zero native-effect calls, and runtime probes for
+painted breadcrumb, sorting, navigation, parent, file-type, and comparison
+glyphs. Each mandatory glyph region must contain rendered ink; the controls do
+not depend on optional font coverage. `--allow-skip`
 converts only an unavailable native GUI/readback capability into an explicit
 `skipped_capability_unavailable` artifact for local diagnostics; validation,
 timeout, and app-construction failures still fail. CI runs the verified

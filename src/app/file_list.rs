@@ -43,9 +43,7 @@ impl App {
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new("\u{2ba4}").size(14.0).color(t.accent),
-                                );
+                                crate::app::glyphs::parent_up(ui, t.accent);
                                 ui.add_space(2.0);
                                 ui.label(
                                     egui::RichText::new("..")
@@ -57,6 +55,13 @@ impl App {
                         })
                         .response
                         .interact(Sense::click());
+                    up_row.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            ui.is_enabled(),
+                            "Parent folder",
+                        )
+                    });
 
                     if up_row.double_clicked() {
                         panel.go_up();
@@ -474,7 +479,16 @@ impl App {
                             Self::paint_folder_icon(ui, count);
                         } else {
                             ui.add_space(3.0);
-                            ui.label(egui::RichText::new(entry.icon()).size(metrics.icon_pt));
+                            let (red, green, blue) = crate::file_color::kind_color(
+                                crate::selection_summary::kind_of(entry),
+                                dark,
+                            );
+                            crate::app::glyphs::file_document(
+                                ui,
+                                &entry.extension,
+                                Color32::from_rgb(red, green, blue),
+                                t.bg_panel,
+                            );
                         }
                         ui.add_space(3.0);
 

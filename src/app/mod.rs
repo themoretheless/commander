@@ -11,6 +11,7 @@ mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
 mod find_dialog;
+pub(crate) mod glyphs;
 mod history_dialog;
 mod keys;
 mod mask_dialog;

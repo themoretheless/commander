@@ -1146,33 +1146,6 @@ impl FileEntry {
         )
     }
 
-    pub fn icon(&self) -> &str {
-        if self.is_dir {
-            return "📁";
-        }
-        match self.extension.as_str() {
-            "rs" => "🦀",
-            "py" => "🐍",
-            "js" | "ts" | "jsx" | "tsx" => "🟨",
-            "html" | "css" | "scss" => "🌐",
-            "json" | "toml" | "yaml" | "yml" | "xml" => "⚙️",
-            "md" | "txt" | "rtf" | "doc" | "docx" => "📄",
-            "pdf" => "📕",
-            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" => "🖼️",
-            "mp4" | "mov" | "avi" | "mkv" | "webm" => "🎬",
-            "mp3" | "wav" | "flac" | "aac" | "ogg" => "🎵",
-            "zip" | "tar" | "gz" | "7z" | "rar" | "bz2" | "xz" => "📦",
-            "sh" | "bash" | "zsh" | "fish" => "💻",
-            "exe" | "dmg" | "app" | "msi" => "⚡",
-            "swift" => "🐦",
-            "go" => "🐹",
-            "java" | "kt" => "☕",
-            "c" | "cpp" | "h" | "hpp" => "🔧",
-            "lock" => "🔒",
-            _ => "📄",
-        }
-    }
-
     pub fn size_display(&self) -> &str {
         &self.size_str
     }
@@ -2617,15 +2590,8 @@ impl PanelState {
         dirs
     }
 
-    pub fn sort_indicator(&self, col: SortColumn) -> &str {
-        if self.view.sort_col() == col {
-            match self.view.sort_order() {
-                SortOrder::Asc => " ▲",
-                SortOrder::Desc => " ▼",
-            }
-        } else {
-            ""
-        }
+    pub fn sort_order_for(&self, col: SortColumn) -> Option<SortOrder> {
+        (self.view.sort_col() == col).then(|| self.view.sort_order())
     }
 }
 
