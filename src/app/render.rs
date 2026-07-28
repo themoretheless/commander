@@ -254,6 +254,7 @@ impl App {
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
+        reduced_motion: bool,
     ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
@@ -823,6 +824,7 @@ impl App {
                     opener,
                     dragging,
                     metrics,
+                    reduced_motion,
                 );
             });
 

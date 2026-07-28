@@ -61,9 +61,14 @@ fn cache_path() -> PathBuf {
     #[cfg(test)]
     let dir = std::env::temp_dir().join(format!("commander-test-cache-{}", std::process::id()));
     #[cfg(not(test))]
-    let dir = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("commander");
+    let dir = crate::fs_util::storage_root_override().map_or_else(
+        || {
+            dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("commander")
+        },
+        |root| root.join("cache"),
+    );
     let _ = fs::create_dir_all(&dir);
     dir.join("dir_sizes.json")
 }

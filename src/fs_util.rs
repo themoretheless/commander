@@ -1,14 +1,31 @@
 //! Shared filesystem helpers used across panels, transfers and menus.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static STORAGE_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg(feature = "visual-qa")]
+pub(crate) fn install_storage_root_override(path: PathBuf) -> Result<(), PathBuf> {
+    STORAGE_ROOT_OVERRIDE.set(path)
+}
+
+pub(crate) fn storage_root_override() -> Option<&'static Path> {
+    STORAGE_ROOT_OVERRIDE.get().map(PathBuf::as_path)
+}
 
 /// The app's config directory (created if missing), where persisted state
 /// (session, smart folders) lives. Falls back to the cache dir, then `/tmp`.
 pub fn config_dir() -> PathBuf {
-    let dir = dirs::config_dir()
-        .or_else(dirs::cache_dir)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("commander");
+    let dir = storage_root_override().map_or_else(
+        || {
+            dirs::config_dir()
+                .or_else(dirs::cache_dir)
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("commander")
+        },
+        |root| root.join("config"),
+    );
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

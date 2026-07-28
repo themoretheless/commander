@@ -1,6 +1,8 @@
 //! Lazy provider activation and the process boundary for optional providers.
 
-use crate::ports::{ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult};
+use crate::ports::{
+    ContextMenuAction, ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -21,6 +23,7 @@ pub enum ContextMenuUiEffect {
     Open(crate::ports::OpenRequest),
     CopyPath(PathBuf),
     MoveToTrash(PathBuf),
+    Perform(ContextMenuAction),
     Notice {
         level: ContextMenuNoticeLevel,
         message: String,
@@ -58,6 +61,9 @@ pub fn reduce_context_menu_result(
         ContextMenuResult::MoveToTrashRequested => {
             Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
         }
+        ContextMenuResult::DeferredActionRequested(action) => {
+            Some(ContextMenuUiEffect::Perform(action))
+        }
         ContextMenuResult::Unsupported { reason } => Some(ContextMenuUiEffect::Notice {
             level: ContextMenuNoticeLevel::Info,
             message: format!("Context menu unavailable: {reason}"),
@@ -68,6 +74,12 @@ pub fn reduce_context_menu_result(
                 message: "Context menu must run on the main thread".to_string(),
             })
         }
+        ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation) => {
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: "The context menu selection expired; open the menu again".to_string(),
+            })
+        }
         ContextMenuResult::Failed(ContextMenuFailure::Action { command, message }) => {
             let action = match command {
                 ContextMenuCommand::OpenWith => "open item with the selected application",
@@ -75,6 +87,8 @@ pub fn reduce_context_menu_result(
                 ContextMenuCommand::GetInfo => "show item information",
                 ContextMenuCommand::Duplicate => "duplicate item",
                 ContextMenuCommand::Compress => "start compression",
+                ContextMenuCommand::ToggleTag => "update Finder tags",
+                ContextMenuCommand::Share => "share item",
                 ContextMenuCommand::MoveToTrash => "move item to Trash",
             };
             Some(ContextMenuUiEffect::Notice {

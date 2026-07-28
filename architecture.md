@@ -867,10 +867,27 @@ validates.
 
 ## Invariants and testing
 
-The crate currently exposes 720 unit tests. The default suite passes 717 with
-three explicit ignores, including the separately executed single-threaded CI
-performance gate. Headless egui/AccessKit tests now exercise text-focus and IME
-suppression, modal priority, FIFO pending ownership, one-shot Escape routing,
-and the SafeState-to-Recovery transition frame. They still do **not** replace a
-full screenshot-driven running-app pass for texture presentation, hover
-geometry, native menus, and multi-window layout.
+The default suite includes three explicit ignores, including the separately
+executed single-threaded CI performance gate. Headless egui/AccessKit tests
+exercise text-focus and IME suppression, modal priority, FIFO pending
+ownership, one-shot Escape routing, and the SafeState-to-Recovery transition
+frame. A feature-gated native QA process adds four real eframe/WGPU framebuffer
+scenarios: 1280x760 dark desktop, 900x500 light minimum window, 900x500 at 200%
+with high contrast/reduced motion, and confirmation-modal ownership. Every
+process uses a temporary storage root and fake native ports, always writes
+capability/manifest JSON and writes PNG when framebuffer readback is available,
+then checks frame diversity, geometry, pane separation, modal stacking policy,
+and absence of native effects.
+
+The native context menu is a declarative `MenuInvocation` tree with stable item
+IDs and an invocation-bound target. AppKit renders that model with
+invocation-local handler state; Objective-C selectors only record a typed
+selection. Duplicate, Compress, Tags, and Share execute after menu tracking
+returns through `ContextMenuPort::perform_deferred_action`. This removes the
+former thread-local path/result state, prevents callbacks from mutating files
+or launching services, balances owned AppKit menu objects, and preserves
+pathname bytes through NSURL filesystem representations.
+
+The automated framebuffer excludes AppKit's separate popup and window chrome.
+Popup pixels/tracking geometry, VoiceOver speech/navigation, and multi-monitor
+1x/2x placement remain an explicit permission-bound manual matrix.

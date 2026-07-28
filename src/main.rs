@@ -71,6 +71,8 @@ mod ui_request;
 mod undo;
 mod verified_hash;
 mod version_store;
+#[cfg(feature = "visual-qa")]
+mod visual_qa;
 mod volume_profile;
 mod watcher_health;
 mod watcher_policy;
@@ -86,6 +88,11 @@ use eframe::NativeOptions;
 use egui::ViewportBuilder;
 
 fn main() -> eframe::Result<()> {
+    #[cfg(feature = "visual-qa")]
+    if let Some(result) = visual_qa::maybe_run() {
+        return result;
+    }
+
     let options = NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title("Commander")

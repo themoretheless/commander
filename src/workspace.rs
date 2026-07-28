@@ -449,6 +449,16 @@ impl Workspace {
         trash: std::sync::Arc<dyn crate::ports::TrashPort>,
         free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
     ) -> Self {
+        Self::with_ports_and_bookmarks(left, right, trash, free_space, crate::bookmarks::load())
+    }
+
+    pub(crate) fn with_ports_and_bookmarks(
+        left: PathBuf,
+        right: PathBuf,
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+        bookmarks: crate::bookmarks::Bookmarks,
+    ) -> Self {
         Workspace {
             left: PanelState::new(left),
             right: PanelState::new(right),
@@ -462,7 +472,7 @@ impl Workspace {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             ui_requests: crate::ui_request::UiRequestQueue::default(),
             shelf: crate::shelf::Shelf::default(),
-            bookmarks: crate::bookmarks::load(),
+            bookmarks,
             selection_stash: std::collections::HashSet::new(),
             transfers: transfer_queue::TransferQueueController::default(),
             space_probes: space_probe::SpaceProbeController::default(),

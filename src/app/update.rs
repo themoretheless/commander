@@ -191,6 +191,8 @@ impl eframe::App for App {
         let _frame_latency =
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FrameTime);
         let ctx = ui.ctx().clone();
+        #[cfg(feature = "visual-qa")]
+        crate::visual_qa::begin_probe_frame(&ctx);
         let prior_modal_ownership = ModalOwnershipSnapshot::capture(self.has_modal_surface());
         self.begin_frame(&ctx);
         self.capture_operation_failures(&ctx);
@@ -223,6 +225,13 @@ impl eframe::App for App {
             self.has_modal_surface(),
         );
         let modal_open = input_policy.trapped();
+        #[cfg(feature = "visual-qa")]
+        {
+            let owner =
+                crate::accessibility::top_open_modal(|surface| self.is_modal_surface_open(surface))
+                    .map(|surface| format!("{surface:?}"));
+            crate::visual_qa::record_input_policy(&ctx, input_policy.background_enabled(), owner);
+        }
         let trapped = crate::accessibility::focus_order(crate::accessibility::FocusLayout {
             toolbar_visible: !self.ui.focus_mode,
             operations_open: self.show_operations_center,
@@ -1263,6 +1272,19 @@ impl App {
             crate::provider_runtime::ContextMenuUiEffect::MoveToTrash(path) => {
                 self.ws.request_context_delete(panel, &path);
             }
+            crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
+                let path = action.path().to_path_buf();
+                let result = self.context_menu.perform_deferred_action(&action);
+                let next = crate::provider_runtime::reduce_context_menu_result(result, &path);
+                debug_assert!(
+                    !matches!(
+                        next,
+                        Some(crate::provider_runtime::ContextMenuUiEffect::Perform(_))
+                    ),
+                    "a deferred native-menu action must produce a terminal result"
+                );
+                self.apply_context_menu_effect(panel, next, ctx);
+            }
             crate::provider_runtime::ContextMenuUiEffect::Notice { level, message } => {
                 let kind = match level {
                     crate::provider_runtime::ContextMenuNoticeLevel::Info => {
@@ -1410,9 +1432,16 @@ impl App {
                     &opener,
                     dragging,
                     left_metrics,
+                    self.accessibility_preferences.reduced_motion,
                 )
             });
         let left_outcome = left_resp.inner;
+        #[cfg(feature = "visual-qa")]
+        crate::visual_qa::record_rect(
+            &ctx,
+            crate::visual_qa::ProbeId::LeftPane,
+            left_resp.response.rect,
+        );
         tree_toggle |= left_outcome.tree_toggle;
 
         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
@@ -1484,11 +1513,18 @@ impl App {
                         &opener,
                         dragging,
                         right_metrics,
+                        self.accessibility_preferences.reduced_motion,
                     )
                 })
                 .inner
             });
         let right_outcome = right_resp.inner;
+        #[cfg(feature = "visual-qa")]
+        crate::visual_qa::record_rect(
+            &ctx,
+            crate::visual_qa::ProbeId::RightPane,
+            right_resp.response.rect,
+        );
         tree_toggle |= right_outcome.tree_toggle;
 
         let pending_external_opens = external_open.into_inner();

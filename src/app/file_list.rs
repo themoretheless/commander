@@ -14,12 +14,13 @@ impl App {
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
+        reduced_motion: bool,
     ) -> Option<crate::provider_runtime::ContextMenuUiEffect> {
         let mut context_menu_effect = None;
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
-            .animated(!crate::accessibility::Preferences::system().reduced_motion)
+            .animated(!reduced_motion)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;

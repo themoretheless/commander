@@ -114,7 +114,7 @@ impl App {
         let win_w = 1000.0f32.min(avail_w);
         let win_h = 800.0f32.min(avail_h);
 
-        egui::Window::new(win_title)
+        let dialog_response = egui::Window::new(win_title)
             .collapsible(false)
             .resizable(false)
             .fixed_size(Vec2::new(win_w, win_h))
@@ -450,6 +450,14 @@ impl App {
                     self.confirm_pending_op(ctx);
                 }
             });
+        #[cfg(feature = "visual-qa")]
+        if let Some(response) = dialog_response {
+            crate::visual_qa::record_rect(
+                ctx,
+                crate::visual_qa::ProbeId::Confirmation,
+                response.response.rect,
+            );
+        }
     }
 
     /// Close the dialog and reset its per-dialog egui state.

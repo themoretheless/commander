@@ -175,16 +175,45 @@ pub enum ContextMenuCommand {
     GetInfo,
     Duplicate,
     Compress,
+    ToggleTag,
+    Share,
     MoveToTrash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuFailure {
     MainThreadRequired,
+    StaleInvocation,
     Action {
         command: ContextMenuCommand,
         message: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextMenuAction {
+    Duplicate(PathBuf),
+    Compress(PathBuf),
+    ToggleTag { path: PathBuf, tag: String },
+    Share { path: PathBuf, service: String },
+}
+
+impl ContextMenuAction {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Duplicate(path) | Self::Compress(path) => path,
+            Self::ToggleTag { path, .. } | Self::Share { path, .. } => path,
+        }
+    }
+
+    pub const fn command(&self) -> ContextMenuCommand {
+        match self {
+            Self::Duplicate(_) => ContextMenuCommand::Duplicate,
+            Self::Compress(_) => ContextMenuCommand::Compress,
+            Self::ToggleTag { .. } => ContextMenuCommand::ToggleTag,
+            Self::Share { .. } => ContextMenuCommand::Share,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +227,7 @@ pub enum ContextMenuResult {
     RevealRequested,
     CopyPathRequested,
     MoveToTrashRequested,
+    DeferredActionRequested(ContextMenuAction),
     Unsupported { reason: String },
     Failed(ContextMenuFailure),
 }
@@ -206,6 +236,18 @@ pub enum ContextMenuResult {
 /// `Send`/`Sync` bounds: AppKit adapters are owned and invoked by the UI thread.
 pub trait ContextMenuPort {
     fn show_context_menu(&self, path: &Path) -> ContextMenuResult;
+
+    /// Execute a typed action only after the native selector has returned.
+    ///
+    /// Objective-C callbacks are presentation adapters: they may select an
+    /// action, but must not mutate the filesystem, launch a service, or touch
+    /// another native capability while AppKit is tracking the menu.
+    fn perform_deferred_action(&self, action: &ContextMenuAction) -> ContextMenuResult {
+        ContextMenuResult::Failed(ContextMenuFailure::Action {
+            command: action.command(),
+            message: "the context-menu adapter does not support deferred actions".to_string(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

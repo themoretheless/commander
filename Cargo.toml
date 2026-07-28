@@ -7,6 +7,10 @@ repository = "https://github.com/themoretheless/commander"
 license = "MIT"
 publish = false
 
+[features]
+default = []
+visual-qa = []
+
 [lints.rust]
 # The objc crate's macros probe `feature = "cargo-clippy"`; register the
 # value so the expansion doesn't trip unexpected_cfgs in our crate.

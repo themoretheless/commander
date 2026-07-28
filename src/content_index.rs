@@ -188,6 +188,11 @@ impl ContentIndex {
         Self::from_settings(load_settings_from(&settings_path()), workload)
     }
 
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn empty(workload: crate::workload::WorkloadHandle) -> Self {
+        Self::from_settings(SettingsStore::default(), workload)
+    }
+
     fn from_settings(settings: SettingsStore, workload: crate::workload::WorkloadHandle) -> Self {
         Self {
             settings,

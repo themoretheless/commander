@@ -112,6 +112,16 @@ pub struct App {
     pub(crate) persistence_issue_seen: u64,
 }
 
+#[cfg(feature = "visual-qa")]
+pub(crate) struct VisualQaSeed {
+    pub left: PathBuf,
+    pub right: PathBuf,
+    pub ui_scale: f32,
+    pub theme_mode: ThemeMode,
+    pub accessibility_preferences: crate::accessibility::Preferences,
+    pub show_tree: bool,
+}
+
 pub(crate) struct DeveloperNotice {
     pub message: String,
     pub path: Option<PathBuf>,
@@ -644,6 +654,74 @@ impl App {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
         }
         app
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn new_visual_qa(
+        cc: &eframe::CreationContext<'_>,
+        seed: VisualQaSeed,
+        context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+        clipboard: Rc<dyn crate::ports::ClipboardPort>,
+        opener: Rc<dyn crate::ports::OpenerPort>,
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    ) -> Self {
+        apply_theme(
+            &cc.egui_ctx,
+            seed.theme_mode,
+            seed.accessibility_preferences,
+        );
+        cc.egui_ctx.set_zoom_factor(seed.ui_scale);
+        let ws = Workspace::with_ports_and_bookmarks(
+            seed.left,
+            seed.right,
+            trash,
+            free_space,
+            crate::bookmarks::Bookmarks::default(),
+        );
+        Self {
+            ws,
+            ui: ui_state::UiState::default(),
+            context_menu,
+            clipboard,
+            opener,
+            ui_scale: seed.ui_scale,
+            theme_mode: seed.theme_mode,
+            colors: ThemeColors::for_preferences(seed.theme_mode, seed.accessibility_preferences),
+            accessibility_preferences: seed.accessibility_preferences,
+            prev_window_width: 0.0,
+            image_cache: crate::image_cache::ImageCache::new(),
+            show_tree: seed.show_tree,
+            tree_expanded: std::collections::HashSet::new(),
+            tree_children_cache: std::collections::HashMap::new(),
+            tree_width: 200.0,
+            show_size_bars: true,
+            show_compare: false,
+            show_operations_center: false,
+            operations_tab: OperationsTab::default(),
+            operations_search: String::new(),
+            operation_failures: crate::operation_view::FailureInbox::default(),
+            failure_notice_seen: std::collections::HashSet::new(),
+            recent_order: crate::panel::RecentOrder::Frecency,
+            search_engine: crate::search::SearchEngine::default(),
+            search_history: crate::search::QueryHistory::default(),
+            content_index: crate::content_index::ContentIndex::empty(
+                crate::workload::global_handle(),
+            ),
+            toasts: crate::toasts::ToastQueue::default(),
+            receipts: crate::receipts::ReceiptLog::default(),
+            recovery: RecoveryState::default(),
+            palette_usage: crate::command::UsageStats::default(),
+            palette_tick: 0,
+            smart_folders: None,
+            project_collections: crate::collections::ProjectCollections::default(),
+            command_templates: None,
+            compare_cache: None,
+            startup_trace: None,
+            show_developer_panel: false,
+            developer_notice: None,
+            persistence_issue_seen: crate::persistence::issue_generation(),
+        }
     }
 
     pub(crate) fn issue_transient_nonce(&mut self) -> u64 {

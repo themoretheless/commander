@@ -1,15 +1,23 @@
-use crate::ports::{ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult};
+mod model;
+
+use crate::ports::{
+    ContextMenuAction, ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult,
+};
+use model::{
+    DynamicMenuEntries, MenuIntent, MenuInvocation, MenuItemState, MenuNode, MenuSelection,
+    build_invocation, selection_result,
+};
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, NO, Object, Sel};
+use objc::runtime::{Class, NO, Object, Sel, YES};
 use objc::{class, msg_send, sel, sel_impl};
-use std::cell::RefCell;
-use std::ffi::CString;
+use std::collections::BTreeSet;
+use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// NSPoint / NSSize — same layout {f64, f64}
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct NSPoint {
@@ -17,485 +25,365 @@ struct NSPoint {
     y: f64,
 }
 
-thread_local! {
-    static MENU_PATH: RefCell<PathBuf> = const { RefCell::new(PathBuf::new()) };
-    static MENU_RESULT: RefCell<ContextMenuResult> = const { RefCell::new(ContextMenuResult::Dismissed) };
+struct HandlerState {
+    invocation_id: u64,
+    bound_target: PathBuf,
+    intents: Vec<(model::MenuItemId, MenuIntent)>,
+    selection: Option<MenuSelection>,
 }
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let c = CString::new(s).unwrap_or_default();
-    msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()]
-}
-
-fn with_path<F: FnOnce(&Path)>(f: F) {
-    MENU_PATH.with(|p| f(&p.borrow()));
-}
-
-fn set_menu_result(result: ContextMenuResult) {
-    MENU_RESULT.with(|slot| *slot.borrow_mut() = result);
-}
-
-fn take_menu_result() -> ContextMenuResult {
-    MENU_RESULT.with(|slot| slot.replace(ContextMenuResult::Dismissed))
-}
-
-fn record_action_result<T, E: std::fmt::Display>(
-    command: ContextMenuCommand,
-    result: Result<T, E>,
-) {
-    set_menu_result(reduce_action_result(command, result));
-}
-
-fn reduce_action_result<T, E: std::fmt::Display>(
-    command: ContextMenuCommand,
-    result: Result<T, E>,
-) -> ContextMenuResult {
-    match result {
-        Ok(_) => ContextMenuResult::RefreshRequested,
-        Err(error) => ContextMenuResult::Failed(ContextMenuFailure::Action {
-            command,
-            message: error.to_string(),
-        }),
+impl HandlerState {
+    fn new(invocation: &MenuInvocation) -> Self {
+        Self {
+            invocation_id: invocation.id,
+            bound_target: invocation.bound_target.clone(),
+            intents: Vec::new(),
+            selection: None,
+        }
     }
-}
 
-fn record_launch_result<T, E: std::fmt::Display>(
-    command: ContextMenuCommand,
-    result: Result<T, E>,
-) {
-    set_menu_result(reduce_launch_result(command, result));
-}
-
-fn reduce_launch_result<T, E: std::fmt::Display>(
-    command: ContextMenuCommand,
-    result: Result<T, E>,
-) -> ContextMenuResult {
-    match result {
-        Ok(_) => ContextMenuResult::Dismissed,
-        Err(error) => ContextMenuResult::Failed(ContextMenuFailure::Action {
-            command,
-            message: error.to_string(),
-        }),
+    fn select(&mut self, index: usize) {
+        let Some((item_id, intent)) = self.intents.get(index).cloned() else {
+            return;
+        };
+        self.selection = Some(MenuSelection {
+            invocation_id: self.invocation_id,
+            bound_target: self.bound_target.clone(),
+            item_id,
+            intent,
+        });
     }
-}
-
-fn record_action_failure(command: ContextMenuCommand, message: impl Into<String>) {
-    set_menu_result(ContextMenuResult::Failed(ContextMenuFailure::Action {
-        command,
-        message: message.into(),
-    }));
 }
 
 fn is_main_thread() -> bool {
     unsafe { msg_send![class!(NSThread), isMainThread] }
 }
 
-unsafe fn add_item(menu: *mut Object, title: &str, target: *mut Object, action: Sel) {
-    let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-    let title_ns = unsafe { nsstring(title) };
-    let key_ns = unsafe { nsstring("") };
-    let item: *mut Object =
-        msg_send![item, initWithTitle: title_ns action: action keyEquivalent: key_ns];
-    let _: () = msg_send![item, setTarget: target];
-    let _: () = msg_send![menu, addItem: item];
+unsafe fn nsstring(value: &str) -> Result<*mut Object, String> {
+    let value = CString::new(value).map_err(|_| "menu text contains a NUL byte".to_string())?;
+    let string: *mut Object = msg_send![class!(NSString), stringWithUTF8String: value.as_ptr()];
+    if string.is_null() {
+        Err("AppKit could not create menu text".to_string())
+    } else {
+        Ok(string)
+    }
 }
 
-unsafe fn add_separator(menu: *mut Object) {
-    let sep: *mut Object = msg_send![class!(NSMenuItem), separatorItem];
-    let _: () = msg_send![menu, addItem: sep];
+unsafe fn string_from_nsstring(value: *mut Object) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    let utf8: *const std::os::raw::c_char = msg_send![value, UTF8String];
+    if utf8.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(utf8) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+#[cfg(unix)]
+unsafe fn file_url(path: &Path) -> Option<*mut Object> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let nil: *mut Object = std::ptr::null_mut();
+    let url: *mut Object = msg_send![class!(NSURL),
+        fileURLWithFileSystemRepresentation: bytes.as_ptr()
+        isDirectory: path.is_dir()
+        relativeToURL: nil
+    ];
+    (!url.is_null()).then_some(url)
+}
+
+#[cfg(not(unix))]
+unsafe fn file_url(path: &Path) -> Option<*mut Object> {
+    let value = nsstring(&path.display().to_string()).ok()?;
+    let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: value];
+    (!url.is_null()).then_some(url)
+}
+
+#[cfg(unix)]
+unsafe fn path_from_file_url(url: *mut Object) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    if url.is_null() {
+        return None;
+    }
+    let bytes: *const std::os::raw::c_char = msg_send![url, fileSystemRepresentation];
+    if bytes.is_null() {
+        return None;
+    }
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(
+        unsafe { CStr::from_ptr(bytes) }.to_bytes(),
+    )))
+}
+
+#[cfg(not(unix))]
+unsafe fn path_from_file_url(url: *mut Object) -> Option<PathBuf> {
+    if url.is_null() {
+        return None;
+    }
+    let path: *mut Object = msg_send![url, path];
+    string_from_nsstring(path).map(PathBuf::from)
 }
 
 static REGISTERED: OnceLock<bool> = OnceLock::new();
 
 fn ensure_class() -> bool {
     *REGISTERED.get_or_init(|| {
-        if Class::get("CmdrMenuHandler").is_some() {
+        if Class::get("CmdrMenuHandlerV2").is_some() {
             return true;
         }
         let Some(superclass) = Class::get("NSObject") else {
             return false;
         };
-        let Some(mut decl) = ClassDecl::new("CmdrMenuHandler", superclass) else {
+        let Some(mut decl) = ClassDecl::new("CmdrMenuHandlerV2", superclass) else {
             return false;
         };
+        decl.add_ivar::<usize>("rustState");
 
-        extern "C" fn action_open(_: &Object, _: Sel, _: *mut Object) {
-            set_menu_result(ContextMenuResult::OpenRequested);
-        }
-
-        extern "C" fn action_open_with(_: &Object, _: Sel, sender: *mut Object) {
-            if sender.is_null() {
-                record_action_failure(
-                    ContextMenuCommand::OpenWith,
-                    "the selected application was unavailable",
-                );
-                return;
-            }
-            unsafe {
-                let app_url: *mut Object = msg_send![sender, representedObject];
-                if app_url.is_null() {
-                    record_action_failure(
-                        ContextMenuCommand::OpenWith,
-                        "the selected application URL was unavailable",
-                    );
-                    return;
-                }
-                let app_path_obj: *mut Object = msg_send![app_url, path];
-                if app_path_obj.is_null() {
-                    record_action_failure(
-                        ContextMenuCommand::OpenWith,
-                        "the selected application path was unavailable",
-                    );
-                    return;
-                }
-                let utf8: *const std::os::raw::c_char = msg_send![app_path_obj, UTF8String];
-                if utf8.is_null() {
-                    record_action_failure(
-                        ContextMenuCommand::OpenWith,
-                        "the selected application path could not be represented",
-                    );
-                    return;
-                }
-                let app_path = std::ffi::CStr::from_ptr(utf8).to_string_lossy().to_string();
-                set_menu_result(ContextMenuResult::OpenWithRequested {
-                    application: PathBuf::from(app_path),
-                });
-            }
-        }
-
-        extern "C" fn action_quick_look(_: &Object, _: Sel, _: *mut Object) {
-            set_menu_result(ContextMenuResult::QuickLookRequested);
-        }
-
-        extern "C" fn action_get_info(_: &Object, _: Sel, _: *mut Object) {
-            set_menu_result(ContextMenuResult::GetInfoRequested);
-        }
-
-        extern "C" fn action_duplicate(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| {
-                record_action_result(ContextMenuCommand::Duplicate, crate::fs_util::duplicate(p));
-            });
-        }
-
-        extern "C" fn action_compress(_: &Object, _: Sel, _: *mut Object) {
-            with_path(|p| {
-                record_launch_result(
-                    ContextMenuCommand::Compress,
-                    crate::fs_util::compress_to_zip(p),
-                );
-            });
-        }
-
-        extern "C" fn action_copy_path(_: &Object, _: Sel, _: *mut Object) {
-            set_menu_result(ContextMenuResult::CopyPathRequested);
-        }
-
-        extern "C" fn action_show_in_finder(_: &Object, _: Sel, _: *mut Object) {
-            set_menu_result(ContextMenuResult::RevealRequested);
-        }
-
-        extern "C" fn action_trash(_: &Object, _: Sel, _: *mut Object) {
-            set_menu_result(ContextMenuResult::MoveToTrashRequested);
-        }
-
-        extern "C" fn action_toggle_tag(_: &Object, _: Sel, sender: *mut Object) {
+        extern "C" fn action_select(this: &Object, _: Sel, sender: *mut Object) {
             if sender.is_null() {
                 return;
             }
             unsafe {
-                let tag_name: *mut Object = msg_send![sender, representedObject];
-                if tag_name.is_null() {
+                let state_ptr = *this.get_ivar::<usize>("rustState");
+                if state_ptr == 0 {
                     return;
                 }
-
-                MENU_PATH.with(|p| {
-                    let path = p.borrow();
-                    let path_ns = nsstring(&path.display().to_string());
-                    let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
-
-                    unsafe extern "C" {
-                        static NSURLTagNamesKey: *mut Object;
-                    }
-
-                    // Read current tags
-                    let mut tags_val: *mut Object = std::ptr::null_mut();
-                    let tags_ptr: *mut *mut Object = &mut tags_val;
-                    let nil_err: *mut Object = std::ptr::null_mut();
-                    let _: bool = msg_send![url,
-                        getResourceValue: tags_ptr
-                        forKey: NSURLTagNamesKey
-                        error: nil_err
-                    ];
-
-                    // Collect existing tags, toggling the selected one
-                    let new_arr: *mut Object = msg_send![class!(NSMutableArray), array];
-                    let mut found = false;
-
-                    if !tags_val.is_null() {
-                        let count: usize = msg_send![tags_val, count];
-                        for i in 0..count {
-                            let t: *mut Object = msg_send![tags_val, objectAtIndex: i];
-                            let eq: bool = msg_send![t, isEqualToString: tag_name];
-                            if eq {
-                                found = true; // skip = remove
-                            } else {
-                                let _: () = msg_send![new_arr, addObject: t];
-                            }
-                        }
-                    }
-
-                    if !found {
-                        let _: () = msg_send![new_arr, addObject: tag_name];
-                    }
-
-                    let _: bool = msg_send![url,
-                        setResourceValue: new_arr
-                        forKey: NSURLTagNamesKey
-                        error: nil_err
-                    ];
-                });
-            }
-        }
-
-        extern "C" fn action_share(_: &Object, _: Sel, sender: *mut Object) {
-            if sender.is_null() {
-                return;
-            }
-            unsafe {
-                let service: *mut Object = msg_send![sender, representedObject];
-                if service.is_null() {
+                let represented: *mut Object = msg_send![sender, representedObject];
+                if represented.is_null() {
                     return;
                 }
-                MENU_PATH.with(|p| {
-                    let path = p.borrow();
-                    let path_ns = nsstring(&path.display().to_string());
-                    let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
-                    let items: *mut Object = msg_send![class!(NSArray), arrayWithObject: url];
-                    let _: () = msg_send![service, performWithItems: items];
-                });
+                let index: usize = msg_send![represented, unsignedIntegerValue];
+                let state = &mut *(state_ptr as *mut HandlerState);
+                state.select(index);
             }
         }
 
         extern "C" fn action_noop(_: &Object, _: Sel, _: *mut Object) {}
 
         unsafe {
-            type Fn = extern "C" fn(&Object, Sel, *mut Object);
-            decl.add_method(sel!(actionOpen:), action_open as Fn);
-            decl.add_method(sel!(actionOpenWith:), action_open_with as Fn);
-            decl.add_method(sel!(actionQuickLook:), action_quick_look as Fn);
-            decl.add_method(sel!(actionGetInfo:), action_get_info as Fn);
-            decl.add_method(sel!(actionDuplicate:), action_duplicate as Fn);
-            decl.add_method(sel!(actionCompress:), action_compress as Fn);
-            decl.add_method(sel!(actionCopyPath:), action_copy_path as Fn);
-            decl.add_method(sel!(actionShowInFinder:), action_show_in_finder as Fn);
-            decl.add_method(sel!(actionTrash:), action_trash as Fn);
-            decl.add_method(sel!(actionToggleTag:), action_toggle_tag as Fn);
-            decl.add_method(sel!(actionShare:), action_share as Fn);
-            decl.add_method(sel!(actionNoop:), action_noop as Fn);
+            type Action = extern "C" fn(&Object, Sel, *mut Object);
+            decl.add_method(sel!(actionSelect:), action_select as Action);
+            decl.add_method(sel!(actionNoop:), action_noop as Action);
         }
-
         decl.register();
         true
     })
 }
 
-/// Build "Open With" submenu by querying NSWorkspace.
-/// Returns the submenu NSMenu* (or null if unavailable).
-unsafe fn build_open_with_submenu(handler: *mut Object, path: &Path) -> *mut Object {
+unsafe fn render_menu(
+    nodes: &[MenuNode],
+    handler: *mut Object,
+    state: &mut HandlerState,
+) -> Result<*mut Object, String> {
+    let menu: *mut Object = msg_send![class!(NSMenu), new];
+    if menu.is_null() {
+        return Err("AppKit could not allocate NSMenu".to_string());
+    }
+    let _: () = msg_send![menu, setAutoenablesItems: NO];
+
+    for node in nodes {
+        let result = match node {
+            MenuNode::Separator => {
+                let separator: *mut Object = msg_send![class!(NSMenuItem), separatorItem];
+                let _: () = msg_send![menu, addItem: separator];
+                Ok(())
+            }
+            MenuNode::Item(item) => {
+                let title = match unsafe { nsstring(&item.title) } {
+                    Ok(title) => title,
+                    Err(error) => {
+                        let _: () = msg_send![menu, release];
+                        return Err(error);
+                    }
+                };
+                let key = match unsafe {
+                    nsstring(
+                        item.key_equivalent
+                            .as_ref()
+                            .map_or("", |equivalent| equivalent.key.as_str()),
+                    )
+                } {
+                    Ok(key) => key,
+                    Err(error) => {
+                        let _: () = msg_send![menu, release];
+                        return Err(error);
+                    }
+                };
+                let action = if item.intent.is_some() {
+                    sel!(actionSelect:)
+                } else {
+                    sel!(actionNoop:)
+                };
+                let menu_item: *mut Object = msg_send![class!(NSMenuItem), alloc];
+                let menu_item: *mut Object = msg_send![menu_item,
+                    initWithTitle: title
+                    action: action
+                    keyEquivalent: key
+                ];
+                if menu_item.is_null() {
+                    Err("AppKit could not allocate NSMenuItem".to_string())
+                } else {
+                    let _: () = msg_send![menu_item, setTarget: handler];
+                    let enabled = if item.enabled { YES } else { NO };
+                    let _: () = msg_send![menu_item, setEnabled: enabled];
+                    if item.state == MenuItemState::On {
+                        let _: () = msg_send![menu_item, setState: 1_isize];
+                    }
+                    if let Ok(label) = unsafe { nsstring(&item.accessible_label) } {
+                        let responds: bool =
+                            msg_send![menu_item, respondsToSelector: sel!(setAccessibilityLabel:)];
+                        if responds {
+                            let _: () = msg_send![menu_item, setAccessibilityLabel: label];
+                        }
+                    }
+                    if let Some(intent) = &item.intent {
+                        let index = state.intents.len();
+                        state.intents.push((item.id.clone(), intent.clone()));
+                        let represented: *mut Object =
+                            msg_send![class!(NSNumber), numberWithUnsignedInteger: index];
+                        let _: () = msg_send![menu_item, setRepresentedObject: represented];
+                    }
+                    if !item.children.is_empty() {
+                        match unsafe { render_menu(&item.children, handler, state) } {
+                            Ok(submenu) => {
+                                let _: () = msg_send![menu_item, setSubmenu: submenu];
+                                let _: () = msg_send![submenu, release];
+                            }
+                            Err(error) => {
+                                let _: () = msg_send![menu_item, release];
+                                return Err(error);
+                            }
+                        }
+                    }
+                    let _: () = msg_send![menu, addItem: menu_item];
+                    // NSMenu retains inserted items; balance alloc/init here.
+                    let _: () = msg_send![menu_item, release];
+                    Ok(())
+                }
+            }
+        };
+        if let Err(error) = result {
+            let _: () = msg_send![menu, release];
+            return Err(error);
+        }
+    }
+    Ok(menu)
+}
+
+unsafe fn open_with_entries(path: &Path) -> Vec<(String, PathBuf)> {
+    let Some(url) = (unsafe { file_url(path) }) else {
+        return Vec::new();
+    };
     let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
     if workspace.is_null() {
-        return std::ptr::null_mut();
+        return Vec::new();
     }
-
-    let path_str = path.display().to_string();
-    let file_str = unsafe { nsstring(&path_str) };
-    let file_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: file_str];
-    if file_url.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    // urlsForApplicationsToOpenURL: (macOS 12+)
-    // Check if the workspace responds to this selector first
     let responds: bool =
         msg_send![workspace, respondsToSelector: sel!(urlsForApplicationsToOpenURL:)];
     if !responds {
-        return std::ptr::null_mut();
+        return Vec::new();
     }
-
-    let app_urls: *mut Object = msg_send![workspace, urlsForApplicationsToOpenURL: file_url];
-    if app_urls.is_null() {
-        return std::ptr::null_mut();
+    let urls: *mut Object = msg_send![workspace, urlsForApplicationsToOpenURL: url];
+    if urls.is_null() {
+        return Vec::new();
     }
-
-    let count: usize = msg_send![app_urls, count];
-    if count == 0 {
-        return std::ptr::null_mut();
-    }
-
-    let submenu: *mut Object = msg_send![class!(NSMenu), new];
-
-    for i in 0..count {
-        let app_url: *mut Object = msg_send![app_urls, objectAtIndex: i];
-        if app_url.is_null() {
+    let count: usize = msg_send![urls, count];
+    let mut applications = Vec::with_capacity(count);
+    for index in 0..count {
+        let app_url: *mut Object = msg_send![urls, objectAtIndex: index];
+        let Some(path) = (unsafe { path_from_file_url(app_url) }) else {
             continue;
+        };
+        let component: *mut Object = msg_send![app_url, lastPathComponent];
+        let title: *mut Object = msg_send![component, stringByDeletingPathExtension];
+        if let Some(title) = unsafe { string_from_nsstring(title) } {
+            applications.push((title, path));
         }
-
-        let last_comp: *mut Object = msg_send![app_url, lastPathComponent];
-        if last_comp.is_null() {
-            continue;
-        }
-        let app_name: *mut Object = msg_send![last_comp, stringByDeletingPathExtension];
-        if app_name.is_null() {
-            continue;
-        }
-
-        let key_ns = unsafe { nsstring("") };
-        let sub_item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-        let sub_item: *mut Object = msg_send![sub_item,
-            initWithTitle: app_name
-            action: sel!(actionOpenWith:)
-            keyEquivalent: key_ns
-        ];
-        let _: () = msg_send![sub_item, setTarget: handler];
-        let _: () = msg_send![sub_item, setRepresentedObject: app_url];
-
-        // App icon (best-effort)
-        let app_path_ns: *mut Object = msg_send![app_url, path];
-        if !app_path_ns.is_null() {
-            let icon: *mut Object = msg_send![workspace, iconForFile: app_path_ns];
-            if !icon.is_null() {
-                let sz = NSPoint { x: 16.0, y: 16.0 };
-                let _: () = msg_send![icon, setSize: sz];
-                let _: () = msg_send![sub_item, setImage: icon];
-            }
-        }
-
-        let _: () = msg_send![submenu, addItem: sub_item];
     }
-
-    submenu
+    applications
 }
 
-/// Build a "Tags" submenu with the 7 standard Finder tag colours.
-/// Already-applied tags get a checkmark (NSOnState).
-unsafe fn build_tags_submenu(handler: *mut Object, path: &Path) -> *mut Object {
-    let submenu: *mut Object = msg_send![class!(NSMenu), new];
-
-    // Read current tags via NSURL resource values
+unsafe fn read_tags(path: &Path) -> Result<BTreeSet<String>, String> {
     unsafe extern "C" {
         static NSURLTagNamesKey: *mut Object;
     }
-    let path_ns = unsafe { nsstring(&path.display().to_string()) };
-    let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
-
-    let mut current_tags: *mut Object = std::ptr::null_mut();
-    let tags_ptr: *mut *mut Object = &mut current_tags;
-    let nil_err: *mut Object = std::ptr::null_mut();
-    let tag_names_key: *mut Object = unsafe { NSURLTagNamesKey };
-    let _: bool = msg_send![url,
-        getResourceValue: tags_ptr
-        forKey: tag_names_key
-        error: nil_err
+    let Some(url) = (unsafe { file_url(path) }) else {
+        return Err("the target path could not be represented by NSURL".to_string());
+    };
+    let mut value: *mut Object = std::ptr::null_mut();
+    let mut error: *mut Object = std::ptr::null_mut();
+    let ok: bool = msg_send![url,
+        getResourceValue: &mut value
+        forKey: unsafe { NSURLTagNamesKey }
+        error: &mut error
     ];
-
-    let tags: &[(&str, &str)] = &[
-        ("Red", "🔴"),
-        ("Orange", "🟠"),
-        ("Yellow", "🟡"),
-        ("Green", "🟢"),
-        ("Blue", "🔵"),
-        ("Purple", "🟣"),
-        ("Gray", "⚪"),
-    ];
-
-    for &(name, dot) in tags {
-        let title = format!("{}  {}", dot, name);
-        let title_ns = unsafe { nsstring(&title) };
-        let key_ns = unsafe { nsstring("") };
-        let tag_ns = unsafe { nsstring(name) };
-
-        let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-        let item: *mut Object = msg_send![item,
-            initWithTitle: title_ns
-            action: sel!(actionToggleTag:)
-            keyEquivalent: key_ns
-        ];
-        let _: () = msg_send![item, setTarget: handler];
-        let _: () = msg_send![item, setRepresentedObject: tag_ns];
-
-        // Checkmark if tag is already applied
-        if !current_tags.is_null() {
-            let has: bool = msg_send![current_tags, containsObject: tag_ns];
-            if has {
-                let _: () = msg_send![item, setState: 1_isize]; // NSOnState
-            }
-        }
-
-        let _: () = msg_send![submenu, addItem: item];
+    if !ok {
+        return Err(unsafe { ns_error_message(error, "could not read Finder tags") });
     }
-
-    submenu
+    if value.is_null() {
+        return Ok(BTreeSet::new());
+    }
+    let count: usize = msg_send![value, count];
+    let mut tags = BTreeSet::new();
+    for index in 0..count {
+        let tag: *mut Object = msg_send![value, objectAtIndex: index];
+        if let Some(tag) = unsafe { string_from_nsstring(tag) } {
+            tags.insert(tag);
+        }
+    }
+    Ok(tags)
 }
 
-/// Build a "Share" submenu via NSSharingService.
-unsafe fn build_share_submenu(handler: *mut Object, path: &Path) -> *mut Object {
-    let path_ns = unsafe { nsstring(&path.display().to_string()) };
-    let file_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_ns];
-    if file_url.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    let items: *mut Object = msg_send![class!(NSArray), arrayWithObject: file_url];
+unsafe fn share_services(path: &Path) -> Vec<String> {
+    let Some(url) = (unsafe { file_url(path) }) else {
+        return Vec::new();
+    };
+    let items: *mut Object = msg_send![class!(NSArray), arrayWithObject: url];
     let services: *mut Object = msg_send![class!(NSSharingService), sharingServicesForItems: items];
     if services.is_null() {
-        return std::ptr::null_mut();
+        return Vec::new();
     }
-
     let count: usize = msg_send![services, count];
-    if count == 0 {
-        return std::ptr::null_mut();
-    }
-
-    let submenu: *mut Object = msg_send![class!(NSMenu), new];
-
-    for i in 0..count {
-        let service: *mut Object = msg_send![services, objectAtIndex: i];
-        if service.is_null() {
-            continue;
-        }
-
+    let mut titles = Vec::with_capacity(count);
+    for index in 0..count {
+        let service: *mut Object = msg_send![services, objectAtIndex: index];
         let title: *mut Object = msg_send![service, title];
-        if title.is_null() {
-            continue;
+        if let Some(title) = unsafe { string_from_nsstring(title) } {
+            titles.push(title);
         }
-
-        let key_ns = unsafe { nsstring("") };
-        let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-        let item: *mut Object = msg_send![item,
-            initWithTitle: title
-            action: sel!(actionShare:)
-            keyEquivalent: key_ns
-        ];
-        let _: () = msg_send![item, setTarget: handler];
-        let _: () = msg_send![item, setRepresentedObject: service];
-
-        // Service icon (best-effort)
-        let icon: *mut Object = msg_send![service, image];
-        if !icon.is_null() {
-            let sz = NSPoint { x: 16.0, y: 16.0 };
-            let _: () = msg_send![icon, setSize: sz];
-            let _: () = msg_send![item, setImage: icon];
-        }
-
-        let _: () = msg_send![submenu, addItem: item];
     }
+    titles
+}
 
-    submenu
+unsafe fn dynamic_entries(path: &Path) -> DynamicMenuEntries {
+    let tags = unsafe { read_tags(path) };
+    DynamicMenuEntries {
+        open_with: unsafe { open_with_entries(path) },
+        applied_tags: tags.clone().unwrap_or_default(),
+        tags_available: tags.is_ok(),
+        share_services: unsafe { share_services(path) },
+    }
+}
+
+fn next_invocation_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 #[derive(Debug)]
 pub struct MacOsContextMenu {
-    // An Rc marker makes the AppKit adapter statically !Send and !Sync.
     _main_thread_only: PhantomData<Rc<()>>,
 }
 
@@ -514,9 +402,30 @@ impl ContextMenuPort for MacOsContextMenu {
     fn show_context_menu(&self, path: &Path) -> ContextMenuResult {
         show_native(path)
     }
+
+    fn perform_deferred_action(&self, action: &ContextMenuAction) -> ContextMenuResult {
+        if !is_main_thread() {
+            return ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired);
+        }
+        match action {
+            ContextMenuAction::Duplicate(path) => reduce_action_result(
+                ContextMenuCommand::Duplicate,
+                crate::fs_util::duplicate(path),
+            ),
+            ContextMenuAction::Compress(path) => reduce_launch_result(
+                ContextMenuCommand::Compress,
+                crate::fs_util::compress_to_zip(path),
+            ),
+            ContextMenuAction::ToggleTag { path, tag } => {
+                reduce_action_result(ContextMenuCommand::ToggleTag, toggle_tag(path, tag))
+            }
+            ContextMenuAction::Share { path, service } => {
+                reduce_launch_result(ContextMenuCommand::Share, perform_share(path, service))
+            }
+        }
+    }
 }
 
-/// Show a native macOS NSMenu context menu for a file.
 fn show_native(path: &Path) -> ContextMenuResult {
     if !is_main_thread() {
         return ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired);
@@ -526,118 +435,152 @@ fn show_native(path: &Path) -> ContextMenuResult {
             reason: "AppKit context-menu handler could not be registered".to_string(),
         };
     }
-    let Some(handler_cls) = Class::get("CmdrMenuHandler") else {
+    let Some(handler_class) = Class::get("CmdrMenuHandlerV2") else {
         return ContextMenuResult::Unsupported {
             reason: "AppKit context-menu handler is unavailable".to_string(),
         };
     };
-    MENU_PATH.with(|p| *p.borrow_mut() = path.to_path_buf());
-    set_menu_result(ContextMenuResult::Dismissed);
 
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-        let handler: *mut Object = msg_send![handler_cls, new];
-
-        let menu: *mut Object = msg_send![class!(NSMenu), new];
-        let _: () = msg_send![menu, setAutoenablesItems: NO];
-
-        // ── Open ──
-        add_item(menu, "Open", handler, sel!(actionOpen:));
-
-        // ── Open With ▸ ──
-        let ow_submenu = build_open_with_submenu(handler, path);
-        if !ow_submenu.is_null() {
-            let key_ns = nsstring("");
-            let title_ns = nsstring("Open With");
-            let ow_item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-            let ow_item: *mut Object = msg_send![ow_item,
-                initWithTitle: title_ns
-                action: sel!(actionNoop:)
-                keyEquivalent: key_ns
-            ];
-            let _: () = msg_send![ow_item, setSubmenu: ow_submenu];
-            let _: () = msg_send![menu, addItem: ow_item];
-        }
-
-        // ── Quick Look ──
-        add_item(menu, "Quick Look", handler, sel!(actionQuickLook:));
-        add_separator(menu);
-
-        add_item(menu, "Get Info", handler, sel!(actionGetInfo:));
-
-        // ── Tags ▸ ──
-        {
-            let tags_sub = build_tags_submenu(handler, path);
-            let title_ns = nsstring("Tags");
-            let key_ns = nsstring("");
-            let tags_item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-            let tags_item: *mut Object = msg_send![tags_item,
-                initWithTitle: title_ns
-                action: sel!(actionNoop:)
-                keyEquivalent: key_ns
-            ];
-            let _: () = msg_send![tags_item, setSubmenu: tags_sub];
-            let _: () = msg_send![menu, addItem: tags_item];
-        }
-        add_separator(menu);
-
-        add_item(menu, "Duplicate", handler, sel!(actionDuplicate:));
-
-        let compress_title = format!(
-            "Compress \"{}\"",
-            path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
+        let invocation = build_invocation(
+            next_invocation_id(),
+            path.to_path_buf(),
+            &display_name(path),
+            dynamic_entries(path),
         );
-        add_item(menu, &compress_title, handler, sel!(actionCompress:));
-        add_separator(menu);
-
-        add_item(menu, "Copy Path", handler, sel!(actionCopyPath:));
-
-        // ── Share ▸ ──
-        let share_sub = build_share_submenu(handler, path);
-        if !share_sub.is_null() {
-            let title_ns = nsstring("Share");
-            let key_ns = nsstring("");
-            let share_item: *mut Object = msg_send![class!(NSMenuItem), alloc];
-            let share_item: *mut Object = msg_send![share_item,
-                initWithTitle: title_ns
-                action: sel!(actionNoop:)
-                keyEquivalent: key_ns
-            ];
-            let _: () = msg_send![share_item, setSubmenu: share_sub];
-            let _: () = msg_send![menu, addItem: share_item];
+        let mut state = Box::new(HandlerState::new(&invocation));
+        let handler: *mut Object = msg_send![handler_class, new];
+        if handler.is_null() {
+            let _: () = msg_send![pool, drain];
+            return ContextMenuResult::Unsupported {
+                reason: "AppKit could not allocate the menu handler".to_string(),
+            };
         }
-        add_separator(menu);
+        (*handler).set_ivar("rustState", state.as_mut() as *mut HandlerState as usize);
 
-        add_item(menu, "Show in Finder", handler, sel!(actionShowInFinder:));
-        add_separator(menu);
-
-        add_item(menu, "Move to Trash", handler, sel!(actionTrash:));
-
-        // ── Pop up at mouse location ──
-        let loc: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        let menu = match render_menu(&invocation.tree, handler, &mut state) {
+            Ok(menu) => menu,
+            Err(reason) => {
+                (*handler).set_ivar("rustState", 0_usize);
+                let _: () = msg_send![handler, release];
+                let _: () = msg_send![pool, drain];
+                return ContextMenuResult::Unsupported { reason };
+            }
+        };
+        let location: NSPoint = msg_send![class!(NSEvent), mouseLocation];
         let nil: *mut Object = std::ptr::null_mut();
         let _: bool = msg_send![menu,
             popUpMenuPositioningItem: nil
-            atLocation: loc
+            atLocation: location
             inView: nil
         ];
 
-        let _: () = msg_send![handler, release];
+        (*handler).set_ivar("rustState", 0_usize);
+        let selection = state.selection.take();
         let _: () = msg_send![menu, release];
+        let _: () = msg_send![handler, release];
+        let result = selection_result(&invocation, selection);
         let _: () = msg_send![pool, drain];
+        result
     }
+}
 
-    take_menu_result()
+fn reduce_action_result<T, E: std::fmt::Display>(
+    command: ContextMenuCommand,
+    result: Result<T, E>,
+) -> ContextMenuResult {
+    match result {
+        Ok(_) => ContextMenuResult::RefreshRequested,
+        Err(error) => ContextMenuResult::Failed(ContextMenuFailure::Action {
+            command,
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn reduce_launch_result<T, E: std::fmt::Display>(
+    command: ContextMenuCommand,
+    result: Result<T, E>,
+) -> ContextMenuResult {
+    match result {
+        Ok(_) => ContextMenuResult::Dismissed,
+        Err(error) => ContextMenuResult::Failed(ContextMenuFailure::Action {
+            command,
+            message: error.to_string(),
+        }),
+    }
+}
+
+unsafe fn ns_error_message(error: *mut Object, fallback: &str) -> String {
+    if error.is_null() {
+        return fallback.to_string();
+    }
+    let description: *mut Object = msg_send![error, localizedDescription];
+    unsafe { string_from_nsstring(description) }.unwrap_or_else(|| fallback.to_string())
+}
+
+fn toggle_tag(path: &Path, tag: &str) -> Result<(), String> {
+    unsafe {
+        let Some(url) = file_url(path) else {
+            return Err("the target path could not be represented by NSURL".to_string());
+        };
+        let current = read_tags(path)?;
+        let mut next = current;
+        if !next.remove(tag) {
+            next.insert(tag.to_string());
+        }
+        let array: *mut Object = msg_send![class!(NSMutableArray), array];
+        for value in next {
+            let value = nsstring(&value)?;
+            let _: () = msg_send![array, addObject: value];
+        }
+        unsafe extern "C" {
+            static NSURLTagNamesKey: *mut Object;
+        }
+        let mut error: *mut Object = std::ptr::null_mut();
+        let ok: bool = msg_send![url,
+            setResourceValue: array
+            forKey: NSURLTagNamesKey
+            error: &mut error
+        ];
+        if ok {
+            Ok(())
+        } else {
+            Err(ns_error_message(error, "could not update Finder tags"))
+        }
+    }
+}
+
+fn perform_share(path: &Path, expected_title: &str) -> Result<(), String> {
+    unsafe {
+        let Some(url) = file_url(path) else {
+            return Err("the target path could not be represented by NSURL".to_string());
+        };
+        let items: *mut Object = msg_send![class!(NSArray), arrayWithObject: url];
+        let services: *mut Object =
+            msg_send![class!(NSSharingService), sharingServicesForItems: items];
+        if services.is_null() {
+            return Err("sharing services are unavailable".to_string());
+        }
+        let count: usize = msg_send![services, count];
+        for index in 0..count {
+            let service: *mut Object = msg_send![services, objectAtIndex: index];
+            let title: *mut Object = msg_send![service, title];
+            if string_from_nsstring(title).as_deref() == Some(expected_title) {
+                let _: () = msg_send![service, performWithItems: items];
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "the selected sharing service \"{expected_title}\" is no longer available"
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ContextMenuCommand, ContextMenuFailure, ContextMenuResult, reduce_action_result,
-        reduce_launch_result,
-    };
+    use super::*;
 
     #[test]
     fn accepted_non_mutating_launch_does_not_request_refresh() {
@@ -656,21 +599,15 @@ mod tests {
     }
 
     #[test]
-    fn accepted_compression_spawn_does_not_request_refresh() {
-        assert_eq!(
-            reduce_launch_result(ContextMenuCommand::Compress, Ok::<(), std::io::Error>(())),
-            ContextMenuResult::Dismissed
-        );
-    }
-
-    #[test]
-    fn failed_mutating_actions_preserve_their_errors_without_refresh() {
+    fn failed_actions_preserve_command_and_message() {
         for command in [
             ContextMenuCommand::OpenWith,
             ContextMenuCommand::QuickLook,
             ContextMenuCommand::GetInfo,
             ContextMenuCommand::Duplicate,
             ContextMenuCommand::Compress,
+            ContextMenuCommand::ToggleTag,
+            ContextMenuCommand::Share,
             ContextMenuCommand::MoveToTrash,
         ] {
             assert_eq!(

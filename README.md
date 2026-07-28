@@ -295,9 +295,9 @@ AppKit / AVFoundation / ImageIO).
 ## Development
 
 ```sh
-cargo test                       # unit tests (UI-independent core)
-cargo clippy --all-targets       # lints (the repo is clippy-clean)
-cargo fmt --check                # formatting
+cargo test --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --check
 ```
 
 The file-manager logic lives in a UI-independent core (`workspace`,
@@ -308,6 +308,44 @@ emits typed FIFO `UiRequest` values; `app/update.rs` owns the single per-frame
 dispatcher and the `app` module remains the egui adapter. Main-thread AppKit
 context-menu behavior and background workload admission are injected through
 narrow handles rather than reached through UI-global state.
+
+### Native visual QA
+
+The `visual-qa` feature runs the real native eframe/WGPU renderer against a
+temporary, deterministic workspace. It does not load the session, recovery
+inventory, bookmarks, collections, content-index settings, or user storage;
+clipboard, opener, Trash, free-space, and context-menu effects are recording
+fakes. Run each scenario in its own main-thread process:
+
+```sh
+for scenario in desktop_base minimum_window zoom_200_accessible confirmation_owner; do
+  cargo run --features visual-qa -- --visual-qa "$scenario" --output target/visual-qa
+done
+```
+
+Each scenario always writes `manifest.json` and `capabilities.json` under
+`target/visual-qa/<scenario>`; a successful capture also writes `frame.png`.
+Checks cover framebuffer dimensions, alpha/nonblank/color diversity, finite
+in-viewport pane and dialog geometry, pane non-overlap, modal ownership,
+disabled modal background, and zero native-effect calls. `--allow-skip`
+converts only an unavailable native GUI/readback capability into an explicit
+`skipped_capability_unavailable` artifact; validation and app-construction failures
+still fail.
+
+The pure native-menu contract tests stable item IDs, order, separators,
+enabled state, submenus, key-equivalent metadata, accessibility labels, and
+invocation binding. AppKit callbacks only return typed selections; mutations
+run later through the context-menu port. Pixel capture of AppKit's separate
+popup window, VoiceOver speech/navigation, and 1x/2x multi-monitor placement
+remain manual checks because they require Screen Recording, Accessibility
+permission, and an interactive WindowServer session.
+
+Manual release check:
+
+- Open and dismiss the AppKit menu with Escape; no action or focus leak occurs.
+- Navigate every menu/submenu by keyboard and verify VoiceOver labels.
+- Check popup placement and clipping on 1x/2x displays and across two monitors.
+
 The architecture and the refactoring plan are documented in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
 
