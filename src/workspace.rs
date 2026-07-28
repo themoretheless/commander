@@ -389,49 +389,6 @@ fn trash_batch_item(entry: &FileEntry) -> crate::ports::TrashBatchItem {
     trash_batch_item_from_listing(entry.path.clone(), &entry.identity)
 }
 
-/// Resolve a typed path for go-to-path (Cmd+L): trim, expand a leading `~`
-/// to `home`, and require the result to be an existing directory.
-pub fn resolve_dir_input(input: &str, home: &Path) -> Result<PathBuf, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("Path is empty".into());
-    }
-    let expanded: PathBuf = if trimmed == "~" {
-        home.to_path_buf()
-    } else if let Some(rest) = trimmed.strip_prefix("~/") {
-        home.join(rest)
-    } else {
-        PathBuf::from(trimmed)
-    };
-    if !expanded.exists() {
-        return Err("Path does not exist".into());
-    }
-    if !expanded.is_dir() {
-        return Err("Not a folder".into());
-    }
-    Ok(expanded)
-}
-
-/// Validate a proposed file name against its siblings (UI-independent so it
-/// can drive live feedback while typing). `siblings` must exclude the entry
-/// being renamed.
-pub fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), String> {
-    let n = name.trim();
-    if n.is_empty() {
-        return Err("Name cannot be empty".into());
-    }
-    if n.contains('/') {
-        return Err("Name cannot contain '/'".into());
-    }
-    if n == "." || n == ".." {
-        return Err("Invalid name".into());
-    }
-    if siblings.iter().any(|s| s == n) {
-        return Err("Name already in use".into());
-    }
-    Ok(())
-}
-
 impl Workspace {
     #[cfg(test)]
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
@@ -2166,7 +2123,8 @@ impl Workspace {
             return Ok(()); // nothing to do
         }
         let siblings = Self::rename_siblings(old);
-        validate_new_name(new_name, &siblings)?;
+        crate::pathname::validate_new_name(new_name, &siblings)
+            .map_err(|error| error.to_string())?;
         let dest = old
             .parent()
             .map(|p| p.join(new_name))

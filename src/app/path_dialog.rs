@@ -1,5 +1,5 @@
 //! Go-to-path input (Cmd+L): type a directory path and jump to it. The
-//! resolution/validation lives in `workspace::resolve_dir_input`.
+//! resolution/validation lives in `pathname::resolve_dir_input`.
 
 use super::*;
 
@@ -24,7 +24,7 @@ impl App {
         let t = self.colors;
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
 
-        let resolved = crate::workspace::resolve_dir_input(buffer, &home);
+        let resolved = crate::pathname::resolve_dir_input(buffer, &home);
         let mut go: Option<std::path::PathBuf> = None;
         let mut cancel = false;
 
@@ -66,8 +66,12 @@ impl App {
                                 .color(t.accent),
                         );
                     }
-                    Err(msg) => {
-                        ui.label(egui::RichText::new(msg).size(11.0).color(t.accent_red));
+                    Err(error) => {
+                        ui.label(
+                            egui::RichText::new(error.to_string())
+                                .size(11.0)
+                                .color(t.accent_red),
+                        );
                     }
                 }
 

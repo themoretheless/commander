@@ -1,5 +1,6 @@
 //! Inline rename editor: a small modal seeded from the cursor entry, with
-//! live name validation. Commit/validation logic lives in `workspace`.
+//! live name validation. Commit orchestration lives in `workspace`; lexical
+//! validation lives in `pathname`.
 
 use super::*;
 
@@ -70,7 +71,9 @@ impl App {
                 state.error = if state.buffer.trim() == old_name {
                     None
                 } else {
-                    crate::workspace::validate_new_name(&state.buffer, &state.siblings).err()
+                    crate::pathname::validate_new_name(&state.buffer, &state.siblings)
+                        .err()
+                        .map(|error| error.to_string())
                 };
                 let valid = state.error.is_none();
 
