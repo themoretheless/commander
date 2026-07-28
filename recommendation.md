@@ -45,7 +45,7 @@ references. When the two disagree, architecture.md wins.
 | # | Step | Risk | Notes |
 | --- | --- | --- | --- |
 | A1 | Extract `compare` module | done | Shipped on `master` (`ddab764`). |
-| A2 | Workspace test split + typed `pathname` extraction | **done** | `workspace.rs` stays a file with `workspace/tests.rs` as its child. Pure pathname parsing and typed errors drive both dialogs and commit-time rename validation; an injected `DirectoryProbePort` and generation-bound `PathProbeController` now move `Cmd+L` metadata off the frame thread while preserving lexical paths and symlink-to-directory behavior. |
+| A2 | Workspace test split + typed `pathname` extraction | **done** | `workspace.rs` stays a file with `workspace/tests.rs` as its child. Pure pathname parsing and typed errors drive both dialogs and commit-time rename validation; an injected `DirectoryProbePort` and exact-binding/latest-wins `PathProbeController` now move `Cmd+L` metadata off the frame thread while preserving lexical paths and symlink-to-directory behavior. |
 | A3 | Encapsulated `ViewConfig`, pure sorting, atomic view transitions | **done** | `ListingState` owns rows/revision/filter cache; the former explicit-`entries_gen` design is superseded. Per-panel session adapters preserve legacy flat JSON while seeding both configs before first listing. Hidden toggles commit config+rows atomically, publish success/rejection through the shared non-modal FIFO, and invalidate a hidden-policy-aware bounded tree cache on success. |
 | A4 | Replace the `*_request` flag bus with one typed request queue | **done** | Shipped as `ui_request::UiRequestQueue`: 25 fields removed, one FIFO snapshot drain, payload-preserving modal serialization, FIFO Escape ownership, and tested SafeState-to-Recovery handoff. |
 | A5 | Extract `UiState` (group dialog buffers out of `App`) | **done** | `app::ui_state::UiState` owns transient input and all modal buffers; opening contexts retain immutable targets and the FIFO/Escape contract is unchanged. |
@@ -96,11 +96,15 @@ duplicate-crate groups visible as warning-level debt. The waiver owner is
 README.
 The pathname implementation pass then split pure lexical parsing from the
 injected filesystem probe. `Cmd+L` captures its home and opening panel once,
-uses a 200 ms debounce and dedicated two-worker quota, accepts only the exact
-dialog/generation/raw/lexical binding, and retires cancellation, admission,
-panic and disconnect paths terminally. Nine deterministic controller tests
-bring the full serial all-feature suite to 956 passing with three intentional
-ignores. The isolated performance smoke remains green. Synchronous
+uses a 200 ms debounce and dedicated two-worker quota, admits at most two tasks
+and never more than one for the current binding, while collapsing further
+edits into one latest-wins candidate as stale slots retire. It accepts only the exact
+dialog/generation/raw/lexical binding and does not register transient dialog
+roots in the scheduler generation map. Ten deterministic controller tests
+cover blocked workers, 100-edit bounds, synchronous completion, cancellation,
+admission, panic and disconnect paths, bringing the full serial all-feature
+suite to 957 passing with three intentional ignores. The isolated performance
+smoke remains green. Synchronous
 `PanelState::navigate_to` listing and the probe-to-listing TOCTOU remain
 explicitly outside this scoped change.
 
@@ -406,7 +410,7 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 31. `предложение` `src/app/mask_dialog.rs:9-11` - Mask dialog has no persisted history of recently-used masks, so a common mask like '*.rs' or '!*test*' must be retyped every time the dialog opens with an empty buffer
 32. `предложение` `src/smart_folder.rs:10-15; referenced from src/app/saved_search_dialog.rs:130-138` - Smart folders have no 'run now' from a list without going through the Find sheet indirection, and no way to reorder or rename a saved search once created
 33. `предложение` `src/density.rs:75-81` - Density has exactly 3 fixed tiers with no user-tunable custom row height, and no per-folder memory (already tracked as B2 in recommendation.md) but also no keyboard shortcut discoverable from density.rs itself for jumping directly to a tier (only relative cycle)
-34. `проблема` `src/app/path_dialog.rs:24` - resolve_dir_input() re-parses the string and hits the filesystem (exists()/is_dir() syscalls) on every single frame the dialog is open, not just on text change (resolved 2026-07-28: pure parsing is separated from a 200 ms debounced, generation-bound worker probe)
+34. `проблема` `src/app/path_dialog.rs:24` - resolve_dir_input() re-parses the string and hits the filesystem (exists()/is_dir() syscalls) on every single frame the dialog is open, not just on text change (resolved 2026-07-28: pure parsing is separated from a 200 ms debounced, exact-binding worker probe with bounded latest-wins replacement)
 35. `ошибка` `src/listing_export.rs:29-33,46-57` - Text and Markdown listing export formats do not escape embedded newlines/tabs in filenames, unlike the CSV format which correctly quotes them
 36. `проблема` `src/listing_export.rs:63-74` - csv_escape/md_escape only guard the fields listing_export builds itself (name, size_str, modified_str) but not e.g. a possible '"' or '\|' inside modified_str, which is fine today only because modified_str's format string is controlled
 37. `проблема` `src/app/path_dialog.rs:22` - show_path_dialog does the home_dir() lookup and Command::resolve every frame even though `home` never changes while the app runs (resolved 2026-07-28: home is captured once in `open_path`, and unchanged frames perform no pathname I/O)

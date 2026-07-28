@@ -90,7 +90,8 @@ impl App {
                 }
 
                 ui.add_space(4.0);
-                let status = state.probe.status().clone();
+                let status = state.probe.status();
+                let status_message = status.message();
                 let status_color = match status {
                     crate::path_probe::ProbeStatus::Valid => t.accent,
                     crate::path_probe::ProbeStatus::Error(_)
@@ -103,14 +104,18 @@ impl App {
                         egui::vec2(ui.available_width(), 18.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            ui.label(
-                                egui::RichText::new(status.message())
-                                    .size(11.0)
-                                    .color(status_color),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(status_message.clone())
+                                        .size(11.0)
+                                        .color(status_color),
+                                )
+                                .truncate(),
                             )
                         },
                     )
-                    .inner;
+                    .inner
+                    .on_hover_text(status_message);
                 ui.ctx().accesskit_node_builder(status_response.id, |node| {
                     node.set_role(egui::accesskit::Role::Status);
                     node.set_live(egui::accesskit::Live::Polite);

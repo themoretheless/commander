@@ -1,4 +1,4 @@
-//! Debounced, generation-bound directory probing for the go-to-path dialog.
+//! Debounced, binding-checked directory probing for the go-to-path dialog.
 
 use crate::pathname::{DirInputError, DirectoryProbePort, parse_dir_input};
 use crate::workload::{
@@ -10,7 +10,8 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 pub(crate) const PATH_PROBE_DEBOUNCE: Duration = Duration::from_millis(200);
-const PATH_PROBE_POLL: Duration = Duration::from_millis(50);
+const PATH_PROBE_POLL: Duration = Duration::from_millis(250);
+const MAX_IN_FLIGHT_PROBES: usize = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProbeStatus {
@@ -70,6 +71,21 @@ struct InFlightProbe {
     binding: ProbeBinding,
     task: TaskHandle,
     receiver: mpsc::Receiver<WorkerEvent>,
+    cancellation_requested: bool,
+}
+
+impl InFlightProbe {
+    fn cancel_once(&mut self) {
+        if !self.cancellation_requested {
+            self.task.cancel();
+            self.cancellation_requested = true;
+        }
+    }
+}
+
+enum ProbeTerminal {
+    Event(WorkerEvent),
+    Disconnected,
 }
 
 pub(crate) struct PathProbeController {
@@ -80,7 +96,7 @@ pub(crate) struct PathProbeController {
     lexical_path: Option<PathBuf>,
     status: ProbeStatus,
     edited_at: f64,
-    in_flight: Option<InFlightProbe>,
+    in_flight: Vec<InFlightProbe>,
 }
 
 impl PathProbeController {
@@ -98,7 +114,7 @@ impl PathProbeController {
             lexical_path,
             status,
             edited_at: now,
-            in_flight: None,
+            in_flight: Vec::with_capacity(MAX_IN_FLIGHT_PROBES),
         }
     }
 
@@ -124,8 +140,8 @@ impl PathProbeController {
             .generation
             .checked_add(1)
             .expect("path probe generation space exhausted");
-        if let Some(in_flight) = &self.in_flight {
-            in_flight.task.cancel();
+        for in_flight in &mut self.in_flight {
+            in_flight.cancel_once();
         }
         match parse_dir_input(&self.raw_input, &self.home) {
             Ok(path) => {
@@ -159,8 +175,8 @@ impl PathProbeController {
         probe: Arc<dyn DirectoryProbePort>,
         notify: Arc<dyn Fn() + Send + Sync>,
     ) {
-        self.poll_terminal();
-        if self.in_flight.is_some() || self.status != ProbeStatus::Waiting {
+        self.poll_terminals();
+        if self.status != ProbeStatus::Waiting {
             return;
         }
         if now < self.edited_at + PATH_PROBE_DEBOUNCE.as_secs_f64() {
@@ -169,6 +185,17 @@ impl PathProbeController {
         let Some(binding) = self.current_binding() else {
             return;
         };
+        if self
+            .in_flight
+            .iter()
+            .any(|in_flight| in_flight.binding == binding)
+        {
+            self.status = ProbeStatus::Checking;
+            return;
+        }
+        if self.in_flight.len() >= MAX_IN_FLIGHT_PROBES {
+            return;
+        }
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker_sender = sender.clone();
         let abandoned_sender = sender;
@@ -178,11 +205,10 @@ impl PathProbeController {
         let abandoned_notify = notify;
         let spec = TaskSpec::new(
             TaskKind::PathProbe,
-            PathBuf::from(format!(".commander-path-probe/{}", self.dialog_id)),
+            binding.lexical_path.clone(),
             self.generation,
         )
-        .priority(Priority::Interactive)
-        .replace_older_generation();
+        .priority(Priority::Interactive);
 
         let submitted = workload.submit_with_abandonment(
             spec,
@@ -219,12 +245,13 @@ impl PathProbeController {
         match submitted {
             Ok(task) => {
                 self.status = ProbeStatus::Checking;
-                self.in_flight = Some(InFlightProbe {
+                self.in_flight.push(InFlightProbe {
                     binding,
                     task,
                     receiver,
+                    cancellation_requested: false,
                 });
-                self.poll_terminal();
+                self.poll_terminals();
             }
             Err(error) => {
                 self.status = ProbeStatus::WorkerFailed(admission_message(&error));
@@ -234,7 +261,7 @@ impl PathProbeController {
 
     pub(crate) fn repaint_after(&self, now: f64) -> Option<Duration> {
         match self.status {
-            ProbeStatus::Waiting if self.in_flight.is_none() => {
+            ProbeStatus::Waiting if self.in_flight.is_empty() => {
                 let remaining = (self.edited_at + PATH_PROBE_DEBOUNCE.as_secs_f64() - now).max(0.0);
                 Some(Duration::from_secs_f64(remaining))
             }
@@ -252,52 +279,59 @@ impl PathProbeController {
         })
     }
 
-    fn poll_terminal(&mut self) {
-        let Some(in_flight) = self.in_flight.as_ref() else {
+    fn poll_terminals(&mut self) {
+        let current = self.current_binding();
+        let mut current_terminal = None;
+        let mut index = 0;
+        while index < self.in_flight.len() {
+            let terminal = match self.in_flight[index].receiver.try_recv() {
+                Ok(event) => Some(ProbeTerminal::Event(event)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(ProbeTerminal::Disconnected),
+            };
+            let Some(terminal) = terminal else {
+                index += 1;
+                continue;
+            };
+            let retired = self.in_flight.swap_remove(index);
+            if current.as_ref() == Some(&retired.binding) {
+                current_terminal = Some((retired.binding, terminal));
+            }
+        }
+
+        let Some((binding, terminal)) = current_terminal else {
             return;
         };
-        let terminal = match in_flight.receiver.try_recv() {
-            Ok(event) => Some(Ok(event)),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(())),
-        };
-        let Some(terminal) = terminal else {
-            return;
-        };
-        let in_flight = self.in_flight.take().expect("in-flight probe exists");
-        let is_current = self.current_binding().as_ref() == Some(&in_flight.binding);
-        match terminal {
-            Ok(event) if is_current && event.binding() == &in_flight.binding => {
-                self.status = match event {
-                    WorkerEvent::Completed {
-                        outcome: Ok(()), ..
-                    } => ProbeStatus::Valid,
-                    WorkerEvent::Completed {
-                        outcome: Err(error),
-                        ..
-                    } => ProbeStatus::Error(error),
-                    WorkerEvent::Cancelled { .. } => {
-                        ProbeStatus::WorkerFailed("Folder check was cancelled".to_string())
-                    }
-                    WorkerEvent::Abandoned { reason, .. } => {
-                        ProbeStatus::WorkerFailed(format!("Folder check could not run: {reason}"))
-                    }
-                };
+        self.status = match terminal {
+            ProbeTerminal::Event(event) if event.binding() == &binding => match event {
+                WorkerEvent::Completed {
+                    outcome: Ok(()), ..
+                } => ProbeStatus::Valid,
+                WorkerEvent::Completed {
+                    outcome: Err(error),
+                    ..
+                } => ProbeStatus::Error(error),
+                WorkerEvent::Cancelled { .. } => {
+                    ProbeStatus::WorkerFailed("Folder check was cancelled".to_string())
+                }
+                WorkerEvent::Abandoned { reason, .. } => {
+                    ProbeStatus::WorkerFailed(format!("Folder check could not run: {reason}"))
+                }
+            },
+            ProbeTerminal::Event(_) => ProbeStatus::WorkerFailed(
+                "Folder check worker returned a mismatched result".to_string(),
+            ),
+            ProbeTerminal::Disconnected => {
+                ProbeStatus::WorkerFailed("Folder check worker stopped unexpectedly".to_string())
             }
-            Err(()) if is_current => {
-                self.status = ProbeStatus::WorkerFailed(
-                    "Folder check worker stopped unexpectedly".to_string(),
-                );
-            }
-            Ok(_) | Err(()) => {}
         }
     }
 }
 
 impl Drop for PathProbeController {
     fn drop(&mut self) {
-        if let Some(in_flight) = &self.in_flight {
-            in_flight.task.cancel();
+        for in_flight in &mut self.in_flight {
+            in_flight.cancel_once();
         }
     }
 }
@@ -334,7 +368,7 @@ mod tests {
         WorkloadJob,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, mpsc};
+    use std::sync::{Condvar, Mutex, mpsc};
     use std::thread::ThreadId;
     use std::time::Instant;
 
@@ -361,6 +395,60 @@ mod tests {
     impl DirectoryProbePort for PanicProbe {
         fn probe(&self, _path: &Path) -> Result<(), DirInputError> {
             panic!("scripted probe failure");
+        }
+    }
+
+    #[derive(Default)]
+    struct ProbeGate {
+        open: Mutex<bool>,
+        ready: Condvar,
+    }
+
+    impl ProbeGate {
+        fn wait(&self) {
+            let open = crate::lock_util::recover(&self.open);
+            let (_open, timeout) = self
+                .ready
+                .wait_timeout_while(open, Duration::from_secs(2), |open| !*open)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(!timeout.timed_out(), "scripted path probe was not released");
+        }
+
+        fn release(&self) {
+            *crate::lock_util::recover(&self.open) = true;
+            self.ready.notify_all();
+        }
+    }
+
+    struct BlockingProbe {
+        calls: mpsc::Sender<PathBuf>,
+        first: ProbeGate,
+        second: ProbeGate,
+    }
+
+    impl BlockingProbe {
+        fn new() -> (Arc<Self>, mpsc::Receiver<PathBuf>) {
+            let (calls, receiver) = mpsc::channel();
+            (
+                Arc::new(Self {
+                    calls,
+                    first: ProbeGate::default(),
+                    second: ProbeGate::default(),
+                }),
+                receiver,
+            )
+        }
+    }
+
+    impl DirectoryProbePort for BlockingProbe {
+        fn probe(&self, path: &Path) -> Result<(), DirInputError> {
+            let _ = self.calls.send(path.to_path_buf());
+            if path == Path::new("first") {
+                self.first.wait();
+            } else if path == Path::new("second") {
+                self.second.wait();
+            }
+            Ok(())
         }
     }
 
@@ -395,21 +483,70 @@ mod tests {
     }
 
     #[test]
-    fn rapid_edits_keep_one_trailing_submission() {
-        let runtime = DeterministicWorkload::new(SchedulerLimits::default());
-        let probe = Arc::new(RecordingProbe::default());
+    fn blocked_probe_allows_one_latest_wins_replacement_and_bounds_rapid_edits() {
+        let runtime = crate::workload::WorkloadRuntime::new(SchedulerLimits::default());
+        let workload = WorkloadHandle::from_runtime(runtime.clone());
+        let (probe, calls) = BlockingProbe::new();
         let mut controller = controller("first");
-        controller.drive(0.2, &runtime.handle(), probe.clone(), silent_notify());
-        assert_eq!(runtime.stats().queued, 1);
+        controller.drive(0.2, &workload, probe.clone(), silent_notify());
+        assert_eq!(
+            calls.recv_timeout(Duration::from_secs(1)).unwrap(),
+            PathBuf::from("first")
+        );
 
+        controller.replace_input("second", 0.21);
+        controller.drive(0.42, &workload, probe.clone(), silent_notify());
+        assert_eq!(
+            calls.recv_timeout(Duration::from_secs(1)).unwrap(),
+            PathBuf::from("second"),
+            "the second workload lane must not wait behind blocked metadata"
+        );
         for edit in 0..100 {
-            controller.replace_input(format!("path-{edit}"), 0.21 + f64::from(edit) / 1_000.0);
+            controller.replace_input(format!("latest-{edit}"), 0.42 + f64::from(edit) / 10_000.0);
         }
-        assert_eq!(runtime.stats().queued, 0);
-        controller.drive(1.0, &runtime.handle(), probe.clone(), silent_notify());
-        assert_eq!(runtime.stats().queued, 1);
-        controller.drive(1.1, &runtime.handle(), probe, silent_notify());
-        assert_eq!(runtime.stats().queued, 1);
+        controller.drive(1.0, &workload, probe.clone(), silent_notify());
+        assert_eq!(controller.in_flight.len(), MAX_IN_FLIGHT_PROBES);
+        assert_eq!(controller.repaint_after(1.0), Some(PATH_PROBE_POLL));
+        assert!(matches!(
+            calls.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        probe.second.release();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let submitted = loop {
+            controller.drive(1.0, &workload, probe.clone(), silent_notify());
+            match calls.recv_timeout(Duration::from_millis(10)) {
+                Ok(path) => break path,
+                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+                Err(error) => panic!("latest path probe was not submitted: {error}"),
+            }
+        };
+        assert_eq!(submitted, PathBuf::from("latest-99"));
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while controller.status() != &ProbeStatus::Valid && Instant::now() < deadline {
+            controller.drive(1.0, &workload, probe.clone(), silent_notify());
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            controller.validated_path("latest-99"),
+            Some(Path::new("latest-99"))
+        );
+        assert_eq!(controller.repaint_after(1.0), None);
+
+        probe.first.release();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while (!controller.in_flight.is_empty() || runtime.stats().running != 0)
+            && Instant::now() < deadline
+        {
+            controller.drive(1.0, &workload, probe.clone(), silent_notify());
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(controller.in_flight.is_empty());
+        assert_eq!(runtime.stats().running, 0);
+        assert!(calls.try_recv().is_err());
+        assert_eq!(controller.status(), &ProbeStatus::Valid);
     }
 
     #[test]
@@ -420,14 +557,18 @@ mod tests {
         controller.drive(0.2, &runtime.handle(), probe.clone(), silent_notify());
 
         assert!(runtime.run_next_after_dequeue(|| {
-            controller.replace_input("B", 0.21);
-            controller.replace_input("A", 0.22);
+            controller.replace_input("B", 0.31);
+            controller.replace_input("A", 0.32);
         }));
-        controller.drive(0.5, &runtime.handle(), probe.clone(), silent_notify());
+        controller.drive(0.4, &runtime.handle(), probe.clone(), silent_notify());
+        assert_eq!(controller.status(), &ProbeStatus::Waiting);
+        assert!(controller.validated_path("A").is_none());
+
+        controller.drive(0.521, &runtime.handle(), probe.clone(), silent_notify());
         assert_eq!(controller.status(), &ProbeStatus::Checking);
         assert!(controller.validated_path("A").is_none());
         assert!(runtime.run_next());
-        controller.drive(0.5, &runtime.handle(), probe, silent_notify());
+        controller.drive(0.521, &runtime.handle(), probe, silent_notify());
         assert_eq!(controller.status(), &ProbeStatus::Valid);
         assert_eq!(controller.validated_path("A"), Some(Path::new("A")));
     }
@@ -545,6 +686,47 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ImmediateBackend {
+        next_id: AtomicUsize,
+        submitted: Mutex<Vec<TaskSpec>>,
+    }
+
+    impl WorkloadBackend for ImmediateBackend {
+        fn submit_boxed(
+            self: Arc<Self>,
+            spec: TaskSpec,
+            work: WorkloadJob,
+            on_abandoned: Option<crate::workload::AbandonmentCallback>,
+        ) -> Result<TaskSnapshot, AdmissionError> {
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+            let snapshot = TaskSnapshot {
+                id: crate::workload::TaskId(id),
+                kind: spec.kind,
+                root: spec.root.clone(),
+                generation: spec.generation,
+                priority: spec.priority,
+                estimated_bytes: spec.estimated_bytes,
+                submitted_tick: id,
+                replace_older_generation: spec.replace_older_generation,
+            };
+            crate::lock_util::recover(&self.submitted).push(spec);
+
+            // This backend intentionally completes before submit returns.
+            work(crate::workload::CancellationToken::new());
+            drop(on_abandoned);
+            Ok(snapshot)
+        }
+
+        fn cancel_task(self: Arc<Self>, _id: crate::workload::TaskId) -> bool {
+            false
+        }
+
+        fn stats(&self) -> SchedulerStats {
+            SchedulerStats::default()
+        }
+    }
+
     #[test]
     fn disconnected_worker_channel_is_terminal() {
         let workload = WorkloadHandle::new(Arc::new(DisconnectingBackend));
@@ -559,6 +741,32 @@ mod tests {
             controller.status(),
             ProbeStatus::WorkerFailed(message) if message.contains("stopped unexpectedly")
         ));
+    }
+
+    #[test]
+    fn synchronous_completion_is_observed_without_scheduler_freshness_keys() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let workload = WorkloadHandle::new(backend.clone());
+        let probe = Arc::new(RecordingProbe::default());
+
+        for dialog_id in 1..=100 {
+            let mut controller = PathProbeController::new(
+                dialog_id,
+                format!("path-{dialog_id}"),
+                PathBuf::from("/home/test"),
+                0.0,
+            );
+            controller.drive(0.2, &workload, probe.clone(), silent_notify());
+            assert_eq!(controller.status(), &ProbeStatus::Valid);
+            assert!(controller.in_flight.is_empty());
+        }
+
+        let submitted = crate::lock_util::recover(&backend.submitted);
+        assert_eq!(submitted.len(), 100);
+        assert!(
+            submitted.iter().all(|spec| !spec.replace_older_generation),
+            "dialog-local bindings must not grow Scheduler::active_generations"
+        );
     }
 
     #[test]

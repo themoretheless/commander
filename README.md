@@ -344,10 +344,13 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
   pathname parsing/validation lives in its own typed module.
 - `path_probe::PathProbeController` debounces `Cmd+L` input, binds every result
   to the exact dialog/input generation, and runs the injected filesystem
-  `metadata` probe through a dedicated bounded workload lane. The dialog keeps
-  stable status geometry and a polite accessibility live region.
+  `metadata` probe through a dedicated two-worker workload lane. A dialog owns
+  at most two admitted probes and never more than one for its current binding;
+  further edits collapse into one latest-wins candidate while older slots
+  retire, without growing scheduler freshness state. The dialog keeps stable
+  one-line status geometry and a polite accessibility live region.
 
-The full serial suite currently passes 956 tests with three intentional
+The full serial suite currently passes 957 tests with three intentional
 manual/performance harnesses ignored. The next high-value architecture work is
 closing the permission-bound VoiceOver, AppKit popup, and multi-monitor release
 checks. `PanelState::navigate_to` still performs its listing publication on the
