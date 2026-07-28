@@ -1479,7 +1479,7 @@ fn apply_batch_rename_rejects_invalid_regex_before_mutation() {
     assert!(error.starts_with("Invalid regex:"), "{error}");
     assert!(original.is_file());
     assert!(!l.path().join("renamed").exists());
-    assert!(!ws.stack.can_undo());
+    assert!(!ws.can_undo());
 }
 
 #[test]
@@ -2241,7 +2241,7 @@ fn keep_both_move_undo_does_not_relocate_the_existing_file() {
     // A Keep Both rename is not faithfully reversible, so no undo is recorded
     // and Cmd+Z must not relocate the pre-existing file (the old bug did).
     assert!(
-        ws.stack.peek_undo().is_none(),
+        ws.top_undo_action().is_none(),
         "no bogus undo recorded for an all-KeepBoth move"
     );
     let _ = ws.perform_undo(|| {});
@@ -2482,7 +2482,7 @@ fn move_then_undo_restores_the_source() {
     wait_transfer(&mut ws);
     assert!(!f.exists(), "move removed the source");
     assert!(r.path().join("doc.txt").exists());
-    assert!(ws.stack.can_undo(), "a clean move is undoable");
+    assert!(ws.can_undo(), "a clean move is undoable");
 
     let _ = ws.perform_undo(|| {});
     wait_transfer(&mut ws);
@@ -2494,7 +2494,7 @@ fn move_then_undo_restores_the_source() {
     );
 
     // Redo re-applies the move.
-    assert!(ws.stack.can_redo(), "the undone move is redoable");
+    assert!(ws.can_redo(), "the undone move is redoable");
     let _ = ws.perform_redo(|| {});
     wait_transfer(&mut ws);
     assert!(!f.exists(), "redo re-moved the source away");
@@ -2519,7 +2519,7 @@ fn batch_rename_is_undoable_and_redoable() {
     };
     assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 2);
     assert!(l.path().join("x_a.txt").is_file());
-    assert!(ws.stack.can_undo());
+    assert!(ws.can_undo());
 
     let _ = ws.perform_undo(|| {});
     assert!(l.path().join("a.txt").is_file(), "undo restored names");
@@ -2924,7 +2924,7 @@ fn commit_rename_is_undoable_and_redoable() {
     let mut ws = workspace(&l, &r);
 
     ws.commit_rename(&old, "new.txt").unwrap();
-    assert!(ws.stack.can_undo());
+    assert!(ws.can_undo());
     ws.perform_undo(|| {}).unwrap();
     assert!(old.is_file());
     assert!(!new.exists());
@@ -2994,7 +2994,7 @@ fn commit_rename_rejects_nul_before_touching_disk_or_history() {
 
     assert_eq!(error, "Name cannot contain NUL");
     assert!(original.is_file());
-    assert!(!workspace.stack.can_undo());
+    assert!(!workspace.can_undo());
 }
 
 #[test]
@@ -3044,7 +3044,10 @@ fn batch_rename_undo_surfaces_a_failed_rename() {
         dir: dir.clone(),
         pairs: vec![("a.txt".to_string(), "b.txt".to_string())],
     };
-    let result = ws.execute_action(action, transfer_queue::HistoryDirection::Undo, || {});
+    ws.record_history_for_test(crate::undo::invert(&action).unwrap());
+    let plan = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    assert_eq!(plan.action, action);
+    let result = ws.execute_action(plan.action, plan.reservation, || {});
     assert!(
         result.is_err(),
         "a clobbering rename during undo must surface an error, not be swallowed"
@@ -3061,43 +3064,42 @@ fn blocked_undo_keeps_the_history_pointer_unchanged() {
     let renamed = l.file("new.txt", "completed rename");
     std::fs::write(&original, "foreign replacement").unwrap();
     let mut ws = workspace(&l, &r);
-    ws.stack.push(crate::undo::Action::Rename {
+    ws.record_history_for_test(crate::undo::Action::Rename {
         from: original,
         to: renamed,
     });
 
     let error = ws.perform_undo(|| {}).unwrap_err();
     assert!(error.contains("occupied"), "{error}");
-    assert!(ws.stack.can_undo());
-    assert!(!ws.stack.can_redo());
+    assert!(ws.can_undo());
+    assert!(!ws.can_redo());
 }
 
 #[test]
 fn async_history_transition_commits_only_for_a_clean_worker() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&l, &r);
-    ws.stack.push(crate::undo::Action::Rename {
+    ws.record_history_for_test(crate::undo::Action::Rename {
         from: l.path().join("a.txt"),
         to: l.path().join("b.txt"),
     });
+    let undo = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
     let clean = ws.launch_test_transfer(
         test_transfer_spec("clean-undo", r.path()),
-        transfer_queue::HistoryIntent::replay(transfer_queue::HistoryDirection::Undo, None),
+        transfer_queue::HistoryIntent::replay(undo.reservation, None),
     );
     crate::lock_util::recover(&clean).finished = true;
 
     ws.poll_transfer(|| {});
-    assert!(!ws.stack.can_undo());
-    assert!(ws.stack.can_redo());
+    assert!(!ws.can_undo());
+    assert!(ws.can_redo());
 
     let replay_folder = l.path().join("gathered");
     std::fs::create_dir(&replay_folder).unwrap();
+    let redo = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Redo);
     let failed = ws.launch_test_transfer(
         test_transfer_spec("failed-redo", r.path()),
-        transfer_queue::HistoryIntent::replay(
-            transfer_queue::HistoryDirection::Redo,
-            Some(replay_folder.clone()),
-        ),
+        transfer_queue::HistoryIntent::replay(redo.reservation, Some(replay_folder.clone())),
     );
     {
         let mut progress = crate::lock_util::recover(&failed);
@@ -3106,8 +3108,8 @@ fn async_history_transition_commits_only_for_a_clean_worker() {
     }
     ws.poll_transfer(|| {});
     ws.dismiss_transfer(|| {});
-    assert!(!ws.stack.can_undo(), "failed redo was not committed");
-    assert!(ws.stack.can_redo());
+    assert!(!ws.can_undo(), "failed redo was not committed");
+    assert!(ws.can_redo());
     assert!(
         !replay_folder.exists(),
         "empty container created by failed replay was left behind"
@@ -3115,15 +3117,87 @@ fn async_history_transition_commits_only_for_a_clean_worker() {
 }
 
 #[test]
+fn filesystem_mutation_is_blocked_before_disk_while_async_replay_is_reserved() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let original = left.file("untouched.txt", "content");
+    let renamed = left.path().join("changed.txt");
+    let mut workspace = workspace(&left, &right);
+    workspace.record_history_for_test(crate::undo::Action::Rename {
+        from: left.path().join("old.txt"),
+        to: left.path().join("new.txt"),
+    });
+    let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    let _active = workspace.launch_test_transfer(
+        test_transfer_spec("pending-history-replay", right.path()),
+        transfer_queue::HistoryIntent::replay(replay.reservation, None),
+    );
+
+    let error = workspace
+        .commit_rename(&original, "changed.txt")
+        .expect_err("rename must be rejected before touching disk");
+
+    assert!(error.contains("history replay"), "{error}");
+    assert_eq!(std::fs::read_to_string(&original).unwrap(), "content");
+    assert!(!renamed.exists());
+    assert!(workspace.can_undo());
+    assert!(!workspace.can_redo());
+}
+
+#[test]
+fn foreign_async_replay_completion_enters_safe_state_without_advancing_history() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let mut workspace = workspace(&left, &right);
+    workspace.record_history_for_test(crate::undo::Action::Rename {
+        from: left.path().join("old.txt"),
+        to: left.path().join("new.txt"),
+    });
+    let _current = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+
+    let mut foreign = crate::undo::UndoCenter::default();
+    foreign
+        .record(crate::undo::Action::Rename {
+            from: right.path().join("foreign-old.txt"),
+            to: right.path().join("foreign-new.txt"),
+        })
+        .unwrap();
+    let first_foreign_replay = foreign
+        .begin(crate::undo::ReplayDirection::Undo)
+        .unwrap()
+        .unwrap();
+    foreign.abort(first_foreign_replay.reservation).unwrap();
+    let foreign_replay = foreign
+        .begin(crate::undo::ReplayDirection::Undo)
+        .unwrap()
+        .unwrap();
+    let active = workspace.launch_test_transfer(
+        test_transfer_spec("foreign-history-outcome", right.path()),
+        transfer_queue::HistoryIntent::replay(foreign_replay.reservation, None),
+    );
+    crate::lock_util::recover(&active).finished = true;
+
+    workspace.poll_transfer(|| {});
+
+    let safe_state = workspace
+        .safe_state
+        .as_ref()
+        .expect("foreign settlement must fail closed");
+    assert!(safe_state.reason.contains("reservation does not match"));
+    assert!(workspace.can_undo());
+    assert!(!workspace.can_redo());
+    assert!(workspace.mutations_blocked());
+}
+
+#[test]
 fn redo_invalidation_names_the_later_action() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&l, &r);
-    ws.stack.push(crate::undo::Action::Rename {
+    ws.record_history_for_test(crate::undo::Action::Rename {
         from: l.path().join("old.txt"),
         to: l.path().join("new.txt"),
     });
-    ws.stack.undo();
-    ws.stack.push(crate::undo::Action::Move {
+    let undo = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    ws.commit_history_replay_for_test(undo.reservation);
+    ws.record_history_for_test(crate::undo::Action::Move {
         pairs: vec![(l.path().join("a.txt"), r.path().join("a.txt"))],
     });
 
@@ -3146,7 +3220,10 @@ fn move_replay_refuses_all_sources_before_starting_a_partial_undo() {
         ],
     };
 
-    let result = ws.execute_action(action, transfer_queue::HistoryDirection::Undo, || {});
+    ws.record_history_for_test(crate::undo::invert(&action).unwrap());
+    let plan = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
+    assert_eq!(plan.action, action);
+    let result = ws.execute_action(plan.action, plan.reservation, || {});
 
     assert!(result.is_err());
     assert!(existing.is_file());
@@ -3221,7 +3298,7 @@ fn commit_rename_noop_on_unchanged_name() {
     let mut ws = workspace(&l, &r);
     assert!(ws.commit_rename(&f, "a.txt").is_ok());
     assert!(f.exists());
-    assert!(!ws.stack.can_undo());
+    assert!(!ws.can_undo());
 }
 
 #[test]
