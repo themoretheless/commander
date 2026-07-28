@@ -400,13 +400,37 @@ impl Workspace {
         )
     }
 
+    #[cfg(test)]
     pub fn with_ports(
         left: PathBuf,
         right: PathBuf,
         trash: std::sync::Arc<dyn crate::ports::TrashPort>,
         free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
     ) -> Self {
-        Self::with_ports_and_bookmarks(left, right, trash, free_space, crate::bookmarks::load())
+        Self::with_ports_and_views(
+            left,
+            right,
+            [crate::panel::ViewConfig::default(); 2],
+            trash,
+            free_space,
+        )
+    }
+
+    pub(crate) fn with_ports_and_views(
+        left: PathBuf,
+        right: PathBuf,
+        views: [crate::panel::ViewConfig; 2],
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    ) -> Self {
+        Self::with_ports_bookmarks_and_views(
+            left,
+            right,
+            views,
+            trash,
+            free_space,
+            crate::bookmarks::load(),
+        )
     }
 
     pub(crate) fn with_ports_and_bookmarks(
@@ -416,9 +440,28 @@ impl Workspace {
         free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
         bookmarks: crate::bookmarks::Bookmarks,
     ) -> Self {
+        Self::with_ports_bookmarks_and_views(
+            left,
+            right,
+            [crate::panel::ViewConfig::default(); 2],
+            trash,
+            free_space,
+            bookmarks,
+        )
+    }
+
+    fn with_ports_bookmarks_and_views(
+        left: PathBuf,
+        right: PathBuf,
+        views: [crate::panel::ViewConfig; 2],
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+        bookmarks: crate::bookmarks::Bookmarks,
+    ) -> Self {
+        let [left_view, right_view] = views;
         Workspace {
-            left: PanelState::new(left),
-            right: PanelState::new(right),
+            left: PanelState::new_with_view(left, left_view),
+            right: PanelState::new_with_view(right, right_view),
             active: ActivePanel::Left,
             pending_op: None,
             safe_state: None,
@@ -1075,8 +1118,7 @@ impl Workspace {
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {
                 let panel = self.active_panel();
-                panel.toggle_hidden();
-                panel.refresh();
+                let _ = panel.toggle_hidden();
             }
             Command::ToggleFoldersFirst => self.active_panel().toggle_folders_first(),
             Command::ToggleNaturalSort => self.active_panel().toggle_natural_sort(),

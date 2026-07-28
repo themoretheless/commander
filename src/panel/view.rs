@@ -9,12 +9,12 @@ const DEFAULT_VIEW_MEMORY_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ViewConfig {
-    pub sort_col: SortColumn,
-    pub sort_order: SortOrder,
-    pub show_hidden: bool,
-    pub folders_first: bool,
-    pub natural_name_sort: bool,
-    pub density: crate::density::Density,
+    sort_col: SortColumn,
+    sort_order: SortOrder,
+    show_hidden: bool,
+    folders_first: bool,
+    natural_name_sort: bool,
+    density: crate::density::Density,
 }
 
 impl Default for ViewConfig {
@@ -30,15 +30,67 @@ impl Default for ViewConfig {
     }
 }
 
+impl ViewConfig {
+    pub(crate) fn sort_column(self) -> SortColumn {
+        self.sort_col
+    }
+
+    pub(crate) fn sort_order(self) -> SortOrder {
+        self.sort_order
+    }
+
+    pub(crate) fn show_hidden(self) -> bool {
+        self.show_hidden
+    }
+
+    pub(crate) fn folders_first(self) -> bool {
+        self.folders_first
+    }
+
+    pub(crate) fn natural_name_sort(self) -> bool {
+        self.natural_name_sort
+    }
+
+    pub(crate) fn density(self) -> crate::density::Density {
+        self.density
+    }
+
+    pub(crate) fn with_sort(mut self, column: SortColumn, order: SortOrder) -> Self {
+        self.sort_col = column;
+        self.sort_order = order;
+        self
+    }
+
+    pub(crate) fn with_show_hidden(mut self, show_hidden: bool) -> Self {
+        self.show_hidden = show_hidden;
+        self
+    }
+
+    pub(crate) fn with_folders_first(mut self, folders_first: bool) -> Self {
+        self.folders_first = folders_first;
+        self
+    }
+
+    pub(crate) fn with_natural_name_sort(mut self, natural_name_sort: bool) -> Self {
+        self.natural_name_sort = natural_name_sort;
+        self
+    }
+
+    pub(crate) fn with_density(mut self, density: crate::density::Density) -> Self {
+        self.density = density;
+        self
+    }
+}
+
 /// A directory's complete remembered view, including transient filters and
 /// scroll focus. Keeping this in one value avoids restoring a half-old view.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ViewSettings {
-    pub config: ViewConfig,
-    pub search_query: String,
-    pub facets: FacetSet,
-    pub cursor_path: Option<PathBuf>,
-    pub scroll_anchor: usize,
+pub(super) struct ViewSettings {
+    pub(super) config: ViewConfig,
+    pub(super) search_query: String,
+    pub(super) facets: FacetSet,
+    pub(super) cursor_path: Option<PathBuf>,
+    pub(super) scroll_anchor: usize,
 }
 
 pub(super) struct ViewState {
@@ -58,8 +110,16 @@ impl Default for ViewState {
 
 impl ViewState {
     fn with_capacity(capacity: usize) -> Self {
+        Self::with_config_and_capacity(ViewConfig::default(), capacity)
+    }
+
+    pub(super) fn with_config(config: ViewConfig) -> Self {
+        Self::with_config_and_capacity(config, DEFAULT_VIEW_MEMORY_CAPACITY)
+    }
+
+    fn with_config_and_capacity(config: ViewConfig, capacity: usize) -> Self {
         Self {
-            config: ViewConfig::default(),
+            config,
             search_query: String::new(),
             facets: FacetSet::default(),
             remembered: HashMap::new(),
@@ -72,7 +132,7 @@ impl ViewState {
         self.config
     }
 
-    pub(super) fn replace_config(&mut self, config: ViewConfig) {
+    pub(super) fn commit_config(&mut self, config: ViewConfig) {
         self.config = config;
     }
 
@@ -105,10 +165,6 @@ impl ViewState {
 
     pub(super) fn show_hidden(&self) -> bool {
         self.config.show_hidden
-    }
-
-    pub(super) fn toggle_hidden(&mut self) {
-        self.config.show_hidden = !self.config.show_hidden;
     }
 
     pub(super) fn toggle_folders_first(&mut self) {
@@ -211,7 +267,7 @@ mod tests {
         let mut state = ViewState::default();
         let mut remembered = settings("report");
         remembered.facets.kind = Some(super::super::KindFacet::Docs);
-        remembered.config.show_hidden = true;
+        remembered.config = remembered.config.with_show_hidden(true);
         state.remember(Path::new("/docs"), remembered);
 
         let restored = state.restore(Path::new("/docs")).unwrap();

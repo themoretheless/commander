@@ -13,6 +13,7 @@ use std::time::SystemTime;
 mod listing;
 mod selection;
 mod size_index;
+mod sort;
 mod view;
 mod watcher;
 
@@ -20,8 +21,11 @@ use listing::ListingState;
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
 use size_index::{SizeIndex, SizeScanInput};
-use view::ViewState;
-pub use view::{ViewConfig, ViewSettings};
+#[cfg(test)]
+use sort::natural_cmp;
+use sort::sort_entries;
+pub use view::ViewConfig;
+use view::{ViewSettings, ViewState};
 use watcher::DirectoryWatcherState;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1002,7 +1006,7 @@ pub fn flush_cache() {
 
 /// Why a directory listing is the way it is, so an empty list can be told
 /// apart from an unreadable or vanished directory.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirStatus {
     /// Read succeeded and there are entries.
     Listed,
@@ -1015,6 +1019,13 @@ pub enum DirStatus {
     /// The directory opened, but at least one child could not be observed.
     /// The previous complete snapshot remains authoritative.
     Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum ViewApplyOutcome {
+    Applied,
+    ReadRejected(DirStatus),
 }
 
 enum DirectoryRead {
@@ -1347,91 +1358,6 @@ pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) 
     }
 }
 
-/// Natural ("human") ordering: runs of digits compare by numeric value, so
-/// "file2" sorts before "file10". Non-digit runs compare by char. Inputs are
-/// expected pre-lowercased (we sort on `name_lower`).
-pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < a.len() && j < b.len() {
-        let (ca, cb) = (a[i], b[j]);
-        if ca.is_ascii_digit() && cb.is_ascii_digit() {
-            let si = i;
-            while i < a.len() && a[i].is_ascii_digit() {
-                i += 1;
-            }
-            let sj = j;
-            while j < b.len() && b[j].is_ascii_digit() {
-                j += 1;
-            }
-            // Compare by numeric value: drop leading zeros, then longer run
-            // wins, then lexically; finally fewer leading zeros sorts first.
-            let va = strip_leading_zeros(&a[si..i]);
-            let vb = strip_leading_zeros(&b[sj..j]);
-            let ord = va
-                .len()
-                .cmp(&vb.len())
-                .then_with(|| va.iter().cmp(vb.iter()))
-                .then_with(|| (i - si).cmp(&(j - sj)));
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        } else {
-            match ca.cmp(&cb) {
-                Ordering::Equal => {
-                    i += 1;
-                    j += 1;
-                }
-                ord => return ord,
-            }
-        }
-    }
-    // One ran out: the shorter string sorts first.
-    (a.len() - i).cmp(&(b.len() - j))
-}
-
-fn strip_leading_zeros(s: &[char]) -> &[char] {
-    let mut k = 0;
-    while k + 1 < s.len() && s[k] == '0' {
-        k += 1;
-    }
-    &s[k..]
-}
-
-fn sort_entries_with_config(entries: &mut [FileEntry], config: ViewConfig) {
-    entries.sort_by(|a, b| {
-        if config.folders_first {
-            match (a.is_dir, b.is_dir) {
-                (true, false) => return Ordering::Less,
-                (false, true) => return Ordering::Greater,
-                _ => {}
-            }
-        }
-
-        let primary = match config.sort_col {
-            SortColumn::Name if config.natural_name_sort => {
-                natural_cmp(&a.name_lower, &b.name_lower)
-            }
-            SortColumn::Name => a.name_lower.cmp(&b.name_lower),
-            SortColumn::Size => a.size.cmp(&b.size),
-            SortColumn::Modified => a.modified.cmp(&b.modified),
-            SortColumn::Extension => a
-                .extension
-                .cmp(&b.extension)
-                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
-            SortColumn::Kind => crate::selection_summary::kind_of(a)
-                .cmp(&crate::selection_summary::kind_of(b))
-                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
-        };
-        let ordered = match config.sort_order {
-            SortOrder::Asc => primary,
-            SortOrder::Desc => primary.reverse(),
-        };
-        ordered.then_with(|| a.path.cmp(&b.path))
-    });
-}
-
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -1609,7 +1535,15 @@ impl PanelState {
     /// Create a panel pointed at `path`. The directory is NOT read yet:
     /// call [`refresh`](Self::refresh) (the UI does this when wiring the
     /// notify callback on the first frame).
+    #[cfg(test)]
     pub fn new(path: PathBuf) -> Self {
+        Self::new_with_view(path, ViewConfig::default())
+    }
+
+    /// Seed persisted view configuration before the first directory listing.
+    /// This prevents sort/hidden indicators from temporarily disagreeing with
+    /// rows loaded under default settings.
+    pub(crate) fn new_with_view(path: PathBuf, config: ViewConfig) -> Self {
         PanelState {
             current_path: path.clone(),
             listing: ListingState::new(path.clone()),
@@ -1620,7 +1554,7 @@ impl PanelState {
                 h.push(path.clone());
                 h
             },
-            view: ViewState::default(),
+            view: ViewState::with_config(config),
             sizes: SizeIndex::new(path.clone()),
             watcher: DirectoryWatcherState::default(),
             drag_entries: Vec::new(),
@@ -1768,10 +1702,6 @@ impl PanelState {
         self.view.config()
     }
 
-    pub fn restore_view_config(&mut self, config: ViewConfig) {
-        self.view.replace_config(config);
-    }
-
     pub fn search_query(&self) -> &str {
         self.view.search_query()
     }
@@ -1808,8 +1738,34 @@ impl PanelState {
         self.view.show_hidden()
     }
 
-    pub fn toggle_hidden(&mut self) {
-        self.view.toggle_hidden();
+    /// Toggle hidden entries as one view/listing transition.
+    ///
+    /// A rejected read leaves both the prior configuration and its complete
+    /// rows authoritative; callers can present the typed failure without a
+    /// split-brain hidden indicator.
+    pub fn toggle_hidden(&mut self) -> ViewApplyOutcome {
+        let candidate = self
+            .view
+            .config()
+            .with_show_hidden(!self.view.show_hidden());
+        let path = self.current_path.clone();
+        self.sizes.bind(&path);
+        self.watcher.ensure_binding(&path);
+        let ticket = self.watcher.snapshot_ticket();
+        let entries = match Self::read_dir(&path, candidate.show_hidden()) {
+            DirectoryRead::Complete(entries) => entries,
+            DirectoryRead::Incomplete(status) => {
+                self.watcher.defer_snapshot(ticket.as_ref());
+                return ViewApplyOutcome::ReadRejected(status);
+            }
+        };
+
+        self.view.commit_config(candidate);
+        self.publish_complete_listing(entries, candidate);
+        let listing_binding = self.listing.binding().to_path_buf();
+        self.watcher.acknowledge_snapshot(ticket, &listing_binding);
+        self.refresh_sizes(true);
+        ViewApplyOutcome::Applied
     }
 
     pub fn density(&self) -> crate::density::Density {
@@ -1850,6 +1806,28 @@ impl PanelState {
     fn apply_directory_read(&mut self, read: DirectoryRead) -> bool {
         let binding = self.current_path.clone();
         let binding_changed = self.listing.binding() != binding;
+        match read {
+            DirectoryRead::Complete(entries) => {
+                self.publish_complete_listing(entries, self.view.config());
+                true
+            }
+            DirectoryRead::Incomplete(status) => {
+                if binding_changed {
+                    self.selection.bind(&binding);
+                    self.sizes.bind(&binding);
+                    self.drag_entries.clear();
+                    self.drop_target = None;
+                }
+                let changed = self.listing.mark_incomplete(binding, status);
+                debug_assert_eq!(changed, binding_changed);
+                false
+            }
+        }
+    }
+
+    fn publish_complete_listing(&mut self, mut entries: Vec<FileEntry>, config: ViewConfig) {
+        let binding = self.current_path.clone();
+        let binding_changed = self.listing.binding() != binding;
         let cursor_path = (!binding_changed).then(|| self.focused_path()).flatten();
         let old_cursor = if binding_changed { 0 } else { self.cursor() };
 
@@ -1860,20 +1838,12 @@ impl PanelState {
             self.drop_target = None;
         }
 
-        let mut entries = match read {
-            DirectoryRead::Complete(entries) => entries,
-            DirectoryRead::Incomplete(status) => {
-                let changed = self.listing.mark_incomplete(binding, status);
-                debug_assert_eq!(changed, binding_changed);
-                return false;
-            }
-        };
         let status = if entries.is_empty() {
             DirStatus::Empty
         } else {
             DirStatus::Listed
         };
-        sort_entries_with_config(&mut entries, self.view.config());
+        sort_entries(&mut entries, config);
         self.selection.publish_complete(&binding);
         self.listing.replace(binding, entries, status);
 
@@ -1883,7 +1853,6 @@ impl PanelState {
         if !binding_changed {
             self.restore_cursor_focus(cursor_path, old_cursor);
         }
-        true
     }
 
     /// Check if fs watcher flagged a change; if so, refresh.
@@ -2018,12 +1987,11 @@ impl PanelState {
         }
     }
 
-    pub fn sort_entries(&mut self) {
+    fn sort_entries(&mut self) {
         let focus = self.focused_path();
         let old_cursor = self.cursor();
         let config = self.view.config();
-        self.listing
-            .resort(|entries| sort_entries_with_config(entries, config));
+        self.listing.resort(|entries| sort_entries(entries, config));
         self.restore_cursor_focus(focus, old_cursor);
     }
 
@@ -3228,6 +3196,87 @@ mod tests {
     }
 
     #[test]
+    fn seeded_view_config_drives_the_first_complete_listing() {
+        let root = TempDir::new();
+        root.file("small.txt", "1");
+        root.file("large.txt", "12345");
+        root.file(".hidden.txt", "123");
+        let config = ViewConfig::default()
+            .with_sort(SortColumn::Size, SortOrder::Desc)
+            .with_show_hidden(true)
+            .with_density(crate::density::Density::Compact);
+        let mut panel = PanelState::new_with_view(root.path().to_path_buf(), config);
+
+        panel.refresh();
+
+        assert_eq!(panel.view_config(), config);
+        assert_eq!(
+            panel
+                .entries()
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["large.txt", ".hidden.txt", "small.txt"]
+        );
+    }
+
+    #[test]
+    fn hidden_toggle_commits_config_and_listing_together() {
+        let root = TempDir::new();
+        root.file("visible.txt", "v");
+        root.file(".hidden.txt", "h");
+        let mut panel = PanelState::new(root.path().to_path_buf());
+        panel.refresh();
+        let before_revision = panel.entries_gen();
+        assert!(!panel.show_hidden());
+        assert_eq!(panel.entries().len(), 1);
+        panel.set_cursor(1);
+        let focused = panel.cursor_entry().unwrap().path.clone();
+
+        assert_eq!(panel.toggle_hidden(), ViewApplyOutcome::Applied);
+
+        assert!(panel.show_hidden());
+        assert_eq!(panel.entries().len(), 2);
+        assert!(panel.entries_gen() > before_revision);
+        assert_eq!(panel.cursor_entry().unwrap().path, focused);
+    }
+
+    #[test]
+    fn rejected_hidden_toggle_preserves_complete_view_and_rows() {
+        let root = TempDir::new();
+        let folder = root.dir("folder");
+        root.file("folder/visible.txt", "v");
+        let mut panel = PanelState::new(folder.clone());
+        panel.refresh();
+        let config = panel.view_config();
+        let paths = panel
+            .entries()
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        let revision = panel.entries_gen();
+        let status = panel.dir_status();
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        assert_eq!(
+            panel.toggle_hidden(),
+            ViewApplyOutcome::ReadRejected(DirStatus::Gone)
+        );
+
+        assert_eq!(panel.view_config(), config);
+        assert_eq!(panel.entries_gen(), revision);
+        assert_eq!(panel.dir_status(), status);
+        assert_eq!(
+            panel
+                .entries()
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>(),
+            paths
+        );
+    }
+
+    #[test]
     fn history_navigation_walks_back_and_forward() {
         let tmp = TempDir::new();
         let sub = tmp.dir("sub");
@@ -3301,12 +3350,10 @@ mod tests {
 
         let mut p = PanelState::new(downloads.clone());
         p.refresh();
-        let mut config = p.view_config();
-        config.sort_col = SortColumn::Size;
-        config.sort_order = SortOrder::Desc;
-        config.show_hidden = true;
-        config.density = crate::density::Density::Compact;
-        p.restore_view_config(config);
+        p.set_sort(SortColumn::Size);
+        p.reverse_sort();
+        assert_eq!(p.toggle_hidden(), ViewApplyOutcome::Applied);
+        p.set_density(crate::density::Density::Compact);
         p.set_search_query("download-filter");
 
         // "docs" has never been visited: like before per-folder memory
@@ -3319,12 +3366,9 @@ mod tests {
         assert_eq!(p.search_query(), "");
 
         // Now give "docs" its own, different view.
-        let mut config = p.view_config();
-        config.sort_col = SortColumn::Extension;
-        config.sort_order = SortOrder::Asc;
-        config.show_hidden = false;
-        config.density = crate::density::Density::Spacious;
-        p.restore_view_config(config);
+        p.set_sort(SortColumn::Extension);
+        assert_eq!(p.toggle_hidden(), ViewApplyOutcome::Applied);
+        p.set_density(crate::density::Density::Spacious);
         p.set_search_query("docs-filter");
 
         // Back to "downloads": its own remembered view returns, not "docs"'s.

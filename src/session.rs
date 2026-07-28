@@ -83,6 +83,44 @@ impl Session {
         };
         (pick(&self.left_path), pick(&self.right_path))
     }
+
+    pub(crate) fn left_view_config(&self) -> crate::panel::ViewConfig {
+        persisted_view_config(
+            self.left_sort_col,
+            self.left_sort_order,
+            self.left_hidden,
+            self.left_folders_first,
+            self.left_natural_sort,
+            self.left_density,
+        )
+    }
+
+    pub(crate) fn right_view_config(&self) -> crate::panel::ViewConfig {
+        persisted_view_config(
+            self.right_sort_col,
+            self.right_sort_order,
+            self.right_hidden,
+            self.right_folders_first,
+            self.right_natural_sort,
+            self.right_density,
+        )
+    }
+}
+
+fn persisted_view_config(
+    sort_column: SortColumn,
+    sort_order: SortOrder,
+    show_hidden: bool,
+    folders_first: bool,
+    natural_name_sort: bool,
+    density: crate::density::Density,
+) -> crate::panel::ViewConfig {
+    crate::panel::ViewConfig::default()
+        .with_sort(sort_column, sort_order)
+        .with_show_hidden(show_hidden)
+        .with_folders_first(folders_first)
+        .with_natural_name_sort(natural_name_sort)
+        .with_density(density)
 }
 
 fn session_path() -> PathBuf {
@@ -211,6 +249,27 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn persisted_panel_views_restore_as_complete_configs() {
+        let session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+
+        let left = session.left_view_config();
+        assert_eq!(left.sort_column(), SortColumn::Size);
+        assert_eq!(left.sort_order(), SortOrder::Desc);
+        assert!(left.show_hidden());
+        assert!(left.folders_first());
+        assert!(!left.natural_name_sort());
+        assert_eq!(left.density(), crate::density::Density::Compact);
+
+        let right = session.right_view_config();
+        assert_eq!(right.sort_column(), SortColumn::Name);
+        assert_eq!(right.sort_order(), SortOrder::Asc);
+        assert!(!right.show_hidden());
+        assert!(!right.folders_first());
+        assert!(right.natural_name_sort());
+        assert_eq!(right.density(), crate::density::Density::Spacious);
     }
 
     #[test]

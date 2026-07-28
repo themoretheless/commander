@@ -61,7 +61,7 @@ pub struct App {
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
-    pub(crate) tree_children_cache: std::collections::HashMap<PathBuf, Vec<PathBuf>>,
+    pub(crate) tree_children_cache: std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
     pub(crate) tree_width: f32,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
@@ -559,7 +559,11 @@ impl App {
             .as_ref()
             .map(|s| s.sanitized_paths(&home))
             .unwrap_or_else(|| (home.clone(), home.clone()));
-        let mut ws = Workspace::with_ports(left, right, trash, free_space);
+        let views = session
+            .as_ref()
+            .map(|saved| [saved.left_view_config(), saved.right_view_config()])
+            .unwrap_or([crate::panel::ViewConfig::default(); 2]);
+        let mut ws = Workspace::with_ports_and_views(left, right, views, trash, free_space);
 
         let ui_scale =
             crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
@@ -571,22 +575,6 @@ impl App {
             } else {
                 ActivePanel::Right
             };
-            ws.left.restore_view_config(crate::panel::ViewConfig {
-                sort_col: s.left_sort_col,
-                sort_order: s.left_sort_order,
-                show_hidden: s.left_hidden,
-                folders_first: s.left_folders_first,
-                natural_name_sort: s.left_natural_sort,
-                density: s.left_density,
-            });
-            ws.right.restore_view_config(crate::panel::ViewConfig {
-                sort_col: s.right_sort_col,
-                sort_order: s.right_sort_order,
-                show_hidden: s.right_hidden,
-                folders_first: s.right_folders_first,
-                natural_name_sort: s.right_natural_sort,
-                density: s.right_density,
-            });
             ws.durability_profile = s.durability_profile;
             ws.version_retention = s.version_retention;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
@@ -776,18 +764,18 @@ impl App {
             tree_width: self.tree_width,
             show_size_bars: self.show_size_bars,
             show_compare: self.show_compare,
-            left_sort_col: left_view.sort_col,
-            left_sort_order: left_view.sort_order,
-            left_hidden: left_view.show_hidden,
-            right_sort_col: right_view.sort_col,
-            right_sort_order: right_view.sort_order,
-            right_hidden: right_view.show_hidden,
-            left_folders_first: left_view.folders_first,
-            left_natural_sort: left_view.natural_name_sort,
-            right_folders_first: right_view.folders_first,
-            right_natural_sort: right_view.natural_name_sort,
-            left_density: left_view.density,
-            right_density: right_view.density,
+            left_sort_col: left_view.sort_column(),
+            left_sort_order: left_view.sort_order(),
+            left_hidden: left_view.show_hidden(),
+            right_sort_col: right_view.sort_column(),
+            right_sort_order: right_view.sort_order(),
+            right_hidden: right_view.show_hidden(),
+            left_folders_first: left_view.folders_first(),
+            left_natural_sort: left_view.natural_name_sort(),
+            right_folders_first: right_view.folders_first(),
+            right_natural_sort: right_view.natural_name_sort(),
+            left_density: left_view.density(),
+            right_density: right_view.density(),
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
             recent_paths,

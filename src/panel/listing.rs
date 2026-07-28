@@ -112,7 +112,12 @@ impl ListingState {
     }
 
     fn bump_revision(&mut self) {
-        self.revision = ListingRevision(self.revision.0.wrapping_add(1));
+        self.revision = ListingRevision(
+            self.revision
+                .0
+                .checked_add(1)
+                .expect("listing revision space exhausted"),
+        );
     }
 
     pub(super) fn filtered_snapshot(&self, query: &str, facets: FacetSet) -> Arc<[usize]> {
@@ -263,6 +268,31 @@ mod tests {
         let changed = listing.filtered_snapshot_at("al", FacetSet::default(), UNIX_EPOCH);
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(&*changed, &[0, 1]);
+    }
+
+    #[test]
+    fn resort_bumps_revision_and_invalidates_the_filter_snapshot() {
+        let mut listing = ListingState::default();
+        listing.replace_for_test(vec![entry("beta", UNIX_EPOCH), entry("alpha", UNIX_EPOCH)]);
+        let revision = listing.revision();
+        let before = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
+
+        listing.resort(|entries| entries.sort_by(|a, b| a.name.cmp(&b.name)));
+
+        assert!(listing.revision().value() > revision.value());
+        let after = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(listing.entries()[0].name, "alpha");
+    }
+
+    #[test]
+    #[should_panic(expected = "listing revision space exhausted")]
+    fn revision_exhaustion_fails_closed_instead_of_wrapping() {
+        let mut listing = ListingState {
+            revision: ListingRevision(u64::MAX),
+            ..ListingState::default()
+        };
+        listing.resort(|_| {});
     }
 
     #[test]

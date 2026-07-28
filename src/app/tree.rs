@@ -1,5 +1,9 @@
 use super::*;
 
+fn child_cache_key(path: &std::path::Path, show_hidden: bool) -> (PathBuf, bool) {
+    (path.to_path_buf(), show_hidden)
+}
+
 impl App {
     /// Render the global tree sidebar. Returns Some(path) if user clicked a folder.
     pub(crate) fn render_global_tree(
@@ -109,18 +113,19 @@ impl App {
         active_path: &std::path::Path,
         show_hidden: bool,
         expanded: &mut std::collections::HashSet<PathBuf>,
-        cache: &mut std::collections::HashMap<PathBuf, Vec<PathBuf>>,
+        cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
     ) -> Option<PathBuf> {
         let mut nav = None;
         let is_current = active_path == path;
         let is_expanded = expanded.contains(path);
 
         // Get subdirs (cached)
-        let subdirs = if let Some(cached) = cache.get(path) {
+        let cache_key = child_cache_key(path, show_hidden);
+        let subdirs = if let Some(cached) = cache.get(&cache_key) {
             cached.clone()
         } else {
             let dirs = PanelState::subdirs(path, show_hidden);
-            cache.insert(path.to_path_buf(), dirs.clone());
+            cache.insert(cache_key, dirs.clone());
             dirs
         };
         let has_children = !subdirs.is_empty();
@@ -271,5 +276,16 @@ impl App {
         }
 
         nav
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_policy_is_part_of_the_tree_child_cache_key() {
+        let path = std::path::Path::new("/tmp/example");
+        assert_ne!(child_cache_key(path, false), child_cache_key(path, true));
     }
 }
