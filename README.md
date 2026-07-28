@@ -319,6 +319,10 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
   reservations. Async settlement is bound to the center owner, timeline
   revision, history entry, and transfer operation; interrupted replays remain
   locked until the matching recovery is resumed or rolled back.
+- `transfer::executor::TransferExecutor` owns the transactional lifecycle from
+  preflight through terminal publication. Native/clone, delta, sparse, and
+  buffered staging run through replaceable backend ports that cannot place the
+  final destination, delete the source, or settle the operation journal.
 - `UiState` owns transient input and all dialog/modal buffers while
   `UiRequestQueue` preserves non-modal and modal FIFO ordering.
 - `ListingState` owns rows, checked revision, and filter-cache invalidation;
@@ -333,12 +337,12 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
 - The large workspace integration suite lives in `workspace/tests.rs`;
   pathname parsing/validation lives in its own typed module.
 
-The full serial suite currently passes 896 tests with three intentional
+The full serial suite currently passes 913 tests with three intentional
 manual/performance harnesses ignored. The remaining high-value architecture
-work is narrower: split the large transfer executor by backend and introduce
-the final shared persistence port/versioned envelope. Durable undo history and
-path-identity-bound replay remain a later schema migration, not an in-memory
-history concern.
+work is narrower: introduce the final shared persistence port/versioned
+envelope. Durable undo history, path-identity-bound replay, and reconciliation
+of the last placement-to-journal crash window remain later schema migrations,
+not in-memory controller concerns.
 
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
 by enabling only the image decoders Commander uses. `cargo audit` reports no

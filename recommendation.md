@@ -72,28 +72,32 @@ workspace-test/pathname/ViewConfig ownership pass. Every P0-P2 finding raised
 inside those scopes was fixed and re-reviewed. The next four-role pass added
 `UndoCenter`, including owner-bound reservations and explicit
 `Reserved -> Running -> Interrupted` recovery states. Durable history and
-path-identity-bound actions remain an explicit future schema migration.
+path-identity-bound actions remain an explicit future schema migration. A
+subsequent four-role pass extracted `TransferExecutor` and staging-only
+native/clone, delta, sparse, and buffered ports, then hardened commit-time
+mount, identity, durability, overwrite, source-cleanup, and progress
+invariants.
 
 Highest-value next steps, in order:
 
-1. Split `transfer.rs` (now the largest production file) into a narrow
-   `TransferExecutor` plus explicit clone/delta/buffered backend ports without
-   weakening staging, identity or verification proofs.
-2. Introduce the remaining persistence boundary: one versioned store envelope
+1. Introduce the remaining persistence boundary: one versioned store envelope
    and injected `Persist` port that preserves the existing
    pre-commit/committed-not-durable distinction.
-3. Check in an explicit `cargo-deny` policy and CI gate. `cargo audit` is clean
+2. Check in an explicit `cargo-deny` policy and CI gate. `cargo audit` is clean
    after the 2026-07-28 lockfile refresh and image feature reduction;
    `ttf-parser` remains an unmaintained Wayland/winit transitive with no
    lockfile-only replacement, so its temporary acceptance needs an owner and
    expiry review.
-4. Move go-to-path filesystem metadata probing off the UI frame and design an
+3. Move go-to-path filesystem metadata probing off the UI frame and design an
    `OsStr` plus volume-capability-aware naming policy for non-UTF-8,
    case-sensitivity and Unicode normalization.
-5. Promote `minimum_window`, `zoom_200_accessible`, and
+4. Promote `minimum_window`, `zoom_200_accessible`, and
    `confirmation_owner` to strict visual gates after their scenario-specific
    geometry checks stabilize; keep AppKit popup pixels, VoiceOver and
    multi-monitor placement as permission-bound release checks.
+5. Reconcile the transfer journal's remaining crash window between successful
+   placement and `mark_completed`, then add descriptor-relative namespace
+   effects and a streaming parallel-directory planner.
 6. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries. Their state ownership is already split; mechanical
    field moves would now make the design worse.

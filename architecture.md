@@ -101,12 +101,17 @@ Grouped by the bounded context each module really belongs to:
   and `sync_guard` supply identity proof, filesystem capability policy,
   remount safety, bounded version retention, reversible history, and circuit
   breakers.
-- **Transfer execution**: `transfer` coordinates staging and commit;
-  `native_copy`, `delta_copy`, and `verified_hash` own specialized data paths;
-  `volume_profile` and `transfer_tuning` own capability/telemetry policy;
-  `opqueue` is surfaced through the queue panel. `conflict`, `fs_util`,
-  `rename`, `rename_order`, `sync`, and `shelf` remain adjacent operation
-  helpers.
+- **Transfer execution**: `transfer::executor::TransferExecutor` exclusively
+  coordinates preflight, conflict review, identity and mount fences, journal
+  transitions, placement, source cleanup, rollback, and terminal publication.
+  `transfer::backend` selects replaceable object-safe native/clone, delta,
+  sparse, and buffered staging ports; their typed receipt carries artifact
+  identity, byte/fast-path accounting, and durability proof but no final
+  namespace capability. `native_copy`, `delta_copy`, and `verified_hash` own
+  specialized data paths; `volume_profile` and `transfer_tuning` own
+  capability/telemetry policy; `opqueue` is surfaced through the queue panel.
+  `conflict`, `fs_util`, `rename`, `rename_order`, `sync`, and `shelf` remain
+  adjacent operation helpers.
 - **Capability / workload boundaries**: `ports` defines narrow preview,
   search, filesystem, hashing, clipboard, opener, Trash, free-space, and
   main-thread context-menu contracts. `native_effect` contains the real macOS
@@ -167,7 +172,8 @@ track was accepted; one unsafe journal patch was rejected rather than merged.
 
 | Track | Result | Remaining boundary |
 | --- | --- | --- |
-| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, `SpaceProbeController`, and `UndoCenter` own their state; filesystem action execution remains the next coherent facade split |
+| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, `SpaceProbeController`, and `UndoCenter` own their state; only coherent command/file-operation facades remain |
+| Transfer executor/backend boundary | accepted after adversarial hardening | `TransferExecutor` owns transactional effects; native/clone, delta, sparse, and buffered ports only stage artifacts and return typed receipts |
 | Typed UI request queue + `UiState` | accepted | FIFO/modal/Escape ownership and dialog buffers are centralized; `App` retains presentation-only state |
 | Operation journal/recovery proof model | accepted after a fresh redesign | stable path identities, explicit transitions, migration validation, restart/fault/model tests; UI repair decisions remain explicit |
 | Panel ownership split | accepted | listing/view/sort/selection/watcher/size owners are separate; the public coordination facade is still large |
@@ -360,12 +366,16 @@ Three mechanisms connect the core to the shell:
   listing/revision/filter cache, view config/memory, selection, watcher, and
   size index are separate owners. The next useful reductions are smaller
   command/file-operation facades, not another state-field shuffle.
-- **One oversized operation coordinator.** `transfer` still owns manifest
-  iteration, staging/commit, buffered and sparse traversal, progress mutation,
-  journal calls, and cleanup policy. `delta_copy`, `operation_journal`,
-  `transfer_tuning`, and `verified_hash` are now separate, but the next split
-  should extract a `TransferExecutor` state machine and a `CopyBackend` port
-  rather than add another branch to `CopyMethod::copy_entry`.
+- **Transfer ownership is split; byte-copy primitives remain concentrated.**
+  `TransferExecutor` is the single transactional coordinator and
+  `transfer::backend` is the staging-only port boundary. The buffered,
+  sparse, and parallel tree-copy primitives still live in `transfer.rs`
+  beside the public progress/spec facade. Moving those primitives into
+  backend-specific files is now a mechanical readability pass, not an
+  ownership prerequisite. More important residual work is journal-schema
+  reconciliation for a crash after placement but before `mark_completed`, a
+  descriptor-relative filesystem effect port, and a streaming tree planner
+  that does not materialize every file before parallel copy.
 - **The request catalogue remains shared vocabulary.** The old 25-field flag
   bus is gone, but adding a new shell intent still adds one `UiRequest` variant
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
