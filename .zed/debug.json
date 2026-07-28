@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Debug Commander",
+    "adapter": "CodeLLDB",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "--package", "commander", "--bin", "commander"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/commander",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "sourceLanguages": ["rust"],
+    "request": "launch"
+  }
+]
