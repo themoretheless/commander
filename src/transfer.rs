@@ -4,6 +4,8 @@
 //! and the caller supplies a `notify` callback (e.g. a repaint request), so
 //! the engine never depends on egui.
 
+mod backend;
+
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +25,8 @@ use serde::{Deserialize, Serialize};
 const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
 const CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
 const MAX_MOUNT_RETRIES: usize = 2;
+
+pub(crate) use crate::verified_hash::prefix as prefix_digest;
 
 /// What to do when destination file already exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,191 +278,6 @@ pub(crate) fn request_cancel(progress: &TransferState) {
     }
 }
 
-impl CopyMethod {
-    /// Strategy entry point: copy one top-level entry with this method.
-    /// Returns bytes copied (used as the progress base for the next entry).
-    fn copy_entry(
-        self,
-        src: &Path,
-        is_dir: bool,
-        dest: &Path,
-        context: CopyContext<'_>,
-    ) -> std::io::Result<CopyOutcome> {
-        if std::fs::symlink_metadata(src)?.file_type().is_symlink() {
-            return match context.symlink_policy {
-                crate::filesystem_policy::SymlinkPolicy::Preserve => {
-                    copy_symlink(src, dest).map(|()| CopyOutcome {
-                        bytes: 0,
-                        fast_path: crate::transfer_tuning::FastPath::Buffered,
-                    })
-                }
-                crate::filesystem_policy::SymlinkPolicy::Follow => {
-                    let followed = std::fs::canonicalize(src)?;
-                    let metadata = std::fs::symlink_metadata(&followed)?;
-                    self.copy_entry(&followed, metadata.is_dir(), dest, context)
-                }
-                crate::filesystem_policy::SymlinkPolicy::Skip => Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "skipped symlink reached the copy backend",
-                )),
-            };
-        }
-        let bandwidth_limited = context.rule.max_bytes_per_second.is_some();
-        let source_size = (!is_dir)
-            .then(|| src.metadata().map(|metadata| metadata.len()))
-            .transpose()?;
-        let resume_delta = context
-            .resume
-            .and_then(|checkpoint| checkpoint.layout.delta_mode());
-        if resume_delta.is_some() && context.basis.is_none() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "delta checkpoint lost its basis",
-            ));
-        }
-        if !is_dir
-            && !bandwidth_limited
-            && let Some(basis) = context.basis
-            && let Ok(basis_metadata) = basis.metadata()
-            && basis_metadata.is_file()
-        {
-            let mode = resume_delta.or_else(|| {
-                if context.resume.is_none() {
-                    crate::delta_copy::select(
-                        context.profile.capabilities.delta,
-                        source_size.unwrap_or_default(),
-                        basis_metadata.len(),
-                        context.tuning,
-                    )
-                } else {
-                    None
-                }
-            });
-            if let Some(mode) = mode {
-                return copy_file_delta(src, basis, dest, mode, context).map(|stats| CopyOutcome {
-                    bytes: stats.logical_bytes,
-                    fast_path: mode.fast_path(),
-                });
-            }
-        }
-        let force_resumable =
-            source_size.is_some_and(|size| requires_resumable_buffer(context.profile, size));
-        let force_buffered = bandwidth_limited
-            || force_resumable
-            || context.symlink_policy != crate::filesystem_policy::SymlinkPolicy::Preserve;
-        if !is_dir
-            && context.resume.is_none()
-            && context.profile.capabilities.sparse
-            && is_sparse_file(src)
-        {
-            let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(context.rule);
-            return copy_file_sparse(src, dest, context.progress, &mut limiter).map(|bytes| {
-                CopyOutcome {
-                    bytes,
-                    fast_path: crate::transfer_tuning::FastPath::Sparse,
-                }
-            });
-        }
-        match self {
-            CopyMethod::Native if !force_buffered && context.resume.is_none() => {
-                if is_dir {
-                    crate::native_copy::copy_dir_native(
-                        src,
-                        dest,
-                        context.progress,
-                        context.base_bytes,
-                    )
-                    .map(|bytes| CopyOutcome {
-                        bytes,
-                        fast_path: crate::transfer_tuning::FastPath::Native,
-                    })
-                } else {
-                    crate::native_copy::copy_file_native(
-                        src,
-                        dest,
-                        context.progress,
-                        context.base_bytes,
-                        context.profile.capabilities.clone,
-                    )
-                    .map(|outcome| CopyOutcome {
-                        bytes: outcome.bytes,
-                        fast_path: if outcome.cloned {
-                            crate::transfer_tuning::FastPath::Clone
-                        } else {
-                            crate::transfer_tuning::FastPath::Native
-                        },
-                    })
-                }
-            }
-            CopyMethod::Native | CopyMethod::Buffered => {
-                let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(context.rule);
-                if is_dir {
-                    let workers = crate::transfer_tuning::snapshot(context.profile).concurrency;
-                    if workers > 1
-                        && context.rule.max_bytes_per_second.is_none()
-                        && context.symlink_policy
-                            == crate::filesystem_policy::SymlinkPolicy::Preserve
-                    {
-                        copy_dir_buffered_parallel(
-                            src,
-                            dest,
-                            context.progress,
-                            workers,
-                            context.profile.capabilities.sparse,
-                        )
-                    } else {
-                        copy_dir_buffered_with_limiter(
-                            src,
-                            dest,
-                            context.progress,
-                            &mut limiter,
-                            context.profile.capabilities.sparse,
-                            context.symlink_policy,
-                        )
-                    }
-                    .map(|bytes| CopyOutcome {
-                        bytes,
-                        fast_path: crate::transfer_tuning::FastPath::Buffered,
-                    })
-                } else {
-                    copy_file_buffered_with_limiter(
-                        src,
-                        dest,
-                        context.progress,
-                        &mut limiter,
-                        context.resume,
-                        Some(context.journal),
-                        context.profile.capabilities.sparse,
-                    )
-                    .map(|bytes| CopyOutcome {
-                        bytes,
-                        fast_path: if context.resume.is_some() {
-                            crate::transfer_tuning::FastPath::Resumed
-                        } else {
-                            crate::transfer_tuning::FastPath::Buffered
-                        },
-                    })
-                }
-            }
-        }
-    }
-}
-
-fn requires_resumable_buffer(
-    profile: &crate::volume_profile::VolumeProfile,
-    source_size: u64,
-) -> bool {
-    profile.capabilities.resumable
-        && profile.backend.is_slow_link()
-        && source_size >= crate::delta_copy::DELTA_MIN_BYTES
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CopyOutcome {
-    bytes: u64,
-    fast_path: crate::transfer_tuning::FastPath,
-}
-
 #[derive(Clone, Copy)]
 struct JournalStep<'a> {
     operation_id: &'a OperationId,
@@ -466,86 +285,28 @@ struct JournalStep<'a> {
     enabled: bool,
 }
 
-struct CopyContext<'a> {
-    progress: &'a TransferState,
-    base_bytes: u64,
-    profile: &'a crate::volume_profile::VolumeProfile,
-    rule: crate::transfer_tuning::VolumeRule,
-    tuning: crate::transfer_tuning::TuningSnapshot,
-    basis: Option<&'a Path>,
-    resume: Option<&'a ResumeCheckpoint>,
-    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
-    journal: JournalStep<'a>,
+struct JournalCheckpointSink<'a> {
+    step: JournalStep<'a>,
 }
 
-fn copy_file_delta(
-    source: &Path,
-    basis: &Path,
-    destination: &Path,
-    mode: crate::delta_copy::DeltaMode,
-    context: CopyContext<'_>,
-) -> std::io::Result<crate::delta_copy::DeltaStats> {
-    let layout = match mode {
-        crate::delta_copy::DeltaMode::Fixed => CheckpointLayout::DeltaFixed,
-        crate::delta_copy::DeltaMode::ContentDefined => CheckpointLayout::DeltaCdc,
-    };
-    if let Some(checkpoint) = context.resume {
-        let expected = checkpoint.content_digest.ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Delta checkpoint has no content proof",
-            )
-        })?;
-        if prefix_digest(source, checkpoint.offset)? != expected
-            || prefix_digest(destination, checkpoint.offset)? != expected
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Delta checkpoint content proof does not match source and staging",
-            ));
+impl backend::CheckpointSink for JournalCheckpointSink<'_> {
+    fn publish(&mut self, checkpoint: ResumeCheckpoint) -> std::io::Result<()> {
+        if !self.step.enabled {
+            return Ok(());
         }
+        crate::operation_journal::mark_checkpoint(self.step.operation_id, self.step.key, checkpoint)
+            .map_err(std::io::Error::other)
     }
-    let resume_offset = context.resume.map(|checkpoint| checkpoint.offset);
-    let journal = context.journal;
-    let mut checkpoint = |offset, content_digest| {
-        persist_delta_checkpoint(source, destination, offset, layout, content_digest, journal)
-    };
-    crate::delta_copy::copy_file(
-        crate::delta_copy::DeltaRequest {
-            source,
-            basis,
-            destination,
-            mode,
-            state: context.progress,
-            base_bytes: context.base_bytes,
-            allow_clone_seed: context.profile.capabilities.clone,
-            resume_offset,
-        },
-        &mut checkpoint,
-    )
 }
 
-fn persist_delta_checkpoint(
-    source: &Path,
-    destination: &Path,
-    offset: u64,
-    layout: CheckpointLayout,
-    content_digest: [u8; 32],
-    journal: JournalStep<'_>,
-) -> std::io::Result<()> {
-    if !journal.enabled {
-        return Ok(());
-    }
-    let checkpoint = ResumeCheckpoint {
-        staging: destination.to_path_buf(),
-        offset,
-        source: PathIdentity::observe_deep(source)?,
-        partial: PathIdentity::observe_deep(destination)?,
-        layout,
-        content_digest: Some(content_digest),
-    };
-    crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
-        .map_err(std::io::Error::other)
+#[cfg(test)]
+fn requires_resumable_buffer(
+    profile: &crate::volume_profile::VolumeProfile,
+    source_size: u64,
+) -> bool {
+    profile.capabilities.resumable
+        && profile.backend.is_slow_link()
+        && source_size >= crate::delta_copy::DELTA_MIN_BYTES
 }
 
 /// A copy/move request, fully described and detached from any UI state.
@@ -827,6 +588,70 @@ fn wait_for_mount(
         Ok(()) => Ok(()),
         Err(error) => Err(MountWaitError::Unavailable(error)),
     }
+}
+
+fn check_mount_fence(
+    guard: &crate::mount_guard::MountGuard,
+    check_override: Option<&(dyn Fn() -> std::io::Result<()> + Send + Sync)>,
+) -> std::io::Result<()> {
+    if let Some(check) = check_override {
+        return check();
+    }
+    match guard.check() {
+        crate::mount_guard::MountAvailability::Available => Ok(()),
+        crate::mount_guard::MountAvailability::Disconnected => Err(std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "destination volume disconnected before commit",
+        )),
+        crate::mount_guard::MountAvailability::Replaced => Err(std::io::Error::new(
+            std::io::ErrorKind::StaleNetworkFileHandle,
+            "destination volume changed before commit",
+        )),
+    }
+}
+
+fn valid_runtime_checkpoint(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    source: &Path,
+    staging: &Path,
+    journal_enabled: bool,
+) -> Option<ResumeCheckpoint> {
+    if !journal_enabled {
+        return None;
+    }
+    let checkpoint = crate::operation_journal::step_checkpoint(operation_id, key)
+        .ok()
+        .flatten()?;
+    if checkpoint.staging != staging || checkpoint.content_digest.is_none() {
+        return None;
+    }
+    let source_now = PathIdentity::observe_deep(source).ok()?;
+    if !checkpoint.source.same_binding(&source_now) {
+        return None;
+    }
+    let partial_now = PathIdentity::observe_deep(staging).ok()?;
+    if !checkpoint.partial.same_object(&partial_now)
+        || partial_now.kind != Some(crate::path_identity::PathKind::File)
+    {
+        return None;
+    }
+    let layout_matches = match checkpoint.layout {
+        CheckpointLayout::Prefix => partial_now.size >= checkpoint.offset,
+        CheckpointLayout::DeltaFixed | CheckpointLayout::DeltaCdc => {
+            partial_now.size == checkpoint.partial.size && partial_now.size >= checkpoint.offset
+        }
+    };
+    if !layout_matches {
+        return None;
+    }
+    let expected = checkpoint.content_digest?;
+    if prefix_digest(source, checkpoint.offset).ok()? != expected
+        || prefix_digest(staging, checkpoint.offset).ok()? != expected
+    {
+        return None;
+    }
+    Some(checkpoint)
 }
 
 fn is_disconnect_error(error: &std::io::Error) -> bool {
@@ -1253,292 +1078,239 @@ fn spawn_transfer_on(
     progress: TransferState,
     notify: impl Fn() + Send + 'static,
 ) {
-    static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
-    let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let task_root = spec.target.clone();
-    let worker_progress = Arc::clone(&progress);
-    let notify = Arc::new(Mutex::new(notify));
-    let worker_notify = Arc::clone(&notify);
-    let abandoned_progress = Arc::clone(&progress);
-    let abandoned_notify = Arc::clone(&notify);
-    let abandoned_operation_id = spec.operation_id.clone();
-    let abandoned_target = task_root.clone();
-    let task_spec = crate::workload::TaskSpec::new(
-        crate::workload::TaskKind::Transfer,
-        task_root.clone(),
-        generation,
-    )
-    .priority(crate::workload::Priority::Critical)
-    .estimated_bytes(64 * 1024 * 1024);
-    let worker = move |scheduler_cancel: crate::workload::CancellationToken| {
-        let mut spec = spec;
-        let progress = worker_progress;
-        let notify = || (crate::lock_util::recover(&worker_notify))();
-        let mount_wait_override: Option<Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>> = {
-            #[cfg(test)]
-            {
-                spec.mount_wait_override.clone()
-            }
-            #[cfg(not(test))]
-            {
-                None
-            }
-        };
-        if scheduler_cancel.is_cancelled() {
-            crate::lock_util::recover(&progress).cancelled = true;
-            finish_progress(&progress, FinalizationOutcome::NotReached);
-            notify();
-            return;
+    TransferExecutor::new(workload, spec, progress, notify).submit();
+}
+
+struct TransferExecutor<N> {
+    workload: crate::workload::WorkloadHandle,
+    spec: TransferSpec,
+    progress: TransferState,
+    notify: N,
+    backends: backend::BackendPorts,
+}
+
+impl<N: Fn() + Send + 'static> TransferExecutor<N> {
+    fn new(
+        workload: crate::workload::WorkloadHandle,
+        spec: TransferSpec,
+        progress: TransferState,
+        notify: N,
+    ) -> Self {
+        Self {
+            workload,
+            spec,
+            progress,
+            notify,
+            backends: backend::BackendPorts::production(),
         }
-        let journal_enabled = journal_enabled(&spec);
-        {
-            let mut state = crate::lock_util::recover(&progress);
-            state.operation_id = Some(spec.operation_id.clone());
-            state.group_id = spec.group_id.clone();
-            state.set_phase(crate::operation_view::OperationPhase::Scan);
+    }
+
+    #[cfg(test)]
+    fn with_backends(
+        workload: crate::workload::WorkloadHandle,
+        spec: TransferSpec,
+        progress: TransferState,
+        notify: N,
+        backends: backend::BackendPorts,
+    ) -> Self {
+        Self {
+            workload,
+            spec,
+            progress,
+            notify,
+            backends,
         }
-        let terminal = TerminalContext::capture(&spec);
-        let mut terminal_guard =
-            PanicTerminalGuard::new(terminal.clone(), &progress, &notify, journal_enabled);
-        notify();
-        let expectations_complete = spec.expectations.len() == spec.entries.len();
-        if spec.preflight_bytes.is_some() && !expectations_complete {
-            record_failure(
-                &progress,
-                "Operation",
-                ClassifiedFailure::message(
-                    FailureClass::IntegrityUncertain,
-                    None,
-                    "Confirmed resource preflight snapshot is incomplete",
-                ),
-            );
-            finish_progress(&progress, FinalizationOutcome::NotReached);
-            terminal_guard.disarm();
-            notify();
-            return;
-        }
-        let needs_worker_preflight = spec.preflight_bytes.is_none();
-        let mut worker_preflight = needs_worker_preflight
-            .then(|| crate::scan::transfer_preflight(&spec.entries, spec.symlink_policy));
-        let total_bytes = match spec.preflight_bytes.map(Ok).unwrap_or_else(|| {
-            worker_preflight
-                .as_ref()
-                .map(|scan| scan.need_bytes.clone())
-                .unwrap_or_else(|| {
-                    Err(crate::ports::NativeFailure {
-                        kind: crate::ports::NativeFailureKind::Unknown,
-                        message: "Transfer resource preflight was unavailable".to_string(),
-                    })
-                })
-        }) {
-            Ok(total_bytes) => total_bytes,
-            Err(failure) => {
-                record_failure(
-                    &progress,
-                    "Operation",
-                    ClassifiedFailure::message(FailureClass::Blocked, None, failure.message),
-                );
+    }
+
+    fn submit(self) {
+        let Self {
+            workload,
+            spec,
+            progress,
+            notify,
+            backends,
+        } = self;
+        static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+        let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let task_root = spec.target.clone();
+        let worker_progress = Arc::clone(&progress);
+        let notify = Arc::new(Mutex::new(notify));
+        let worker_notify = Arc::clone(&notify);
+        let abandoned_progress = Arc::clone(&progress);
+        let abandoned_notify = Arc::clone(&notify);
+        let abandoned_operation_id = spec.operation_id.clone();
+        let abandoned_target = task_root.clone();
+        let task_spec = crate::workload::TaskSpec::new(
+            crate::workload::TaskKind::Transfer,
+            task_root.clone(),
+            generation,
+        )
+        .priority(crate::workload::Priority::Critical)
+        .estimated_bytes(64 * 1024 * 1024);
+        let worker = move |scheduler_cancel: crate::workload::CancellationToken| {
+            let mut spec = spec;
+            let progress = worker_progress;
+            let notify = || (crate::lock_util::recover(&worker_notify))();
+            let mount_wait_override: Option<Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>> = {
+                #[cfg(test)]
+                {
+                    spec.mount_wait_override.clone()
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            };
+            if scheduler_cancel.is_cancelled() {
+                crate::lock_util::recover(&progress).cancelled = true;
                 finish_progress(&progress, FinalizationOutcome::NotReached);
-                terminal_guard.disarm();
                 notify();
                 return;
             }
-        };
-        {
-            let mut state = crate::lock_util::recover(&progress);
-            state.total_bytes = total_bytes;
-            state.total_known = true;
-            state.set_phase(crate::operation_view::OperationPhase::Plan);
-        }
-        notify();
-        if spec.expectations.len() != spec.entries.len() {
-            let Some(scan) = worker_preflight.take() else {
+            let journal_enabled = journal_enabled(&spec);
+            {
+                let mut state = crate::lock_util::recover(&progress);
+                state.operation_id = Some(spec.operation_id.clone());
+                state.group_id = spec.group_id.clone();
+                state.set_phase(crate::operation_view::OperationPhase::Scan);
+            }
+            let terminal = TerminalContext::capture(&spec);
+            let mut terminal_guard =
+                PanicTerminalGuard::new(terminal.clone(), &progress, &notify, journal_enabled);
+            notify();
+            let expectations_complete = spec.expectations.len() == spec.entries.len();
+            if spec.preflight_bytes.is_some() && !expectations_complete {
                 record_failure(
                     &progress,
                     "Operation",
                     ClassifiedFailure::message(
-                        FailureClass::Blocked,
+                        FailureClass::IntegrityUncertain,
                         None,
-                        "Transfer source preflight was unavailable",
+                        "Confirmed resource preflight snapshot is incomplete",
                     ),
                 );
                 finish_progress(&progress, FinalizationOutcome::NotReached);
                 terminal_guard.disarm();
                 notify();
                 return;
-            };
-            match expectations_from_source_identities(
-                &spec.entries,
-                &spec.target,
-                scan.source_identities,
-            ) {
-                Ok(expectations) => spec.expectations = expectations,
+            }
+            let needs_worker_preflight = spec.preflight_bytes.is_none();
+            let mut worker_preflight = needs_worker_preflight
+                .then(|| crate::scan::transfer_preflight(&spec.entries, spec.symlink_policy));
+            let total_bytes = match spec.preflight_bytes.map(Ok).unwrap_or_else(|| {
+                worker_preflight
+                    .as_ref()
+                    .map(|scan| scan.need_bytes.clone())
+                    .unwrap_or_else(|| {
+                        Err(crate::ports::NativeFailure {
+                            kind: crate::ports::NativeFailureKind::Unknown,
+                            message: "Transfer resource preflight was unavailable".to_string(),
+                        })
+                    })
+            }) {
+                Ok(total_bytes) => total_bytes,
                 Err(failure) => {
                     record_failure(
                         &progress,
                         "Operation",
-                        ClassifiedFailure::message(
-                            FailureClass::IntegrityUncertain,
-                            None,
-                            failure.message,
-                        ),
+                        ClassifiedFailure::message(FailureClass::Blocked, None, failure.message),
                     );
                     finish_progress(&progress, FinalizationOutcome::NotReached);
                     terminal_guard.disarm();
                     notify();
                     return;
                 }
+            };
+            {
+                let mut state = crate::lock_util::recover(&progress);
+                state.total_bytes = total_bytes;
+                state.total_known = true;
+                state.set_phase(crate::operation_view::OperationPhase::Plan);
             }
-        } else if let Some(scan) = worker_preflight.take()
-            && let Err(failure) =
-                rebind_expectations_to_worker_scan(&mut spec.expectations, scan.source_identities)
-        {
-            record_failure(
-                &progress,
-                "Operation",
-                ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, failure.message),
-            );
-            finish_progress(&progress, FinalizationOutcome::NotReached);
-            terminal_guard.disarm();
             notify();
-            return;
-        }
-        let target_profile = crate::volume_profile::profile(&spec.target);
-        let target_mount = crate::mount_guard::MountGuard::capture(
-            &spec.target,
-            crate::mount_guard::ReconnectPolicy::default(),
-        );
-        let resource_rule = crate::transfer_tuning::rule_for(&target_profile);
-        let tuning = crate::transfer_tuning::snapshot(&target_profile);
-        {
-            let mut state = crate::lock_util::recover(&progress);
-            state.backend_label = target_profile.backend.label().to_string();
-            state.backend_reason = target_profile.reason.clone();
-            state.p95_latency_ms = tuning.p95_latency_ms;
-            state.adaptive_concurrency = tuning.concurrency;
-            state.bandwidth_limit = resource_rule.max_bytes_per_second;
-        }
-        if journal_enabled {
-            if let Err(error) = crate::operation_journal::begin(&spec) {
-                record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
+            if spec.expectations.len() != spec.entries.len() {
+                let Some(scan) = worker_preflight.take() else {
+                    record_failure(
+                        &progress,
+                        "Operation",
+                        ClassifiedFailure::message(
+                            FailureClass::Blocked,
+                            None,
+                            "Transfer source preflight was unavailable",
+                        ),
+                    );
+                    finish_progress(&progress, FinalizationOutcome::NotReached);
+                    terminal_guard.disarm();
+                    notify();
+                    return;
+                };
+                match expectations_from_source_identities(
+                    &spec.entries,
+                    &spec.target,
+                    scan.source_identities,
+                ) {
+                    Ok(expectations) => spec.expectations = expectations,
+                    Err(failure) => {
+                        record_failure(
+                            &progress,
+                            "Operation",
+                            ClassifiedFailure::message(
+                                FailureClass::IntegrityUncertain,
+                                None,
+                                failure.message,
+                            ),
+                        );
+                        finish_progress(&progress, FinalizationOutcome::NotReached);
+                        terminal_guard.disarm();
+                        notify();
+                        return;
+                    }
+                }
+            } else if let Some(scan) = worker_preflight.take()
+                && let Err(failure) = rebind_expectations_to_worker_scan(
+                    &mut spec.expectations,
+                    scan.source_identities,
+                )
+            {
+                record_failure(
+                    &progress,
+                    "Operation",
+                    ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        None,
+                        failure.message,
+                    ),
+                );
                 finish_progress(&progress, FinalizationOutcome::NotReached);
                 terminal_guard.disarm();
                 notify();
                 return;
             }
-            terminal_guard.journal_started();
-        }
-        match wait_for_mount(
-            &target_mount,
-            "Destination volume",
-            &progress,
-            &scheduler_cancel,
-            mount_wait_override.as_deref(),
-            &notify,
-        ) {
-            Ok(()) => {}
-            Err(MountWaitError::Interrupted) => {
-                prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
-                finalize_and_publish(
-                    &terminal,
-                    &progress,
-                    journal_enabled,
-                    crate::operation_journal::OperationStatus::Stopped,
-                );
-                terminal_guard.disarm();
-                notify();
-                return;
-            }
-            Err(MountWaitError::Unavailable(error)) => {
-                record_failure(
-                    &progress,
-                    "Operation",
-                    ClassifiedFailure::io(Some(spec.target.clone()), "mount unavailable", &error),
-                );
-                prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
-                finalize_and_publish(
-                    &terminal,
-                    &progress,
-                    journal_enabled,
-                    crate::operation_journal::OperationStatus::Failed,
-                );
-                terminal_guard.disarm();
-                notify();
-                return;
-            }
-        }
-        while resource_rule.is_quiet_now() {
-            let should_stop = {
-                let mut state = crate::lock_util::recover(&progress);
-                let reason = crate::operation_view::PauseReason::QuietHours { resume_at: None };
-                state.waiting_reason = Some(reason.label());
-                state.pause_reason = Some(reason);
-                if scheduler_cancel.is_cancelled() {
-                    state.cancelled = true;
-                }
-                state.cancelled || state.stop_requested
-            };
-            notify();
-            if should_stop {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        {
-            let mut state = crate::lock_util::recover(&progress);
-            state.waiting_reason = None;
-            state.pause_reason = None;
-        }
-        let is_move = spec.kind == TransferKind::Move;
-        let mut base_bytes: u64 = 0;
-        let expectations = spec.expectations;
-        let mut work = spec
-            .entries
-            .into_iter()
-            .zip(expectations)
-            .enumerate()
-            .map(|(index, (entry, expectation))| {
-                let destination = spec.target.join(&entry.name);
-                let key = expectation
-                    .key
-                    .clone()
-                    .unwrap_or_else(|| spec.operation_id.step_key(index, &destination));
-                TransferWorkItem {
-                    key,
-                    entry,
-                    expectation,
-                    mount_retries: 0,
-                }
-            })
-            .collect::<VecDeque<_>>();
-
-        crate::lock_util::recover(&progress)
-            .set_phase(crate::operation_view::OperationPhase::Transfer);
-        notify();
-
-        'work: while let Some(mut work_item) = work.pop_front() {
-            let this_size = work_item.expectation.source.as_ref().map_or_else(
-                |_| entry_size(&work_item.entry),
-                |source| source.logical_bytes,
+            let target_profile = crate::volume_profile::profile(&spec.target);
+            let target_mount = crate::mount_guard::MountGuard::capture(
+                &spec.target,
+                crate::mount_guard::ReconnectPolicy::default(),
             );
-            let entry = work_item.entry.clone();
-            let dest = spec.target.join(&entry.name);
-
+            let resource_rule = crate::transfer_tuning::rule_for(&target_profile);
+            let tuning = crate::transfer_tuning::snapshot(&target_profile);
             {
-                let mut s = crate::lock_util::recover(&progress);
-                s.current_file = entry.name.clone();
-                if scheduler_cancel.is_cancelled() {
-                    s.cancelled = true;
-                }
-                if s.cancelled {
-                    break; // fall through to the finished-setter below
-                }
-                if s.stop_requested {
-                    s.stopped = true;
-                    break;
-                }
+                let mut state = crate::lock_util::recover(&progress);
+                state.backend_label = target_profile.backend.label().to_string();
+                state.backend_reason = target_profile.reason.clone();
+                state.p95_latency_ms = tuning.p95_latency_ms;
+                state.adaptive_concurrency = tuning.concurrency;
+                state.bandwidth_limit = resource_rule.max_bytes_per_second;
             }
-
+            if journal_enabled {
+                if let Err(error) = crate::operation_journal::begin(&spec) {
+                    record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
+                    finish_progress(&progress, FinalizationOutcome::NotReached);
+                    terminal_guard.disarm();
+                    notify();
+                    return;
+                }
+                terminal_guard.journal_started();
+            }
             match wait_for_mount(
                 &target_mount,
                 "Destination volume",
@@ -1548,547 +1320,651 @@ fn spawn_transfer_on(
                 &notify,
             ) {
                 Ok(()) => {}
-                Err(MountWaitError::Interrupted) => break 'work,
-                Err(MountWaitError::Unavailable(error)) => {
-                    complete_without_copy(
+                Err(MountWaitError::Interrupted) => {
+                    prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
+                    finalize_and_publish(
+                        &terminal,
                         &progress,
-                        &mut base_bytes,
-                        this_size,
-                        &entry.name,
-                        Some(ClassifiedFailure::io(
+                        journal_enabled,
+                        crate::operation_journal::OperationStatus::Stopped,
+                    );
+                    terminal_guard.disarm();
+                    notify();
+                    return;
+                }
+                Err(MountWaitError::Unavailable(error)) => {
+                    record_failure(
+                        &progress,
+                        "Operation",
+                        ClassifiedFailure::io(
                             Some(spec.target.clone()),
                             "mount unavailable",
                             &error,
-                        )),
-                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                        &notify,
+                        ),
                     );
-                    continue;
-                }
-            }
-
-            if journal_enabled {
-                match crate::operation_journal::step_is_settled(&spec.operation_id, &work_item.key)
-                {
-                    Ok(true) => {
-                        complete_without_copy(
-                            &progress,
-                            &mut base_bytes,
-                            this_size,
-                            &entry.name,
-                            None,
-                            None,
-                            &notify,
-                        );
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        complete_without_copy(
-                            &progress,
-                            &mut base_bytes,
-                            this_size,
-                            &entry.name,
-                            Some(ClassifiedFailure::message(
-                                FailureClass::IntegrityUncertain,
-                                Some(dest.clone()),
-                                error,
-                            )),
-                            None,
-                            &notify,
-                        );
-                        continue;
-                    }
-                }
-            }
-
-            let expected_source = match work_item.expectation.source.clone() {
-                Ok(identity) => identity,
-                Err(message) => {
-                    complete_without_copy(
+                    prepare_terminal_progress(&progress, FinalizationOutcome::NotReached);
+                    finalize_and_publish(
+                        &terminal,
                         &progress,
-                        &mut base_bytes,
-                        this_size,
-                        &entry.name,
-                        Some(ClassifiedFailure::message(
-                            FailureClass::Blocked,
-                            Some(entry.path.clone()),
-                            message,
-                        )),
-                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                        &notify,
+                        journal_enabled,
+                        crate::operation_journal::OperationStatus::Failed,
                     );
-                    continue;
+                    terminal_guard.disarm();
+                    notify();
+                    return;
                 }
-            };
-            let source_before =
-                match crate::scan::capture_transfer_source(&entry.path, spec.symlink_policy) {
-                    Ok(identity) => identity,
-                    Err(failure) => {
-                        complete_without_copy(
-                            &progress,
-                            &mut base_bytes,
-                            this_size,
-                            &entry.name,
-                            Some(ClassifiedFailure::message(
-                                FailureClass::IntegrityUncertain,
-                                Some(entry.path.clone()),
-                                failure.message,
-                            )),
-                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                            &notify,
-                        );
-                        continue;
+            }
+            while resource_rule.is_quiet_now() {
+                let should_stop = {
+                    let mut state = crate::lock_util::recover(&progress);
+                    let reason = crate::operation_view::PauseReason::QuietHours { resume_at: None };
+                    state.waiting_reason = Some(reason.label());
+                    state.pause_reason = Some(reason);
+                    if scheduler_cancel.is_cancelled() {
+                        state.cancelled = true;
                     }
+                    state.cancelled || state.stop_requested
                 };
-            if !expected_source.same_binding(&source_before) {
-                complete_without_copy(
-                    &progress,
-                    &mut base_bytes,
-                    this_size,
-                    &entry.name,
-                    Some(ClassifiedFailure::message(
-                        FailureClass::IntegrityUncertain,
-                        Some(entry.path.clone()),
-                        "source changed after transfer preflight",
-                    )),
-                    Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                    &notify,
-                );
-                continue;
-            }
-
-            if spec.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Skip
-                && source_before.lexical.kind == Some(crate::path_identity::PathKind::Symlink)
-            {
-                complete_without_copy(
-                    &progress,
-                    &mut base_bytes,
-                    this_size,
-                    &entry.name,
-                    None,
-                    Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                    &notify,
-                );
-                continue;
-            }
-
-            let expected_destination = match work_item.expectation.destination.clone() {
-                Ok(identity) => identity,
-                Err(message) => {
-                    complete_without_copy(
-                        &progress,
-                        &mut base_bytes,
-                        this_size,
-                        &entry.name,
-                        Some(ClassifiedFailure::message(
-                            FailureClass::Blocked,
-                            Some(dest.clone()),
-                            message,
-                        )),
-                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                        &notify,
-                    );
-                    continue;
+                notify();
+                if should_stop {
+                    break;
                 }
-            };
-
-            // Reject destructive self-referential transfers (a directory into
-            // itself or its own subtree, a file onto itself) before touching
-            // anything, so neither source nor destination is harmed.
-            if fs_util::is_within_or_equal(&dest, &entry.path) {
-                complete_without_copy(
-                    &progress,
-                    &mut base_bytes,
-                    this_size,
-                    &entry.name,
-                    Some(ClassifiedFailure::message(
-                        FailureClass::UserDecision,
-                        Some(entry.path.clone()),
-                        "cannot copy a path into itself",
-                    )),
-                    Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                    &notify,
-                );
-                continue;
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
-
-            // Check the destination LIVE, not the scan-time conflict list: the
-            // confirmation dialog can sit open while the filesystem changes.
-            // `path_is_taken` (not `exists`) so a broken symlink occupying the
-            // name is honoured as a conflict, matching `find_conflicts`.
-            let dest_present = fs_util::path_is_taken(&dest);
-            if dest_present {
-                match spec.policy {
-                    OverwritePolicy::SkipAll => {
-                        complete_without_copy(
-                            &progress,
-                            &mut base_bytes,
-                            this_size,
-                            &entry.name,
-                            None,
-                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                            &notify,
-                        );
-                        continue;
-                    }
-                    OverwritePolicy::Ask => {
-                        // No overwrite was confirmed (no conflict was shown, or
-                        // the destination appeared after the scan): refuse
-                        // rather than silently clobber it.
-                        complete_without_copy(
-                            &progress,
-                            &mut base_bytes,
-                            this_size,
-                            &entry.name,
-                            Some(ClassifiedFailure::message(
-                                FailureClass::UserDecision,
-                                Some(dest.clone()),
-                                "destination already exists",
-                            )),
-                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
-                            &notify,
-                        );
-                        continue;
-                    }
-                    // Fall through; KeepBoth/OverwriteAll handled below.
-                    OverwritePolicy::OverwriteAll | OverwritePolicy::KeepBoth => {}
-                }
-            }
-
-            let (errors_before, failures_before) = {
-                let state = crate::lock_util::recover(&progress);
-                (state.errors.len(), state.failures.len())
-            };
-
-            // Every entry is staged beside its final landing. This gives new
-            // directories the same no-merge guarantee as files and leaves one
-            // commit point where destination identity can be revalidated.
-            let landing = work_item.expectation.landing.clone().unwrap_or_else(|| {
-                if dest_present && spec.policy == OverwritePolicy::KeepBoth {
-                    fs_util::available_copy_name(&dest)
-                } else {
-                    dest.clone()
-                }
-            });
-            let expected_landing =
-                work_item
-                    .expectation
-                    .landing_before
-                    .clone()
-                    .unwrap_or_else(|| {
-                        if landing == dest {
-                            expected_destination
-                        } else {
-                            PathIdentity::missing(&landing)
-                        }
-                    });
-            let replace_existing = expected_landing.exists;
-            let copy_target = work_item.expectation.resume.as_ref().map_or_else(
-                || staging_path(&landing),
-                |checkpoint| checkpoint.staging.clone(),
-            );
-            if journal_enabled
-                && let Err(error) = crate::operation_journal::mark_running(
-                    &spec.operation_id,
-                    &work_item.key,
-                    &copy_target,
-                    &landing,
-                    expected_landing.clone(),
-                )
-            {
-                complete_without_copy(
-                    &progress,
-                    &mut base_bytes,
-                    this_size,
-                    &entry.name,
-                    Some(ClassifiedFailure::message(
-                        FailureClass::IntegrityUncertain,
-                        Some(landing.clone()),
-                        format!("operation journal update failed: {error}"),
-                    )),
-                    None,
-                    &notify,
-                );
-                continue;
-            }
-
-            let attempt_base = base_bytes;
-            let attempt_started = std::time::Instant::now();
-            let attempt_tuning = crate::transfer_tuning::snapshot(&target_profile);
-            let copy_entry = || {
-                spec.method.copy_entry(
-                    &entry.path,
-                    entry.is_dir,
-                    &copy_target,
-                    CopyContext {
-                        progress: &progress,
-                        base_bytes,
-                        profile: &target_profile,
-                        rule: resource_rule,
-                        tuning: attempt_tuning,
-                        basis: dest_present.then_some(dest.as_path()),
-                        resume: work_item.expectation.resume.as_ref(),
-                        symlink_policy: spec.symlink_policy,
-                        journal: JournalStep {
-                            operation_id: &spec.operation_id,
-                            key: &work_item.key,
-                            enabled: journal_enabled,
-                        },
-                    },
-                )
-            };
-            // A move first attempts the atomic rename itself. `EXDEV` is the
-            // authoritative cross-volume result and falls back to the normal
-            // copy pipeline without a separate device-id OS read.
-            let try_rename =
-                is_move && spec.symlink_policy != crate::filesystem_policy::SymlinkPolicy::Follow;
-            let mut renamed = false;
-            let result = if try_rename {
-                match rename_entry(
-                    &entry.path,
-                    &copy_target,
-                    &entry,
-                    this_size,
-                    &progress,
-                    base_bytes,
-                ) {
-                    Ok(bytes) => {
-                        renamed = true;
-                        Ok(CopyOutcome {
-                            bytes,
-                            fast_path: crate::transfer_tuning::FastPath::Rename,
-                        })
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
-                        copy_entry()
-                    }
-                    Err(error) => Err(error),
-                }
-            } else {
-                copy_entry()
-            };
-            crate::transfer_tuning::record(
-                &target_profile,
-                attempt_started.elapsed(),
-                result.is_ok(),
-            );
-            let tuning = crate::transfer_tuning::snapshot(&target_profile);
             {
                 let mut state = crate::lock_util::recover(&progress);
-                state.p95_latency_ms = tuning.p95_latency_ms;
-                state.adaptive_concurrency = tuning.concurrency;
+                state.waiting_reason = None;
+                state.pause_reason = None;
             }
+            let is_move = spec.kind == TransferKind::Move;
+            let mut base_bytes: u64 = 0;
+            let expectations = spec.expectations;
+            let mut work = spec
+                .entries
+                .into_iter()
+                .zip(expectations)
+                .enumerate()
+                .map(|(index, (entry, expectation))| {
+                    let destination = spec.target.join(&entry.name);
+                    let key = expectation
+                        .key
+                        .clone()
+                        .unwrap_or_else(|| spec.operation_id.step_key(index, &destination));
+                    TransferWorkItem {
+                        key,
+                        entry,
+                        expectation,
+                        mount_retries: 0,
+                    }
+                })
+                .collect::<VecDeque<_>>();
 
-            match &result {
-                Ok(outcome) => base_bytes += outcome.bytes,
-                Err(e) => {
-                    let resumable_partial = journal_enabled
-                        && !renamed
-                        && !entry.is_dir
-                        && crate::fs_util::path_is_taken(&copy_target);
-                    if crate::lock_util::recover(&progress).cancelled {
-                        // For a rename this is a no-op (a failed rename never
-                        // created `copy_target`); for a copy it drops the
-                        // partial. Either way the source is left intact.
-                        if !resumable_partial {
-                            let _ = undo_placement(&copy_target, &entry.path, renamed);
-                        }
+            crate::lock_util::recover(&progress)
+                .set_phase(crate::operation_view::OperationPhase::Transfer);
+            notify();
+
+            'work: while let Some(mut work_item) = work.pop_front() {
+                let this_size = work_item.expectation.source.as_ref().map_or_else(
+                    |_| entry_size(&work_item.entry),
+                    |source| source.logical_bytes,
+                );
+                let entry = work_item.entry.clone();
+                let dest = spec.target.join(&entry.name);
+
+                {
+                    let mut s = crate::lock_util::recover(&progress);
+                    s.current_file = entry.name.clone();
+                    if scheduler_cancel.is_cancelled() {
+                        s.cancelled = true;
+                    }
+                    if s.cancelled {
                         break; // fall through to the finished-setter below
                     }
-                    if is_disconnect_error(e) && work_item.mount_retries < MAX_MOUNT_RETRIES {
-                        match wait_for_mount(
-                            &target_mount,
-                            "Destination volume",
-                            &progress,
-                            &scheduler_cancel,
-                            mount_wait_override.as_deref(),
-                            &notify,
-                        ) {
-                            Ok(()) => {
-                                let checkpoint = if journal_enabled {
-                                    crate::operation_journal::step_checkpoint(
-                                        &spec.operation_id,
-                                        &work_item.key,
-                                    )
-                                    .ok()
-                                    .flatten()
-                                } else {
-                                    None
-                                };
-                                if checkpoint.is_none() {
-                                    let _ = undo_placement(&copy_target, &entry.path, renamed);
-                                }
-                                work_item.expectation.resume = checkpoint;
-                                work_item.mount_retries += 1;
-                                base_bytes = attempt_base;
-                                {
-                                    let mut state = crate::lock_util::recover(&progress);
-                                    state.copied_bytes = attempt_base;
-                                    state.current_file_copied = 0;
-                                }
-                                work.push_front(work_item);
-                                notify();
-                                continue 'work;
-                            }
-                            Err(MountWaitError::Interrupted) => {
-                                if !resumable_partial {
-                                    let _ = undo_placement(&copy_target, &entry.path, renamed);
-                                }
-                                break 'work;
-                            }
-                            Err(MountWaitError::Unavailable(wait_error)) => record_failure(
-                                &progress,
-                                &entry.name,
-                                ClassifiedFailure::io(
-                                    Some(entry.path.clone()),
-                                    "mount reconnect failed",
-                                    &wait_error,
-                                ),
-                            ),
-                        }
-                    } else {
-                        record_failure(
-                            &progress,
-                            &entry.name,
-                            ClassifiedFailure::io(Some(entry.path.clone()), "copy failed", e),
-                        );
-                    }
-                    crate::volume_profile::invalidate(target_profile.volume_id);
-                }
-            }
-
-            #[cfg(test)]
-            if result.is_ok()
-                && let Some(hook) = &spec.before_commit
-            {
-                hook(&entry.path, &landing);
-            }
-
-            if result.is_ok() && crate::lock_util::recover(&progress).errors.len() == errors_before
-            {
-                let observed_source = if renamed {
-                    copy_target.as_path()
-                } else {
-                    entry.path.as_path()
-                };
-                match crate::scan::capture_transfer_source(observed_source, spec.symlink_policy) {
-                    Ok(source_after)
-                        if if renamed {
-                            source_before.same_version(&source_after)
-                        } else {
-                            source_before.same_binding(&source_after)
-                        } => {}
-                    Ok(_) => {
-                        let restore_error = undo_placement(&copy_target, &entry.path, renamed);
-                        record_failure(
-                            &progress,
-                            &entry.name,
-                            ClassifiedFailure::message(
-                                FailureClass::IntegrityUncertain,
-                                Some(entry.path.clone()),
-                                "source changed while it was being copied",
-                            ),
-                        );
-                        if let Some(message) = restore_error {
-                            record_failure(
-                                &progress,
-                                &entry.name,
-                                ClassifiedFailure::message(
-                                    FailureClass::IntegrityUncertain,
-                                    Some(copy_target.clone()),
-                                    message,
-                                ),
-                            );
-                        }
-                    }
-                    Err(failure) => {
-                        let restore_error = undo_placement(&copy_target, &entry.path, renamed);
-                        record_failure(
-                            &progress,
-                            &entry.name,
-                            ClassifiedFailure::message(
-                                FailureClass::IntegrityUncertain,
-                                Some(entry.path.clone()),
-                                failure.message,
-                            ),
-                        );
-                        if let Some(message) = restore_error {
-                            record_failure(
-                                &progress,
-                                &entry.name,
-                                ClassifiedFailure::message(
-                                    FailureClass::IntegrityUncertain,
-                                    Some(copy_target.clone()),
-                                    message,
-                                ),
-                            );
-                        }
+                    if s.stop_requested {
+                        s.stopped = true;
+                        break;
                     }
                 }
-            }
 
-            // "Clean" = Ok return AND no per-file errors recorded by the
-            // native callback during this entry.
-            let mut clean = result.is_ok()
-                && crate::lock_util::recover(&progress).errors.len() == errors_before;
-            if clean
-                && spec.durability.verifies()
-                && !renamed
-                && !transfer_paths_equal(&entry.path, &copy_target, spec.symlink_policy)
-            {
-                record_failure(
+                match wait_for_mount(
+                    &target_mount,
+                    "Destination volume",
                     &progress,
-                    &entry.name,
-                    ClassifiedFailure::message(
-                        FailureClass::IntegrityUncertain,
-                        Some(copy_target.clone()),
-                        "copy verification failed",
-                    ),
-                );
-                clean = false;
-            }
-            if clean {
-                match PathIdentity::observe(&landing) {
-                    Ok(current) if expected_landing.same_version(&current) => {}
-                    Ok(_) => {
-                        record_failure(
+                    &scheduler_cancel,
+                    mount_wait_override.as_deref(),
+                    &notify,
+                ) {
+                    Ok(()) => {}
+                    Err(MountWaitError::Interrupted) => break 'work,
+                    Err(MountWaitError::Unavailable(error)) => {
+                        complete_without_copy(
                             &progress,
+                            &mut base_bytes,
+                            this_size,
                             &entry.name,
-                            ClassifiedFailure::message(
-                                FailureClass::UserDecision,
-                                Some(landing.clone()),
-                                "destination changed after conflict review",
-                            ),
-                        );
-                        clean = false;
-                    }
-                    Err(error) => {
-                        record_failure(
-                            &progress,
-                            &entry.name,
-                            ClassifiedFailure::io(
-                                Some(landing.clone()),
-                                "destination identity check failed",
+                            Some(ClassifiedFailure::io(
+                                Some(spec.target.clone()),
+                                "mount unavailable",
                                 &error,
-                            ),
+                            )),
+                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                            &notify,
                         );
-                        clean = false;
+                        continue;
                     }
                 }
-            }
 
-            let resumable_partial = result.is_err()
-                && journal_enabled
-                && !renamed
-                && !entry.is_dir
-                && crate::fs_util::path_is_taken(&copy_target);
-            let placed = if !clean {
-                // Undo our placement; a pre-existing dest is untouched. For a
-                // rename this restores the source rather than deleting its only
-                // copy.
-                if !resumable_partial
-                    && let Some(msg) = undo_placement(&copy_target, &entry.path, renamed)
+                if journal_enabled {
+                    match crate::operation_journal::step_is_settled(
+                        &spec.operation_id,
+                        &work_item.key,
+                    ) {
+                        Ok(true) => {
+                            complete_without_copy(
+                                &progress,
+                                &mut base_bytes,
+                                this_size,
+                                &entry.name,
+                                None,
+                                None,
+                                &notify,
+                            );
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            complete_without_copy(
+                                &progress,
+                                &mut base_bytes,
+                                this_size,
+                                &entry.name,
+                                Some(ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(dest.clone()),
+                                    error,
+                                )),
+                                None,
+                                &notify,
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                let expected_source = match work_item.expectation.source.clone() {
+                    Ok(identity) => identity,
+                    Err(message) => {
+                        complete_without_copy(
+                            &progress,
+                            &mut base_bytes,
+                            this_size,
+                            &entry.name,
+                            Some(ClassifiedFailure::message(
+                                FailureClass::Blocked,
+                                Some(entry.path.clone()),
+                                message,
+                            )),
+                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                            &notify,
+                        );
+                        continue;
+                    }
+                };
+                let source_before =
+                    match crate::scan::capture_transfer_source(&entry.path, spec.symlink_policy) {
+                        Ok(identity) => identity,
+                        Err(failure) => {
+                            complete_without_copy(
+                                &progress,
+                                &mut base_bytes,
+                                this_size,
+                                &entry.name,
+                                Some(ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(entry.path.clone()),
+                                    failure.message,
+                                )),
+                                Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                                &notify,
+                            );
+                            continue;
+                        }
+                    };
+                if !expected_source.same_binding(&source_before) {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        Some(ClassifiedFailure::message(
+                            FailureClass::IntegrityUncertain,
+                            Some(entry.path.clone()),
+                            "source changed after transfer preflight",
+                        )),
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                        &notify,
+                    );
+                    continue;
+                }
+
+                if spec.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Skip
+                    && source_before.lexical.kind == Some(crate::path_identity::PathKind::Symlink)
+                {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        None,
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                        &notify,
+                    );
+                    continue;
+                }
+
+                let expected_destination = match work_item.expectation.destination.clone() {
+                    Ok(identity) => identity,
+                    Err(message) => {
+                        complete_without_copy(
+                            &progress,
+                            &mut base_bytes,
+                            this_size,
+                            &entry.name,
+                            Some(ClassifiedFailure::message(
+                                FailureClass::Blocked,
+                                Some(dest.clone()),
+                                message,
+                            )),
+                            Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                            &notify,
+                        );
+                        continue;
+                    }
+                };
+
+                // Reject destructive self-referential transfers (a directory into
+                // itself or its own subtree, a file onto itself) before touching
+                // anything, so neither source nor destination is harmed.
+                if fs_util::is_within_or_equal(&dest, &entry.path) {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        Some(ClassifiedFailure::message(
+                            FailureClass::UserDecision,
+                            Some(entry.path.clone()),
+                            "cannot copy a path into itself",
+                        )),
+                        Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                        &notify,
+                    );
+                    continue;
+                }
+
+                // Check the destination LIVE, not the scan-time conflict list: the
+                // confirmation dialog can sit open while the filesystem changes.
+                // `path_is_taken` (not `exists`) so a broken symlink occupying the
+                // name is honoured as a conflict, matching `find_conflicts`.
+                let dest_present = fs_util::path_is_taken(&dest);
+                if dest_present {
+                    match spec.policy {
+                        OverwritePolicy::SkipAll => {
+                            complete_without_copy(
+                                &progress,
+                                &mut base_bytes,
+                                this_size,
+                                &entry.name,
+                                None,
+                                Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                                &notify,
+                            );
+                            continue;
+                        }
+                        OverwritePolicy::Ask => {
+                            // No overwrite was confirmed (no conflict was shown, or
+                            // the destination appeared after the scan): refuse
+                            // rather than silently clobber it.
+                            complete_without_copy(
+                                &progress,
+                                &mut base_bytes,
+                                this_size,
+                                &entry.name,
+                                Some(ClassifiedFailure::message(
+                                    FailureClass::UserDecision,
+                                    Some(dest.clone()),
+                                    "destination already exists",
+                                )),
+                                Some((&spec.operation_id, &work_item.key, journal_enabled)),
+                                &notify,
+                            );
+                            continue;
+                        }
+                        // Fall through; KeepBoth/OverwriteAll handled below.
+                        OverwritePolicy::OverwriteAll | OverwritePolicy::KeepBoth => {}
+                    }
+                }
+
+                let (errors_before, failures_before) = {
+                    let state = crate::lock_util::recover(&progress);
+                    (state.errors.len(), state.failures.len())
+                };
+
+                // Every entry is staged beside its final landing. This gives new
+                // directories the same no-merge guarantee as files and leaves one
+                // commit point where destination identity can be revalidated.
+                let landing = work_item.expectation.landing.clone().unwrap_or_else(|| {
+                    if dest_present && spec.policy == OverwritePolicy::KeepBoth {
+                        fs_util::available_copy_name(&dest)
+                    } else {
+                        dest.clone()
+                    }
+                });
+                let expected_landing =
+                    work_item
+                        .expectation
+                        .landing_before
+                        .clone()
+                        .unwrap_or_else(|| {
+                            if landing == dest {
+                                expected_destination
+                            } else {
+                                PathIdentity::missing(&landing)
+                            }
+                        });
+                let replace_existing = expected_landing.exists;
+                let copy_target = work_item.expectation.resume.as_ref().map_or_else(
+                    || staging_path(&landing),
+                    |checkpoint| checkpoint.staging.clone(),
+                );
+                if journal_enabled
+                    && let Err(error) = crate::operation_journal::mark_running(
+                        &spec.operation_id,
+                        &work_item.key,
+                        &copy_target,
+                        &landing,
+                        expected_landing.clone(),
+                    )
+                {
+                    complete_without_copy(
+                        &progress,
+                        &mut base_bytes,
+                        this_size,
+                        &entry.name,
+                        Some(ClassifiedFailure::message(
+                            FailureClass::IntegrityUncertain,
+                            Some(landing.clone()),
+                            format!("operation journal update failed: {error}"),
+                        )),
+                        None,
+                        &notify,
+                    );
+                    continue;
+                }
+
+                let attempt_base = base_bytes;
+                let attempt_started = std::time::Instant::now();
+                let attempt_tuning = crate::transfer_tuning::snapshot(&target_profile);
+                let mut checkpoint_sink = JournalCheckpointSink {
+                    step: JournalStep {
+                        operation_id: &spec.operation_id,
+                        key: &work_item.key,
+                        enabled: journal_enabled,
+                    },
+                };
+                let mut copy_entry = || {
+                    backends.stage(
+                        spec.method,
+                        backend::StageRequest {
+                            source: &entry.path,
+                            is_dir: entry.is_dir,
+                            staging: &copy_target,
+                            progress: &progress,
+                            base_bytes,
+                            profile: &target_profile,
+                            rule: resource_rule,
+                            tuning: attempt_tuning,
+                            basis: dest_present.then_some(dest.as_path()),
+                            resume: work_item.expectation.resume.as_ref(),
+                            symlink_policy: spec.symlink_policy,
+                        },
+                        &mut checkpoint_sink,
+                    )
+                };
+                // A move first attempts the atomic rename itself. `EXDEV` is the
+                // authoritative cross-volume result and falls back to the normal
+                // copy pipeline without a separate device-id OS read.
+                let try_rename = is_move
+                    && spec.symlink_policy == crate::filesystem_policy::SymlinkPolicy::Preserve;
+                let mut renamed = false;
+                let mut result = if try_rename {
+                    match rename_entry(
+                        &entry.path,
+                        &copy_target,
+                        &entry,
+                        this_size,
+                        &progress,
+                        base_bytes,
+                    ) {
+                        Ok(bytes) => {
+                            renamed = true;
+                            PathIdentity::observe(&copy_target).map(|artifact| {
+                                backend::StageReceipt {
+                                    bytes,
+                                    fast_path: crate::transfer_tuning::FastPath::Rename,
+                                    artifact,
+                                }
+                            })
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                            copy_entry()
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    copy_entry()
+                };
+                crate::transfer_tuning::record(
+                    &target_profile,
+                    attempt_started.elapsed(),
+                    result.is_ok(),
+                );
+                let tuning = crate::transfer_tuning::snapshot(&target_profile);
+                {
+                    let mut state = crate::lock_util::recover(&progress);
+                    state.p95_latency_ms = tuning.p95_latency_ms;
+                    state.adaptive_concurrency = tuning.concurrency;
+                }
+
+                #[cfg(test)]
+                if result.is_ok()
+                    && let Some(hook) = &spec.before_commit
+                {
+                    hook(&entry.path, &landing);
+                }
+
+                if result.is_ok() {
+                    let cancelled = {
+                        let mut state = crate::lock_util::recover(&progress);
+                        if scheduler_cancel.is_cancelled() {
+                            state.cancelled = true;
+                        }
+                        state.cancelled
+                    };
+                    if cancelled {
+                        result = Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "transfer cancelled before commit",
+                        ));
+                    }
+                }
+                if result.is_ok()
+                    && let Err(error) =
+                        check_mount_fence(&target_mount, mount_wait_override.as_deref())
+                {
+                    result = Err(error);
+                }
+                if let Ok(receipt) = &result {
+                    match PathIdentity::observe(&copy_target) {
+                        Ok(current) if receipt.artifact.same_binding(&current) => {}
+                        Ok(_) => {
+                            result = Err(std::io::Error::other(
+                                "staging artifact changed before commit",
+                            ));
+                        }
+                        Err(error) => result = Err(error),
+                    }
+                }
+
+                match &result {
+                    Ok(outcome) => base_bytes += outcome.bytes,
+                    Err(e) => {
+                        let checkpoint = (!renamed && !entry.is_dir)
+                            .then(|| {
+                                valid_runtime_checkpoint(
+                                    &spec.operation_id,
+                                    &work_item.key,
+                                    &entry.path,
+                                    &copy_target,
+                                    journal_enabled,
+                                )
+                            })
+                            .flatten();
+                        let resumable_partial = checkpoint.is_some();
+                        if crate::lock_util::recover(&progress).cancelled {
+                            // For a rename this is a no-op (a failed rename never
+                            // created `copy_target`); for a copy it drops the
+                            // partial. Either way the source is left intact.
+                            if !resumable_partial {
+                                let _ = undo_placement(&copy_target, &entry.path, renamed);
+                            }
+                            break; // fall through to the finished-setter below
+                        }
+                        if is_disconnect_error(e) && work_item.mount_retries < MAX_MOUNT_RETRIES {
+                            match wait_for_mount(
+                                &target_mount,
+                                "Destination volume",
+                                &progress,
+                                &scheduler_cancel,
+                                mount_wait_override.as_deref(),
+                                &notify,
+                            ) {
+                                Ok(()) => {
+                                    if checkpoint.is_none() {
+                                        let _ = undo_placement(&copy_target, &entry.path, renamed);
+                                    }
+                                    work_item.expectation.resume = checkpoint;
+                                    work_item.mount_retries += 1;
+                                    base_bytes = attempt_base;
+                                    {
+                                        let mut state = crate::lock_util::recover(&progress);
+                                        state.copied_bytes = attempt_base;
+                                        state.current_file_copied = 0;
+                                    }
+                                    work.push_front(work_item);
+                                    notify();
+                                    continue 'work;
+                                }
+                                Err(MountWaitError::Interrupted) => {
+                                    if !resumable_partial {
+                                        let _ = undo_placement(&copy_target, &entry.path, renamed);
+                                    }
+                                    break 'work;
+                                }
+                                Err(MountWaitError::Unavailable(wait_error)) => record_failure(
+                                    &progress,
+                                    &entry.name,
+                                    ClassifiedFailure::io(
+                                        Some(entry.path.clone()),
+                                        "mount reconnect failed",
+                                        &wait_error,
+                                    ),
+                                ),
+                            }
+                        } else {
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::io(Some(entry.path.clone()), "copy failed", e),
+                            );
+                        }
+                        crate::volume_profile::invalidate(target_profile.volume_id);
+                    }
+                }
+
+                if result.is_ok()
+                    && crate::lock_util::recover(&progress).errors.len() == errors_before
+                {
+                    let observed_source = if renamed {
+                        copy_target.as_path()
+                    } else {
+                        entry.path.as_path()
+                    };
+                    match crate::scan::capture_transfer_source(observed_source, spec.symlink_policy)
+                    {
+                        Ok(source_after)
+                            if if renamed {
+                                source_before.same_version(&source_after)
+                            } else {
+                                source_before.same_binding(&source_after)
+                            } => {}
+                        Ok(_) => {
+                            let restore_error = undo_placement(&copy_target, &entry.path, renamed);
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(entry.path.clone()),
+                                    "source changed while it was being copied",
+                                ),
+                            );
+                            if let Some(message) = restore_error {
+                                record_failure(
+                                    &progress,
+                                    &entry.name,
+                                    ClassifiedFailure::message(
+                                        FailureClass::IntegrityUncertain,
+                                        Some(copy_target.clone()),
+                                        message,
+                                    ),
+                                );
+                            }
+                        }
+                        Err(failure) => {
+                            let restore_error = undo_placement(&copy_target, &entry.path, renamed);
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(entry.path.clone()),
+                                    failure.message,
+                                ),
+                            );
+                            if let Some(message) = restore_error {
+                                record_failure(
+                                    &progress,
+                                    &entry.name,
+                                    ClassifiedFailure::message(
+                                        FailureClass::IntegrityUncertain,
+                                        Some(copy_target.clone()),
+                                        message,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // "Clean" = Ok return AND no per-file errors recorded by the
+                // native callback during this entry.
+                let mut clean = result.is_ok()
+                    && crate::lock_util::recover(&progress).errors.len() == errors_before;
+                if clean
+                    && spec.durability.verifies()
+                    && !renamed
+                    && !transfer_paths_equal(&entry.path, &copy_target, spec.symlink_policy)
                 {
                     record_failure(
                         &progress,
@@ -2096,273 +1972,350 @@ fn spawn_transfer_on(
                         ClassifiedFailure::message(
                             FailureClass::IntegrityUncertain,
                             Some(copy_target.clone()),
-                            msg,
+                            "copy verification failed",
                         ),
                     );
+                    clean = false;
                 }
-                false
-            } else {
-                let version_result = if replace_existing && spec.durability.keeps_versions() {
-                    crate::version_store::preserve_expected_with_policy(
-                        &landing,
-                        &expected_landing,
-                        &spec.operation_id,
-                        work_item.key.clone(),
-                        spec.version_retention,
-                    )
-                    .map(|_| ())
-                    .map_err(|failure| std::io::Error::other(failure.message))
-                } else {
-                    Ok(())
-                };
-                let placement = version_result.and_then(|()| {
-                    if replace_existing {
-                        swap_into_place(
-                            &copy_target,
-                            &landing,
-                            &expected_landing,
-                            JournalStep {
-                                operation_id: &spec.operation_id,
-                                key: &work_item.key,
-                                enabled: journal_enabled,
-                            },
-                        )
-                    } else {
-                        crate::native_copy::rename_noreplace(&copy_target, &landing)?;
-                        fs_util::sync_parent_namespace(&landing)?;
-                        Ok(None)
-                    }
-                });
-                match placement {
-                    Ok(cleanup_warning) => {
-                        if let Some(message) = cleanup_warning {
+                if clean {
+                    match PathIdentity::observe(&landing) {
+                        Ok(current) if expected_landing.same_version(&current) => {}
+                        Ok(_) => {
                             record_failure(
                                 &progress,
                                 &entry.name,
                                 ClassifiedFailure::message(
-                                    FailureClass::IntegrityUncertain,
+                                    FailureClass::UserDecision,
                                     Some(landing.clone()),
-                                    message,
+                                    "destination changed after conflict review",
                                 ),
                             );
+                            clean = false;
                         }
-                        true
+                        Err(error) => {
+                            record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::io(
+                                    Some(landing.clone()),
+                                    "destination identity check failed",
+                                    &error,
+                                ),
+                            );
+                            clean = false;
+                        }
                     }
-                    Err(e) => {
-                        // The swap left the staged data at `copy_target`. For a
-                        // rename that is the source's ONLY copy, so move it back
-                        // to the source instead of deleting it (the previous
-                        // unconditional cleanup here lost the source on a failed
-                        // same-volume overwrite move).
-                        let extra = undo_placement(&copy_target, &entry.path, renamed);
+                }
+
+                let resumable_partial = result.is_err()
+                    && !renamed
+                    && !entry.is_dir
+                    && valid_runtime_checkpoint(
+                        &spec.operation_id,
+                        &work_item.key,
+                        &entry.path,
+                        &copy_target,
+                        journal_enabled,
+                    )
+                    .is_some();
+                let placed = if !clean {
+                    // Undo our placement; a pre-existing dest is untouched. For a
+                    // rename this restores the source rather than deleting its only
+                    // copy.
+                    if !resumable_partial
+                        && let Some(msg) = undo_placement(&copy_target, &entry.path, renamed)
+                    {
                         record_failure(
                             &progress,
                             &entry.name,
-                            ClassifiedFailure::io(
-                                Some(landing.clone()),
-                                "final placement failed",
-                                &e,
+                            ClassifiedFailure::message(
+                                FailureClass::IntegrityUncertain,
+                                Some(copy_target.clone()),
+                                msg,
                             ),
                         );
-                        if let Some(msg) = extra {
+                    }
+                    false
+                } else {
+                    let version_result = if replace_existing && spec.durability.keeps_versions() {
+                        crate::version_store::preserve_expected_with_policy(
+                            &landing,
+                            &expected_landing,
+                            &spec.operation_id,
+                            work_item.key.clone(),
+                            spec.version_retention,
+                        )
+                        .map(|_| ())
+                        .map_err(|failure| std::io::Error::other(failure.message))
+                    } else {
+                        Ok(())
+                    };
+                    let placement = version_result.and_then(|()| {
+                        if replace_existing {
+                            swap_into_place(
+                                &copy_target,
+                                &landing,
+                                &expected_landing,
+                                JournalStep {
+                                    operation_id: &spec.operation_id,
+                                    key: &work_item.key,
+                                    enabled: journal_enabled,
+                                },
+                            )
+                        } else {
+                            crate::native_copy::rename_noreplace(&copy_target, &landing)?;
+                            fs_util::sync_parent_namespace(&landing)?;
+                            Ok(None)
+                        }
+                    });
+                    match placement {
+                        Ok(cleanup_warning) => {
+                            if let Some(message) = cleanup_warning {
+                                record_failure(
+                                    &progress,
+                                    &entry.name,
+                                    ClassifiedFailure::message(
+                                        FailureClass::IntegrityUncertain,
+                                        Some(landing.clone()),
+                                        message,
+                                    ),
+                                );
+                            }
+                            true
+                        }
+                        Err(e) => {
+                            // The swap left the staged data at `copy_target`. For a
+                            // rename that is the source's ONLY copy, so move it back
+                            // to the source instead of deleting it (the previous
+                            // unconditional cleanup here lost the source on a failed
+                            // same-volume overwrite move).
+                            let extra = undo_placement(&copy_target, &entry.path, renamed);
                             record_failure(
                                 &progress,
                                 &entry.name,
-                                ClassifiedFailure::message(
-                                    FailureClass::IntegrityUncertain,
-                                    Some(copy_target.clone()),
-                                    msg,
+                                ClassifiedFailure::io(
+                                    Some(landing.clone()),
+                                    "final placement failed",
+                                    &e,
                                 ),
                             );
+                            if let Some(msg) = extra {
+                                record_failure(
+                                    &progress,
+                                    &entry.name,
+                                    ClassifiedFailure::message(
+                                        FailureClass::IntegrityUncertain,
+                                        Some(copy_target.clone()),
+                                        msg,
+                                    ),
+                                );
+                            }
+                            false
                         }
-                        false
+                    }
+                };
+
+                // Delete only the source object proven before copy. The final
+                // identity fence narrows the pathname race; Skip preserves every
+                // omitted symlink and the directories needed to contain it.
+                if is_move && placed && !renamed {
+                    let cleanup_result = match crate::scan::capture_transfer_source(
+                        &entry.path,
+                        spec.symlink_policy,
+                    ) {
+                        Ok(source_now) if source_before.same_binding(&source_now) => {
+                            cleanup_moved_source(&entry.path, spec.symlink_policy)
+                        }
+                        Ok(_) => Err(std::io::Error::other(
+                            "source changed before post-commit cleanup",
+                        )),
+                        Err(failure) => Err(std::io::Error::other(failure.message)),
+                    };
+                    if let Err(error) = cleanup_result {
+                        record_failure(
+                            &progress,
+                            &entry.name,
+                            ClassifiedFailure::message(
+                                FailureClass::IntegrityUncertain,
+                                Some(entry.path.clone()),
+                                format!(
+                                    "destination is complete but source cleanup failed: {error}"
+                                ),
+                            ),
+                        );
                     }
                 }
-            };
-
-            // Delete the source only once the destination is fully in place.
-            // A same-volume rename already moved the source, so there is
-            // nothing left to remove.
-            if is_move
-                && placed
-                && !renamed
-                && let Err(error) = cleanup_path(&entry.path)
-            {
-                record_failure(
-                    &progress,
-                    &entry.name,
-                    ClassifiedFailure::message(
-                        FailureClass::IntegrityUncertain,
-                        Some(entry.path.clone()),
-                        format!("destination is complete but source cleanup failed: {error}"),
-                    ),
-                );
-            }
-            if is_move
-                && placed
-                && let Err(error) = fs_util::sync_parent_namespace(&entry.path)
-            {
-                record_failure(
-                    &progress,
-                    &entry.name,
-                    ClassifiedFailure::message(
-                        FailureClass::IntegrityUncertain,
-                        Some(entry.path.clone()),
-                        format!(
-                            "destination is placed but source namespace could not be synced: {error}"
+                if is_move
+                    && placed
+                    && let Err(error) = fs_util::sync_parent_namespace(&entry.path)
+                {
+                    record_failure(
+                        &progress,
+                        &entry.name,
+                        ClassifiedFailure::message(
+                            FailureClass::IntegrityUncertain,
+                            Some(entry.path.clone()),
+                            format!(
+                                "destination is placed but source namespace could not be synced: {error}"
+                            ),
                         ),
-                    ),
-                );
-            }
+                    );
+                }
 
-            // Record where a successfully moved entry actually landed, so undo
-            // reverses the real placement (a KeepBoth conflict lands at a "copy"
-            // name, not the original).
-            if is_move && placed {
-                crate::lock_util::recover(&progress)
-                    .placements
-                    .push((entry.path.clone(), landing.clone()));
-            }
-            if placed {
-                crate::lock_util::recover(&progress).fast_paths.push(
-                    result
-                        .as_ref()
-                        .expect("placed transfer has an outcome")
-                        .fast_path,
-                );
-            }
-
-            if journal_enabled {
-                let step_failure = {
-                    let state = crate::lock_util::recover(&progress);
-                    state
-                        .failures
-                        .iter()
-                        .skip(failures_before)
-                        .max_by_key(|failure| {
-                            if failure.class == FailureClass::IntegrityUncertain {
-                                1
-                            } else {
-                                0
-                            }
-                        })
-                        .cloned()
-                };
-                if let Some(failure) = step_failure {
-                    if let Err(error) = crate::operation_journal::mark_failed(
-                        &spec.operation_id,
-                        &work_item.key,
-                        failure,
-                    ) {
-                        record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
-                    }
-                } else if placed
-                    && let Err(error) = crate::operation_journal::mark_completed(
-                        &spec.operation_id,
-                        &work_item.key,
-                        &landing,
+                // Record where a successfully moved entry actually landed, so undo
+                // reverses the real placement (a KeepBoth conflict lands at a "copy"
+                // name, not the original).
+                if is_move && placed {
+                    crate::lock_util::recover(&progress)
+                        .placements
+                        .push((entry.path.clone(), landing.clone()));
+                }
+                if placed {
+                    crate::lock_util::recover(&progress).fast_paths.push(
                         result
                             .as_ref()
                             .expect("placed transfer has an outcome")
                             .fast_path,
-                    )
+                    );
+                }
+
+                if journal_enabled {
+                    let step_failure = {
+                        let state = crate::lock_util::recover(&progress);
+                        state
+                            .failures
+                            .iter()
+                            .skip(failures_before)
+                            .max_by_key(|failure| {
+                                if failure.class == FailureClass::IntegrityUncertain {
+                                    1
+                                } else {
+                                    0
+                                }
+                            })
+                            .cloned()
+                    };
+                    if let Some(failure) = step_failure {
+                        if let Err(error) = crate::operation_journal::mark_failed(
+                            &spec.operation_id,
+                            &work_item.key,
+                            failure,
+                        ) {
+                            record_journal_error(
+                                &progress,
+                                &entry.name,
+                                Some(landing.clone()),
+                                error,
+                            );
+                        }
+                    } else if placed
+                        && let Err(error) = crate::operation_journal::mark_completed(
+                            &spec.operation_id,
+                            &work_item.key,
+                            &landing,
+                            result
+                                .as_ref()
+                                .expect("placed transfer has an outcome")
+                                .fast_path,
+                        )
+                    {
+                        record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
+                    }
+                }
+
                 {
-                    record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
+                    let mut s = crate::lock_util::recover(&progress);
+                    s.files_done += 1;
+                    s.record_sample();
+                }
+                notify();
+            }
+
+            crate::lock_util::recover(&progress)
+                .set_phase(crate::operation_view::OperationPhase::Verify);
+            notify();
+            crate::lock_util::recover(&progress)
+                .set_phase(crate::operation_view::OperationPhase::Finalize);
+            notify();
+            let failure_rollback = run_failure_rollback(
+                spec.rollback_cleanup.as_ref(),
+                &spec.operation_id,
+                journal_enabled,
+                &progress,
+            );
+            #[cfg(test)]
+            if let Some(hook) = &spec.before_post_success {
+                hook();
+            }
+            let post_success = run_post_success(spec.post_success.as_ref(), &progress);
+            let finalization = FinalizationOutcome::Reached(post_success);
+            prepare_terminal_progress(&progress, finalization);
+            let status = {
+                let state = crate::lock_util::recover(&progress);
+                if failure_rollback == FailureRollback::Complete {
+                    crate::operation_journal::OperationStatus::RolledBack
+                } else if state
+                    .failures
+                    .iter()
+                    .any(|failure| failure.class == FailureClass::IntegrityUncertain)
+                {
+                    crate::operation_journal::OperationStatus::NeedsReview
+                } else if state.cancelled || state.stopped {
+                    crate::operation_journal::OperationStatus::Stopped
+                } else if !state.errors.is_empty() {
+                    crate::operation_journal::OperationStatus::Failed
+                } else {
+                    crate::operation_journal::OperationStatus::Completed
+                }
+            };
+            finalize_and_publish(&terminal, &progress, journal_enabled, status);
+            terminal_guard.disarm();
+            notify();
+        };
+        let on_abandoned = move |reason: crate::workload::AbandonReason| {
+            let record_abandonment = {
+                let mut state = crate::lock_util::recover(&abandoned_progress);
+                if state.finished {
+                    return;
+                }
+                state.operation_id = Some(abandoned_operation_id);
+                !state.cancelled
+            };
+            if record_abandonment {
+                record_failure(
+                    &abandoned_progress,
+                    "Operation",
+                    ClassifiedFailure::message(
+                        FailureClass::Retryable,
+                        Some(abandoned_target),
+                        format!("workload abandoned transfer before execution: {reason}"),
+                    ),
+                );
+            }
+            finish_progress(&abandoned_progress, FinalizationOutcome::NotReached);
+            (crate::lock_util::recover(&abandoned_notify))();
+        };
+        let task = workload.submit_with_abandonment(task_spec, worker, on_abandoned);
+        match task {
+            Ok(task) => {
+                let mut state = crate::lock_util::recover(&progress);
+                if !state.finished {
+                    state.scheduler_task = Some(task);
                 }
             }
-
-            {
-                let mut s = crate::lock_util::recover(&progress);
-                s.files_done += 1;
-                s.record_sample();
+            Err(error) => {
+                record_failure(
+                    &progress,
+                    "Operation",
+                    ClassifiedFailure::message(
+                        FailureClass::Blocked,
+                        Some(task_root),
+                        format!("workload scheduler refused transfer: {error}"),
+                    ),
+                );
+                finish_progress(&progress, FinalizationOutcome::NotReached);
+                (crate::lock_util::recover(&notify))();
             }
-            notify();
-        }
-
-        crate::lock_util::recover(&progress)
-            .set_phase(crate::operation_view::OperationPhase::Verify);
-        notify();
-        crate::lock_util::recover(&progress)
-            .set_phase(crate::operation_view::OperationPhase::Finalize);
-        notify();
-        let failure_rollback = run_failure_rollback(
-            spec.rollback_cleanup.as_ref(),
-            &spec.operation_id,
-            journal_enabled,
-            &progress,
-        );
-        #[cfg(test)]
-        if let Some(hook) = &spec.before_post_success {
-            hook();
-        }
-        let post_success = run_post_success(spec.post_success.as_ref(), &progress);
-        let finalization = FinalizationOutcome::Reached(post_success);
-        prepare_terminal_progress(&progress, finalization);
-        let status = {
-            let state = crate::lock_util::recover(&progress);
-            if failure_rollback == FailureRollback::Complete {
-                crate::operation_journal::OperationStatus::RolledBack
-            } else if state
-                .failures
-                .iter()
-                .any(|failure| failure.class == FailureClass::IntegrityUncertain)
-            {
-                crate::operation_journal::OperationStatus::NeedsReview
-            } else if state.cancelled || state.stopped {
-                crate::operation_journal::OperationStatus::Stopped
-            } else if !state.errors.is_empty() {
-                crate::operation_journal::OperationStatus::Failed
-            } else {
-                crate::operation_journal::OperationStatus::Completed
-            }
-        };
-        finalize_and_publish(&terminal, &progress, journal_enabled, status);
-        terminal_guard.disarm();
-        notify();
-    };
-    let on_abandoned = move |reason: crate::workload::AbandonReason| {
-        let record_abandonment = {
-            let mut state = crate::lock_util::recover(&abandoned_progress);
-            if state.finished {
-                return;
-            }
-            state.operation_id = Some(abandoned_operation_id);
-            !state.cancelled
-        };
-        if record_abandonment {
-            record_failure(
-                &abandoned_progress,
-                "Operation",
-                ClassifiedFailure::message(
-                    FailureClass::Retryable,
-                    Some(abandoned_target),
-                    format!("workload abandoned transfer before execution: {reason}"),
-                ),
-            );
-        }
-        finish_progress(&abandoned_progress, FinalizationOutcome::NotReached);
-        (crate::lock_util::recover(&abandoned_notify))();
-    };
-    let task = workload.submit_with_abandonment(task_spec, worker, on_abandoned);
-    match task {
-        Ok(task) => {
-            let mut state = crate::lock_util::recover(&progress);
-            if !state.finished {
-                state.scheduler_task = Some(task);
-            }
-        }
-        Err(error) => {
-            record_failure(
-                &progress,
-                "Operation",
-                ClassifiedFailure::message(
-                    FailureClass::Blocked,
-                    Some(task_root),
-                    format!("workload scheduler refused transfer: {error}"),
-                ),
-            );
-            finish_progress(&progress, FinalizationOutcome::NotReached);
-            (crate::lock_util::recover(&notify))();
         }
     }
 }
@@ -2638,14 +2591,60 @@ fn staging_path(dest: &Path) -> PathBuf {
 
 /// Remove a file or directory tree, treating "not found" as success.
 fn cleanup_path(path: &Path) -> std::io::Result<()> {
-    let result = if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
+    let result = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path)
+        }
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) => {
+            return if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            };
+        }
     };
     match result {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
+    }
+}
+
+fn cleanup_moved_source(
+    path: &Path,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+) -> std::io::Result<()> {
+    if symlink_policy != crate::filesystem_policy::SymlinkPolicy::Skip {
+        return cleanup_path(path);
+    }
+    cleanup_transferred_tree(path).map(|_| ())
+}
+
+/// Remove the entries transferred under `Skip`, while leaving omitted
+/// symlinks and any now-nonempty ancestor directory in place.
+fn cleanup_transferred_tree(path: &Path) -> std::io::Result<bool> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    if !metadata.is_dir() {
+        std::fs::remove_file(path)?;
+        return Ok(true);
+    }
+
+    let mut children = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+    children.sort_by_key(|entry| entry.file_name());
+    for child in children {
+        cleanup_transferred_tree(&child.path())?;
+    }
+    match std::fs::remove_dir(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -2769,17 +2768,18 @@ fn copy_file_buffered_with_limiter(
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
     resume: Option<&ResumeCheckpoint>,
-    journal: Option<JournalStep<'_>>,
+    checkpoints: Option<&mut dyn backend::CheckpointSink>,
     preserve_sparse: bool,
 ) -> std::io::Result<u64> {
     if preserve_sparse && resume.is_none() && is_sparse_file(src) {
         return copy_file_sparse(src, dst, state, limiter);
     }
-    let result = copy_file_buffered_inner(src, dst, state, limiter, resume, journal);
+    let retain_partial = checkpoints.is_some();
+    let result = copy_file_buffered_inner(src, dst, state, limiter, resume, checkpoints);
     if let Err(ref e) = result {
         // Clean up our own partial write, but never delete a destination that
         // was already there (AlreadyExists means create_new refused to clobber).
-        if journal.is_none() && e.kind() != std::io::ErrorKind::AlreadyExists {
+        if !retain_partial && e.kind() != std::io::ErrorKind::AlreadyExists {
             let _ = std::fs::remove_file(dst);
         }
     }
@@ -2888,9 +2888,6 @@ fn copy_file_sparse(
     let mut progress = crate::lock_util::recover(state);
     progress.current_file_copied = file_size;
     progress.copied_bytes = base.saturating_add(file_size);
-    progress
-        .fast_paths
-        .push(crate::transfer_tuning::FastPath::Sparse);
     Ok(file_size)
 }
 
@@ -2913,7 +2910,7 @@ fn copy_file_buffered_inner(
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
     resume: Option<&ResumeCheckpoint>,
-    journal: Option<JournalStep<'_>>,
+    mut checkpoints: Option<&mut dyn backend::CheckpointSink>,
 ) -> std::io::Result<u64> {
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
     let offset = resume.map_or(0, |checkpoint| checkpoint.offset);
@@ -2935,7 +2932,7 @@ fn copy_file_buffered_inner(
                 "Prefix checkpoint has no content proof",
             )
         })?;
-        hash_prefix_into(src, offset, &mut content_hasher)?;
+        crate::verified_hash::prefix_into(src, offset, &mut content_hasher)?;
         if *content_hasher.clone().finalize().as_bytes() != expected
             || prefix_digest(dst, offset)? != expected
         {
@@ -2992,7 +2989,14 @@ fn copy_file_buffered_inner(
             let s = crate::lock_util::recover(state);
             if s.cancelled {
                 drop(s);
-                persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
+                persist_checkpoint(
+                    src,
+                    dst,
+                    copied,
+                    &mut writer,
+                    &content_hasher,
+                    &mut checkpoints,
+                )?;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
                     "cancelled",
@@ -3008,7 +3012,14 @@ fn copy_file_buffered_inner(
         content_hasher.update(&buf[..n]);
         copied = copied.saturating_add(n as u64);
         if let Err(error) = limiter.consume(n, || crate::lock_util::recover(state).cancelled) {
-            persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
+            persist_checkpoint(
+                src,
+                dst,
+                copied,
+                &mut writer,
+                &content_hasher,
+                &mut checkpoints,
+            )?;
             return Err(error);
         }
 
@@ -3019,11 +3030,25 @@ fn copy_file_buffered_inner(
             s.maybe_sample();
         }
         if copied >= next_checkpoint {
-            persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
+            persist_checkpoint(
+                src,
+                dst,
+                copied,
+                &mut writer,
+                &content_hasher,
+                &mut checkpoints,
+            )?;
             next_checkpoint = copied.saturating_add(CHECKPOINT_INTERVAL);
         }
     }
-    persist_checkpoint(src, dst, copied, &mut writer, &content_hasher, journal)?;
+    persist_checkpoint(
+        src,
+        dst,
+        copied,
+        &mut writer,
+        &content_hasher,
+        &mut checkpoints,
+    )?;
     // Apply the source's permissions only after the contents are complete, so
     // a concurrent reader never sees a partial file already wearing its final
     // (possibly executable) mode.
@@ -3039,11 +3064,11 @@ fn persist_checkpoint(
     offset: u64,
     writer: &mut std::io::BufWriter<std::fs::File>,
     content_hasher: &blake3::Hasher,
-    journal: Option<JournalStep<'_>>,
+    checkpoints: &mut Option<&mut dyn backend::CheckpointSink>,
 ) -> std::io::Result<()> {
     writer.flush()?;
     writer.get_ref().sync_data()?;
-    let Some(journal) = journal.filter(|journal| journal.enabled) else {
+    let Some(checkpoints) = checkpoints.as_deref_mut() else {
         return Ok(());
     };
     let source = PathIdentity::observe_deep(src)?;
@@ -3056,34 +3081,7 @@ fn persist_checkpoint(
         layout: CheckpointLayout::Prefix,
         content_digest: Some(*content_hasher.clone().finalize().as_bytes()),
     };
-    crate::operation_journal::mark_checkpoint(journal.operation_id, journal.key, checkpoint)
-        .map_err(std::io::Error::other)
-}
-
-pub(crate) fn prefix_digest(path: &Path, offset: u64) -> std::io::Result<[u8; 32]> {
-    let mut hasher = blake3::Hasher::new();
-    hash_prefix_into(path, offset, &mut hasher)?;
-    Ok(*hasher.finalize().as_bytes())
-}
-
-fn hash_prefix_into(path: &Path, offset: u64, hasher: &mut blake3::Hasher) -> std::io::Result<()> {
-    let mut file = std::io::BufReader::with_capacity(COPY_BUF_SIZE, std::fs::File::open(path)?);
-    let mut remaining = offset;
-    let mut buffer = vec![0_u8; COPY_BUF_SIZE];
-    while remaining > 0 {
-        let limit = usize::try_from(remaining.min(buffer.len() as u64))
-            .expect("bounded prefix chunk fits usize");
-        let read = file.read(&mut buffer[..limit])?;
-        if read == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "checkpoint content is shorter than its verified offset",
-            ));
-        }
-        hasher.update(&buffer[..read]);
-        remaining -= read as u64;
-    }
-    Ok(())
+    checkpoints.publish(checkpoint)
 }
 
 fn copy_dir_buffered_parallel(
@@ -3151,7 +3149,7 @@ fn prepare_buffered_tree(
             files.push((source, destination));
             continue;
         }
-        std::fs::create_dir_all(&destination)?;
+        std::fs::create_dir(&destination)?;
         permissions.push((destination.clone(), metadata.permissions()));
         let mut children = std::fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
         children.sort_by_key(|entry| entry.file_name());
@@ -3226,7 +3224,7 @@ fn copy_dir_buffered_with_limiter(
                         format!("symlink cycle detected at {}", source.display()),
                     ));
                 }
-                std::fs::create_dir_all(&destination)?;
+                std::fs::create_dir(&destination)?;
                 let mut children = std::fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
                 children.sort_by_key(|entry| entry.file_name());
                 tasks.push(Task::ExitDirectory(canonical));
@@ -3246,7 +3244,6 @@ fn copy_dir_buffered_with_limiter(
 #[cfg(unix)]
 fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     let target = std::fs::read_link(src)?;
-    let _ = std::fs::remove_file(dst);
     std::os::unix::fs::symlink(target, dst)
 }
 
@@ -3304,6 +3301,120 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "transfer timed out");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    fn run_with_backends(spec: TransferSpec, backends: backend::BackendPorts) -> TransferProgress {
+        let total = total_bytes(&spec.entries);
+        let progress: TransferState =
+            Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
+        TransferExecutor::with_backends(
+            crate::workload::global_handle(),
+            spec,
+            Arc::clone(&progress),
+            || {},
+            backends,
+        )
+        .submit();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            {
+                let state = progress.lock().unwrap();
+                if state.finished {
+                    return state.clone();
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "transfer timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    struct FakeStageBackend {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        cancel_after_stage: bool,
+    }
+
+    impl FakeStageBackend {
+        fn stage(
+            &self,
+            label: &'static str,
+            request: backend::StageRequest<'_>,
+        ) -> std::io::Result<backend::StageReceipt> {
+            assert!(!request.is_dir, "test backend only stages files");
+            assert!(
+                request
+                    .staging
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(".cmdr-tmp.")),
+                "backend must receive an isolated staging pathname"
+            );
+            crate::lock_util::recover(&self.calls).push(label);
+            let bytes = std::fs::copy(request.source, request.staging)?;
+            std::fs::File::open(request.staging)?.sync_data()?;
+            {
+                let mut progress = crate::lock_util::recover(request.progress);
+                progress.current_file_copied = bytes;
+                progress.copied_bytes = request.base_bytes.saturating_add(bytes);
+                if self.cancel_after_stage {
+                    progress.cancelled = true;
+                }
+            }
+            Ok(backend::StageReceipt {
+                bytes,
+                fast_path: crate::transfer_tuning::FastPath::Buffered,
+                artifact: PathIdentity::observe(request.staging)?,
+            })
+        }
+    }
+
+    impl backend::NativeCloneBackend for FakeStageBackend {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+        ) -> std::io::Result<backend::StageReceipt> {
+            self.stage("native", request)
+        }
+    }
+
+    impl backend::DeltaBackend for FakeStageBackend {
+        fn stage(
+            &self,
+            _mode: crate::delta_copy::DeltaMode,
+            request: backend::StageRequest<'_>,
+            _checkpoints: &mut dyn backend::CheckpointSink,
+        ) -> std::io::Result<backend::StageReceipt> {
+            self.stage("delta", request)
+        }
+    }
+
+    impl backend::SparseBackend for FakeStageBackend {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+        ) -> std::io::Result<backend::StageReceipt> {
+            self.stage("sparse", request)
+        }
+    }
+
+    impl backend::BufferedBackend for FakeStageBackend {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+            _checkpoints: &mut dyn backend::CheckpointSink,
+        ) -> std::io::Result<backend::StageReceipt> {
+            self.stage("buffered", request)
+        }
+    }
+
+    fn fake_ports(
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        cancel_after_stage: bool,
+    ) -> backend::BackendPorts {
+        let fake = Arc::new(FakeStageBackend {
+            calls,
+            cancel_after_stage,
+        });
+        backend::BackendPorts::new(fake.clone(), fake.clone(), fake.clone(), fake)
     }
 
     #[test]
@@ -3558,6 +3669,152 @@ mod tests {
             before_terminal_publish: None,
             journal_enabled: false,
         }
+    }
+
+    #[test]
+    fn executor_places_only_the_artifact_returned_by_the_selected_backend_port() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("port.txt", "through the port");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+
+        let state = run_with_backends(
+            spec(
+                TransferKind::Copy,
+                CopyMethod::Buffered,
+                vec![entry_for(&file)],
+                target.path(),
+                vec![],
+                OverwritePolicy::Ask,
+            ),
+            fake_ports(Arc::clone(&calls), false),
+        );
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(*crate::lock_util::recover(&calls), ["buffered"]);
+        assert_eq!(
+            std::fs::read_to_string(target.path().join("port.txt")).unwrap(),
+            "through the port"
+        );
+        assert!(std::fs::read_dir(target.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".cmdr-tmp.")
+        }));
+    }
+
+    #[test]
+    fn executor_honors_cancel_after_stage_and_before_namespace_commit() {
+        let (source, target, journal_root) = (TempDir::new(), TempDir::new(), TempDir::new());
+        let file = source.file("late-cancel.txt", "source survives");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let _journal = crate::operation_journal::use_test_journal(
+            journal_root.path().join("operation-journal.json"),
+        );
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            target.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        request.journal_enabled = true;
+        let operation_id = request.operation_id.clone();
+
+        let state = run_with_backends(request, fake_ports(Arc::clone(&calls), true));
+
+        assert!(state.cancelled);
+        assert!(file.exists());
+        assert!(!target.path().join("late-cancel.txt").exists());
+        assert_eq!(*crate::lock_util::recover(&calls), ["buffered"]);
+        assert!(std::fs::read_dir(target.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".cmdr-tmp.")
+        }));
+        let record = crate::operation_journal::operation(&operation_id).unwrap();
+        assert!(record.steps[0].checkpoint.is_none());
+        assert!(
+            record.steps[0]
+                .staging
+                .as_ref()
+                .is_none_or(|staging| !staging.exists())
+        );
+    }
+
+    #[test]
+    fn executor_rechecks_destination_mount_before_placement() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("mount-fence.txt", "source survives");
+        let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut request = spec(
+            TransferKind::Copy,
+            CopyMethod::Buffered,
+            vec![entry_for(&file)],
+            target.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        let worker_checks = Arc::clone(&checks);
+        request.mount_wait_override = Some(Arc::new(move || {
+            let call = worker_checks.fetch_add(1, Ordering::SeqCst);
+            if call < 2 {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "fixture mount replaced before commit",
+                ))
+            }
+        }));
+
+        let state = run(request);
+
+        assert!(file.exists());
+        assert!(!target.path().join("mount-fence.txt").exists());
+        assert!(checks.load(Ordering::SeqCst) >= 3);
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("mount reconnect failed"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_directory_with_skip_preserves_omitted_symlinks_in_source() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let folder = source.dir("folder");
+        let regular = source.file("folder/data.txt", "moved");
+        let omitted = folder.join("omitted-link");
+        std::os::unix::fs::symlink(&regular, &omitted).unwrap();
+        let mut request = spec(
+            TransferKind::Move,
+            CopyMethod::Buffered,
+            vec![entry_for(&folder)],
+            target.path(),
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        request.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Skip;
+        bind_preflight(&mut request);
+
+        let state = run(request);
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(
+            std::fs::read_to_string(target.path().join("folder/data.txt")).unwrap(),
+            "moved"
+        );
+        assert!(!target.path().join("folder/omitted-link").exists());
+        assert!(!regular.exists());
+        assert!(omitted.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(folder.is_dir());
     }
 
     #[test]
@@ -4563,6 +4820,21 @@ mod tests {
             link_meta.file_type().is_symlink(),
             "the link must be recreated, not followed"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_backend_never_removes_an_existing_staging_entry() {
+        let root = TempDir::new();
+        let target = root.file("target.txt", "target");
+        let source = root.path().join("source-link");
+        std::os::unix::fs::symlink(&target, &source).unwrap();
+        let occupied = root.file("occupied", "foreign");
+
+        let error = copy_symlink(&source, &occupied).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(occupied).unwrap(), "foreign");
     }
 
     #[cfg(unix)]

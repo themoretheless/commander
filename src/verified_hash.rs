@@ -74,6 +74,36 @@ pub fn file(path: &Path) -> std::io::Result<VerifiedHash> {
     Ok(hash)
 }
 
+pub fn prefix(path: &Path, offset: u64) -> std::io::Result<VerifiedHash> {
+    let mut hasher = blake3::Hasher::new();
+    prefix_into(path, offset, &mut hasher)?;
+    Ok(*hasher.finalize().as_bytes())
+}
+
+pub(crate) fn prefix_into(
+    path: &Path,
+    offset: u64,
+    hasher: &mut blake3::Hasher,
+) -> std::io::Result<()> {
+    let mut file = std::io::BufReader::with_capacity(HASH_BUFFER_SIZE, std::fs::File::open(path)?);
+    let mut remaining = offset;
+    let mut buffer = vec![0_u8; HASH_BUFFER_SIZE];
+    while remaining > 0 {
+        let limit = usize::try_from(remaining.min(buffer.len() as u64))
+            .expect("bounded prefix chunk fits usize");
+        let read = file.read(&mut buffer[..limit])?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "checkpoint content is shorter than its verified offset",
+            ));
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(())
+}
+
 pub fn files_equal(left: &Path, right: &Path) -> bool {
     files_equal_with(crate::ports::default_hasher(), left, right)
 }
@@ -201,5 +231,17 @@ mod tests {
         let second = cache_key(&path, &identity, &profile);
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn prefix_hash_is_bounded_and_rejects_short_files() {
+        let temp = TempDir::new();
+        let path = temp.file("prefix.bin", "abcdef");
+
+        assert_eq!(prefix(&path, 3).unwrap(), *blake3::hash(b"abc").as_bytes());
+        assert_eq!(
+            prefix(&path, 7).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
     }
 }
