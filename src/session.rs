@@ -5,6 +5,90 @@ use crate::panel::{SortColumn, SortOrder};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub(crate) struct PersistedLeftView {
+    #[serde(rename = "left_sort_col")]
+    sort_column: SortColumn,
+    #[serde(rename = "left_sort_order")]
+    sort_order: SortOrder,
+    #[serde(rename = "left_hidden")]
+    show_hidden: bool,
+    #[serde(rename = "left_folders_first", default = "default_true")]
+    folders_first: bool,
+    #[serde(rename = "left_natural_sort", default = "default_true")]
+    natural_name_sort: bool,
+    #[serde(rename = "left_density", default)]
+    density: crate::density::Density,
+}
+
+impl PersistedLeftView {
+    fn view_config(self) -> crate::panel::ViewConfig {
+        persisted_view_config(
+            self.sort_column,
+            self.sort_order,
+            self.show_hidden,
+            self.folders_first,
+            self.natural_name_sort,
+            self.density,
+        )
+    }
+}
+
+impl From<crate::panel::ViewConfig> for PersistedLeftView {
+    fn from(config: crate::panel::ViewConfig) -> Self {
+        Self {
+            sort_column: config.sort_column(),
+            sort_order: config.sort_order(),
+            show_hidden: config.show_hidden(),
+            folders_first: config.folders_first(),
+            natural_name_sort: config.natural_name_sort(),
+            density: config.density(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub(crate) struct PersistedRightView {
+    #[serde(rename = "right_sort_col")]
+    sort_column: SortColumn,
+    #[serde(rename = "right_sort_order")]
+    sort_order: SortOrder,
+    #[serde(rename = "right_hidden")]
+    show_hidden: bool,
+    #[serde(rename = "right_folders_first", default = "default_true")]
+    folders_first: bool,
+    #[serde(rename = "right_natural_sort", default = "default_true")]
+    natural_name_sort: bool,
+    #[serde(rename = "right_density", default)]
+    density: crate::density::Density,
+}
+
+impl PersistedRightView {
+    fn view_config(self) -> crate::panel::ViewConfig {
+        persisted_view_config(
+            self.sort_column,
+            self.sort_order,
+            self.show_hidden,
+            self.folders_first,
+            self.natural_name_sort,
+            self.density,
+        )
+    }
+}
+
+impl From<crate::panel::ViewConfig> for PersistedRightView {
+    fn from(config: crate::panel::ViewConfig) -> Self {
+        Self {
+            sort_column: config.sort_column(),
+            sort_order: config.sort_order(),
+            show_hidden: config.show_hidden(),
+            folders_first: config.folders_first(),
+            natural_name_sort: config.natural_name_sort(),
+            density: config.density(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Session {
     pub left_path: PathBuf,
@@ -16,28 +100,12 @@ pub struct Session {
     pub tree_width: f32,
     pub show_size_bars: bool,
     pub show_compare: bool,
-    pub left_sort_col: SortColumn,
-    pub left_sort_order: SortOrder,
-    pub left_hidden: bool,
-    pub right_sort_col: SortColumn,
-    pub right_sort_order: SortOrder,
-    pub right_hidden: bool,
-    /// Sort toggles, defaulted true for sessions written before they existed.
-    #[serde(default = "default_true")]
-    pub left_folders_first: bool,
-    #[serde(default = "default_true")]
-    pub left_natural_sort: bool,
-    #[serde(default = "default_true")]
-    pub right_folders_first: bool,
-    #[serde(default = "default_true")]
-    pub right_natural_sort: bool,
-    /// List density, per panel. Defaulted for sessions written before
-    /// density existed (and before it moved from a single app-wide tier to
-    /// one per panel).
-    #[serde(default)]
-    pub left_density: crate::density::Density,
-    #[serde(default)]
-    pub right_density: crate::density::Density,
+    /// Flattened to the legacy `left_*`/`right_*` JSON keys so old sessions
+    /// remain readable while Rust code handles each panel view as one value.
+    #[serde(flatten)]
+    pub(crate) left_view: PersistedLeftView,
+    #[serde(flatten)]
+    pub(crate) right_view: PersistedRightView,
     /// Command-palette usage history, for recency/frequency ranking.
     #[serde(default)]
     pub palette_usage: crate::command::UsageStats,
@@ -84,26 +152,8 @@ impl Session {
         (pick(&self.left_path), pick(&self.right_path))
     }
 
-    pub(crate) fn left_view_config(&self) -> crate::panel::ViewConfig {
-        persisted_view_config(
-            self.left_sort_col,
-            self.left_sort_order,
-            self.left_hidden,
-            self.left_folders_first,
-            self.left_natural_sort,
-            self.left_density,
-        )
-    }
-
-    pub(crate) fn right_view_config(&self) -> crate::panel::ViewConfig {
-        persisted_view_config(
-            self.right_sort_col,
-            self.right_sort_order,
-            self.right_hidden,
-            self.right_folders_first,
-            self.right_natural_sort,
-            self.right_density,
-        )
+    pub(crate) fn view_configs(&self) -> [crate::panel::ViewConfig; 2] {
+        [self.left_view.view_config(), self.right_view.view_config()]
     }
 }
 
@@ -156,18 +206,18 @@ mod tests {
             tree_width: 220.0,
             show_size_bars: false,
             show_compare: true,
-            left_sort_col: SortColumn::Size,
-            left_sort_order: SortOrder::Desc,
-            left_hidden: true,
-            right_sort_col: SortColumn::Name,
-            right_sort_order: SortOrder::Asc,
-            right_hidden: false,
-            left_folders_first: true,
-            left_natural_sort: false,
-            right_folders_first: false,
-            right_natural_sort: true,
-            left_density: crate::density::Density::Compact,
-            right_density: crate::density::Density::Spacious,
+            left_view: PersistedLeftView::from(
+                crate::panel::ViewConfig::default()
+                    .with_sort(SortColumn::Size, SortOrder::Desc)
+                    .with_show_hidden(true)
+                    .with_natural_name_sort(false)
+                    .with_density(crate::density::Density::Compact),
+            ),
+            right_view: PersistedRightView::from(
+                crate::panel::ViewConfig::default()
+                    .with_folders_first(false)
+                    .with_density(crate::density::Density::Spacious),
+            ),
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 7,
             recent_paths: Vec::new(),
@@ -191,8 +241,9 @@ mod tests {
         obj.remove("left_density");
         obj.remove("right_density");
         let back: Session = serde_json::from_value(val).unwrap();
-        assert_eq!(back.left_density, crate::density::Density::Comfortable);
-        assert_eq!(back.right_density, crate::density::Density::Comfortable);
+        let [left, right] = back.view_configs();
+        assert_eq!(left.density(), crate::density::Density::Comfortable);
+        assert_eq!(right.density(), crate::density::Density::Comfortable);
     }
 
     #[test]
@@ -206,10 +257,11 @@ mod tests {
         obj.remove("right_folders_first");
         obj.remove("right_natural_sort");
         let back: Session = serde_json::from_value(val).unwrap();
-        assert!(back.left_folders_first);
-        assert!(back.left_natural_sort);
-        assert!(back.right_folders_first);
-        assert!(back.right_natural_sort);
+        let [left, right] = back.view_configs();
+        assert!(left.folders_first());
+        assert!(left.natural_name_sort());
+        assert!(right.folders_first());
+        assert!(right.natural_name_sort());
     }
 
     #[test]
@@ -255,7 +307,7 @@ mod tests {
     fn persisted_panel_views_restore_as_complete_configs() {
         let session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
 
-        let left = session.left_view_config();
+        let [left, right] = session.view_configs();
         assert_eq!(left.sort_column(), SortColumn::Size);
         assert_eq!(left.sort_order(), SortOrder::Desc);
         assert!(left.show_hidden());
@@ -263,13 +315,38 @@ mod tests {
         assert!(!left.natural_name_sort());
         assert_eq!(left.density(), crate::density::Density::Compact);
 
-        let right = session.right_view_config();
         assert_eq!(right.sort_column(), SortColumn::Name);
         assert_eq!(right.sort_order(), SortOrder::Asc);
         assert!(!right.show_hidden());
         assert!(!right.folders_first());
         assert!(right.natural_name_sort());
         assert_eq!(right.density(), crate::density::Density::Spacious);
+    }
+
+    #[test]
+    fn panel_views_keep_the_legacy_flat_json_schema() {
+        let session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let value = serde_json::to_value(session).unwrap();
+        let object = value.as_object().unwrap();
+
+        for key in [
+            "left_sort_col",
+            "left_sort_order",
+            "left_hidden",
+            "left_folders_first",
+            "left_natural_sort",
+            "left_density",
+            "right_sort_col",
+            "right_sort_order",
+            "right_hidden",
+            "right_folders_first",
+            "right_natural_sort",
+            "right_density",
+        ] {
+            assert!(object.contains_key(key), "missing legacy key {key}");
+        }
+        assert!(!object.contains_key("left_view"));
+        assert!(!object.contains_key("right_view"));
     }
 
     #[test]

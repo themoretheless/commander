@@ -283,6 +283,16 @@ impl DirectoryWatcherState {
         })
     }
 
+    pub(super) fn snapshot_ticket_for(&self, path: &Path) -> Option<ReconciliationTicket> {
+        self.binding
+            .as_ref()
+            .filter(|binding| binding.path == path)
+            .map(|binding| ReconciliationTicket {
+                binding: binding.clone(),
+                generation: self.requested_generation,
+            })
+    }
+
     pub(super) fn acknowledge_snapshot(
         &mut self,
         ticket: Option<ReconciliationTicket>,
@@ -454,6 +464,21 @@ impl DirectoryWatcherState {
     pub(super) fn has_pending_reconciliation_for_test(&self) -> bool {
         self.requested_generation > self.applied_generation
     }
+
+    #[cfg(test)]
+    pub(super) fn reconciliation_state_for_test(
+        &self,
+    ) -> (Option<(PathBuf, u64)>, u64, u64, u64, u64) {
+        (
+            self.binding
+                .as_ref()
+                .map(|binding| (binding.path.clone(), binding.epoch)),
+            self.requested_generation,
+            self.applied_generation,
+            self.gap_generation,
+            self.applied_gap_generation,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -515,6 +540,15 @@ mod tests {
 
         watcher.acknowledge_snapshot(Some(snapshot), Path::new("/watched"));
         assert!(!watcher.has_pending_reconciliation_for_test());
+    }
+
+    #[test]
+    fn path_bound_snapshot_never_borrows_a_stale_subscription() {
+        let mut watcher = DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/old"));
+
+        assert!(watcher.snapshot_ticket_for(Path::new("/current")).is_none());
+        assert!(watcher.snapshot_ticket_for(Path::new("/old")).is_some());
     }
 
     #[test]

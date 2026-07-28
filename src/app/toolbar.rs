@@ -247,7 +247,7 @@ impl App {
                             .on_hover_text("Toggle hidden files (\u{2318}H)")
                             .clicked()
                         {
-                            self.toggle_active_hidden(ui.input(|input| input.time));
+                            self.ws.execute(crate::command::Command::ToggleHidden);
                         }
 
                         // Density cycle (active panel)
@@ -458,7 +458,7 @@ impl App {
                         ui.separator();
                         let mut show_hidden = self.ws.active_panel_ref().show_hidden();
                         if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
-                            self.toggle_active_hidden(ui.input(|input| input.time));
+                            self.ws.execute(crate::command::Command::ToggleHidden);
                         }
                         if ui
                             .button(format!(
@@ -513,26 +513,6 @@ impl App {
         };
         self.colors = ThemeColors::for_preferences(self.theme_mode, self.accessibility_preferences);
         apply_theme(ctx, self.theme_mode, self.accessibility_preferences);
-    }
-
-    fn toggle_active_hidden(&mut self, now: f64) {
-        let outcome = self.ws.active_panel().toggle_hidden();
-        if let crate::panel::ViewApplyOutcome::ReadRejected(status) = outcome {
-            let reason = match status {
-                crate::panel::DirStatus::Denied => "folder access was denied",
-                crate::panel::DirStatus::Gone => "the folder is no longer available",
-                crate::panel::DirStatus::Partial => "the folder could not be read completely",
-                crate::panel::DirStatus::Listed | crate::panel::DirStatus::Empty => {
-                    "the folder could not be refreshed"
-                }
-            };
-            self.toasts.push(crate::toasts::Toast::new(
-                format!("Hidden files unchanged: {reason}"),
-                crate::toasts::ToastKind::Error,
-                false,
-                now,
-            ));
-        }
     }
 
     fn set_ui_scale(&mut self, ctx: &egui::Context, scale: f32) {

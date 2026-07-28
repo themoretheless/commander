@@ -1117,8 +1117,8 @@ impl Workspace {
             Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {
-                let panel = self.active_panel();
-                let _ = panel.toggle_hidden();
+                let outcome = self.active_panel().toggle_hidden();
+                self.emit_ui_request(UiRequest::HiddenFilesOutcome(outcome));
             }
             Command::ToggleFoldersFirst => self.active_panel().toggle_folders_first(),
             Command::ToggleNaturalSort => self.active_panel().toggle_natural_sort(),

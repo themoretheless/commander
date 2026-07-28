@@ -1,7 +1,20 @@
 use super::*;
 
+const TREE_CHILD_CACHE_LIMIT: usize = 2_048;
+
 fn child_cache_key(path: &std::path::Path, show_hidden: bool) -> (PathBuf, bool) {
     (path.to_path_buf(), show_hidden)
+}
+
+fn cache_children(
+    cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    key: (PathBuf, bool),
+    children: Vec<PathBuf>,
+) {
+    if !cache.contains_key(&key) && cache.len() >= TREE_CHILD_CACHE_LIMIT {
+        cache.clear();
+    }
+    cache.insert(key, children);
 }
 
 impl App {
@@ -125,7 +138,7 @@ impl App {
             cached.clone()
         } else {
             let dirs = PanelState::subdirs(path, show_hidden);
-            cache.insert(cache_key, dirs.clone());
+            cache_children(cache, cache_key, dirs.clone());
             dirs
         };
         let has_children = !subdirs.is_empty();
@@ -287,5 +300,23 @@ mod tests {
     fn hidden_policy_is_part_of_the_tree_child_cache_key() {
         let path = std::path::Path::new("/tmp/example");
         assert_ne!(child_cache_key(path, false), child_cache_key(path, true));
+    }
+
+    #[test]
+    fn tree_child_cache_is_bounded_under_path_and_policy_churn() {
+        let mut cache = std::collections::HashMap::new();
+        for index in 0..=TREE_CHILD_CACHE_LIMIT {
+            cache_children(
+                &mut cache,
+                (PathBuf::from(format!("/tmp/{index}")), index % 2 == 0),
+                Vec::new(),
+            );
+        }
+
+        assert!(cache.len() <= TREE_CHILD_CACHE_LIMIT);
+        assert!(cache.contains_key(&(
+            PathBuf::from(format!("/tmp/{TREE_CHILD_CACHE_LIMIT}")),
+            TREE_CHILD_CACHE_LIMIT.is_multiple_of(2)
+        )));
     }
 }

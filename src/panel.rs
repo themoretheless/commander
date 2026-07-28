@@ -1749,9 +1749,7 @@ impl PanelState {
             .config()
             .with_show_hidden(!self.view.show_hidden());
         let path = self.current_path.clone();
-        self.sizes.bind(&path);
-        self.watcher.ensure_binding(&path);
-        let ticket = self.watcher.snapshot_ticket();
+        let ticket = self.watcher.snapshot_ticket_for(&path);
         let entries = match Self::read_dir(&path, candidate.show_hidden()) {
             DirectoryRead::Complete(entries) => entries,
             DirectoryRead::Incomplete(status) => {
@@ -1762,6 +1760,8 @@ impl PanelState {
 
         self.view.commit_config(candidate);
         self.publish_complete_listing(entries, candidate);
+        self.sizes.bind(&path);
+        self.watcher.ensure_binding(&path);
         let listing_binding = self.listing.binding().to_path_buf();
         self.watcher.acknowledge_snapshot(ticket, &listing_binding);
         self.refresh_sizes(true);
@@ -2685,6 +2685,29 @@ mod tests {
     }
 
     #[test]
+    fn descending_sort_keeps_folders_first_and_reverses_within_each_group() {
+        let mut p = panel_with(vec![
+            entry("small-dir", true, 1),
+            entry("large-file", false, 20),
+            entry("large-dir", true, 10),
+            entry("small-file", false, 2),
+        ]);
+
+        p.set_sort(SortColumn::Size);
+        p.set_sort(SortColumn::Size);
+
+        let names: Vec<&str> = p
+            .entries()
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["large-dir", "small-dir", "large-file", "small-file"]
+        );
+    }
+
+    #[test]
     fn folders_first_off_sorts_dirs_inline() {
         let mut p = panel_with(vec![
             entry("zeta.txt", false, 1),
@@ -3237,7 +3260,7 @@ mod tests {
 
         assert!(panel.show_hidden());
         assert_eq!(panel.entries().len(), 2);
-        assert!(panel.entries_gen() > before_revision);
+        assert_eq!(panel.entries_gen(), before_revision + 1);
         assert_eq!(panel.cursor_entry().unwrap().path, focused);
     }
 
@@ -3246,8 +3269,17 @@ mod tests {
         let root = TempDir::new();
         let folder = root.dir("folder");
         root.file("folder/visible.txt", "v");
+        root.file("folder/second.txt", "s");
         let mut panel = PanelState::new(folder.clone());
         panel.refresh();
+        let selected = panel.entries()[0].path.clone();
+        panel.select_path(selected.clone());
+        panel.toggle_mark(selected);
+        panel.set_cursor(1);
+        panel.set_scroll_anchor(1);
+        panel.set_search_query("txt");
+        panel.watcher.activate_test_binding(&folder);
+
         let config = panel.view_config();
         let paths = panel
             .entries()
@@ -3256,6 +3288,14 @@ mod tests {
             .collect::<Vec<_>>();
         let revision = panel.entries_gen();
         let status = panel.dir_status();
+        let cursor = panel.cursor();
+        let scroll_anchor = panel.scroll_anchor();
+        let selected = panel.selected_paths().clone();
+        let marked = panel.marked_paths().clone();
+        let filter = panel.filtered_indices();
+        let size_revision = panel.size_snapshot().revision();
+        let size_binding = panel.sizes.binding_for_test().to_path_buf();
+        let watcher_state = panel.watcher.reconciliation_state_for_test();
         std::fs::remove_dir_all(&folder).unwrap();
 
         assert_eq!(
@@ -3266,6 +3306,14 @@ mod tests {
         assert_eq!(panel.view_config(), config);
         assert_eq!(panel.entries_gen(), revision);
         assert_eq!(panel.dir_status(), status);
+        assert_eq!(panel.cursor(), cursor);
+        assert_eq!(panel.scroll_anchor(), scroll_anchor);
+        assert_eq!(panel.selected_paths(), &selected);
+        assert_eq!(panel.marked_paths(), &marked);
+        assert!(Arc::ptr_eq(&filter, &panel.filtered_indices()));
+        assert_eq!(panel.size_snapshot().revision(), size_revision);
+        assert_eq!(panel.sizes.binding_for_test(), size_binding);
+        assert_eq!(panel.watcher.reconciliation_state_for_test(), watcher_state);
         assert_eq!(
             panel
                 .entries()
@@ -3274,6 +3322,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             paths
         );
+    }
+
+    #[test]
+    fn watcher_event_racing_hidden_snapshot_remains_pending_for_reconciliation() {
+        let root = TempDir::new();
+        root.file("before.txt", "before");
+        let mut panel = PanelState::new(root.path().to_path_buf());
+        panel.refresh();
+        panel.watcher.activate_test_binding(root.path());
+
+        let raced = root.file("raced.txt", "raced");
+        panel.watcher.inject_current_change_for_test(raced.clone());
+
+        assert_eq!(panel.toggle_hidden(), ViewApplyOutcome::Applied);
+        assert!(panel.poll_fs_changes());
+        assert!(panel.entries().iter().any(|entry| entry.path == raced));
+        assert!(!panel.watcher.has_pending_reconciliation_for_test());
     }
 
     #[test]

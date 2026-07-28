@@ -12,6 +12,7 @@ pub(crate) enum DirInputError {
     Empty,
     Missing,
     NotDirectory,
+    Unavailable,
 }
 
 impl fmt::Display for DirInputError {
@@ -20,6 +21,7 @@ impl fmt::Display for DirInputError {
             Self::Empty => "Path is empty",
             Self::Missing => "Path does not exist",
             Self::NotDirectory => "Not a folder",
+            Self::Unavailable => "Path cannot be accessed",
         })
     }
 }
@@ -30,6 +32,7 @@ impl std::error::Error for DirInputError {}
 pub(crate) enum NewNameError {
     Empty,
     ContainsSlash,
+    ContainsNul,
     DotEntry,
     Collision,
 }
@@ -39,6 +42,7 @@ impl fmt::Display for NewNameError {
         formatter.write_str(match self {
             Self::Empty => "Name cannot be empty",
             Self::ContainsSlash => "Name cannot contain '/'",
+            Self::ContainsNul => "Name cannot contain NUL",
             Self::DotEntry => "Invalid name",
             Self::Collision => "Name already in use",
         })
@@ -60,11 +64,16 @@ pub(crate) fn resolve_dir_input(input: &str, home: &Path) -> Result<PathBuf, Dir
     } else {
         PathBuf::from(trimmed)
     };
-    if !expanded.exists() {
-        return Err(DirInputError::Missing);
-    }
-    if !expanded.is_dir() {
-        return Err(DirInputError::NotDirectory);
+    match std::fs::metadata(&expanded) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(DirInputError::NotDirectory),
+        Err(error) => {
+            return Err(match error.kind() {
+                std::io::ErrorKind::NotFound => DirInputError::Missing,
+                std::io::ErrorKind::NotADirectory => DirInputError::NotDirectory,
+                _ => DirInputError::Unavailable,
+            });
+        }
     }
     Ok(expanded)
 }
@@ -81,6 +90,9 @@ pub(crate) fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), N
     }
     if name.contains('/') {
         return Err(NewNameError::ContainsSlash);
+    }
+    if name.contains('\0') {
+        return Err(NewNameError::ContainsNul);
     }
     if name == "." || name == ".." {
         return Err(NewNameError::DotEntry);
@@ -158,16 +170,24 @@ mod tests {
         assert_eq!(DirInputError::Empty.to_string(), "Path is empty");
         assert_eq!(DirInputError::Missing.to_string(), "Path does not exist");
         assert_eq!(DirInputError::NotDirectory.to_string(), "Not a folder");
+        assert_eq!(
+            DirInputError::Unavailable.to_string(),
+            "Path cannot be accessed"
+        );
     }
 
     #[test]
-    fn new_name_rejects_whitespace_slash_dot_entries_and_exact_collision() {
+    fn new_name_rejects_whitespace_separators_nul_dot_entries_and_exact_collision() {
         let siblings = vec!["taken.txt".to_string()];
 
         assert_eq!(validate_new_name("  ", &siblings), Err(NewNameError::Empty));
         assert_eq!(
             validate_new_name("a/b", &siblings),
             Err(NewNameError::ContainsSlash)
+        );
+        assert_eq!(
+            validate_new_name("a\0b", &siblings),
+            Err(NewNameError::ContainsNul)
         );
         assert_eq!(
             validate_new_name(".", &siblings),
@@ -182,6 +202,7 @@ mod tests {
             Err(NewNameError::Collision)
         );
         assert_eq!(validate_new_name(" fresh.txt ", &siblings), Ok(()));
+        assert_eq!(validate_new_name("line\nbreak", &siblings), Ok(()));
     }
 
     #[test]
@@ -199,7 +220,19 @@ mod tests {
             NewNameError::ContainsSlash.to_string(),
             "Name cannot contain '/'"
         );
+        assert_eq!(
+            NewNameError::ContainsNul.to_string(),
+            "Name cannot contain NUL"
+        );
         assert_eq!(NewNameError::DotEntry.to_string(), "Invalid name");
         assert_eq!(NewNameError::Collision.to_string(), "Name already in use");
+    }
+
+    #[test]
+    fn invalid_path_encoding_is_not_reported_as_missing() {
+        assert_eq!(
+            resolve_dir_input("\0", Path::new("/unused")),
+            Err(DirInputError::Unavailable)
+        );
     }
 }

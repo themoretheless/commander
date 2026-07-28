@@ -517,6 +517,11 @@ impl SizeIndex {
     }
 
     #[cfg(test)]
+    pub(super) fn binding_for_test(&self) -> &Path {
+        &self.binding
+    }
+
+    #[cfg(test)]
     pub(super) fn mark_dirty_immediately_for_test(&mut self) {
         self.dirty = true;
         self.last_recompute = None;

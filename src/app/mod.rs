@@ -561,7 +561,7 @@ impl App {
             .unwrap_or_else(|| (home.clone(), home.clone()));
         let views = session
             .as_ref()
-            .map(|saved| [saved.left_view_config(), saved.right_view_config()])
+            .map(crate::session::Session::view_configs)
             .unwrap_or([crate::panel::ViewConfig::default(); 2]);
         let mut ws = Workspace::with_ports_and_views(left, right, views, trash, free_space);
 
@@ -764,18 +764,8 @@ impl App {
             tree_width: self.tree_width,
             show_size_bars: self.show_size_bars,
             show_compare: self.show_compare,
-            left_sort_col: left_view.sort_column(),
-            left_sort_order: left_view.sort_order(),
-            left_hidden: left_view.show_hidden(),
-            right_sort_col: right_view.sort_column(),
-            right_sort_order: right_view.sort_order(),
-            right_hidden: right_view.show_hidden(),
-            left_folders_first: left_view.folders_first(),
-            left_natural_sort: left_view.natural_name_sort(),
-            right_folders_first: right_view.folders_first(),
-            right_natural_sort: right_view.natural_name_sort(),
-            left_density: left_view.density(),
-            right_density: right_view.density(),
+            left_view: crate::session::PersistedLeftView::from(left_view),
+            right_view: crate::session::PersistedRightView::from(right_view),
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
             recent_paths,

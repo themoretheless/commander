@@ -810,6 +810,50 @@ fn same_frame_ui_commands_preserve_fifo_and_duplicates() {
 }
 
 #[test]
+fn toggle_hidden_command_emits_typed_success_feedback() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file(".hidden.txt", "hidden");
+    let mut ws = workspace(&left, &right);
+
+    ws.execute(Command::ToggleHidden);
+
+    assert!(ws.left.show_hidden());
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::HiddenFilesOutcome(
+            crate::panel::ViewApplyOutcome::Applied
+        )]
+    );
+}
+
+#[test]
+fn toggle_hidden_command_reports_rejection_without_changing_the_view() {
+    let root = TempDir::new();
+    let left = root.dir("left");
+    root.file("left/visible.txt", "visible");
+    let right = TempDir::new();
+    let mut ws = Workspace::new(left.clone(), right.path().to_path_buf());
+    ws.left.refresh();
+    ws.right.refresh();
+    let config = ws.left.view_config();
+    let revision = ws.left.entries_gen();
+    let status = ws.left.dir_status();
+    std::fs::remove_dir_all(&left).unwrap();
+
+    ws.execute(Command::ToggleHidden);
+
+    assert_eq!(ws.left.view_config(), config);
+    assert_eq!(ws.left.entries_gen(), revision);
+    assert_eq!(ws.left.dir_status(), status);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::HiddenFilesOutcome(
+            crate::panel::ViewApplyOutcome::ReadRejected(crate::panel::DirStatus::Gone)
+        )]
+    );
+}
+
+#[test]
 fn conditional_and_listing_commands_emit_payload_requests() {
     let (left, right) = (TempDir::new(), TempDir::new());
     let shelf_item = left.file("shelf.txt", "x");
@@ -2936,6 +2980,35 @@ fn commit_rename_refuses_to_clobber_a_file_only_on_disk() {
         "2"
     );
     assert!(a.exists(), "source untouched on refusal");
+}
+
+#[test]
+fn commit_rename_rejects_nul_before_touching_disk_or_history() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let original = left.file("original.txt", "content");
+    let mut workspace = workspace(&left, &right);
+
+    let error = workspace
+        .commit_rename(&original, "bad\0name.txt")
+        .unwrap_err();
+
+    assert_eq!(error, "Name cannot contain NUL");
+    assert!(original.is_file());
+    assert!(!workspace.stack.can_undo());
+}
+
+#[test]
+fn commit_rename_uses_the_same_trimmed_basename_as_live_validation() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let original = left.file("original.txt", "content");
+    let mut workspace = workspace(&left, &right);
+
+    workspace
+        .commit_rename(&original, "  renamed.txt  ")
+        .unwrap();
+
+    assert!(left.path().join("renamed.txt").is_file());
+    assert!(!left.path().join("  renamed.txt  ").exists());
 }
 
 #[test]

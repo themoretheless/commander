@@ -1,13 +1,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
 use super::{FacetSet, SortColumn, SortOrder};
 
 const DEFAULT_VIEW_MEMORY_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewConfig {
     sort_col: SortColumn,
     sort_order: SortOrder,

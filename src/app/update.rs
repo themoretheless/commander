@@ -59,6 +59,17 @@ fn perform_open(
     })
 }
 
+fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'static str {
+    match status {
+        crate::panel::DirStatus::Denied => "folder access was denied",
+        crate::panel::DirStatus::Gone => "the folder is no longer available",
+        crate::panel::DirStatus::Partial => "the folder could not be read completely",
+        crate::panel::DirStatus::Listed | crate::panel::DirStatus::Empty => {
+            "the folder could not be refreshed"
+        }
+    }
+}
+
 struct AppUiRequestSink<'app, 'ctx> {
     app: &'app mut App,
     ctx: &'ctx egui::Context,
@@ -651,8 +662,34 @@ impl App {
             UiRequest::CopyText { text, label } => {
                 self.write_clipboard(&text, &label, ctx);
             }
+            UiRequest::HiddenFilesOutcome(outcome) => {
+                self.apply_hidden_files_outcome(outcome, ctx);
+            }
             UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
             UiRequest::DrainShelf => self.drain_shelf(ctx),
+        }
+    }
+
+    fn apply_hidden_files_outcome(
+        &mut self,
+        outcome: crate::panel::ViewApplyOutcome,
+        ctx: &egui::Context,
+    ) {
+        match outcome {
+            crate::panel::ViewApplyOutcome::Applied => {
+                self.tree_children_cache.clear();
+            }
+            crate::panel::ViewApplyOutcome::ReadRejected(status) => {
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!(
+                        "Hidden files unchanged: {}",
+                        hidden_files_rejection_message(status)
+                    ),
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    ctx.input(|input| input.time),
+                ));
+            }
         }
     }
 
@@ -1834,7 +1871,8 @@ impl App {
 mod tests {
     use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
-        perform_clipboard_write, perform_open, recovery_review_handoff_allowed,
+        hidden_files_rejection_message, perform_clipboard_write, perform_open,
+        recovery_review_handoff_allowed,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2060,5 +2098,21 @@ mod tests {
         assert_eq!(failed.status, NativeEffectStatus::Failure);
         assert!(failed.message.contains("launch denied"));
         assert_eq!(port.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn hidden_view_rejections_have_specific_non_modal_feedback() {
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Denied),
+            "folder access was denied"
+        );
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Gone),
+            "the folder is no longer available"
+        );
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Partial),
+            "the folder could not be read completely"
+        );
     }
 }

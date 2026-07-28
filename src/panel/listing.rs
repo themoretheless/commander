@@ -279,7 +279,7 @@ mod tests {
 
         listing.resort(|entries| entries.sort_by(|a, b| a.name.cmp(&b.name)));
 
-        assert!(listing.revision().value() > revision.value());
+        assert_eq!(listing.revision().value(), revision.value() + 1);
         let after = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
         assert!(!Arc::ptr_eq(&before, &after));
         assert_eq!(listing.entries()[0].name, "alpha");
