@@ -51,11 +51,14 @@ impl fmt::Display for NewNameError {
 
 impl std::error::Error for NewNameError {}
 
-/// Resolve go-to-path input without canonicalizing it.
-pub(crate) fn resolve_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputError> {
+/// Parse go-to-path input without touching the filesystem or canonicalizing it.
+pub(crate) fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(DirInputError::Empty);
+    }
+    if trimmed.contains('\0') {
+        return Err(DirInputError::Unavailable);
     }
     let expanded = if trimmed == "~" {
         home.to_path_buf()
@@ -64,18 +67,30 @@ pub(crate) fn resolve_dir_input(input: &str, home: &Path) -> Result<PathBuf, Dir
     } else {
         PathBuf::from(trimmed)
     };
-    match std::fs::metadata(&expanded) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => return Err(DirInputError::NotDirectory),
-        Err(error) => {
-            return Err(match error.kind() {
-                std::io::ErrorKind::NotFound => DirInputError::Missing,
-                std::io::ErrorKind::NotADirectory => DirInputError::NotDirectory,
-                _ => DirInputError::Unavailable,
-            });
-        }
-    }
     Ok(expanded)
+}
+
+pub(crate) trait DirectoryProbePort: Send + Sync {
+    fn probe(&self, path: &Path) -> Result<(), DirInputError>;
+}
+
+pub(crate) struct FsDirectoryProbe;
+
+impl DirectoryProbePort for FsDirectoryProbe {
+    fn probe(&self, path: &Path) -> Result<(), DirInputError> {
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(DirInputError::NotDirectory),
+            Err(error) => {
+                return Err(match error.kind() {
+                    std::io::ErrorKind::NotFound => DirInputError::Missing,
+                    std::io::ErrorKind::NotADirectory => DirInputError::NotDirectory,
+                    _ => DirInputError::Unavailable,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Validate a proposed basename against an exact sibling-name snapshot.
@@ -114,55 +129,55 @@ mod tests {
         let documents = home.dir("Documents");
 
         assert_eq!(
-            resolve_dir_input("~", home.path()),
+            parse_dir_input("~", home.path()),
             Ok(home.path().to_path_buf())
         );
-        assert_eq!(resolve_dir_input("~/Documents", home.path()), Ok(documents));
+        assert_eq!(parse_dir_input("~/Documents", home.path()), Ok(documents));
         assert_eq!(
-            resolve_dir_input("  ~/Documents  ", home.path()),
+            parse_dir_input("  ~/Documents  ", home.path()),
             Ok(home.path().join("Documents"))
         );
     }
 
     #[test]
     fn dir_input_preserves_lexical_relative_paths() {
-        assert_eq!(
-            resolve_dir_input(" . ", Path::new("/unused")),
-            Ok(".".into())
-        );
+        assert_eq!(parse_dir_input(" . ", Path::new("/unused")), Ok(".".into()));
     }
 
     #[cfg(unix)]
     #[test]
-    fn dir_input_accepts_directory_symlink_without_canonicalizing() {
+    fn filesystem_probe_accepts_directory_symlink_without_canonicalizing() {
         let root = TempDir::new();
         let target = root.dir("target");
         let link = root.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
         assert_eq!(
-            resolve_dir_input(link.to_str().unwrap(), root.path()),
-            Ok(link)
+            parse_dir_input(link.to_str().unwrap(), root.path()),
+            Ok(link.clone())
         );
+        assert_eq!(FsDirectoryProbe.probe(&link), Ok(()));
     }
 
     #[test]
-    fn dir_input_distinguishes_empty_missing_and_non_directory() {
+    fn parser_and_probe_distinguish_empty_missing_and_non_directory() {
         let root = TempDir::new();
         let file = root.file("note.txt", "x");
+        let missing = root.path().join("missing");
 
         assert_eq!(
-            resolve_dir_input("   ", root.path()),
+            parse_dir_input("   ", root.path()),
             Err(DirInputError::Empty)
         );
         assert_eq!(
-            resolve_dir_input(root.path().join("missing").to_str().unwrap(), root.path()),
+            FsDirectoryProbe.probe(&missing),
             Err(DirInputError::Missing)
         );
         assert_eq!(
-            resolve_dir_input(file.to_str().unwrap(), root.path()),
+            FsDirectoryProbe.probe(&file),
             Err(DirInputError::NotDirectory)
         );
+        assert_eq!(FsDirectoryProbe.probe(root.path()), Ok(()));
     }
 
     #[test]
@@ -231,7 +246,11 @@ mod tests {
     #[test]
     fn invalid_path_encoding_is_not_reported_as_missing() {
         assert_eq!(
-            resolve_dir_input("\0", Path::new("/unused")),
+            parse_dir_input("\0", Path::new("/unused")),
+            Err(DirInputError::Unavailable)
+        );
+        assert_eq!(
+            FsDirectoryProbe.probe(Path::new("\0")),
             Err(DirInputError::Unavailable)
         );
     }

@@ -41,6 +41,7 @@ mod operation_view;
 mod opqueue;
 mod panel;
 mod path_identity;
+mod path_probe;
 mod pathname;
 mod persistence;
 pub mod ports;
@@ -130,12 +131,16 @@ fn main() -> eframe::Result<()> {
             })?;
             Ok(Box::new(app::App::new(
                 cc,
-                std::rc::Rc::new(context_menu),
-                std::rc::Rc::new(clipboard),
-                std::rc::Rc::new(opener),
-                std::sync::Arc::new(native_effect::NativeTrash),
-                std::sync::Arc::new(native_effect::NativeFreeSpace),
-                persistence::fs_persist(),
+                app::AppServices {
+                    context_menu: std::rc::Rc::new(context_menu),
+                    clipboard: std::rc::Rc::new(clipboard),
+                    opener: std::rc::Rc::new(opener),
+                    trash: std::sync::Arc::new(native_effect::NativeTrash),
+                    free_space: std::sync::Arc::new(native_effect::NativeFreeSpace),
+                    persistence: persistence::fs_persist(),
+                    workload: workload::global_handle(),
+                    directory_probe: std::sync::Arc::new(pathname::FsDirectoryProbe),
+                },
             )))
         }),
     )

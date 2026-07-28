@@ -44,6 +44,17 @@ pub(crate) use crate::transfer::{CopyMethod, TransferKind};
 pub(crate) use crate::ui_request::{UiModal, UiRequest};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
+pub(crate) struct AppServices {
+    pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+    pub(crate) clipboard: Rc<dyn crate::ports::ClipboardPort>,
+    pub(crate) opener: Rc<dyn crate::ports::OpenerPort>,
+    pub(crate) trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+    pub(crate) free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    pub(crate) persistence: std::sync::Arc<dyn crate::persistence::Persist>,
+    pub(crate) workload: crate::workload::WorkloadHandle,
+    pub(crate) directory_probe: std::sync::Arc<dyn crate::pathname::DirectoryProbePort>,
+}
+
 pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
@@ -53,6 +64,8 @@ pub struct App {
     pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
     pub(crate) clipboard: Rc<dyn crate::ports::ClipboardPort>,
     pub(crate) opener: Rc<dyn crate::ports::OpenerPort>,
+    pub(crate) workload: crate::workload::WorkloadHandle,
+    pub(crate) directory_probe: std::sync::Arc<dyn crate::pathname::DirectoryProbePort>,
     pub(crate) persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     pub(crate) session_gate: crate::persistence::StoreGate,
     pub ui_scale: f32,
@@ -509,15 +522,17 @@ pub(crate) struct RecoveryScanResult {
 }
 
 impl App {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        context_menu: Rc<dyn crate::ports::ContextMenuPort>,
-        clipboard: Rc<dyn crate::ports::ClipboardPort>,
-        opener: Rc<dyn crate::ports::OpenerPort>,
-        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
-        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
-        persistence: std::sync::Arc<dyn crate::persistence::Persist>,
-    ) -> Self {
+    pub(crate) fn new(cc: &eframe::CreationContext<'_>, services: AppServices) -> Self {
+        let AppServices {
+            context_menu,
+            clipboard,
+            opener,
+            trash,
+            free_space,
+            persistence,
+            workload,
+            directory_probe,
+        } = services;
         let mut startup = crate::measurement::StartupTrace::start();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let loaded_session = crate::session::load_with(persistence.as_ref());
@@ -608,6 +623,8 @@ impl App {
             context_menu,
             clipboard,
             opener,
+            workload,
+            directory_probe,
             persistence,
             session_gate,
             ui_scale,
@@ -690,6 +707,8 @@ impl App {
             context_menu,
             clipboard,
             opener,
+            workload: crate::workload::global_handle(),
+            directory_probe: std::sync::Arc::new(crate::pathname::FsDirectoryProbe),
             persistence,
             session_gate: crate::persistence::StoreGate::missing(),
             ui_scale: seed.ui_scale,

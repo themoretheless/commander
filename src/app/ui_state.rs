@@ -112,7 +112,7 @@ define_modal_store!(
         mask_input: Option<String>, option
     },
     Path => Path {
-        path_input: Option<String>, option
+        path_input: Option<crate::path_probe::PathDialogState>, option
     },
     Recent => Recent {
         recent_input: Option<String>, option

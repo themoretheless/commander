@@ -342,14 +342,21 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
   them.
 - The large workspace integration suite lives in `workspace/tests.rs`;
   pathname parsing/validation lives in its own typed module.
+- `path_probe::PathProbeController` debounces `Cmd+L` input, binds every result
+  to the exact dialog/input generation, and runs the injected filesystem
+  `metadata` probe through a dedicated bounded workload lane. The dialog keeps
+  stable status geometry and a polite accessibility live region.
 
-The full serial suite currently passes 947 tests with three intentional
+The full serial suite currently passes 956 tests with three intentional
 manual/performance harnesses ignored. The next high-value architecture work is
-moving pathname metadata probing off the UI thread. Durable undo history,
-path-identity-bound replay, migration of the operation journal and content
-index to versioned stores, cross-process persistence CAS, descriptor-relative
-filesystem effects, and reconciliation of the last placement-to-journal crash
-window remain later schema migrations or OS-hardening work.
+closing the permission-bound VoiceOver, AppKit popup, and multi-monitor release
+checks. `PanelState::navigate_to` still performs its listing publication on the
+UI thread, and the successful path probe remains advisory across the TOCTOU
+window before that listing. Durable undo history, path-identity-bound replay,
+migration of the operation journal and content index to versioned stores,
+cross-process persistence CAS, descriptor-relative filesystem effects, and
+reconciliation of the last placement-to-journal crash window remain later
+schema migrations or OS-hardening work.
 
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
 by enabling only the image decoders Commander uses. The checked-in

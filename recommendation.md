@@ -45,7 +45,7 @@ references. When the two disagree, architecture.md wins.
 | # | Step | Risk | Notes |
 | --- | --- | --- | --- |
 | A1 | Extract `compare` module | done | Shipped on `master` (`ddab764`). |
-| A2 | Workspace test split + typed `pathname` extraction | **done** | `workspace.rs` stays a file with `workspace/tests.rs` as its child; the mechanical move preserved the 855-test baseline. Typed crate-private pathname errors now drive both dialogs and commit-time rename validation, distinguish inaccessible paths from missing ones with one metadata call, and reject NUL before a filesystem mutation. |
+| A2 | Workspace test split + typed `pathname` extraction | **done** | `workspace.rs` stays a file with `workspace/tests.rs` as its child. Pure pathname parsing and typed errors drive both dialogs and commit-time rename validation; an injected `DirectoryProbePort` and generation-bound `PathProbeController` now move `Cmd+L` metadata off the frame thread while preserving lexical paths and symlink-to-directory behavior. |
 | A3 | Encapsulated `ViewConfig`, pure sorting, atomic view transitions | **done** | `ListingState` owns rows/revision/filter cache; the former explicit-`entries_gen` design is superseded. Per-panel session adapters preserve legacy flat JSON while seeding both configs before first listing. Hidden toggles commit config+rows atomically, publish success/rejection through the shared non-modal FIFO, and invalidate a hidden-policy-aware bounded tree cache on success. |
 | A4 | Replace the `*_request` flag bus with one typed request queue | **done** | Shipped as `ui_request::UiRequestQueue`: 25 fields removed, one FIFO snapshot drain, payload-preserving modal serialization, FIFO Escape ownership, and tested SafeState-to-Recovery handoff. |
 | A5 | Extract `UiState` (group dialog buffers out of `App`) | **done** | `app::ui_state::UiState` owns transient input and all modal buffers; opening contexts retain immutable targets and the FIFO/Escape contract is unchanged. |
@@ -94,16 +94,26 @@ duplicate-crate groups visible as warning-level debt. The waiver owner is
 00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
 `0.20.2` before running it. Reproduce the policy with the command shown in the
 README.
+The pathname implementation pass then split pure lexical parsing from the
+injected filesystem probe. `Cmd+L` captures its home and opening panel once,
+uses a 200 ms debounce and dedicated two-worker quota, accepts only the exact
+dialog/generation/raw/lexical binding, and retires cancellation, admission,
+panic and disconnect paths terminally. Nine deterministic controller tests
+bring the full serial all-feature suite to 956 passing with three intentional
+ignores. The isolated performance smoke remains green. Synchronous
+`PanelState::navigate_to` listing and the probe-to-listing TOCTOU remain
+explicitly outside this scoped change.
 
 Highest-value next steps, in order:
 
-1. Move go-to-path filesystem metadata probing off the UI frame and design an
-   `OsStr` plus volume-capability-aware naming policy for non-UTF-8,
-   case-sensitivity and Unicode normalization.
-2. Promote `minimum_window`, `zoom_200_accessible`, and
+1. Promote `minimum_window`, `zoom_200_accessible`, and
    `confirmation_owner` to strict visual gates after their scenario-specific
    geometry checks stabilize; keep AppKit popup pixels, VoiceOver and
    multi-monitor placement as permission-bound release checks.
+2. Move `PanelState::navigate_to` listing/publication off the UI thread and
+   close the probe-to-listing TOCTOU; separately design an `OsStr` plus
+   volume-capability-aware naming policy for non-UTF-8, case-sensitivity and
+   Unicode normalization.
 3. Reconcile the transfer journal's remaining crash window between successful
    placement and `mark_completed`, then add descriptor-relative namespace
    effects and a streaming parallel-directory planner.
@@ -396,10 +406,10 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 31. `предложение` `src/app/mask_dialog.rs:9-11` - Mask dialog has no persisted history of recently-used masks, so a common mask like '*.rs' or '!*test*' must be retyped every time the dialog opens with an empty buffer
 32. `предложение` `src/smart_folder.rs:10-15; referenced from src/app/saved_search_dialog.rs:130-138` - Smart folders have no 'run now' from a list without going through the Find sheet indirection, and no way to reorder or rename a saved search once created
 33. `предложение` `src/density.rs:75-81` - Density has exactly 3 fixed tiers with no user-tunable custom row height, and no per-folder memory (already tracked as B2 in recommendation.md) but also no keyboard shortcut discoverable from density.rs itself for jumping directly to a tier (only relative cycle)
-34. `проблема` `src/app/path_dialog.rs:24` - resolve_dir_input() re-parses the string and hits the filesystem (exists()/is_dir() syscalls) on every single frame the dialog is open, not just on text change
+34. `проблема` `src/app/path_dialog.rs:24` - resolve_dir_input() re-parses the string and hits the filesystem (exists()/is_dir() syscalls) on every single frame the dialog is open, not just on text change (resolved 2026-07-28: pure parsing is separated from a 200 ms debounced, generation-bound worker probe)
 35. `ошибка` `src/listing_export.rs:29-33,46-57` - Text and Markdown listing export formats do not escape embedded newlines/tabs in filenames, unlike the CSV format which correctly quotes them
 36. `проблема` `src/listing_export.rs:63-74` - csv_escape/md_escape only guard the fields listing_export builds itself (name, size_str, modified_str) but not e.g. a possible '"' or '\|' inside modified_str, which is fine today only because modified_str's format string is controlled
-37. `проблема` `src/app/path_dialog.rs:22` - show_path_dialog does the home_dir() lookup and Command::resolve every frame even though `home` never changes while the app runs
+37. `проблема` `src/app/path_dialog.rs:22` - show_path_dialog does the home_dir() lookup and Command::resolve every frame even though `home` never changes while the app runs (resolved 2026-07-28: home is captured once in `open_path`, and unchanged frames perform no pathname I/O)
 38. `ошибка` `src/app/path_dialog.rs:103-107` - Pressing Enter or clicking Go when the path field is not yet resolved-ok is a no-op with no feedback beyond the static red error label -- if the user presses Enter rapidly while resolution is still showing the previous error text, there's no shake/flash to signal the rejection
 39. `проблема` `src/app/path_dialog.rs:24 (via workspace::resolve_dir_input)` - ~user (tilde followed by a different username) is not supported by resolve_dir_input's caller-visible contract implied by the doc comment/hint text '~/Documents', but path_dialog.rs never surface a friendly message for that specific case -- it falls through to a raw PathBuf::from('~otheruser') and fails as 'Path does not exist'
 40. `улучшение` `src/app/path_dialog.rs:24,58-69` - The Ok/Err match on `resolved` in show_path_dialog rebuilds a RichText/label every frame purely to show a static checkmark or the error string; the whole dialog closure captures `resolved` by move implicitly through the outer scope, but since resolved is computed unconditionally above show(), it's wasted work on frames where the window isn't focused/visible (e.g. if occluded)

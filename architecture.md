@@ -48,8 +48,8 @@ These constraints reinforce, rather than replace, the shipped `ViewConfig`,
 effect ports. `UndoCenter` now owns the in-memory history timeline and
 identity-bound replay reservations. The shared persistence boundary and
 versioned envelope are now shipped too. The remaining architectural work is
-narrower: supply-chain policy, async pathname probing, native release QA, and
-smaller execution facades.
+narrower: native release QA, asynchronous listing publication, and smaller
+execution facades.
 The typed queue portion is shipped as `ui_request::UiRequestQueue`; historical
 roadmap references to an Effect bus describe that completed migration. `G044`
 has an owner in `volume_profile`; `path_identity` supplies the core of `G057`.
@@ -405,6 +405,16 @@ Three mechanisms connect the core to the shell:
   duplicate-crate groups stay at warning severity as explicit dependency debt;
   there are no broad duplicate skips or GPL/LGPL license allowances. Run the
   same gate with the command shown in the README.
+- **Go-to-path probing has an asynchronous owner.** `pathname` performs only
+  lexical parsing and exact tilde expansion; injected
+  `DirectoryProbePort::probe` owns the one filesystem `metadata` call.
+  `PathProbeController` captures home and opening-panel context, debounces for
+  200 ms, admits at most one task at a time through the dedicated `PathProbe`
+  workload quota, and rejects stale A-to-B-to-A, cancelled, abandoned, panicked
+  and disconnected outcomes. `Go` and Enter consume only an exact current
+  `Valid` binding. This removes pathname I/O from frame rendering, but
+  `PanelState::navigate_to` still reads/publishes the directory synchronously
+  and there is an advisory-probe TOCTOU window before that read.
 - **Panel async ownership is split but the facade is not yet small.**
   `DirectoryWatcherState` and `SizeIndex` own generation, binding, retry and
   bounded-cache state; `ListingState` owns rows and filter invalidation.
@@ -605,7 +615,8 @@ extracts several small leaf modules in one commit).
 
 | Module | Responsibility | ~Lines | Depends on |
 | --- | --- | --- | --- |
-| `pathname` | Validate and resolve user-typed path/name strings (go-to-path input, new-name-vs-siblings input), independent of Workspace. | ~45 | - |
+| `pathname` | Parse user-typed paths, validate names, and expose the injected filesystem directory-probe port without canonicalizing lexical input. | ~80 | - |
+| `path_probe` | Debounce and generation-bind `Cmd+L` directory probes, own cancellation/worker retirement, and publish terminal UI status. | ~300 incl. tests | pathname, workload, workspace::ActivePanel |
 | `pending_op` | Represent a copy/move/delete/shelf-drain awaiting confirmation or completion, and the pure helpers that compute its space/undo shape, with zero Worksp… | ~225 | fs_util (OpClass, SpaceVerdict, space_verdict), undo (Action, wrapped opaquely by the loca… |
 | `kind (NEW, split out of selection_summary, replaces the previous panel::entry/kind_of half-move)` | The Kind enum (Folder/Image/Video/Audio/Document/Code/Archive/Other) and the kind_of(&FileEntry) -> Kind classifier, as a standalone leaf with no othe… | ~65 | panel::entry (FileEntry, is_static_image, is_video, extension -- kind_of's own inputs) |
 
@@ -818,7 +829,7 @@ can be taken on faith until that port is read.
 
 1. Step 0 (A2, **done 2026-07-28**): the inline test body moved mechanically to `src/workspace/tests.rs` behind `#[cfg(test)] mod tests;`. `src/workspace.rs` deliberately remains a file; converting it to `workspace/mod.rs` would add rename churn with no ownership benefit. The move preserved all `workspace::tests::*` paths and the exact 855-test baseline before later focused tests were added.
 
-2. Step 1 (A2, **done 2026-07-28**): `src/pathname.rs` owns crate-private `resolve_dir_input` and `validate_new_name` plus typed `DirInputError`/`NewNameError`. App dialogs and `Workspace::commit_rename` call it directly; there is no compatibility re-export. Nine focused tests freeze lexical relative/symlink behavior, exact tilde expansion, stable UI copy, one-stat I/O classification, universal NUL rejection, and the current case-sensitive/normalization-distinct contract. Commit-time live sibling validation and `rename_noreplace` remain unchanged.
+2. Step 1 (A2, **done 2026-07-28; async follow-up done 2026-07-28**): `src/pathname.rs` owns pure `parse_dir_input`, `validate_new_name`, typed `DirInputError`/`NewNameError`, and the injected `DirectoryProbePort`. `src/path_probe.rs` owns the debounced worker/controller lifecycle; `AppServices` injects its filesystem and workload adapters. Eighteen focused tests freeze lexical relative/symlink behavior, exact tilde expansion, stable UI copy, universal NUL rejection, debounce/admission bounds, worker-thread execution, opening-context capture, cancellation/reopen, disconnect/panic retirement, A-to-B-to-A freshness, and same-frame edit-before-Enter ordering. Commit-time live sibling validation and `rename_noreplace` remain unchanged; async panel listing is a separate follow-up.
 
 3. Step 2: extract pending_op (PendingTransfer+impl, QueuedJob, PendingOp, DeleteOutcome, ShelfDrainOutcome, move_pairs, faithfully_undoable, fit_stats -- workspace.rs:22-230) into src/pending_op.rs. All pure data types/functions, compiler-verified with zero logic change. FIX vs round 2 (ISP smell the critique found, verified: QueuedJob only clones/pattern-matches its stored Action at the poll_transfer call site outside pending_op itself -- pending_op's own logic never branches on which Action variant is stored): change QueuedJob's field from `undo: Option<undo::Action>` to a module-private opaque carrier `undo: Option<UndoPayload>` where `UndoPayload` is a thin newtype wrapping `undo::Action` with no methods of its own beyond construction/unwrap -- this keeps pending_op's own code from needing to know Action's variants while still being honest that the payload IS an undo::Action underneath (a real newtype, not a type-erased Box<dyn Any>, since the consumer -- undo_center -- always knows the concrete type it put in). pending_op's dependsOn keeps `undo (Action, wrapped by UndoPayload, held opaquely by QueuedJob)` but the module doc-comment states explicitly that pending_op never matches on Action's variants, so a future Action variant addition (e.g. D20's Rename) touches undo_center and fileops, never pending_op. Also depends on fs_util (OpClass/SpaceVerdict/space_verdict), transfer (TransferKind/OverwritePolicy/CopyMethod), and scan (FlatList/FileEntry) as round 2 already corrected.
 

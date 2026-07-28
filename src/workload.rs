@@ -14,6 +14,7 @@ pub struct TaskId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskKind {
     Listing,
+    PathProbe,
     Search,
     Preview,
     Hash,
@@ -22,22 +23,24 @@ pub enum TaskKind {
 }
 
 impl TaskKind {
-    const COUNT: usize = 6;
+    const COUNT: usize = 7;
 
     fn index(self) -> usize {
         match self {
             Self::Listing => 0,
-            Self::Search => 1,
-            Self::Preview => 2,
-            Self::Hash => 3,
-            Self::Transfer => 4,
-            Self::Index => 5,
+            Self::PathProbe => 1,
+            Self::Search => 2,
+            Self::Preview => 3,
+            Self::Hash => 4,
+            Self::Transfer => 5,
+            Self::Index => 6,
         }
     }
 
     fn thread_label(self) -> &'static str {
         match self {
             Self::Listing => "listing",
+            Self::PathProbe => "path-probe",
             Self::Search => "search",
             Self::Preview => "preview",
             Self::Hash => "hash",
@@ -184,7 +187,7 @@ impl Default for SchedulerLimits {
             max_running: 8,
             max_queued: 128,
             max_inflight_bytes: 2 * 1024 * 1024 * 1024,
-            per_kind_running: [2, 2, 4, 2, 2, 1],
+            per_kind_running: [2, 2, 2, 4, 2, 2, 1],
         }
     }
 }
