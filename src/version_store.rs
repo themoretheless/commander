@@ -4,7 +4,11 @@ use crate::operation::{IdempotencyKey, OperationId, VersionRetentionPolicy};
 use crate::path_identity::PathIdentity;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+const MANIFEST_STORE: crate::persistence::StoreSpec =
+    crate::persistence::StoreSpec::new("commander.version_manifest", 1, 16 * 1024 * 1024);
 
 #[cfg(test)]
 thread_local! {
@@ -44,6 +48,22 @@ pub struct VersionRecord {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct VersionManifest {
     records: Vec<VersionRecord>,
+}
+
+struct LoadedManifest {
+    manifest: VersionManifest,
+    gate: crate::persistence::StoreGate,
+    blocked: bool,
+}
+
+fn manifest_persist() -> &'static crate::persistence::FsPersist {
+    static PERSIST: OnceLock<crate::persistence::FsPersist> = OnceLock::new();
+    PERSIST.get_or_init(crate::persistence::FsPersist::default)
+}
+
+fn manifest_transaction() -> &'static Mutex<()> {
+    static TRANSACTION: OnceLock<Mutex<()>> = OnceLock::new();
+    TRANSACTION.get_or_init(|| Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -125,7 +145,19 @@ fn preserve_at_inner(
     if !before.exists {
         return Ok(None);
     }
+    let persist = manifest_persist();
+    let loaded = load_manifest_with(persist, root);
+    if loaded.blocked {
+        return Err(version_failure(
+            "Version manifest is unreadable or incompatible; preservation is blocked",
+        ));
+    }
     let stored = record_path(root, operation_id, &key, path);
+    if !lexically_descends_from(root, &stored) {
+        return Err(version_failure(
+            "Generated version path escaped the configured versions root",
+        ));
+    }
     if let Some(parent) = stored.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             version_failure(format!(
@@ -161,6 +193,10 @@ fn preserve_at_inner(
             ),
         });
     }
+    if let Err(message) = validate_stored_path(root, &stored) {
+        let _ = remove_path(&stored);
+        return Err(version_failure(message));
+    }
 
     let record = VersionRecord {
         operation_id: operation_id.clone(),
@@ -171,16 +207,39 @@ fn preserve_at_inner(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs()),
     };
-    let mut manifest = load_manifest(root);
-    manifest
+    let _manifest_guard = crate::lock_util::recover(manifest_transaction());
+    let mut loaded = load_manifest_with(persist, root);
+    if loaded.blocked {
+        let _ = remove_path(&stored);
+        return Err(version_failure(
+            "Version manifest changed to an unreadable or incompatible state",
+        ));
+    }
+    loaded
+        .manifest
         .records
         .retain(|existing| existing.key != record.key);
-    manifest.records.push(record.clone());
-    if !save_manifest(root, &manifest) {
-        let _ = remove_path(&stored);
-        return Err(version_failure("Could not save version manifest"));
+    loaded.manifest.records.push(record.clone());
+    match save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate) {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
+            prune_manifest(
+                persist,
+                root,
+                &loaded.manifest,
+                &mut loaded.gate,
+                retention,
+                record.created_at_secs,
+            );
+        }
+        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            crate::persistence::record_durability_warning("Version manifest", &error);
+        }
+        Err(error) => {
+            let _ = remove_path(&stored);
+            crate::persistence::record_json_save_failure("Version manifest", &error);
+            return Err(version_failure("Could not save version manifest"));
+        }
     }
-    prune_manifest(root, &manifest, retention, record.created_at_secs);
     Ok(Some(record))
 }
 
@@ -198,23 +257,48 @@ pub fn discard_record(record: &VersionRecord) -> Result<(), String> {
 
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
-    let mut manifest = load_manifest(root);
-    let previous_len = manifest.records.len();
-    manifest
+    let persist = manifest_persist();
+    let _manifest_guard = crate::lock_util::recover(manifest_transaction());
+    let mut loaded = load_manifest_with(persist, root);
+    if loaded.blocked {
+        return Err(
+            "Version manifest is unreadable or incompatible; discard is blocked".to_string(),
+        );
+    }
+    let Some(authoritative) = loaded
+        .manifest
+        .records
+        .iter()
+        .find(|candidate| candidate.key == record.key)
+        .cloned()
+    else {
+        return Ok(());
+    };
+    if authoritative != *record {
+        return Err("Version record changed before discard".to_string());
+    }
+    validate_stored_path(root, &authoritative.stored)?;
+    loaded
+        .manifest
         .records
         .retain(|candidate| candidate.key != record.key);
-    if manifest.records.len() == previous_len {
-        return Ok(());
+    match save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate) {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => remove_path(&authoritative.stored)
+            .map_err(|error| {
+                format!(
+                    "Could not remove rejected version {}: {error}",
+                    authoritative.stored.display()
+                )
+            }),
+        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            crate::persistence::record_durability_warning("Version manifest", &error);
+            Ok(())
+        }
+        Err(error) => {
+            crate::persistence::record_json_save_failure("Version manifest", &error);
+            Err("Could not remove rejected version from the manifest".to_string())
+        }
     }
-    if !save_manifest(root, &manifest) {
-        return Err("Could not remove rejected version from the manifest".to_string());
-    }
-    remove_path(&record.stored).map_err(|error| {
-        format!(
-            "Could not remove rejected version {}: {error}",
-            record.stored.display()
-        )
-    })
 }
 
 fn retained_records(
@@ -261,8 +345,10 @@ fn retained_records(
 }
 
 fn prune_manifest(
+    persist: &dyn crate::persistence::Persist,
     root: &Path,
     manifest: &VersionManifest,
+    gate: &mut crate::persistence::StoreGate,
     policy: VersionRetentionPolicy,
     now_secs: u64,
 ) {
@@ -274,10 +360,21 @@ fn prune_manifest(
     // Publish the manifest before deleting data. A failed policy update keeps
     // extra recovery data; it never leaves a manifest pointing at a deleted
     // version.
-    if !save_manifest(root, &pruned) {
-        return;
+    match save_manifest_with(persist, root, &pruned, gate) {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
+        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            crate::persistence::record_durability_warning("Version manifest", &error);
+            return;
+        }
+        Err(error) => {
+            crate::persistence::record_json_save_failure("Version manifest", &error);
+            return;
+        }
     }
     for record in expired {
+        if validate_stored_path(root, &record.stored).is_err() {
+            continue;
+        }
         let _ = remove_path(&record.stored);
         remove_empty_version_dirs(record.stored.parent(), root);
     }
@@ -293,26 +390,51 @@ fn remove_empty_version_dirs(mut directory: Option<&Path>, root: &Path) {
 }
 
 pub fn restore(record: &VersionRecord) -> Result<(), String> {
+    restore_at(&versions_dir(), record)
+}
+
+fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
     if crate::fs_util::path_is_taken(&record.original) {
         return Err(format!(
             "Restore destination is occupied: {}",
             record.original.display()
         ));
     }
-    copy_path(&record.stored, &record.original)
+    let loaded = load_manifest_with(manifest_persist(), root);
+    if loaded.blocked {
+        return Err(
+            "Version manifest is unreadable or incompatible; restore is blocked".to_string(),
+        );
+    }
+    let Some(authoritative) = loaded
+        .manifest
+        .records
+        .iter()
+        .find(|candidate| *candidate == record)
+    else {
+        return Err("Version record is not present in the authoritative manifest".to_string());
+    };
+    validate_stored_path(root, &authoritative.stored)?;
+    copy_path(&authoritative.stored, &authoritative.original)
         .map_err(|error| format!("Could not restore {}: {error}", record.original.display()))?;
-    if !paths_equal(&record.stored, &record.original) {
-        let _ = remove_path(&record.original);
+    if !paths_equal(&authoritative.stored, &authoritative.original) {
+        let _ = remove_path(&authoritative.original);
         return Err(format!(
             "Restored version failed verification: {}",
-            record.original.display()
+            authoritative.original.display()
         ));
     }
     Ok(())
 }
 
 pub fn records_for(operation_id: &OperationId) -> Vec<VersionRecord> {
-    load_manifest(&versions_dir())
+    let root = versions_dir();
+    let loaded = load_manifest_with(manifest_persist(), &root);
+    if loaded.blocked {
+        return Vec::new();
+    }
+    loaded
+        .manifest
         .records
         .into_iter()
         .filter(|record| &record.operation_id == operation_id)
@@ -320,11 +442,23 @@ pub fn records_for(operation_id: &OperationId) -> Vec<VersionRecord> {
 }
 
 pub fn records() -> Vec<VersionRecord> {
-    load_manifest(&versions_dir()).records
+    let root = versions_dir();
+    let loaded = load_manifest_with(manifest_persist(), &root);
+    if loaded.blocked {
+        Vec::new()
+    } else {
+        loaded.manifest.records
+    }
 }
 
 pub fn record_for_key(key: &IdempotencyKey) -> Option<VersionRecord> {
-    load_manifest(&versions_dir())
+    let root = versions_dir();
+    let loaded = load_manifest_with(manifest_persist(), &root);
+    if loaded.blocked {
+        return None;
+    }
+    loaded
+        .manifest
         .records
         .into_iter()
         .find(|record| &record.key == key)
@@ -354,19 +488,132 @@ fn record_path(
     root.join(&operation_id.0).join(&key.0).join(name)
 }
 
-fn load_manifest(root: &Path) -> VersionManifest {
-    fs::File::open(manifest_path(root))
-        .ok()
-        .and_then(|file| serde_json::from_reader(file).ok())
-        .unwrap_or_default()
+fn normalized_absolute(path: &Path) -> Option<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => {
+                normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR));
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(component) => normalized.push(component),
+        }
+    }
+    Some(normalized)
 }
 
-fn save_manifest(root: &Path, manifest: &VersionManifest) -> bool {
-    let path = manifest_path(root);
-    let _ = fs::create_dir_all(root);
-    serde_json::to_string_pretty(manifest)
-        .ok()
-        .is_some_and(|json| crate::fs_util::write_atomic(&path, &json))
+fn lexically_descends_from(root: &Path, candidate: &Path) -> bool {
+    let (Some(root), Some(candidate)) = (normalized_absolute(root), normalized_absolute(candidate))
+    else {
+        return false;
+    };
+    candidate != root && candidate.starts_with(root)
+}
+
+fn validate_stored_path(root: &Path, stored: &Path) -> Result<(), String> {
+    if !lexically_descends_from(root, stored) {
+        return Err("Version record points outside the versions root".to_string());
+    }
+    let root_metadata =
+        fs::symlink_metadata(root).map_err(|_| "Versions root is unavailable".to_string())?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err("Versions root is not a trusted directory".to_string());
+    }
+    let root_canonical =
+        fs::canonicalize(root).map_err(|_| "Versions root could not be resolved".to_string())?;
+    let parent = stored
+        .parent()
+        .ok_or_else(|| "Version record has no parent directory".to_string())?;
+    let parent_canonical =
+        fs::canonicalize(parent).map_err(|_| "Stored version parent is unavailable".to_string())?;
+    if !parent_canonical.starts_with(&root_canonical) {
+        return Err("Stored version parent escapes through a symlink".to_string());
+    }
+    let relative = parent
+        .strip_prefix(root)
+        .map_err(|_| "Stored version parent is outside the versions root".to_string())?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&current)
+            .map_err(|_| "Stored version ancestry is unavailable".to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("Stored version ancestry is not a trusted directory".to_string());
+        }
+    }
+    fs::symlink_metadata(stored).map_err(|_| "Stored version is unavailable".to_string())?;
+    Ok(())
+}
+
+fn manifest_paths_are_valid(root: &Path, manifest: &VersionManifest) -> bool {
+    let mut paths = std::collections::HashSet::new();
+    manifest.records.iter().all(|record| {
+        paths.insert(record.stored.clone()) && validate_stored_path(root, &record.stored).is_ok()
+    })
+}
+
+fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) -> LoadedManifest {
+    let loaded = crate::persistence::load_enveloped::<VersionManifest>(
+        persist,
+        &manifest_path(root),
+        MANIFEST_STORE,
+    );
+    let status = loaded.gate.status();
+    let mut gate = loaded.gate;
+    let mut blocked = matches!(
+        status,
+        crate::persistence::LoadStatus::Corrupt
+            | crate::persistence::LoadStatus::FutureVersion
+            | crate::persistence::LoadStatus::Unreadable
+    );
+    let manifest = loaded.value.unwrap_or_default();
+    if !blocked
+        && status != crate::persistence::LoadStatus::Missing
+        && !manifest_paths_are_valid(root, &manifest)
+    {
+        gate.block(crate::persistence::LoadStatus::Corrupt);
+        blocked = true;
+    }
+    if blocked {
+        crate::persistence::record_unreadable("Version manifest");
+    }
+    LoadedManifest {
+        manifest,
+        gate,
+        blocked,
+    }
+}
+
+#[cfg(test)]
+fn load_manifest(root: &Path) -> VersionManifest {
+    load_manifest_with(manifest_persist(), root).manifest
+}
+
+fn save_manifest_with(
+    persist: &dyn crate::persistence::Persist,
+    root: &Path,
+    manifest: &VersionManifest,
+    gate: &mut crate::persistence::StoreGate,
+) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::JsonSaveError> {
+    crate::persistence::save_enveloped(
+        persist,
+        &manifest_path(root),
+        MANIFEST_STORE,
+        manifest,
+        gate,
+        crate::persistence::SaveIntent::Explicit,
+    )
 }
 
 fn copy_path(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -595,7 +842,7 @@ mod tests {
         .unwrap();
 
         std::fs::remove_file(&original).unwrap();
-        restore(&record).unwrap();
+        restore_at(&versions, &record).unwrap();
 
         assert_eq!(std::fs::read_to_string(&original).unwrap(), "before");
         assert_eq!(load_manifest(&versions).records, vec![record]);
@@ -692,5 +939,125 @@ mod tests {
         assert_eq!(manifest.records.len(), 3);
         assert!(!created[0].stored.exists());
         assert!(created[1..].iter().all(|record| record.stored.exists()));
+    }
+
+    #[test]
+    fn corrupt_manifest_blocks_preserve_without_rewriting_original_bytes() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let manifest_path = manifest_path(&versions);
+        let original_manifest = b"{not-json".to_vec();
+        std::fs::write(&manifest_path, &original_manifest).unwrap();
+        let source = temp.file("source.txt", "payload");
+        let operation = OperationId("blocked-preserve".to_string());
+
+        let failure = preserve_at(
+            &versions,
+            &source,
+            &operation,
+            operation.step_key(0, &source),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap_err();
+
+        assert!(failure.contains("manifest"));
+        assert_eq!(std::fs::read(manifest_path).unwrap(), original_manifest);
+        assert!(!versions.join(&operation.0).exists());
+    }
+
+    #[test]
+    fn future_manifest_blocks_preserve_without_downgrade() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let manifest_path = manifest_path(&versions);
+        let future = br#"{
+          "format":"commander.persist",
+          "store":"commander.version_manifest",
+          "schema":99,
+          "generation":4,
+          "payload":{"records":[]}
+        }"#;
+        std::fs::write(&manifest_path, future).unwrap();
+        let source = temp.file("source.txt", "payload");
+        let operation = OperationId("future-preserve".to_string());
+
+        let loaded = load_manifest_with(manifest_persist(), &versions);
+        assert!(loaded.blocked);
+        assert_eq!(
+            loaded.gate.status(),
+            crate::persistence::LoadStatus::FutureVersion
+        );
+        assert!(
+            preserve_at(
+                &versions,
+                &source,
+                &operation,
+                operation.step_key(0, &source),
+                VersionRetentionPolicy::Recent,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(manifest_path).unwrap(), future);
+    }
+
+    #[test]
+    fn manifest_path_escape_cannot_restore_or_delete_external_data() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let external = temp.file("outside/version.txt", "protected");
+        let original = temp.path().join("restore.txt");
+        let record = VersionRecord {
+            operation_id: OperationId("escape".to_string()),
+            key: IdempotencyKey("escape-key".to_string()),
+            original: original.clone(),
+            stored: external.clone(),
+            created_at_secs: 1,
+        };
+        let legacy = VersionManifest {
+            records: vec![record.clone()],
+        };
+        std::fs::write(
+            manifest_path(&versions),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_manifest_with(manifest_persist(), &versions);
+        assert!(loaded.blocked);
+        assert!(discard_record_at(&versions, &record).is_err());
+        assert!(restore_at(&versions, &record).is_err());
+        assert_eq!(std::fs::read_to_string(external).unwrap(), "protected");
+        assert!(!original.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_symlink_ancestry_cannot_escape_versions_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let external = temp.dir("external");
+        let payload = temp.file("external/version.txt", "protected");
+        symlink(&external, versions.join("linked")).unwrap();
+        let record = VersionRecord {
+            operation_id: OperationId("symlink-escape".to_string()),
+            key: IdempotencyKey("symlink-key".to_string()),
+            original: temp.path().join("restore.txt"),
+            stored: versions.join("linked/version.txt"),
+            created_at_secs: 1,
+        };
+        std::fs::write(
+            manifest_path(&versions),
+            serde_json::to_vec_pretty(&VersionManifest {
+                records: vec![record.clone()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(discard_record_at(&versions, &record).is_err());
+        assert_eq!(std::fs::read_to_string(payload).unwrap(), "protected");
     }
 }
