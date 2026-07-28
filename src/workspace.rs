@@ -2042,16 +2042,13 @@ impl Workspace {
     /// sorted largest first. Reads the existing cache; never walks.
     pub fn treemap_snapshot(&self) -> TreemapSnapshot {
         let active = self.active_panel_ref();
-        let sizes = active.dir_sizes.lock().ok();
+        let sizes = active.size_snapshot();
         let mut items: Vec<(FileEntry, u64)> = active
             .entries()
             .iter()
             .map(|e| {
                 let bytes = if e.is_dir {
-                    sizes
-                        .as_ref()
-                        .and_then(|s| s.get(&e.path).copied())
-                        .unwrap_or(0)
+                    sizes.size_of(&e.path).unwrap_or(0)
                 } else {
                     e.size
                 };
@@ -2391,21 +2388,14 @@ impl Workspace {
         let Some(entry) = panel.cursor_entry().cloned() else {
             return;
         };
+        let sizes = panel.size_snapshot();
         let dir_size = if entry.is_dir {
-            panel
-                .dir_sizes
-                .lock()
-                .ok()
-                .and_then(|m| m.get(&entry.path).copied())
+            sizes.size_of(&entry.path)
         } else {
             Some(entry.size)
         };
         let children = if entry.is_dir {
-            panel
-                .dir_counts
-                .lock()
-                .ok()
-                .and_then(|m| m.get(&entry.path).copied())
+            sizes.count_of(&entry.path)
         } else {
             None
         };

@@ -103,6 +103,9 @@ impl App {
                                     "This folder no longer exists",
                                     Some(("Go up", "up")),
                                 ),
+                                DirStatus::Partial => {
+                                    ("\u{21bb}", "Folder changed while reading; retrying", None)
+                                }
                                 _ => ("\u{1f4c2}", "Empty", None),
                             }
                         };
@@ -136,11 +139,9 @@ impl App {
                 let mut pending_drop_target: Option<std::path::PathBuf> = None;
                 let mut scrolled = false;
 
-                // Lock shared data once for all rows (clone Arc to avoid borrowing panel)
-                let counts_arc = std::sync::Arc::clone(&panel.dir_counts);
-                let sizes_arc = std::sync::Arc::clone(&panel.dir_sizes);
-                let dir_counts = counts_arc.lock().ok();
-                let dir_sizes = sizes_arc.lock().ok();
+                // One immutable metrics snapshot for the frame. Warm frames
+                // reuse the same Arc; workers never expose mutable maps here.
+                let size_snapshot = panel.size_snapshot();
 
                 let cursor = panel.cursor();
                 let scroll_pending = panel.scroll_to_cursor();
@@ -188,20 +189,9 @@ impl App {
                 panel.set_page_rows(((viewport.height() / row_h).floor() as usize).max(1));
 
                 // Largest entry size in the listing, used to scale occupancy
-                // bars. Computed once with the size map already locked above.
+                // bars.
                 let size_max: u64 = if size_bars {
-                    dir_sizes
-                        .as_ref()
-                        .map(|sizes| {
-                            filtered
-                                .iter()
-                                .map(|&i| {
-                                    crate::panel::entry_display_size(&panel.entries()[i], sizes)
-                                })
-                                .max()
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0)
+                    panel.max_display_size(&filtered)
                 } else {
                     0
                 };
@@ -278,8 +268,11 @@ impl App {
                         Some(modified) => crate::reldate::relative_date(modified, now),
                         None => entry.modified_display().to_string(),
                     };
-                    let size_text = if let Some(ref sizes) = dir_sizes {
-                        entry.size_display_with_dir_size(sizes)
+                    let size_text = if entry.is_dir {
+                        size_snapshot
+                            .size_of(&entry.path)
+                            .map(crate::panel::format_size)
+                            .unwrap_or_else(|| "\u{2026}".to_string())
                     } else {
                         entry.size_display().to_string()
                     };
@@ -367,10 +360,7 @@ impl App {
                     // of the largest entry, ramping to a warning tint when it
                     // dominates the directory.
                     if size_max > 0 {
-                        let size = dir_sizes
-                            .as_ref()
-                            .map(|s| crate::panel::entry_display_size(entry, s))
-                            .unwrap_or(0);
+                        let size = size_snapshot.display_size(entry);
                         if size > 0 {
                             let frac = (size as f32 / size_max as f32).clamp(0.0, 1.0);
                             let bar = egui::Rect::from_min_size(
@@ -469,9 +459,7 @@ impl App {
                         }
 
                         if entry.is_dir {
-                            let count = dir_counts
-                                .as_ref()
-                                .and_then(|c| c.get(&entry.path).copied());
+                            let count = size_snapshot.count_of(&entry.path);
                             Self::paint_folder_icon(ui, count);
                         } else {
                             ui.add_space(3.0);
@@ -613,10 +601,6 @@ impl App {
                     ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
                 }
 
-                // Drop locks before mutating panel
-                drop(dir_counts);
-                drop(dir_sizes);
-
                 // Apply the interactions recorded during the loop.
                 if let Some(c) = pending_cursor {
                     panel.set_cursor(c);
@@ -646,7 +630,8 @@ impl App {
                 ui.horizontal(|ui| {
                     let shown = panel.filtered_count();
                     let total = panel.entries().len();
-                    let sel = panel.selected_count();
+                    let selected_total = panel.selected_count();
+                    let selected_visible = panel.visible_selected_count();
                     // One pass for the folder total plus its largest/oldest entry.
                     let overview = panel.folder_overview();
                     let filters_active =
@@ -670,22 +655,27 @@ impl App {
                         };
                         ui.label(egui::RichText::new(filter_label).size(11.0).color(t.accent));
                     }
-                    if sel > 0 {
+                    if selected_total > 0 {
+                        let selected_size = format_size(panel.visible_selected_size());
+                        let selection_text = if selected_visible == selected_total {
+                            format!("{selected_total} selected ({selected_size})")
+                        } else {
+                            format!(
+                                "{selected_total} selected ({selected_visible} visible, \
+                                 {selected_size})"
+                            )
+                        };
                         ui.label(
-                            egui::RichText::new(format!(
-                                "  |  {} selected ({})",
-                                sel,
-                                format_size(panel.total_size_selected())
-                            ))
-                            .size(11.0)
-                            .color(t.accent_purple),
+                            egui::RichText::new(format!("  |  {selection_text}"))
+                                .size(11.0)
+                                .color(t.accent_purple),
                         );
                     }
 
                     // Folder largest/oldest: the always-on complement to the
                     // selection HUD (which shows the same for the selection).
                     // Hidden once a selection is active, so the two don't clash.
-                    if sel == 0 && total >= 2 {
+                    if selected_total == 0 && total >= 2 {
                         let short = |name: &str| -> String {
                             const MAX: usize = 16;
                             if name.chars().count() > MAX {

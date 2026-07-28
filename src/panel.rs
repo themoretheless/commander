@@ -6,18 +6,23 @@ use std::hash::Hash;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
 mod listing;
 mod selection;
+mod size_index;
 mod view;
+mod watcher;
 
 use listing::ListingState;
 use selection::{Focus, SelectionState};
+pub use size_index::SizeSnapshot;
+use size_index::{SizeIndex, SizeScanInput};
 use view::ViewState;
 pub use view::{ViewConfig, ViewSettings};
+use watcher::DirectoryWatcherState;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct VolumePathKey {
@@ -242,6 +247,11 @@ fn walk_log() -> &'static Mutex<HashMap<VolumePathKey, (std::time::Instant, std:
     LOG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn cache_flush_lock() -> &'static Mutex<()> {
+    static FLUSH: Mutex<()> = Mutex::new(());
+    &FLUSH
+}
+
 const WALK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
 const WALK_EXPENSIVE: std::time::Duration = std::time::Duration::from_secs(2);
 const WALK_LOG_LIMIT: usize = 4_096;
@@ -325,6 +335,8 @@ fn begin_panel_scan(
     current: &Mutex<Arc<ScanEpoch>>,
     sizes: &Mutex<HashMap<PathBuf, u64>>,
     counts: &Mutex<HashMap<PathBuf, usize>>,
+    retained_paths: &HashSet<PathBuf>,
+    revision: &AtomicU64,
 ) -> Arc<ScanEpoch> {
     let _boundary = lock_recover(scan_commit_boundary());
     let next = Arc::new(ScanEpoch::new());
@@ -333,8 +345,15 @@ fn begin_panel_scan(
         current.cancel();
         *current = Arc::clone(&next);
     }
-    lock_recover(sizes).clear();
-    lock_recover(counts).clear();
+    let mut sizes = lock_recover(sizes);
+    let mut counts = lock_recover(counts);
+    let old_sizes = sizes.len();
+    let old_counts = counts.len();
+    sizes.retain(|path, _| retained_paths.contains(path));
+    counts.retain(|path, _| retained_paths.contains(path));
+    if sizes.len() != old_sizes || counts.len() != old_counts {
+        revision.fetch_add(1, AtomicOrdering::Release);
+    }
     next
 }
 
@@ -514,6 +533,7 @@ fn publish_scan_values_if_current<V>(
     epoch: &Arc<ScanEpoch>,
     target: &Mutex<HashMap<PathBuf, V>>,
     values: impl IntoIterator<Item = (PathBuf, V)>,
+    revision: &AtomicU64,
 ) -> bool {
     let values: Vec<_> = values.into_iter().collect();
     if values.is_empty() {
@@ -525,6 +545,7 @@ fn publish_scan_values_if_current<V>(
         return false;
     }
     lock_recover(target).extend(values);
+    revision.fetch_add(1, AtomicOrdering::Release);
     true
 }
 
@@ -535,6 +556,7 @@ fn publish_cached_size_if_current(
     path: &Path,
     key: &VolumePathKey,
     expected_mtime: Option<SystemTime>,
+    revision: &AtomicU64,
 ) -> bool {
     let _boundary = lock_recover(scan_commit_boundary());
     if !scan_is_current(current, epoch) {
@@ -548,6 +570,7 @@ fn publish_cached_size_if_current(
         return false;
     }
     lock_recover(sizes).insert(path.to_path_buf(), cached_size);
+    revision.fetch_add(1, AtomicOrdering::Release);
     true
 }
 
@@ -633,6 +656,7 @@ fn publish_dir_measurements_if_current(
     scan_epoch: &Arc<ScanEpoch>,
     sizes: &Mutex<HashMap<PathBuf, u64>>,
     results: &[DirMeasurement],
+    revision: &AtomicU64,
 ) -> PublishOutcome {
     if results.is_empty() {
         return PublishOutcome::default();
@@ -740,6 +764,7 @@ fn publish_dir_measurements_if_current(
             .iter()
             .map(|result| (result.path.clone(), result.size)),
     );
+    revision.fetch_add(1, AtomicOrdering::Release);
     {
         let mut epochs = lock_recover(active_path_epochs());
         for result in &valid {
@@ -938,19 +963,15 @@ pub fn invalidate_size_cache(path: &Path) {
     lock_recover(walk_log()).retain(|key, _| !path.starts_with(&key.path));
 }
 
-fn flag_watcher_gap(
-    generation: &std::sync::atomic::AtomicU64,
-    reload: &std::sync::atomic::AtomicBool,
-) {
-    generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    reload.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// Save current cache to disk (best-effort, called from background threads).
 /// Snapshot under the mutex, then serialize and write after releasing it.
 /// Stale paths are harmless because reuse always verifies mtime; probing them
 /// here could block every panel behind the mutex when a remote volume is down.
 pub fn flush_cache() {
+    // Serialize snapshot + commit so an older panel worker cannot publish
+    // after a newer one. The persistence layer supplies a unique private temp
+    // file and durable atomic replacement.
+    let _flush = lock_recover(cache_flush_lock());
     let mut entries = {
         let _boundary = lock_recover(scan_commit_boundary());
         let mut cache = lock_recover(dir_size_cache());
@@ -971,9 +992,7 @@ pub fn flush_cache() {
     };
     entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
     let persisted = PersistedCache { schema: 1, entries };
-    if let Ok(json) = serde_json::to_string(&persisted) {
-        crate::fs_util::write_atomic(&cache_path(), &json);
-    }
+    let _ = crate::persistence::save_json_atomic(&cache_path(), &persisted);
 }
 
 /// Why a directory listing is the way it is, so an empty list can be told
@@ -988,10 +1007,19 @@ pub enum DirStatus {
     Denied,
     /// The directory no longer exists.
     Gone,
+    /// The directory opened, but at least one child could not be observed.
+    /// The previous complete snapshot remains authoritative.
+    Partial,
+}
+
+enum DirectoryRead {
+    Complete(Vec<FileEntry>),
+    Incomplete(DirStatus),
 }
 
 /// Classify a directory read for UI messaging. `is_empty` is whether the
 /// listing came back with zero entries.
+#[cfg(test)]
 pub fn classify_dir(path: &Path, is_empty: bool) -> DirStatus {
     match fs::read_dir(path) {
         Ok(_) => {
@@ -1128,15 +1156,6 @@ impl FileEntry {
 
     pub fn size_display(&self) -> &str {
         &self.size_str
-    }
-
-    pub fn size_display_with_dir_size(&self, dir_sizes: &HashMap<PathBuf, u64>) -> String {
-        if self.is_dir
-            && let Some(&size) = dir_sizes.get(&self.path)
-        {
-            return format_size(size);
-        }
-        self.size_str.clone()
     }
 
     pub fn modified_display(&self) -> &str {
@@ -1327,6 +1346,7 @@ fn term_matches(term: &str, name_lower: &str, ext: &str) -> bool {
 
 /// Size used for the occupancy bar: a file's own size, or a directory's
 /// resolved recursive size (0 while it is still being measured).
+#[cfg(test)]
 pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) -> u64 {
     if entry.is_dir {
         dir_sizes.get(&entry.path).copied().unwrap_or(0)
@@ -1423,133 +1443,6 @@ fn sort_entries_with_config(entries: &mut [FileEntry], config: ViewConfig) {
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
-
-enum DirectoryWatcher {
-    Native(notify::RecommendedWatcher),
-    Polling(notify::PollWatcher),
-}
-
-impl DirectoryWatcher {
-    fn watch(
-        &mut self,
-        path: &Path,
-        depth: crate::watcher_policy::WatchDepth,
-    ) -> notify::Result<()> {
-        use notify::Watcher as _;
-
-        let mode = match depth {
-            crate::watcher_policy::WatchDepth::Recursive => notify::RecursiveMode::Recursive,
-            crate::watcher_policy::WatchDepth::DirectoryOnly => notify::RecursiveMode::NonRecursive,
-        };
-        match self {
-            Self::Native(watcher) => watcher.watch(path, mode),
-            Self::Polling(watcher) => watcher.watch(path, mode),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct WatcherSignals {
-    reload: Arc<std::sync::atomic::AtomicBool>,
-    sizes_dirty: Arc<std::sync::atomic::AtomicBool>,
-    rescan_generation: Arc<std::sync::atomic::AtomicU64>,
-    restart_requested: Arc<std::sync::atomic::AtomicBool>,
-    event_generation: Arc<std::sync::atomic::AtomicU64>,
-    ready_generation: Arc<std::sync::atomic::AtomicU64>,
-    batch_scheduled: Arc<std::sync::atomic::AtomicBool>,
-    wake: Option<Notify>,
-    watched: PathBuf,
-    coalesce_window: std::time::Duration,
-}
-
-impl WatcherSignals {
-    fn into_handler(self) -> Box<dyn FnMut(Result<notify::Event, notify::Error>) + Send + 'static> {
-        Box::new(move |result| {
-            let Ok(event) = result else {
-                crate::watcher_health::record_backend_error();
-                self.restart_requested
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                invalidate_size_cache(&self.watched);
-                flag_watcher_gap(&self.rescan_generation, &self.reload);
-                if let Some(wake) = &self.wake {
-                    wake();
-                }
-                return;
-            };
-
-            crate::watcher_health::record_event();
-            if event.need_rescan() {
-                crate::watcher_health::record_rescan_signal();
-                invalidate_size_cache(&self.watched);
-                flag_watcher_gap(&self.rescan_generation, &self.reload);
-                if let Some(wake) = &self.wake {
-                    wake();
-                }
-                return;
-            }
-
-            // A change anywhere under a cached directory makes its size
-            // stale, even though its own mtime does not move.
-            let mut direct = event.paths.is_empty();
-            for path in &event.paths {
-                invalidate_size_cache(path);
-                if path == &self.watched || path.parent() == Some(self.watched.as_path()) {
-                    direct = true;
-                }
-            }
-            if direct {
-                crate::watcher_health::record_direct_event();
-                self.event_generation
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let coalesced = self
-                    .batch_scheduled
-                    .swap(true, std::sync::atomic::Ordering::AcqRel);
-                crate::watcher_health::record_event_batch(coalesced);
-                if !coalesced {
-                    let scheduled = Arc::clone(&self.batch_scheduled);
-                    let events = Arc::clone(&self.event_generation);
-                    let ready = Arc::clone(&self.ready_generation);
-                    let wake = self.wake.clone();
-                    let delay = self.coalesce_window;
-                    let spawn = std::thread::Builder::new()
-                        .name("commander-watcher-batch".to_string())
-                        .spawn(move || {
-                            std::thread::sleep(delay);
-                            // Clear first so an event racing with publication
-                            // schedules the next bounded batch.
-                            scheduled.store(false, std::sync::atomic::Ordering::Release);
-                            ready.store(
-                                events.load(std::sync::atomic::Ordering::Acquire),
-                                std::sync::atomic::Ordering::Release,
-                            );
-                            if let Some(wake) = wake {
-                                wake();
-                            }
-                        });
-                    if spawn.is_err() {
-                        self.batch_scheduled
-                            .store(false, std::sync::atomic::Ordering::Release);
-                        self.ready_generation.store(
-                            self.event_generation
-                                .load(std::sync::atomic::Ordering::Acquire),
-                            std::sync::atomic::Ordering::Release,
-                        );
-                        if let Some(wake) = &self.wake {
-                            wake();
-                        }
-                    }
-                }
-            } else {
-                crate::watcher_health::record_deep_event();
-                self.sizes_dirty
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(wake) = &self.wake {
-                    wake();
-                }
-            }
-        })
-    }
-}
 
 /// A category facet for the quick-filter chips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1714,32 +1607,10 @@ pub struct PanelState {
     /// truncates its forward tail on a new navigation.
     pub history: crate::jumplist::JumpList,
     view: ViewState,
-    pub dir_sizes: Arc<Mutex<HashMap<PathBuf, u64>>>,
-    pub dir_counts: Arc<Mutex<HashMap<PathBuf, usize>>>,
-    /// Identity and cancellation source for the newest metadata scan.
-    dir_scan_epoch: Arc<Mutex<Arc<ScanEpoch>>>,
-    notify: Option<Notify>,
+    sizes: SizeIndex,
+    watcher: DirectoryWatcherState,
     pub drag_entries: Vec<PathBuf>,
     pub drop_target: Option<PathBuf>,
-    pub needs_refresh: Arc<std::sync::atomic::AtomicBool>,
-    /// Incremented when the backend reports an overflow/rescan flag or an
-    /// event-stream error. The next poll replaces the whole listing snapshot.
-    watcher_rescan_generation: Arc<std::sync::atomic::AtomicU64>,
-    /// Backend errors may invalidate the event stream itself; the UI thread
-    /// owns the watcher and performs the restart on its next poll.
-    watcher_restart_requested: Arc<std::sync::atomic::AtomicBool>,
-    applied_rescan_generation: u64,
-    /// Set by deep watcher events: directory sizes need recomputing,
-    /// but the listing itself is unchanged.
-    sizes_dirty: Arc<std::sync::atomic::AtomicBool>,
-    last_sizes_recompute: Option<std::time::Instant>,
-    watcher_event_generation: Arc<std::sync::atomic::AtomicU64>,
-    watcher_ready_generation: Arc<std::sync::atomic::AtomicU64>,
-    watcher_batch_scheduled: Arc<std::sync::atomic::AtomicBool>,
-    applied_event_generation: u64,
-    watcher: Option<DirectoryWatcher>,
-    watched_path: Option<PathBuf>,
-    watcher_retry: Option<(PathBuf, std::time::Instant)>,
 }
 
 impl PanelState {
@@ -1754,46 +1625,26 @@ impl PanelState {
             preview: None,
             history: {
                 let mut h = crate::jumplist::JumpList::new();
-                h.push(path);
+                h.push(path.clone());
                 h
             },
             view: ViewState::default(),
-            dir_sizes: Arc::new(Mutex::new(HashMap::new())),
-            dir_counts: Arc::new(Mutex::new(HashMap::new())),
-            dir_scan_epoch: Arc::new(Mutex::new(Arc::new(ScanEpoch::new()))),
-            notify: None,
+            sizes: SizeIndex::new(path.clone()),
+            watcher: DirectoryWatcherState::default(),
             drag_entries: Vec::new(),
             drop_target: None,
-            needs_refresh: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            watcher_rescan_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            watcher_restart_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            applied_rescan_generation: 0,
-            sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            last_sizes_recompute: None,
-            watcher_event_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            watcher_ready_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            watcher_batch_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            applied_event_generation: 0,
-            watcher: None,
-            watched_path: None,
-            watcher_retry: None,
         }
     }
 
     /// Wire the UI wake-up callback and restart the watcher so its
     /// notifications reach the UI.
     pub fn set_notify(&mut self, notify: Notify) {
-        self.notify = Some(notify);
-        self.watcher = None;
-        self.watched_path = None;
-        self.watcher_retry = None;
-        self.watcher_restart_requested
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        self.start_watcher();
+        self.watcher.set_notify(notify);
+        self.watcher.ensure_binding(&self.current_path);
     }
 
     pub fn has_notify(&self) -> bool {
-        self.notify.is_some()
+        self.watcher.has_notify()
     }
 
     pub fn entries(&self) -> &[FileEntry] {
@@ -1973,36 +1824,55 @@ impl PanelState {
     }
 
     pub fn watcher_active(&self) -> bool {
-        self.watcher.is_some()
+        self.watcher.is_active()
     }
 
     pub fn refresh(&mut self) {
-        self.reload_entries();
-        if self.compute_dir_sizes(true) {
-            self.sizes_dirty
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+        let path = self.current_path.clone();
+        self.sizes.bind(&path);
+        // Subscribe before taking the snapshot. A callback racing with the
+        // read stays queued with this exact binding and forces a later pass.
+        self.watcher.ensure_binding(&path);
+        let ticket = self.watcher.snapshot_ticket();
+        if self.reload_entries() {
+            self.watcher.acknowledge_snapshot(ticket);
+            self.refresh_sizes(true);
+        } else {
+            self.watcher.defer_snapshot(ticket.as_ref());
         }
-        self.last_sizes_recompute = Some(std::time::Instant::now());
-        self.start_watcher();
     }
 
     /// Re-read the directory, preserving selection and cursor position
     /// by path (entries may have been added, removed or re-sorted).
-    fn reload_entries(&mut self) {
+    fn reload_entries(&mut self) -> bool {
+        let read = Self::read_dir(&self.current_path, self.view.show_hidden());
+        self.apply_directory_read(read)
+    }
+
+    fn apply_directory_read(&mut self, read: DirectoryRead) -> bool {
         let cursor_path = self.focused_path();
         let old_cursor = self.cursor();
 
-        let mut entries = Self::read_dir(&self.current_path, self.view.show_hidden());
-        let status = classify_dir(&self.current_path, entries.is_empty());
+        let mut entries = match read {
+            DirectoryRead::Complete(entries) => entries,
+            DirectoryRead::Incomplete(status) => {
+                self.listing.mark_incomplete(status);
+                return false;
+            }
+        };
+        let status = if entries.is_empty() {
+            DirStatus::Empty
+        } else {
+            DirStatus::Listed
+        };
         sort_entries_with_config(&mut entries, self.view.config());
         self.listing.replace(entries, status);
 
-        {
-            self.selection
-                .retain_present(self.listing.entries().iter().map(|entry| &entry.path));
-        }
+        self.selection
+            .retain_present(self.listing.entries().iter().map(|entry| &entry.path));
 
         self.restore_cursor_focus(cursor_path, old_cursor);
+        true
     }
 
     /// Check if fs watcher flagged a change; if so, refresh.
@@ -2010,167 +1880,22 @@ impl PanelState {
     /// Deep events (below the watched dir) only recompute directory
     /// sizes, debounced so event floods during transfers don't thrash.
     pub fn poll_fs_changes(&mut self) -> bool {
-        const SIZES_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
-
-        if self
-            .watcher_restart_requested
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
-            self.watcher = None;
-            self.watched_path = None;
-            self.watcher_retry = Some((
-                self.current_path.clone(),
-                std::time::Instant::now() + WATCHER_RETRY_BACKOFF,
-            ));
+        let path = self.current_path.clone();
+        let outcome = self.watcher.poll(&path);
+        if outcome.sizes_dirty {
+            self.sizes.mark_dirty();
         }
-        if self.notify.is_some() && self.watcher.is_none() {
-            self.start_watcher();
-        }
-        let gap_reload = self
-            .needs_refresh
-            .swap(false, std::sync::atomic::Ordering::Relaxed);
-        let ready_generation = self
-            .watcher_ready_generation
-            .load(std::sync::atomic::Ordering::Acquire);
-        let batch_reload = ready_generation != self.applied_event_generation;
-        let reload = gap_reload || batch_reload;
-        if reload {
-            let rescan_generation = self
-                .watcher_rescan_generation
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let recovered_gap = rescan_generation != self.applied_rescan_generation;
-            if recovered_gap {
-                invalidate_size_cache(&self.current_path);
-                self.applied_rescan_generation = rescan_generation;
+        if let Some(ticket) = outcome.ticket {
+            if self.reload_entries() {
+                self.watcher.acknowledge_snapshot(Some(ticket));
+                self.refresh_sizes(true);
+                crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
+                return true;
             }
-            self.applied_event_generation = ready_generation;
-            self.reload_entries();
-            let retry = self.compute_dir_sizes(true);
-            self.sizes_dirty
-                .store(retry, std::sync::atomic::Ordering::Relaxed);
-            self.last_sizes_recompute = Some(std::time::Instant::now());
-            crate::watcher_health::record_listing_reconciliation(recovered_gap);
-            return true;
+            self.watcher.defer_snapshot(Some(&ticket));
         }
-
-        if self.sizes_dirty.load(std::sync::atomic::Ordering::Relaxed) {
-            let due = self
-                .last_sizes_recompute
-                .is_none_or(|t| t.elapsed() >= SIZES_DEBOUNCE);
-            if due {
-                self.last_sizes_recompute = Some(std::time::Instant::now());
-                // Keep the dirty flag when some dir is still in its walk
-                // cooldown: a later poll picks it up.
-                let retry = self.compute_dir_sizes(false);
-                self.sizes_dirty
-                    .store(retry, std::sync::atomic::Ordering::Relaxed);
-                crate::watcher_health::record_size_reconciliation();
-            } else if let Some(wake) = &self.notify {
-                // Poll again on a later frame once the debounce expires.
-                wake();
-            }
-        }
+        self.poll_sizes();
         false
-    }
-
-    fn start_watcher(&mut self) {
-        // Skip if already watching this path
-        if self.watched_path.as_ref() == Some(&self.current_path) {
-            return;
-        }
-        if self.watcher_retry.as_ref().is_some_and(|(path, retry_at)| {
-            path == &self.current_path && std::time::Instant::now() < *retry_at
-        }) {
-            return;
-        }
-        let recovering = self
-            .watcher_retry
-            .take()
-            .is_some_and(|(path, _)| path == self.current_path);
-
-        // Drop old watcher
-        self.watcher = None;
-        self.watched_path = None;
-
-        let profile = crate::volume_profile::profile(&self.current_path);
-        let policy = crate::watcher_policy::policy_for(profile.backend);
-        let attempts = [
-            (policy.backend, policy.depth, false),
-            (
-                crate::watcher_policy::WatcherBackend::Polling,
-                crate::watcher_policy::WatchDepth::DirectoryOnly,
-                true,
-            ),
-        ];
-        let attempt_count = if policy.backend == crate::watcher_policy::WatcherBackend::Native {
-            2
-        } else {
-            1
-        };
-
-        for &(backend, depth, fallback) in attempts.iter().take(attempt_count) {
-            let signals = WatcherSignals {
-                reload: Arc::clone(&self.needs_refresh),
-                sizes_dirty: Arc::clone(&self.sizes_dirty),
-                rescan_generation: Arc::clone(&self.watcher_rescan_generation),
-                restart_requested: Arc::clone(&self.watcher_restart_requested),
-                event_generation: Arc::clone(&self.watcher_event_generation),
-                ready_generation: Arc::clone(&self.watcher_ready_generation),
-                batch_scheduled: Arc::clone(&self.watcher_batch_scheduled),
-                wake: self.notify.clone(),
-                watched: self.current_path.clone(),
-                coalesce_window: policy.coalesce_window,
-            };
-            let watcher = match backend {
-                crate::watcher_policy::WatcherBackend::Native => {
-                    notify::recommended_watcher(signals.into_handler())
-                        .map(DirectoryWatcher::Native)
-                }
-                crate::watcher_policy::WatcherBackend::Polling => notify::PollWatcher::new(
-                    signals.into_handler(),
-                    notify::Config::default().with_poll_interval(policy.poll_interval),
-                )
-                .map(DirectoryWatcher::Polling),
-            };
-            let Ok(mut watcher) = watcher else {
-                crate::watcher_health::record_start_failure();
-                continue;
-            };
-            if watcher.watch(&self.current_path, depth).is_err() {
-                crate::watcher_health::record_watch_failure();
-                continue;
-            }
-
-            self.watched_path = Some(self.current_path.clone());
-            self.watcher = Some(watcher);
-            self.watcher_retry = None;
-            crate::watcher_health::record_watcher_start(backend, depth, fallback);
-            if recovering {
-                crate::watcher_health::record_reconnect();
-                invalidate_size_cache(&self.current_path);
-                flag_watcher_gap(&self.watcher_rescan_generation, &self.needs_refresh);
-                if let Some(wake) = &self.notify {
-                    wake();
-                }
-            }
-            return;
-        }
-
-        self.mark_watcher_unavailable();
-    }
-
-    fn mark_watcher_unavailable(&mut self) {
-        invalidate_size_cache(&self.current_path);
-        flag_watcher_gap(&self.watcher_rescan_generation, &self.needs_refresh);
-        self.watcher = None;
-        self.watched_path = None;
-        self.watcher_retry = Some((
-            self.current_path.clone(),
-            std::time::Instant::now() + WATCHER_RETRY_BACKOFF,
-        ));
-        if let Some(wake) = &self.notify {
-            wake();
-        }
     }
 
     /// Schedule background recomputation of subdirectory sizes and counts.
@@ -2178,241 +1903,86 @@ impl PanelState {
     /// dirs, background (watcher-noise) recomputes may not.
     /// Returns `true` when some dir was skipped because of the walk
     /// cooldown and the caller should retry later.
-    fn compute_dir_sizes(&self, forced: bool) -> bool {
-        let scan_epoch = begin_panel_scan(&self.dir_scan_epoch, &self.dir_sizes, &self.dir_counts);
+    fn refresh_sizes(&mut self, forced: bool) {
+        let filtered = self.filtered_indices();
+        let path = self.current_path.clone();
+        let scroll_anchor = self.scroll_anchor();
+        let page_rows = self.page_rows();
+        let notify = self.watcher.notify();
+        self.sizes.refresh(
+            SizeScanInput {
+                path: &path,
+                entries: self.listing.entries(),
+                filtered,
+                scroll_anchor,
+                page_rows,
+                notify,
+            },
+            forced,
+        );
+    }
 
-        // Collect dirs that need background work
-        let mut need_count: Vec<PathBuf> = Vec::new();
-        let mut need_size: Vec<(PathBuf, Option<SystemTime>, VolumePathKey)> = Vec::new();
-        let mut retry = false;
-
-        for entry in self.listing.entries() {
-            if !entry.is_dir {
-                continue;
+    fn poll_sizes(&mut self) {
+        let filtered = self.filtered_indices();
+        let path = self.current_path.clone();
+        let input = SizeScanInput {
+            path: &path,
+            entries: self.listing.entries(),
+            filtered,
+            scroll_anchor: self.scroll_anchor(),
+            page_rows: self.page_rows(),
+            notify: self.watcher.notify(),
+        };
+        self.sizes.poll(input);
+    }
+    fn read_dir(path: &Path, show_hidden: bool) -> DirectoryRead {
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) => {
+                let status = if error.kind() == std::io::ErrorKind::NotFound {
+                    DirStatus::Gone
+                } else {
+                    DirStatus::Denied
+                };
+                return DirectoryRead::Incomplete(status);
             }
+        };
 
-            need_count.push(entry.path.clone());
-
-            let dir_mtime = fs::metadata(&entry.path).and_then(|m| m.modified()).ok();
-            let cache_key = VolumePathKey::observe(&entry.path);
-
-            if let Some(mtime) = dir_mtime
-                && publish_cached_size_if_current(
-                    &self.dir_scan_epoch,
-                    &scan_epoch,
-                    &self.dir_sizes,
-                    &entry.path,
-                    &cache_key,
-                    Some(mtime),
-                )
+        let mut result = Vec::new();
+        let mut complete = true;
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    complete = false;
+                    continue;
+                }
+            };
+            let path = entry.path();
+            if !show_hidden
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with('.'))
             {
                 continue;
             }
-
-            // Walk-log guards (see walk_log docs).
-            // In test builds the guards can be switched off via env to
-            // benchmark the unguarded behaviour (profiling harness).
-            #[cfg(test)]
-            let guards_enabled = std::env::var("COMMANDER_DISABLE_WALK_GUARDS").is_err();
-            #[cfg(not(test))]
-            let guards_enabled = true;
-
-            let mut skip = false;
-            if guards_enabled {
-                let _boundary = lock_recover(scan_commit_boundary());
-                if !scan_is_current(&self.dir_scan_epoch, &scan_epoch) {
-                    return retry;
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    complete = false;
+                    continue;
                 }
-                if let Some(&(when, cost)) = lock_recover(walk_log()).get(&cache_key) {
-                    if when.elapsed() < WALK_COOLDOWN {
-                        skip = true;
-                        retry = true;
-                    } else if !forced && cost > WALK_EXPENSIVE {
-                        skip = true;
-                    }
-                }
+            };
+            match FileEntry::from_meta(path, &metadata) {
+                Some(entry) => result.push(entry),
+                None => complete = false,
             }
-            if skip {
-                publish_cached_size_if_current(
-                    &self.dir_scan_epoch,
-                    &scan_epoch,
-                    &self.dir_sizes,
-                    &entry.path,
-                    &cache_key,
-                    None,
-                );
-                continue;
-            }
-
-            need_size.push((entry.path.clone(), dir_mtime, cache_key));
         }
-
-        let filtered = self.filtered_indices();
-        let visible_paths: std::collections::HashSet<PathBuf> =
-            visible_window(filtered.len(), self.scroll_anchor(), self.page_rows())
-                .filter_map(|index| {
-                    filtered
-                        .get(index)
-                        .and_then(|entry| self.listing.entries().get(*entry))
-                })
-                .filter(|entry| entry.is_dir)
-                .map(|entry| entry.path.clone())
-                .collect();
-        let (visible_counts, background_counts): (Vec<_>, Vec<_>) = need_count
-            .into_iter()
-            .partition(|path| visible_paths.contains(path));
-        let (visible_sizes, background_sizes): (Vec<_>, Vec<_>) = need_size
-            .into_iter()
-            .partition(|(path, _, _)| visible_paths.contains(path));
-
-        // Dedicated thread pool (max 10 threads) for filesystem work
-        fn fs_pool() -> &'static rayon::ThreadPool {
-            static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-            POOL.get_or_init(|| {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(10)
-                    .thread_name(|i| format!("fs-worker-{}", i))
-                    .build()
-                    .unwrap()
-            })
+        if complete {
+            DirectoryRead::Complete(result)
+        } else {
+            DirectoryRead::Incomplete(DirStatus::Partial)
         }
-
-        // Subdir counts
-        if !visible_counts.is_empty() || !background_counts.is_empty() {
-            let counts = Arc::clone(&self.dir_counts);
-            let current = Arc::clone(&self.dir_scan_epoch);
-            let epoch = Arc::clone(&scan_epoch);
-            let wake1 = self.notify.clone();
-            fs_pool().spawn_fifo(move || {
-                use rayon::prelude::*;
-                fn count(path: &PathBuf, epoch: &ScanEpoch) -> Option<(PathBuf, usize)> {
-                    if epoch.is_cancelled() {
-                        return None;
-                    }
-                    let Ok(entries) = fs::read_dir(path) else {
-                        return Some((path.clone(), 0));
-                    };
-                    let mut count = 0;
-                    for entry in entries {
-                        if epoch.is_cancelled() {
-                            return None;
-                        }
-                        count += usize::from(entry.is_ok());
-                    }
-                    (!epoch.is_cancelled()).then(|| (path.clone(), count))
-                }
-
-                let visible_results: Vec<_> = visible_counts
-                    .iter()
-                    .filter_map(|path| count(path, &epoch))
-                    .collect();
-                if publish_scan_values_if_current(&current, &epoch, &counts, visible_results)
-                    && let Some(wake) = &wake1
-                {
-                    wake();
-                }
-                if epoch.is_cancelled() {
-                    return;
-                }
-
-                let background_results: Vec<_> = background_counts
-                    .par_iter()
-                    .filter_map(|path| count(path, &epoch))
-                    .collect();
-                if publish_scan_values_if_current(&current, &epoch, &counts, background_results)
-                    && let Some(wake) = &wake1
-                {
-                    wake();
-                }
-            });
-        }
-
-        // Dir sizes
-        if !visible_sizes.is_empty() || !background_sizes.is_empty() {
-            let sizes = Arc::clone(&self.dir_sizes);
-            let current = Arc::clone(&self.dir_scan_epoch);
-            let epoch = Arc::clone(&scan_epoch);
-            let wake2 = self.notify.clone();
-            fs_pool().spawn_fifo(move || {
-                use rayon::prelude::*;
-                fn measure(
-                    (path, modified, cache_key): &(PathBuf, Option<SystemTime>, VolumePathKey),
-                    scan_epoch: &Arc<ScanEpoch>,
-                ) -> Option<DirMeasurement> {
-                    if scan_epoch.is_cancelled() {
-                        return None;
-                    }
-                    let path_epoch = capture_path_epoch(cache_key);
-                    let started = std::time::Instant::now();
-                    let size = dir_size_recursive_until(path, || {
-                        scan_epoch.is_cancelled() || path_epoch.is_cancelled()
-                    })?;
-                    let completed_at = std::time::Instant::now();
-                    Some(DirMeasurement {
-                        path: path.clone(),
-                        modified: *modified,
-                        cache_key: cache_key.clone(),
-                        path_epoch,
-                        size,
-                        completed_at,
-                        elapsed: completed_at.duration_since(started),
-                    })
-                }
-
-                let visible_results: Vec<_> = visible_sizes
-                    .iter()
-                    .filter_map(|item| measure(item, &epoch))
-                    .collect();
-                let visible_outcome =
-                    publish_dir_measurements_if_current(&current, &epoch, &sizes, &visible_results);
-                if visible_outcome.cache_changed {
-                    flush_cache();
-                }
-                if visible_outcome.published > 0
-                    && let Some(wake) = &wake2
-                {
-                    wake();
-                }
-                if epoch.is_cancelled() {
-                    return;
-                }
-
-                let background_results: Vec<_> = background_sizes
-                    .par_iter()
-                    .filter_map(|item| measure(item, &epoch))
-                    .collect();
-                let background_outcome = publish_dir_measurements_if_current(
-                    &current,
-                    &epoch,
-                    &sizes,
-                    &background_results,
-                );
-                if background_outcome.cache_changed {
-                    flush_cache();
-                }
-                if background_outcome.published > 0
-                    && let Some(wake) = &wake2
-                {
-                    wake();
-                }
-            });
-        }
-
-        retry
-    }
-
-    fn read_dir(path: &Path, show_hidden: bool) -> Vec<FileEntry> {
-        jwalk::WalkDir::new(path)
-            .max_depth(1)
-            .skip_hidden(!show_hidden)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.depth() == 1) // skip the root dir itself
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                FileEntry::from_meta(e.path(), &meta)
-            })
-            .collect()
     }
 
     pub fn sort_entries(&mut self) {
@@ -2918,71 +2488,36 @@ impl PanelState {
         }
     }
 
-    pub fn total_size_selected(&self) -> u64 {
-        let sizes = lock_recover(&self.dir_sizes);
+    pub fn visible_selected_count(&self) -> usize {
+        self.filtered_snapshot()
+            .iter()
+            .filter_map(|&index| self.listing.entries().get(index))
+            .filter(|entry| self.selection.selected().contains(&entry.path))
+            .count()
+    }
+
+    pub fn visible_selected_size(&self) -> u64 {
+        let sizes = self.sizes.snapshot();
         self.filtered_snapshot()
             .iter()
             .filter_map(|&i| self.listing.entries().get(i))
             .filter(|e| self.selection.selected().contains(&e.path))
-            .map(|e| {
-                if e.is_dir {
-                    sizes.get(&e.path).copied().unwrap_or(0)
-                } else {
-                    e.size
-                }
-            })
+            .map(|entry| sizes.display_size(entry))
             .sum()
     }
 
-    /// Folder aggregates for the status bar, computed in a single pass over the
-    /// listing with one lock on the size map: total bytes, the largest entry,
-    /// and the oldest. `total` is `None` until at least one subdirectory has
-    /// been sized, so it never flashes a misleadingly-small figure mid-scan.
-    /// Subdirectory sizes come from the background-computed map; an unsized
-    /// subdir counts as 0. Largest/oldest keep the first-seen entry on ties.
     pub fn folder_overview(&self) -> FolderOverview {
-        let sizes = lock_recover(&self.dir_sizes);
-        let mut dir_count = 0usize;
-        let mut computed = 0usize;
-        let mut total = 0u64;
-        // Track winners by index and clone their names once at the end, so the
-        // per-frame pass allocates at most twice (not once per new maximum).
-        let mut largest: Option<(usize, u64)> = None;
-        let mut oldest: Option<(usize, SystemTime)> = None;
-        for (i, e) in self.listing.entries().iter().enumerate() {
-            let size = if e.is_dir {
-                dir_count += 1;
-                match sizes.get(&e.path).copied() {
-                    Some(s) => {
-                        computed += 1;
-                        total += s;
-                        s
-                    }
-                    None => 0,
-                }
-            } else {
-                total += e.size;
-                e.size
-            };
-            if largest.is_none_or(|(_, sz)| size > sz) {
-                largest = Some((i, size));
-            }
-            if let Some(m) = e.modified
-                && oldest.is_none_or(|(_, om)| m < om)
-            {
-                oldest = Some((i, m));
-            }
-        }
-        let total = if computed == 0 && dir_count > 0 {
-            None
-        } else {
-            Some(total)
-        };
-        FolderOverview {
-            total,
-            largest: largest.map(|(i, sz)| (self.listing.entries()[i].name.clone(), sz)),
-            oldest: oldest.map(|(i, m)| (self.listing.entries()[i].name.clone(), m)),
-        }
+        self.sizes
+            .folder_overview(self.entries_gen(), self.listing.entries())
+    }
+
+    pub fn size_snapshot(&self) -> Arc<SizeSnapshot> {
+        self.sizes.snapshot()
+    }
+
+    pub fn max_display_size(&self, filtered: &Arc<[usize]>) -> u64 {
+        self.sizes
+            .max_display_size(self.entries_gen(), self.listing.entries(), filtered)
     }
 
     /// Monotonic generation of this panel's entry list, bumped on every content
@@ -3410,6 +2945,41 @@ mod tests {
     }
 
     #[test]
+    fn visible_selection_metrics_do_not_count_filtered_out_items() {
+        let mut panel = panel_with(vec![entry("alpha", false, 10), entry("zebra", false, 90)]);
+        panel.extend_selection([PathBuf::from("/test/alpha"), PathBuf::from("/test/zebra")]);
+        panel.set_search_query("alpha");
+
+        assert_eq!(panel.selected_count(), 2);
+        assert_eq!(panel.visible_selected_count(), 1);
+        assert_eq!(panel.visible_selected_size(), 10);
+        assert_eq!(
+            panel.selected_or_cursor().unwrap()[0].path,
+            PathBuf::from("/test/alpha")
+        );
+    }
+
+    #[test]
+    fn incomplete_snapshot_preserves_selection_marks_and_reconciliation() {
+        let mut panel = panel_with(vec![entry("keep.txt", false, 10)]);
+        let path = PathBuf::from("/test/keep.txt");
+        panel.select_path(path.clone());
+        panel.toggle_mark(path.clone());
+        panel.watcher.activate_test_binding(Path::new("/test"));
+        let ticket = panel.watcher.snapshot_ticket();
+
+        for status in [DirStatus::Partial, DirStatus::Denied, DirStatus::Gone] {
+            assert!(!panel.apply_directory_read(DirectoryRead::Incomplete(status)));
+            assert_eq!(panel.entries().len(), 1);
+            assert!(panel.is_selected(&path));
+            assert!(panel.is_marked(&path));
+            assert_eq!(panel.dir_status(), status);
+        }
+        panel.watcher.defer_snapshot(ticket.as_ref());
+        assert!(panel.watcher.has_pending_reconciliation_for_test());
+    }
+
+    #[test]
     fn invert_selection_flips_only_filtered_rows() {
         let mut p = panel_with(vec![
             entry("alpha", false, 1),
@@ -3478,6 +3048,11 @@ mod tests {
 
         p.set_sort(SortColumn::Size);
 
+        assert_eq!(p.entries()[0].path, PathBuf::from("/a/same.txt"));
+        assert_eq!(p.entries()[1].path, PathBuf::from("/z/same.txt"));
+
+        p.set_sort(SortColumn::Size);
+        assert_eq!(p.sort_order(), SortOrder::Desc);
         assert_eq!(p.entries()[0].path, PathBuf::from("/a/same.txt"));
         assert_eq!(p.entries()[1].path, PathBuf::from("/z/same.txt"));
     }
@@ -4154,76 +3729,23 @@ mod tests {
     }
 
     #[test]
-    fn stale_directory_scan_cannot_publish_after_epoch_replacement() {
-        let panel = panel_with(Vec::new());
-        let old_path = PathBuf::from("/old/child");
-        let current_path = PathBuf::from("/current/child");
-
-        panel.compute_dir_sizes(true);
-        let old_epoch = Arc::clone(&lock_recover(&panel.dir_scan_epoch));
-        assert!(publish_scan_values_if_current(
-            &panel.dir_scan_epoch,
-            &old_epoch,
-            &panel.dir_sizes,
-            [(old_path.clone(), 10)],
-        ));
-        assert!(publish_scan_values_if_current(
-            &panel.dir_scan_epoch,
-            &old_epoch,
-            &panel.dir_counts,
-            [(old_path.clone(), 1)],
-        ));
-
-        panel.compute_dir_sizes(true);
-        let current_epoch = Arc::clone(&lock_recover(&panel.dir_scan_epoch));
-        assert!(!Arc::ptr_eq(&old_epoch, &current_epoch));
-        assert!(old_epoch.is_cancelled());
-
-        assert!(!publish_scan_values_if_current(
-            &panel.dir_scan_epoch,
-            &old_epoch,
-            &panel.dir_sizes,
-            [(old_path.clone(), 20)],
-        ));
-        assert!(!publish_scan_values_if_current(
-            &panel.dir_scan_epoch,
-            &old_epoch,
-            &panel.dir_counts,
-            [(old_path, 2)],
-        ));
-        assert!(publish_scan_values_if_current(
-            &panel.dir_scan_epoch,
-            &current_epoch,
-            &panel.dir_sizes,
-            [(current_path.clone(), 30)],
-        ));
-        assert!(publish_scan_values_if_current(
-            &panel.dir_scan_epoch,
-            &current_epoch,
-            &panel.dir_counts,
-            [(current_path.clone(), 3)],
-        ));
-
-        assert_eq!(
-            *panel.dir_sizes.lock().unwrap(),
-            HashMap::from([(current_path.clone(), 30)])
-        );
-        assert_eq!(
-            *panel.dir_counts.lock().unwrap(),
-            HashMap::from([(current_path, 3)])
-        );
-    }
-
-    #[test]
     fn watcher_invalidation_wins_against_worker_paused_before_commit() {
         let tmp = TempDir::new();
         let directory = tmp.dir("subject");
         let changed = directory.join("nested/file.bin");
         let cache_key = VolumePathKey::observe(&directory);
         let path_epoch = capture_path_epoch(&cache_key);
-        let panel = panel_with(Vec::new());
-        panel.compute_dir_sizes(true);
-        let scan_epoch = Arc::clone(&lock_recover(&panel.dir_scan_epoch));
+        let current = Arc::new(Mutex::new(Arc::new(ScanEpoch::new())));
+        let sizes = Arc::new(Mutex::new(HashMap::new()));
+        let counts = Arc::new(Mutex::new(HashMap::new()));
+        let revision = Arc::new(AtomicU64::new(0));
+        let scan_epoch = begin_panel_scan(
+            &current,
+            &sizes,
+            &counts,
+            &HashSet::from([directory.clone()]),
+            &revision,
+        );
 
         {
             let _boundary = lock_recover(scan_commit_boundary());
@@ -4233,8 +3755,9 @@ mod tests {
 
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_barrier = Arc::clone(&barrier);
-        let current = Arc::clone(&panel.dir_scan_epoch);
-        let sizes = Arc::clone(&panel.dir_sizes);
+        let worker_current = Arc::clone(&current);
+        let worker_sizes = Arc::clone(&sizes);
+        let worker_revision = Arc::clone(&revision);
         let worker_scan_epoch = Arc::clone(&scan_epoch);
         let worker_path_epoch = Arc::clone(&path_epoch);
         let worker_key = cache_key.clone();
@@ -4252,21 +3775,22 @@ mod tests {
             worker_barrier.wait();
             worker_barrier.wait();
             publish_dir_measurements_if_current(
-                &current,
+                &worker_current,
                 &worker_scan_epoch,
-                &sizes,
+                &worker_sizes,
                 &[measurement],
+                &worker_revision,
             )
         });
 
         barrier.wait();
         invalidate_size_cache(&changed);
         assert!(path_epoch.is_cancelled());
-        assert!(scan_is_current(&panel.dir_scan_epoch, &scan_epoch));
+        assert!(scan_is_current(&current, &scan_epoch));
         barrier.wait();
 
         assert_eq!(worker.join().unwrap(), PublishOutcome::default());
-        assert!(!lock_recover(&panel.dir_sizes).contains_key(&directory));
+        assert!(!lock_recover(&sizes).contains_key(&directory));
         let _boundary = lock_recover(scan_commit_boundary());
         assert!(!lock_recover(dir_size_cache()).contains_key(&cache_key));
         assert!(!lock_recover(walk_log()).contains_key(&cache_key));
@@ -4641,7 +4165,7 @@ mod tests {
         fn wait_for_size(p: &PanelState, dir: &Path, expected: u64) {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
-                if p.dir_sizes.lock().unwrap().get(dir) == Some(&expected) {
+                if p.size_snapshot().size_of(dir) == Some(expected) {
                     return;
                 }
                 assert!(
@@ -4667,14 +4191,38 @@ mod tests {
 
         // What the recursive watcher does on such an event:
         invalidate_size_cache(&new_file);
-        p.sizes_dirty
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        p.last_sizes_recompute = None; // bypass the debounce in the test
+        p.sizes.mark_dirty_immediately_for_test();
         reset_walk_log(); // bypass the walk cooldown in the test
 
         let reloaded = p.poll_fs_changes();
         assert!(!reloaded, "sizes-only events must not reload the listing");
         wait_for_size(&p, &sub, 12);
+    }
+
+    #[test]
+    fn mutation_during_subscription_snapshot_handoff_forces_reconciliation() {
+        let tmp = TempDir::new();
+        tmp.file("before.txt", "before");
+        let mut panel = PanelState::new(tmp.path().to_path_buf());
+        panel.refresh();
+
+        panel.watcher.activate_test_binding(tmp.path());
+        let subscription_ticket = panel.watcher.snapshot_ticket();
+
+        // Deterministic handoff barrier: the subscription is active, but its
+        // first complete listing has not yet been acknowledged.
+        let created = tmp.file("during.txt", "during");
+        panel
+            .watcher
+            .inject_current_change_for_test(created.clone());
+        assert!(panel.reload_entries());
+        panel
+            .watcher
+            .acknowledge_snapshot(subscription_ticket.clone());
+
+        assert!(panel.poll_fs_changes());
+        assert!(panel.entries().iter().any(|entry| entry.path == created));
+        assert!(!panel.watcher.has_pending_reconciliation_for_test());
     }
 
     #[test]
@@ -4693,7 +4241,8 @@ mod tests {
 
         std::fs::remove_file(tmp.path().join("before.txt")).unwrap();
         tmp.file("after.txt", "after");
-        flag_watcher_gap(&panel.watcher_rescan_generation, &panel.needs_refresh);
+        panel.watcher.activate_test_binding(tmp.path());
+        panel.watcher.inject_gap_for_test();
 
         assert!(panel.poll_fs_changes());
         assert!(
@@ -4708,76 +4257,10 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "before.txt")
         );
-        assert_eq!(
-            panel.applied_rescan_generation,
-            panel
-                .watcher_rescan_generation
-                .load(std::sync::atomic::Ordering::Relaxed)
-        );
+        assert!(!panel.watcher.has_pending_reconciliation_for_test());
         let health_after = crate::watcher_health::snapshot();
         assert!(health_after.listing_reconciliations > health_before.listing_reconciliations);
         assert!(health_after.gap_reconciliations > health_before.gap_reconciliations);
-    }
-
-    #[test]
-    fn direct_watcher_events_publish_one_batched_generation() {
-        let tmp = TempDir::new();
-        let event_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let ready_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let batch_scheduled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let wake_counter = Arc::clone(&wakes);
-        let signals = WatcherSignals {
-            reload: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            sizes_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            rescan_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            restart_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            event_generation: Arc::clone(&event_generation),
-            ready_generation: Arc::clone(&ready_generation),
-            batch_scheduled: Arc::clone(&batch_scheduled),
-            wake: Some(Arc::new(move || {
-                wake_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            })),
-            watched: tmp.path().to_path_buf(),
-            coalesce_window: std::time::Duration::from_millis(10),
-        };
-        let mut handler = signals.into_handler();
-
-        for name in ["one.txt", "two.txt"] {
-            handler(Ok(
-                notify::Event::new(notify::EventKind::Any).add_path(tmp.path().join(name))
-            ));
-        }
-        assert_eq!(
-            event_generation.load(std::sync::atomic::Ordering::Acquire),
-            2
-        );
-        assert!(batch_scheduled.load(std::sync::atomic::Ordering::Acquire));
-
-        std::thread::sleep(std::time::Duration::from_millis(40));
-        assert_eq!(
-            ready_generation.load(std::sync::atomic::Ordering::Acquire),
-            2
-        );
-        assert_eq!(wakes.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(!batch_scheduled.load(std::sync::atomic::Ordering::Acquire));
-    }
-
-    #[test]
-    fn backend_restart_request_observes_retry_backoff() {
-        let tmp = TempDir::new();
-        let mut panel = PanelState::new(tmp.path().to_path_buf());
-        panel.notify = Some(Arc::new(|| {}));
-        panel
-            .watcher_restart_requested
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        panel.poll_fs_changes();
-
-        assert!(!panel.watcher_active());
-        let (path, retry_at) = panel.watcher_retry.as_ref().unwrap();
-        assert_eq!(path, &panel.current_path);
-        assert!(*retry_at > std::time::Instant::now());
     }
 
     /// Profiling harness, not a test: drives a real watcher + poll loop

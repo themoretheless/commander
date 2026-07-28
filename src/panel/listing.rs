@@ -70,6 +70,17 @@ impl ListingState {
         self.bump_revision();
     }
 
+    pub(super) fn mark_incomplete(&mut self, status: DirStatus) {
+        debug_assert!(matches!(
+            status,
+            DirStatus::Denied | DirStatus::Gone | DirStatus::Partial
+        ));
+        if self.status != status {
+            self.status = status;
+            self.bump_revision();
+        }
+    }
+
     pub(super) fn resort(&mut self, sort: impl FnOnce(&mut [FileEntry])) {
         sort(&mut self.entries);
         self.bump_revision();
