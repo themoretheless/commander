@@ -46,8 +46,10 @@ target architecture without changing the current migration order:
 These constraints reinforce, rather than replace, the shipped `ViewConfig`,
 `TransferQueueController`, `UiState`, journal proof model, and injected native
 effect ports. `UndoCenter` now owns the in-memory history timeline and
-identity-bound replay reservations. The remaining architectural work is
-narrower: a persistence port/shared envelope and smaller execution facades.
+identity-bound replay reservations. The shared persistence boundary and
+versioned envelope are now shipped too. The remaining architectural work is
+narrower: supply-chain policy, async pathname probing, native release QA, and
+smaller execution facades.
 The typed queue portion is shipped as `ui_request::UiRequestQueue`; historical
 roadmap references to an Effect bus describe that completed migration. `G044`
 has an owner in `volume_profile`; `path_identity` supplies the core of `G057`.
@@ -381,13 +383,17 @@ Three mechanisms connect the core to the shell:
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
   presentation state in `app`; do not let the enum grow dialog implementation
   details.
-- **The remaining OS boundary is persistence, not desktop actions.** Preview,
+- **The primary desktop and persistence boundaries are explicit.** Preview,
   filesystem, hash, context-menu, Clipboard, Trash, opener and free-space calls
-  now sit behind narrow typed ports/adapters. Native menu callbacks cannot
-  mutate files or launch services while AppKit is tracking; invocation and
-  target identity are revalidated before a deferred effect. Persistence has
-  typed pre-commit/committed-not-durable outcomes and atomic helpers, but the
-  stores do not yet share one injected `Persist` port/versioned envelope.
+  sit behind narrow typed ports/adapters. Native menu callbacks cannot mutate
+  files or launch services while AppKit is tracking; invocation and target
+  identity are revalidated before a deferred effect. `persistence::Persist`
+  owns bounded byte reads and revision-checked atomic commits, while typed
+  stores own schema and recovery policy through one versioned envelope.
+  Bookmarks/session receive the same injected port through `App`/`Workspace`;
+  feature flags and the version manifest use the boundary and fail closed.
+  Cross-process CAS, descriptor-relative opens, and migration of the operation
+  journal/content index remain explicit follow-ups.
 - **Supply-chain policy still needs a checked-in owner.** The lockfile has no
   known RustSec vulnerabilities after upgrading `crossbeam-epoch`,
   `wayland-scanner`, `quick-xml`, and the `zbus_xml` chain. Narrow image decoder
@@ -408,13 +414,14 @@ Three mechanisms connect the core to the shell:
   Conflict results are resolved on synthetic data (audit round-4 #27, #28).
   One `is_dir` guard, or reusing the existing recursive `dir_size_cache`,
   closes all three call sites at once.
-- **Four independent, identical, fragile persistence loaders.** `bookmarks`,
-  `smart_folder`, `cmdtemplate`, and `session` each hand-roll the same
-  read-file -> `serde_json::from_str` -> `unwrap_or_default()` load path, which
-  discards the entire store on any single deserialization error with no
-  partial recovery or warning (audit round-4 #31). A shared `load_lenient<T>`
-  helper (or promoting this into the `Persist` port planned in A7) would fix
-  all four at once instead of one at a time.
+- **Persistence migration is intentionally incremental.** Bookmarks support
+  item-level recovery and source quarantine, while session state is strict;
+  both share the injected port and envelope without write-on-read. Feature
+  flags and the version manifest reject corrupt, unreadable, wrong-store, and
+  future-schema input without replacing it. Legacy utility stores such as
+  smart folders, command templates and the panel cache still use the atomic
+  compatibility facade; the operation journal and content index need their own
+  streaming/schema migrations before they can adopt the envelope safely.
 - **Dialog buffers are centralized, while visual modality remains an egui
   composition contract.** `UiState` owns every transient modal buffer and the
   FIFO/Escape router; opening contexts capture panel/directory/path identity.
@@ -548,10 +555,12 @@ Target shape:
   closed on stale, foreign, duplicate, or operation-mismatched completions.
   Durable history and path-identity-bound actions still require a versioned
   persistence schema rather than more in-memory controller state.
-- **Ports (desktop effects shipped, persistence remaining).** Clipboard,
-  Trash, opener, free-space and context-menu capabilities are injected and
-  return structured outcomes. A shared `Persist` port/versioned envelope is
-  the remaining port.
+- **Ports (desktop effects and persistence shipped).** Clipboard, Trash,
+  opener, free-space and context-menu capabilities are injected and return
+  structured outcomes. The object-safe `Persist` port separates byte I/O from
+  typed version/recovery policy; `App` and `Workspace` share one injected
+  instance. Compatibility stores remain visible migration work rather than
+  hidden alternate ownership.
 - **Bounded contexts as modules.** Navigation, Selection, Comparison (done),
   Transfer/ops, View, Persistence each own their types and tests; no core file
   exceeds ~600 lines.

@@ -334,15 +334,22 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
 - Clipboard, opener, Trash, free-space, and native context-menu behavior use
   typed ports. AppKit selectors return invocation-bound intents and perform no
   filesystem or process effects while the menu is tracking.
+- `persistence::Persist` is the shared object-safe byte-store boundary.
+  Bookmarks and session state use an injected instance; feature flags and the
+  version manifest use the same versioned envelope, bounded no-follow reads,
+  generation/revision checks, and fail-closed recovery rules. Recovered
+  bookmark sources are quarantined before an explicit upgrade can replace
+  them.
 - The large workspace integration suite lives in `workspace/tests.rs`;
   pathname parsing/validation lives in its own typed module.
 
-The full serial suite currently passes 913 tests with three intentional
-manual/performance harnesses ignored. The remaining high-value architecture
-work is narrower: introduce the final shared persistence port/versioned
-envelope. Durable undo history, path-identity-bound replay, and reconciliation
-of the last placement-to-journal crash window remain later schema migrations,
-not in-memory controller concerns.
+The full serial suite currently passes 947 tests with three intentional
+manual/performance harnesses ignored. The next high-value architecture work is
+an explicit `cargo-deny` supply-chain policy and CI gate. Durable undo history,
+path-identity-bound replay, migration of the operation journal and content
+index to versioned stores, cross-process persistence CAS, descriptor-relative
+filesystem effects, and reconciliation of the last placement-to-journal crash
+window remain later schema migrations or OS-hardening work.
 
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
 by enabling only the image decoders Commander uses. `cargo audit` reports no

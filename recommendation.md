@@ -50,7 +50,7 @@ references. When the two disagree, architecture.md wins.
 | A4 | Replace the `*_request` flag bus with one typed request queue | **done** | Shipped as `ui_request::UiRequestQueue`: 25 fields removed, one FIFO snapshot drain, payload-preserving modal serialization, FIFO Escape ownership, and tested SafeState-to-Recovery handoff. |
 | A5 | Extract `UiState` (group dialog buffers out of `App`) | **done** | `app::ui_state::UiState` owns transient input and all modal buffers; opening contexts retain immutable targets and the FIFO/Escape contract is unchanged. |
 | A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | **done** | `TransferQueueController` owns queue/active worker/history intent/safe-state identity and returns typed launch/poll/retirement outcomes. `UndoCenter` exclusively owns the stack, timeline revision, and replay reservation lifecycle; stale, foreign, duplicate, partial, and operation-mismatched settlements fail closed. |
-| A7 | Define and inject desktop-effect / persistence ports; return structured outcomes | **partial** | Clipboard, Trash, opener, free-space and context menu are injected with typed failures; native selectors only return deferred intents. Persistence has typed atomic outcomes but no single injected `Persist` port/shared versioned envelope yet. |
+| A7 | Define and inject desktop-effect / persistence ports; return structured outcomes | **done** | Clipboard, Trash, opener, free-space and context menu are injected with typed failures; native selectors only return deferred intents. `Persist` is an object-safe byte boundary, one instance is injected through `App`/`Workspace`, and bookmarks/session, feature flags, and the version manifest use a versioned fail-closed envelope. |
 
 Deferred from the spike (re-land only on explicit demand, each is a feature in
 its own right, not cleanup): tokio runtime + `spawn_blocking`, virtualised file
@@ -77,28 +77,33 @@ subsequent four-role pass extracted `TransferExecutor` and staging-only
 native/clone, delta, sparse, and buffered ports, then hardened commit-time
 mount, identity, durability, overwrite, source-cleanup, and progress
 invariants.
+The next four-role pass added the shared `Persist` boundary and versioned
+envelope. It separates byte I/O from typed schema policy, performs bounded
+no-follow reads, rejects stale in-process revisions, preserves recovered
+bookmark input before explicit upgrade, and blocks destructive version-store
+actions when the manifest is corrupt, incompatible, forged, or path-escaping.
+The accepted scope deliberately leaves the operation journal/content index,
+cross-process CAS, and descriptor-relative filesystem traversal for dedicated
+migrations.
 
 Highest-value next steps, in order:
 
-1. Introduce the remaining persistence boundary: one versioned store envelope
-   and injected `Persist` port that preserves the existing
-   pre-commit/committed-not-durable distinction.
-2. Check in an explicit `cargo-deny` policy and CI gate. `cargo audit` is clean
+1. Check in an explicit `cargo-deny` policy and CI gate. `cargo audit` is clean
    after the 2026-07-28 lockfile refresh and image feature reduction;
    `ttf-parser` remains an unmaintained Wayland/winit transitive with no
    lockfile-only replacement, so its temporary acceptance needs an owner and
    expiry review.
-3. Move go-to-path filesystem metadata probing off the UI frame and design an
+2. Move go-to-path filesystem metadata probing off the UI frame and design an
    `OsStr` plus volume-capability-aware naming policy for non-UTF-8,
    case-sensitivity and Unicode normalization.
-4. Promote `minimum_window`, `zoom_200_accessible`, and
+3. Promote `minimum_window`, `zoom_200_accessible`, and
    `confirmation_owner` to strict visual gates after their scenario-specific
    geometry checks stabilize; keep AppKit popup pixels, VoiceOver and
    multi-monitor placement as permission-bound release checks.
-5. Reconcile the transfer journal's remaining crash window between successful
+4. Reconcile the transfer journal's remaining crash window between successful
    placement and `mark_completed`, then add descriptor-relative namespace
    effects and a streaming parallel-directory planner.
-6. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
+5. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries. Their state ownership is already split; mechanical
    field moves would now make the design worse.
 
