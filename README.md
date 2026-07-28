@@ -315,6 +315,10 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
 
 - `TransferQueueController`, `DeleteController`, and `SpaceProbeController`
   own their asynchronous lifecycle state; `Workspace` applies typed outcomes.
+- `UndoCenter` exclusively owns the undo/redo timeline and replay
+  reservations. Async settlement is bound to the center owner, timeline
+  revision, history entry, and transfer operation; interrupted replays remain
+  locked until the matching recovery is resumed or rolled back.
 - `UiState` owns transient input and all dialog/modal buffers while
   `UiRequestQueue` preserves non-modal and modal FIFO ordering.
 - `ListingState` owns rows, checked revision, and filter-cache invalidation;
@@ -329,11 +333,12 @@ The ordered SOLID/DRY pass completed these ownership boundaries:
 - The large workspace integration suite lives in `workspace/tests.rs`;
   pathname parsing/validation lives in its own typed module.
 
-The full serial suite currently passes 878 tests with three intentional
+The full serial suite currently passes 896 tests with three intentional
 manual/performance harnesses ignored. The remaining high-value architecture
-work is narrower: extract undo/history application from `Workspace`, split the
-large transfer executor by backend, and introduce the final shared persistence
-port/versioned envelope.
+work is narrower: split the large transfer executor by backend and introduce
+the final shared persistence port/versioned envelope. Durable undo history and
+path-identity-bound replay remain a later schema migration, not an in-memory
+history concern.
 
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
 by enabling only the image decoders Commander uses. `cargo audit` reports no

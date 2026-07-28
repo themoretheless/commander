@@ -49,7 +49,7 @@ references. When the two disagree, architecture.md wins.
 | A3 | Encapsulated `ViewConfig`, pure sorting, atomic view transitions | **done** | `ListingState` owns rows/revision/filter cache; the former explicit-`entries_gen` design is superseded. Per-panel session adapters preserve legacy flat JSON while seeding both configs before first listing. Hidden toggles commit config+rows atomically, publish success/rejection through the shared non-modal FIFO, and invalidate a hidden-policy-aware bounded tree cache on success. |
 | A4 | Replace the `*_request` flag bus with one typed request queue | **done** | Shipped as `ui_request::UiRequestQueue`: 25 fields removed, one FIFO snapshot drain, payload-preserving modal serialization, FIFO Escape ownership, and tested SafeState-to-Recovery handoff. |
 | A5 | Extract `UiState` (group dialog buffers out of `App`) | **done** | `app::ui_state::UiState` owns transient input and all modal buffers; opening contexts retain immutable targets and the FIFO/Escape contract is unchanged. |
-| A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | **partial** | `TransferQueueController` now owns queue/active worker/history intent/safe-state identity and returns typed launch/poll/retirement outcomes. The remaining half is a dedicated `UndoCenter`; `Workspace` still applies history outcomes. |
+| A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | **done** | `TransferQueueController` owns queue/active worker/history intent/safe-state identity and returns typed launch/poll/retirement outcomes. `UndoCenter` exclusively owns the stack, timeline revision, and replay reservation lifecycle; stale, foreign, duplicate, partial, and operation-mismatched settlements fail closed. |
 | A7 | Define and inject desktop-effect / persistence ports; return structured outcomes | **partial** | Clipboard, Trash, opener, free-space and context menu are injected with typed failures; native selectors only return deferred intents. Persistence has typed atomic outcomes but no single injected `Persist` port/shared versioned envelope yet. |
 
 Deferred from the spike (re-land only on explicit demand, each is a feature in
@@ -69,33 +69,34 @@ queue controller, `UiState`, a redesigned identity-safe journal/recovery proof
 model, panel listing/view/selection/watcher/size owners, typed desktop-effect
 ports, strict running-app visual QA plus a pure native-menu model, and the
 workspace-test/pathname/ViewConfig ownership pass. Every P0-P2 finding raised
-inside those scopes was fixed and re-reviewed.
+inside those scopes was fixed and re-reviewed. The next four-role pass added
+`UndoCenter`, including owner-bound reservations and explicit
+`Reserved -> Running -> Interrupted` recovery states. Durable history and
+path-identity-bound actions remain an explicit future schema migration.
 
 Highest-value next steps, in order:
 
-1. Extract an `UndoCenter` so `Workspace` no longer applies queue retirement,
-   undo/redo stack transitions, and replay cleanup itself.
-2. Split `transfer.rs` (now the largest production file) into a narrow
+1. Split `transfer.rs` (now the largest production file) into a narrow
    `TransferExecutor` plus explicit clone/delta/buffered backend ports without
    weakening staging, identity or verification proofs.
-3. Introduce the remaining persistence boundary: one versioned store envelope
+2. Introduce the remaining persistence boundary: one versioned store envelope
    and injected `Persist` port that preserves the existing
    pre-commit/committed-not-durable distinction.
-4. Promote `minimum_window`, `zoom_200_accessible`, and
-   `confirmation_owner` to strict visual gates after their scenario-specific
-   geometry checks stabilize; keep AppKit popup pixels, VoiceOver and
-   multi-monitor placement as permission-bound release checks.
-5. Move go-to-path filesystem metadata probing off the UI frame and design an
-   `OsStr` plus volume-capability-aware naming policy for non-UTF-8,
-   case-sensitivity and Unicode normalization.
-6. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
-   operation boundaries. Their state ownership is already split; mechanical
-   field moves would now make the design worse.
-7. Check in an explicit `cargo-deny` policy and CI gate. `cargo audit` is clean
+3. Check in an explicit `cargo-deny` policy and CI gate. `cargo audit` is clean
    after the 2026-07-28 lockfile refresh and image feature reduction;
    `ttf-parser` remains an unmaintained Wayland/winit transitive with no
    lockfile-only replacement, so its temporary acceptance needs an owner and
    expiry review.
+4. Move go-to-path filesystem metadata probing off the UI frame and design an
+   `OsStr` plus volume-capability-aware naming policy for non-UTF-8,
+   case-sensitivity and Unicode normalization.
+5. Promote `minimum_window`, `zoom_200_accessible`, and
+   `confirmation_owner` to strict visual gates after their scenario-specific
+   geometry checks stabilize; keep AppKit popup pixels, VoiceOver and
+   multi-monitor placement as permission-bound release checks.
+6. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
+   operation boundaries. Their state ownership is already split; mechanical
+   field moves would now make the design worse.
 
 The 500-point digest below remains a dated audit snapshot. Its old line numbers
 are evidence of what was reviewed, not a claim that every location still has

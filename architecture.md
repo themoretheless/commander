@@ -45,11 +45,12 @@ target architecture without changing the current migration order:
 
 These constraints reinforce, rather than replace, the shipped `ViewConfig`,
 `TransferQueueController`, `UiState`, journal proof model, and injected native
-effect ports. The remaining architectural work is narrower: an `UndoCenter`,
-a persistence port/shared envelope, and smaller execution facades. The typed
-queue portion is shipped as `ui_request::UiRequestQueue`; historical roadmap
-references to an Effect bus describe that completed migration. `G044` has an
-owner in `volume_profile`; `path_identity` supplies the core of `G057`.
+effect ports. `UndoCenter` now owns the in-memory history timeline and
+identity-bound replay reservations. The remaining architectural work is
+narrower: a persistence port/shared envelope and smaller execution facades.
+The typed queue portion is shipped as `ui_request::UiRequestQueue`; historical
+roadmap references to an Effect bus describe that completed migration. `G044`
+has an owner in `volume_profile`; `path_identity` supplies the core of `G057`.
 `ports`/`provider_runtime`, `workload`, and the journal transition machines own
 `G081-G090`. `measurement`, `benchmark_fixture`,
 `capability_diagnostic`, `support_bundle`, `feature_flags`, and `klm` own
@@ -80,15 +81,17 @@ Grouped by the bounded context each module really belongs to:
   and member search. `fuzzy`, `image_cache`, and `io_budget` are shared
   mechanisms, not UI policies.
 - **Workspace / coordination**: `workspace` composes two panels, pending
-  operations, undo/history, compare/sync/drop glue, and typed controllers:
+  operations, compare/sync/drop glue, and typed controllers:
   `workspace::transfer_queue` owns queue admission, active-worker identity,
   sequencing, cancellation, safe-state publication and retirement;
   `workspace::delete` and `workspace::space_probe` own their asynchronous
-  lifecycles. The 109 workspace integration tests live in
-  `workspace/tests.rs`. `ui_request` is the toolkit-independent FIFO intent
-  boundary; `command` owns the `Command` enum + key mapping and typed
-  composable predicates over pure `CommandContext` snapshots used by every
-  action surface).
+  lifecycles. `undo::UndoCenter` exclusively owns stack transitions,
+  revisions, and replay reservation state while `Workspace` executes the
+  filesystem action and applies typed settlement outcomes. The workspace
+  integration tests live in `workspace/tests.rs`. `ui_request` is the
+  toolkit-independent FIFO intent boundary; `command` owns the `Command` enum
+  + key mapping and typed composable predicates over pure `CommandContext`
+  snapshots used by every action surface).
 - **Selection / comparison**: `compare` (cross-pane classification + selection
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
@@ -164,7 +167,7 @@ track was accepted; one unsafe journal patch was rejected rather than merged.
 
 | Track | Result | Remaining boundary |
 | --- | --- | --- |
-| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, and `SpaceProbeController` own lifecycle state; an `UndoCenter` remains |
+| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, `SpaceProbeController`, and `UndoCenter` own their state; filesystem action execution remains the next coherent facade split |
 | Typed UI request queue + `UiState` | accepted | FIFO/modal/Escape ownership and dialog buffers are centralized; `App` retains presentation-only state |
 | Operation journal/recovery proof model | accepted after a fresh redesign | stable path identities, explicit transitions, migration validation, restart/fault/model tests; UI repair decisions remain explicit |
 | Panel ownership split | accepted | listing/view/sort/selection/watcher/size owners are separate; the public coordination facade is still large |
@@ -350,13 +353,13 @@ Three mechanisms connect the core to the shell:
 ## Known structural debt
 
 - **Two oversized coordination facades remain.** `Workspace` still coordinates
-  panels, pending operations, undo, compare/sync, batch rename and drop glue,
-  but queue, delete and free-space state now live in owned controllers and its
-  tests are out of the production file. `PanelState` still exposes a broad
-  method surface, but listing/revision/filter cache, view config/memory,
-  selection, watcher, and size index are separate owners. The next useful
-  reductions are an `UndoCenter` and smaller command/file-operation facades,
-  not another state-field shuffle.
+  panels, pending operations, history action execution, compare/sync, batch
+  rename and drop glue, but queue, delete, free-space, and undo timeline state
+  now live in owned controllers and its tests are out of the production file.
+  `PanelState` still exposes a broad method surface, but
+  listing/revision/filter cache, view config/memory, selection, watcher, and
+  size index are separate owners. The next useful reductions are smaller
+  command/file-operation facades, not another state-field shuffle.
 - **One oversized operation coordinator.** `transfer` still owns manifest
   iteration, staging/commit, buffered and sparse traversal, progress mutation,
   journal calls, and cleanup policy. `delta_copy`, `operation_journal`,
@@ -527,10 +530,14 @@ Target shape:
   `session` bridge, and the initial config is seeded before the first listing.
   Pure comparison lives in `panel::sort`; `ListingState` alone owns row order,
   revision, and the revision-keyed filter cache.
-- **Services out of `Workspace` (partial).** `TransferQueueController` owns
+- **Services out of `Workspace` (shipped ownership pass).**
+  `TransferQueueController` owns
   queue + active worker + poll/cancel/dismiss/retirement state and returns
-  typed outcomes; `compare` is extracted. `UndoCenter` remains the next
-  coherent service boundary.
+  typed outcomes; `compare` is extracted; `UndoCenter` owns history entries,
+  timeline revision, and replay reservation state. Replay settlement fails
+  closed on stale, foreign, duplicate, or operation-mismatched completions.
+  Durable history and path-identity-bound actions still require a versioned
+  persistence schema rather than more in-memory controller state.
 - **Ports (desktop effects shipped, persistence remaining).** Clipboard,
   Trash, opener, free-space and context-menu capabilities are injected and
   return structured outcomes. A shared `Persist` port/versioned envelope is
