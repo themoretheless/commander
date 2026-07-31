@@ -1,0 +1,57 @@
+[graph]
+# An empty target list keeps platform-specific packages in the checked graph.
+targets = []
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+maximum-db-staleness = "P7D"
+unused-ignored-advisory = "deny"
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "TEMPORARY: Linux Wayland path via winit/sctk-adwaita has no patched release; owner=@themoretheless; review-by=2026-10-21; expires=2026-10-28; remove after an upstream migration or an intentional Linux support decision." },
+]
+
+[licenses]
+confidence-threshold = 0.93
+unused-allowed-license = "deny"
+unused-license-exception = "deny"
+include-dev = true
+include-build = true
+allow = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]
+exceptions = [
+  { allow = ["BSL-1.0"], crate = "clipboard-win@5.4.1" },
+  { allow = ["BSL-1.0"], crate = "error-code@3.3.2" },
+  { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts@0.35.0" },
+  { allow = ["MPL-2.0"], crate = "option-ext@0.2.0" },
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@1.0.8" },
+]
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+multiple-versions-include-dev = true
+wildcards = "deny"
+highlight = "all"
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+required-git-spec = "rev"

@@ -4,7 +4,7 @@ use crate::panel::{FacetSet, KindFacet};
 #[derive(Default)]
 pub(crate) struct PanelRenderOutcome {
     pub tree_toggle: bool,
-    pub context_menu: Option<crate::provider_runtime::ContextMenuUiEffect>,
+    pub context_menu_request: Option<ui_state::ContextMenuCandidate>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -119,7 +119,8 @@ fn render_text_preview(
 impl App {
     /// A row of toggleable quick-filter chips under the filter box.
     fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) -> bool {
-        let before = panel.facets;
+        let before = panel.facets();
+        let mut facets = before;
         Frame::NONE
             .fill(Color32::TRANSPARENT)
             .inner_margin(Margin {
@@ -148,7 +149,7 @@ impl App {
                         .clicked()
                     };
 
-                    let f = &mut panel.facets;
+                    let f = &mut facets;
                     // Kind chips (mutually exclusive: clicking the active one clears it).
                     for (label, kind) in [
                         ("Folders", KindFacet::Folders),
@@ -224,7 +225,12 @@ impl App {
                     }
                 });
             });
-        panel.facets != before
+        if facets != before {
+            panel.set_facets(facets);
+            true
+        } else {
+            false
+        }
     }
 
     /// Render one file panel and return deferred UI effects after its borrows
@@ -244,14 +250,14 @@ impl App {
         tree_open: bool,
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
-        context_menu: &dyn crate::ports::ContextMenuPort,
-        opener: &dyn Fn(&std::path::Path),
+        opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
+        reduced_motion: bool,
     ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
-        let mut context_menu_effect = None;
+        let mut context_menu_request = None;
 
         Frame::NONE
             .fill(panel_bg)
@@ -259,7 +265,6 @@ impl App {
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::ZERO)
             .show(ui, |ui| {
-                ui.set_min_size(ui.available_size());
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 10.0);
 
                 // Path bar: back/forward + breadcrumb arrows
@@ -291,12 +296,8 @@ impl App {
                                 Stroke::new(1.0_f32, t.border),
                                 egui::StrokeKind::Outside,
                             );
-                            ui.painter().text(
-                                back_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "\u{25c0}",
-                                egui::FontId::proportional(13.0),
-                                back_color,
+                            crate::app::glyphs::navigation_triangle(
+                                ui, back_rect, false, back_color,
                             );
                             if back_resp.clicked() && can_back {
                                 panel.go_back();
@@ -317,13 +318,7 @@ impl App {
                                 Stroke::new(1.0_f32, t.border),
                                 egui::StrokeKind::Outside,
                             );
-                            ui.painter().text(
-                                fwd_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "\u{25b6}",
-                                egui::FontId::proportional(13.0),
-                                fwd_color,
-                            );
+                            crate::app::glyphs::navigation_triangle(ui, fwd_rect, true, fwd_color);
                             if fwd_resp.clicked() && can_fwd {
                                 panel.go_forward();
                             }
@@ -405,15 +400,7 @@ impl App {
                                     .interact(Sense::click())
                             };
                             let sep = |ui: &mut egui::Ui| {
-                                Frame::NONE
-                                    .inner_margin(Margin::symmetric(3, 3))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new("\u{276f}")
-                                                .size(11.0)
-                                                .color(t.text_muted),
-                                        );
-                                    });
+                                crate::app::glyphs::breadcrumb_chevron(ui, t.text_muted);
                             };
 
                             ui.horizontal(|ui| {
@@ -485,13 +472,14 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            let text_filter_active = !panel.search_query.trim().is_empty();
+                            let mut query = panel.search_query().to_string();
+                            let text_filter_active = !query.trim().is_empty();
                             let clear_width = if text_filter_active { 30.0 } else { 0.0 };
                             let input_width = (ui.available_width() - clear_width).max(80.0);
                             filter_changed |= ui
                                 .add_sized(
                                     Vec2::new(input_width, 26.0),
-                                    egui::TextEdit::singleline(&mut panel.search_query)
+                                    egui::TextEdit::singleline(&mut query)
                                         .hint_text("\u{1f50d} Filter\u{2026}")
                                         .desired_width(f32::INFINITY)
                                         .margin(egui::vec2(8.0, 4.0)),
@@ -512,8 +500,11 @@ impl App {
                                     .on_hover_text("Clear filter")
                                     .clicked()
                             {
-                                panel.search_query.clear();
+                                query.clear();
                                 filter_changed = true;
+                            }
+                            if query != panel.search_query() {
+                                panel.set_search_query(query);
                             }
                         });
                     });
@@ -553,17 +544,13 @@ impl App {
                                 );
                                 ui.add_space(4.0);
                             }
-                            let name_label =
-                                format!("Name{}", panel.sort_indicator(SortColumn::Name));
-                            if ui
-                                .label(
-                                    egui::RichText::new(name_label)
-                                        .size(11.0)
-                                        .strong()
-                                        .color(header_text),
-                                )
-                                .interact(Sense::click())
-                                .clicked()
+                            if crate::app::glyphs::sort_header(
+                                ui,
+                                "Name",
+                                panel.sort_order_for(SortColumn::Name),
+                                header_text,
+                            )
+                            .clicked()
                             {
                                 panel.set_sort(SortColumn::Name);
                             }
@@ -571,36 +558,26 @@ impl App {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(8.0);
 
-                                let mod_label = format!(
-                                    "Modified{}",
-                                    panel.sort_indicator(SortColumn::Modified)
-                                );
-                                if ui
-                                    .label(
-                                        egui::RichText::new(mod_label)
-                                            .size(11.0)
-                                            .strong()
-                                            .color(header_text),
-                                    )
-                                    .interact(Sense::click())
-                                    .clicked()
+                                if crate::app::glyphs::sort_header(
+                                    ui,
+                                    "Modified",
+                                    panel.sort_order_for(SortColumn::Modified),
+                                    header_text,
+                                )
+                                .clicked()
                                 {
                                     panel.set_sort(SortColumn::Modified);
                                 }
 
                                 ui.add_space(24.0);
 
-                                let size_label =
-                                    format!("Size{}", panel.sort_indicator(SortColumn::Size));
-                                if ui
-                                    .label(
-                                        egui::RichText::new(size_label)
-                                            .size(11.0)
-                                            .strong()
-                                            .color(header_text),
-                                    )
-                                    .interact(Sense::click())
-                                    .clicked()
+                                if crate::app::glyphs::sort_header(
+                                    ui,
+                                    "Size",
+                                    panel.sort_order_for(SortColumn::Size),
+                                    header_text,
+                                )
+                                .clicked()
                                 {
                                     panel.set_sort(SortColumn::Size);
                                 }
@@ -801,24 +778,31 @@ impl App {
                 }
 
                 // File list
-                context_menu_effect = Self::render_file_list(
-                    ui,
-                    panel,
-                    is_active,
-                    t,
-                    panel_side,
-                    size_bars,
-                    compare,
-                    context_menu,
-                    opener,
-                    dragging,
-                    metrics,
-                );
+                // Keep the scroll viewport inside the parent panel after the
+                // final separator stroke and egui's cursor rounding.
+                let list_size = (ui.available_size() - Vec2::new(0.0, 1.0)).max(Vec2::ZERO);
+                ui.allocate_ui_with_layout(list_size, Layout::top_down(Align::Min), |list_ui| {
+                    list_ui.set_min_size(list_size);
+                    list_ui.set_max_size(list_size);
+                    context_menu_request = Self::render_file_list(
+                        list_ui,
+                        panel,
+                        is_active,
+                        t,
+                        panel_side,
+                        size_bars,
+                        compare,
+                        opener,
+                        dragging,
+                        metrics,
+                        reduced_motion,
+                    );
+                });
             });
 
         PanelRenderOutcome {
             tree_toggle,
-            context_menu: context_menu_effect,
+            context_menu_request,
         }
     }
 }

@@ -2,6 +2,74 @@
 
 use super::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeEffectFeedback {
+    message: String,
+    status: NativeEffectStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeEffectStatus {
+    Success,
+    Submitted,
+    Failure,
+}
+
+fn perform_clipboard_write(
+    port: &dyn crate::ports::ClipboardPort,
+    text: &str,
+    label: &str,
+) -> NativeEffectFeedback {
+    match port.write_text(text) {
+        crate::ports::ClipboardOutcome::Committed => NativeEffectFeedback {
+            message: format!("Copied {label}"),
+            status: NativeEffectStatus::Success,
+        },
+        crate::ports::ClipboardOutcome::Submitted => NativeEffectFeedback {
+            message: format!("Submitted {label} to the clipboard"),
+            status: NativeEffectStatus::Submitted,
+        },
+        crate::ports::ClipboardOutcome::Unsupported(failure) => NativeEffectFeedback {
+            message: format!("Clipboard unavailable: {}", failure.message),
+            status: NativeEffectStatus::Failure,
+        },
+        crate::ports::ClipboardOutcome::Failed(failure) => NativeEffectFeedback {
+            message: format!("Could not copy {label}: {}", failure.message),
+            status: NativeEffectStatus::Failure,
+        },
+    }
+}
+
+fn perform_open(
+    port: &dyn crate::ports::OpenerPort,
+    request: &crate::ports::OpenRequest,
+) -> Option<NativeEffectFeedback> {
+    let failure = match port.open(request) {
+        crate::ports::OpenOutcome::Accepted => return None,
+        crate::ports::OpenOutcome::Unsupported(failure)
+        | crate::ports::OpenOutcome::Failed(failure) => failure,
+    };
+    Some(NativeEffectFeedback {
+        message: format!(
+            "Could not open {}: {}",
+            request.path().display(),
+            failure.message
+        ),
+        status: NativeEffectStatus::Failure,
+    })
+}
+
+fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'static str {
+    match status {
+        crate::panel::DirStatus::Denied => "folder access was denied",
+        crate::panel::DirStatus::Gone => "the folder is no longer available",
+        crate::panel::DirStatus::Partial => "the folder could not be read completely",
+        crate::panel::DirStatus::Listed | crate::panel::DirStatus::Empty => {
+            "the folder could not be refreshed"
+        }
+    }
+}
+
 struct AppUiRequestSink<'app, 'ctx> {
     app: &'app mut App,
     ctx: &'ctx egui::Context,
@@ -13,7 +81,7 @@ impl crate::ui_request::UiRequestSink for AppUiRequestSink<'_, '_> {
     }
 
     fn is_modal_open(&self, modal: UiModal) -> bool {
-        self.app.is_ui_modal_open(modal)
+        self.app.ui.modals.is_open(modal)
     }
 
     fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
@@ -27,7 +95,8 @@ impl crate::ui_request::UiRequestSink for AppUiRequestSink<'_, '_> {
 
 fn recovery_review_handoff_allowed(
     safe_state: Option<&crate::operation::SafeState>,
-    active_transfer: Option<&crate::transfer::TransferProgress>,
+    active_operation_id: Option<&crate::operation::OperationId>,
+    active_progress: Option<&crate::transfer::TransferProgress>,
     unrelated_modal_open: bool,
     requested_operation: &crate::operation::OperationId,
 ) -> bool {
@@ -37,11 +106,85 @@ fn recovery_review_handoff_allowed(
         return false;
     }
 
-    active_transfer.is_none_or(|progress| {
-        progress.finished
-            && !progress.errors.is_empty()
-            && progress.operation_id.as_ref() == Some(requested_operation)
-    })
+    match (active_operation_id, active_progress) {
+        (None, None) => true,
+        (Some(operation_id), Some(progress)) => {
+            operation_id == requested_operation && progress.finished && !progress.errors.is_empty()
+        }
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ModalOwnershipSnapshot {
+    prior_open: bool,
+}
+
+impl ModalOwnershipSnapshot {
+    fn capture(prior_open: bool) -> Self {
+        Self { prior_open }
+    }
+
+    fn trap_active_after(self, current_open: bool) -> bool {
+        crate::accessibility::modal_trap_active(self.prior_open, current_open)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameInputPolicy {
+    trapped: bool,
+    background_enabled: bool,
+}
+
+impl FrameInputPolicy {
+    fn resolve(
+        containing_ui_enabled: bool,
+        modal_ownership: ModalOwnershipSnapshot,
+        modal_is_open: bool,
+    ) -> Self {
+        let trapped = modal_ownership.trap_active_after(modal_is_open);
+        Self {
+            trapped,
+            background_enabled: containing_ui_enabled && !trapped,
+        }
+    }
+
+    fn trapped(self) -> bool {
+        self.trapped
+    }
+
+    fn background_enabled(self) -> bool {
+        self.background_enabled
+    }
+
+    fn allows_raw_input(self, containing_ui_enabled: bool, requested: bool) -> bool {
+        self.background_enabled && containing_ui_enabled && requested
+    }
+
+    fn allows_drop_target(self, containing_ui_enabled: bool, requested: bool) -> bool {
+        self.allows_raw_input(containing_ui_enabled, requested)
+    }
+
+    fn allows_drop_execution(self, pointer_released: bool) -> bool {
+        self.background_enabled && pointer_released
+    }
+
+    fn allows_divider_reset(self, containing_ui_enabled: bool, double_clicked: bool) -> bool {
+        self.allows_raw_input(containing_ui_enabled, double_clicked)
+    }
+
+    fn clear_stale_drag(self) -> bool {
+        self.trapped
+    }
+}
+
+fn any_modal_surface_open(
+    safe_state_open: bool,
+    transfer_open: bool,
+    confirmation_open: bool,
+    app_modal_open: bool,
+) -> bool {
+    safe_state_open || transfer_open || confirmation_open || app_modal_open
 }
 
 fn clipped_label(text: &str, max_chars: usize) -> String {
@@ -59,10 +202,14 @@ impl eframe::App for App {
         let _frame_latency =
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FrameTime);
         let ctx = ui.ctx().clone();
+        #[cfg(feature = "visual-qa")]
+        crate::visual_qa::begin_probe_frame(&ctx);
+        let prior_modal_ownership = ModalOwnershipSnapshot::capture(self.has_modal_surface());
         self.begin_frame(&ctx);
+        self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
-        let modal_was_open = self.has_modal_surface();
         self.show_transfer_dialog(&ctx);
+        self.show_delete_activity(&ctx);
         self.show_safe_state_dialog(&ctx);
         self.show_recovery_dialog(&ctx);
         self.show_history_dialog(&ctx);
@@ -84,20 +231,35 @@ impl eframe::App for App {
         self.show_palette_dialog(&ctx);
         // Keep the background disabled on the close frame too, so the pointer
         // release that dismissed a modal cannot click through into a file row.
-        let modal_open =
-            crate::accessibility::modal_trap_active(modal_was_open, self.has_modal_surface());
+        let input_policy = FrameInputPolicy::resolve(
+            ui.is_enabled(),
+            prior_modal_ownership,
+            self.has_modal_surface(),
+        );
+        let modal_open = input_policy.trapped();
+        #[cfg(feature = "visual-qa")]
+        {
+            let owner =
+                crate::accessibility::top_open_modal(|surface| self.is_modal_surface_open(surface))
+                    .map(|surface| format!("{surface:?}"));
+            crate::visual_qa::record_input_policy(&ctx, input_policy.background_enabled(), owner);
+        }
         let trapped = crate::accessibility::focus_order(crate::accessibility::FocusLayout {
             toolbar_visible: !self.ui.focus_mode,
-            operations_open: self.ui.show_operations_center,
+            operations_open: self.show_operations_center,
             dialog_open: modal_open,
         }) == [crate::accessibility::FocusRegion::Dialog];
+        debug_assert_eq!(trapped, input_policy.trapped());
+        if input_policy.clear_stale_drag() {
+            self.ws.cancel_drag();
+        }
         let background_order =
             crate::accessibility::focus_order(crate::accessibility::FocusLayout {
                 toolbar_visible: !self.ui.focus_mode,
-                operations_open: self.ui.show_operations_center,
+                operations_open: self.show_operations_center,
                 dialog_open: false,
             });
-        ui.add_enabled_ui(!trapped, |ui| {
+        ui.add_enabled_ui(input_policy.background_enabled(), |ui| {
             for region in background_order {
                 match region {
                     crate::accessibility::FocusRegion::Toolbar => self.show_toolbar_panel(ui),
@@ -110,7 +272,7 @@ impl eframe::App for App {
                             self.show_shelf_tray(ui);
                             self.show_selection_hud(ui);
                         }
-                        self.show_main_area(ui);
+                        self.show_main_area(ui, input_policy);
                     }
                     crate::accessibility::FocusRegion::RightPanel
                     | crate::accessibility::FocusRegion::Dialog => {}
@@ -118,67 +280,167 @@ impl eframe::App for App {
             }
         });
         self.show_drag_overlay(&ctx);
-        self.show_type_ahead_overlay(&ctx);
-        self.show_toasts(&ctx);
-        self.show_developer_panel(&ctx);
-        self.handle_drop(&ctx);
+        self.show_type_ahead_overlay(&ctx, input_policy.background_enabled());
+        self.show_toasts(&ctx, input_policy.background_enabled());
+        self.show_developer_panel(&ctx, input_policy.background_enabled());
+        self.handle_drop(&ctx, input_policy);
     }
 
     /// eframe calls this on exit and on its auto-save interval; persist our
     /// own session snapshot (panel paths, layout, view toggles).
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        match crate::session::save(&self.to_session()) {
+        let session = self.to_session();
+        match crate::session::save_with(self.persistence.as_ref(), &session, &mut self.session_gate)
+        {
             Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
             Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(failure)) => {
                 crate::persistence::record_durability_warning("Session", &failure);
             }
-            Err(error) => crate::persistence::record_save_failure("Session", &error),
+            Err(error) => crate::persistence::record_json_save_failure("Session", &error),
         }
     }
 }
 
 impl App {
-    fn has_modal_surface(&self) -> bool {
-        self.ws.safe_state.is_some() || self.has_modal_surface_except_safe_state()
+    fn process_pending_context_menu(&mut self, ctx: &egui::Context) {
+        if self.has_modal_surface() || !ctx.input(|input| input.focused) {
+            self.ui.cancel_context_menu();
+            return;
+        }
+        let request = match self.ui.poll_context_menu() {
+            ui_state::ContextMenuPoll::Idle => return,
+            ui_state::ContextMenuPoll::AwaitingPaint => {
+                // The rest of frame B paints and publishes the new row cursor
+                // and AccessKit tree; request frame C for native tracking.
+                ctx.request_repaint();
+                return;
+            }
+            ui_state::ContextMenuPoll::Ready(request) => request,
+        };
+        if self.ws.active != request.panel {
+            return;
+        }
+        let context_menu = std::rc::Rc::clone(&self.context_menu);
+        let effect = crate::provider_runtime::request_context_menu(
+            context_menu.as_ref(),
+            &request.invocation,
+        );
+        self.apply_context_menu_effect(request.panel, effect, ctx);
+        if !self.has_modal_surface() {
+            ctx.memory_mut(|memory| memory.request_focus(request.focus_id));
+        }
     }
 
-    fn has_modal_surface_except_safe_state(&self) -> bool {
-        self.ws.active_transfer.is_some() || self.has_modal_surface_except_safe_state_and_transfer()
+    fn queue_context_menu_candidate(
+        &mut self,
+        panel: ActivePanel,
+        candidate: ui_state::ContextMenuCandidate,
+        ctx: &egui::Context,
+    ) {
+        self.ws.active = ui_state::context_menu_owner(self.ws.active, panel);
+        let invocation = self.context_menu.prepare_context_menu(
+            candidate.target,
+            candidate.trigger,
+            candidate.anchor,
+        );
+        self.ui
+            .queue_context_menu(panel, invocation, candidate.focus_id);
+        ctx.request_repaint();
+    }
+
+    fn has_modal_surface(&self) -> bool {
+        any_modal_surface_open(
+            self.ws.safe_state.is_some(),
+            self.ws.active_transfer_view().is_some(),
+            self.ws.pending_op.is_some(),
+            self.ui.modals.any_open(),
+        ) || self.ws.delete_active()
     }
 
     fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
-        self.ws.pending_op.is_some()
-            || self.ui.recovery.open
-            || self.ui.history_preview.is_some()
-            || self.ui.renaming.is_some()
-            || self.ui.mask_input.is_some()
-            || self.ui.path_input.is_some()
-            || self.ui.recent_input.is_some()
-            || self.ui.run_command.is_some()
-            || self.ui.palette_input.is_some()
-            || self.ui.batch_rename.is_some()
-            || self.ui.sync.is_some()
-            || self.ui.duplicates.is_some()
-            || self.ui.diff.is_some()
-            || self.ui.treemap.is_some()
-            || self.ui.find.is_some()
-            || self.ui.archive.is_some()
-            || self.ui.saved_search_open
-            || self.ui.collections_dialog.is_some()
+        self.ws.pending_op.is_some() || self.ws.delete_active() || self.ui.modals.any_open()
+    }
+
+    fn show_delete_activity(&mut self, ctx: &egui::Context) {
+        let escape_requested =
+            self.take_modal_escape(crate::accessibility::ModalSurface::DeleteActivity);
+        let Some(activity) = self.ws.delete_activity() else {
+            return;
+        };
+        let mut cancel_requested = escape_requested;
+        ctx.request_repaint_after(std::time::Duration::from_millis(125));
+        egui::Window::new("Moving to Trash")
+            .id(egui::Id::new("delete_activity"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label(format!(
+                    "{} of {} {} processed",
+                    activity.completed,
+                    activity.total,
+                    if activity.total == 1 { "item" } else { "items" }
+                ));
+                let fraction = if activity.total == 0 {
+                    0.0
+                } else {
+                    activity.completed as f32 / activity.total as f32
+                };
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(ui.available_width())
+                        .show_percentage(),
+                );
+                ui.add_space(6.0);
+                if ui
+                    .add_enabled(
+                        !activity.cancel_requested,
+                        egui::Button::new(if activity.cancel_requested {
+                            "Cancelling..."
+                        } else {
+                            "Cancel"
+                        })
+                        .corner_radius(egui::CornerRadius::ZERO),
+                    )
+                    .clicked()
+                {
+                    cancel_requested = true;
+                }
+            });
+        if cancel_requested {
+            self.ws.cancel_delete();
+        }
+    }
+
+    pub(crate) fn is_modal_surface_open(
+        &self,
+        surface: crate::accessibility::ModalSurface,
+    ) -> bool {
+        match surface {
+            crate::accessibility::ModalSurface::Transfer => {
+                self.ws.active_transfer_view().is_some()
+            }
+            crate::accessibility::ModalSurface::SafeState => self.ws.safe_state.is_some(),
+            crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
+            crate::accessibility::ModalSurface::DeleteActivity => self.ws.delete_active(),
+            _ => self.ui.modals.is_surface_open(surface),
+        }
     }
 
     fn can_transition_ui_request(&self, request: &UiRequest) -> bool {
         let UiRequest::ReviewRecovery(operation_id) = request else {
             return false;
         };
-        let active_transfer = self
-            .ws
-            .active_transfer
+        let active_transfer = self.ws.active_transfer_view();
+        let active_progress = active_transfer
             .as_ref()
-            .map(|state| crate::lock_util::recover(state));
+            .map(|view| crate::lock_util::recover(&view.progress));
         recovery_review_handoff_allowed(
             self.ws.safe_state.as_ref(),
-            active_transfer.as_deref(),
+            active_transfer.as_ref().map(|view| &view.operation_id),
+            active_progress.as_deref(),
             self.has_modal_surface_except_safe_state_and_transfer(),
             operation_id,
         )
@@ -192,11 +454,11 @@ impl App {
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
         });
         let persistence_generation = crate::persistence::issue_generation();
-        if persistence_generation > self.ui.persistence_issue_seen {
+        if persistence_generation > self.persistence_issue_seen {
             let persistence = crate::persistence::health_snapshot();
-            self.ui.persistence_issue_seen = persistence.issue_generation;
+            self.persistence_issue_seen = persistence.issue_generation;
             if let Some(message) = persistence.last_issue {
-                self.ui.toasts.push(crate::toasts::Toast::new(
+                self.toasts.push(crate::toasts::Toast::new(
                     message,
                     crate::toasts::ToastKind::Error,
                     false,
@@ -216,14 +478,24 @@ impl App {
             input.events.is_empty()
                 && !input.pointer.any_down()
                 && input.smooth_scroll_delta == Vec2::ZERO
-        }) && self.ws.active_transfer.is_none()
+        }) && self.ws.active_transfer_view().is_none()
             && self.ws.pending_op.is_none()
-            && self.ui.find.as_ref().is_none_or(|state| !state.searching);
+            && !self.ws.delete_active()
+            && self
+                .ui
+                .modals
+                .find
+                .as_ref()
+                .is_none_or(|state| !state.searching);
         if !index_idle {
             crate::io_budget::note_foreground_activity();
         }
-        self.ui.content_index.set_idle(index_idle);
-        self.ui.content_index.poll();
+        self.content_index.set_idle(index_idle);
+        self.content_index.poll();
+        {
+            let repaint = ctx.clone();
+            self.ws.poll_space_probe(move || repaint.request_repaint());
+        }
 
         // First frame: wire the repaint callback into both panels and do
         // the initial directory read.
@@ -246,7 +518,7 @@ impl App {
             self.ws.right.refresh();
         }
         drop(listing_latency);
-        if first_listing && let Some(mut trace) = self.ui.startup_trace.take() {
+        if first_listing && let Some(mut trace) = self.startup_trace.take() {
             trace.checkpoint(crate::measurement::StartupPhase::FirstListing);
             trace.finish();
         }
@@ -270,19 +542,23 @@ impl App {
             let c = ctx.clone();
             // poll_transfer drains the next queued transfer (two-way sync second
             // pass, or any op queued behind the active one) via this notify.
-            if self.ws.poll_transfer(move || c.request_repaint()) {
+            let outcome = self.ws.poll_transfer(move || c.request_repaint());
+            let now = ctx.input(|input| input.time);
+            if let Some(report) = outcome.terminal {
+                self.capture_terminal_report(report, (now * 1_000.0) as u64);
+            }
+            if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
                 // log a receipt (jump-back + the same live undo affordance).
-                let now = ctx.input(|i| i.time);
-                if let Some(a) = self.ws.stack.peek_undo() {
-                    self.ui.toasts.push(crate::toasts::Toast::new(
+                if let Some(a) = self.ws.top_undo_action() {
+                    self.toasts.push(crate::toasts::Toast::new(
                         format!("{} {} item(s)", a.verb(), a.item_count()),
                         crate::toasts::ToastKind::Success,
                         true,
                         now,
                     ));
                     if let Some(jump_to) = a.jump_to() {
-                        self.ui.receipts.push(crate::receipts::Receipt {
+                        self.receipts.push(crate::receipts::Receipt {
                             verb: a.verb(),
                             item_count: a.item_count(),
                             timestamp: now,
@@ -293,7 +569,10 @@ impl App {
                 }
             }
         }
-        self.ui.toasts.prune(ctx.input(|i| i.time));
+        if let Some(outcome) = self.ws.poll_delete() {
+            self.apply_delete_outcome(outcome, ctx);
+        }
+        self.toasts.prune(ctx.input(|i| i.time));
         self.dispatch_ui_requests(ctx);
         self.capture_escape_request(ctx);
         self.update_focus_mode(ctx);
@@ -311,25 +590,86 @@ impl App {
         self.ws.defer_ui_requests(deferred);
     }
 
-    fn is_ui_modal_open(&self, modal: UiModal) -> bool {
-        match modal {
-            UiModal::Recovery => self.ui.recovery.open,
-            UiModal::History => self.ui.history_preview.is_some(),
-            UiModal::Rename => self.ui.renaming.is_some(),
-            UiModal::BatchRename => self.ui.batch_rename.is_some(),
-            UiModal::Sync => self.ui.sync.is_some(),
-            UiModal::Duplicates => self.ui.duplicates.is_some(),
-            UiModal::Diff => self.ui.diff.is_some(),
-            UiModal::Treemap => self.ui.treemap.is_some(),
-            UiModal::Find => self.ui.find.is_some(),
-            UiModal::Archive => self.ui.archive.is_some(),
-            UiModal::SavedSearch => self.ui.saved_search_open,
-            UiModal::Collections => self.ui.collections_dialog.is_some(),
-            UiModal::Mask => self.ui.mask_input.is_some(),
-            UiModal::Path => self.ui.path_input.is_some(),
-            UiModal::Recent => self.ui.recent_input.is_some(),
-            UiModal::RunCommand => self.ui.run_command.is_some(),
-            UiModal::Palette => self.ui.palette_input.is_some(),
+    fn apply_delete_outcome(
+        &mut self,
+        outcome: crate::workspace::DeleteOutcome,
+        ctx: &egui::Context,
+    ) {
+        let now = ctx.input(|input| input.time);
+        let item = |count: usize| if count == 1 { "item" } else { "items" };
+        let (message, kind) = if outcome.indeterminate {
+            (
+                "Trash result is uncertain; review operation errors".to_string(),
+                crate::toasts::ToastKind::Error,
+            )
+        } else if outcome.cancelled {
+            (
+                if outcome.trashed == 0 {
+                    "Moving to Trash was cancelled".to_string()
+                } else {
+                    format!("Moved {} to Trash before cancellation", outcome.trashed)
+                },
+                crate::toasts::ToastKind::Info,
+            )
+        } else if outcome.failed == 0 {
+            (
+                format!(
+                    "Moved {} {} to Trash",
+                    outcome.trashed,
+                    item(outcome.trashed)
+                ),
+                crate::toasts::ToastKind::Success,
+            )
+        } else if outcome.trashed == 0 {
+            (
+                format!(
+                    "Could not move {} {} to Trash",
+                    outcome.failed,
+                    item(outcome.failed)
+                ),
+                crate::toasts::ToastKind::Error,
+            )
+        } else {
+            (
+                format!(
+                    "Moved {} to Trash, {} failed",
+                    outcome.trashed, outcome.failed
+                ),
+                crate::toasts::ToastKind::Error,
+            )
+        };
+        self.toasts
+            .push(crate::toasts::Toast::new(message, kind, false, now));
+
+        if outcome.trashed > 0 {
+            let jump_to = outcome
+                .submitted
+                .source_roots
+                .first()
+                .cloned()
+                .unwrap_or_else(|| self.ws.active_panel_ref().current_path.clone());
+            self.receipts.push(crate::receipts::Receipt {
+                verb: "Deleted",
+                item_count: outcome.trashed,
+                timestamp: now,
+                jump_to,
+                undo_action: None,
+            });
+        }
+
+        if !outcome.failures.is_empty() {
+            self.ingest_failure_notice(crate::operation_view::FailureNotice {
+                attempt_id: outcome.attempt_id,
+                operation_id: outcome.operation_id,
+                summary: outcome.submitted,
+                errors: outcome
+                    .failures
+                    .iter()
+                    .map(|failure| failure.message.clone())
+                    .collect(),
+                failures: outcome.failures,
+                created_at_millis: (now * 1_000.0) as u64,
+            });
         }
     }
 
@@ -366,19 +706,39 @@ impl App {
             UiRequest::ReviewRecovery(operation_id) => {
                 self.open_recovery_operation(operation_id, RecoveryDetail::Inspect)
             }
+            UiRequest::OpenExternal(request) => self.open_external(request, ctx),
             UiRequest::CopyPaths(style) => self.copy_paths(style, ctx),
             UiRequest::CopyText { text, label } => {
-                ctx.copy_text(text);
-                let now = ctx.input(|input| input.time);
-                self.ui.toasts.push(crate::toasts::Toast::new(
-                    format!("Copied {label}"),
-                    crate::toasts::ToastKind::Success,
-                    false,
-                    now,
-                ));
+                self.write_clipboard(&text, &label, ctx);
+            }
+            UiRequest::HiddenFilesOutcome(outcome) => {
+                self.apply_hidden_files_outcome(outcome, ctx);
             }
             UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
             UiRequest::DrainShelf => self.drain_shelf(ctx),
+        }
+    }
+
+    fn apply_hidden_files_outcome(
+        &mut self,
+        outcome: crate::panel::ViewApplyOutcome,
+        ctx: &egui::Context,
+    ) {
+        match outcome {
+            crate::panel::ViewApplyOutcome::Applied => {
+                self.tree_children_cache.clear();
+            }
+            crate::panel::ViewApplyOutcome::ReadRejected(status) => {
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!(
+                        "Hidden files unchanged: {}",
+                        hidden_files_rejection_message(status)
+                    ),
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    ctx.input(|input| input.time),
+                ));
+            }
         }
     }
 
@@ -387,12 +747,12 @@ impl App {
             HistoryReplayMode::Undo => self.ws.preview_undo(),
             HistoryReplayMode::Redo => self.ws.preview_redo(),
         };
-        self.ui.history_preview = preview.map(|preview| HistoryPreviewState {
+        self.ui.modals.history_preview = preview.map(|preview| HistoryPreviewState {
             mode,
             preview,
             error: None,
         });
-        if self.ui.history_preview.is_some() {
+        if self.ui.modals.history_preview.is_some() {
             return;
         }
         match mode {
@@ -418,19 +778,50 @@ impl App {
         if !paths.is_empty() {
             let other_root = self.ws.inactive_panel().current_path.clone();
             let text = crate::clipboard::format(&paths, style, Some(&other_root));
-            ctx.copy_text(text);
-            let now = ctx.input(|i| i.time);
-            self.ui.toasts.push(crate::toasts::Toast::new(
-                format!(
-                    "Copied {} ({})",
-                    crate::clipboard::style_label(style),
-                    paths.len()
-                ),
-                crate::toasts::ToastKind::Success,
-                false,
-                now,
-            ));
+            self.write_clipboard(
+                &text,
+                format!("{} ({})", crate::clipboard::style_label(style), paths.len()).as_str(),
+                ctx,
+            );
         }
+    }
+
+    fn write_clipboard(&mut self, text: &str, label: &str, ctx: &egui::Context) {
+        let feedback = perform_clipboard_write(self.clipboard.as_ref(), text, label);
+        let kind = match feedback.status {
+            NativeEffectStatus::Success => crate::toasts::ToastKind::Success,
+            NativeEffectStatus::Submitted => crate::toasts::ToastKind::Info,
+            NativeEffectStatus::Failure => crate::toasts::ToastKind::Error,
+        };
+        self.toasts.push(crate::toasts::Toast::new(
+            feedback.message,
+            kind,
+            false,
+            ctx.input(|input| input.time),
+        ));
+    }
+
+    pub(crate) fn open_external(
+        &mut self,
+        request: crate::ports::OpenRequest,
+        ctx: &egui::Context,
+    ) {
+        if let crate::ports::OpenRequest::OpenPath(path) = &request
+            && crate::archive::is_supported(path)
+        {
+            self.ws.emit_ui_request(UiRequest::Archive(path.clone()));
+            ctx.request_repaint();
+            return;
+        }
+        let Some(feedback) = perform_open(self.opener.as_ref(), &request) else {
+            return;
+        };
+        self.toasts.push(crate::toasts::Toast::new(
+            feedback.message,
+            crate::toasts::ToastKind::Error,
+            false,
+            ctx.input(|input| input.time),
+        ));
     }
 
     fn drain_shelf(&mut self, ctx: &egui::Context) {
@@ -441,7 +832,7 @@ impl App {
         }
         let now = ctx.input(|input| input.time);
         let item = |count: usize| if count == 1 { "item" } else { "items" };
-        self.ui.toasts.push(crate::toasts::Toast::new(
+        self.toasts.push(crate::toasts::Toast::new(
             format!(
                 "{} shelf {} unavailable, kept on the shelf",
                 outcome.unavailable,
@@ -563,17 +954,17 @@ impl App {
                                     format!(
                                         "Rows {}",
                                         crate::density::short_label(
-                                            self.ws.active_panel_ref().density
+                                            self.ws.active_panel_ref().density()
                                         )
                                     ),
                                     true,
                                 );
                                 chip(ui, "Tree".to_string(), self.show_tree);
-                                chip(ui, "Compare".to_string(), self.ui.show_compare);
+                                chip(ui, "Compare".to_string(), self.show_compare);
                                 chip(
                                     ui,
                                     "Hidden".to_string(),
-                                    self.ws.active_panel_ref().show_hidden,
+                                    self.ws.active_panel_ref().show_hidden(),
                                 );
                                 if !self.ws.shelf.is_empty() {
                                     chip(ui, format!("Shelf {}", self.ws.shelf.len()), true);
@@ -632,9 +1023,9 @@ impl App {
     fn quick_action_context(&self) -> crate::quick_actions::QuickActionContext {
         let active = self.ws.active_panel_ref();
         crate::quick_actions::QuickActionContext {
-            selected_count: active.selected.len(),
+            selected_count: active.selected_count(),
             shelf_count: self.ws.shelf.len(),
-            has_filters: crate::panel::filter_is_active(&active.search_query, &active.facets),
+            has_filters: crate::panel::filter_is_active(active.search_query(), &active.facets()),
         }
     }
 
@@ -674,7 +1065,7 @@ impl App {
                 self.ws.execute(crate::command::Command::BeginBatchRename);
             }
             QuickAction::ClearSelection => {
-                self.ws.active_panel().selected.clear();
+                self.ws.active_panel().clear_selection();
             }
             QuickAction::ClearFilters => {
                 self.ws.active_panel().clear_filters();
@@ -694,7 +1085,7 @@ impl App {
     fn save_active_filter_as_smart_folder(&mut self, ctx: &egui::Context) {
         let (name, root, query) = {
             let active = self.ws.active_panel_ref();
-            let query = crate::query::from_panel_filter(&active.search_query, &active.facets);
+            let query = crate::query::from_panel_filter(active.search_query(), &active.facets());
             if query.predicates.is_empty() {
                 return;
             }
@@ -704,10 +1095,10 @@ impl App {
                 .map(|n| n.to_string_lossy().to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| active.current_path.display().to_string());
-            let descriptor = if active.search_query.trim().is_empty() {
-                format!("{} facet(s)", active.facets.active_count())
+            let descriptor = if active.search_query().trim().is_empty() {
+                format!("{} facet(s)", active.facets().active_count())
             } else {
-                active.search_query.trim().to_string()
+                active.search_query().trim().to_string()
             };
             (
                 format!(
@@ -738,8 +1129,7 @@ impl App {
                 crate::toasts::ToastKind::Error,
             )
         };
-        self.ui
-            .toasts
+        self.toasts
             .push(crate::toasts::Toast::new(msg, kind, false, now));
     }
 
@@ -955,11 +1345,48 @@ impl App {
         let Some(effect) = effect else {
             return;
         };
+        let effect = match effect {
+            crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
+                let path = action.path().to_path_buf();
+                let result = self.context_menu.perform_deferred_action(&action);
+                crate::provider_runtime::reduce_deferred_context_menu_result(result, &path)
+            }
+            terminal => Some(terminal),
+        };
+        let Some(effect) = effect else {
+            return;
+        };
         match effect {
-            crate::provider_runtime::ContextMenuUiEffect::RefreshPanel => match panel {
-                ActivePanel::Left => self.ws.left.refresh(),
-                ActivePanel::Right => self.ws.right.refresh(),
-            },
+            crate::provider_runtime::ContextMenuUiEffect::RefreshPanels => {
+                self.ws.left.refresh();
+                self.ws.right.refresh();
+            }
+            crate::provider_runtime::ContextMenuUiEffect::Open(request) => {
+                self.open_external(request, ctx);
+            }
+            crate::provider_runtime::ContextMenuUiEffect::CopyPath(path) => {
+                let text = crate::clipboard::format(
+                    std::slice::from_ref(&path),
+                    crate::clipboard::PathStyle::FullPath,
+                    None,
+                );
+                self.write_clipboard(&text, "path", ctx);
+            }
+            crate::provider_runtime::ContextMenuUiEffect::MoveToTrash(path) => {
+                self.ws.request_context_delete(panel, &path);
+            }
+            crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
+                let now = ctx.input(|input| input.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!(
+                        "Could not {:?}: nested context-menu actions are not allowed",
+                        action.command()
+                    ),
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
+            }
             crate::provider_runtime::ContextMenuUiEffect::Notice { level, message } => {
                 let kind = match level {
                     crate::provider_runtime::ContextMenuNoticeLevel::Info => {
@@ -970,17 +1397,17 @@ impl App {
                     }
                 };
                 let now = ctx.input(|input| input.time);
-                self.ui
-                    .toasts
+                self.toasts
                     .push(crate::toasts::Toast::new(message, kind, false, now));
             }
         }
     }
 
     /// Tree sidebar plus the two file panels with the resizable divider.
-    fn show_main_area(&mut self, ui: &mut egui::Ui) {
+    fn show_main_area(&mut self, ui: &mut egui::Ui, input_policy: FrameInputPolicy) {
         let ctx = ui.ctx().clone();
         let t = self.colors;
+        let containing_ui_enabled = ui.is_enabled();
         let active_left = self.ws.active == ActivePanel::Left;
         let close_active_preview =
             self.take_escape_request(crate::accessibility::EscapeRoute::ActivePreview);
@@ -989,8 +1416,8 @@ impl App {
         } else {
             (false, close_active_preview)
         };
-        let left_metrics = crate::density::metrics(self.ws.left.density);
-        let right_metrics = crate::density::metrics(self.ws.right.density);
+        let left_metrics = crate::density::metrics(self.ws.left.density());
+        let right_metrics = crate::density::metrics(self.ws.right.density());
         let drag_source = if !self.ws.left.drag_entries.is_empty() {
             Some(ActivePanel::Left)
         } else if !self.ws.right.drag_entries.is_empty() {
@@ -998,7 +1425,7 @@ impl App {
         } else {
             None
         };
-        let dragging = drag_source.is_some();
+        let dragging = input_policy.allows_raw_input(containing_ui_enabled, drag_source.is_some());
         // Side surfaces have already carved their space from this Ui. Base
         // pane geometry on the remaining width so panels never overlap them.
         let window_width = ui.available_width();
@@ -1009,18 +1436,18 @@ impl App {
         // not rebuild two HashMaps (cloning every name) on every painted frame.
         let cmp_right_gen = self.ws.right.entries_gen();
         let cmp_left_gen = self.ws.left.entries_gen();
-        let (left_compare, right_compare) = if self.ui.show_compare {
-            match self.ui.compare_cache.take() {
+        let (left_compare, right_compare) = if self.show_compare {
+            match self.compare_cache.take() {
                 Some((rg, lg, lmap, rmap)) if rg == cmp_right_gen && lg == cmp_left_gen => {
                     (Some(lmap), Some(rmap))
                 }
                 _ => (
-                    Some(crate::compare::build_compare_map(&self.ws.right.entries)),
-                    Some(crate::compare::build_compare_map(&self.ws.left.entries)),
+                    Some(crate::compare::build_compare_map(self.ws.right.entries())),
+                    Some(crate::compare::build_compare_map(self.ws.left.entries())),
                 ),
             }
         } else {
-            self.ui.compare_cache = None;
+            self.compare_cache = None;
             (None, None)
         };
 
@@ -1071,17 +1498,10 @@ impl App {
         self.prev_window_width = window_width;
 
         let mut tree_toggle = false;
-        let archive_open = std::cell::RefCell::new(None);
-        let external_opener = self.ws.opener.as_ref();
-        let opener = |path: &std::path::Path| {
-            if crate::archive::is_supported(path) {
-                archive_open.replace(Some(path.to_path_buf()));
-            } else {
-                external_opener(path);
-            }
+        let external_open = std::cell::RefCell::new(Vec::new());
+        let opener = |request: crate::ports::OpenRequest| {
+            external_open.borrow_mut().push(request);
         };
-        let context_menu = std::rc::Rc::clone(&self.context_menu);
-
         // Left panel
         let pane_min = crate::accessibility::pane_min_width(remaining);
         let left_resp = egui::Panel::left(panel_id)
@@ -1090,8 +1510,11 @@ impl App {
             .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
-                if ui.rect_contains_pointer(ui.max_rect()) && ctx.input(|i| i.pointer.any_pressed())
-                {
+                if input_policy.allows_raw_input(
+                    ui.is_enabled(),
+                    ui.rect_contains_pointer(ui.max_rect())
+                        && ctx.input(|i| i.pointer.any_pressed()),
+                ) {
                     self.ws.active = ActivePanel::Left;
                 }
                 Self::render_panel(
@@ -1103,23 +1526,31 @@ impl App {
                     &mut self.image_cache,
                     "left",
                     self.show_tree,
-                    self.ui.show_size_bars,
+                    self.show_size_bars,
                     left_compare.as_ref(),
-                    context_menu.as_ref(),
                     &opener,
                     dragging,
                     left_metrics,
+                    self.accessibility_preferences.reduced_motion,
                 )
             });
         let left_outcome = left_resp.inner;
+        #[cfg(feature = "visual-qa")]
+        crate::visual_qa::record_response(
+            &ctx,
+            crate::visual_qa::ProbeId::LeftPane,
+            &left_resp.response,
+        );
         tree_toggle |= left_outcome.tree_toggle;
 
         let hover_pos = ctx.input(|i| i.pointer.hover_pos());
-        if dragging
-            && drag_source != Some(ActivePanel::Left)
-            && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
-            && self.ws.left.drop_target.is_none()
-        {
+        if input_policy.allows_drop_target(
+            containing_ui_enabled,
+            dragging
+                && drag_source != Some(ActivePanel::Left)
+                && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
+                && self.ws.left.drop_target.is_none(),
+        ) {
             self.ws.left.drop_target = Some(self.ws.left.current_path.clone());
         }
         if self.ws.left.drop_target.is_some() {
@@ -1147,7 +1578,7 @@ impl App {
                     false
                 }
             });
-            if double_clicked {
+            if input_policy.allows_divider_reset(containing_ui_enabled, double_clicked) {
                 ctx.data_mut(|d| {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
                 });
@@ -1159,9 +1590,11 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
                 ui.push_id(crate::accessibility::FocusRegion::RightPanel.id(), |ui| {
-                    if ui.rect_contains_pointer(ui.max_rect())
-                        && ctx.input(|i| i.pointer.any_pressed())
-                    {
+                    if input_policy.allows_raw_input(
+                        ui.is_enabled(),
+                        ui.rect_contains_pointer(ui.max_rect())
+                            && ctx.input(|i| i.pointer.any_pressed()),
+                    ) {
                         self.ws.active = ActivePanel::Right;
                     }
                     Self::render_panel(
@@ -1173,28 +1606,43 @@ impl App {
                         &mut self.image_cache,
                         "right",
                         self.show_tree,
-                        self.ui.show_size_bars,
+                        self.show_size_bars,
                         right_compare.as_ref(),
-                        context_menu.as_ref(),
                         &opener,
                         dragging,
                         right_metrics,
+                        self.accessibility_preferences.reduced_motion,
                     )
                 })
                 .inner
             });
         let right_outcome = right_resp.inner;
+        #[cfg(feature = "visual-qa")]
+        crate::visual_qa::record_response(
+            &ctx,
+            crate::visual_qa::ProbeId::RightPane,
+            &right_resp.response,
+        );
         tree_toggle |= right_outcome.tree_toggle;
 
-        let pending_archive = archive_open.into_inner();
-        self.apply_context_menu_effect(ActivePanel::Left, left_outcome.context_menu, &ctx);
-        self.apply_context_menu_effect(ActivePanel::Right, right_outcome.context_menu, &ctx);
+        let pending_external_opens = external_open.into_inner();
+        if let Some(candidate) = left_outcome.context_menu_request {
+            self.queue_context_menu_candidate(ActivePanel::Left, candidate, &ctx);
+        }
+        if let Some(candidate) = right_outcome.context_menu_request {
+            self.queue_context_menu_candidate(ActivePanel::Right, candidate, &ctx);
+        }
+        for request in pending_external_opens {
+            self.open_external(request, &ctx);
+        }
 
-        if dragging
-            && drag_source != Some(ActivePanel::Right)
-            && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
-            && self.ws.right.drop_target.is_none()
-        {
+        if input_policy.allows_drop_target(
+            containing_ui_enabled,
+            dragging
+                && drag_source != Some(ActivePanel::Right)
+                && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
+                && self.ws.right.drop_target.is_none(),
+        ) {
             self.ws.right.drop_target = Some(self.ws.right.current_path.clone());
         }
         if self.ws.right.drop_target.is_some() {
@@ -1218,11 +1666,7 @@ impl App {
         // built from) so the next frame reuses them while the entries are
         // unchanged.
         if let (Some(lmap), Some(rmap)) = (left_compare, right_compare) {
-            self.ui.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
-        }
-        if let Some(path) = pending_archive {
-            self.ws.emit_ui_request(UiRequest::Archive(path));
-            ctx.request_repaint();
+            self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
         }
     }
 
@@ -1311,13 +1755,15 @@ impl App {
     }
 
     /// Floating capsule showing the current type-ahead buffer.
-    fn show_type_ahead_overlay(&mut self, ctx: &egui::Context) {
+    fn show_type_ahead_overlay(&mut self, ctx: &egui::Context, allow_state_updates: bool) {
         let Some((buffer, last)) = &self.ui.type_ahead else {
             return;
         };
         let now = ctx.input(|i| i.time);
         if now - last > 1.5 {
-            self.ui.type_ahead = None;
+            if allow_state_updates {
+                self.ui.type_ahead = None;
+            }
             return;
         }
         let t = self.colors;
@@ -1345,14 +1791,14 @@ impl App {
 
     /// Bottom-right stack of operation toasts, each with a hairline countdown
     /// and an inline Undo on undoable ops.
-    fn show_toasts(&mut self, ctx: &egui::Context) {
-        if self.ui.toasts.is_empty() {
+    fn show_toasts(&mut self, ctx: &egui::Context, input_enabled: bool) {
+        if self.toasts.is_empty() {
             return;
         }
         let t = self.colors;
         let now = ctx.input(|i| i.time);
         let screen = ctx.input(|i| i.viewport_rect());
-        let active = self.ui.toasts.active();
+        let active = self.toasts.active();
         let mut undo = false;
         let mut avoid = Vec::with_capacity(2);
         for id in ["current_focus_indicator", "active_error_surface"] {
@@ -1396,6 +1842,7 @@ impl App {
             egui::Area::new(egui::Id::new(("toast", toast.id())))
                 .fixed_pos(egui::pos2(stack.x, y))
                 .order(egui::Order::Tooltip)
+                .enabled(input_enabled)
                 .show(ctx, |ui| {
                     egui::Frame::popup(ui.style())
                         .fill(t.bg_card)
@@ -1444,7 +1891,7 @@ impl App {
                         });
                 });
         }
-        if undo {
+        if input_enabled && undo {
             self.ws.execute(crate::command::Command::Undo);
         }
         let repaint_ms = if self.accessibility_preferences.reduced_motion {
@@ -1456,8 +1903,8 @@ impl App {
     }
 
     /// On mouse release, move dragged files into the hovered directory.
-    fn handle_drop(&mut self, ctx: &egui::Context) {
-        if !ctx.input(|i| i.pointer.any_released()) {
+    fn handle_drop(&mut self, ctx: &egui::Context, input_policy: FrameInputPolicy) {
+        if !input_policy.allows_drop_execution(ctx.input(|i| i.pointer.any_released())) {
             return;
         }
         let ctx2 = ctx.clone();
@@ -1477,7 +1924,138 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::recovery_review_handoff_allowed;
+    use super::{
+        FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
+        hidden_files_rejection_message, perform_clipboard_write, perform_open,
+        recovery_review_handoff_allowed,
+    };
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    struct ScriptedClipboard {
+        outcomes: RefCell<VecDeque<crate::ports::ClipboardOutcome>>,
+        writes: RefCell<Vec<String>>,
+    }
+
+    impl crate::ports::ClipboardPort for ScriptedClipboard {
+        fn write_text(&self, text: &str) -> crate::ports::ClipboardOutcome {
+            self.writes.borrow_mut().push(text.to_string());
+            self.outcomes
+                .borrow_mut()
+                .pop_front()
+                .expect("scripted clipboard outcome")
+        }
+    }
+
+    struct ScriptedOpener {
+        outcomes: RefCell<VecDeque<crate::ports::OpenOutcome>>,
+        requests: RefCell<Vec<crate::ports::OpenRequest>>,
+    }
+
+    impl crate::ports::OpenerPort for ScriptedOpener {
+        fn open(&self, request: &crate::ports::OpenRequest) -> crate::ports::OpenOutcome {
+            self.requests.borrow_mut().push(request.clone());
+            self.outcomes
+                .borrow_mut()
+                .pop_front()
+                .expect("scripted opener outcome")
+        }
+    }
+
+    fn failure(message: &str) -> crate::ports::NativeFailure {
+        crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: message.to_string(),
+        }
+    }
+
+    fn frame_policy(
+        containing_ui_enabled: bool,
+        prior_modal_open: bool,
+        current_modal_open: bool,
+    ) -> FrameInputPolicy {
+        FrameInputPolicy::resolve(
+            containing_ui_enabled,
+            ModalOwnershipSnapshot::capture(prior_modal_open),
+            current_modal_open,
+        )
+    }
+
+    #[test]
+    fn disabled_background_cannot_activate_a_panel() {
+        let policy = frame_policy(true, false, false);
+        assert!(!policy.allows_raw_input(false, true));
+        assert!(!policy.allows_raw_input(true, false));
+        assert!(policy.allows_raw_input(true, true));
+    }
+
+    #[test]
+    fn trapped_frame_never_targets_or_executes_a_drop_and_clears_stale_drag() {
+        for policy in [
+            frame_policy(true, false, true),
+            frame_policy(true, true, false),
+        ] {
+            assert!(policy.trapped());
+            assert!(!policy.allows_drop_target(true, true));
+            assert!(!policy.allows_drop_execution(true));
+            assert!(policy.clear_stale_drag());
+        }
+    }
+
+    #[test]
+    fn untrapped_frame_preserves_drop_and_divider_input() {
+        let policy = frame_policy(true, false, false);
+        assert!(!policy.trapped());
+        assert!(policy.allows_drop_target(true, true));
+        assert!(policy.allows_drop_execution(true));
+        assert!(policy.allows_divider_reset(true, true));
+        assert!(!policy.clear_stale_drag());
+    }
+
+    #[test]
+    fn trapped_frame_blocks_divider_and_auxiliary_actions() {
+        let policy = frame_policy(true, true, false);
+        assert!(!policy.allows_divider_reset(true, true));
+        assert!(!policy.background_enabled());
+    }
+
+    #[test]
+    fn prior_modal_ownership_survives_poll_and_render_transitions() {
+        let prior_transfer = any_modal_surface_open(false, true, false, false);
+        let retired_transfer = frame_policy(true, prior_transfer, false);
+        assert!(
+            retired_transfer.trapped(),
+            "a transfer retired by begin_frame still owns its close frame"
+        );
+
+        let idle = frame_policy(true, false, false);
+        assert!(!idle.trapped());
+
+        let newly_opened = frame_policy(true, false, true);
+        assert!(newly_opened.trapped());
+    }
+
+    #[test]
+    fn safe_state_and_transfer_surfaces_both_activate_the_frame_trap() {
+        for modal_is_open in [
+            any_modal_surface_open(true, false, false, false),
+            any_modal_surface_open(false, true, false, false),
+        ] {
+            let policy = frame_policy(true, false, modal_is_open);
+            assert!(policy.trapped());
+            assert!(!policy.allows_drop_execution(true));
+        }
+    }
+
+    #[test]
+    fn safe_state_to_recovery_handoff_remains_trapped() {
+        let safe_state_with_retained_transfer = any_modal_surface_open(true, true, false, false);
+        let recovery_open = any_modal_surface_open(false, false, false, true);
+
+        let policy = frame_policy(true, safe_state_with_retained_transfer, recovery_open);
+        assert!(policy.trapped());
+        assert!(!policy.background_enabled());
+    }
 
     #[test]
     fn safe_state_handoff_allows_its_retained_error_transfer_only() {
@@ -1495,23 +2073,101 @@ mod tests {
 
         assert!(recovery_review_handoff_allowed(
             Some(&safe_state),
+            Some(&operation_id),
             Some(&transfer),
             false,
             &operation_id,
         ));
         assert!(!recovery_review_handoff_allowed(
             Some(&safe_state),
+            Some(&operation_id),
             Some(&transfer),
             true,
             &operation_id,
         ));
 
         transfer.operation_id = Some(crate::operation::OperationId("other".to_string()));
+        assert!(
+            recovery_review_handoff_allowed(
+                Some(&safe_state),
+                Some(&operation_id),
+                Some(&transfer),
+                false,
+                &operation_id,
+            ),
+            "handoff trusts the controller's canonical identity"
+        );
         assert!(!recovery_review_handoff_allowed(
             Some(&safe_state),
+            Some(&crate::operation::OperationId("other".to_string())),
             Some(&transfer),
             false,
             &operation_id,
         ));
+    }
+
+    #[test]
+    fn clipboard_feedback_reports_success_only_after_committed_outcome() {
+        let port = ScriptedClipboard {
+            outcomes: RefCell::new(
+                [
+                    crate::ports::ClipboardOutcome::Failed(failure("denied")),
+                    crate::ports::ClipboardOutcome::Submitted,
+                    crate::ports::ClipboardOutcome::Committed,
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            writes: RefCell::new(Vec::new()),
+        };
+
+        let failed = perform_clipboard_write(&port, "first", "path");
+        let submitted = perform_clipboard_write(&port, "second", "path");
+        let committed = perform_clipboard_write(&port, "third", "path");
+
+        assert_eq!(failed.status, NativeEffectStatus::Failure);
+        assert!(failed.message.contains("denied"));
+        assert_eq!(submitted.status, NativeEffectStatus::Submitted);
+        assert_eq!(committed.status, NativeEffectStatus::Success);
+        assert_eq!(*port.writes.borrow(), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn opener_acceptance_is_quiet_and_failure_is_reduced() {
+        let port = ScriptedOpener {
+            outcomes: RefCell::new(
+                [
+                    crate::ports::OpenOutcome::Accepted,
+                    crate::ports::OpenOutcome::Failed(failure("launch denied")),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            requests: RefCell::new(Vec::new()),
+        };
+        let request =
+            crate::ports::OpenRequest::OpenPath(std::path::PathBuf::from("/tmp/value.txt"));
+
+        assert_eq!(perform_open(&port, &request), None);
+        let failed = perform_open(&port, &request).expect("failure feedback");
+        assert_eq!(failed.status, NativeEffectStatus::Failure);
+        assert!(failed.message.contains("launch denied"));
+        assert_eq!(port.requests.borrow().len(), 2);
+    }
+
+    #[test]
+    fn hidden_view_rejections_have_specific_non_modal_feedback() {
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Denied),
+            "folder access was denied"
+        );
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Gone),
+            "the folder is no longer available"
+        );
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Partial),
+            "the folder could not be read completely"
+        );
     }
 }

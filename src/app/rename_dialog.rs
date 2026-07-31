@@ -1,5 +1,6 @@
 //! Inline rename editor: a small modal seeded from the cursor entry, with
-//! live name validation. Commit/validation logic lives in `workspace`.
+//! live name validation. Commit orchestration lives in `workspace`; lexical
+//! validation lives in `pathname`.
 
 use super::*;
 
@@ -9,7 +10,7 @@ impl App {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        self.ui.renaming = Some(RenameState {
+        self.ui.modals.renaming = Some(RenameState {
             siblings: crate::workspace::Workspace::rename_siblings(&path),
             path,
             buffer: name,
@@ -21,7 +22,7 @@ impl App {
     pub(crate) fn show_rename_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Rename);
 
-        let Some(state) = &mut self.ui.renaming else {
+        let Some(state) = &mut self.ui.modals.renaming else {
             return;
         };
         let t = self.colors;
@@ -70,7 +71,9 @@ impl App {
                 state.error = if state.buffer.trim() == old_name {
                     None
                 } else {
-                    crate::workspace::validate_new_name(&state.buffer, &state.siblings).err()
+                    crate::pathname::validate_new_name(&state.buffer, &state.siblings)
+                        .err()
+                        .map(|error| error.to_string())
                 };
                 let valid = state.error.is_none();
 
@@ -124,12 +127,12 @@ impl App {
             });
 
         if cancel {
-            self.ui.renaming = None;
+            self.ui.modals.renaming = None;
             return;
         }
         if commit {
             let (path, buffer, changed) = {
-                let s = self.ui.renaming.as_ref().unwrap();
+                let s = self.ui.modals.renaming.as_ref().unwrap();
                 let old_name = s
                     .path
                     .file_name()
@@ -143,19 +146,19 @@ impl App {
             };
             match self.ws.commit_rename(&path, &buffer) {
                 Ok(()) => {
-                    self.ui.renaming = None;
+                    self.ui.modals.renaming = None;
                     if changed {
                         let now = ctx.input(|i| i.time);
-                        self.ui.toasts.push(crate::toasts::Toast::new(
+                        self.toasts.push(crate::toasts::Toast::new(
                             "Renamed 1 item",
                             crate::toasts::ToastKind::Success,
                             true,
                             now,
                         ));
-                        if let Some(action) = self.ws.stack.peek_undo().cloned()
+                        if let Some(action) = self.ws.top_undo_action().cloned()
                             && let Some(jump_to) = action.jump_to()
                         {
-                            self.ui.receipts.push(crate::receipts::Receipt {
+                            self.receipts.push(crate::receipts::Receipt {
                                 verb: action.verb(),
                                 item_count: action.item_count(),
                                 timestamp: now,
@@ -166,7 +169,7 @@ impl App {
                     }
                 }
                 Err(msg) => {
-                    if let Some(s) = &mut self.ui.renaming {
+                    if let Some(s) = &mut self.ui.modals.renaming {
                         s.error = Some(msg);
                     }
                 }

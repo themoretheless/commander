@@ -13,7 +13,7 @@ fn change_count_label(count: usize) -> String {
 
 impl App {
     pub(crate) fn open_mask(&mut self, ctx: &egui::Context) {
-        self.ui.mask_input = Some(String::new());
+        self.ui.modals.mask_input = Some(String::new());
         Self::mark_modal_opened(ctx, UiModal::Mask);
     }
 
@@ -23,7 +23,7 @@ impl App {
             crate::accessibility::ModalSurface::Mask,
         ));
         let active_panel = self.ws.active_panel_ref();
-        let Some(buffer) = &mut self.ui.mask_input else {
+        let Some(buffer) = &mut self.ui.modals.mask_input else {
             return;
         };
         let t = self.colors;
@@ -31,8 +31,6 @@ impl App {
         let mut commit = false;
         let mut cancel = false;
 
-        // The title is hidden (title_bar(false)); the string serves as the
-        // window's egui Id, so keep it unique and stable.
         egui::Window::new("Select by mask")
             .collapsible(false)
             .resizable(false)
@@ -77,11 +75,33 @@ impl App {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if crate::app::ui_common::themed_button(ui, "Select", true, &t) {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Select")
+                                    .size(13.0)
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(t.accent)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
                         commit = true;
                     }
                     ui.add_space(8.0);
-                    if crate::app::ui_common::themed_button(ui, "Cancel", false, &t) {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Cancel")
+                                    .size(13.0)
+                                    .color(t.text_primary),
+                            )
+                            .fill(t.bg_card)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
                         cancel = true;
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -94,10 +114,10 @@ impl App {
             });
 
         if cancel {
-            self.ui.mask_input = None;
+            self.ui.modals.mask_input = None;
             return;
         }
-        if commit && let Some(buf) = self.ui.mask_input.take() {
+        if commit && let Some(buf) = self.ui.modals.mask_input.take() {
             self.ws.active_panel().select_by_mask(&buf);
         }
     }

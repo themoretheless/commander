@@ -1,6 +1,8 @@
 //! Lazy provider activation and the process boundary for optional providers.
 
-use crate::ports::{ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult};
+use crate::ports::{
+    ContextMenuAction, ContextMenuCommand, ContextMenuFailure, ContextMenuPort, ContextMenuResult,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -17,17 +19,51 @@ pub enum ContextMenuNoticeLevel {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuUiEffect {
-    RefreshPanel,
+    RefreshPanels,
+    Open(crate::ports::OpenRequest),
+    CopyPath(PathBuf),
+    MoveToTrash(PathBuf),
+    Perform(ContextMenuAction),
     Notice {
         level: ContextMenuNoticeLevel,
         message: String,
     },
 }
 
-pub fn reduce_context_menu_result(result: ContextMenuResult) -> Option<ContextMenuUiEffect> {
+pub fn reduce_context_menu_result(
+    result: ContextMenuResult,
+    path: &Path,
+) -> Option<ContextMenuUiEffect> {
     match result {
         ContextMenuResult::Dismissed => None,
-        ContextMenuResult::RefreshRequested => Some(ContextMenuUiEffect::RefreshPanel),
+        ContextMenuResult::RefreshRequested => Some(ContextMenuUiEffect::RefreshPanels),
+        ContextMenuResult::OpenRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::OpenPath(path.to_path_buf()),
+        )),
+        ContextMenuResult::OpenWithRequested { application } => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::OpenWith {
+                path: path.to_path_buf(),
+                application,
+            },
+        )),
+        ContextMenuResult::QuickLookRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::QuickLook(path.to_path_buf()),
+        )),
+        ContextMenuResult::GetInfoRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::GetInfo(path.to_path_buf()),
+        )),
+        ContextMenuResult::RevealRequested => Some(ContextMenuUiEffect::Open(
+            crate::ports::OpenRequest::Reveal(path.to_path_buf()),
+        )),
+        ContextMenuResult::CopyPathRequested => {
+            Some(ContextMenuUiEffect::CopyPath(path.to_path_buf()))
+        }
+        ContextMenuResult::MoveToTrashRequested => {
+            Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
+        }
+        ContextMenuResult::DeferredActionRequested(action) => {
+            Some(ContextMenuUiEffect::Perform(action))
+        }
         ContextMenuResult::Unsupported { reason } => Some(ContextMenuUiEffect::Notice {
             level: ContextMenuNoticeLevel::Info,
             message: format!("Context menu unavailable: {reason}"),
@@ -38,10 +74,33 @@ pub fn reduce_context_menu_result(result: ContextMenuResult) -> Option<ContextMe
                 message: "Context menu must run on the main thread".to_string(),
             })
         }
+        ContextMenuResult::Failed(ContextMenuFailure::StaleInvocation) => {
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: "The context menu selection expired; open the menu again".to_string(),
+            })
+        }
+        ContextMenuResult::Failed(ContextMenuFailure::InvalidSelection) => {
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: "The context menu returned an invalid selection".to_string(),
+            })
+        }
+        ContextMenuResult::Failed(ContextMenuFailure::TargetUnavailable { message }) => {
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message: format!("The context menu target is unavailable: {message}"),
+            })
+        }
         ContextMenuResult::Failed(ContextMenuFailure::Action { command, message }) => {
             let action = match command {
+                ContextMenuCommand::OpenWith => "open item with the selected application",
+                ContextMenuCommand::QuickLook => "preview item",
+                ContextMenuCommand::GetInfo => "show item information",
                 ContextMenuCommand::Duplicate => "duplicate item",
                 ContextMenuCommand::Compress => "start compression",
+                ContextMenuCommand::ToggleTag => "update Finder tags",
+                ContextMenuCommand::Share => "share item",
                 ContextMenuCommand::MoveToTrash => "move item to Trash",
             };
             Some(ContextMenuUiEffect::Notice {
@@ -52,11 +111,27 @@ pub fn reduce_context_menu_result(result: ContextMenuResult) -> Option<ContextMe
     }
 }
 
-pub fn request_context_menu(
-    port: &dyn ContextMenuPort,
+pub fn reduce_deferred_context_menu_result(
+    result: ContextMenuResult,
     path: &Path,
 ) -> Option<ContextMenuUiEffect> {
-    reduce_context_menu_result(port.show_context_menu(path))
+    match reduce_context_menu_result(result, path) {
+        Some(ContextMenuUiEffect::Perform(action)) => Some(ContextMenuUiEffect::Notice {
+            level: ContextMenuNoticeLevel::Error,
+            message: format!(
+                "Could not {:?}: the context-menu adapter returned a nested deferred action",
+                action.command()
+            ),
+        }),
+        terminal => terminal,
+    }
+}
+
+pub fn request_context_menu(
+    port: &dyn ContextMenuPort,
+    invocation: &crate::ports::ContextMenuInvocation,
+) -> Option<ContextMenuUiEffect> {
+    reduce_context_menu_result(port.show_context_menu(invocation), &invocation.target.path)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -408,6 +483,10 @@ mod tests {
         path: RefCell<Option<PathBuf>>,
     }
 
+    struct NestedDeferredContextMenuPort {
+        calls: Cell<usize>,
+    }
+
     impl FakeContextMenuPort {
         fn returning(result: ContextMenuResult) -> Self {
             Self {
@@ -419,10 +498,27 @@ mod tests {
     }
 
     impl ContextMenuPort for FakeContextMenuPort {
-        fn show_context_menu(&self, path: &Path) -> ContextMenuResult {
+        fn show_context_menu(
+            &self,
+            invocation: &crate::ports::ContextMenuInvocation,
+        ) -> ContextMenuResult {
             self.calls.set(self.calls.get() + 1);
-            self.path.replace(Some(path.to_path_buf()));
+            self.path.replace(Some(invocation.target.path.clone()));
             self.result.clone()
+        }
+    }
+
+    impl ContextMenuPort for NestedDeferredContextMenuPort {
+        fn show_context_menu(
+            &self,
+            _invocation: &crate::ports::ContextMenuInvocation,
+        ) -> ContextMenuResult {
+            ContextMenuResult::Dismissed
+        }
+
+        fn perform_deferred_action(&self, action: &ContextMenuAction) -> ContextMenuResult {
+            self.calls.set(self.calls.get() + 1);
+            ContextMenuResult::DeferredActionRequested(action.clone())
         }
     }
 
@@ -438,6 +534,23 @@ mod tests {
                 max_bytes: Some(1_000),
             },
             startup_cost_ms: cost,
+        }
+    }
+
+    fn menu_invocation(path: &Path) -> crate::ports::ContextMenuInvocation {
+        crate::ports::ContextMenuInvocation {
+            target: crate::ports::ContextMenuTarget {
+                path: path.to_path_buf(),
+                expected: crate::path_identity::PathIdentity::missing(path),
+            },
+            trigger: crate::ports::ContextMenuTrigger::Keyboard,
+            anchor: crate::ports::ContextMenuAnchor::ViewRect(crate::ports::ContextMenuViewRect {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 100.0,
+                max_y: 24.0,
+                native_points_per_ui_point: 1.0,
+            }),
         }
     }
 
@@ -516,9 +629,10 @@ mod tests {
     fn context_menu_request_uses_the_injected_main_thread_port() {
         let port = FakeContextMenuPort::returning(ContextMenuResult::RefreshRequested);
         let path = Path::new("/tmp/example");
+        let invocation = menu_invocation(path);
         assert_eq!(
-            request_context_menu(&port, path),
-            Some(ContextMenuUiEffect::RefreshPanel)
+            request_context_menu(&port, &invocation),
+            Some(ContextMenuUiEffect::RefreshPanels)
         );
         assert_eq!(port.calls.get(), 1);
         assert_eq!(port.path.borrow().as_deref(), Some(path));
@@ -529,8 +643,9 @@ mod tests {
         let port = FakeContextMenuPort::returning(ContextMenuResult::Unsupported {
             reason: "AppKit is unavailable".to_string(),
         });
+        let invocation = menu_invocation(Path::new("/tmp/example"));
         assert_eq!(
-            request_context_menu(&port, Path::new("/tmp/example")),
+            request_context_menu(&port, &invocation),
             Some(ContextMenuUiEffect::Notice {
                 level: ContextMenuNoticeLevel::Info,
                 message: "Context menu unavailable: AppKit is unavailable".to_string(),
@@ -547,10 +662,13 @@ mod tests {
             (ContextMenuCommand::MoveToTrash, "move item to Trash"),
         ] {
             assert_eq!(
-                reduce_context_menu_result(ContextMenuResult::Failed(ContextMenuFailure::Action {
-                    command,
-                    message: "permission denied".to_string(),
-                })),
+                reduce_context_menu_result(
+                    ContextMenuResult::Failed(ContextMenuFailure::Action {
+                        command,
+                        message: "permission denied".to_string(),
+                    }),
+                    Path::new("/tmp/example")
+                ),
                 Some(ContextMenuUiEffect::Notice {
                     level: ContextMenuNoticeLevel::Error,
                     message: format!("Could not {action}: permission denied"),
@@ -558,9 +676,10 @@ mod tests {
             );
         }
         assert_eq!(
-            reduce_context_menu_result(ContextMenuResult::Failed(
-                ContextMenuFailure::MainThreadRequired
-            )),
+            reduce_context_menu_result(
+                ContextMenuResult::Failed(ContextMenuFailure::MainThreadRequired),
+                Path::new("/tmp/example")
+            ),
             Some(ContextMenuUiEffect::Notice {
                 level: ContextMenuNoticeLevel::Error,
                 message: "Context menu must run on the main thread".to_string(),
@@ -571,9 +690,41 @@ mod tests {
     #[test]
     fn dismissed_context_menu_has_no_ui_effect() {
         assert_eq!(
-            reduce_context_menu_result(ContextMenuResult::Dismissed),
+            reduce_context_menu_result(ContextMenuResult::Dismissed, Path::new("/tmp/example")),
             None
         );
+    }
+
+    #[test]
+    fn context_menu_trash_is_a_policy_intent_not_a_mutation_result() {
+        let path = Path::new("/tmp/example");
+        assert_eq!(
+            reduce_context_menu_result(ContextMenuResult::MoveToTrashRequested, path),
+            Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
+        );
+    }
+
+    #[test]
+    fn nested_deferred_action_from_a_bad_port_is_reduced_once_to_a_terminal_error() {
+        let path = PathBuf::from("/tmp/commander-nested-deferred");
+        let action = ContextMenuAction::Duplicate(crate::ports::ContextMenuTarget {
+            expected: crate::path_identity::PathIdentity::missing(&path),
+            path: path.clone(),
+        });
+        let port = NestedDeferredContextMenuPort {
+            calls: Cell::new(0),
+        };
+
+        let result = port.perform_deferred_action(&action);
+        assert_eq!(port.calls.get(), 1);
+        assert!(matches!(
+            reduce_deferred_context_menu_result(result, &path),
+            Some(ContextMenuUiEffect::Notice {
+                level: ContextMenuNoticeLevel::Error,
+                message,
+            }) if message.contains("nested deferred action")
+        ));
+        assert_eq!(port.calls.get(), 1);
     }
 
     #[test]

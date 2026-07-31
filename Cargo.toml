@@ -7,6 +7,10 @@ repository = "https://github.com/themoretheless/commander"
 license = "MIT"
 publish = false
 
+[features]
+default = []
+visual-qa = ["eframe/glow"]
+
 [lints.rust]
 # The objc crate's macros probe `feature = "cargo-clippy"`; register the
 # value so the expansion doesn't trip unexpected_cfgs in our crate.
@@ -18,7 +22,15 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 eframe = "0.35"
 egui = "0.35"
 egui_extras = { version = "0.35", features = ["all_loaders"] }
-image = { version = "0.25", features = ["png", "jpeg", "gif", "bmp", "ico", "webp"] }
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "bmp",
+    "ico",
+    "webp",
+    "tiff",
+] }
 dirs = "6"
 open = "5"
 trash = "5"
@@ -35,12 +47,4 @@ libc = "0.2"
 blake3 = "1.8.4"
 fastcdc = "4.0.1"
 unicode-normalization = "0.1.25"
-tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread"] }
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-tempfile = "3"
-
-[[bench]]
-name = "commander_bench"
-harness = false
+unicode-segmentation = "1"

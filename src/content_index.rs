@@ -57,6 +57,7 @@ impl IndexedDocument {
             name_lower: name.to_lowercase(),
             name,
             path: self.path.clone(),
+            identity: crate::panel::ListingIdentity::Unavailable,
             is_dir: self.is_dir,
             size: if self.is_dir { 0 } else { self.size },
             extension,
@@ -185,6 +186,11 @@ pub struct ContentIndex {
 impl ContentIndex {
     pub fn load(workload: crate::workload::WorkloadHandle) -> Self {
         Self::from_settings(load_settings_from(&settings_path()), workload)
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn empty(workload: crate::workload::WorkloadHandle) -> Self {
+        Self::from_settings(SettingsStore::default(), workload)
     }
 
     fn from_settings(settings: SettingsStore, workload: crate::workload::WorkloadHandle) -> Self {

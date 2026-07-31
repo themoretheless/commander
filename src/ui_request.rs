@@ -53,8 +53,10 @@ pub(crate) enum UiRequest {
     OperationHistory,
     OpenRecoveryCenter,
     ReviewRecovery(crate::operation::OperationId),
+    OpenExternal(crate::ports::OpenRequest),
     CopyPaths(PathStyle),
     CopyText { text: String, label: String },
+    HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
     DrainShelf,
 }
@@ -84,8 +86,10 @@ impl UiRequest {
             | Self::ToggleQueuePanel
             | Self::OperationHistory
             | Self::OpenRecoveryCenter
+            | Self::OpenExternal(_)
             | Self::CopyPaths(_)
             | Self::CopyText { .. }
+            | Self::HiddenFilesOutcome(_)
             | Self::DrainShelf => None,
         }
     }
@@ -370,6 +374,26 @@ mod tests {
 
         assert_eq!(sink.toggles, 2);
         assert!(queue.snapshot().is_empty());
+    }
+
+    #[test]
+    fn hidden_view_feedback_is_non_modal_and_does_not_disturb_modal_fifo() {
+        let mut queue = UiRequestQueue::default();
+        let mut sink = FakeSink {
+            open_modal: Some(UiModal::Palette),
+            ..Default::default()
+        };
+        let feedback = UiRequest::HiddenFilesOutcome(crate::panel::ViewApplyOutcome::ReadRejected(
+            crate::panel::DirStatus::Gone,
+        ));
+        queue.emit(feedback.clone());
+        queue.emit(UiRequest::Recent);
+
+        dispatch_frame(&mut queue, &mut sink);
+
+        assert_eq!(sink.applied, vec![feedback]);
+        assert_eq!(queue.snapshot(), vec![UiRequest::Recent]);
+        assert_eq!(sink.open_modal, Some(UiModal::Palette));
     }
 
     #[test]

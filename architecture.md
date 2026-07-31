@@ -16,12 +16,13 @@ suggestions).
 > The file-manager logic lives in a UI-independent, unit-tested core; the `app`
 > module is a thin egui layer over it.
 
-That split is real and worth protecting: more than 60 focused modules and 720
-unit tests sit under a thin presentation layer. The broad suite passes 717;
-three manual/performance harnesses are intentionally ignored there, and the
+That split is real and worth protecting: more than 60 focused modules and 881
+tests sit under a thin presentation layer. The broad suite passes 878; three
+manual/performance harnesses are intentionally ignored there, and the
 single-threaded performance timing gate is run separately. The largest debt is
-still concentrated in three oversized core files, but core-to-UI signalling is
-now a typed, FIFO boundary rather than a field-level flag bus.
+still concentrated in the `panel`, `workspace`, and `transfer` facades, but
+their mutable state is now split behind owned controllers and core-to-UI
+signalling is a typed FIFO boundary rather than a field-level flag bus.
 
 ### External-research constraints (2026-07-14, revalidated 2026-07-18)
 
@@ -42,13 +43,18 @@ target architecture without changing the current migration order:
 5. The UI preserves stable geometry and separate active-pane, focus, cursor,
    selection, and mark states. Pointer-only actions have keyboard equivalents.
 
-These constraints reinforce, rather than replace, the planned `ViewConfig`,
-`TransferCenter`/`UndoCenter`, and remaining injected ports. The typed queue
-portion is now shipped as `ui_request::UiRequestQueue`; historical roadmap
-references to an Effect bus describe that completed migration. The
-`G044` has an owner in `volume_profile`; `path_identity` supplies the core of
-`G057`. `ports`/`provider_runtime`, `workload`, and the journal transition
-machines own `G081-G090`. `measurement`, `benchmark_fixture`,
+These constraints reinforce, rather than replace, the shipped `ViewConfig`,
+`TransferQueueController`, `UiState`, journal proof model, and injected native
+effect ports. `UndoCenter` now owns the in-memory history timeline and
+identity-bound replay reservations. The shared persistence boundary and
+versioned envelope are now shipped too. The remaining architectural work is
+narrower: native release QA, asynchronous listing publication, and smaller
+execution facades.
+The typed queue portion is shipped as `ui_request::UiRequestQueue`; historical
+roadmap references to an Effect bus describe that completed migration. `G044`
+has an owner in `volume_profile`; `path_identity` supplies the core of `G057`.
+`ports`/`provider_runtime`, `workload`, and the journal transition machines own
+`G081-G090`. `measurement`, `benchmark_fixture`,
 `capability_diagnostic`, `support_bundle`, `feature_flags`, and `klm` own
 `G091-G100` without adding policy to `Workspace`.
 
@@ -65,23 +71,29 @@ longer-term module migration order below.
 
 Grouped by the bounded context each module really belongs to:
 
-- **Navigation / panel state**: `panel` (the `PanelState` god object: entries,
-  cursor, selection, sort, filter, history, watcher, dir-size index),
-  `watcher_policy` (backend/depth/coalescing choice), `watcher_health`
-  (path-free backend/recovery/batch counters), `jumplist`, `crumbs`, `scan`,
-  `collections`, `tree_overview`.
+- **Navigation / panel state**: `PanelState` is the public coordination facade
+  over `panel::listing` (rows, status, checked revision, filter cache),
+  `panel::view` (private-field `ViewConfig`, filters, bounded per-folder
+  memory), `panel::sort`, `panel::selection`, `panel::watcher`, and
+  `panel::size_index`. `watcher_policy`, `watcher_health`, `jumplist`,
+  `crumbs`, `scan`, `collections`, and `tree_overview` own adjacent policy.
 - **Discovery / search**: `query` is the canonical grammar, `search` owns
   cancellable generations and provider composition, `content_index` owns the
   optional root-scoped snapshot, and `archive` provides bounded ZIP browsing
   and member search. `fuzzy`, `image_cache`, and `io_budget` are shared
   mechanisms, not UI policies.
-- **Workspace / coordination**: `workspace` (the second god object: two panels,
-  undo, pending ops, compare/sync glue, and drop handling),
-  `workspace::transfer_queue` (queue admission, sequencing, cancellation and
-  retirement), `ui_request` (the toolkit-independent FIFO intent boundary),
-  `command` (the `Command` enum + key mapping and typed
-  composable predicates over pure `CommandContext` snapshots used by every
-  action surface).
+- **Workspace / coordination**: `workspace` composes two panels, pending
+  operations, compare/sync/drop glue, and typed controllers:
+  `workspace::transfer_queue` owns queue admission, active-worker identity,
+  sequencing, cancellation, safe-state publication and retirement;
+  `workspace::delete` and `workspace::space_probe` own their asynchronous
+  lifecycles. `undo::UndoCenter` exclusively owns stack transitions,
+  revisions, and replay reservation state while `Workspace` executes the
+  filesystem action and applies typed settlement outcomes. The workspace
+  integration tests live in `workspace/tests.rs`. `ui_request` is the
+  toolkit-independent FIFO intent boundary; `command` owns the `Command` enum
+  + key mapping and typed composable predicates over pure `CommandContext`
+  snapshots used by every action surface).
 - **Selection / comparison**: `compare` (cross-pane classification + selection
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
@@ -91,15 +103,22 @@ Grouped by the bounded context each module really belongs to:
   and `sync_guard` supply identity proof, filesystem capability policy,
   remount safety, bounded version retention, reversible history, and circuit
   breakers.
-- **Transfer execution**: `transfer` coordinates staging and commit;
-  `native_copy`, `delta_copy`, and `verified_hash` own specialized data paths;
-  `volume_profile` and `transfer_tuning` own capability/telemetry policy;
-  `opqueue` is surfaced through the queue panel. `conflict`, `fs_util`,
-  `rename`, `rename_order`, `sync`, and `shelf` remain adjacent operation
-  helpers.
+- **Transfer execution**: `transfer::executor::TransferExecutor` exclusively
+  coordinates preflight, conflict review, identity and mount fences, journal
+  transitions, placement, source cleanup, rollback, and terminal publication.
+  `transfer::backend` selects replaceable object-safe native/clone, delta,
+  sparse, and buffered staging ports; their typed receipt carries artifact
+  identity, byte/fast-path accounting, and durability proof but no final
+  namespace capability. `native_copy`, `delta_copy`, and `verified_hash` own
+  specialized data paths; `volume_profile` and `transfer_tuning` own
+  capability/telemetry policy; `opqueue` is surfaced through the queue panel.
+  `conflict`, `fs_util`, `rename`, `rename_order`, `sync`, and `shelf` remain
+  adjacent operation helpers.
 - **Capability / workload boundaries**: `ports` defines narrow preview,
-  search, filesystem, hashing, and main-thread context-menu contracts;
-  `provider_runtime` enforces lazy
+  search, filesystem, hashing, clipboard, opener, Trash, free-space, and
+  main-thread context-menu contracts. `native_effect` contains the real macOS
+  adapters; native-menu callbacks produce invocation-bound typed intents and
+  defer side effects until AppKit tracking ends. `provider_runtime` enforces lazy
   capability activation, startup budgets, and out-of-process optional
   providers; `workload` owns priority, quotas, cancellation, backpressure,
   immutable snapshots, generation rejection, and scheduler telemetry;
@@ -121,8 +140,9 @@ Grouped by the bounded context each module really belongs to:
 
 ### UI adapter (`app/`, egui)
 
-`app/mod.rs` owns the `App` struct (presentation state: theme, zoom, image
-cache, tree widget, and transient dialog buffers). Per-frame orchestration
+`app/mod.rs` owns the `App` presentation shell (theme, zoom, image cache, tree
+widget, and operation surfaces). `app::ui_state::UiState` owns transient input,
+modal buffers, modal FIFO state, and Escape ownership. Per-frame orchestration
 lives in `app/update.rs`, including the single `UiRequest` snapshot drain;
 input translation lives in `app/keys.rs`; one file per
 dialog/sheet (`confirm_dialog`, `batch_rename_dialog`, `sync_dialog`,
@@ -139,14 +159,14 @@ policy.
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/workspace.rs` | 4,866 | God object plus a large colocated test module; queue lifecycle is extracted |
-| `src/panel.rs` | 4,761 | God object; `PanelState` mixes listing, view, selection, watcher, and cache concerns |
-| `src/transfer.rs` | 3,839 | Coordinator still contains buffered/sparse tree mechanics |
-| `src/operation_journal.rs` | 1,747 | Durable state, transition machines, recovery, rollback, and tests |
-| `src/search.rs` | 1,496 | Provider composition and a large fixture suite |
-| `src/app/update.rs` | 1,509 | Per-frame hub; owns the typed request dispatcher and rendering orchestration |
+| `src/transfer.rs` | 4,851 | Largest production facade; staging, commit and copy backends still need a narrower executor boundary |
+| `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
+| `src/operation_journal.rs` | 3,974 | Durable transitions, proof validation, migration, recovery and fault-oriented tests |
+| `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the 2,925-line production facade |
+| `src/workspace.rs` | 2,925 | Two-panel orchestration; queue/delete/space state lives in owned controllers |
+| `src/app/update.rs` | 2,118 | Per-frame hub and typed request dispatcher; dialog buffers live in `UiState` |
 
-## Agent/critic remediation pass (2026-07-21)
+## Agent/critic remediation sequence (2026-07-21 to 2026-07-28)
 
 Each architectural concern was implemented by a scoped agent and reviewed by
 an independent critic. P0-P2 findings were corrected and re-reviewed before a
@@ -154,20 +174,22 @@ track was accepted; one unsafe journal patch was rejected rather than merged.
 
 | Track | Result | Remaining boundary |
 | --- | --- | --- |
-| Workspace decomposition | accepted after paused-queue P1/P2 fixes | `transfer_queue` is still an `impl Workspace`; extract a controller returning typed retirement outcomes |
-| Typed UI request queue | accepted after Recovery handoff and FIFO Escape fixes | `App` still owns many dialog buffers; a later `UiState` extraction is separate work |
-| Operation journal/rollback rewrite | rejected, not integrated | identity revalidation and crash-safe proof need a fresh design pass |
-| Panel size/cache pipeline | accepted | continue splitting listing/view/watcher ownership out of `PanelState` |
+| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, `SpaceProbeController`, and `UndoCenter` own their state; only coherent command/file-operation facades remain |
+| Transfer executor/backend boundary | accepted after adversarial hardening | `TransferExecutor` owns transactional effects; native/clone, delta, sparse, and buffered ports only stage artifacts and return typed receipts |
+| Typed UI request queue + `UiState` | accepted | FIFO/modal/Escape ownership and dialog buffers are centralized; `App` retains presentation-only state |
+| Operation journal/recovery proof model | accepted after a fresh redesign | stable path identities, explicit transitions, migration validation, restart/fault/model tests; UI repair decisions remain explicit |
+| Panel ownership split | accepted | listing/view/sort/selection/watcher/size owners are separate; the public coordination facade is still large |
 | Async text preview | accepted after timeout, identity, and worker-retirement fixes | retain the isolated one-worker executor and 256 KiB text budget |
 | Atomic persistence/session save | accepted | callers must keep distinguishing pre-commit failure from committed-not-durable |
 | Workload dependency injection | accepted | migrate remaining global-runtime consumers incrementally |
 | Dialog/UI UX contracts | accepted | keep modal Escape and opening snapshots centralized |
-| Headless UI/accessibility contract | accepted | screenshot-level layout QA remains outside the unit suite |
-| macOS context-menu port | accepted | Clipboard, Trash, opener, and free-space probing still need equivalent ports |
+| Native visual/accessibility QA | accepted after fail-closed hardening | four Glow scenarios are strict CI gates; actual NSMenu and full-rect topology checks are automated; popup pixels, VoiceOver and real mixed-monitor journeys require exact-subject human attestation |
+| Native effect ports and context menu | accepted | Clipboard, Trash, opener and free-space are injected; pure menu intents are invocation-bound; a general persistence port remains |
 
-The rejected journal track is intentionally absent from the worktree. This is
-part of the safety contract: a large patch is not progress if its identity and
-rollback invariants cannot be demonstrated.
+The first journal attempt was intentionally rejected. The later implementation
+landed only after stable identity, transition, restart and side-effect fault
+proofs were explicit. That sequence remains the safety contract: a large patch
+is not progress until its recovery invariants are demonstrated.
 
 ### Research milestone 1 (G001-G050)
 
@@ -312,8 +334,7 @@ that direction without forcing a high-risk rewrite of the working core.
 
 ## The core <-> UI boundary today
 
-Three mechanisms connect the core to the shell, in descending order of how much
-coupling they create:
+Three mechanisms connect the core to the shell:
 
 1. **Command dispatch (clean).** `app/keys.rs` translates egui events into
    toolkit-independent `KeyPress`es, `command::map_keys` maps them to
@@ -329,51 +350,83 @@ coupling they create:
    operation identity payloads. The core knows the intent catalogue, but not
    egui types, dialog buffers, validation, or rendering.
 
-3. **Public-field mutation (encapsulation leak).** `PanelState` exposes 25+
-   `pub` fields; the UI mutates `selected`, `cursor`, `sort_col`, `facets`,
-   `show_hidden` directly. No invariant (cursor in range, `selected` subset of
-   entries, sort order consistent with the listing) can be guaranteed.
+3. **Typed native effects (clean at the OS edge).** The shell owns
+   main-thread-only context-menu, clipboard and opener ports; `Workspace` owns
+   thread-safe Trash and free-space ports. Native callbacks return typed
+   selections/outcomes, and the app reduces those outcomes only after the
+   native tracking call returns. The remaining leak is smaller: a few
+   navigation/drag fields are still exposed by the `PanelState` facade even
+   though listing, view, selection, watcher and size invariants are private.
 
 ## Known structural debt
 
-- **Two god objects.** `Workspace` has ~10 responsibilities (panels, transfer
-  queue + pump, undo, pending-op confirm, compare/sync glue, batch rename,
-  duplicate finding, treemap, drop). `PanelState` interleaves four: data
-  (`entries`), view config (`sort_col`/`sort_order`/`folders_first`/
-  `natural_name_sort`/`show_hidden`), view state (`cursor`/`selected`/
-  `search_query`), and async plumbing (`Arc<Mutex<HashMap>>` dir indices,
-  `AtomicBool` refresh flag, fs watcher).
-- **One oversized operation coordinator.** `transfer` still owns manifest
-  iteration, staging/commit, buffered and sparse traversal, progress mutation,
-  journal calls, and cleanup policy. `delta_copy`, `operation_journal`,
-  `transfer_tuning`, and `verified_hash` are now separate, but the next split
-  should extract a `TransferExecutor` state machine and a `CopyBackend` port
-  rather than add another branch to `CopyMethod::copy_entry`.
+- **Two oversized coordination facades remain.** `Workspace` still coordinates
+  panels, pending operations, history action execution, compare/sync, batch
+  rename and drop glue, but queue, delete, free-space, and undo timeline state
+  now live in owned controllers and its tests are out of the production file.
+  `PanelState` still exposes a broad method surface, but
+  listing/revision/filter cache, view config/memory, selection, watcher, and
+  size index are separate owners. The next useful reductions are smaller
+  command/file-operation facades, not another state-field shuffle.
+- **Transfer ownership is split; byte-copy primitives remain concentrated.**
+  `TransferExecutor` is the single transactional coordinator and
+  `transfer::backend` is the staging-only port boundary. The buffered,
+  sparse, and parallel tree-copy primitives still live in `transfer.rs`
+  beside the public progress/spec facade. Moving those primitives into
+  backend-specific files is now a mechanical readability pass, not an
+  ownership prerequisite. More important residual work is journal-schema
+  reconciliation for a crash after placement but before `mark_completed`, a
+  descriptor-relative filesystem effect port, and a streaming tree planner
+  that does not materialize every file before parallel copy.
 - **The request catalogue remains shared vocabulary.** The old 25-field flag
   bus is gone, but adding a new shell intent still adds one `UiRequest` variant
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
   presentation state in `app`; do not let the enum grow dialog implementation
   details.
-- **Remaining OS port gaps.** Preview/filesystem/hash providers and the macOS
-  context menu now sit behind narrow typed ports; the AppKit adapter is
-  main-thread-owned and its result is reduced to a UI effect. `Workspace` still
-  injects `opener: Box<dyn Fn(&Path)>`, while Clipboard, Trash, persistence and
-  free-space probing are called inline, so those paths are not fully isolated
-  from real side-effects. The same gap is security-relevant, not just a
-  testability one: `native_menu`'s
-  "Get Info" action hand-builds an AppleScript string and shells out to
-  `osascript`. The audit's #1/D12 AppleScript-injection finding is now
-  fixed in `native_menu.rs` by escaping double quotes and backslashes before
-  interpolation. Mutating context-menu actions now report structured success or
-  failure; other native side-effects still need the same treatment.
-- **Async intermixed with view state** on `PanelState`, which prevents the
-  panel from being cloned or snapshot-tested. The [audit](audit.md) found
-  concrete bugs in exactly this plumbing: a clear/spawn race in the dir-size
-  index, a redundant nested rayon `install()` (round-4 #26), a stale watcher
-  callback after navigation, and two unbounded caches that never evict
-  (`walk_log`, `dir_size_cache`) - the first three are below the round-4 cut on
-  severity but still open. Extracting a `DirIndex` / `BackgroundScan` owner
-  fixes all of them at once.
+- **The primary desktop and persistence boundaries are explicit.** Preview,
+  filesystem, hash, context-menu, Clipboard, Trash, opener and free-space calls
+  sit behind narrow typed ports/adapters. Native menu callbacks cannot mutate
+  files or launch services while AppKit is tracking; invocation and target
+  identity are revalidated before a deferred effect. `persistence::Persist`
+  owns bounded byte reads and revision-checked atomic commits, while typed
+  stores own schema and recovery policy through one versioned envelope.
+  Bookmarks/session receive the same injected port through `App`/`Workspace`;
+  feature flags and the version manifest use the boundary and fail closed.
+  Cross-process CAS, descriptor-relative opens, and migration of the operation
+  journal/content index remain explicit follow-ups.
+- **Supply-chain acceptance is explicit and CI-enforced.** `deny.toml` checks
+  the full all-features lockfile for advisories, yanked crates, licenses,
+  wildcard requirements, and unapproved registries or Git sources. The current
+  result is zero known vulnerabilities and one accepted unmaintained advisory:
+  `RUSTSEC-2026-0192` for the Linux Wayland/winit `ttf-parser` path. Its owner
+  is `@themoretheless`, review is due on 2026-10-21, and the CI date guard
+  hard-expires the waiver at 00:00 UTC on 2026-10-28. The gate verifies the
+  SHA-256 of pinned `cargo-deny` version `0.20.2` before execution. Forty-one
+  duplicate-crate groups stay at warning severity as explicit dependency debt;
+  there are no broad duplicate skips or GPL/LGPL license allowances. Run the
+  same gate with the command shown in the README.
+- **Go-to-path probing has an asynchronous owner.** `pathname` performs only
+  lexical parsing and exact tilde expansion; injected
+  `DirectoryProbePort::probe` owns the one filesystem `metadata` call.
+  `PathProbeController` captures home and opening-panel context, debounces for
+  200 ms, and admits at most two tasks through the dedicated two-worker
+  `PathProbe` quota, never more than one for the current binding. Further edits
+  collapse into one latest-wins candidate while stale slots retire. Freshness
+  is checked against the exact local
+  dialog/generation/raw/path binding rather than registering transient dialog
+  roots in the scheduler's persistent generation map. Stale A-to-B-to-A
+  outcomes only retire their slot; current cancelled, abandoned, panicked and
+  disconnected outcomes terminate explicitly. `Go` and Enter consume only an
+  exact current `Valid` binding. This removes pathname I/O from frame
+  rendering, but
+  `PanelState::navigate_to` still reads/publishes the directory synchronously
+  and there is an advisory-probe TOCTOU window before that read.
+- **Panel async ownership is split but the facade is not yet small.**
+  `DirectoryWatcherState` and `SizeIndex` own generation, binding, retry and
+  bounded-cache state; `ListingState` owns rows and filter invalidation.
+  `PanelState` intentionally coordinates their atomic publication. Future work
+  should extract coherent operations such as navigation/drag or expose a
+  snapshot reducer, rather than moving their fields back together.
 - **The comparison bounded context is directory-blind.** `sync::compare`,
   `compare::classify_entry`, and `conflict::detect` all classify entries using
   only `FileEntry.size`/`modified`, and every directory's `size` is hardcoded
@@ -381,20 +434,21 @@ coupling they create:
   Conflict results are resolved on synthetic data (audit round-4 #27, #28).
   One `is_dir` guard, or reusing the existing recursive `dir_size_cache`,
   closes all three call sites at once.
-- **Four independent, identical, fragile persistence loaders.** `bookmarks`,
-  `smart_folder`, `cmdtemplate`, and `session` each hand-roll the same
-  read-file -> `serde_json::from_str` -> `unwrap_or_default()` load path, which
-  discards the entire store on any single deserialization error with no
-  partial recovery or warning (audit round-4 #31). A shared `load_lenient<T>`
-  helper (or promoting this into the `Persist` port planned in A7) would fix
-  all four at once instead of one at a time.
-- **The audited dialog target-context bugs are closed, but dialogs remain
-  non-modal.** Every dialog is still a plain `egui::Window` (zero `egui::Modal`
-  usage), yet the three unsafe live-state reads now have explicit owners:
-  `BatchRenameContext` captures panel/directory/targets, `RenameState` captures
-  path/siblings, and `TreemapSnapshot` keeps its directory beside its rows.
-  The remaining structural work is the `UiState`/Effect extraction (A5), not
-  another round of ad-hoc target fields.
+- **Persistence migration is intentionally incremental.** Bookmarks support
+  item-level recovery and source quarantine, while session state is strict;
+  both share the injected port and envelope without write-on-read. Feature
+  flags and the version manifest reject corrupt, unreadable, wrong-store, and
+  future-schema input without replacing it. Legacy utility stores such as
+  smart folders, command templates and the panel cache still use the atomic
+  compatibility facade; the operation journal and content index need their own
+  streaming/schema migrations before they can adopt the envelope safely.
+- **Dialog buffers are centralized, while visual modality remains an egui
+  composition contract.** `UiState` owns every transient modal buffer and the
+  FIFO/Escape router; opening contexts capture panel/directory/path identity.
+  Dialogs are still rendered as `egui::Window`, so focus trapping, stacking
+  and background disabling remain explicit application policy. Headless tests
+  cover ownership and the running-app visual gate covers the real frame; native
+  VoiceOver navigation remains a release check.
 - **`undo::Action` still does not cover every filesystem mutation.** `Move`,
   `BatchRename`, path-stable `Rename`, and typed `Gather`/`Ungather` are now
   undoable. Gather folder cleanup is a transfer-owned post-success action:
@@ -505,27 +559,40 @@ Target shape:
   adapters and drained once in `app/update.rs`. Dialog `open_*` methods own the
   one-shot focus edge, payload modals retain identity, and modal handoffs are
   tested through the same dispatcher engine production uses.
-- **`UiState`.** Group the ~20 transient dialog buffers out of `App` into a
-  dedicated state struct, shrinking the `App` god object.
-- **`ViewConfig` value object.** Bundle the five sort/filter/hidden fields and
-  give it `sort_entries`; the panel and `session` hold it instead of loose
-  fields. This is also the substrate for per-folder view memory.
-- **Services out of `Workspace`.** `TransferCenter` (queue + pump + poll +
-  cancel + dismiss) and `UndoCenter` (stack + perform); `compare` is already
-  extracted.
-- **Ports.** Define `Clipboard`, `Trash`, `Persist` traits and inject them like
-  `opener`, so the core names capabilities, not concrete crates, and returns a
-  structured `OpOutcome` the UI renders uniformly.
+- **`UiState` (shipped).** Transient input, all dialog buffers, modal ownership
+  and Escape routing live in `app::ui_state`; `App` keeps presentation and
+  service handles.
+- **`ViewConfig` value object (shipped).** Its fields are private, panel
+  transitions are the only mutation surface, persisted fields cross one
+  `session` bridge, and the initial config is seeded before the first listing.
+  Pure comparison lives in `panel::sort`; `ListingState` alone owns row order,
+  revision, and the revision-keyed filter cache.
+- **Services out of `Workspace` (shipped ownership pass).**
+  `TransferQueueController` owns
+  queue + active worker + poll/cancel/dismiss/retirement state and returns
+  typed outcomes; `compare` is extracted; `UndoCenter` owns history entries,
+  timeline revision, and replay reservation state. Replay settlement fails
+  closed on stale, foreign, duplicate, or operation-mismatched completions.
+  Durable history and path-identity-bound actions still require a versioned
+  persistence schema rather than more in-memory controller state.
+- **Ports (desktop effects and persistence shipped).** Clipboard, Trash,
+  opener, free-space and context-menu capabilities are injected and return
+  structured outcomes. The object-safe `Persist` port separates byte I/O from
+  typed version/recovery policy; `App` and `Workspace` share one injected
+  instance. Compatibility stores remain visible migration work rather than
+  hidden alternate ownership.
 - **Bounded contexts as modules.** Navigation, Selection, Comparison (done),
   Transfer/ops, View, Persistence each own their types and tests; no core file
   exceeds ~600 lines.
 
 ### SOLID/DRY module decomposition (design pass, 3 critique+refine iterations)
 
-The bullets above name the target pieces (Effect bus, `UiState`, `ViewConfig`,
-`TransferCenter`/`UndoCenter`, ports); this section is the detailed map of how
-`workspace.rs` and `panel.rs` actually get carved into them, plus everything else
-worth splitting at the same time. It came out of a dedicated design pass: 3
+The bullets above name the target pieces. The section below is the dated design
+map that guided the work; current-status annotations and the module map above
+are authoritative when the old line ranges or proposed API differ from shipped
+code. In particular, do not reintroduce the superseded `&mut entries_gen`
+design or convert `workspace.rs` to `workspace/mod.rs` mechanically. The plan
+came out of a dedicated design pass: 3
 independent architects drafted a decomposition from different angles (bounded-
 context/DDD, strict single-responsibility, minimal-risk-incremental), one pass
 synthesized the best of each, then 3 rounds of adversarial critique (SOLID-
@@ -537,9 +604,9 @@ originally being split incompletely across two modules; a discarded
 the AppleScript call site is a static `extern "C"` ObjC callback, not a
 trait-object call site).
 
-**75 target modules**, averaging ~93 lines each (vs. `workspace.rs`'s
-~3013 and `panel.rs`'s ~2557 today) - small enough to review one commit at a
-time. The table below (grouped by area) is the reviewable summary of each
+The original target was **75 modules** averaging ~93 lines. Those historical
+estimates are sizing evidence, not current line counts. The table below
+(grouped by area) is the reviewable summary of each
 module's responsibility and dependencies; the responsibility text is trimmed
 for the table, and the exact `movesFrom` line ranges in the current files are
 given inline in the numbered **migration steps** further down (each step names
@@ -554,7 +621,8 @@ extracts several small leaf modules in one commit).
 
 | Module | Responsibility | ~Lines | Depends on |
 | --- | --- | --- | --- |
-| `pathname` | Validate and resolve user-typed path/name strings (go-to-path input, new-name-vs-siblings input), independent of Workspace. | ~45 | - |
+| `pathname` | Parse user-typed paths, validate names, and expose the injected filesystem directory-probe port without canonicalizing lexical input. | ~80 | - |
+| `path_probe` | Debounce and exact-binding-check `Cmd+L` directory probes, bound admitted workers and one latest candidate, and publish terminal UI status. | ~815 incl. tests | pathname, workload, workspace::ActivePanel |
 | `pending_op` | Represent a copy/move/delete/shelf-drain awaiting confirmation or completion, and the pure helpers that compute its space/undo shape, with zero Worksp… | ~225 | fs_util (OpClass, SpaceVerdict, space_verdict), undo (Action, wrapped opaquely by the loca… |
 | `kind (NEW, split out of selection_summary, replaces the previous panel::entry/kind_of half-move)` | The Kind enum (Folder/Image/Video/Audio/Document/Code/Archive/Other) and the kind_of(&FileEntry) -> Kind classifier, as a standalone leaf with no othe… | ~65 | panel::entry (FileEntry, is_static_image, is_video, extension -- kind_of's own inputs) |
 
@@ -765,9 +833,9 @@ can be taken on faith until that port is read.
 
 #### Migration steps (one green commit each, in order)
 
-1. Step 0 (A2, prerequisite, do first): git mv workspace.rs's #[cfg(test)] mod tests block (workspace.rs:1820-3013) verbatim into src/workspace/tests.rs, converting workspace.rs into src/workspace/mod.rs. Zero behavior change, compiler-verified; cargo test must show the same pass count. Do NOT split the test module by future destination yet -- that happens incrementally as each extraction below lands.
+1. Step 0 (A2, **done 2026-07-28**): the inline test body moved mechanically to `src/workspace/tests.rs` behind `#[cfg(test)] mod tests;`. `src/workspace.rs` deliberately remains a file; converting it to `workspace/mod.rs` would add rename churn with no ownership benefit. The move preserved all `workspace::tests::*` paths and the exact 855-test baseline before later focused tests were added.
 
-2. Step 1 (A2): extract pathname (resolve_dir_input workspace.rs:235-254, validate_new_name workspace.rs:259-274) into src/pathname.rs with a temporary re-export from workspace::mod so app/path_dialog.rs and app/rename_dialog.rs call sites are not touched in the same commit; a follow-up commit repoints those call sites and deletes the re-export. Both are pure functions -- fully compiler-verified.
+2. Step 1 (A2, **done 2026-07-28; async follow-up and lifecycle hardening done 2026-07-28**): `src/pathname.rs` owns pure `parse_dir_input`, `validate_new_name`, typed `DirInputError`/`NewNameError`, and the injected `DirectoryProbePort`. `src/path_probe.rs` owns the debounced worker/controller lifecycle; `AppServices` injects its filesystem and workload adapters. Nineteen focused tests freeze lexical relative/symlink behavior, exact tilde expansion, stable UI copy, universal NUL rejection, debounce/admission bounds, blocking-worker replacement, 100-edit submission bounds, synchronous completion ordering, worker-thread execution, opening-context capture, cancellation/reopen, disconnect/panic retirement, A-to-B-to-A freshness, and same-frame edit-before-Enter ordering. Commit-time live sibling validation and `rename_noreplace` remain unchanged; async panel listing is a separate follow-up.
 
 3. Step 2: extract pending_op (PendingTransfer+impl, QueuedJob, PendingOp, DeleteOutcome, ShelfDrainOutcome, move_pairs, faithfully_undoable, fit_stats -- workspace.rs:22-230) into src/pending_op.rs. All pure data types/functions, compiler-verified with zero logic change. FIX vs round 2 (ISP smell the critique found, verified: QueuedJob only clones/pattern-matches its stored Action at the poll_transfer call site outside pending_op itself -- pending_op's own logic never branches on which Action variant is stored): change QueuedJob's field from `undo: Option<undo::Action>` to a module-private opaque carrier `undo: Option<UndoPayload>` where `UndoPayload` is a thin newtype wrapping `undo::Action` with no methods of its own beyond construction/unwrap -- this keeps pending_op's own code from needing to know Action's variants while still being honest that the payload IS an undo::Action underneath (a real newtype, not a type-erased Box<dyn Any>, since the consumer -- undo_center -- always knows the concrete type it put in). pending_op's dependsOn keeps `undo (Action, wrapped by UndoPayload, held opaquely by QueuedJob)` but the module doc-comment states explicitly that pending_op never matches on Action's variants, so a future Action variant addition (e.g. D20's Rename) touches undo_center and fileops, never pending_op. Also depends on fs_util (OpClass/SpaceVerdict/space_verdict), transfer (TransferKind/OverwritePolicy/CopyMethod), and scan (FlatList/FileEntry) as round 2 already corrected.
 
@@ -777,11 +845,11 @@ can be taken on faith until that port is read.
 
 6. Step 5: extract panel::persist_cache (on-disk dir-size cache: CacheEntry, cache_path, dir_size_cache, load_cache_from_disk, invalidate_size_cache, flush_cache), panel::walk_log (walk_log, WALK_COOLDOWN, WALK_EXPENSIVE, reset_walk_log), and panel::recent_dirs (visited_log, VISITED_CAP, push_visit, record_visit, visited_paths, filter_visited) as three separate modules -- independently-changing concerns (on-disk persistence, walk-cost cooldown policy, Cmd+P recent-switcher list) that today sit as loose statics with no dependency on PanelState's own fields. NOTE 1 (carried forward): panel::persist_cache's invalidate_size_cache is called directly from inside the fs-watcher's background callback closure, not just from panel methods -- flag this now so Step 9's watcher extraction accounts for it instead of discovering it late. NOTE 2 (cross-referenced for ports::persist, fixes a round-2 critique gap): panel::persist_cache's load_cache_from_disk (panel.rs:12-52) is structurally a FIFTH instance of the same 'read-file -> serde_json::from_str -> fall back to empty on error' loader pattern that Step 26 (ports::persist) later consolidates for bookmarks/smart_folder/cmdtemplate/session -- it differs only in target type (a raw HashMap<PathBuf,u64>-shaped cache, not a serde-derived settings struct) and base directory (dirs::cache_dir() vs fs_util::config_dir()). This module's own doc-comment states explicitly 'see ports::persist (Step 26) for the four-plus-this-one shared loader pattern' so Step 26's author does not miss this fifth instance purely because it landed 21 steps earlier.
 
-7. Step 6: extract panel::sort (SortColumn, SortOrder, sort_entries, sort_indicator) and panel::filter_cache (FilterCache, ensure_filter_cache, filtered_count/get/indices/entries) as pure function-relocations still operating on &PanelState/&mut PanelState via inherent methods (no struct-field move yet). panel::sort now depends only on panel::natural_sort and crate::kind::kind_of (moved in Step 3) -- no dependency on selection_summary in either direction. Document explicitly, in this commit's message, that sort_entries is the ONLY place entries_gen is bumped today (panel.rs:1148 inside sort_entries) -- this fact drives Step 7. FIX vs round 2 (panel::filter_cache received no equivalent fix to the ViewConfig/entries_gen problem the plan already solved for sort_entries -- the critique's 'punted and never revisited' finding): panel::filter_cache's own methods (ensure_filter_cache, filtered_get, filtered_entries, filtered_count, filtered_indices -- panel.rs:1410-1465) read self.entries, self.entries_gen, self.search_query, and self.facets directly, none of which FilterCache itself owns even after this step. State explicitly, in this module's doc-comment, that this is a DELIBERATE, TIME-BOXED interim state identical in shape to Step 6(old)/7(new)'s ViewConfig problem but NOT yet fixed with explicit parameters -- the fix lands in Step 8 below (panel::view) at the same time entries_gen's ownership is finalized, because ensure_filter_cache's staleness check (entries_gen-based) and ViewConfig's entries_gen-bumping are two halves of one invariant that should be fixed in the same commit rather than twice. Do not let panel::filter_cache's extraction commit claim the coupling is resolved; it explicitly is not until Step 8.
+7. Step 6 (A3, **done in the current ownership shape**): pure natural/composite ordering lives in `panel/sort.rs`. `SortColumn`/`SortOrder` remain shared panel vocabulary, while `ListingState::resort` is the only API that mutates row order and bumps its checked monotonic `ListingRevision`. The filter cache is already a private member of `ListingState`, keyed by that revision, query, facets, and time validity; extracting it into a second owner would weaken the invariant.
 
-8. Step 7 (renumbered, was round 2's Step 6, now explicitly followed by Step 8's filter_cache fix in the same breath -- A3 keystone): introduce ViewConfig as its own module bundling sort_col/sort_order/folders_first/natural_name_sort/show_hidden plus sort_entries/toggle_folders_first/toggle_natural_sort/set_sort/reverse_sort/sort_indicator (building on panel::sort from Step 6). Make ViewConfig::sort_entries the sole place that bumps entries_gen, taking &mut u64 as an explicit parameter since ViewConfig does not own entries_gen itself (PanelState does). FIX (the signature-cascade gap): toggle_folders_first, toggle_natural_sort, reverse_sort, and set_sort all currently call self.sort_entries() with zero arguments (panel.rs:1152-1155, 1157-1160, 1299-1305, 1613-1622) because entries_gen lives on the same struct today. Once ViewConfig owns sort_entries but not entries_gen, ALL FOUR of these sibling methods must also take an explicit `gen: &mut u64` parameter and forward it, or they cannot call sort_entries. State this explicitly as an in-scope part of this commit; every call site of these four methods (not just sort_entries's own callers) is updated in the same commit. Move PanelState's five loose fields into one `view: ViewConfig` field and fix every direct call site (app/toolbar.rs, app/render.rs, session save/restore in app/mod.rs). This is the first PanelState struct-layout change in the plan -- run the full sort/filter test suite plus a manual smoke test of sort-column clicks and session round-trip before committing. B2's per-folder view memory has since shipped with loose `PanelState` fields; this step now consolidates that live behavior under one value object instead of blocking the feature.
+8. Step 7 (A3, **done 2026-07-28**): `ViewConfig` is a private-field, non-Serde value object owned by `ViewState`; callers use panel intents and read-only accessors. `PanelState` coordinates sorting, cursor preservation, and listing publication. Session conversion groups each panel's six persisted values behind one flattened adapter, preserving the legacy JSON keys, and passes both configs to `PanelState::new_with_view` before the first read. Hidden-file toggles stage a candidate read and commit config plus complete rows together; rejection preserves config, status, rows, selection/marks, cursor/scroll, size binding, watcher generations, listing revision, and filter-cache identity. Every command entry point publishes the typed outcome through the non-modal FIFO: success invalidates tree children and rejection produces shared feedback without disturbing modal ownership. Tree children are keyed by `(path, show_hidden)` and the cache is bounded.
 
-9. Step 8 (NEW, closes Step 6's deferred filter_cache fix -- do immediately after Step 7 since both touch entries_gen's ownership): apply the SAME explicit-parameter fix to panel::filter_cache that Step 7 applied to ViewConfig. ensure_filter_cache(&mut self, entries: &[FileEntry], gen: u64, query: &str, facets: &FacetSet) -> bool (or equivalent explicit-parameter shape) replaces the implicit self.entries/self.entries_gen/self.search_query/self.facets reads; filtered_get/filtered_entries/filtered_count/filtered_indices take &[FileEntry] (or an already-validated cache handle) rather than reaching into a PanelState that FilterCache doesn't yet compose. This closes the exact defect class Step 7 already fixed once, applied to the second instance of the same problem in the same subsystem. Verify filter_cache_tracks_query_and_entry_changes before and after; this is the commit that makes FilterCache a genuinely composable field rather than an inherent-impl fiction, and panel::state's later assembly (Step 12) can then treat it as a real owned field with a narrow update call, not a lingering implicit-self dependency.
+9. Step 8 (A3, **superseded by shipped ownership**): do **not** pass `&mut entries_gen` through `ViewConfig` or expose entries/query/facets as parallel parameters to a detached cache. `entries_gen()` is now only a facade over `ListingState::revision()`. `replace`, `mark_incomplete`, and `resort` atomically bump the checked revision that invalidates the colocated cache. Focused tests cover exact revision bumps, stable ties, descending folders-first semantics, cursor preservation, hidden success/failure atomicity, watcher races, per-folder restore, legacy-compatible session bootstrap, typed command feedback, and bounded tree hidden-policy keys.
 
 10. Step 9 (widened scope vs round 2, fixes the encapsulation-gap defect the critique found, CORRECTED for the test-write contradiction the reviewability lens found): extract panel::drag_state as its own struct PanelState composes, with a method API instead of public fields: take_drag() -> Option<(Vec<PathBuf>, Option<PathBuf>)> draining drag_entries+drop_target together, set_drag(paths), set_drop_target(path), clear() zeroing both in one call. Verified call sites beyond workspace.rs's drop_dragged/take_drop_plan (deferred to Step 22 since that rewrite is D22's dedicated fix-site): app/file_list.rs:146 (dragging check), app/file_list.rs:465 (drag_entries assignment on drag start), app/file_list.rs:480-481 (drop_target assignment), app/update.rs:93-94 (per-frame drop_target reset in begin_frame), and app/update.rs:845-867 (show_drag_overlay reading both fields). ALL FOUR of file_list.rs/update.rs's call sites are rewired to the new API in this SAME commit. CORRECTION vs round 3 (the reviewability lens's finding, verified: workspace.rs's own test module has drop_prefers_source_panel_target/drop_falls_back_to_other_panel_path/drop_with_conflict_opens_dialog_instead_of_moving at workspace.rs:2933-2934, 2985, 3000 writing `ws.left.drag_entries = vec![...]` and `ws.left.drop_target = Some(...)` directly as test setup): the plan's prior claim of 'ZERO remaining raw pub-field access anywhere in the crate except the one deliberately-deferred workspace.rs production site' was FALSE -- these three tests are additional raw-field call sites this step missed. Fix: fields become genuinely private (not pub(crate)) in this commit, and these three tests are REWRITTEN in this SAME commit to call `ws.left.drag.set_drag(vec![file.clone()])` / `ws.left.drag.set_drop_target(sub.clone())` instead of field assignment -- since drop_dragged's production body (still reading raw fields until Step 22) is a private method on PanelState itself, PanelState's own impl block can still reach its own private drag field directly without an API call, so the production deferral to Step 22 remains valid; only EXTERNAL (test and other-file) raw access is eliminated here, and the module's doc-comment states this distinction precisely: 'private field access from within panel::state's own impl (including workspace.rs's drop_dragged, which is itself a PanelState/Workspace method) is not a violation; the violation this step eliminates is access from outside the owning module, including test setup code.' This closes the gap outright instead of partially, and is exactly why D22's drag-and-drop rewrite (Step 22) gets a clean, invariant-enforcing baseline with zero remaining EXTERNAL raw-field access anywhere in the crate.
 
@@ -867,10 +935,63 @@ validates.
 
 ## Invariants and testing
 
-The crate currently exposes 720 unit tests. The default suite passes 717 with
-three explicit ignores, including the separately executed single-threaded CI
-performance gate. Headless egui/AccessKit tests now exercise text-focus and IME
-suppression, modal priority, FIFO pending ownership, one-shot Escape routing,
-and the SafeState-to-Recovery transition frame. They still do **not** replace a
-full screenshot-driven running-app pass for texture presentation, hover
-geometry, native menus, and multi-window layout.
+The default suite includes three explicit ignores, including the separately
+executed single-threaded CI performance gate. Headless egui/AccessKit tests
+exercise text-focus and IME suppression, modal priority, FIFO pending
+ownership, one-shot Escape routing, and the SafeState-to-Recovery transition
+frame. A feature-gated native QA process provides four eframe/Glow framebuffer
+scenarios. Desktop, minimum-window, 200% accessible, and confirmation-modal
+captures are all strict CI matrix jobs. Every process uses a temporary storage
+root and fake native ports, always writes capability/manifest JSON and writes
+PNG when framebuffer readback is available, then checks frame diversity,
+logical viewport size, geometry, pane separation, modal stacking policy,
+painted glyph pixels, and absence of native effects.
+
+The native context menu is a declarative `MenuInvocation` tree with stable item
+IDs and an invocation-bound target. AppKit renders that model with
+invocation-local handler state; Objective-C selectors only record a typed
+selection. Duplicate, Compress, Tags, and Share execute after menu tracking
+returns through `ContextMenuPort::perform_deferred_action`. This removes the
+former thread-local path/result state, prevents callbacks from mutating files
+or launching services, balances owned AppKit menu objects, and preserves
+pathname bytes through NSURL filesystem representations.
+
+`native_release_qa` is a narrow facade over six owners: `contract` defines
+evidence types, `policy` owns pure placement/attestation/verdict rules,
+`macos_probe` reads already-granted capabilities and `NSScreen` topology,
+`identity` owns compile-time build provenance plus canonical topology
+fingerprints, `secure_artifact` owns bounded no-follow reads and private atomic
+writes, and `artifact` only orchestrates evidence assembly. `build.rs` watches
+Git HEAD/index/ref and every tracked package file, so a dirty build cannot
+become an apparently clean stale binary after its source edit is reverted.
+Runtime environment commit hints are not trusted. The subject also requires
+the current process's kernel CDHash to match a strictly verified code signature
+for the exact file whose BLAKE3 is recorded.
+
+The production AppKit bridge captures the exact pointer or row anchor during
+the input frame, reads actual `NSMenu.size` after dynamic provider discovery,
+refreshes display topology at show time, and asks the same pure policy for a
+top-left placement whose complete downward-growing content rectangle fits one
+`visibleFrame`. Oversized menus fail closed. Secondary click, Shift-F10, and
+AccessKit `ShowContextMenu` store the exact listing identity, trigger, anchor,
+pane, and row focus in `UiState`; an AX request activates its pane and publishes
+the new cursor/focus tree before synchronous AppKit tracking. Latest-wins
+replacement, modal/window-focus cancellation, and post-tracking focus return
+are reducer contracts. Directory rows no longer publish a false
+`expanded=false` state.
+
+The automated framebuffer still excludes AppKit's separate popup and window
+chrome. Actual `NSMenu` model/renderer introspection and full-rectangle
+center/corner placement are automated without TCC. Popup pixels, VoiceOver
+speech and task navigation, Escape focus return, and real multi-monitor
+interaction are human checks bound to the exact commit, executable BLAKE3 and
+topology fingerprint. Strict policy rejects dirty or mismatched builds, unknown
+JSON fields, missing/duplicate/extra cases, missing permissions, empty review
+fields, stale/future attestation, `not_run`, mismatches and blocked checks.
+Diagnostic mode records them without prompting or claiming pass. Evidence and
+attestation files use private descriptor-relative atomic writes; path symlinks
+and non-regular inputs are rejected.
+The shipping renderer remains WGPU; its eframe 0.35 Metal screenshot readback
+is a manual boundary because external `Device::poll` attempts can deadlock the
+renderer/event-loop ownership. A missing screenshot event is a test failure,
+not a capability skip.

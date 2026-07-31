@@ -20,8 +20,8 @@ fn budget_state(latency: crate::measurement::LatencyPercentiles, hard_p95_ms: f6
 }
 
 impl App {
-    pub(crate) fn show_developer_panel(&mut self, ctx: &egui::Context) {
-        if !self.ui.show_developer_panel {
+    pub(crate) fn show_developer_panel(&mut self, ctx: &egui::Context, input_enabled: bool) {
+        if !self.show_developer_panel {
             return;
         }
         let t = self.colors;
@@ -36,7 +36,7 @@ impl App {
             .saturating_add(watcher.watch_failures);
         let image_cache = self.image_cache.stats();
         let active_root = self.ws.active_panel_ref().current_path.clone();
-        let index = self.ui.content_index.status(&active_root);
+        let index = self.content_index.status(&active_root);
         let runtime_metrics = crate::measurement::snapshots();
         let metric = |name| {
             runtime_metrics
@@ -53,10 +53,12 @@ impl App {
         let screen = ctx.input(|input| input.viewport_rect());
         let width = 480.0_f32.min((screen.width() - 32.0).max(320.0));
         let height = 680.0_f32.min((screen.height() - 32.0).max(360.0));
-        let mut open = self.ui.show_developer_panel;
+        let mut open = self.show_developer_panel;
+        let mut reveal = None;
 
         egui::Window::new("Developer diagnostics")
             .open(&mut open)
+            .enabled(input_enabled)
             .default_size(Vec2::new(width, height))
             .min_width(320.0)
             .max_width(560.0)
@@ -341,7 +343,7 @@ impl App {
                             if enabled_response.changed()
                                 && !crate::feature_flags::set_killed(state.feature, !enabled)
                             {
-                                self.ui.developer_notice =
+                                self.developer_notice =
                                     Some(DeveloperNotice::error("Could not save runtime control"));
                             }
                             let effective_enabled =
@@ -394,7 +396,7 @@ impl App {
                                     rollout,
                                 )
                             {
-                                self.ui.developer_notice = Some(DeveloperNotice::error(
+                                self.developer_notice = Some(DeveloperNotice::error(
                                     "Could not save rollout percentage",
                                 ));
                             }
@@ -407,7 +409,7 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("Export capabilities").clicked() {
                             let paths = self.diagnostic_paths();
-                            self.ui.developer_notice =
+                            self.developer_notice =
                                 Some(match crate::capability_diagnostic::export(&paths) {
                                     Ok(path) => {
                                         DeveloperNotice::success("Capability report created", path)
@@ -417,7 +419,7 @@ impl App {
                         }
                         if ui.button("Create support bundle").clicked() {
                             let paths = self.diagnostic_paths();
-                            self.ui.developer_notice =
+                            self.developer_notice =
                                 Some(match crate::support_bundle::export(&paths) {
                                     Ok(path) => {
                                         DeveloperNotice::success("Support bundle created", path)
@@ -426,7 +428,7 @@ impl App {
                                 });
                         }
                     });
-                    if let Some(notice) = &self.ui.developer_notice {
+                    if let Some(notice) = &self.developer_notice {
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
@@ -437,7 +439,7 @@ impl App {
                             if let Some(path) = &notice.path
                                 && ui.button("Show in Finder").clicked()
                             {
-                                let _ = open::that(path.parent().unwrap_or(path));
+                                reveal = Some(path.clone());
                             }
                         });
                         if let Some(path) = &notice.path {
@@ -454,7 +456,12 @@ impl App {
                     }
                 });
             });
-        self.ui.show_developer_panel = open;
+        if input_enabled {
+            self.show_developer_panel = open;
+        }
+        if let Some(path) = reveal {
+            self.open_external(crate::ports::OpenRequest::Reveal(path), ctx);
+        }
     }
 
     fn diagnostic_paths(&self) -> [PathBuf; 2] {

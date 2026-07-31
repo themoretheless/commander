@@ -294,6 +294,7 @@ mod tests {
         ClassifiedFailure, DurabilityProfile, FailureClass, IdempotencyKey, OperationId,
     };
     use crate::operation_journal::{OperationRecord, OperationStatus, OperationStep, StepStatus};
+    use crate::path_identity::PathIdentity;
     use crate::testutil::TempDir;
     use crate::transfer::{CopyMethod, OverwritePolicy, TransferKind};
 
@@ -313,6 +314,8 @@ mod tests {
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             post_success: None,
             rollback_cleanup: Some(secret.clone()),
+            rollback_cleanup_identity: Some(PathIdentity::missing(&secret)),
+            rollback_cleanup_quarantine: None,
             status: OperationStatus::Failed,
             created_at_secs: 10,
             updated_at_secs: 16,
@@ -321,6 +324,9 @@ mod tests {
                 source: secret.clone(),
                 destination: secret.with_file_name("copied.txt"),
                 source_before: None,
+                source_followed: Vec::new(),
+                source_logical_bytes: None,
+                source_proof_complete: false,
                 destination_before: None,
                 landing: None,
                 landing_before: None,
@@ -328,6 +334,9 @@ mod tests {
                 staging: None,
                 checkpoint: None,
                 fast_path: Some(crate::transfer_tuning::FastPath::Native),
+                replacement: None,
+                rollback: None,
+                rollback_quarantine: None,
                 status: StepStatus::Failed,
                 attempts: 2,
                 failure: Some(ClassifiedFailure::message(

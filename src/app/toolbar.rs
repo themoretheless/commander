@@ -192,7 +192,7 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(12.0);
 
-                        let diagnostics_fill = if self.ui.show_developer_panel {
+                        let diagnostics_fill = if self.show_developer_panel {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
@@ -206,7 +206,7 @@ impl App {
                             .on_hover_text("Developer diagnostics")
                             .clicked()
                         {
-                            self.ui.show_developer_panel = !self.ui.show_developer_panel;
+                            self.show_developer_panel = !self.show_developer_panel;
                         }
 
                         // Theme toggle
@@ -227,7 +227,7 @@ impl App {
                         }
 
                         // Hidden files toggle
-                        let active_hidden = self.ws.active_panel_ref().show_hidden;
+                        let active_hidden = self.ws.active_panel_ref().show_hidden();
                         let hidden_icon = if active_hidden {
                             "\u{1f441}"
                         } else {
@@ -247,11 +247,11 @@ impl App {
                             .on_hover_text("Toggle hidden files (\u{2318}H)")
                             .clicked()
                         {
-                            self.toggle_active_hidden();
+                            self.ws.execute(crate::command::Command::ToggleHidden);
                         }
 
                         // Density cycle (active panel)
-                        let density = self.ws.active_panel_ref().density;
+                        let density = self.ws.active_panel_ref().density();
                         let density_label = crate::density::short_label(density);
                         if ui
                             .add(
@@ -269,11 +269,13 @@ impl App {
                             ))
                             .clicked()
                         {
-                            self.ws.active_panel().density = crate::density::cycle(density);
+                            self.ws
+                                .active_panel()
+                                .set_density(crate::density::cycle(density));
                         }
 
                         // Size-bars toggle
-                        let bars_fill = if self.ui.show_size_bars {
+                        let bars_fill = if self.show_size_bars {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
@@ -287,25 +289,20 @@ impl App {
                             .on_hover_text("Toggle size bars")
                             .clicked()
                         {
-                            self.ui.show_size_bars = !self.ui.show_size_bars;
+                            self.show_size_bars = !self.show_size_bars;
                         }
 
                         // Folder-compare toggle
-                        let cmp_fill = if self.ui.show_compare {
+                        let cmp_fill = if self.show_compare {
                             t.accent.linear_multiply(0.3)
                         } else {
                             t.bg_card
                         };
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new("\u{21c4}").size(14.0))
-                                    .fill(cmp_fill)
-                                    .corner_radius(crate::theme::ROUNDING_SM),
-                            )
+                        if crate::app::glyphs::toolbar_compare_button(ui, cmp_fill, t.text_primary)
                             .on_hover_text("Compare panels (highlight differences)")
                             .clicked()
                         {
-                            self.ui.show_compare = !self.ui.show_compare;
+                            self.show_compare = !self.show_compare;
                         }
 
                         // Refresh button
@@ -459,23 +456,25 @@ impl App {
                         }
 
                         ui.separator();
-                        let mut show_hidden = self.ws.active_panel_ref().show_hidden;
+                        let mut show_hidden = self.ws.active_panel_ref().show_hidden();
                         if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
-                            self.toggle_active_hidden();
+                            self.ws.execute(crate::command::Command::ToggleHidden);
                         }
                         if ui
                             .button(format!(
                                 "Row density: {}",
-                                crate::density::label(self.ws.active_panel_ref().density)
+                                crate::density::label(self.ws.active_panel_ref().density())
                             ))
                             .clicked()
                         {
-                            let density = self.ws.active_panel_ref().density;
-                            self.ws.active_panel().density = crate::density::cycle(density);
+                            let density = self.ws.active_panel_ref().density();
+                            self.ws
+                                .active_panel()
+                                .set_density(crate::density::cycle(density));
                         }
-                        ui.checkbox(&mut self.ui.show_size_bars, "Show size bars");
-                        ui.checkbox(&mut self.ui.show_compare, "Compare panels");
-                        ui.checkbox(&mut self.ui.show_developer_panel, "Developer diagnostics");
+                        ui.checkbox(&mut self.show_size_bars, "Show size bars");
+                        ui.checkbox(&mut self.show_compare, "Compare panels");
+                        ui.checkbox(&mut self.show_developer_panel, "Developer diagnostics");
 
                         ui.separator();
                         let theme_label = match self.theme_mode {
@@ -514,12 +513,6 @@ impl App {
         };
         self.colors = ThemeColors::for_preferences(self.theme_mode, self.accessibility_preferences);
         apply_theme(ctx, self.theme_mode, self.accessibility_preferences);
-    }
-
-    fn toggle_active_hidden(&mut self) {
-        let panel = self.ws.active_panel();
-        panel.show_hidden = !panel.show_hidden;
-        panel.refresh();
     }
 
     fn set_ui_scale(&mut self, ctx: &egui::Context, scale: f32) {

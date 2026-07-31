@@ -1,5 +1,22 @@
 use super::*;
 
+const TREE_CHILD_CACHE_LIMIT: usize = 2_048;
+
+fn child_cache_key(path: &std::path::Path, show_hidden: bool) -> (PathBuf, bool) {
+    (path.to_path_buf(), show_hidden)
+}
+
+fn cache_children(
+    cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    key: (PathBuf, bool),
+    children: Vec<PathBuf>,
+) {
+    if !cache.contains_key(&key) && cache.len() >= TREE_CHILD_CACHE_LIMIT {
+        cache.clear();
+    }
+    cache.insert(key, children);
+}
+
 impl App {
     /// Render the global tree sidebar. Returns Some(path) if user clicked a folder.
     pub(crate) fn render_global_tree(
@@ -8,7 +25,7 @@ impl App {
         t: &ThemeColors,
     ) -> Option<PathBuf> {
         let active_path = self.ws.active_panel_ref().current_path.clone();
-        let show_hidden = self.ws.active_panel_ref().show_hidden;
+        let show_hidden = self.ws.active_panel_ref().show_hidden();
 
         // Favorites rail: bookmarked directories with their quick-jump slots,
         // above the filesystem tree. Clicking one navigates the active panel.
@@ -109,18 +126,19 @@ impl App {
         active_path: &std::path::Path,
         show_hidden: bool,
         expanded: &mut std::collections::HashSet<PathBuf>,
-        cache: &mut std::collections::HashMap<PathBuf, Vec<PathBuf>>,
+        cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
     ) -> Option<PathBuf> {
         let mut nav = None;
         let is_current = active_path == path;
         let is_expanded = expanded.contains(path);
 
         // Get subdirs (cached)
-        let subdirs = if let Some(cached) = cache.get(path) {
+        let cache_key = child_cache_key(path, show_hidden);
+        let subdirs = if let Some(cached) = cache.get(&cache_key) {
             cached.clone()
         } else {
             let dirs = PanelState::subdirs(path, show_hidden);
-            cache.insert(path.to_path_buf(), dirs.clone());
+            cache_children(cache, cache_key, dirs.clone());
             dirs
         };
         let has_children = !subdirs.is_empty();
@@ -271,5 +289,34 @@ impl App {
         }
 
         nav
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_policy_is_part_of_the_tree_child_cache_key() {
+        let path = std::path::Path::new("/tmp/example");
+        assert_ne!(child_cache_key(path, false), child_cache_key(path, true));
+    }
+
+    #[test]
+    fn tree_child_cache_is_bounded_under_path_and_policy_churn() {
+        let mut cache = std::collections::HashMap::new();
+        for index in 0..=TREE_CHILD_CACHE_LIMIT {
+            cache_children(
+                &mut cache,
+                (PathBuf::from(format!("/tmp/{index}")), index % 2 == 0),
+                Vec::new(),
+            );
+        }
+
+        assert!(cache.len() <= TREE_CHILD_CACHE_LIMIT);
+        assert!(cache.contains_key(&(
+            PathBuf::from(format!("/tmp/{TREE_CHILD_CACHE_LIMIT}")),
+            TREE_CHILD_CACHE_LIMIT.is_multiple_of(2)
+        )));
     }
 }

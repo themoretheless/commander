@@ -160,6 +160,9 @@ pub struct SafeState {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationId(pub String);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TransferAttemptId(pub u64);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationGroupId(pub String);
 
@@ -167,6 +170,7 @@ pub struct OperationGroupId(pub String);
 pub struct IdempotencyKey(pub String);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_TRANSFER_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 
 impl OperationId {
     pub fn new() -> Self {
@@ -191,6 +195,18 @@ impl OperationId {
 }
 
 impl Default for OperationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TransferAttemptId {
+    pub fn new() -> Self {
+        Self(NEXT_TRANSFER_ATTEMPT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Default for TransferAttemptId {
     fn default() -> Self {
         Self::new()
     }

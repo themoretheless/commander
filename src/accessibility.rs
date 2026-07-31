@@ -141,6 +141,7 @@ modal_registry!(
     Sync,
     BatchRename,
     Rename,
+    DeleteActivity,
     Confirmation,
     History,
     Recovery,
@@ -221,6 +222,22 @@ pub fn text_input_state(ctx: &egui::Context) -> TextInputState {
         text_edit_focused,
         ime_composing,
     }
+}
+
+/// Consume one accessibility context-menu request for the exact row node.
+pub fn consume_show_context_menu(ctx: &egui::Context, id: egui::Id) -> bool {
+    let mut requested = false;
+    ctx.input_mut(|input| {
+        input.consume_accesskit_action_requests(id, |request| {
+            if request.action == egui::accesskit::Action::ShowContextMenu {
+                requested = true;
+                true
+            } else {
+                false
+            }
+        });
+    });
+    requested
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -440,7 +457,7 @@ pub fn file_row_semantics(
     selected: bool,
     marked: bool,
     cursor: bool,
-    is_directory: bool,
+    _is_directory: bool,
 ) -> FileRowSemantics {
     let mut states = Vec::new();
     if selected {
@@ -460,7 +477,9 @@ pub fn file_row_semantics(
     FileRowSemantics {
         label: format!("Name: {name}; Kind: {kind}; Size: {size}; Modified: {modified}{state}"),
         selected,
-        expanded: is_directory.then_some(false),
+        // Directory rows navigate to another listing; they do not expose an
+        // inline expand/collapse action and must not announce "collapsed".
+        expanded: None,
     }
 }
 
@@ -715,7 +734,7 @@ mod tests {
             "Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected, marked"
         );
         assert!(row.selected);
-        assert_eq!(row.expanded, Some(false));
+        assert_eq!(row.expanded, None);
     }
 
     #[test]

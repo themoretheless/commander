@@ -1,7 +1,11 @@
 //! Undo/redo history plus filesystem-aware replay preflight. An [`Action`]
 //! records a completed reversible operation, [`preview`] proves whether its
-//! paths can still be replayed, and [`UndoStack`] advances only after the caller
-//! reports a successful filesystem commit.
+//! paths can still be replayed, and [`UndoCenter`] advances only after the
+//! caller reports a successful filesystem commit.
+
+mod center;
+
+pub(crate) use center::{HistoryError, ReplayDirection, ReplayPlan, ReplayReservation, UndoCenter};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -271,66 +275,118 @@ pub struct RedoInvalidation {
     pub caused_by: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryEntryId(u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryEntry {
+    id: HistoryEntryId,
+    action: Action,
+}
+
 #[derive(Default)]
-pub struct UndoStack {
-    undo: Vec<Action>,
-    redo: Vec<Action>,
+struct UndoStack {
+    undo: Vec<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
     redo_invalidation: Option<RedoInvalidation>,
 }
 
 impl UndoStack {
-    pub fn can_undo(&self) -> bool {
+    fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
     /// The action that a Cmd+Z would reverse, without changing the stack.
-    pub fn peek_undo(&self) -> Option<&Action> {
+    fn peek_undo(&self) -> Option<&Action> {
+        self.peek_undo_entry().map(|entry| &entry.action)
+    }
+
+    fn peek_undo_entry(&self) -> Option<&HistoryEntry> {
         self.undo.last()
     }
 
-    pub fn can_redo(&self) -> bool {
+    fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
 
     /// Record a freshly performed action; abandons any redo branch.
-    pub fn push(&mut self, action: Action) {
+    fn push_entry(&mut self, entry: HistoryEntry) {
         if !self.redo.is_empty() {
             self.redo_invalidation = Some(RedoInvalidation {
                 abandoned_actions: self.redo.len(),
-                caused_by: action.description(),
+                caused_by: entry.action.description(),
             });
         }
-        self.undo.push(action);
+        self.undo.push(entry);
         self.redo.clear();
     }
 
-    pub fn redo_invalidation(&self) -> Option<&RedoInvalidation> {
+    #[cfg(test)]
+    fn push(&mut self, action: Action) {
+        let next_id = self
+            .undo
+            .len()
+            .saturating_add(self.redo.len())
+            .saturating_add(1) as u64;
+        self.push_entry(HistoryEntry {
+            id: HistoryEntryId(next_id),
+            action,
+        });
+    }
+
+    fn redo_invalidation(&self) -> Option<&RedoInvalidation> {
         self.redo_invalidation.as_ref()
     }
 
-    pub fn peek_undo_inverse(&self) -> Option<Action> {
-        invert(self.undo.last()?)
+    fn peek_undo_inverse(&self) -> Option<Action> {
+        invert(&self.peek_undo_entry()?.action)
     }
 
-    pub fn peek_redo_action(&self) -> Option<Action> {
-        self.redo.last().cloned()
+    fn peek_redo_action(&self) -> Option<Action> {
+        self.peek_redo_entry().map(|entry| entry.action.clone())
     }
 
-    pub fn commit_undo(&mut self) -> bool {
-        let Some(action) = self.undo.pop() else {
+    fn peek_redo_entry(&self) -> Option<&HistoryEntry> {
+        self.redo.last()
+    }
+
+    fn commit_undo_entry(&mut self, expected: HistoryEntryId) -> bool {
+        if self.peek_undo_entry().map(|entry| entry.id) != Some(expected) {
             return false;
-        };
-        self.redo.push(action);
+        }
+        let entry = self
+            .undo
+            .pop()
+            .expect("the expected undo entry was checked above");
+        self.redo.push(entry);
         self.redo_invalidation = None;
         true
     }
 
-    pub fn commit_redo(&mut self) -> bool {
-        let Some(action) = self.redo.pop() else {
+    fn commit_redo_entry(&mut self, expected: HistoryEntryId) -> bool {
+        if self.peek_redo_entry().map(|entry| entry.id) != Some(expected) {
             return false;
-        };
-        self.undo.push(action);
+        }
+        let entry = self
+            .redo
+            .pop()
+            .expect("the expected redo entry was checked above");
+        self.undo.push(entry);
         true
+    }
+
+    #[cfg(test)]
+    fn commit_undo(&mut self) -> bool {
+        self.peek_undo_entry()
+            .map(|entry| entry.id)
+            .is_some_and(|entry| self.commit_undo_entry(entry))
+    }
+
+    #[cfg(test)]
+    fn commit_redo(&mut self) -> bool {
+        self.peek_redo_entry()
+            .map(|entry| entry.id)
+            .is_some_and(|entry| self.commit_redo_entry(entry))
     }
 
     /// Pop the most recent action onto the redo stack and return the action to

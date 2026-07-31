@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "mode": "strict",
+  "subject": {
+    "commit": "0000000000000000000000000000000000000000",
+    "binary_blake3": "0000000000000000000000000000000000000000000000000000000000000000",
+    "topology_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "completed_at_unix": 0,
+  "reviewer": "",
+  "cases": [
+    {
+      "name": "voiceover_primary_journey",
+      "status": "not_run",
+      "notes": ""
+    },
+    {
+      "name": "voiceover_context_menu",
+      "status": "not_run",
+      "notes": ""
+    },
+    {
+      "name": "appkit_popup_pixels",
+      "status": "not_run",
+      "notes": ""
+    },
+    {
+      "name": "popup_escape_focus_return",
+      "status": "not_run",
+      "notes": ""
+    },
+    {
+      "name": "mixed_scale_multi_monitor_placement",
+      "status": "not_run",
+      "notes": ""
+    }
+  ]
+}

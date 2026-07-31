@@ -8,7 +8,7 @@ const ROW_HEIGHT: f32 = 28.0;
 
 impl App {
     fn start_disk_usage_scan(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.ui.treemap.as_mut() else {
+        let Some(state) = self.ui.modals.treemap.as_mut() else {
             return;
         };
         let root = state.initial.dir.clone();
@@ -31,6 +31,7 @@ impl App {
         let mut disconnected = false;
         if let Some(run) = self
             .ui
+            .modals
             .treemap
             .as_ref()
             .and_then(|state| state.run.as_ref())
@@ -46,7 +47,7 @@ impl App {
                 }
             }
         }
-        if let Some(state) = self.ui.treemap.as_mut() {
+        if let Some(state) = self.ui.modals.treemap.as_mut() {
             for event in events {
                 match event {
                     crate::tree_overview::OverviewEvent::Progress(progress) => {
@@ -71,7 +72,7 @@ impl App {
     pub(crate) fn open_treemap(&mut self, ctx: &egui::Context) {
         let mut initial = self.ws.treemap_snapshot();
         initial.items.retain(|(_, bytes)| *bytes > 0);
-        self.ui.treemap = Some(DiskUsageState {
+        self.ui.modals.treemap = Some(DiskUsageState {
             progress: crate::tree_overview::ScanProgress {
                 directories: 1,
                 current: initial.dir.clone(),
@@ -88,7 +89,12 @@ impl App {
     }
 
     pub(crate) fn show_treemap_dialog(&mut self, ctx: &egui::Context) {
-        if self.ui.treemap.is_none() {
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Treemap);
+        if self.ui.modals.treemap.is_none() {
+            return;
+        }
+        if super::ui_state::modal_close_requested(true, escape_requested) {
+            self.ui.modals.treemap = None;
             return;
         }
         self.poll_disk_usage_scan();
@@ -101,7 +107,7 @@ impl App {
         let mut open_path = None;
 
         {
-            let state = self.ui.treemap.as_mut().expect("checked above");
+            let state = self.ui.modals.treemap.as_mut().expect("checked above");
             egui::Window::new("Disk usage")
                 .open(&mut window_open)
                 .collapsible(false)
@@ -138,12 +144,12 @@ impl App {
                 });
         }
 
-        if !window_open {
-            self.ui.treemap = None;
+        if super::ui_state::modal_close_requested(window_open, false) {
+            self.ui.modals.treemap = None;
             return;
         }
         if stop
-            && let Some(state) = self.ui.treemap.as_mut()
+            && let Some(state) = self.ui.modals.treemap.as_mut()
             && let Some(run) = state.run.as_ref()
         {
             run.cancel();
@@ -158,7 +164,7 @@ impl App {
             } else {
                 self.ws.reveal(&path);
             }
-            self.ui.treemap = None;
+            self.ui.modals.treemap = None;
         }
     }
 }

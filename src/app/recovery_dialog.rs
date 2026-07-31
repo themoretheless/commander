@@ -2,6 +2,10 @@
 
 use super::*;
 
+fn recovery_destructive_action_allowed(close_requested: bool) -> bool {
+    !close_requested
+}
+
 impl RecoveryState {
     pub(crate) fn scan(workspace: &Workspace) -> Self {
         let mut state = Self::default();
@@ -392,7 +396,7 @@ fn show_repair(
 
 impl App {
     fn push_recovery_toast(&mut self, ctx: &egui::Context, message: String, error: bool) {
-        self.ui.toasts.push(crate::toasts::Toast::new(
+        self.toasts.push(crate::toasts::Toast::new(
             message,
             if error {
                 crate::toasts::ToastKind::Error
@@ -406,13 +410,13 @@ impl App {
 
     pub(crate) fn show_recovery_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recovery);
-        let mut state = std::mem::take(&mut self.ui.recovery);
+        let mut state = std::mem::take(&mut self.recovery);
         state.poll_scan();
         if state.scanning {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        if !state.open {
-            self.ui.recovery = state;
+        if !self.ui.modals.recovery_open {
+            self.recovery = state;
             return;
         }
 
@@ -656,6 +660,11 @@ impl App {
         if let Some(operation_id) = selected {
             state.select(operation_id);
         }
+        if !recovery_destructive_action_allowed(close) {
+            self.ui.modals.recovery_open = false;
+            self.recovery = state;
+            return;
+        }
         if refresh {
             state.start_scan(&self.ws);
         }
@@ -694,7 +703,7 @@ impl App {
                 .resume_recovery(&operation_id, move || repaint.request_repaint())
             {
                 Ok(count) => {
-                    state.open = false;
+                    self.ui.modals.recovery_open = false;
                     self.push_recovery_toast(
                         ctx,
                         if count == 0 {
@@ -708,12 +717,20 @@ impl App {
                 Err(error) => state.error = Some(error),
             }
         }
-        if close {
-            state.open = false;
-        }
         if state.detail == RecoveryDetail::Repair && !state.repair_loaded {
             state.load_repair();
         }
-        self.ui.recovery = state;
+        self.recovery = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recovery_destructive_action_allowed;
+
+    #[test]
+    fn recovery_close_blocks_same_frame_destructive_actions() {
+        assert!(!recovery_destructive_action_allowed(true));
+        assert!(recovery_destructive_action_allowed(false));
     }
 }

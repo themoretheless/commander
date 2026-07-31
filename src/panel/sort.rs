@@ -1,29 +1,10 @@
-//! Sorting logic for panel entries.
-//! SRP: natural sort, column/order state, sort methods extracted.
-//! DRY from main panel.rs. Matches patterns in other file managers (e.g. Total Commander natural sort, mc sorting).
-
-use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-use super::FileEntry;
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum SortColumn {
-    Name,
-    Size,
-    Modified,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum SortOrder {
-    Asc,
-    Desc,
-}
+use super::{FileEntry, SortColumn, SortOrder, ViewConfig};
 
 /// Natural ("human") ordering: runs of digits compare by numeric value, so
-/// "file2" sorts before "file10". Non-digit runs compare by char. Inputs are
-/// expected pre-lowercased (we sort on `name_lower`).
-pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+/// "file2" sorts before "file10". Inputs are expected pre-lowercased.
+pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let (mut i, mut j) = (0usize, 0usize);
@@ -38,17 +19,15 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
             while j < b.len() && b[j].is_ascii_digit() {
                 j += 1;
             }
-            // Compare by numeric value: drop leading zeros, then longer run
-            // wins, then lexically; finally fewer leading zeros sorts first.
             let va = strip_leading_zeros(&a[si..i]);
             let vb = strip_leading_zeros(&b[sj..j]);
-            let ord = va
+            let ordering = va
                 .len()
                 .cmp(&vb.len())
                 .then_with(|| va.iter().cmp(vb.iter()))
                 .then_with(|| (i - si).cmp(&(j - sj)));
-            if ord != Ordering::Equal {
-                return ord;
+            if ordering != Ordering::Equal {
+                return ordering;
             }
         } else {
             match ca.cmp(&cb) {
@@ -56,84 +35,60 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
                     i += 1;
                     j += 1;
                 }
-                ord => return ord,
+                ordering => return ordering,
             }
         }
     }
-    // One ran out: the shorter string sorts first.
     (a.len() - i).cmp(&(b.len() - j))
 }
 
-fn strip_leading_zeros(s: &[char]) -> &[char] {
-    let mut k = 0;
-    while k + 1 < s.len() && s[k] == '0' {
-        k += 1;
+fn strip_leading_zeros(run: &[char]) -> &[char] {
+    let mut first = 0;
+    while first + 1 < run.len() && run[first] == '0' {
+        first += 1;
     }
-    &s[k..]
+    &run[first..]
 }
 
-/// Sort the panel's entries in place using current sort_col and sort_order.
-/// Dirs always first. Updates entries_gen.
-pub fn sort_entries(panel: &mut super::PanelState) {
-    let col = panel.sort_col;
-    let order = panel.sort_order;
-
-    panel.entries.sort_by(|a, b| {
-        // Dirs always first
-        match (a.is_dir, b.is_dir) {
-            (true, false) => return Ordering::Less,
-            (false, true) => return Ordering::Greater,
-            _ => {}
+pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
+    entries.sort_by(|a, b| {
+        if config.folders_first() {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => return Ordering::Less,
+                (false, true) => return Ordering::Greater,
+                _ => {}
+            }
         }
 
-        let cmp = match col {
-            // Natural order over the precomputed lowercase name, so
-            // "file2" sorts before "file10".
-            SortColumn::Name => natural_cmp(&a.name_lower, &b.name_lower),
+        let primary = match config.sort_column() {
+            SortColumn::Name if config.natural_name_sort() => {
+                natural_cmp(&a.name_lower, &b.name_lower)
+            }
+            SortColumn::Name => a.name_lower.cmp(&b.name_lower),
             SortColumn::Size => a.size.cmp(&b.size),
             SortColumn::Modified => a.modified.cmp(&b.modified),
+            SortColumn::Extension => a
+                .extension
+                .cmp(&b.extension)
+                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
+            SortColumn::Kind => crate::selection_summary::kind_of(a)
+                .cmp(&crate::selection_summary::kind_of(b))
+                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
         };
-
-        match order {
-            SortOrder::Asc => cmp,
-            SortOrder::Desc => cmp.reverse(),
-        }
+        let ordered = match config.sort_order() {
+            SortOrder::Asc => primary,
+            SortOrder::Desc => primary.reverse(),
+        };
+        ordered.then_with(|| a.path.cmp(&b.path))
     });
-    // Content/order changed: filtered indices must be rebuilt.
-    panel.entries_gen = panel.entries_gen.wrapping_add(1);
-}
-
-pub fn set_sort(panel: &mut super::PanelState, col: SortColumn) {
-    if panel.sort_col == col {
-        panel.sort_order = match panel.sort_order {
-            SortOrder::Asc => SortOrder::Desc,
-            SortOrder::Desc => SortOrder::Asc,
-        };
-    } else {
-        panel.sort_col = col;
-        panel.sort_order = SortOrder::Asc;
-    }
-    sort_entries(panel);
-}
-
-pub fn sort_indicator(panel: &super::PanelState, col: SortColumn) -> &str {
-    if panel.sort_col == col {
-        match panel.sort_order {
-            SortOrder::Asc => " ▲",
-            SortOrder::Desc => " ▼",
-        }
-    } else {
-        ""
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cmp::Ordering;
 
     #[test]
-    fn natural_cmp_orders_numbers_by_value() {
+    fn natural_numbers_are_ordered_by_value_then_leading_zero_count() {
         assert_eq!(natural_cmp("file2", "file10"), Ordering::Less);
         assert_eq!(natural_cmp("file10", "file2"), Ordering::Greater);
         assert_eq!(natural_cmp("a", "a"), Ordering::Equal);

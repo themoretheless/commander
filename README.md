@@ -283,8 +283,6 @@ ordering, the **transfer queue** panel, and **operation history**) are
 available from the command palette (`Cmd+K`). Names sort naturally (`file2`
 before `file10`) by default.
 
-Tabs and bookmarks draw from classic commanders (Total Commander, Double Commander, FAR) and modern editors (VS Code tabs/palette/git, Path Finder favorites/preview).
-
 ## Build and run
 
 ```sh
@@ -297,9 +295,9 @@ AppKit / AVFoundation / ImageIO).
 ## Development
 
 ```sh
-cargo test                       # unit tests (UI-independent core)
-cargo clippy --all-targets       # lints (the repo is clippy-clean)
-cargo fmt --check                # formatting
+cargo test --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --check
 ```
 
 The file-manager logic lives in a UI-independent core (`workspace`,
@@ -310,10 +308,164 @@ emits typed FIFO `UiRequest` values; `app/update.rs` owns the single per-frame
 dispatcher and the `app` module remains the egui adapter. Main-thread AppKit
 context-menu behavior and background workload admission are injected through
 narrow handles rather than reached through UI-global state.
+
+### Architecture checkpoint
+
+The ordered SOLID/DRY pass completed these ownership boundaries:
+
+- `TransferQueueController`, `DeleteController`, and `SpaceProbeController`
+  own their asynchronous lifecycle state; `Workspace` applies typed outcomes.
+- `UndoCenter` exclusively owns the undo/redo timeline and replay
+  reservations. Async settlement is bound to the center owner, timeline
+  revision, history entry, and transfer operation; interrupted replays remain
+  locked until the matching recovery is resumed or rolled back.
+- `transfer::executor::TransferExecutor` owns the transactional lifecycle from
+  preflight through terminal publication. Native/clone, delta, sparse, and
+  buffered staging run through replaceable backend ports that cannot place the
+  final destination, delete the source, or settle the operation journal.
+- `UiState` owns transient input and all dialog/modal buffers while
+  `UiRequestQueue` preserves non-modal and modal FIFO ordering.
+- `ListingState` owns rows, checked revision, and filter-cache invalidation;
+  `ViewState` owns private `ViewConfig` plus bounded per-folder memory.
+  Selection, watcher, size index, and pure sorting are separate panel owners.
+- `operation_journal` validates stable path identity, legal state transitions,
+  restart/migration proofs, and rollback/recovery behavior under injected
+  side-effect failures.
+- Clipboard, opener, Trash, free-space, and native context-menu behavior use
+  typed ports. AppKit selectors return invocation-bound intents and perform no
+  filesystem or process effects while the menu is tracking.
+- `persistence::Persist` is the shared object-safe byte-store boundary.
+  Bookmarks and session state use an injected instance; feature flags and the
+  version manifest use the same versioned envelope, bounded no-follow reads,
+  generation/revision checks, and fail-closed recovery rules. Recovered
+  bookmark sources are quarantined before an explicit upgrade can replace
+  them.
+- The large workspace integration suite lives in `workspace/tests.rs`;
+  pathname parsing/validation lives in its own typed module.
+- `path_probe::PathProbeController` debounces `Cmd+L` input, binds every result
+  to the exact dialog/input generation, and runs the injected filesystem
+  `metadata` probe through a dedicated two-worker workload lane. A dialog owns
+  at most two admitted probes and never more than one for its current binding;
+  further edits collapse into one latest-wins candidate while older slots
+  retire, without growing scheduler freshness state. The dialog keeps stable
+  one-line status geometry and a polite accessibility live region.
+
+The full serial suite currently passes 979 tests with three intentional
+manual/performance harnesses ignored. Native release QA now records automated
+checks and blocks until its permission-bound human attestation is complete.
+The next high-value architecture work is moving `PanelState::navigate_to`
+listing publication off the UI thread and closing the successful path-probe
+TOCTOU window. Durable undo history, path-identity-bound replay, migration of
+the operation journal and content index to versioned stores, cross-process
+persistence CAS, descriptor-relative filesystem effects, and reconciliation
+of the last placement-to-journal crash window remain later schema migrations
+or OS-hardening work.
+
+The same checkpoint reduced the locked dependency graph from 559 to 516 crates
+by enabling only the image decoders Commander uses. The checked-in
+[`deny.toml`](deny.toml) and CI gate for pull requests, main-branch pushes, and
+a weekly refresh report zero known vulnerabilities and explicitly accept one
+unmaintained advisory, `RUSTSEC-2026-0192`, for `ttf-parser` in the Linux
+Wayland/winit stack. The waiver is owned by
+`@themoretheless`, its review is due on 2026-10-21, and it hard-expires at
+00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
+`0.20.2` before executing it. Forty-one duplicate-crate groups remain a warning
+and tracked dependency debt. Run the same full-lockfile policy locally with:
+
+```sh
+cargo deny --all-features --locked check advisories bans licenses sources
+```
+
+### Native visual and release QA
+
+The `visual-qa` feature runs the real native eframe/Glow framebuffer path
+against a temporary deterministic workspace. It does not load user session or
+storage data, and every native effect is a recording fake. CI runs all four
+scenarios as independent strict matrix jobs:
+
+```sh
+cargo run --features visual-qa -- --visual-qa desktop_base --output target/visual-qa
+cargo run --features visual-qa -- --visual-qa minimum_window --output target/visual-qa
+cargo run --features visual-qa -- --visual-qa zoom_200_accessible --output target/visual-qa
+cargo run --features visual-qa -- --visual-qa confirmation_owner --output target/visual-qa
+```
+
+Each scenario writes `manifest.json` and `capabilities.json`; a successful
+capture also writes `frame.png`. Checks cover framebuffer content, exact
+logical viewport size, in-viewport pane/row/dialog geometry, pane separation,
+modal ownership, disabled modal background, painted glyph pixels, and zero
+native-effect calls. The 200% scenario opens an `1800x1000` native window so
+the application receives the intended `900x500` logical workspace at 2x text
+zoom. `--allow-skip` is diagnostic only; CI omits it, so unsupported capture,
+timeout, and validation failure are red.
+
+Native release evidence is a separate fail-closed path:
+
+```sh
+cargo run --features visual-qa -- --native-release-qa diagnostic --output target/native-release-qa
+cargo run --features visual-qa -- --native-release-qa strict --output target/native-release-qa --attestation path/to/attestation.json
+```
+
+Diagnostic mode never opens a TCC prompt. `build.rs` embeds the source commit
+and dirty bit while watching Git metadata plus every tracked package file.
+Runtime evidence ignores `COMMANDER_QA_COMMIT`/`GITHUB_SHA`, verifies that
+embedded identity against the exact clean source checkout, and hashes the
+current executable with BLAKE3. On macOS it additionally compares the running
+process's kernel CDHash with the strictly verified on-disk code signature, so a
+replaced `current_exe` path cannot pass as the loaded binary. It also records
+the macOS build, existing WindowServer, Accessibility, Screen Recording, and
+VoiceOver capability state, full `NSScreen` topology, and a canonical
+order-independent fingerprint. It renders the declarative menu into an actual
+`NSMenu`, then recursively compares all 22 items and separators: titles, stable
+accessibility identifiers, full labels, enabled/state/submenu/shortcut
+metadata, targets, selectors, and represented objects. The same pure placement
+function used by production verifies that the full top-left-anchored menu
+rectangle fits the `visibleFrame` at the center and four corners of every
+detected display, including negative coordinates and mixed backing scales.
+Oversized menus fail instead of being reported as unclipped.
+
+Speech quality, VoiceOver task navigation, separate AppKit popup pixels,
+Escape focus return, and real mixed-display behavior remain permission-bound
+human checks. Diagnostic output includes an exact-subject attestation template.
+The output directory is private (`0700`), fixed-name JSON files are atomically
+replaced through a held no-follow directory descriptor, and files are `0600`;
+symlink, non-regular, oversized, corrupt, and unknown-field input fails closed.
+Evidence schema v4 and attestation schema v2 bind strict mode, commit,
+executable digest, topology, case set, reviewer, notes, and timestamp. The
+checked-in structural references are
+[`qa/native-release-attestation.schema.json`](qa/native-release-attestation.schema.json)
+and
+[`qa/native-release-attestation.template.json`](qa/native-release-attestation.template.json).
+Strict mode accepts only a clean exact commit/binary/topology binding, all
+native capabilities, all automated checks, and all five human cases passed
+within seven days. Denied, blocked, `not_run`, stale, mismatched, malformed, or
+missing evidence exits nonzero.
+
+On the 2026-07-28 implementation host, actual 22-item NSMenu introspection and
+all 15 full-rectangle placement probes passed on three displays (1x at negative
+x, 2x main, and 2x above). Accessibility and Screen Recording were denied and
+VoiceOver was not running, so evidence remained non-passing and strict mode
+returned nonzero. No permission prompt was shown.
+
+The production WGPU presentation path remains in the normal application. It is
+not used for automated readback: on the tested Metal host, eframe 0.35 queued
+`ViewportCommand::Screenshot` but did not deliver `Event::Screenshot` without
+external device polling, while polling outside the renderer's event-loop
+ownership could hang. Such a timeout is classified as a capture failure, never
+as an unsupported capability.
+
+Manual release check:
+
+- Complete the primary two-pane journey with VoiceOver.
+- Invoke the focused row's AccessKit `ShowContextMenu` action with
+  VoiceOver-Shift-M, including a row in the inactive pane, then navigate the
+  resulting AppKit menu without a pointer.
+- Verify separate popup pixels and all submenus at display edges.
+- Dismiss with Escape and verify focus returns to the exact row.
+- Repeat placement on the attested mixed 1x/2x topology.
+
 The architecture and the refactoring plan are documented in
 [architecture.md](architecture.md) and [recommendation.md](recommendation.md).
-
-Performance work ongoing (git status debounced; benchmarks added for refresh/git paths showing ~2.5x wins; more fixes from audit: allocations, per-frame work, multi-tab scaling).
 
 ## License
 

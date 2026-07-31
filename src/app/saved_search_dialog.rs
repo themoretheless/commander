@@ -4,16 +4,33 @@
 
 use super::*;
 
+#[derive(Debug, PartialEq, Eq)]
+enum SavedSearchTransition<T> {
+    Stay,
+    Close,
+    Open(T),
+}
+
+fn saved_search_transition<T>(cancel_requested: bool, open: Option<T>) -> SavedSearchTransition<T> {
+    if cancel_requested {
+        SavedSearchTransition::Close
+    } else if let Some(value) = open {
+        SavedSearchTransition::Open(value)
+    } else {
+        SavedSearchTransition::Stay
+    }
+}
+
 impl App {
     pub(crate) fn open_saved_search(&mut self) {
         self.smart_folders_mut();
-        self.ui.saved_search_open = true;
+        self.ui.modals.saved_search_open = true;
     }
 
     pub(crate) fn show_saved_search_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::SavedSearch);
-        if !self.ui.saved_search_open {
+        if !self.ui.modals.saved_search_open {
             return;
         }
         let t = self.colors;
@@ -24,7 +41,6 @@ impl App {
         {
             let empty: &[crate::smart_folder::Definition] = &[];
             let items = self
-                .ui
                 .smart_folders
                 .as_ref()
                 .map(|s| s.items.as_slice())
@@ -99,7 +115,17 @@ impl App {
                     }
 
                     ui.add_space(10.0);
-                    if crate::app::ui_common::themed_button(ui, "Close", false, &t)
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Close")
+                                    .size(13.0)
+                                    .color(t.text_primary),
+                            )
+                            .fill(t.bg_card)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
                         || escape_requested
                     {
                         close = true;
@@ -107,11 +133,16 @@ impl App {
                 });
         }
 
+        let transition = saved_search_transition(close, open_def);
+        if transition == SavedSearchTransition::Close {
+            self.ui.modals.saved_search_open = false;
+            return;
+        }
         if let Some(name) = delete {
             self.smart_folders_mut().remove(&name);
             if !crate::smart_folder::save(self.smart_folders_mut()) {
                 let now = ctx.input(|i| i.time);
-                self.ui.toasts.push(crate::toasts::Toast::new(
+                self.toasts.push(crate::toasts::Toast::new(
                     "Could not save saved searches to disk",
                     crate::toasts::ToastKind::Error,
                     false,
@@ -119,18 +150,31 @@ impl App {
                 ));
             }
         }
-        if let Some(def) = open_def {
+        if let SavedSearchTransition::Open(def) = transition {
             let mut state = FindState::from_definition(&def);
             state.index_exclusions = super::find_dialog::format_index_exclusions(
                 &state.root,
-                &self.ui.content_index.exclusions(&state.root),
+                &self.content_index.exclusions(&state.root),
             );
-            self.ui.find = Some(state);
-            self.ui.saved_search_open = false;
-            return;
+            self.ui.modals.find = Some(state);
+            self.ui.modals.saved_search_open = false;
         }
-        if close {
-            self.ui.saved_search_open = false;
-        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SavedSearchTransition, saved_search_transition};
+
+    #[test]
+    fn cancel_wins_over_saved_search_transition_in_the_same_frame() {
+        assert_eq!(
+            saved_search_transition(true, Some(7)),
+            SavedSearchTransition::Close
+        );
+        assert_eq!(
+            saved_search_transition(false, Some(7)),
+            SavedSearchTransition::Open(7)
+        );
     }
 }

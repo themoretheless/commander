@@ -274,6 +274,7 @@ fn file_row_semantics_reach_the_headless_accesskit_tree() {
         ui.ctx().accesskit_node_builder(response.id, |node| {
             node.set_role(egui::accesskit::Role::Row);
             node.set_selected(semantics.selected);
+            node.add_action(egui::accesskit::Action::ShowContextMenu);
             if let Some(expanded) = semantics.expanded {
                 node.set_expanded(expanded);
             }
@@ -297,6 +298,37 @@ fn file_row_semantics_reach_the_headless_accesskit_tree() {
         )
     );
     assert_eq!(row.is_selected(), Some(true));
-    assert_eq!(row.is_expanded(), Some(false));
+    assert_eq!(row.is_expanded(), None);
     assert!(row.supports_action(egui::accesskit::Action::Focus));
+    assert!(row.supports_action(egui::accesskit::Action::ShowContextMenu));
+}
+
+#[test]
+fn accesskit_context_menu_request_routes_to_exact_row_once() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let row_id = egui::Id::new("accesskit-context-row");
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::AccessKitActionRequest(
+        egui::accesskit::ActionRequest {
+            action: egui::accesskit::Action::ShowContextMenu,
+            target_node: row_id.accesskit_id(),
+            target_tree: egui::accesskit::TreeId::ROOT,
+            data: None,
+        },
+    ));
+    let _ = ctx.run_ui(input, |ui| {
+        assert!(crate::accessibility::consume_show_context_menu(
+            ui.ctx(),
+            row_id
+        ));
+        assert!(!crate::accessibility::consume_show_context_menu(
+            ui.ctx(),
+            row_id
+        ));
+        assert!(!crate::accessibility::consume_show_context_menu(
+            ui.ctx(),
+            egui::Id::new("another-row")
+        ));
+    });
 }

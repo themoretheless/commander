@@ -33,13 +33,17 @@ mod lock_util;
 pub mod measurement;
 mod mount_guard;
 mod native_copy;
+mod native_effect;
 mod native_menu;
+mod native_release_qa;
 mod operation;
 mod operation_journal;
 mod operation_view;
 mod opqueue;
 mod panel;
 mod path_identity;
+mod path_probe;
+mod pathname;
 mod persistence;
 pub mod ports;
 pub mod provider_runtime;
@@ -70,6 +74,8 @@ mod ui_request;
 mod undo;
 mod verified_hash;
 mod version_store;
+#[cfg(feature = "visual-qa")]
+mod visual_qa;
 mod volume_profile;
 mod watcher_health;
 mod watcher_policy;
@@ -85,6 +91,11 @@ use eframe::NativeOptions;
 use egui::ViewportBuilder;
 
 fn main() -> eframe::Result<()> {
+    #[cfg(feature = "visual-qa")]
+    if let Some(result) = visual_qa::maybe_run() {
+        return result;
+    }
+
     let options = NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title("Commander")
@@ -109,7 +120,29 @@ fn main() -> eframe::Result<()> {
                     "could not construct the main-thread AppKit adapter: {error:?}"
                 ))
             })?;
-            Ok(Box::new(app::App::new(cc, std::rc::Rc::new(context_menu))))
+            let clipboard = native_effect::MacOsClipboard::new().map_err(|error| {
+                std::io::Error::other(format!(
+                    "could not construct the main-thread clipboard adapter: {error:?}"
+                ))
+            })?;
+            let opener = native_effect::MacOsOpener::new().map_err(|error| {
+                std::io::Error::other(format!(
+                    "could not construct the main-thread opener adapter: {error:?}"
+                ))
+            })?;
+            Ok(Box::new(app::App::new(
+                cc,
+                app::AppServices {
+                    context_menu: std::rc::Rc::new(context_menu),
+                    clipboard: std::rc::Rc::new(clipboard),
+                    opener: std::rc::Rc::new(opener),
+                    trash: std::sync::Arc::new(native_effect::NativeTrash),
+                    free_space: std::sync::Arc::new(native_effect::NativeFreeSpace),
+                    persistence: persistence::fs_persist(),
+                    workload: workload::global_handle(),
+                    directory_probe: std::sync::Arc::new(pathname::FsDirectoryProbe),
+                },
+            )))
         }),
     )
 }

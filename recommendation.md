@@ -13,13 +13,11 @@ F's exact count.
 
 ## Strategy
 
-`master` is the mainline. The `refactor/god-removal-ui-state` branch is treated
-as a **proven spike**, not a merge candidate: its ideas (Effect bus, `UiState`,
-`Pane`/`CommandHandler` traits, tokio async) are re-landed onto `master` in
-small, reviewable steps. It diverged on a stale base (`master` ~42 commits
-ahead, the spike ~13), so a wholesale merge would be conflict-heavy and is
-explicitly out of scope. Where a step below has a working reference on the
-spike, that is noted as "mine from spike".
+`master` is the mainline. The old `refactor/god-removal-ui-state` branch remains
+historical evidence, not a merge candidate. Its useful ideas have now been
+re-landed as small reviewed commits: `UiRequestQueue`, `UiState`, owned panel
+substates, and typed effect ports. Tokio, generic `Pane`/`CommandHandler`
+traits, and a wholesale spike merge remain explicitly out of scope.
 
 **Track A** decomposes the two god objects, while the D-track closes verified
 correctness gaps in small passes. **Track B is now complete**; it remains below
@@ -47,12 +45,12 @@ references. When the two disagree, architecture.md wins.
 | # | Step | Risk | Notes |
 | --- | --- | --- | --- |
 | A1 | Extract `compare` module | done | Shipped on `master` (`ddab764`). |
-| A2 | Move `workspace.rs`'s test module to `workspace/tests.rs` (Step 0), then extract `pathname` (Step 1) | low | Pure file moves, compiler-verified. Detailed as architecture.md's Steps 0-1. |
-| A3 | Introduce `ViewConfig` value object (sort/filter/hidden + `sort_entries`) | low-med | Covered by existing sort tests. Consolidates the already-shipped B2 view-memory settings. Now Steps 3-9 of the detailed plan (panel leaves extracted first, `ViewConfig` and its `filter_cache` sibling-fix land together at Steps 7-8 since they share one invariant). |
+| A2 | Workspace test split + typed `pathname` extraction | **done** | `workspace.rs` stays a file with `workspace/tests.rs` as its child. Pure pathname parsing and typed errors drive both dialogs and commit-time rename validation; an injected `DirectoryProbePort` and exact-binding/latest-wins `PathProbeController` now move `Cmd+L` metadata off the frame thread while preserving lexical paths and symlink-to-directory behavior. |
+| A3 | Encapsulated `ViewConfig`, pure sorting, atomic view transitions | **done** | `ListingState` owns rows/revision/filter cache; the former explicit-`entries_gen` design is superseded. Per-panel session adapters preserve legacy flat JSON while seeding both configs before first listing. Hidden toggles commit config+rows atomically, publish success/rejection through the shared non-modal FIFO, and invalidate a hidden-policy-aware bounded tree cache on success. |
 | A4 | Replace the `*_request` flag bus with one typed request queue | **done** | Shipped as `ui_request::UiRequestQueue`: 25 fields removed, one FIFO snapshot drain, payload-preserving modal serialization, FIFO Escape ownership, and tested SafeState-to-Recovery handoff. |
-| A5 | Extract `UiState` (group the ~20 dialog buffers out of `App`) | med | Mine from spike. Shrinks the `App` god object. Split into Steps 16-17 (`dialog_state_types` then `dialog_buffers`); D19's dialog-retargeting fix lands in the same commit as Step 17 since both touch the same lines. |
-| A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | **partial** | Queue lifecycle moved to `workspace/transfer_queue.rs` and paused-state safety bugs were fixed. It still extends `Workspace`; next extract a controller that returns typed retirement outcomes, then separate undo/history application. |
-| A7 | Define and inject `Clipboard` / `Trash` / `Persist` ports; return a structured `OpOutcome` | **partial** | Main-thread context menu and workload runtime are injected; persistence has typed commit/durability outcomes. Clipboard, Trash, opener, and free-space probing remain to port. |
+| A5 | Extract `UiState` (group dialog buffers out of `App`) | **done** | `app::ui_state::UiState` owns transient input and all modal buffers; opening contexts retain immutable targets and the FIFO/Escape contract is unchanged. |
+| A6 | Extract `TransferCenter` + `UndoCenter` from `Workspace` | **done** | `TransferQueueController` owns queue/active worker/history intent/safe-state identity and returns typed launch/poll/retirement outcomes. `UndoCenter` exclusively owns the stack, timeline revision, and replay reservation lifecycle; stale, foreign, duplicate, partial, and operation-mismatched settlements fail closed. |
+| A7 | Define and inject desktop-effect / persistence ports; return structured outcomes | **done** | Clipboard, Trash, opener, free-space and context menu are injected with typed failures; native selectors only return deferred intents. `Persist` is an object-safe byte boundary, one instance is injected through `App`/`Workspace`, and bookmarks/session, feature flags, and the version manifest use a versioned fail-closed envelope. |
 
 Deferred from the spike (re-land only on explicit demand, each is a feature in
 its own right, not cleanup): tokio runtime + `spawn_blocking`, virtualised file
@@ -62,32 +60,81 @@ splits are in the detailed plan as **optional, beyond committed Track A**
 `app/confirm_dialog.rs`'s two list-rendering strategies into their own files -
 land only if reviewers want them after A1-A7 lands clean.
 
-### 2026-07-21 execution review
+### 2026-07-28 execution review
 
-Ten scoped implementation tracks were paired with independent critics. The
-accepted work covers panel cache publication, isolated async text preview,
-atomic persistence outcomes, workload injection, dialog/IME/Escape contracts,
-the macOS context-menu port, transfer-queue extraction, and the typed UI request
-queue. Critic P0-P2 findings were fixed and re-reviewed. The proposed operation
-journal/rollback rewrite was rejected and is not present in the branch because
-its identity and crash-safety proof was incomplete.
+Seven ordered architecture points were each run through four roles: independent
+architecture/failure analysis, implementation, and an adversarial critic that
+also repaired its findings. The accepted sequence now includes the transfer
+queue controller, `UiState`, a redesigned identity-safe journal/recovery proof
+model, panel listing/view/selection/watcher/size owners, typed desktop-effect
+ports, strict running-app visual QA plus a pure native-menu model, and the
+workspace-test/pathname/ViewConfig ownership pass. Every P0-P2 finding raised
+inside those scopes was fixed and re-reviewed. The next four-role pass added
+`UndoCenter`, including owner-bound reservations and explicit
+`Reserved -> Running -> Interrupted` recovery states. Durable history and
+path-identity-bound actions remain an explicit future schema migration. A
+subsequent four-role pass extracted `TransferExecutor` and staging-only
+native/clone, delta, sparse, and buffered ports, then hardened commit-time
+mount, identity, durability, overwrite, source-cleanup, and progress
+invariants.
+The next four-role pass added the shared `Persist` boundary and versioned
+envelope. It separates byte I/O from typed schema policy, performs bounded
+no-follow reads, rejects stale in-process revisions, preserves recovered
+bookmark input before explicit upgrade, and blocks destructive version-store
+actions when the manifest is corrupt, incompatible, forged, or path-escaping.
+The accepted scope deliberately leaves the operation journal/content index,
+cross-process CAS, and descriptor-relative filesystem traversal for dedicated
+migrations.
+The following four-role pass checked in the full-lockfile `cargo-deny` policy
+and an Ubuntu gate for pull requests, main-branch pushes, and a weekly refresh.
+It currently reports zero known vulnerabilities, accepts only the unmaintained
+`RUSTSEC-2026-0192` Wayland/winit `ttf-parser` path, and leaves 41
+duplicate-crate groups visible as warning-level debt. The waiver owner is
+`@themoretheless`, its review is due on 2026-10-21, and its hard expiry is
+00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
+`0.20.2` before running it. Reproduce the policy with the command shown in the
+README.
+The pathname implementation pass then split pure lexical parsing from the
+injected filesystem probe. `Cmd+L` captures its home and opening panel once,
+uses a 200 ms debounce and dedicated two-worker quota, admits at most two tasks
+and never more than one for the current binding, while collapsing further
+edits into one latest-wins candidate as stale slots retire. It accepts only the exact
+dialog/generation/raw/lexical binding and does not register transient dialog
+roots in the scheduler generation map. Ten deterministic controller tests
+cover blocked workers, 100-edit bounds, synchronous completion, cancellation,
+admission, panic and disconnect paths, bringing the full serial all-feature
+suite to 964 passing with three intentional ignores. The isolated performance
+smoke remains green. Synchronous
+`PanelState::navigate_to` listing and the probe-to-listing TOCTOU remain
+explicitly outside this scoped change.
+
+The final native-release adversarial pass adds compile-time Git provenance,
+stale-dirty-build regressions, strict deny-unknown attestation parsing, private
+descriptor-relative artifacts, canonical topology identity, recursive 22-item
+NSMenu inspection with RAII ownership, and the exact-row AccessKit context-menu
+route. The current all-target/all-feature serial result is 979 passing with
+three intentional ignores.
 
 Highest-value next steps, in order:
 
-1. Replace the child-module `impl Workspace` queue extraction with a
-   `TransferQueueController` that returns typed retirement/safe-state/history
-   outcomes.
-2. Extract dialog buffers from `App` into `UiState` without changing the shipped
-   `UiRequest` ordering contract.
-3. Redesign the rejected journal track around stable path identity, explicit
-   transition proofs, and fault-injected restart tests before writing another
-   production patch.
-4. Split `PanelState` into listing, view configuration, selection, watcher, and
-   size-cache owners; its current 4,761 lines are the largest SRP hotspot.
-5. Add Clipboard, Trash, opener, and free-space ports, then move native failure
-   reduction to the same typed outcome pattern as the context menu.
-6. Add running-app screenshot/native-menu QA; headless tests now cover focus,
-   IME, modal FIFO, and Escape, but not visual stacking or AppKit presentation.
+1. Completed: `minimum_window`, `zoom_200_accessible`, and
+   `confirmation_owner` are strict CI matrix gates alongside `desktop_base`.
+   Native release QA now binds actual NSMenu introspection, full popup-rectangle
+   placement, compile-time source identity, current-executable digest, canonical
+   topology evidence, private atomic artifacts, and a fail-closed human
+   VoiceOver/popup/multi-monitor attestation without requesting TCC access.
+   File rows expose AccessKit `ShowContextMenu`; the queued exact-row route also
+   works from an inactive pane and publishes focus before AppKit blocks.
+2. Move `PanelState::navigate_to` listing/publication off the UI thread and
+   close the probe-to-listing TOCTOU; separately design an `OsStr` plus
+   volume-capability-aware naming policy for non-UTF-8, case-sensitivity and
+   Unicode normalization.
+3. Reconcile the transfer journal's remaining crash window between successful
+   placement and `mark_completed`, then add descriptor-relative namespace
+   effects and a streaming parallel-directory planner.
+4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
+   operation boundaries. Their state ownership is already split; mechanical
+   field moves would now make the design worse.
 
 The 500-point digest below remains a dated audit snapshot. Its old line numbers
 are evidence of what was reviewed, not a claim that every location still has
@@ -374,10 +421,10 @@ Category mix for the first 500: **79 bugs**, **194 problems**, **115 improvement
 31. `предложение` `src/app/mask_dialog.rs:9-11` - Mask dialog has no persisted history of recently-used masks, so a common mask like '*.rs' or '!*test*' must be retyped every time the dialog opens with an empty buffer
 32. `предложение` `src/smart_folder.rs:10-15; referenced from src/app/saved_search_dialog.rs:130-138` - Smart folders have no 'run now' from a list without going through the Find sheet indirection, and no way to reorder or rename a saved search once created
 33. `предложение` `src/density.rs:75-81` - Density has exactly 3 fixed tiers with no user-tunable custom row height, and no per-folder memory (already tracked as B2 in recommendation.md) but also no keyboard shortcut discoverable from density.rs itself for jumping directly to a tier (only relative cycle)
-34. `проблема` `src/app/path_dialog.rs:24` - resolve_dir_input() re-parses the string and hits the filesystem (exists()/is_dir() syscalls) on every single frame the dialog is open, not just on text change
+34. `проблема` `src/app/path_dialog.rs:24` - resolve_dir_input() re-parses the string and hits the filesystem (exists()/is_dir() syscalls) on every single frame the dialog is open, not just on text change (resolved 2026-07-28: pure parsing is separated from a 200 ms debounced, exact-binding worker probe with bounded latest-wins replacement)
 35. `ошибка` `src/listing_export.rs:29-33,46-57` - Text and Markdown listing export formats do not escape embedded newlines/tabs in filenames, unlike the CSV format which correctly quotes them
 36. `проблема` `src/listing_export.rs:63-74` - csv_escape/md_escape only guard the fields listing_export builds itself (name, size_str, modified_str) but not e.g. a possible '"' or '\|' inside modified_str, which is fine today only because modified_str's format string is controlled
-37. `проблема` `src/app/path_dialog.rs:22` - show_path_dialog does the home_dir() lookup and Command::resolve every frame even though `home` never changes while the app runs
+37. `проблема` `src/app/path_dialog.rs:22` - show_path_dialog does the home_dir() lookup and Command::resolve every frame even though `home` never changes while the app runs (resolved 2026-07-28: home is captured once in `open_path`, and unchanged frames perform no pathname I/O)
 38. `ошибка` `src/app/path_dialog.rs:103-107` - Pressing Enter or clicking Go when the path field is not yet resolved-ok is a no-op with no feedback beyond the static red error label -- if the user presses Enter rapidly while resolution is still showing the previous error text, there's no shake/flash to signal the rejection
 39. `проблема` `src/app/path_dialog.rs:24 (via workspace::resolve_dir_input)` - ~user (tilde followed by a different username) is not supported by resolve_dir_input's caller-visible contract implied by the doc comment/hint text '~/Documents', but path_dialog.rs never surface a friendly message for that specific case -- it falls through to a raw PathBuf::from('~otheruser') and fails as 'Path does not exist'
 40. `улучшение` `src/app/path_dialog.rs:24,58-69` - The Ok/Err match on `resolved` in show_path_dialog rebuilds a RichText/label every frame purely to show a static checkmark or the error string; the whole dialog closure captures `resolved` by move implicitly through the outer scope, but since resolved is computed unconditionally above show(), it's wasted work on frames where the window isn't focused/visible (e.g. if occluded)

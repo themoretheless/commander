@@ -7,15 +7,187 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_TEXT_PREVIEW_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFailureKind {
+    Denied,
+    NotFound,
+    ReadOnly,
+    Busy,
+    Stale,
+    Cancelled,
+    Unsupported,
+    InvalidInput,
+    Overflow,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeFailure {
+    pub kind: NativeFailureKind,
+    pub message: String,
+}
+
+impl NativeFailure {
+    pub fn from_io(error: &std::io::Error) -> Self {
+        use std::io::ErrorKind;
+        let kind = match error.kind() {
+            ErrorKind::PermissionDenied => NativeFailureKind::Denied,
+            ErrorKind::NotFound => NativeFailureKind::NotFound,
+            ErrorKind::ReadOnlyFilesystem => NativeFailureKind::ReadOnly,
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => NativeFailureKind::Busy,
+            ErrorKind::Interrupted => NativeFailureKind::Cancelled,
+            ErrorKind::InvalidInput | ErrorKind::InvalidFilename => NativeFailureKind::InvalidInput,
+            ErrorKind::Unsupported => NativeFailureKind::Unsupported,
+            _ => NativeFailureKind::Unknown,
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            kind: NativeFailureKind::Unsupported,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipboardOutcome {
+    Committed,
+    Submitted,
+    Unsupported(NativeFailure),
+    Failed(NativeFailure),
+}
+
+/// Main-thread clipboard boundary. Native pasteboards are intentionally not
+/// exposed as `Send`/`Sync`.
+pub trait ClipboardPort {
+    fn write_text(&self, text: &str) -> ClipboardOutcome;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenRequest {
+    OpenPath(PathBuf),
+    Reveal(PathBuf),
+    OpenWith { path: PathBuf, application: PathBuf },
+    QuickLook(PathBuf),
+    GetInfo(PathBuf),
+}
+
+impl OpenRequest {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::OpenPath(path)
+            | Self::Reveal(path)
+            | Self::QuickLook(path)
+            | Self::GetInfo(path) => path,
+            Self::OpenWith { path, .. } => path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenOutcome {
+    Accepted,
+    Unsupported(NativeFailure),
+    Failed(NativeFailure),
+}
+
+/// Main-thread application-launch boundary.
+pub trait OpenerPort {
+    fn open(&self, request: &OpenRequest) -> OpenOutcome;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrashTarget {
+    pub path: PathBuf,
+    pub expected: crate::path_identity::PathIdentity,
+}
+
+/// One ordered item in a Trash batch. A listing that could not capture a
+/// lexical binding contributes a typed failure without invoking the adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrashBatchItem {
+    Ready(TrashTarget),
+    CaptureFailed {
+        path: PathBuf,
+        failure: NativeFailure,
+    },
+}
+
+impl TrashBatchItem {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Ready(target) => &target.path,
+            Self::CaptureFailed { path, .. } => path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrashItemOutcome {
+    Trashed,
+    Missing,
+    StaleBinding,
+    Cancelled,
+    Indeterminate(NativeFailure),
+    Unsupported(NativeFailure),
+    Failed(NativeFailure),
+}
+
+pub trait TrashPort: Send + Sync {
+    fn move_to_trash(&self, target: &TrashTarget) -> TrashItemOutcome;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpacePrecision {
+    Exact,
+    SaturatedLowerBound,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpaceProbeOutcome {
+    Known {
+        bytes: u64,
+        precision: SpacePrecision,
+    },
+    Unknown(NativeFailure),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VolumeRelation {
+    Same,
+    Different,
+    Unknown(NativeFailure),
+}
+
+pub trait FreeSpacePort: Send + Sync {
+    fn probe(&self, path: &Path) -> SpaceProbeOutcome;
+    fn volume_relation(&self, source: &Path, target: &Path) -> VolumeRelation;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextMenuCommand {
+    OpenWith,
+    QuickLook,
+    GetInfo,
     Duplicate,
     Compress,
+    ToggleTag,
+    Share,
     MoveToTrash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuFailure {
     MainThreadRequired,
+    StaleInvocation,
+    InvalidSelection,
+    TargetUnavailable {
+        message: String,
+    },
     Action {
         command: ContextMenuCommand,
         message: String,
@@ -23,9 +195,105 @@ pub enum ContextMenuFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextMenuTarget {
+    pub path: PathBuf,
+    pub expected: crate::path_identity::PathIdentity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenuTrigger {
+    Pointer,
+    Keyboard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContextMenuPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContextMenuViewRect {
+    pub min_x: f64,
+    pub min_y: f64,
+    pub max_x: f64,
+    pub max_y: f64,
+    /// Native AppKit points represented by one egui coordinate unit.
+    pub native_points_per_ui_point: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContextMenuViewPoint {
+    pub x: f64,
+    pub y: f64,
+    pub native_points_per_ui_point: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContextMenuAnchor {
+    GlobalScreen(ContextMenuPoint),
+    ViewPoint(ContextMenuViewPoint),
+    ViewRect(ContextMenuViewRect),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextMenuInvocation {
+    pub target: ContextMenuTarget,
+    pub trigger: ContextMenuTrigger,
+    pub anchor: ContextMenuAnchor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextMenuAction {
+    Duplicate(ContextMenuTarget),
+    Compress(ContextMenuTarget),
+    ToggleTag {
+        target: ContextMenuTarget,
+        tag: String,
+    },
+    Share {
+        target: ContextMenuTarget,
+        service: String,
+    },
+}
+
+impl ContextMenuAction {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Duplicate(target) | Self::Compress(target) => &target.path,
+            Self::ToggleTag { target, .. } | Self::Share { target, .. } => &target.path,
+        }
+    }
+
+    pub fn target(&self) -> &ContextMenuTarget {
+        match self {
+            Self::Duplicate(target) | Self::Compress(target) => target,
+            Self::ToggleTag { target, .. } | Self::Share { target, .. } => target,
+        }
+    }
+
+    pub const fn command(&self) -> ContextMenuCommand {
+        match self {
+            Self::Duplicate(_) => ContextMenuCommand::Duplicate,
+            Self::Compress(_) => ContextMenuCommand::Compress,
+            Self::ToggleTag { .. } => ContextMenuCommand::ToggleTag,
+            Self::Share { .. } => ContextMenuCommand::Share,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuResult {
     Dismissed,
     RefreshRequested,
+    OpenRequested,
+    OpenWithRequested { application: PathBuf },
+    QuickLookRequested,
+    GetInfoRequested,
+    RevealRequested,
+    CopyPathRequested,
+    MoveToTrashRequested,
+    DeferredActionRequested(ContextMenuAction),
     Unsupported { reason: String },
     Failed(ContextMenuFailure),
 }
@@ -33,7 +301,34 @@ pub enum ContextMenuResult {
 /// Main-thread desktop context-menu boundary. It intentionally has no
 /// `Send`/`Sync` bounds: AppKit adapters are owned and invoked by the UI thread.
 pub trait ContextMenuPort {
-    fn show_context_menu(&self, path: &Path) -> ContextMenuResult;
+    /// Capture presentation identity in the event frame, before the render
+    /// barrier or dynamic AppKit provider discovery can move the pointer.
+    fn prepare_context_menu(
+        &self,
+        target: ContextMenuTarget,
+        trigger: ContextMenuTrigger,
+        anchor: ContextMenuAnchor,
+    ) -> ContextMenuInvocation {
+        ContextMenuInvocation {
+            target,
+            trigger,
+            anchor,
+        }
+    }
+
+    fn show_context_menu(&self, invocation: &ContextMenuInvocation) -> ContextMenuResult;
+
+    /// Execute a typed action only after the native selector has returned.
+    ///
+    /// Objective-C callbacks are presentation adapters: they may select an
+    /// action, but must not mutate the filesystem, launch a service, or touch
+    /// another native capability while AppKit is tracking the menu.
+    fn perform_deferred_action(&self, action: &ContextMenuAction) -> ContextMenuResult {
+        ContextMenuResult::Failed(ContextMenuFailure::Action {
+            command: action.command(),
+            message: "the context-menu adapter does not support deferred actions".to_string(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

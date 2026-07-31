@@ -10,8 +10,8 @@ impl App {
         let policy = SyncPolicy::TwoWay;
         let left_dir = self.ws.left.current_path.clone();
         let right_dir = self.ws.right.current_path.clone();
-        let left_show_hidden = self.ws.left.show_hidden;
-        let right_show_hidden = self.ws.right.show_hidden;
+        let left_show_hidden = self.ws.left.show_hidden();
+        let right_show_hidden = self.ws.right.show_hidden();
         let guard = self.ws.sync_guard_policy.clone();
         let marker_input = guard
             .health_marker
@@ -25,7 +25,7 @@ impl App {
         let settings_fingerprint = stamp.as_ref().map_or(0, |stamp| {
             crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key())
         });
-        self.ui.sync = Some(SyncState {
+        self.ui.modals.sync = Some(SyncState {
             policy,
             durability: self.ws.durability_profile,
             version_retention: self.ws.version_retention,
@@ -46,7 +46,7 @@ impl App {
 
     pub(crate) fn show_sync_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Sync);
-        if self.ui.sync.is_none() {
+        if self.ui.modals.sync.is_none() {
             return;
         }
         let t = self.colors;
@@ -58,7 +58,7 @@ impl App {
 
         // Borrow the sync state only for the window body (no `self.ws` use here).
         {
-            let state = self.ui.sync.as_mut().unwrap();
+            let state = self.ui.modals.sync.as_mut().unwrap();
             let mut to_right = 0usize;
             let mut to_left = 0usize;
             for a in &state.actions {
@@ -325,16 +325,16 @@ impl App {
         }
 
         if cancel {
-            self.ui.sync = None;
+            self.ui.modals.sync = None;
             return;
         }
         if let Some(p) = new_policy
-            && let Some(s) = self.ui.sync.as_mut()
+            && let Some(s) = self.ui.modals.sync.as_mut()
         {
             s.policy = p;
             refresh_plan = true;
         }
-        if refresh_plan && let Some(state) = self.ui.sync.as_mut() {
+        if refresh_plan && let Some(state) = self.ui.modals.sync.as_mut() {
             match crate::sync_guard::build_plan(
                 &state.left_dir,
                 &state.right_dir,
@@ -361,17 +361,17 @@ impl App {
             }
         }
         if commit {
-            let Some(mut state) = self.ui.sync.take() else {
+            let Some(mut state) = self.ui.modals.sync.take() else {
                 return;
             };
             if let Some(error) = configure_marker(&mut state) {
                 state.error = Some(error);
-                self.ui.sync = Some(state);
+                self.ui.modals.sync = Some(state);
                 return;
             }
             let Some(stamp) = state.stamp.clone() else {
                 state.error = Some("Refresh the synchronization plan before applying".to_string());
-                self.ui.sync = Some(state);
+                self.ui.modals.sync = Some(state);
                 return;
             };
             let c = ctx.clone();
@@ -392,7 +392,7 @@ impl App {
                 Ok(_) => {}
                 Err(error) => {
                     state.error = Some(error);
-                    self.ui.sync = Some(state);
+                    self.ui.modals.sync = Some(state);
                 }
             }
         }

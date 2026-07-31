@@ -255,16 +255,26 @@ fn copy_file_native_inner(
             "cancelled",
         ));
     }
-    if allow_clone && unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) } == 0 {
-        if report_progress {
-            let mut progress = crate::lock_util::recover(state);
-            progress.current_file_copied = file_size;
-            progress.copied_bytes = base_bytes.saturating_add(file_size);
+    if allow_clone {
+        if unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) } == 0 {
+            if report_progress {
+                let mut progress = crate::lock_util::recover(state);
+                progress.current_file_copied = file_size;
+                progress.copied_bytes = base_bytes.saturating_add(file_size);
+            }
+            return Ok(NativeCopyOutcome {
+                bytes: file_size,
+                cloned: true,
+            });
         }
-        return Ok(NativeCopyOutcome {
-            bytes: file_size,
-            cloned: true,
-        });
+        // Fallback is legal only when the declined clone left no artifact.
+        // Otherwise COPYFILE_EXCL would fail ambiguously and a caller could
+        // mistake an unverified partial for resumable staging.
+        if crate::fs_util::path_is_taken(dst) {
+            return Err(std::io::Error::other(
+                "clone backend declined after creating a staging artifact",
+            ));
+        }
     }
 
     unsafe {

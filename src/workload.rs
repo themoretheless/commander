@@ -14,6 +14,7 @@ pub struct TaskId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskKind {
     Listing,
+    PathProbe,
     Search,
     Preview,
     Hash,
@@ -22,22 +23,24 @@ pub enum TaskKind {
 }
 
 impl TaskKind {
-    const COUNT: usize = 6;
+    const COUNT: usize = 7;
 
     fn index(self) -> usize {
         match self {
             Self::Listing => 0,
-            Self::Search => 1,
-            Self::Preview => 2,
-            Self::Hash => 3,
-            Self::Transfer => 4,
-            Self::Index => 5,
+            Self::PathProbe => 1,
+            Self::Search => 2,
+            Self::Preview => 3,
+            Self::Hash => 4,
+            Self::Transfer => 5,
+            Self::Index => 6,
         }
     }
 
     fn thread_label(self) -> &'static str {
         match self {
             Self::Listing => "listing",
+            Self::PathProbe => "path-probe",
             Self::Search => "search",
             Self::Preview => "preview",
             Self::Hash => "hash",
@@ -184,7 +187,7 @@ impl Default for SchedulerLimits {
             max_running: 8,
             max_queued: 128,
             max_inflight_bytes: 2 * 1024 * 1024 * 1024,
-            per_kind_running: [2, 2, 4, 2, 2, 1],
+            per_kind_running: [2, 2, 2, 4, 2, 2, 1],
         }
     }
 }
@@ -533,9 +536,79 @@ fn trim_samples(samples: &mut VecDeque<u64>) {
 
 pub type WorkloadJob = Box<dyn FnOnce(CancellationToken) + Send + 'static>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbandonReason {
+    Cancelled,
+    Disconnected,
+    Superseded,
+    SpawnFailed,
+    BackendDropped,
+}
+
+impl std::fmt::Display for AbandonReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Cancelled => "cancelled while queued",
+            Self::Disconnected => "root disconnected",
+            Self::Superseded => "superseded before execution",
+            Self::SpawnFailed => "worker thread spawn failed",
+            Self::BackendDropped => "workload backend dropped",
+        };
+        formatter.write_str(label)
+    }
+}
+
+pub type AbandonmentCallback = Box<dyn FnOnce(AbandonReason) + Send + 'static>;
+
+fn invoke_abandonment(callback: AbandonmentCallback, reason: AbandonReason) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(reason)));
+}
+
+struct PendingWork {
+    work: Option<WorkloadJob>,
+    on_abandoned: Option<AbandonmentCallback>,
+    fallback_reason: AbandonReason,
+}
+
+impl PendingWork {
+    fn new(work: WorkloadJob, on_abandoned: Option<AbandonmentCallback>) -> Self {
+        Self {
+            work: Some(work),
+            on_abandoned,
+            fallback_reason: AbandonReason::BackendDropped,
+        }
+    }
+
+    fn with_fallback_reason(mut self, reason: AbandonReason) -> Self {
+        self.fallback_reason = reason;
+        self
+    }
+
+    fn run(mut self, token: CancellationToken) {
+        self.on_abandoned = None;
+        let work = self.work.take().expect("pending work runs at most once");
+        work(token);
+    }
+
+    fn abandon(mut self, reason: AbandonReason) {
+        self.work = None;
+        if let Some(callback) = self.on_abandoned.take() {
+            invoke_abandonment(callback, reason);
+        }
+    }
+}
+
+impl Drop for PendingWork {
+    fn drop(&mut self) {
+        if let Some(callback) = self.on_abandoned.take() {
+            invoke_abandonment(callback, self.fallback_reason);
+        }
+    }
+}
+
 struct RuntimeState {
     scheduler: Scheduler,
-    pending: HashMap<TaskId, WorkloadJob>,
+    pending: HashMap<TaskId, PendingWork>,
     tick: u64,
 }
 
@@ -544,6 +617,7 @@ pub trait WorkloadBackend: Send + Sync + 'static {
         self: Arc<Self>,
         spec: TaskSpec,
         work: WorkloadJob,
+        on_abandoned: Option<AbandonmentCallback>,
     ) -> Result<TaskSnapshot, AdmissionError>;
 
     fn cancel_task(self: Arc<Self>, id: TaskId) -> bool;
@@ -574,7 +648,25 @@ impl WorkloadHandle {
         spec: TaskSpec,
         work: impl FnOnce(CancellationToken) + Send + 'static,
     ) -> Result<TaskHandle, AdmissionError> {
-        let snapshot = Arc::clone(&self.backend).submit_boxed(spec, Box::new(work))?;
+        self.submit_inner(spec, Box::new(work), None)
+    }
+
+    pub fn submit_with_abandonment(
+        &self,
+        spec: TaskSpec,
+        work: impl FnOnce(CancellationToken) + Send + 'static,
+        on_abandoned: impl FnOnce(AbandonReason) + Send + 'static,
+    ) -> Result<TaskHandle, AdmissionError> {
+        self.submit_inner(spec, Box::new(work), Some(Box::new(on_abandoned)))
+    }
+
+    fn submit_inner(
+        &self,
+        spec: TaskSpec,
+        work: WorkloadJob,
+        on_abandoned: Option<AbandonmentCallback>,
+    ) -> Result<TaskHandle, AdmissionError> {
+        let snapshot = Arc::clone(&self.backend).submit_boxed(spec, work, on_abandoned)?;
         Ok(TaskHandle {
             snapshot,
             owner: Arc::downgrade(&self.backend),
@@ -588,6 +680,8 @@ impl WorkloadHandle {
 
 pub struct WorkloadRuntime {
     state: Mutex<RuntimeState>,
+    #[cfg(test)]
+    fail_next_spawn: AtomicBool,
 }
 
 impl WorkloadRuntime {
@@ -598,6 +692,8 @@ impl WorkloadRuntime {
                 pending: HashMap::new(),
                 tick: 0,
             }),
+            #[cfg(test)]
+            fail_next_spawn: AtomicBool::new(false),
         })
     }
 
@@ -613,15 +709,37 @@ impl WorkloadRuntime {
         self: &Arc<Self>,
         spec: TaskSpec,
         work: WorkloadJob,
+        on_abandoned: Option<AbandonmentCallback>,
     ) -> Result<TaskSnapshot, AdmissionError> {
-        let snapshot = {
+        let (snapshot, superseded) = {
             let mut state = crate::lock_util::recover(&self.state);
             state.tick = state.tick.saturating_add(1);
             let tick = state.tick;
             let snapshot = state.scheduler.submit_at(spec, tick)?;
-            state.pending.insert(snapshot.id, work);
-            snapshot
+            let superseded_ids = state
+                .pending
+                .keys()
+                .copied()
+                .filter(|id| {
+                    !state
+                        .scheduler
+                        .tasks
+                        .get(id)
+                        .is_some_and(|record| record.state == TaskState::Queued)
+                })
+                .collect::<Vec<_>>();
+            let superseded = superseded_ids
+                .into_iter()
+                .filter_map(|id| state.pending.remove(&id))
+                .collect::<Vec<_>>();
+            state
+                .pending
+                .insert(snapshot.id, PendingWork::new(work, on_abandoned));
+            (snapshot, superseded)
         };
+        for pending in superseded {
+            pending.abandon(AbandonReason::Superseded);
+        }
         self.pump();
         Ok(snapshot)
     }
@@ -639,7 +757,10 @@ impl WorkloadRuntime {
                     state.scheduler.cancel_at(started.snapshot.id, tick);
                     continue;
                 };
-                (started, work)
+                (
+                    started,
+                    work.with_fallback_reason(AbandonReason::SpawnFailed),
+                )
             };
             let runtime = Arc::clone(self);
             let task_id = next.0.snapshot.id;
@@ -648,11 +769,17 @@ impl WorkloadRuntime {
                 next.0.snapshot.kind.thread_label(),
                 next.0.snapshot.id.0
             );
+            #[cfg(test)]
+            if self.fail_next_spawn.swap(false, Ordering::AcqRel) {
+                drop(next);
+                self.finish(task_id, false);
+                continue;
+            }
             let spawn = std::thread::Builder::new()
                 .name(thread_name)
                 .spawn(move || {
                     let succeeded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        (next.1)(next.0.token);
+                        next.1.run(next.0.token);
                     }))
                     .is_ok();
                     runtime.finish(next.0.snapshot.id, succeeded);
@@ -674,31 +801,43 @@ impl WorkloadRuntime {
     }
 
     fn cancel(self: &Arc<Self>, id: TaskId) -> bool {
-        let cancelled = {
+        let (cancelled, abandoned) = {
             let mut state = crate::lock_util::recover(&self.state);
             state.tick = state.tick.saturating_add(1);
             let tick = state.tick;
             let cancelled = state.scheduler.cancel_at(id, tick);
-            state.pending.remove(&id);
-            cancelled
+            let abandoned = state.pending.remove(&id);
+            (cancelled, abandoned)
         };
+        if let Some(pending) = abandoned {
+            pending.abandon(AbandonReason::Cancelled);
+        }
         self.pump();
         cancelled
     }
 
     pub fn disconnect_root(self: &Arc<Self>, root: &Path) -> usize {
-        let count = {
+        let (count, abandoned) = {
             let mut state = crate::lock_util::recover(&self.state);
             state.tick = state.tick.saturating_add(1);
             let tick = state.tick;
             let ids = state.scheduler.disconnect_at(root, tick);
-            for id in &ids {
-                state.pending.remove(id);
-            }
-            ids.len()
+            let abandoned = ids
+                .iter()
+                .filter_map(|id| state.pending.remove(id))
+                .collect::<Vec<_>>();
+            (ids.len(), abandoned)
         };
+        for pending in abandoned {
+            pending.abandon(AbandonReason::Disconnected);
+        }
         self.pump();
         count
+    }
+
+    #[cfg(test)]
+    fn fail_next_spawn_for_test(&self) {
+        self.fail_next_spawn.store(true, Ordering::Release);
     }
 
     pub fn stats(&self) -> SchedulerStats {
@@ -711,8 +850,9 @@ impl WorkloadBackend for WorkloadRuntime {
         self: Arc<Self>,
         spec: TaskSpec,
         work: WorkloadJob,
+        on_abandoned: Option<AbandonmentCallback>,
     ) -> Result<TaskSnapshot, AdmissionError> {
-        WorkloadRuntime::submit_boxed(&self, spec, work)
+        WorkloadRuntime::submit_boxed(&self, spec, work, on_abandoned)
     }
 
     fn cancel_task(self: Arc<Self>, id: TaskId) -> bool {
@@ -773,21 +913,52 @@ impl WorkloadBackend for DeterministicBackend {
         self: Arc<Self>,
         spec: TaskSpec,
         work: WorkloadJob,
+        on_abandoned: Option<AbandonmentCallback>,
     ) -> Result<TaskSnapshot, AdmissionError> {
-        let mut state = crate::lock_util::recover(&self.state);
-        state.tick = state.tick.saturating_add(1);
-        let tick = state.tick;
-        let snapshot = state.scheduler.submit_at(spec, tick)?;
-        state.pending.insert(snapshot.id, work);
+        let (snapshot, superseded) = {
+            let mut state = crate::lock_util::recover(&self.state);
+            state.tick = state.tick.saturating_add(1);
+            let tick = state.tick;
+            let snapshot = state.scheduler.submit_at(spec, tick)?;
+            let superseded_ids = state
+                .pending
+                .keys()
+                .copied()
+                .filter(|id| {
+                    !state
+                        .scheduler
+                        .tasks
+                        .get(id)
+                        .is_some_and(|record| record.state == TaskState::Queued)
+                })
+                .collect::<Vec<_>>();
+            let superseded = superseded_ids
+                .into_iter()
+                .filter_map(|id| state.pending.remove(&id))
+                .collect::<Vec<_>>();
+            state
+                .pending
+                .insert(snapshot.id, PendingWork::new(work, on_abandoned));
+            (snapshot, superseded)
+        };
+        for pending in superseded {
+            pending.abandon(AbandonReason::Superseded);
+        }
         Ok(snapshot)
     }
 
     fn cancel_task(self: Arc<Self>, id: TaskId) -> bool {
-        let mut state = crate::lock_util::recover(&self.state);
-        state.tick = state.tick.saturating_add(1);
-        let tick = state.tick;
-        let cancelled = state.scheduler.cancel_at(id, tick);
-        state.pending.remove(&id);
+        let (cancelled, abandoned) = {
+            let mut state = crate::lock_util::recover(&self.state);
+            state.tick = state.tick.saturating_add(1);
+            let tick = state.tick;
+            let cancelled = state.scheduler.cancel_at(id, tick);
+            let abandoned = state.pending.remove(&id);
+            (cancelled, abandoned)
+        };
+        if let Some(pending) = abandoned {
+            pending.abandon(AbandonReason::Cancelled);
+        }
         cancelled
     }
 
@@ -821,6 +992,10 @@ impl DeterministicWorkload {
     }
 
     pub(crate) fn run_next(&self) -> bool {
+        self.run_next_after_dequeue(|| {})
+    }
+
+    pub(crate) fn run_next_after_dequeue(&self, before_run: impl FnOnce()) -> bool {
         let (started, work) = {
             let mut state = crate::lock_util::recover(&self.backend.state);
             state.tick = state.tick.saturating_add(1);
@@ -834,9 +1009,10 @@ impl DeterministicWorkload {
             };
             (started, work)
         };
+        before_run();
         let task_id = started.snapshot.id;
         let succeeded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            work(started.token);
+            work.run(started.token);
         }))
         .is_ok();
         let mut state = crate::lock_util::recover(&self.backend.state);
@@ -1031,5 +1207,104 @@ mod tests {
         assert_eq!(runtime.stats().queued, 0);
         assert_eq!(runtime.stats().running, 0);
         assert!(!task.cancel());
+    }
+
+    #[test]
+    fn queued_cancellation_runs_abandonment_callback_exactly_once() {
+        let runtime = DeterministicWorkload::new(SchedulerLimits::default());
+        let handle = runtime.handle();
+        let callback_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_count_for_job = Arc::clone(&callback_count);
+        let observed_reason = Arc::new(Mutex::new(None));
+        let observed_reason_for_job = Arc::clone(&observed_reason);
+
+        let task = handle
+            .submit_with_abandonment(
+                spec(TaskKind::Transfer, 1, Priority::Critical),
+                |_| panic!("cancelled queued work must not execute"),
+                move |reason| {
+                    callback_count_for_job.fetch_add(1, Ordering::SeqCst);
+                    *crate::lock_util::recover(&observed_reason_for_job) = Some(reason);
+                },
+            )
+            .unwrap();
+
+        assert!(task.cancel());
+        assert!(!task.cancel());
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *crate::lock_util::recover(&observed_reason),
+            Some(AbandonReason::Cancelled)
+        );
+        assert_eq!(runtime.stats().queued, 0);
+        assert!(!runtime.run_next());
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn spawn_failure_abandons_admitted_work_without_running_it() {
+        let runtime = WorkloadRuntime::new(SchedulerLimits::default());
+        runtime.fail_next_spawn_for_test();
+        let handle = WorkloadHandle::from_runtime(Arc::clone(&runtime));
+        let callback_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_count_for_job = Arc::clone(&callback_count);
+        let observed_reason = Arc::new(Mutex::new(None));
+        let observed_reason_for_job = Arc::clone(&observed_reason);
+        let work_ran = Arc::new(AtomicBool::new(false));
+        let work_ran_for_job = Arc::clone(&work_ran);
+
+        let task = handle
+            .submit_with_abandonment(
+                spec(TaskKind::Transfer, 1, Priority::Critical),
+                move |_| {
+                    work_ran_for_job.store(true, Ordering::Release);
+                },
+                move |reason| {
+                    callback_count_for_job.fetch_add(1, Ordering::SeqCst);
+                    *crate::lock_util::recover(&observed_reason_for_job) = Some(reason);
+                },
+            )
+            .unwrap();
+
+        assert!(!work_ran.load(Ordering::Acquire));
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *crate::lock_util::recover(&observed_reason),
+            Some(AbandonReason::SpawnFailed)
+        );
+        assert_eq!(runtime.stats().running, 0);
+        assert!(!task.cancel());
+    }
+
+    #[test]
+    fn disconnect_abandons_each_queued_job_once() {
+        let runtime = WorkloadRuntime::new(SchedulerLimits {
+            max_running: 0,
+            ..SchedulerLimits::default()
+        });
+        let handle = WorkloadHandle::from_runtime(Arc::clone(&runtime));
+        let callback_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_reason = Arc::new(Mutex::new(None));
+        let callback_count_for_job = Arc::clone(&callback_count);
+        let observed_reason_for_job = Arc::clone(&observed_reason);
+
+        handle
+            .submit_with_abandonment(
+                spec(TaskKind::Index, 1, Priority::Background),
+                |_| panic!("disconnected queued work must not execute"),
+                move |reason| {
+                    callback_count_for_job.fetch_add(1, Ordering::SeqCst);
+                    *crate::lock_util::recover(&observed_reason_for_job) = Some(reason);
+                },
+            )
+            .unwrap();
+
+        assert_eq!(runtime.disconnect_root(Path::new("/project")), 1);
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *crate::lock_util::recover(&observed_reason),
+            Some(AbandonReason::Disconnected)
+        );
+        assert_eq!(runtime.stats().queued, 0);
     }
 }

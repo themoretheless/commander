@@ -26,28 +26,6 @@ fn prioritized_modal(
     top_open_modal(open).or(first_pending)
 }
 
-fn modal_surface(modal: UiModal) -> ModalSurface {
-    match modal {
-        UiModal::Recovery => ModalSurface::Recovery,
-        UiModal::History => ModalSurface::History,
-        UiModal::Rename => ModalSurface::Rename,
-        UiModal::BatchRename => ModalSurface::BatchRename,
-        UiModal::Sync => ModalSurface::Sync,
-        UiModal::Duplicates => ModalSurface::Duplicates,
-        UiModal::Diff => ModalSurface::Diff,
-        UiModal::Treemap => ModalSurface::Treemap,
-        UiModal::Find => ModalSurface::Find,
-        UiModal::Archive => ModalSurface::Archive,
-        UiModal::SavedSearch => ModalSurface::SavedSearch,
-        UiModal::Collections => ModalSurface::Collections,
-        UiModal::Mask => ModalSurface::Mask,
-        UiModal::Path => ModalSurface::Path,
-        UiModal::Recent => ModalSurface::Recent,
-        UiModal::RunCommand => ModalSurface::RunCommand,
-        UiModal::Palette => ModalSurface::Palette,
-    }
-}
-
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
         let contract = self.ui_contract(ctx);
@@ -95,32 +73,8 @@ impl App {
     }
 
     pub(crate) fn ui_contract(&self, ctx: &egui::Context) -> UiContract {
-        let first_pending = self.ws.first_pending_ui_modal().map(modal_surface);
-        let modal = prioritized_modal(
-            |surface| match surface {
-                ModalSurface::Transfer => self.ws.active_transfer.is_some(),
-                ModalSurface::SafeState => self.ws.safe_state.is_some(),
-                ModalSurface::Recovery => self.ui.recovery.open,
-                ModalSurface::History => self.ui.history_preview.is_some(),
-                ModalSurface::Confirmation => self.ws.pending_op.is_some(),
-                ModalSurface::Rename => self.ui.renaming.is_some(),
-                ModalSurface::BatchRename => self.ui.batch_rename.is_some(),
-                ModalSurface::Sync => self.ui.sync.is_some(),
-                ModalSurface::Duplicates => self.ui.duplicates.is_some(),
-                ModalSurface::Diff => self.ui.diff.is_some(),
-                ModalSurface::Treemap => self.ui.treemap.is_some(),
-                ModalSurface::Find => self.ui.find.is_some(),
-                ModalSurface::Archive => self.ui.archive.is_some(),
-                ModalSurface::SavedSearch => self.ui.saved_search_open,
-                ModalSurface::Collections => self.ui.collections_dialog.is_some(),
-                ModalSurface::Mask => self.ui.mask_input.is_some(),
-                ModalSurface::Path => self.ui.path_input.is_some(),
-                ModalSurface::Recent => self.ui.recent_input.is_some(),
-                ModalSurface::RunCommand => self.ui.run_command.is_some(),
-                ModalSurface::Palette => self.ui.palette_input.is_some(),
-            },
-            first_pending,
-        );
+        let first_pending = self.ws.first_pending_ui_modal().map(UiModal::surface);
+        let modal = prioritized_modal(|surface| self.is_modal_surface_open(surface), first_pending);
         let active_left = self.ws.active == ActivePanel::Left;
         let active_preview_open = if active_left {
             self.ws.left.preview.is_some()
@@ -167,7 +121,7 @@ impl App {
     }
 
     fn push_key_feedback(&mut self, ctx: &egui::Context, message: &'static str) {
-        self.ui.toasts.push(crate::toasts::Toast::new(
+        self.toasts.push(crate::toasts::Toast::new(
             message,
             crate::toasts::ToastKind::Info,
             false,
@@ -411,7 +365,7 @@ mod tests {
         queue.emit(UiRequest::Palette);
         let modal = prioritized_modal(
             |surface| surface == ModalSurface::Palette,
-            queue.first_pending_modal().map(modal_surface),
+            queue.first_pending_modal().map(UiModal::surface),
         );
 
         assert_eq!(modal, Some(ModalSurface::Palette));
@@ -422,7 +376,7 @@ mod tests {
         let mut queue = crate::ui_request::UiRequestQueue::default();
         queue.emit(UiRequest::Recent);
         queue.emit(UiRequest::Palette);
-        let modal = prioritized_modal(|_| false, queue.first_pending_modal().map(modal_surface));
+        let modal = prioritized_modal(|_| false, queue.first_pending_modal().map(UiModal::surface));
 
         assert_eq!(modal, Some(ModalSurface::Recent));
         assert_eq!(
@@ -472,7 +426,7 @@ mod tests {
 
         let before_dispatch = prioritized_modal(
             |surface| matches!(surface, ModalSurface::SafeState | ModalSurface::Transfer),
-            queue.first_pending_modal().map(modal_surface),
+            queue.first_pending_modal().map(UiModal::surface),
         );
         assert_eq!(before_dispatch, Some(ModalSurface::SafeState));
 
@@ -485,7 +439,7 @@ mod tests {
                 ModalSurface::Transfer => sink.retained_transfer_open,
                 _ => false,
             },
-            queue.first_pending_modal().map(modal_surface),
+            queue.first_pending_modal().map(UiModal::surface),
         );
 
         assert_eq!(after_dispatch, Some(ModalSurface::Recovery));

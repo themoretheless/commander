@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(crate) fn push_history_notice(&mut self, ctx: &egui::Context, message: &str, error: bool) {
-        self.ui.toasts.push(crate::toasts::Toast::new(
+        self.toasts.push(crate::toasts::Toast::new(
             message,
             if error {
                 crate::toasts::ToastKind::Error
@@ -18,7 +18,7 @@ impl App {
 
     pub(crate) fn show_history_dialog(&mut self, ctx: &egui::Context) {
         let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::History);
-        let Some(mut state) = self.ui.history_preview.take() else {
+        let Some(mut state) = self.ui.modals.history_preview.take() else {
             return;
         };
         let t = self.colors;
@@ -211,7 +211,7 @@ impl App {
             match result {
                 Ok(()) => {
                     if is_undo {
-                        self.ui.toasts.dismiss_undoable();
+                        self.toasts.dismiss_undoable();
                     }
                     return;
                 }
@@ -228,6 +228,6 @@ impl App {
                 }
             }
         }
-        self.ui.history_preview = Some(state);
+        self.ui.modals.history_preview = Some(state);
     }
 }

@@ -1,33 +1,101 @@
 //! Shared filesystem helpers used across panels, transfers and menus.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static STORAGE_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg(feature = "visual-qa")]
+pub(crate) fn install_storage_root_override(path: PathBuf) -> Result<(), PathBuf> {
+    STORAGE_ROOT_OVERRIDE.set(path)
+}
+
+pub(crate) fn storage_root_override() -> Option<&'static Path> {
+    STORAGE_ROOT_OVERRIDE.get().map(PathBuf::as_path)
+}
 
 /// The app's config directory (created if missing), where persisted state
 /// (session, smart folders) lives. Falls back to the cache dir, then `/tmp`.
 pub fn config_dir() -> PathBuf {
-    let dir = dirs::config_dir()
-        .or_else(dirs::cache_dir)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("commander");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+    let preferred = storage_root_override().map_or_else(
+        || {
+            dirs::config_dir()
+                .or_else(dirs::cache_dir)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("commander")
+        },
+        |root| root.join("config"),
+    );
+    if let Some(dir) = ensure_private_directory(&preferred) {
+        return dir;
+    }
+    #[cfg(unix)]
+    let fallback = std::env::temp_dir().join(format!(
+        "commander-{}",
+        // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+        unsafe { libc::geteuid() }
+    ));
+    #[cfg(not(unix))]
+    let fallback = std::env::temp_dir().join(format!("commander-{}", std::process::id()));
+    if let Some(dir) = ensure_private_directory(&fallback) {
+        return dir;
+    }
+    #[cfg(unix)]
+    {
+        PathBuf::from("/dev/null/commander")
+    }
+    #[cfg(not(unix))]
+    {
+        fallback
+    }
+}
+
+fn ensure_private_directory(path: &Path) -> Option<PathBuf> {
+    std::fs::create_dir_all(path).ok()?;
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return None;
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).ok()?;
+    }
+    Some(path.to_path_buf())
 }
 
 /// Atomically write `contents` to `path`: write a sibling temp file, then
 /// rename it over the destination, so a crash or concurrent reader mid-write
 /// never sees a truncated file. Best-effort; returns whether it succeeded.
 pub fn write_atomic(path: &Path, contents: &str) -> bool {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    if std::fs::write(&tmp, contents).is_err() {
-        return false;
+    match crate::persistence::commit_bytes_atomic(path, contents.as_bytes()) {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => true,
+        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            crate::persistence::record_durability_warning("Legacy store", &error);
+            true
+        }
+        Err(_) => false,
     }
-    if std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp); // do not leave a stray temp behind
-        return false;
+}
+
+/// Flush a pathname mutation in `path`'s parent directory before a durable
+/// journal record is allowed to claim that the mutation survived a crash.
+pub fn sync_parent_namespace(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)?.sync_all()
     }
-    true
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(())
+    }
 }
 
 /// Total size in bytes of all files under `path` (parallel walk).
@@ -39,7 +107,7 @@ pub fn dir_size_recursive(path: &Path) -> u64 {
         .filter_map(|e| e.metadata().ok())
         .filter(|m| !m.is_dir())
         .map(|m| m.len())
-        .sum()
+        .fold(0_u64, u64::saturating_add)
 }
 
 /// Recursively copy a directory tree into a new destination. Directory
@@ -220,44 +288,6 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
     Ok(dest)
 }
 
-/// Free space in bytes on the volume containing `path`. A direct filesystem
-/// query avoids spawning and waiting for `df` on the UI path.
-#[cfg(unix)]
-pub fn free_space(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: `path` is NUL-terminated and `stats` points to writable storage
-    // that is read only after statvfs reports success.
-    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    let stats = unsafe { stats.assume_init() };
-    (stats.f_bavail as u64).checked_mul(stats.f_frsize)
-}
-
-#[cfg(not(unix))]
-pub fn free_space(_path: &Path) -> Option<u64> {
-    None
-}
-
-/// Whether two paths live on the same filesystem (so a move is an instant
-/// rename needing no extra space).
-#[cfg(unix)]
-pub fn same_volume(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev(),
-        _ => false,
-    }
-}
-
-#[cfg(not(unix))]
-pub fn same_volume(_a: &Path, _b: &Path) -> bool {
-    false
-}
-
 /// How a planned transfer consumes space on the target volume, which decides
 /// how much of `need` it actually writes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -266,9 +296,6 @@ pub enum OpClass {
     /// a cross-volume move copies to the target first, so it needs the full
     /// size there until the source is removed.
     Move { same_volume: bool },
-    /// An APFS clone (a same-volume copy on a clone-capable volume): near-zero
-    /// extra space until the copy diverges from its original.
-    Clone,
     /// A byte copy (cross-volume, or a same-volume copy without clone support):
     /// needs the full size on the target.
     Copy,
@@ -277,6 +304,9 @@ pub enum OpClass {
 /// Whether a planned transfer fits on the target volume.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpaceVerdict {
+    /// The probe has not completed or the platform could not establish free
+    /// space. Callers may continue under policy, but must not label this Fits.
+    Indeterminate,
     /// Comfortably fits.
     Fits,
     /// Fits, but only by dipping into the safety reserve.
@@ -289,10 +319,9 @@ pub enum SpaceVerdict {
 /// `free` bytes on the target, after subtracting `reclaim` (bytes freed by
 /// overwriting existing destinations) and keeping a `reserve` safety margin.
 ///
-/// A same-volume move and a clone need ~0; a cross-volume move and a plain copy
-/// need the full size. `free == None` (the free space could not be read) is
-/// treated as non-blocking ([`SpaceVerdict::Fits`]) rather than falsely
-/// refusing the operation.
+/// A same-volume move needs ~0. Copies, including clone attempts, reserve the
+/// full logical size because the native clone may fall back to a byte copy.
+/// `free == None` is explicitly indeterminate rather than falsely labeled Fits.
 pub fn space_verdict(
     need: u64,
     free: Option<u64>,
@@ -301,18 +330,24 @@ pub fn space_verdict(
     reserve: u64,
 ) -> SpaceVerdict {
     let need_eff = match class {
-        OpClass::Move { same_volume: true } | OpClass::Clone => 0,
+        OpClass::Move { same_volume: true } => 0,
         OpClass::Move { same_volume: false } | OpClass::Copy => need,
     };
     let need_eff = need_eff.saturating_sub(reclaim);
     let Some(free) = free else {
-        return SpaceVerdict::Fits;
+        return SpaceVerdict::Indeterminate;
     };
+    if need_eff == 0 {
+        return SpaceVerdict::Fits;
+    }
     if need_eff > free {
         SpaceVerdict::WontFit {
             short_by: need_eff - free,
         }
-    } else if need_eff.saturating_add(reserve) > free {
+    } else if need_eff
+        .checked_add(reserve)
+        .is_none_or(|with_reserve| with_reserve > free)
+    {
         SpaceVerdict::Tight
     } else {
         SpaceVerdict::Fits
@@ -516,18 +551,38 @@ mod tests {
         assert!(!Path::new(&temp).exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn private_directory_rejects_symlinks_and_uses_owner_only_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let tmp = TempDir::new();
+        let directory = tmp.path().join("private");
+        assert_eq!(
+            ensure_private_directory(&directory).as_deref(),
+            Some(directory.as_path())
+        );
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let target = tmp.dir("target");
+        let link = tmp.path().join("link");
+        symlink(target, &link).unwrap();
+        assert!(ensure_private_directory(&link).is_none());
+    }
+
     #[test]
     fn space_verdict_classes_and_boundaries() {
         use OpClass::*;
         use SpaceVerdict::*;
 
-        // Same-volume move and clone need ~0, so they fit even when the size
-        // dwarfs free space.
+        // A same-volume move needs ~0, so it fits even when size dwarfs free.
         assert_eq!(
             space_verdict(1_000, Some(10), Move { same_volume: true }, 0, 0),
             Fits
         );
-        assert_eq!(space_verdict(1_000, Some(10), Clone, 0, 0), Fits);
 
         // Cross-volume move and plain copy need the full size.
         assert_eq!(
@@ -555,28 +610,18 @@ mod tests {
             Fits,
             "exact fit with no reserve is Fits, not WontFit"
         );
-
-        // Unknown free space never blocks.
-        assert_eq!(space_verdict(u64::MAX, None, Copy, 0, 0), Fits);
-    }
-
-    #[test]
-    fn free_space_uses_the_containing_filesystem() {
-        let tmp = TempDir::new();
-        assert!(free_space(tmp.path()).is_some_and(|bytes| bytes > 0));
         assert_eq!(
-            free_space(Path::new("/definitely/not/present/commander")),
-            None
+            space_verdict(u64::MAX, Some(u64::MAX), Copy, 0, 1),
+            Tight,
+            "reserve overflow cannot be mislabeled Fits"
         );
-    }
 
-    #[test]
-    fn same_volume_true_within_one_filesystem() {
-        let tmp = TempDir::new();
-        let a = tmp.file("a.txt", "x");
-        let b = tmp.dir("sub");
-        // Both live under the same temp dir, hence the same device.
-        assert!(same_volume(&a, &b));
+        // Unknown free space is non-blocking policy, but never mislabeled Fits.
+        assert_eq!(space_verdict(u64::MAX, None, Copy, 0, 0), Indeterminate);
+        assert_eq!(
+            space_verdict(u64::MAX, None, Move { same_volume: true }, 0, 0),
+            Indeterminate
+        );
     }
 
     #[test]

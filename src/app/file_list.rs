@@ -1,5 +1,53 @@
 use super::*;
 
+fn context_menu_candidate(
+    entry: &crate::panel::FileEntry,
+    trigger: crate::ports::ContextMenuTrigger,
+    row_rect: egui::Rect,
+    response: &egui::Response,
+) -> Option<ui_state::ContextMenuCandidate> {
+    let crate::panel::ListingIdentity::Captured(expected) = &entry.identity else {
+        return None;
+    };
+    // AppKit converts this anchor through the full content view. Using the
+    // viewport origin keeps egui and AppKit coordinates aligned when a safe
+    // area changes the narrower content rect.
+    let origin = response.ctx.input(|input| input.viewport_rect().min);
+    let relative = row_rect.translate(-origin.to_vec2());
+    let scale = f64::from(response.ctx.zoom_factor());
+    let anchor = match trigger {
+        crate::ports::ContextMenuTrigger::Pointer => {
+            let point = response
+                .interact_pointer_pos()
+                .unwrap_or_else(|| row_rect.center())
+                - origin.to_vec2();
+            crate::ports::ContextMenuAnchor::ViewPoint(crate::ports::ContextMenuViewPoint {
+                x: f64::from(point.x),
+                y: f64::from(point.y),
+                native_points_per_ui_point: scale,
+            })
+        }
+        crate::ports::ContextMenuTrigger::Keyboard => {
+            crate::ports::ContextMenuAnchor::ViewRect(crate::ports::ContextMenuViewRect {
+                min_x: f64::from(relative.min.x),
+                min_y: f64::from(relative.min.y),
+                max_x: f64::from(relative.max.x),
+                max_y: f64::from(relative.max.y),
+                native_points_per_ui_point: scale,
+            })
+        }
+    };
+    Some(ui_state::ContextMenuCandidate {
+        target: crate::ports::ContextMenuTarget {
+            path: entry.path.clone(),
+            expected: expected.clone(),
+        },
+        trigger,
+        anchor,
+        focus_id: response.id,
+    })
+}
+
 impl App {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_file_list(
@@ -10,16 +58,24 @@ impl App {
         panel_side: &str,
         size_bars: bool,
         compare: Option<&crate::compare::CompareMap>,
-        context_menu: &dyn crate::ports::ContextMenuPort,
-        opener: &dyn Fn(&std::path::Path),
+        opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
         metrics: crate::density::DensityMetrics,
-    ) -> Option<crate::provider_runtime::ContextMenuUiEffect> {
-        let mut context_menu_effect = None;
+        reduced_motion: bool,
+    ) -> Option<ui_state::ContextMenuCandidate> {
+        let keyboard_context_menu_requested = is_active
+            && ui.is_enabled()
+            && crate::accessibility::text_input_state(ui.ctx())
+                .mode()
+                .is_none()
+            && ui
+                .ctx()
+                .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
+        let mut context_menu_request = None;
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
-            .animated(!crate::accessibility::Preferences::system().reduced_motion)
+            .animated(!reduced_motion)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
@@ -27,7 +83,7 @@ impl App {
                 // ".." row — go up one directory (cursor == 0)
                 let can_go_up = panel.current_path.parent().is_some();
                 if can_go_up {
-                    let is_cursor_on_up = panel.cursor == 0;
+                    let is_cursor_on_up = panel.cursor() == 0;
                     let up_bg = if is_cursor_on_up && is_active {
                         t.bg_selected.linear_multiply(0.25)
                     } else {
@@ -42,9 +98,7 @@ impl App {
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new("\u{2ba4}").size(14.0).color(t.accent),
-                                );
+                                crate::app::glyphs::parent_up(ui, t.accent);
                                 ui.add_space(2.0);
                                 ui.label(
                                     egui::RichText::new("..")
@@ -56,11 +110,18 @@ impl App {
                         })
                         .response
                         .interact(Sense::click());
+                    up_row.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            ui.is_enabled(),
+                            "Parent folder",
+                        )
+                    });
 
                     if up_row.double_clicked() {
                         panel.go_up();
                     } else if up_row.clicked() {
-                        panel.cursor = 0;
+                        panel.set_cursor(0);
                     }
                     if up_row.hovered() && !is_cursor_on_up {
                         ui.painter().rect_filled(
@@ -78,21 +139,21 @@ impl App {
                 let filtered = panel.filtered_indices();
                 // Active filter query, for highlighting matched characters in
                 // each visible row. Trimmed to match panel filtering semantics.
-                let query = panel.search_query.trim().to_string();
+                let query = panel.search_query().trim().to_string();
 
                 if filtered.is_empty() {
                     use crate::panel::DirStatus;
                     // Distinguish a filtered-to-nothing list, a truly empty
                     // folder, and an unreadable/vanished one.
                     let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
-                        if crate::panel::filter_is_active(&panel.search_query, &panel.facets) {
+                        if crate::panel::filter_is_active(panel.search_query(), &panel.facets()) {
                             (
                                 "\u{1f50d}",
                                 "No matches",
                                 Some(("Clear filters", "clear_filters")),
                             )
                         } else {
-                            match panel.dir_status {
+                            match panel.dir_status() {
                                 DirStatus::Denied => (
                                     "\u{1f512}",
                                     "No permission to read this folder",
@@ -103,6 +164,9 @@ impl App {
                                     "This folder no longer exists",
                                     Some(("Go up", "up")),
                                 ),
+                                DirStatus::Partial => {
+                                    ("\u{21bb}", "Folder changed while reading; retrying", None)
+                                }
                                 _ => ("\u{1f4c2}", "Empty", None),
                             }
                         };
@@ -115,7 +179,9 @@ impl App {
                             ui.add_space(8.0);
                             if ui.button(label).clicked() {
                                 match kind {
-                                    "finder" => opener(&panel.current_path),
+                                    "finder" => opener(crate::ports::OpenRequest::Reveal(
+                                        panel.current_path.clone(),
+                                    )),
                                     "up" => panel.go_up(),
                                     "clear_filters" => {
                                         panel.clear_filters();
@@ -136,14 +202,12 @@ impl App {
                 let mut pending_drop_target: Option<std::path::PathBuf> = None;
                 let mut scrolled = false;
 
-                // Lock shared data once for all rows (clone Arc to avoid borrowing panel)
-                let counts_arc = std::sync::Arc::clone(&panel.dir_counts);
-                let sizes_arc = std::sync::Arc::clone(&panel.dir_sizes);
-                let dir_counts = counts_arc.lock().ok();
-                let dir_sizes = sizes_arc.lock().ok();
+                // One immutable metrics snapshot for the frame. Warm frames
+                // reuse the same Arc; workers never expose mutable maps here.
+                let size_snapshot = panel.size_snapshot();
 
-                let cursor = panel.cursor;
-                let scroll_pending = panel.scroll_to_cursor;
+                let cursor = panel.cursor();
+                let scroll_pending = panel.scroll_to_cursor();
                 // Row sizing follows the density tier. `row_content` is the
                 // allocated row height; `row_h` adds the 1px item spacing so the
                 // virtualization stride matches (Comfortable == 28 + 1 == 29,
@@ -185,23 +249,12 @@ impl App {
                 let now = std::time::SystemTime::now();
 
                 // Feed the visible-row count back to the core for PageUp/Down.
-                panel.page_rows = ((viewport.height() / row_h).floor() as usize).max(1);
+                panel.set_page_rows(((viewport.height() / row_h).floor() as usize).max(1));
 
                 // Largest entry size in the listing, used to scale occupancy
-                // bars. Computed once with the size map already locked above.
+                // bars.
                 let size_max: u64 = if size_bars {
-                    dir_sizes
-                        .as_ref()
-                        .map(|sizes| {
-                            filtered
-                                .iter()
-                                .map(|&i| {
-                                    crate::panel::entry_display_size(&panel.entries[i], sizes)
-                                })
-                                .max()
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0)
+                    panel.max_display_size(&filtered)
                 } else {
                     0
                 };
@@ -226,7 +279,7 @@ impl App {
                         first_visible = last_visible.saturating_sub(visible_count);
                     }
                 }
-                panel.scroll_anchor = first_visible;
+                panel.set_scroll_anchor(first_visible);
 
                 // Space before visible rows
                 if first_visible > 0 {
@@ -240,11 +293,11 @@ impl App {
                 for (offset, &entry_idx) in filtered[first_visible..last_visible].iter().enumerate()
                 {
                     let idx = first_visible + offset;
-                    let entry = &panel.entries[entry_idx];
+                    let entry = &panel.entries()[entry_idx];
                     let row_cursor = idx + 1;
                     let is_cursor = row_cursor == cursor;
-                    let is_selected = panel.selected.contains(&entry.path);
-                    let is_marked = panel.marked.contains(&entry.path);
+                    let is_selected = panel.is_selected(&entry.path);
+                    let is_marked = panel.is_marked(&entry.path);
 
                     let zebra = if idx % 2 == 1 {
                         t.bg_card.linear_multiply(0.3)
@@ -278,8 +331,11 @@ impl App {
                         Some(modified) => crate::reldate::relative_date(modified, now),
                         None => entry.modified_display().to_string(),
                     };
-                    let size_text = if let Some(ref sizes) = dir_sizes {
-                        entry.size_display_with_dir_size(sizes)
+                    let size_text = if entry.is_dir {
+                        size_snapshot
+                            .size_of(&entry.path)
+                            .map(crate::panel::format_size)
+                            .unwrap_or_else(|| "\u{2026}".to_string())
                     } else {
                         entry.size_display().to_string()
                     };
@@ -304,10 +360,23 @@ impl App {
                     ui.ctx().accesskit_node_builder(row_resp.id, |node| {
                         node.set_role(egui::accesskit::Role::Row);
                         node.set_selected(semantics.selected);
+                        if ui.is_enabled() {
+                            node.add_action(egui::accesskit::Action::ShowContextMenu);
+                        }
                         if let Some(expanded) = semantics.expanded {
                             node.set_expanded(expanded);
                         }
                     });
+                    let accesskit_context_menu_requested = ui.is_enabled()
+                        && crate::accessibility::consume_show_context_menu(ui.ctx(), row_resp.id);
+                    #[cfg(feature = "visual-qa")]
+                    if panel_side == "left" && (is_cursor || idx == first_visible) {
+                        crate::visual_qa::record_response(
+                            ui.ctx(),
+                            crate::visual_qa::ProbeId::LeftRow,
+                            &row_resp,
+                        );
+                    }
 
                     // Scroll to cursor row when navigating with keyboard
                     if is_cursor && scroll_pending {
@@ -367,10 +436,7 @@ impl App {
                     // of the largest entry, ramping to a warning tint when it
                     // dominates the directory.
                     if size_max > 0 {
-                        let size = dir_sizes
-                            .as_ref()
-                            .map(|s| crate::panel::entry_display_size(entry, s))
-                            .unwrap_or(0);
+                        let size = size_snapshot.display_size(entry);
                         if size > 0 {
                             let frac = (size as f32 / size_max as f32).clamp(0.0, 1.0);
                             let bar = egui::Rect::from_min_size(
@@ -469,13 +535,20 @@ impl App {
                         }
 
                         if entry.is_dir {
-                            let count = dir_counts
-                                .as_ref()
-                                .and_then(|c| c.get(&entry.path).copied());
+                            let count = size_snapshot.count_of(&entry.path);
                             Self::paint_folder_icon(ui, count);
                         } else {
                             ui.add_space(3.0);
-                            ui.label(egui::RichText::new(entry.icon()).size(metrics.icon_pt));
+                            let (red, green, blue) = crate::file_color::kind_color(
+                                crate::selection_summary::kind_of(entry),
+                                dark,
+                            );
+                            crate::app::glyphs::file_document(
+                                ui,
+                                &entry.extension,
+                                Color32::from_rgb(red, green, blue),
+                                t.bg_panel,
+                            );
                         }
                         ui.add_space(3.0);
 
@@ -570,10 +643,27 @@ impl App {
                         }
                     });
 
+                    if (keyboard_context_menu_requested && is_cursor)
+                        || accesskit_context_menu_requested
+                    {
+                        row_resp.request_focus();
+                        pending_cursor = Some(row_cursor);
+                        context_menu_request = context_menu_candidate(
+                            entry,
+                            crate::ports::ContextMenuTrigger::Keyboard,
+                            full_rect,
+                            &row_resp,
+                        );
+                    }
+
                     if row_resp.secondary_clicked() {
-                        context_menu_effect = crate::provider_runtime::request_context_menu(
-                            context_menu,
-                            &entry.path,
+                        row_resp.request_focus();
+                        pending_cursor = Some(row_cursor);
+                        context_menu_request = context_menu_candidate(
+                            entry,
+                            crate::ports::ContextMenuTrigger::Pointer,
+                            full_rect,
+                            &row_resp,
                         );
                     }
 
@@ -613,16 +703,12 @@ impl App {
                     ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
                 }
 
-                // Drop locks before mutating panel
-                drop(dir_counts);
-                drop(dir_sizes);
-
                 // Apply the interactions recorded during the loop.
                 if let Some(c) = pending_cursor {
-                    panel.cursor = c;
+                    panel.set_cursor(c);
                 }
                 if scrolled {
-                    panel.scroll_to_cursor = false;
+                    panel.set_scroll_to_cursor(false);
                 }
                 if let Some(anchor) = drag_anchor {
                     panel.begin_drag(anchor);
@@ -631,7 +717,7 @@ impl App {
                     panel.drop_target = Some(target);
                 }
                 if let Some(path) = open_path {
-                    opener(&path);
+                    opener(crate::ports::OpenRequest::OpenPath(path));
                 }
                 if let Some(path) = navigate_to {
                     panel.navigate_to(path);
@@ -645,12 +731,13 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let shown = panel.filtered_count();
-                    let total = panel.entries.len();
-                    let sel = panel.selected.len();
+                    let total = panel.entries().len();
+                    let selected_total = panel.selected_count();
+                    let selected_visible = panel.visible_selected_count();
                     // One pass for the folder total plus its largest/oldest entry.
                     let overview = panel.folder_overview();
                     let filters_active =
-                        crate::panel::filter_is_active(&panel.search_query, &panel.facets);
+                        crate::panel::filter_is_active(panel.search_query(), &panel.facets());
                     let count_prefix = if filters_active {
                         format!("{shown} of {total} items")
                     } else {
@@ -662,7 +749,7 @@ impl App {
                     };
                     ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
                     if filters_active {
-                        let active_count = panel.facets.active_count();
+                        let active_count = panel.facets().active_count();
                         let filter_label = if active_count > 0 {
                             format!("  |  Filters {active_count}")
                         } else {
@@ -670,22 +757,27 @@ impl App {
                         };
                         ui.label(egui::RichText::new(filter_label).size(11.0).color(t.accent));
                     }
-                    if sel > 0 {
+                    if selected_total > 0 {
+                        let selected_size = format_size(panel.visible_selected_size());
+                        let selection_text = if selected_visible == selected_total {
+                            format!("{selected_total} selected ({selected_size})")
+                        } else {
+                            format!(
+                                "{selected_total} selected ({selected_visible} visible, \
+                                 {selected_size})"
+                            )
+                        };
                         ui.label(
-                            egui::RichText::new(format!(
-                                "  |  {} selected ({})",
-                                sel,
-                                format_size(panel.total_size_selected())
-                            ))
-                            .size(11.0)
-                            .color(t.accent_purple),
+                            egui::RichText::new(format!("  |  {selection_text}"))
+                                .size(11.0)
+                                .color(t.accent_purple),
                         );
                     }
 
                     // Folder largest/oldest: the always-on complement to the
                     // selection HUD (which shows the same for the selection).
                     // Hidden once a selection is active, so the two don't clash.
-                    if sel == 0 && total >= 2 {
+                    if selected_total == 0 && total >= 2 {
                         let short = |name: &str| -> String {
                             const MAX: usize = 16;
                             if name.chars().count() > MAX {
@@ -735,20 +827,20 @@ impl App {
                                 )
                                 .clicked();
                             if clicked {
-                                panel.selected = crate::compare::select_by_compare(
+                                panel.replace_selection(crate::compare::select_by_compare(
                                     panel
                                         .filtered_indices()
-                                        .into_iter()
-                                        .filter_map(|i| panel.entries.get(i)),
+                                        .iter()
+                                        .filter_map(|&i| panel.entries().get(i)),
                                     map,
                                     crit,
-                                );
+                                ));
                             }
                         }
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let hidden_label = if panel.show_hidden {
+                        let hidden_label = if panel.show_hidden() {
                             "Hidden: ON"
                         } else {
                             "Hidden: OFF"
@@ -761,7 +853,7 @@ impl App {
                     });
                 });
             });
-        context_menu_effect
+        context_menu_request
     }
 
     pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {

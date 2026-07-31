@@ -48,10 +48,17 @@ pub(super) fn format_index_exclusions(root: &std::path::Path, exclusions: &[Path
 }
 
 impl App {
-    fn poll_find_events(&mut self) {
+    fn poll_find_events(
+        &mut self,
+    ) -> Option<(
+        String,
+        crate::query::MatchMode,
+        PathBuf,
+        crate::search::SearchSummary,
+    )> {
         let mut events = Vec::new();
         let mut disconnected = false;
-        if let Some(state) = self.ui.find.as_ref()
+        if let Some(state) = self.ui.modals.find.as_ref()
             && let Some(run) = state.run.as_ref()
         {
             loop {
@@ -67,7 +74,7 @@ impl App {
         }
 
         let mut history_record = None;
-        if let Some(state) = self.ui.find.as_mut() {
+        if let Some(state) = self.ui.modals.find.as_mut() {
             for event in events {
                 match event {
                     crate::search::SearchEvent::Batch {
@@ -122,21 +129,17 @@ impl App {
                 state.error = Some("Search worker stopped before completion".to_string());
             }
         }
-        if let Some((expression, mode, root, summary)) = history_record {
-            self.ui
-                .search_history
-                .record(expression, mode, root, &summary);
-        }
+        history_record
     }
 
     pub(crate) fn begin_find_search(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.ui.find.as_ref() else {
+        let Some(state) = self.ui.modals.find.as_ref() else {
             return;
         };
         let query = match state.build_query() {
             Ok(query) => query,
             Err(error) => {
-                if let Some(state) = self.ui.find.as_mut() {
+                if let Some(state) = self.ui.modals.find.as_mut() {
                     state.error = Some(error.to_string());
                     state.pending_rerun = false;
                 }
@@ -154,7 +157,7 @@ impl App {
         } else {
             Vec::new()
         };
-        let index_status = self.ui.content_index.status(&root);
+        let index_status = self.content_index.status(&root);
         if index_status.enabled
             && matches!(
                 index_status.phase,
@@ -162,39 +165,37 @@ impl App {
             )
         {
             let repaint = ctx.clone();
-            if self.ui.content_index.start_build(
+            if self.content_index.start_build(
                 root.clone(),
                 std::sync::Arc::new(move || repaint.request_repaint()),
-            ) && let Some(state) = self.ui.find.as_mut()
+            ) && let Some(state) = self.ui.modals.find.as_mut()
             {
                 state.index_rerun_after_build = true;
             }
         }
         let index = self
-            .ui
             .content_index
             .is_enabled(&root)
-            .then(|| self.ui.content_index.snapshot(&root))
+            .then(|| self.content_index.snapshot(&root))
             .flatten();
         let repaint = ctx.clone();
         let notify = std::sync::Arc::new(move || repaint.request_repaint());
         let run_result = match index {
-            Some(index) => self.ui.search_engine.start_indexed(
+            Some(index) => self.search_engine.start_indexed(
                 index,
                 query,
                 crate::search::DEFAULT_RESULT_CAP,
                 notify,
             ),
             None => {
-                self.ui
-                    .search_engine
+                self.search_engine
                     .start(root, query, crate::search::DEFAULT_RESULT_CAP, notify)
             }
         };
         let run = match run_result {
             Ok(run) => run,
             Err(error) => {
-                if let Some(state) = self.ui.find.as_mut() {
+                if let Some(state) = self.ui.modals.find.as_mut() {
                     state.error = Some(error.to_string());
                     state.pending_rerun = false;
                 }
@@ -202,7 +203,7 @@ impl App {
             }
         };
         let search_source = run.provider.to_string();
-        if let Some(state) = self.ui.find.as_mut() {
+        if let Some(state) = self.ui.modals.find.as_mut() {
             state.generation = run.snapshot.generation;
             state.run = Some(run);
             state.search_source = search_source;
@@ -223,8 +224,8 @@ impl App {
     }
 
     fn mark_find_edited(&mut self, ctx: &egui::Context) {
-        self.ui.search_engine.cancel();
-        if let Some(state) = self.ui.find.as_mut() {
+        self.search_engine.cancel();
+        if let Some(state) = self.ui.modals.find.as_mut() {
             state.run = None;
             state.searching = false;
             state.pending_rerun = true;
@@ -235,11 +236,11 @@ impl App {
     }
 
     pub(crate) fn open_find(&mut self) {
-        self.ui.search_engine.cancel();
+        self.search_engine.cancel();
         let root = self.ws.active_panel_ref().current_path.clone();
         let index_exclusions =
-            format_index_exclusions(&root, &self.ui.content_index.exclusions(&root));
-        self.ui.find = Some(FindState {
+            format_index_exclusions(&root, &self.content_index.exclusions(&root));
+        self.ui.modals.find = Some(FindState {
             root,
             index_exclusions,
             ..Default::default()
@@ -247,19 +248,26 @@ impl App {
     }
 
     pub(crate) fn show_find_dialog(&mut self, ctx: &egui::Context) {
-        if self.ui.find.is_none() {
+        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Find);
+        if self.ui.modals.find.is_none() {
             return;
         }
-        self.poll_find_events();
+        if super::ui_state::modal_close_requested(true, escape_requested) {
+            self.search_engine.cancel();
+            self.ui.modals.find = None;
+            return;
+        }
+        let history_record = self.poll_find_events();
 
         let now_seconds = ctx.input(|input| input.time);
-        let auto_run = self.ui.find.as_ref().is_some_and(|state| {
+        let auto_run = self.ui.modals.find.as_ref().is_some_and(|state| {
             state.pending_rerun && now_seconds - state.last_edit_at >= AUTO_RUN_DELAY
         });
         if auto_run {
             self.begin_find_search(ctx);
         } else if self
             .ui
+            .modals
             .find
             .as_ref()
             .is_some_and(|state| state.pending_rerun)
@@ -268,21 +276,21 @@ impl App {
         }
 
         let t = self.colors;
-        let history = self.ui.search_history.entries.clone();
-        let index_root = self.ui.find.as_ref().unwrap().root.clone();
-        let index_status = self.ui.content_index.status(&index_root);
-        let rerun_on_fresh_index = self.ui.find.as_ref().is_some_and(|state| {
+        let history = self.search_history.entries.clone();
+        let index_root = self.ui.modals.find.as_ref().unwrap().root.clone();
+        let index_status = self.content_index.status(&index_root);
+        let rerun_on_fresh_index = self.ui.modals.find.as_ref().is_some_and(|state| {
             state.index_rerun_after_build
                 && index_status.phase == crate::content_index::IndexPhase::Ready
         });
-        let index_build_failed = self.ui.find.as_ref().is_some_and(|state| {
+        let index_build_failed = self.ui.modals.find.as_ref().is_some_and(|state| {
             state.index_rerun_after_build
                 && index_status.phase == crate::content_index::IndexPhase::Error
         });
-        if rerun_on_fresh_index && let Some(state) = self.ui.find.as_mut() {
+        if rerun_on_fresh_index && let Some(state) = self.ui.modals.find.as_mut() {
             state.index_rerun_after_build = false;
         }
-        if index_build_failed && let Some(state) = self.ui.find.as_mut() {
+        if index_build_failed && let Some(state) = self.ui.modals.find.as_mut() {
             state.index_rerun_after_build = false;
             state.error = index_status
                 .last_error
@@ -303,7 +311,7 @@ impl App {
         let mut index_apply_exclusions = false;
 
         {
-            let state = self.ui.find.as_mut().unwrap();
+            let state = self.ui.modals.find.as_mut().unwrap();
             egui::Window::new("Search")
                 .open(&mut window_open)
                 .collapsible(false)
@@ -767,39 +775,39 @@ impl App {
                 });
         }
 
-        if !window_open {
-            self.ui.search_engine.cancel();
-            self.ui.find = None;
+        if super::ui_state::modal_close_requested(window_open, false) {
+            self.search_engine.cancel();
+            self.ui.modals.find = None;
             return;
         }
+        if let Some((expression, mode, root, summary)) = history_record {
+            self.search_history.record(expression, mode, root, &summary);
+        }
         if let Some(enabled) = index_enabled_change {
-            if self
-                .ui
-                .content_index
-                .set_enabled(index_root.clone(), enabled)
-            {
+            if self.content_index.set_enabled(index_root.clone(), enabled) {
                 if enabled {
                     let repaint = ctx.clone();
-                    let started = self.ui.content_index.start_build(
+                    let started = self.content_index.start_build(
                         index_root.clone(),
                         std::sync::Arc::new(move || repaint.request_repaint()),
                     );
-                    if let Some(state) = self.ui.find.as_mut() {
+                    if let Some(state) = self.ui.modals.find.as_mut() {
                         state.index_rerun_after_build = started;
                         state.error = None;
                     }
-                } else if let Some(state) = self.ui.find.as_mut() {
+                } else if let Some(state) = self.ui.modals.find.as_mut() {
                     state.index_rerun_after_build = false;
                     state.error = None;
                 }
                 edited = true;
-            } else if let Some(state) = self.ui.find.as_mut() {
+            } else if let Some(state) = self.ui.modals.find.as_mut() {
                 state.error = Some("Could not save content index settings".to_string());
             }
         }
         if index_apply_exclusions {
             let values = self
                 .ui
+                .modals
                 .find
                 .as_ref()
                 .map(|state| {
@@ -812,28 +820,28 @@ impl App {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            match self.ui.content_index.set_exclusions(&index_root, values) {
+            match self.content_index.set_exclusions(&index_root, values) {
                 Ok(()) => {
                     let formatted = format_index_exclusions(
                         &index_root,
-                        &self.ui.content_index.exclusions(&index_root),
+                        &self.content_index.exclusions(&index_root),
                     );
                     let mut started = false;
-                    if self.ui.content_index.is_enabled(&index_root) {
+                    if self.content_index.is_enabled(&index_root) {
                         let repaint = ctx.clone();
-                        started = self.ui.content_index.start_build(
+                        started = self.content_index.start_build(
                             index_root.clone(),
                             std::sync::Arc::new(move || repaint.request_repaint()),
                         );
                     }
-                    if let Some(state) = self.ui.find.as_mut() {
+                    if let Some(state) = self.ui.modals.find.as_mut() {
                         state.index_exclusions = formatted;
                         state.index_rerun_after_build = started;
                         state.error = None;
                     }
                 }
                 Err(error) => {
-                    if let Some(state) = self.ui.find.as_mut() {
+                    if let Some(state) = self.ui.modals.find.as_mut() {
                         state.error = Some(error);
                     }
                 }
@@ -841,11 +849,11 @@ impl App {
         }
         if index_rebuild {
             let repaint = ctx.clone();
-            let started = self.ui.content_index.start_build(
+            let started = self.content_index.start_build(
                 index_root.clone(),
                 std::sync::Arc::new(move || repaint.request_repaint()),
             );
-            if let Some(state) = self.ui.find.as_mut() {
+            if let Some(state) = self.ui.modals.find.as_mut() {
                 state.index_rerun_after_build = started;
                 if !started {
                     state.error = Some("Enable the content index before rebuilding".to_string());
@@ -855,11 +863,9 @@ impl App {
             }
         }
         if let Some(entry) = replay {
-            let exclusions = format_index_exclusions(
-                &entry.root,
-                &self.ui.content_index.exclusions(&entry.root),
-            );
-            if let Some(state) = self.ui.find.as_mut() {
+            let exclusions =
+                format_index_exclusions(&entry.root, &self.content_index.exclusions(&entry.root));
+            if let Some(state) = self.ui.modals.find.as_mut() {
                 state.expression = entry.expression;
                 state.mode = entry.mode;
                 state.root = entry.root;
@@ -870,9 +876,8 @@ impl App {
             edited = true;
         }
         if let Some(path) = root_change {
-            let exclusions =
-                format_index_exclusions(&path, &self.ui.content_index.exclusions(&path));
-            if let Some(state) = self.ui.find.as_mut() {
+            let exclusions = format_index_exclusions(&path, &self.content_index.exclusions(&path));
+            if let Some(state) = self.ui.modals.find.as_mut() {
                 state.root = path;
                 state.index_exclusions = exclusions;
                 state.index_rerun_after_build = false;
@@ -880,7 +885,7 @@ impl App {
             edited = true;
         }
         if let Some(index) = remove_predicate
-            && let Some(state) = self.ui.find.as_mut()
+            && let Some(state) = self.ui.modals.find.as_mut()
             && let Ok(mut query) = state.build_query()
             && index < query.predicates.len()
         {
@@ -889,7 +894,7 @@ impl App {
             edited = true;
         }
         if let Some(value) = explanation_change
-            && let Some(state) = self.ui.find.as_mut()
+            && let Some(state) = self.ui.modals.find.as_mut()
         {
             state.explanation_open = value;
         }
@@ -903,7 +908,7 @@ impl App {
             self.ws.reveal(&path);
         }
         if save {
-            let definition = self.ui.find.as_ref().and_then(|state| {
+            let definition = self.ui.modals.find.as_ref().and_then(|state| {
                 state
                     .build_query()
                     .ok()
@@ -929,8 +934,7 @@ impl App {
                         crate::toasts::ToastKind::Error,
                     )
                 };
-                self.ui
-                    .toasts
+                self.toasts
                     .push(crate::toasts::Toast::new(message, kind, false, now));
             }
         }

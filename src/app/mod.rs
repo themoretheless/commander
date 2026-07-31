@@ -11,6 +11,7 @@ mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
 mod find_dialog;
+pub(crate) mod glyphs;
 mod history_dialog;
 mod keys;
 mod mask_dialog;
@@ -30,7 +31,7 @@ mod toolbar;
 mod transfer_dialog;
 mod tree;
 mod treemap_dialog;
-pub(crate) mod ui_common;
+mod ui_state;
 mod update;
 
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
@@ -43,94 +44,30 @@ pub(crate) use crate::transfer::{CopyMethod, TransferKind};
 pub(crate) use crate::ui_request::{UiModal, UiRequest};
 pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
-/// Transient UI state extracted from App to kill god-object.
-/// All dialog boxes, input buffers, view toggles and temp data live here.
-/// App now owns only the core (ws + config + resources) + this bucket.
-pub(crate) struct UiState {
-    /// Active inline rename: the entry being renamed and the edit buffer.
-    pub renaming: Option<RenameState>,
-    /// Type-ahead buffer and the input time of its last keystroke (seconds,
-    /// from egui). Expires after a short idle.
-    pub type_ahead: Option<(String, f64)>,
-    /// Pending vim-style chord leader and its timestamp.
-    pub chord: Option<(char, f64)>,
-    /// Paint relative size occupancy bars behind file rows.
-    pub show_size_bars: bool,
-    /// Compare mode: tint each row by how it differs from the other panel.
-    pub show_compare: bool,
-    pub show_operations_center: bool,
-    pub operations_tab: OperationsTab,
-    pub operations_search: String,
-    pub operation_failures: crate::operation_view::FailureInbox,
-    pub failure_notice_seen: std::collections::HashSet<crate::operation::OperationId>,
-    pub focus_mode: bool,
-    pub focus_started_at: f64,
-    /// Pointer distance accumulated since focus mode was armed.
-    pub focus_moved: f32,
-    pub escape_request: crate::accessibility::EscapeRoute,
-    pub transient_nonce: u64,
-    /// Active select-by-mask input buffer.
-    pub mask_input: Option<String>,
-    /// Active go-to-path input buffer.
-    pub path_input: Option<String>,
-    /// Cached resolution of `path_input` keyed by the exact buffer text, so
-    /// idle frames skip the filesystem stat calls in `resolve_dir_input`.
-    pub path_resolved: Option<(String, Result<std::path::PathBuf, String>)>,
-    /// Active recent-directories quick-switcher filter buffer.
-    pub recent_input: Option<String>,
-    pub recent_order: crate::panel::RecentOrder,
-    pub search_engine: crate::search::SearchEngine,
-    pub search_history: crate::search::QueryHistory,
-    pub content_index: crate::content_index::ContentIndex,
-    /// Transient operation toasts (move / rename confirmations with Undo).
-    pub toasts: crate::toasts::ToastQueue,
-    pub receipts: crate::receipts::ReceiptLog,
-    pub history_preview: Option<HistoryPreviewState>,
-    pub recovery: RecoveryState,
-    /// Active command-palette filter buffer.
-    pub palette_input: Option<String>,
-    /// Command-palette usage history (recency/frequency ranking).
-    pub palette_usage: crate::command::UsageStats,
-    /// Monotonic counter stamped onto each palette command run.
-    pub palette_tick: u64,
-    /// Active batch-rename studio state.
-    pub batch_rename: Option<BatchRenameState>,
-    /// Active synchronise-sheet state.
-    pub sync: Option<SyncState>,
-    /// Active duplicate-finder sheet state.
-    pub duplicates: Option<DupState>,
-    /// Active read-only diff sheet state.
-    pub diff: Option<DiffState>,
-    /// Active disk-usage map and cancellable compressed-tree scan.
-    pub treemap: Option<DiskUsageState>,
-    /// Active recursive-find sheet state.
-    pub find: Option<FindState>,
-    pub archive: Option<ArchiveState>,
-    /// Saved searches, loaded lazily on first use.
-    pub smart_folders: Option<crate::smart_folder::SmartFolders>,
-    /// Whether the saved-search picker is open.
-    pub saved_search_open: bool,
-    pub project_collections: crate::collections::ProjectCollections,
-    pub collections_dialog: Option<CollectionsDialogState>,
-    pub command_templates: Option<crate::cmdtemplate::Templates>,
-    pub run_command: Option<RunCommandState>,
-    pub compare_cache: Option<(
-        u64,
-        u64,
-        crate::compare::CompareMap,
-        crate::compare::CompareMap,
-    )>,
-    pub startup_trace: Option<crate::measurement::StartupTrace>,
-    pub show_developer_panel: bool,
-    pub developer_notice: Option<DeveloperNotice>,
-    pub persistence_issue_seen: u64,
+pub(crate) struct AppServices {
+    pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+    pub(crate) clipboard: Rc<dyn crate::ports::ClipboardPort>,
+    pub(crate) opener: Rc<dyn crate::ports::OpenerPort>,
+    pub(crate) trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+    pub(crate) free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    pub(crate) persistence: std::sync::Arc<dyn crate::persistence::Persist>,
+    pub(crate) workload: crate::workload::WorkloadHandle,
+    pub(crate) directory_probe: std::sync::Arc<dyn crate::pathname::DirectoryProbePort>,
 }
 
 pub struct App {
     /// UI-independent application core (panels, ops, transfers).
     pub ws: Workspace,
+    /// Transient interaction state and the complete set of app-owned modals.
+    pub(crate) ui: ui_state::UiState,
     /// Main-thread-owned desktop integration injected by the composition root.
     pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+    pub(crate) clipboard: Rc<dyn crate::ports::ClipboardPort>,
+    pub(crate) opener: Rc<dyn crate::ports::OpenerPort>,
+    pub(crate) workload: crate::workload::WorkloadHandle,
+    pub(crate) directory_probe: std::sync::Arc<dyn crate::pathname::DirectoryProbePort>,
+    pub(crate) persistence: std::sync::Arc<dyn crate::persistence::Persist>,
+    pub(crate) session_gate: crate::persistence::StoreGate,
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
@@ -139,10 +76,66 @@ pub struct App {
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
-    pub(crate) tree_children_cache: std::collections::HashMap<PathBuf, Vec<PathBuf>>,
+    pub(crate) tree_children_cache: std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
     pub(crate) tree_width: f32,
-    /// Transient dialogs, input buffers, and view toggles.
-    pub(crate) ui: UiState,
+    /// Paint relative size occupancy bars behind file rows.
+    pub(crate) show_size_bars: bool,
+    /// Compare mode: tint each row by how it differs from the other panel.
+    pub(crate) show_compare: bool,
+    /// Whether the unified queue/history/errors/recovery surface is visible.
+    pub(crate) show_operations_center: bool,
+    pub(crate) operations_tab: OperationsTab,
+    pub(crate) operations_search: String,
+    pub(crate) operation_failures: crate::operation_view::FailureInbox,
+    pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::TransferAttemptId>,
+    /// Ranking mode for recent destinations: habitual (frecency) or strictly
+    /// chronological. Persisted with the session.
+    pub(crate) recent_order: crate::panel::RecentOrder,
+    /// Generation-based background search engine and replayable query history.
+    pub(crate) search_engine: crate::search::SearchEngine,
+    pub(crate) search_history: crate::search::QueryHistory,
+    pub(crate) content_index: crate::content_index::ContentIndex,
+    /// Transient operation toasts (move / rename confirmations with Undo).
+    pub(crate) toasts: crate::toasts::ToastQueue,
+    /// Searchable history of completed moves/deletes/batch-renames.
+    pub(crate) receipts: crate::receipts::ReceiptLog,
+    /// Startup-scanned durable recovery and orphan-staging model.
+    pub(crate) recovery: RecoveryState,
+    /// Command-palette usage history (recency/frequency ranking).
+    pub(crate) palette_usage: crate::command::UsageStats,
+    /// Monotonic counter stamped onto each palette command run.
+    pub(crate) palette_tick: u64,
+    /// Saved searches, loaded lazily on first use.
+    pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
+    /// Persisted multi-root projects and active virtual-view UI state.
+    pub(crate) project_collections: crate::collections::ProjectCollections,
+    /// Saved command templates, loaded lazily on first use.
+    pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
+    /// Cached cross-panel compare maps and the panel generations they were built
+    /// from, so compare mode does not rebuild two HashMaps (cloning every
+    /// `name_lower`) on every painted frame. `(right_gen, left_gen, left_map,
+    /// right_map)`: `left_map` indexes the right panel and vice versa.
+    pub(crate) compare_cache: Option<(
+        u64,
+        u64,
+        crate::compare::CompareMap,
+        crate::compare::CompareMap,
+    )>,
+    /// Startup instrumentation remains live through the first directory read.
+    pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
+    pub(crate) show_developer_panel: bool,
+    pub(crate) developer_notice: Option<DeveloperNotice>,
+    pub(crate) persistence_issue_seen: u64,
+}
+
+#[cfg(feature = "visual-qa")]
+pub(crate) struct VisualQaSeed {
+    pub left: PathBuf,
+    pub right: PathBuf,
+    pub ui_scale: f32,
+    pub theme_mode: ThemeMode,
+    pub accessibility_preferences: crate::accessibility::Preferences,
+    pub show_tree: bool,
 }
 
 pub(crate) struct DeveloperNotice {
@@ -175,6 +168,55 @@ pub(crate) struct RunCommandState {
     pub line: String,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
+    /// Immutable panel/selection context captured when the dialog opens.
+    pub opening: RunCommandOpeningContext,
+}
+
+#[derive(Clone)]
+pub(crate) struct RunCommandOpeningContext {
+    pub active_panel: ActivePanel,
+    pub selection: Vec<crate::panel::FileEntry>,
+    pub left_dir: PathBuf,
+    pub right_dir: PathBuf,
+}
+
+impl RunCommandOpeningContext {
+    fn capture(workspace: &Workspace) -> Self {
+        let active_panel = workspace.active;
+        let active = workspace.active_panel_ref();
+        Self {
+            active_panel,
+            selection: active.selected_or_cursor().unwrap_or_default(),
+            left_dir: workspace.left.current_path.clone(),
+            right_dir: workspace.right.current_path.clone(),
+        }
+    }
+
+    fn dir(&self) -> &std::path::Path {
+        match self.active_panel {
+            ActivePanel::Left => &self.left_dir,
+            ActivePanel::Right => &self.right_dir,
+        }
+    }
+
+    fn dir_other(&self) -> &std::path::Path {
+        match self.active_panel {
+            ActivePanel::Left => &self.right_dir,
+            ActivePanel::Right => &self.left_dir,
+        }
+    }
+
+    fn selection_context(&self) -> crate::cmdtemplate::SelectionCtx {
+        crate::cmdtemplate::SelectionCtx {
+            paths: self
+                .selection
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+            dir: self.dir().to_path_buf(),
+            dir_other: self.dir_other().to_path_buf(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -461,7 +503,6 @@ impl OperationsTab {
 
 #[derive(Default)]
 pub(crate) struct RecoveryState {
-    pub open: bool,
     pub section: RecoverySection,
     pub detail: RecoveryDetail,
     pub operations: Vec<crate::operation_journal::OperationRecord>,
@@ -481,13 +522,22 @@ pub(crate) struct RecoveryScanResult {
 }
 
 impl App {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        context_menu: Rc<dyn crate::ports::ContextMenuPort>,
-    ) -> Self {
+    pub(crate) fn new(cc: &eframe::CreationContext<'_>, services: AppServices) -> Self {
+        let AppServices {
+            context_menu,
+            clipboard,
+            opener,
+            trash,
+            free_space,
+            persistence,
+            workload,
+            directory_probe,
+        } = services;
         let mut startup = crate::measurement::StartupTrace::start();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let session = crate::session::load();
+        let loaded_session = crate::session::load_with(persistence.as_ref());
+        let session_gate = loaded_session.gate;
+        let session = loaded_session.value;
         if let Some(saved) = &session {
             crate::panel::restore_visit_snapshot(&saved.recent_paths, &saved.recent_stats);
         }
@@ -529,7 +579,18 @@ impl App {
             .as_ref()
             .map(|s| s.sanitized_paths(&home))
             .unwrap_or_else(|| (home.clone(), home.clone()));
-        let mut ws = Workspace::new(left, right);
+        let views = session
+            .as_ref()
+            .map(crate::session::Session::view_configs)
+            .unwrap_or([crate::panel::ViewConfig::default(); 2]);
+        let mut ws = Workspace::with_ports_and_views(
+            left,
+            right,
+            views,
+            trash,
+            free_space,
+            persistence.clone(),
+        );
 
         let ui_scale =
             crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
@@ -541,18 +602,6 @@ impl App {
             } else {
                 ActivePanel::Right
             };
-            ws.left.sort_col = s.left_sort_col;
-            ws.left.sort_order = s.left_sort_order;
-            ws.left.show_hidden = s.left_hidden;
-            ws.left.folders_first = s.left_folders_first;
-            ws.left.natural_name_sort = s.left_natural_sort;
-            ws.left.density = s.left_density;
-            ws.right.sort_col = s.right_sort_col;
-            ws.right.sort_order = s.right_sort_order;
-            ws.right.show_hidden = s.right_hidden;
-            ws.right.folders_first = s.right_folders_first;
-            ws.right.natural_name_sort = s.right_natural_sort;
-            ws.right.density = s.right_density;
             ws.durability_profile = s.durability_profile;
             ws.version_retention = s.version_retention;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
@@ -570,7 +619,14 @@ impl App {
         startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
         let mut app = App {
             ws,
+            ui: ui_state::UiState::default(),
             context_menu,
+            clipboard,
+            opener,
+            workload,
+            directory_probe,
+            persistence,
+            session_gate,
             ui_scale,
             theme_mode: mode,
             colors: ThemeColors::for_preferences(mode, accessibility_preferences),
@@ -581,69 +637,117 @@ impl App {
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
-            ui: UiState {
-                renaming: None,
-                type_ahead: None,
-                chord: None,
-                show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
-                show_compare: session.as_ref().is_some_and(|s| s.show_compare),
-                show_operations_center: false,
-                operations_tab: OperationsTab::default(),
-                operations_search: String::new(),
-                operation_failures: crate::operation_view::FailureInbox::default(),
-                failure_notice_seen: std::collections::HashSet::new(),
-                focus_mode: false,
-                focus_started_at: 0.0,
-                focus_moved: 0.0,
-                escape_request: crate::accessibility::EscapeRoute::None,
-                transient_nonce: 0,
-                mask_input: None,
-                path_input: None,
-                path_resolved: None,
-                recent_input: None,
-                recent_order: session
-                    .as_ref()
-                    .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
-                search_engine: crate::search::SearchEngine::default(),
-                search_history: session
-                    .as_ref()
-                    .map(|s| s.search_history.clone())
-                    .unwrap_or_default(),
-                content_index,
-                toasts: crate::toasts::ToastQueue::default(),
-                receipts: crate::receipts::ReceiptLog::default(),
-                history_preview: None,
-                recovery,
-                palette_input: None,
-                palette_usage: session
-                    .as_ref()
-                    .map(|s| s.palette_usage.clone())
-                    .unwrap_or_default(),
-                palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
-                batch_rename: None,
-                sync: None,
-                duplicates: None,
-                diff: None,
-                treemap: None,
-                find: None,
-                archive: None,
-                smart_folders: None,
-                saved_search_open: false,
-                project_collections,
-                collections_dialog: None,
-                command_templates: None,
-                run_command: None,
-                compare_cache: None,
-                startup_trace: Some(startup),
-                show_developer_panel: false,
-                developer_notice: None,
-                persistence_issue_seen: 0,
-            },
+            show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
+            show_compare: session.as_ref().is_some_and(|s| s.show_compare),
+            show_operations_center: false,
+            operations_tab: OperationsTab::default(),
+            operations_search: String::new(),
+            operation_failures: crate::operation_view::FailureInbox::default(),
+            failure_notice_seen: std::collections::HashSet::new(),
+            recent_order: session
+                .as_ref()
+                .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
+            search_engine: crate::search::SearchEngine::default(),
+            search_history: session
+                .as_ref()
+                .map(|s| s.search_history.clone())
+                .unwrap_or_default(),
+            content_index,
+            toasts: crate::toasts::ToastQueue::default(),
+            receipts: crate::receipts::ReceiptLog::default(),
+            recovery,
+            palette_usage: session
+                .as_ref()
+                .map(|s| s.palette_usage.clone())
+                .unwrap_or_default(),
+            palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
+            smart_folders: None,
+            project_collections,
+            command_templates: None,
+            compare_cache: None,
+            startup_trace: Some(startup),
+            show_developer_panel: false,
+            developer_notice: None,
+            persistence_issue_seen: 0,
         };
-        if let Some(trace) = &mut app.ui.startup_trace {
+        if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
         }
         app
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn new_visual_qa(
+        cc: &eframe::CreationContext<'_>,
+        seed: VisualQaSeed,
+        context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+        clipboard: Rc<dyn crate::ports::ClipboardPort>,
+        opener: Rc<dyn crate::ports::OpenerPort>,
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    ) -> Self {
+        apply_theme(
+            &cc.egui_ctx,
+            seed.theme_mode,
+            seed.accessibility_preferences,
+        );
+        cc.egui_ctx.set_zoom_factor(seed.ui_scale);
+        let persistence = crate::persistence::ephemeral_persist();
+        let ws = Workspace::with_ports_and_bookmarks(
+            seed.left,
+            seed.right,
+            trash,
+            free_space,
+            crate::bookmarks::Bookmarks::default(),
+            persistence.clone(),
+        );
+        Self {
+            ws,
+            ui: ui_state::UiState::default(),
+            context_menu,
+            clipboard,
+            opener,
+            workload: crate::workload::global_handle(),
+            directory_probe: std::sync::Arc::new(crate::pathname::FsDirectoryProbe),
+            persistence,
+            session_gate: crate::persistence::StoreGate::missing(),
+            ui_scale: seed.ui_scale,
+            theme_mode: seed.theme_mode,
+            colors: ThemeColors::for_preferences(seed.theme_mode, seed.accessibility_preferences),
+            accessibility_preferences: seed.accessibility_preferences,
+            prev_window_width: 0.0,
+            image_cache: crate::image_cache::ImageCache::new(),
+            show_tree: seed.show_tree,
+            tree_expanded: std::collections::HashSet::new(),
+            tree_children_cache: std::collections::HashMap::new(),
+            tree_width: 200.0,
+            show_size_bars: true,
+            show_compare: false,
+            show_operations_center: false,
+            operations_tab: OperationsTab::default(),
+            operations_search: String::new(),
+            operation_failures: crate::operation_view::FailureInbox::default(),
+            failure_notice_seen: std::collections::HashSet::new(),
+            recent_order: crate::panel::RecentOrder::Frecency,
+            search_engine: crate::search::SearchEngine::default(),
+            search_history: crate::search::QueryHistory::default(),
+            content_index: crate::content_index::ContentIndex::empty(
+                crate::workload::global_handle(),
+            ),
+            toasts: crate::toasts::ToastQueue::default(),
+            receipts: crate::receipts::ReceiptLog::default(),
+            recovery: RecoveryState::default(),
+            palette_usage: crate::command::UsageStats::default(),
+            palette_tick: 0,
+            smart_folders: None,
+            project_collections: crate::collections::ProjectCollections::default(),
+            command_templates: None,
+            compare_cache: None,
+            startup_trace: None,
+            show_developer_panel: false,
+            developer_notice: None,
+            persistence_issue_seen: crate::persistence::issue_generation(),
+        }
     }
 
     pub(crate) fn issue_transient_nonce(&mut self) -> u64 {
@@ -672,21 +776,21 @@ impl App {
 
     /// The command-template store, loaded from disk on first access.
     pub(crate) fn command_templates_mut(&mut self) -> &mut crate::cmdtemplate::Templates {
-        self.ui
-            .command_templates
+        self.command_templates
             .get_or_insert_with(crate::cmdtemplate::load)
     }
 
     /// The saved-search store, loaded from disk on first access.
     pub(crate) fn smart_folders_mut(&mut self) -> &mut crate::smart_folder::SmartFolders {
-        self.ui
-            .smart_folders
+        self.smart_folders
             .get_or_insert_with(crate::smart_folder::load)
     }
 
     /// Snapshot the current state into a persistable [`Session`].
     fn to_session(&self) -> crate::session::Session {
         let (recent_paths, recent_stats) = crate::panel::visit_snapshot();
+        let left_view = self.ws.left.view_config();
+        let right_view = self.ws.right.view_config();
         crate::session::Session {
             left_path: self.ws.left.current_path.clone(),
             right_path: self.ws.right.current_path.clone(),
@@ -695,26 +799,16 @@ impl App {
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
-            show_size_bars: self.ui.show_size_bars,
-            show_compare: self.ui.show_compare,
-            left_sort_col: self.ws.left.sort_col,
-            left_sort_order: self.ws.left.sort_order,
-            left_hidden: self.ws.left.show_hidden,
-            right_sort_col: self.ws.right.sort_col,
-            right_sort_order: self.ws.right.sort_order,
-            right_hidden: self.ws.right.show_hidden,
-            left_folders_first: self.ws.left.folders_first,
-            left_natural_sort: self.ws.left.natural_name_sort,
-            right_folders_first: self.ws.right.folders_first,
-            right_natural_sort: self.ws.right.natural_name_sort,
-            left_density: self.ws.left.density,
-            right_density: self.ws.right.density,
-            palette_usage: self.ui.palette_usage.clone(),
-            palette_tick: self.ui.palette_tick,
+            show_size_bars: self.show_size_bars,
+            show_compare: self.show_compare,
+            left_view: crate::session::PersistedLeftView::from(left_view),
+            right_view: crate::session::PersistedRightView::from(right_view),
+            palette_usage: self.palette_usage.clone(),
+            palette_tick: self.palette_tick,
             recent_paths,
             recent_stats,
-            recent_order: self.ui.recent_order,
-            search_history: self.ui.search_history.clone(),
+            recent_order: self.recent_order,
+            search_history: self.search_history.clone(),
             durability_profile: self.ws.durability_profile,
             version_retention: self.ws.version_retention,
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
@@ -723,57 +817,11 @@ impl App {
         }
     }
 
-    /// Confirm the pending operation; progress wakes the UI via repaint.
-    /// A Delete reports its outcome synchronously, so confirm it with a toast
-    /// (and flag anything the Trash refused) rather than letting it vanish
-    /// without acknowledgement.
+    /// Confirm the pending operation; all filesystem work completes through
+    /// background controller polling.
     pub(crate) fn confirm_pending_op(&mut self, ctx: &egui::Context) {
         let ctx2 = ctx.clone();
-        if let Some(outcome) = self.ws.confirm_pending_op(move || ctx2.request_repaint()) {
-            let now = ctx.input(|i| i.time);
-            let item = |n: usize| if n == 1 { "item" } else { "items" };
-            let (message, kind) = if outcome.failed == 0 {
-                (
-                    format!(
-                        "Moved {} {} to Trash",
-                        outcome.trashed,
-                        item(outcome.trashed)
-                    ),
-                    crate::toasts::ToastKind::Success,
-                )
-            } else if outcome.trashed == 0 {
-                (
-                    format!(
-                        "Could not delete {} {}",
-                        outcome.failed,
-                        item(outcome.failed)
-                    ),
-                    crate::toasts::ToastKind::Error,
-                )
-            } else {
-                (
-                    format!(
-                        "Moved {} to Trash, {} failed",
-                        outcome.trashed, outcome.failed
-                    ),
-                    crate::toasts::ToastKind::Error,
-                )
-            };
-            self.ui
-                .toasts
-                .push(crate::toasts::Toast::new(message, kind, false, now));
-            if outcome.trashed > 0 {
-                self.ui.receipts.push(crate::receipts::Receipt {
-                    verb: "Deleted",
-                    item_count: outcome.trashed,
-                    timestamp: now,
-                    jump_to: self.ws.active_panel_ref().current_path.clone(),
-                    // No undo path for a delete in this app today; jump-back
-                    // still gets you to where it happened.
-                    undo_action: None,
-                });
-            }
-        }
+        self.ws.confirm_pending_op(move || ctx2.request_repaint());
     }
 
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {

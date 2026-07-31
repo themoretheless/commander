@@ -72,7 +72,7 @@ impl App {
             return;
         };
         let scroll_nonce = self.issue_transient_nonce();
-        self.ui.batch_rename = Some(BatchRenameState {
+        self.ui.modals.batch_rename = Some(BatchRenameState {
             context,
             find: String::new(),
             replace: String::new(),
@@ -94,7 +94,7 @@ impl App {
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::BatchRename,
         ));
-        let Some(state) = &mut self.ui.batch_rename else {
+        let Some(state) = &mut self.ui.modals.batch_rename else {
             return;
         };
         let t = self.colors;
@@ -311,16 +311,16 @@ impl App {
             });
 
         if cancel {
-            self.ui.batch_rename = None;
+            self.ui.modals.batch_rename = None;
             return;
         }
         if let Some((rule, context)) = commit {
             match self.ws.apply_batch_rename_in(&context, &rule) {
                 Ok(n) => {
-                    self.ui.batch_rename = None;
+                    self.ui.modals.batch_rename = None;
                     if n > 0 {
                         let now = ctx.input(|i| i.time);
-                        self.ui.toasts.push(crate::toasts::Toast::new(
+                        self.toasts.push(crate::toasts::Toast::new(
                             format!("Renamed {n} item(s)"),
                             crate::toasts::ToastKind::Success,
                             true,
@@ -329,10 +329,10 @@ impl App {
                         // apply_batch_rename just pushed this run onto the
                         // undo stack; reuse it for the receipt so the undo
                         // affordance stays exactly in sync with Cmd+Z.
-                        if let Some(a) = self.ws.stack.peek_undo()
+                        if let Some(a) = self.ws.top_undo_action()
                             && let Some(jump_to) = a.jump_to()
                         {
-                            self.ui.receipts.push(crate::receipts::Receipt {
+                            self.receipts.push(crate::receipts::Receipt {
                                 verb: a.verb(),
                                 item_count: a.item_count(),
                                 timestamp: now,
@@ -345,13 +345,13 @@ impl App {
                 Err(msg) => {
                     // Surface the failure both inline and as an error toast.
                     let now = ctx.input(|i| i.time);
-                    self.ui.toasts.push(crate::toasts::Toast::new(
+                    self.toasts.push(crate::toasts::Toast::new(
                         format!("Rename failed: {msg}"),
                         crate::toasts::ToastKind::Error,
                         false,
                         now,
                     ));
-                    if let Some(s) = &mut self.ui.batch_rename {
+                    if let Some(s) = &mut self.ui.modals.batch_rename {
                         s.error = Some(msg);
                     }
                 }
