@@ -60,6 +60,19 @@ mod tests {
     }
 
     #[test]
+    fn multi_pass_selection_big_minus_videos_plus_todays_pdfs() {
+        // The documented workflow: everything big, minus videos, plus today's PDFs.
+        let big = set(&["movie.mkv", "backup.tar", "report.pdf"]);
+        let videos = set(&["movie.mkv", "clip.mp4"]);
+        let todays_pdfs = set(&["report.pdf", "invoice.pdf"]);
+
+        let selection = union(&difference(&big, &videos), &todays_pdfs);
+
+        // Big video is excluded; big PDF stays; small today's PDF is added.
+        assert_eq!(selection, set(&["backup.tar", "report.pdf", "invoice.pdf"]));
+    }
+
+    #[test]
     fn symmetric_difference_self_is_empty_and_mixed_example() {
         let a = set(&["a", "b", "c"]);
         let b = set(&["c", "d"]);

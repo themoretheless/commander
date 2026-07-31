@@ -269,7 +269,7 @@ impl App {
                             ))
                             .clicked()
                         {
-                            self.ws.active_panel().density = crate::density::cycle(density, 1);
+                            self.ws.active_panel().density = crate::density::cycle(density);
                         }
 
                         // Size-bars toggle
@@ -471,7 +471,7 @@ impl App {
                             .clicked()
                         {
                             let density = self.ws.active_panel_ref().density;
-                            self.ws.active_panel().density = crate::density::cycle(density, 1);
+                            self.ws.active_panel().density = crate::density::cycle(density);
                         }
                         ui.checkbox(&mut self.ui.show_size_bars, "Show size bars");
                         ui.checkbox(&mut self.ui.show_compare, "Compare panels");

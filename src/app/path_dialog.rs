@@ -12,6 +12,7 @@ impl App {
             .display()
             .to_string();
         self.ui.path_input = Some(current);
+        self.ui.path_resolved = None;
         Self::mark_modal_opened(ctx, UiModal::Path);
     }
 
@@ -22,9 +23,25 @@ impl App {
             return;
         };
         let t = self.colors;
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
 
-        let resolved = crate::workspace::resolve_dir_input(buffer, &home);
+        // Re-resolve only when the buffer changed since the last frame; this
+        // avoids filesystem stat calls on every idle frame the dialog is open.
+        let stale = self
+            .ui
+            .path_resolved
+            .as_ref()
+            .is_none_or(|(key, _)| key != buffer.as_str());
+        if stale {
+            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+            let result = crate::workspace::resolve_dir_input(buffer, &home);
+            self.ui.path_resolved = Some((buffer.clone(), result));
+        }
+        let resolved = self
+            .ui
+            .path_resolved
+            .as_ref()
+            .map(|(_, r)| r.clone())
+            .expect("path_resolved populated above");
         let mut go: Option<std::path::PathBuf> = None;
         let mut cancel = false;
 
@@ -116,10 +133,12 @@ impl App {
 
         if cancel {
             self.ui.path_input = None;
+            self.ui.path_resolved = None;
             return;
         }
         if let Some(path) = go {
             self.ui.path_input = None;
+            self.ui.path_resolved = None;
             self.ws.active_panel().navigate_to(path);
         }
     }

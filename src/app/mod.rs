@@ -30,6 +30,7 @@ mod toolbar;
 mod transfer_dialog;
 mod tree;
 mod treemap_dialog;
+pub(crate) mod ui_common;
 mod update;
 
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
@@ -64,12 +65,17 @@ pub(crate) struct UiState {
     pub failure_notice_seen: std::collections::HashSet<crate::operation::OperationId>,
     pub focus_mode: bool,
     pub focus_started_at: f64,
+    /// Pointer distance accumulated since focus mode was armed.
+    pub focus_moved: f32,
     pub escape_request: crate::accessibility::EscapeRoute,
     pub transient_nonce: u64,
     /// Active select-by-mask input buffer.
     pub mask_input: Option<String>,
     /// Active go-to-path input buffer.
     pub path_input: Option<String>,
+    /// Cached resolution of `path_input` keyed by the exact buffer text, so
+    /// idle frames skip the filesystem stat calls in `resolve_dir_input`.
+    pub path_resolved: Option<(String, Result<std::path::PathBuf, String>)>,
     /// Active recent-directories quick-switcher filter buffer.
     pub recent_input: Option<String>,
     pub recent_order: crate::panel::RecentOrder,
@@ -588,10 +594,12 @@ impl App {
                 failure_notice_seen: std::collections::HashSet::new(),
                 focus_mode: false,
                 focus_started_at: 0.0,
+                focus_moved: 0.0,
                 escape_request: crate::accessibility::EscapeRoute::None,
                 transient_nonce: 0,
                 mask_input: None,
                 path_input: None,
+                path_resolved: None,
                 recent_input: None,
                 recent_order: session
                     .as_ref()

@@ -273,7 +273,7 @@ impl App {
                 }
             }
             Command::CycleDensity => {
-                let next = crate::density::cycle(active.density, 1);
+                let next = crate::density::cycle(active.density);
                 format!("next: {}", crate::density::label(next))
             }
             Command::TogglePreview => "opposite panel preview".to_string(),

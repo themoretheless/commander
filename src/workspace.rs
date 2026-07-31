@@ -955,7 +955,7 @@ impl Workspace {
             )),
             Command::CycleDensity => {
                 let panel = self.active_panel();
-                panel.density = crate::density::cycle(panel.density, 1);
+                panel.density = crate::density::cycle(panel.density);
             }
             Command::ShelfAdd => {
                 let paths: Vec<PathBuf> = self

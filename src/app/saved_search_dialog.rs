@@ -99,17 +99,7 @@ impl App {
                     }
 
                     ui.add_space(10.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Close")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
-                        .clicked()
+                    if crate::app::ui_common::themed_button(ui, "Close", false, &t)
                         || escape_requested
                     {
                         close = true;

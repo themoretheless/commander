@@ -24,6 +24,8 @@ impl App {
         let mut go: Option<std::path::PathBuf> = None;
         let mut cancel = false;
 
+        // The title is hidden (title_bar(false)); the string serves as the
+        // window's egui Id, so keep it unique and stable.
         egui::Window::new("Recent folders")
             .collapsible(false)
             .resizable(false)
@@ -62,8 +64,15 @@ impl App {
                 ui.add_space(4.0);
 
                 if matches.is_empty() {
+                    let message = if visited.is_empty() {
+                        "No recent folders yet".to_string()
+                    } else if buffer.trim().is_empty() {
+                        "No recent folders".to_string()
+                    } else {
+                        format!("No matches for \"{}\"", buffer.trim())
+                    };
                     ui.label(
-                        egui::RichText::new("No recent folders")
+                        egui::RichText::new(message)
                             .size(11.0)
                             .color(t.text_muted),
                     );
@@ -71,9 +80,7 @@ impl App {
                     egui::ScrollArea::vertical()
                         .max_height(300.0)
                         .show(ui, |ui| {
-                            for (i, item) in
-                                matches.iter().enumerate().take(crate::panel::VISITED_CAP)
-                            {
+                            for (i, item) in matches.iter().enumerate() {
                                 let path = &item.path;
                                 let name = path
                                     .file_name()

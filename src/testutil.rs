@@ -12,7 +12,10 @@ impl TempDir {
         let n = N.fetch_add(1, Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("commander-test-{}-{}", std::process::id(), n));
-        std::fs::create_dir_all(&path).unwrap();
+        // Clear any stale leftover from a crashed run with a recycled pid,
+        // then fail loudly if the directory still unexpectedly exists.
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir(&path).unwrap();
         TempDir(path)
     }
 
@@ -40,6 +43,8 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if let Err(e) = std::fs::remove_dir_all(&self.0) {
+            eprintln!("warning: failed to remove temp dir {}: {}", self.0.display(), e);
+        }
     }
 }

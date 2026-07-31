@@ -31,6 +31,8 @@ impl App {
         let mut commit = false;
         let mut cancel = false;
 
+        // The title is hidden (title_bar(false)); the string serves as the
+        // window's egui Id, so keep it unique and stable.
         egui::Window::new("Select by mask")
             .collapsible(false)
             .resizable(false)
@@ -75,33 +77,11 @@ impl App {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Select")
-                                    .size(13.0)
-                                    .color(Color32::WHITE),
-                            )
-                            .fill(t.accent)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
-                        .clicked()
-                    {
+                    if crate::app::ui_common::themed_button(ui, "Select", true, &t) {
                         commit = true;
                     }
                     ui.add_space(8.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
-                        .clicked()
-                    {
+                    if crate::app::ui_common::themed_button(ui, "Cancel", false, &t) {
                         cancel = true;
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {

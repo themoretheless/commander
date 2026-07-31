@@ -2,6 +2,10 @@
 //! Best practices: central spacing, reusable styled primitives, strong affordances (grips, hovers), hierarchy via size/color.
 //! Inspired by macOS Finder/Path Finder (clean, dense, consistent) + VSCode (tooltips, modern frames) + egui idioms.
 
+// Several helpers are referenced only by files not yet wired into the
+// module tree (facet.rs, status_bar.rs, preview_pane.rs); keep them around.
+#![allow(dead_code)]
+
 use egui::{Color32, CornerRadius, Frame, Margin, RichText, Stroke, Ui};
 
 use crate::theme::ThemeColors;
@@ -45,6 +49,22 @@ pub fn styled_button(ui: &mut Ui, label: &str, fill: Color32) -> bool {
             .fill(fill)
             .corner_radius(CornerRadius::same(2)),
     ).clicked()
+}
+
+/// Square dialog button: accent fill with white text when `primary`,
+/// card fill with primary text otherwise. Returns true when clicked.
+pub fn themed_button(ui: &mut Ui, text: &str, primary: bool, t: &ThemeColors) -> bool {
+    let (fill, color) = if primary {
+        (t.accent, Color32::WHITE)
+    } else {
+        (t.bg_card, t.text_primary)
+    };
+    ui.add(
+        egui::Button::new(RichText::new(text).size(TITLE_SIZE).color(color))
+            .fill(fill)
+            .corner_radius(CornerRadius::ZERO),
+    )
+    .clicked()
 }
 
 pub fn thin_frame(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {

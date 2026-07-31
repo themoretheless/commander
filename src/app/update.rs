@@ -645,10 +645,15 @@ impl App {
         let escape_requested =
             self.take_escape_request(crate::accessibility::EscapeRoute::FocusMode);
         let exit_focus = ctx.input(|i| {
+            // Accumulate movement so a slow continuous drag still exits, but
+            // only once the mode is armed so pre-arm motion does not count.
+            if i.time - self.ui.focus_started_at >= crate::focus_mode::ARM_DELAY_SECS {
+                self.ui.focus_moved += i.pointer.delta().length();
+            }
             crate::focus_mode::should_exit(
                 self.ui.focus_started_at,
                 i.time,
-                i.pointer.delta().length_sq(),
+                self.ui.focus_moved * self.ui.focus_moved,
                 escape_requested,
             )
         });
@@ -681,6 +686,7 @@ impl App {
             QuickAction::FocusMode => {
                 self.ui.focus_mode = true;
                 self.ui.focus_started_at = ctx.input(|i| i.time);
+                self.ui.focus_moved = 0.0;
             }
         }
     }

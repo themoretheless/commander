@@ -70,14 +70,10 @@ pub fn short_label(density: Density) -> &'static str {
 /// Densest-to-roomiest order, for cycling.
 const ORDER: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
 
-/// Step through the density tiers. `dir > 0` moves toward Spacious, `dir < 0`
-/// toward Compact; both wrap around.
-pub fn cycle(density: Density, dir: i32) -> Density {
-    let idx = ORDER.iter().position(|&d| d == density).unwrap_or(1) as i32;
-    let len = ORDER.len() as i32;
-    let step = dir.signum();
-    let next = ((idx + step) % len + len) % len;
-    ORDER[next as usize]
+/// Step to the next density tier, toward Spacious, wrapping to Compact.
+pub fn cycle(density: Density) -> Density {
+    let idx = ORDER.iter().position(|&d| d == density).unwrap_or(1);
+    ORDER[(idx + 1) % ORDER.len()]
 }
 
 #[cfg(test)]
@@ -108,14 +104,9 @@ mod tests {
     }
 
     #[test]
-    fn cycle_wraps_in_both_directions() {
-        // Forward (toward spacious), wrapping back to compact.
-        assert_eq!(cycle(Density::Compact, 1), Density::Comfortable);
-        assert_eq!(cycle(Density::Comfortable, 1), Density::Spacious);
-        assert_eq!(cycle(Density::Spacious, 1), Density::Compact);
-        // Backward (toward compact), wrapping forward to spacious.
-        assert_eq!(cycle(Density::Compact, -1), Density::Spacious);
-        assert_eq!(cycle(Density::Spacious, -1), Density::Comfortable);
-        assert_eq!(cycle(Density::Comfortable, -1), Density::Compact);
+    fn cycle_steps_toward_spacious_and_wraps() {
+        assert_eq!(cycle(Density::Compact), Density::Comfortable);
+        assert_eq!(cycle(Density::Comfortable), Density::Spacious);
+        assert_eq!(cycle(Density::Spacious), Density::Compact);
     }
 }
