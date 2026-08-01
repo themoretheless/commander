@@ -13,6 +13,7 @@ pub(crate) enum DirInputError {
     Missing,
     NotDirectory,
     Unavailable,
+    UnsupportedTilde,
 }
 
 impl fmt::Display for DirInputError {
@@ -22,6 +23,7 @@ impl fmt::Display for DirInputError {
             Self::Missing => "Path does not exist",
             Self::NotDirectory => "Not a folder",
             Self::Unavailable => "Path cannot be accessed",
+            Self::UnsupportedTilde => "~user expansion is not supported",
         })
     }
 }
@@ -59,6 +61,9 @@ pub(crate) fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirIn
     }
     if trimmed.contains('\0') {
         return Err(DirInputError::Unavailable);
+    }
+    if trimmed.starts_with('~') && trimmed != "~" && !trimmed.starts_with("~/") {
+        return Err(DirInputError::UnsupportedTilde);
     }
     let expanded = if trimmed == "~" {
         home.to_path_buf()
@@ -140,6 +145,20 @@ mod tests {
     }
 
     #[test]
+    fn dir_input_reports_unsupported_tilde_user_forms() {
+        let home = TempDir::new();
+
+        assert_eq!(
+            parse_dir_input("~alice", home.path()),
+            Err(DirInputError::UnsupportedTilde)
+        );
+        assert_eq!(
+            parse_dir_input("~alice/docs", home.path()),
+            Err(DirInputError::UnsupportedTilde)
+        );
+    }
+
+    #[test]
     fn dir_input_preserves_lexical_relative_paths() {
         assert_eq!(parse_dir_input(" . ", Path::new("/unused")), Ok(".".into()));
     }
@@ -188,6 +207,10 @@ mod tests {
         assert_eq!(
             DirInputError::Unavailable.to_string(),
             "Path cannot be accessed"
+        );
+        assert_eq!(
+            DirInputError::UnsupportedTilde.to_string(),
+            "~user expansion is not supported"
         );
     }
 

@@ -3,6 +3,7 @@
 //! UI builds the entry slice and copies the returned string.
 
 use crate::panel::FileEntry;
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListingFormat {
@@ -23,12 +24,21 @@ impl ListingFormat {
 
 /// Render `entries` (Name / Size / Modified) in the chosen format. Text is
 /// tab-separated with the human size string; CSV is RFC-4180-escaped with raw
-/// byte sizes; Markdown is a pipe table with `|` escaped inside cells.
+/// byte sizes; Markdown is a pipe table with `|` escaped inside cells. Text and
+/// Markdown also escape embedded control characters (newline, tab, carriage
+/// return) so one entry can never span more than one line or cell.
 pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
     match fmt {
         ListingFormat::Text => entries
             .iter()
-            .map(|e| format!("{}\t{}\t{}", e.name, e.size_str, e.modified_str))
+            .map(|e| {
+                format!(
+                    "{}\t{}\t{}",
+                    escape_controls(&e.name),
+                    escape_controls(&e.size_str),
+                    escape_controls(&e.modified_str)
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n"),
         ListingFormat::Csv => {
@@ -68,9 +78,31 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-/// Escape `|` so a cell can't break the Markdown table.
-fn md_escape(s: &str) -> String {
-    s.replace('|', "\\|")
+/// Escape `|` so a cell can't break the Markdown table. Borrows unchanged when
+/// there is nothing to escape, so a large listing of plain names allocates
+/// nothing here.
+fn md_escape(s: &str) -> Cow<'_, str> {
+    let escaped = escape_controls(s);
+    if !escaped.contains('|') {
+        return escaped;
+    }
+    Cow::Owned(escaped.replace('|', "\\|"))
+}
+
+/// Replace control characters that would break a line- or cell-oriented layout
+/// with visible escape sequences. The backslash goes first so the mapping stays
+/// unambiguous. Returns the input unchanged (and unallocated) when it holds none
+/// of those characters.
+fn escape_controls(s: &str) -> Cow<'_, str> {
+    if !s.contains(['\\', '\n', '\r', '\t']) {
+        return Cow::Borrowed(s);
+    }
+    Cow::Owned(
+        s.replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t"),
+    )
 }
 
 #[cfg(test)]
@@ -120,6 +152,22 @@ mod tests {
         let out = format(&refs(&v), ListingFormat::Markdown);
         assert!(out.contains("| Name | Size | Modified |"));
         assert!(out.contains("| a\\|b.txt |"));
+    }
+
+    #[test]
+    fn text_escapes_embedded_newline_and_tab() {
+        let v = vec![entry("a\nb\tc.txt", 1)];
+        let out = format(&refs(&v), ListingFormat::Text);
+        assert_eq!(out.lines().count(), 1);
+        assert!(out.starts_with("a\\nb\\tc.txt\t"));
+    }
+
+    #[test]
+    fn markdown_escapes_embedded_newline() {
+        let v = vec![entry("a\nb.txt", 1)];
+        let out = format(&refs(&v), ListingFormat::Markdown);
+        assert_eq!(out.lines().count(), 3);
+        assert!(out.contains("| a\\nb.txt |"));
     }
 
     #[test]

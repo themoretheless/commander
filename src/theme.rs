@@ -1,4 +1,4 @@
-use egui::{Color32, CornerRadius, FontDefinitions, FontFamily, Style, Visuals};
+use egui::{Color32, CornerRadius, Style, Visuals};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ThemeMode {
@@ -28,6 +28,16 @@ pub struct ThemeColors {
     pub border: Color32,
 }
 
+/// Selection fill is intentionally identical in the standard light and dark
+/// themes: selected rows always draw white text on this blue, so the pair must
+/// keep the same contrast in both modes. The high-contrast themes override it.
+const SELECTION_BLUE: Color32 = Color32::from_rgb(0, 100, 220);
+
+/// Warning amber is intentionally identical in the standard light and dark
+/// themes: conflict and pending badges must read the same in both modes. The
+/// high-contrast themes override it with darker, more legible variants.
+const WARNING_AMBER: Color32 = Color32::from_rgb(230, 160, 40);
+
 impl ThemeColors {
     pub fn for_preferences(
         mode: ThemeMode,
@@ -47,7 +57,7 @@ impl ThemeColors {
             bg_panel: Color32::from_rgb(252, 252, 254),
             bg_card: Color32::from_rgb(235, 235, 240),
             bg_hover: Color32::from_rgb(225, 225, 232),
-            bg_selected: Color32::from_rgb(0, 100, 220),
+            bg_selected: SELECTION_BLUE,
             bg_toolbar: Color32::from_rgb(240, 240, 244),
 
             text_primary: Color32::from_rgb(30, 30, 35),
@@ -57,7 +67,7 @@ impl ThemeColors {
             accent: Color32::from_rgb(0, 122, 255),
             accent_red: Color32::from_rgb(235, 60, 50),
             accent_purple: Color32::from_rgb(160, 70, 210),
-            accent_warning: Color32::from_rgb(230, 160, 40),
+            accent_warning: WARNING_AMBER,
 
             border: Color32::from_rgb(210, 210, 218),
         }
@@ -69,7 +79,7 @@ impl ThemeColors {
             bg_panel: Color32::from_rgb(24, 24, 30),
             bg_card: Color32::from_rgb(34, 34, 42),
             bg_hover: Color32::from_rgb(44, 44, 54),
-            bg_selected: Color32::from_rgb(0, 100, 220),
+            bg_selected: SELECTION_BLUE,
             bg_toolbar: Color32::from_rgb(20, 20, 26),
 
             text_primary: Color32::from_rgb(230, 230, 240),
@@ -79,7 +89,7 @@ impl ThemeColors {
             accent: Color32::from_rgb(0, 122, 255),
             accent_red: Color32::from_rgb(255, 69, 58),
             accent_purple: Color32::from_rgb(175, 82, 222),
-            accent_warning: Color32::from_rgb(230, 160, 40),
+            accent_warning: WARNING_AMBER,
 
             border: Color32::from_rgb(50, 50, 60),
         }
@@ -190,11 +200,6 @@ pub fn apply_theme(
     };
     ctx.set_style_of(theme, style);
     ctx.set_theme(theme);
-
-    let mut fonts = FontDefinitions::default();
-    fonts.families.entry(FontFamily::Proportional).or_default();
-    fonts.families.entry(FontFamily::Monospace).or_default();
-    ctx.set_fonts(fonts);
 }
 
 #[cfg(test)]

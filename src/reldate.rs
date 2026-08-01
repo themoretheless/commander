@@ -10,7 +10,8 @@ use std::time::SystemTime;
 /// A human-friendly modified time relative to `now`.
 ///
 /// Bands, by elapsed time (`now - modified`):
-/// - in the future, or under a minute -> "just now"
+/// - up to a day in the future, or under a minute -> "just now"
+///   (further in the future -> the calendar date, below)
 /// - under an hour -> "Nm"
 /// - under a day -> "Nh"
 /// - under two days -> "Yesterday"
@@ -18,17 +19,32 @@ use std::time::SystemTime;
 /// - same calendar year -> "Mon D" ("Jun 5")
 /// - older -> "Mon D YYYY" ("May 11 2020")
 pub fn relative_date(modified: SystemTime, now: SystemTime) -> String {
-    // A modified time ahead of `now` (clock skew, copied metadata) reads oddly
-    // as a negative age, so collapse it to the present.
-    let Ok(elapsed) = now.duration_since(modified) else {
-        return "just now".to_string();
-    };
-    let secs = elapsed.as_secs();
-
     const MINUTE: u64 = 60;
     const HOUR: u64 = 60 * MINUTE;
     const DAY: u64 = 24 * HOUR;
     const WEEK: u64 = 7 * DAY;
+    /// How far ahead of `now` a timestamp may sit and still read as the present.
+    const FUTURE_SKEW_TOLERANCE: u64 = DAY;
+
+    let elapsed = match now.duration_since(modified) {
+        Ok(d) => d,
+        Err(e) => {
+            // Ahead of `now`. Small skew (NTP, copied metadata) reads oddly as a
+            // negative age, so collapse it to the present; a wildly future date
+            // is real information, so show the date instead.
+            if e.duration().as_secs() <= FUTURE_SKEW_TOLERANCE {
+                return "just now".to_string();
+            }
+            let modified_utc: chrono::DateTime<chrono::Utc> = modified.into();
+            let now_utc: chrono::DateTime<chrono::Utc> = now.into();
+            return if modified_utc.year() == now_utc.year() {
+                modified_utc.format("%b %-d").to_string()
+            } else {
+                modified_utc.format("%b %-d %Y").to_string()
+            };
+        }
+    };
+    let secs = elapsed.as_secs();
 
     if secs < MINUTE {
         return "just now".to_string();
@@ -81,6 +97,15 @@ mod tests {
     #[test]
     fn future_collapses_to_just_now() {
         assert_eq!(rel(NOW + 500), "just now");
+        assert_eq!(rel(NOW + DAY), "just now"); // tolerance boundary, inclusive
+    }
+
+    #[test]
+    fn far_future_shows_the_date() {
+        // Two days ahead is 2021-06-17, same calendar year.
+        assert_eq!(rel(NOW + 2 * DAY), "Jun 17");
+        // 400 days ahead is 2022-07-20, a different calendar year.
+        assert_eq!(rel(NOW + 400 * DAY), "Jul 20 2022");
     }
 
     #[test]
