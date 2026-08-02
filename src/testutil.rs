@@ -44,7 +44,11 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         if let Err(e) = std::fs::remove_dir_all(&self.0) {
-            eprintln!("warning: failed to remove temp dir {}: {}", self.0.display(), e);
+            eprintln!(
+                "warning: failed to remove temp dir {}: {}",
+                self.0.display(),
+                e
+            );
         }
     }
 }

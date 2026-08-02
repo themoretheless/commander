@@ -71,11 +71,7 @@ impl App {
                     } else {
                         format!("No matches for \"{}\"", buffer.trim())
                     };
-                    ui.label(
-                        egui::RichText::new(message)
-                            .size(11.0)
-                            .color(t.text_muted),
-                    );
+                    ui.label(egui::RichText::new(message).size(11.0).color(t.text_muted));
                 } else {
                     egui::ScrollArea::vertical()
                         .max_height(300.0)
