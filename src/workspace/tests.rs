@@ -186,6 +186,8 @@ fn interrupt_history_replay(
 }
 
 fn assert_mount_wait_interruption(label: &str, cancel: bool, reconnect_wins: bool) {
+    let journal = TempDir::new();
+    let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
     let (left, right) = (TempDir::new(), TempDir::new());
     let source = left.file("mount-race.txt", "payload");
     let entry =
@@ -393,6 +395,8 @@ fn drain_transfers(ws: &mut Workspace) {
 
 #[test]
 fn terminal_publication_waits_for_journal_finalization() {
+    let journal = TempDir::new();
+    let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
     let (left, right) = (TempDir::new(), TempDir::new());
     let source = left.file("boundary.txt", "boundary");
     let entry =
@@ -463,6 +467,8 @@ fn terminal_publication_waits_for_journal_finalization() {
 
 #[test]
 fn zero_entry_recovery_stop_before_worker_keeps_required_cleanup_unfinished() {
+    let journal = TempDir::new();
+    let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
     let (left, right) = (TempDir::new(), TempDir::new());
     let cleanup = left.dir("recovery-cleanup");
     let operation_id = crate::operation::OperationId::new();
@@ -561,6 +567,8 @@ fn cancellation_after_dequeue_finishes_once_before_worker_body_runs() {
 
 #[test]
 fn interruption_before_required_post_success_is_not_normalized_to_completion() {
+    let journal = TempDir::new();
+    let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
     for (label, cancel, expected_terminal) in [
         (
             "cancel",
@@ -732,6 +740,8 @@ fn cancelling_an_admitted_queued_transfer_reports_once_without_running_work() {
 
 #[test]
 fn panicking_transfer_finishes_in_needs_review_without_wedging_workspace() {
+    let journal = TempDir::new();
+    let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
     let (left, right) = (TempDir::new(), TempDir::new());
     let source = left.file("panic.txt", "panic boundary");
     let entry =
