@@ -1031,10 +1031,15 @@ impl Workspace {
                 self.active_panel().go_forward();
             }
             Command::JumpSlot(n) => {
-                if let Some(path) = self.bookmarks.by_slot(n).map(|b| b.path.clone())
-                    && path.is_dir()
-                {
-                    self.active_panel().navigate_to(path);
+                if let Some(path) = self.bookmarks.by_slot(n).map(|b| b.path.clone()) {
+                    if path.is_dir() {
+                        self.active_panel().navigate_to(path);
+                    } else {
+                        self.emit_ui_request(UiRequest::Notice {
+                            message: format!("Quick jump {n} is unavailable: {}", path.display()),
+                            error: true,
+                        });
+                    }
                 }
             }
             Command::AssignSlot(n) => {

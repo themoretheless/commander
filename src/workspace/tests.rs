@@ -2547,6 +2547,28 @@ fn jump_slot_navigates_active_panel_to_the_bookmarked_dir() {
 }
 
 #[test]
+fn jump_slot_reports_a_bookmark_whose_directory_disappeared() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let missing = left.dir("removed-project");
+    let mut workspace = workspace(&left, &right);
+    workspace.bookmarks.add("removed", missing.clone());
+    assert!(workspace.bookmarks.assign_slot(&missing, 2));
+    std::fs::remove_dir(&missing).unwrap();
+
+    let before = workspace.active_panel_ref().current_path.clone();
+    workspace.execute(Command::JumpSlot(2));
+
+    assert_eq!(workspace.active_panel_ref().current_path, before);
+    assert_eq!(
+        workspace.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: format!("Quick jump 2 is unavailable: {}", missing.display()),
+            error: true,
+        }]
+    );
+}
+
+#[test]
 fn move_pairs_maps_source_to_dest() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let a = l.file("a.txt", "x");

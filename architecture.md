@@ -924,12 +924,12 @@ direction and more: a full Effect bus (the `Requests` struct removed, effects
 processed in one `process_effects`), a `UiState` extraction, `Pane` /
 `CommandHandler` traits with a plugin registry, a tokio runtime with
 `spawn_blocking`, a virtualised file list, plus net-new features (tabs, git
-status, tags, notes, configurable columns). It sits on a stale base (`master` is
+status, tags, notes, configurable columns). It sits on a stale base (`main` is
 ~42 commits ahead, the branch ~13), so a direct merge is conflict-heavy.
 
-**Decision (see [recommendation.md](recommendation.md)): `master` stays the
+**Decision (see [recommendation.md](recommendation.md)): `main` stays the
 mainline; the spike is treated as a proven reference, and its ideas are
-re-landed onto `master` in small, reviewable steps** rather than merged
+re-landed onto `main` in small, reviewable steps** rather than merged
 wholesale. The Effect-bus and `UiState` designs above are exactly what the spike
 validates.
 

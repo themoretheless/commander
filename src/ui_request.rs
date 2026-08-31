@@ -56,6 +56,7 @@ pub(crate) enum UiRequest {
     OpenExternal(crate::ports::OpenRequest),
     CopyPaths(PathStyle),
     CopyText { text: String, label: String },
+    Notice { message: String, error: bool },
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
     DrainShelf,
@@ -89,6 +90,7 @@ impl UiRequest {
             | Self::OpenExternal(_)
             | Self::CopyPaths(_)
             | Self::CopyText { .. }
+            | Self::Notice { .. }
             | Self::HiddenFilesOutcome(_)
             | Self::DrainShelf => None,
         }

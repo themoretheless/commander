@@ -711,6 +711,18 @@ impl App {
             UiRequest::CopyText { text, label } => {
                 self.write_clipboard(&text, &label, ctx);
             }
+            UiRequest::Notice { message, error } => {
+                self.toasts.push(crate::toasts::Toast::new(
+                    message,
+                    if error {
+                        crate::toasts::ToastKind::Error
+                    } else {
+                        crate::toasts::ToastKind::Info
+                    },
+                    false,
+                    ctx.input(|input| input.time),
+                ));
+            }
             UiRequest::HiddenFilesOutcome(outcome) => {
                 self.apply_hidden_files_outcome(outcome, ctx);
             }
