@@ -44,7 +44,8 @@ impl JumpList {
     /// - If it equals the focused entry, it is a no-op (consecutive repeats are
     ///   collapsed), so re-entering the current directory does not grow history.
     /// - Otherwise any forward tail (entries after the cursor, reachable only by
-    ///   [`forward`](Self::forward)) is discarded, `path` is appended, and the
+    ///   [`forward_pruning`](Self::forward_pruning)) is discarded, `path` is
+    ///   appended, and the
     ///   cursor moves to it. The oldest entry is evicted once the cap is hit.
     pub fn push(&mut self, path: impl Into<PathBuf>) {
         let path = path.into();
@@ -65,6 +66,7 @@ impl JumpList {
 
     /// Step back one entry, returning the now-focused path, or `None` if already
     /// at the oldest entry (the cursor does not move past the start).
+    #[cfg(test)]
     pub fn back(&mut self) -> Option<&Path> {
         match self.cursor {
             Some(c) if c > 0 => {
@@ -77,6 +79,7 @@ impl JumpList {
 
     /// Step forward one entry, returning the now-focused path, or `None` if
     /// already at the newest entry.
+    #[cfg(test)]
     pub fn forward(&mut self) -> Option<&Path> {
         match self.cursor {
             Some(c) if c + 1 < self.trail.len() => {
@@ -85,6 +88,45 @@ impl JumpList {
             }
             _ => None,
         }
+    }
+
+    /// Step backward to the next entry accepted by `keep`, pruning rejected
+    /// entries as they are encountered. The currently focused entry is never
+    /// tested or removed.
+    pub fn back_pruning(&mut self, mut keep: impl FnMut(&Path) -> bool) -> Option<&Path> {
+        while let Some(current) = self.cursor {
+            if current == 0 {
+                return None;
+            }
+            let candidate = current - 1;
+            if keep(&self.trail[candidate]) {
+                self.cursor = Some(candidate);
+                return self.current();
+            }
+            self.trail.remove(candidate);
+            // Removing the entry immediately before the current one shifts the
+            // current entry left by one; continue searching before it.
+            self.cursor = Some(current - 1);
+        }
+        None
+    }
+
+    /// Step forward to the next entry accepted by `keep`, pruning rejected
+    /// entries as they are encountered. The cursor remains on the original
+    /// entry while rejected forward entries are removed.
+    pub fn forward_pruning(&mut self, mut keep: impl FnMut(&Path) -> bool) -> Option<&Path> {
+        while let Some(current) = self.cursor {
+            let candidate = current + 1;
+            if candidate >= self.trail.len() {
+                return None;
+            }
+            if keep(&self.trail[candidate]) {
+                self.cursor = Some(candidate);
+                return self.current();
+            }
+            self.trail.remove(candidate);
+        }
+        None
     }
 
     /// The currently-focused path, or `None` when the trail is empty.
@@ -122,6 +164,32 @@ mod tests {
         assert_eq!(j.current(), None);
         assert_eq!(j.back(), None);
         assert_eq!(j.forward(), None);
+    }
+
+    #[test]
+    fn pruning_navigation_removes_dead_entries_in_both_directions() {
+        let mut jumps = JumpList::new();
+        for path in ["/a", "/dead-back", "/c", "/dead-forward", "/e"] {
+            jumps.push(path);
+        }
+
+        assert_eq!(
+            jumps.back_pruning(|path| path != Path::new("/dead-forward")),
+            Some(Path::new("/c"))
+        );
+        assert_eq!(
+            jumps.back_pruning(|path| path != Path::new("/dead-back")),
+            Some(Path::new("/a"))
+        );
+        assert_eq!(
+            jumps.forward_pruning(|path| path != Path::new("/dead-back")),
+            Some(Path::new("/c"))
+        );
+        assert_eq!(
+            jumps.forward_pruning(|path| path != Path::new("/dead-forward")),
+            Some(Path::new("/e"))
+        );
+        assert_eq!(trail(&jumps), vec!["/a", "/c", "/e"]);
     }
 
     #[test]

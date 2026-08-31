@@ -2286,9 +2286,14 @@ impl PanelState {
     }
 
     pub fn go_back(&mut self) {
-        // `back` walks the existing trail without recording a new jump.
+        // Walk the existing trail without recording a new jump. Directories
+        // can disappear after being visited, so prune dead entries on sight.
         self.stash_view_settings();
-        if let Some(path) = self.history.back().map(|p| p.to_path_buf()) {
+        if let Some(path) = self
+            .history
+            .back_pruning(Path::is_dir)
+            .map(|p| p.to_path_buf())
+        {
             record_visit(&path);
             self.load_remembered_path(path);
         }
@@ -2296,7 +2301,11 @@ impl PanelState {
 
     pub fn go_forward(&mut self) {
         self.stash_view_settings();
-        if let Some(path) = self.history.forward().map(|p| p.to_path_buf()) {
+        if let Some(path) = self
+            .history
+            .forward_pruning(Path::is_dir)
+            .map(|p| p.to_path_buf())
+        {
             record_visit(&path);
             self.load_remembered_path(path);
         }
@@ -3358,6 +3367,26 @@ mod tests {
 
         p.go_forward();
         assert_eq!(p.current_path, sub);
+    }
+
+    #[test]
+    fn history_navigation_prunes_directories_that_disappeared() {
+        let temp = TempDir::new();
+        let first = temp.dir("first");
+        let removed = temp.dir("removed");
+        let last = temp.dir("last");
+
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.navigate_to(first.clone());
+        panel.navigate_to(removed.clone());
+        panel.navigate_to(last.clone());
+        std::fs::remove_dir(&removed).unwrap();
+
+        panel.go_back();
+        assert_eq!(panel.current_path, first);
+        panel.go_forward();
+        assert_eq!(panel.current_path, last);
     }
 
     #[test]
