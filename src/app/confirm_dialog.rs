@@ -1,6 +1,8 @@
 //! Confirmation dialog for pending copy/move/delete operations.
 
 use super::*;
+
+mod method_tabs;
 use crate::scan::FlatFileEntry;
 use crate::transfer::OverwritePolicy;
 
@@ -472,113 +474,11 @@ impl App {
 
     /// Title on the left, Native/Buffered method tabs on the right.
     fn method_tabs_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors, title: &str, count: usize) {
-        let cur_method = match &self.ws.pending_op {
+        let current = match &self.ws.pending_op {
             Some(PendingOp::Transfer(tr)) => tr.method,
             _ => CopyMethod::Native,
         };
-
-        let row_h = 28.0;
-        let full_w = ui.available_width();
-        let (row_rect, _) = ui.allocate_exact_size(Vec2::new(full_w, row_h), Sense::hover());
-        let p = ui.painter();
-
-        // Bottom line across full width
-        p.line_segment(
-            [
-                egui::pos2(row_rect.left(), row_rect.bottom()),
-                egui::pos2(row_rect.right(), row_rect.bottom()),
-            ],
-            Stroke::new(1.0_f32, t.border),
-        );
-
-        // Title on the left
-        p.text(
-            egui::pos2(row_rect.left() + 4.0, row_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            format!("{} — {} item(s)", title, count),
-            egui::FontId::proportional(13.0),
-            t.text_primary,
-        );
-
-        // Tabs on the right
-        let tabs: &[(&str, CopyMethod)] = &[
-            ("Native", CopyMethod::Native),
-            ("Buffered", CopyMethod::Buffered),
-        ];
-        let tab_w = 90.0;
-        let tabs_total_w = tab_w * tabs.len() as f32;
-        let tabs_left = row_rect.right() - tabs_total_w;
-
-        let mut clicked_method: Option<CopyMethod> = None;
-
-        for (i, &(label, method)) in tabs.iter().enumerate() {
-            let active = cur_method == method;
-            let tab_rect = egui::Rect::from_min_size(
-                egui::pos2(tabs_left + i as f32 * tab_w, row_rect.top()),
-                Vec2::new(tab_w, row_h),
-            );
-
-            if active {
-                p.rect_filled(tab_rect, CornerRadius::ZERO, t.bg_panel);
-                // Left border
-                p.line_segment(
-                    [
-                        egui::pos2(tab_rect.left(), tab_rect.bottom()),
-                        egui::pos2(tab_rect.left(), tab_rect.top()),
-                    ],
-                    Stroke::new(1.0_f32, t.border),
-                );
-                // Top border
-                p.line_segment(
-                    [
-                        egui::pos2(tab_rect.left(), tab_rect.top()),
-                        egui::pos2(tab_rect.right(), tab_rect.top()),
-                    ],
-                    Stroke::new(1.0_f32, t.border),
-                );
-                // Right border
-                p.line_segment(
-                    [
-                        egui::pos2(tab_rect.right(), tab_rect.top()),
-                        egui::pos2(tab_rect.right(), tab_rect.bottom()),
-                    ],
-                    Stroke::new(1.0_f32, t.border),
-                );
-                // Cover bottom line
-                p.line_segment(
-                    [
-                        egui::pos2(tab_rect.left() + 1.0, tab_rect.bottom()),
-                        egui::pos2(tab_rect.right() - 1.0, tab_rect.bottom()),
-                    ],
-                    Stroke::new(2.0_f32, t.bg_panel),
-                );
-            }
-
-            let fg = if active { t.text_primary } else { t.text_muted };
-            p.text(
-                tab_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(12.0),
-                fg,
-            );
-
-            // Click detection
-            let tab_resp =
-                ui.interact(tab_rect, ui.id().with(format!("tab_{}", i)), Sense::click());
-            if tab_resp.clicked() {
-                clicked_method = Some(method);
-            }
-            if tab_resp.hovered() && !active {
-                p.rect_filled(
-                    tab_rect,
-                    CornerRadius::ZERO,
-                    t.bg_hover.linear_multiply(0.2),
-                );
-            }
-        }
-
-        if let Some(method) = clicked_method
+        if let Some(method) = method_tabs::show(ui, t, title, count, current)
             && let Some(PendingOp::Transfer(tr)) = &mut self.ws.pending_op
         {
             tr.method = method;

@@ -741,7 +741,7 @@ extracts several small leaf modules in one commit).
 | --- | --- | --- | --- |
 | `palette (optional, beyond committed Track A)` | Rank and filter the command palette's fuzzy-matched command list, separate from the Command enum and raw key-to-command mapping. | ~370 | - |
 | `app/confirm_dialog::flat_list (optional, beyond committed Track A)` | Render the pending-operation's flat file list in the confirm dialog, in both virtualised and animated variants, separate from the dialog's button/tab… | ~220 | scan (FlatList) |
-| `app/confirm_dialog::method_tabs (optional, beyond committed Track A)` | The copy-method tab strip (Native/Buffered) rendering. Small self-contained widget extracted for the same reason as flat_list. | ~60 | - |
+| `app/confirm_dialog::method_tabs (optional, beyond committed Track A)` | **Shipped:** the copy-method tab strip renders from an input value and returns a selection without owning `App`, `Workspace`, or pending-operation state. | ~100 | - |
 
 #### Suggested reading order
 
@@ -897,7 +897,7 @@ can be taken on faith until that port is read.
 
 32. Step 31 (optional extension beyond committed Track A, not required to close it -- land only if reviewers want it after the above lands clean): split command.rs's palette-ranking machinery (command_catalog, CommandMatch, Usage, UsageStats, combined_score, rank, metadata_score, shortcut_search_text, command_aliases, filter_commands) into src/palette.rs, leaving command.rs holding only the Command enum and map_key/map_keys, which architecture.md already calls the 'clean' dispatch direction. Note UsageStats itself is also referenced by app::ui_state::dialog_buffers's palette_usage field (Step 17) -- palette.rs and app::ui_state::dialog_buffers share a type, not a module boundary; no change needed, just flag the dependency for the reviewer.
 
-33. Step 32 (optional extension beyond committed Track A, same caveat as Step 31): split app/confirm_dialog.rs's two list-rendering strategies (render_flat_list_virtual, render_flat_list_animated) into app/confirm_dialog/flat_list.rs, and its copy-method tab strip (method_tabs_row) into app/confirm_dialog/method_tabs.rs, leaving show_confirm_dialog/dismiss_pending_op as the dialog body in confirm_dialog.rs -- a pure move behind a pub(super) boundary.
+33. Step 32 (optional extension beyond committed Track A, explicitly requested on 2026-09-01): **method-tabs extraction shipped** as a state-independent `current -> Option<selected>` UI component. The two list-rendering strategies (`render_flat_list_virtual`, `render_flat_list_animated`) remain candidates for `app/confirm_dialog/flat_list.rs`; move them only when their shared row model can be expressed without coupling the leaf back to `App`.
 
 #### Risks called out by the design pass
 
