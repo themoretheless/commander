@@ -805,6 +805,19 @@ pub fn save_json_atomic<T: Serialize>(
     commit_bytes_atomic(path, &bytes)
 }
 
+/// Save a lenient item store through the shared durable JSON boundary while
+/// retaining the simple boolean contract used by dialog callers. Failures are
+/// also published to persistence health diagnostics under `store`.
+pub fn save_item_store<T: Serialize>(path: &Path, store: &'static str, value: &T) -> bool {
+    match save_json_atomic(path, value) {
+        Ok(_) => true,
+        Err(error) => {
+            record_save_failure(store, &error);
+            false
+        }
+    }
+}
+
 pub(crate) fn commit_bytes_atomic(
     path: &Path,
     bytes: &[u8],

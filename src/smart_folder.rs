@@ -50,10 +50,7 @@ pub fn load() -> SmartFolders {
 /// Save the searches atomically (temp file + rename). Returns `false` if
 /// serialization or the atomic write failed, so the caller can surface it.
 pub fn save(store: &SmartFolders) -> bool {
-    match serde_json::to_string_pretty(store) {
-        Ok(json) => crate::fs_util::write_atomic(&store_path(), &json),
-        Err(_) => false,
-    }
+    crate::persistence::save_item_store(&store_path(), "Saved searches", store)
 }
 
 #[cfg(test)]
