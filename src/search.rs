@@ -699,11 +699,7 @@ impl CompiledQuery {
                 }
                 CompiledPredicate::Content(_) => {}
                 CompiledPredicate::Metadata(predicate) => {
-                    let query = Query {
-                        predicates: vec![predicate.clone()],
-                        mode: MatchMode::Exact,
-                    };
-                    if !query.matches_metadata(entry, now) {
+                    if !predicate.matches_metadata(entry, now, MatchMode::Exact) {
                         return None;
                     }
                     explanation.components.push(MatchComponent {

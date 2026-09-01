@@ -47,7 +47,7 @@ pub enum Predicate {
 }
 
 impl Predicate {
-    fn matches_metadata(&self, e: &FileEntry, now: SystemTime, mode: MatchMode) -> bool {
+    pub(crate) fn matches_metadata(&self, e: &FileEntry, now: SystemTime, mode: MatchMode) -> bool {
         match self {
             Predicate::NameContains(value) => text_matches(mode, value, &e.name),
             Predicate::PathContains(value) => text_matches(mode, value, &e.path.to_string_lossy()),
@@ -166,6 +166,7 @@ impl Query {
     /// Metadata-only matching. Content predicates are deferred and therefore
     /// pass this stage; the search provider evaluates them before emitting a
     /// hit.
+    #[cfg(test)]
     pub fn matches_metadata(&self, e: &FileEntry, now: SystemTime) -> bool {
         self.predicates
             .iter()
