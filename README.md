@@ -289,8 +289,9 @@ before `file10`) by default.
 cargo run --release
 ```
 
-Requires a recent stable Rust toolchain and macOS (the app links
-AppKit / AVFoundation / ImageIO).
+Requires Rust nightly 1.100 (`rust-toolchain.toml` pins
+`nightly-2026-09-11`) and macOS (the app links AppKit / AVFoundation /
+ImageIO).
 
 ## Development
 

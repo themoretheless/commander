@@ -32,10 +32,10 @@ allow = [
 ]
 exceptions = [
   { allow = ["BSL-1.0"], crate = "clipboard-win@5.4.1" },
-  { allow = ["BSL-1.0"], crate = "error-code@3.3.2" },
-  { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts@0.35.0" },
+  { allow = ["BSL-1.0"], crate = "error-code@3.4.0" },
+  { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts@0.36.2" },
   { allow = ["MPL-2.0"], crate = "option-ext@0.2.0" },
-  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@1.0.8" },
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@1.0.9" },
 ]
 
 [licenses.private]

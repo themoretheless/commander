@@ -3,8 +3,10 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -239,7 +241,7 @@ fn decode_cdhash(value: &str) -> Option<[u8; 20]> {
     Some(decoded)
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn same_file_version(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     left.dev() == right.dev()
         && left.ino() == right.ino()

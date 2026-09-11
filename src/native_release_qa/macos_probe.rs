@@ -1,6 +1,8 @@
+use super::contract::DisplayTopology;
+#[cfg(target_os = "macos")]
+use super::contract::ScreenRect;
 #[cfg(feature = "visual-qa")]
 use super::contract::{CapabilityState, NativeCapabilities};
-use super::contract::{DisplayTopology, ScreenRect};
 #[cfg(feature = "visual-qa")]
 use std::process::Command;
 
