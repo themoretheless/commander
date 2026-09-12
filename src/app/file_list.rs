@@ -167,6 +167,9 @@ impl App {
                                 DirStatus::Partial => {
                                     ("\u{21bb}", "Folder changed while reading; retrying", None)
                                 }
+                                DirStatus::Loading => {
+                                    ("\u{2026}", "Loading folder\u{2026}", None)
+                                }
                                 _ => ("\u{1f4c2}", "Empty", None),
                             }
                         };

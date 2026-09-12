@@ -64,6 +64,7 @@ fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'static s
         crate::panel::DirStatus::Denied => "folder access was denied",
         crate::panel::DirStatus::Gone => "the folder is no longer available",
         crate::panel::DirStatus::Partial => "the folder could not be read completely",
+        crate::panel::DirStatus::Loading => "the folder is still loading",
         crate::panel::DirStatus::Listed | crate::panel::DirStatus::Empty => {
             "the folder could not be refreshed"
         }
@@ -508,6 +509,7 @@ impl App {
             self.ws
                 .left
                 .set_notify(std::sync::Arc::new(move || c.request_repaint()));
+            self.ws.left.set_workload(self.workload.clone());
             self.ws.left.refresh();
         }
         if !self.ws.right.has_notify() {
@@ -515,6 +517,7 @@ impl App {
             self.ws
                 .right
                 .set_notify(std::sync::Arc::new(move || c.request_repaint()));
+            self.ws.right.set_workload(self.workload.clone());
             self.ws.right.refresh();
         }
         drop(listing_latency);
@@ -523,8 +526,10 @@ impl App {
             trace.finish();
         }
 
+        let listing_changed =
+            self.ws.left.poll_listing() | self.ws.right.poll_listing();
         let fs_changed = self.ws.left.poll_fs_changes() | self.ws.right.poll_fs_changes();
-        if fs_changed {
+        if listing_changed || fs_changed {
             self.tree_children_cache.clear();
         }
         if !self.ws.left.watcher_active() || !self.ws.right.watcher_active() {

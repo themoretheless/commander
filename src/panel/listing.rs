@@ -87,10 +87,25 @@ impl ListingState {
     /// A failure for the current binding keeps its last complete snapshot.
     /// A failure after navigation must retire the previous directory's rows
     /// immediately so they cannot be acted on under the new breadcrumb.
+    /// Retire prior rows under a new breadcrumb while an async listing is in flight.
+    pub(super) fn begin_loading(&mut self, binding: PathBuf) -> bool {
+        if self.binding == binding && self.status == DirStatus::Loading {
+            return false;
+        }
+        let changed = self.binding != binding || !self.entries.is_empty() || self.status != DirStatus::Loading;
+        self.binding = binding;
+        self.entries.clear();
+        self.status = DirStatus::Loading;
+        if changed {
+            self.bump_revision();
+        }
+        changed
+    }
+
     pub(super) fn mark_incomplete(&mut self, binding: PathBuf, status: DirStatus) -> bool {
         debug_assert!(matches!(
             status,
-            DirStatus::Denied | DirStatus::Gone | DirStatus::Partial
+            DirStatus::Denied | DirStatus::Gone | DirStatus::Partial | DirStatus::Loading
         ));
         if self.binding != binding {
             self.binding = binding;
