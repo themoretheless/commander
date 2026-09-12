@@ -235,7 +235,7 @@ fn decode_cdhash(value: &str) -> Option<[u8; 20]> {
         return None;
     }
     let mut decoded = [0_u8; 20];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         decoded[index] = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Some(decoded)

@@ -1731,7 +1731,7 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
         CGContextDrawImage(cg_ctx, rect, cg_image);
 
         // Unpremultiply alpha (premultiplied → straight)
-        for chunk in pixels.chunks_exact_mut(4) {
+        for chunk in pixels.as_chunks_mut::<4>().0 {
             let a = chunk[3] as u16;
             if a > 0 && a < 255 {
                 chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
@@ -1929,7 +1929,7 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         CGContextDrawImage(cg_ctx, rect, cg_image);
 
         // Unpremultiply
-        for chunk in pixels.chunks_exact_mut(4) {
+        for chunk in pixels.as_chunks_mut::<4>().0 {
             let a = chunk[3] as u16;
             if a > 0 && a < 255 {
                 chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
