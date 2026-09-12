@@ -1839,8 +1839,7 @@ impl PanelState {
             self.drop_target = None;
             self.listing.begin_loading(path.clone());
         }
-        self.listing_job
-            .request(path, show_hidden, ticket, focus);
+        self.listing_job.request(path, show_hidden, ticket, focus);
         // Opportunistically admit/poll within this call so fast local disks
         // still settle before the next frame when the worker is free.
         let _ = self.poll_listing_results();
@@ -1859,7 +1858,8 @@ impl PanelState {
         let Some(notify) = self.watcher.notify() else {
             return false;
         };
-        self.listing_job.drive(&workload, notify, PanelState::read_dir);
+        self.listing_job
+            .drive(&workload, notify, PanelState::read_dir);
         let Some(ready) = self.listing_job.take_ready() else {
             return false;
         };
@@ -1989,12 +1989,8 @@ impl PanelState {
         if let Some(ticket) = outcome.ticket {
             if self.can_async_list() {
                 let show_hidden = self.view.show_hidden();
-                self.listing_job.request(
-                    path,
-                    show_hidden,
-                    Some(ticket),
-                    PendingFocus::None,
-                );
+                self.listing_job
+                    .request(path, show_hidden, Some(ticket), PendingFocus::None);
                 let applied = self.poll_listing_results();
                 if applied {
                     crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
@@ -2211,8 +2207,7 @@ impl PanelState {
             if let Some(name) = child {
                 // Prefer the child-name landing over any remembered parent focus.
                 if self.can_async_list() && self.listing_job.is_awaiting() {
-                    self.listing_job
-                        .set_focus(PendingFocus::NamedChild(name));
+                    self.listing_job.set_focus(PendingFocus::NamedChild(name));
                 } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
                     self.set_cursor(idx + 1);
                     self.set_scroll_to_cursor(true);

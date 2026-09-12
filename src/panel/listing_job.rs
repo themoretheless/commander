@@ -3,14 +3,12 @@
 //! Follows the path-probe controller shape: generation-checked bindings,
 //! workload admission via `TaskKind::Listing`, and publish-only-when-current.
 
-use crate::workload::{
-    AbandonReason, Priority, TaskHandle, TaskKind, TaskSpec, WorkloadHandle,
-};
+use crate::workload::{AbandonReason, Priority, TaskHandle, TaskKind, TaskSpec, WorkloadHandle};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
 use super::watcher::ReconciliationTicket;
-use super::{DirectoryRead, DirStatus, Notify};
+use super::{DirStatus, DirectoryRead, Notify};
 
 const MAX_IN_FLIGHT_LISTINGS: usize = 2;
 
@@ -341,22 +339,23 @@ mod tests {
         );
 
         let deadline = Instant::now() + Duration::from_secs(2);
-        let ready = loop {
-            job.drive(&workload, Arc::clone(&notify), |path, _show_hidden| {
-                match std::fs::read_dir(path) {
-                    Ok(_) => DirectoryRead::Complete(Vec::new()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        DirectoryRead::Incomplete(DirStatus::Gone)
+        let ready =
+            loop {
+                job.drive(&workload, Arc::clone(&notify), |path, _show_hidden| {
+                    match std::fs::read_dir(path) {
+                        Ok(_) => DirectoryRead::Complete(Vec::new()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            DirectoryRead::Incomplete(DirStatus::Gone)
+                        }
+                        Err(_) => DirectoryRead::Incomplete(DirStatus::Denied),
                     }
-                    Err(_) => DirectoryRead::Incomplete(DirStatus::Denied),
+                });
+                if let Some(ready) = job.take_ready() {
+                    break ready;
                 }
-            });
-            if let Some(ready) = job.take_ready() {
-                break ready;
-            }
-            assert!(Instant::now() < deadline, "timeout waiting for listing");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+                assert!(Instant::now() < deadline, "timeout waiting for listing");
+                std::thread::sleep(Duration::from_millis(5));
+            };
         assert_eq!(ready.binding.path, dir.path());
         assert!(matches!(ready.read, DirectoryRead::Complete(_)));
         assert!(matches!(ready.focus, PendingFocus::Remembered { .. }));

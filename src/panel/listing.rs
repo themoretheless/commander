@@ -92,7 +92,9 @@ impl ListingState {
         if self.binding == binding && self.status == DirStatus::Loading {
             return false;
         }
-        let changed = self.binding != binding || !self.entries.is_empty() || self.status != DirStatus::Loading;
+        let changed = self.binding != binding
+            || !self.entries.is_empty()
+            || self.status != DirStatus::Loading;
         self.binding = binding;
         self.entries.clear();
         self.status = DirStatus::Loading;

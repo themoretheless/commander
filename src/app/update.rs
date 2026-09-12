@@ -526,8 +526,7 @@ impl App {
             trace.finish();
         }
 
-        let listing_changed =
-            self.ws.left.poll_listing() | self.ws.right.poll_listing();
+        let listing_changed = self.ws.left.poll_listing() | self.ws.right.poll_listing();
         let fs_changed = self.ws.left.poll_fs_changes() | self.ws.right.poll_fs_changes();
         if listing_changed || fs_changed {
             self.tree_children_cache.clear();
