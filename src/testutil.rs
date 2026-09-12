@@ -3,6 +3,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Clear unapplied texture deltas so `egui::FullOutput` can drop safely.
+///
+/// epaint 0.36 panics if a `TexturesDelta` is dropped with pending deltas.
+/// Headless tests never upload fonts/textures, so they must clear first.
+pub fn discard_egui_output(mut output: egui::FullOutput) {
+    output.textures_delta.clear();
+}
+
+/// Same as [`discard_egui_output`], but keep the cleared output for inspection.
+pub fn take_egui_output(mut output: egui::FullOutput) -> egui::FullOutput {
+    output.textures_delta.clear();
+    output
+}
+
 /// A unique temporary directory removed on drop.
 pub struct TempDir(PathBuf);
 

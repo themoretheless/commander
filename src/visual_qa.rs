@@ -481,11 +481,16 @@ fn required_painted_glyphs(
         .filter(move |glyph| {
             // Compact layouts intentionally move Compare from the toolbar into
             // the settings menu; every glyph that remains visible stays strict.
+            // ConfirmationOwner covers the file-list document glyph with the
+            // modal overlay, so framebuffer ink there is not required.
             !matches!(
                 (scenario, glyph),
                 (
                     Scenario::MinimumWindow | Scenario::Zoom200Accessible,
                     crate::app::glyphs::PaintedGlyph::ToolbarCompare
+                ) | (
+                    Scenario::ConfirmationOwner,
+                    crate::app::glyphs::PaintedGlyph::FileDocument
                 )
             )
         })

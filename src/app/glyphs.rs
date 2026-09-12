@@ -321,9 +321,10 @@ mod tests {
     fn sort_header_publishes_direction_as_button_semantics() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
-        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            sort_header(ui, "Name", Some(SortOrder::Asc), egui::Color32::WHITE);
-        });
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                sort_header(ui, "Name", Some(SortOrder::Asc), egui::Color32::WHITE);
+            }));
 
         let update = output
             .platform_output

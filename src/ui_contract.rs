@@ -102,9 +102,9 @@ fn modal_focus_is_an_explicit_pending_render_effect() {
 #[test]
 fn focused_file_row_does_not_suppress_workspace_commands() {
     let ctx = egui::Context::default();
-    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+    crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
         ui.button("file row").request_focus();
-    });
+    }));
 
     assert!(ctx.egui_wants_keyboard_input());
     assert!(!ctx.text_edit_focused());
@@ -132,9 +132,9 @@ fn focused_file_row_does_not_suppress_workspace_commands() {
 fn focused_text_edit_suppresses_workspace_commands() {
     let ctx = egui::Context::default();
     let mut text = String::new();
-    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+    crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
         ui.text_edit_singleline(&mut text).request_focus();
-    });
+    }));
 
     assert!(ctx.text_edit_focused());
     let input = text_input_state(&ctx);
@@ -261,7 +261,7 @@ fn file_row_semantics_reach_the_headless_accesskit_tree() {
     let semantics = file_row_semantics(
         "Projects", "Folder", "12 items", "Today", true, true, false, true,
     );
-    let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+    let output = crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
         let response = ui.selectable_label(semantics.selected, "Projects");
         response.widget_info(|| {
             egui::WidgetInfo::selected(
@@ -279,7 +279,7 @@ fn file_row_semantics_reach_the_headless_accesskit_tree() {
                 node.set_expanded(expanded);
             }
         });
-    });
+    }));
 
     let update = output
         .platform_output
@@ -317,7 +317,7 @@ fn accesskit_context_menu_request_routes_to_exact_row_once() {
             data: None,
         },
     ));
-    let _ = ctx.run_ui(input, |ui| {
+    crate::testutil::discard_egui_output(ctx.run_ui(input, |ui| {
         assert!(crate::accessibility::consume_show_context_menu(
             ui.ctx(),
             row_id
@@ -330,5 +330,5 @@ fn accesskit_context_menu_request_routes_to_exact_row_once() {
             ui.ctx(),
             egui::Id::new("another-row")
         ));
-    });
+    }));
 }
