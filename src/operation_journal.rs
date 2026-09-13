@@ -3698,7 +3698,7 @@ mod tests {
         let temp = TempDir::new();
         let _journal = use_test_journal(temp.path().join("placed-journal.json"));
         let target = temp.dir("placed-target");
-        let source = temp.file("placed-source.txt", "new bytes");
+        let source = temp.file("source.txt", "new bytes");
         let destination = temp.file("placed-target/source.txt", "old bytes");
         let staging = temp.file("placed-target/.source.txt.cmdr-tmp.0", "new bytes");
         let entry =
@@ -3760,7 +3760,7 @@ mod tests {
         let temp = TempDir::new();
         let _journal = use_test_journal(temp.path().join("landed-journal.json"));
         let target = temp.dir("landed-target");
-        let source = temp.file("landed-source.txt", "new bytes");
+        let source = temp.file("source.txt", "new bytes");
         let destination = temp.file("landed-target/source.txt", "old bytes");
         let staging = temp.file("landed-target/.source.txt.cmdr-tmp.0", "new bytes");
         let entry =
