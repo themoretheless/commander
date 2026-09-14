@@ -864,8 +864,7 @@ fn load_journal_at(path: &Path) -> Result<LoadedJournal, String> {
             Err("Operation journal is corrupt: envelope or payload rejected".to_string())
         }
         crate::persistence::LoadStatus::FutureVersion => Err(
-            "Operation journal uses a newer persist envelope than this build supports"
-                .to_string(),
+            "Operation journal uses a newer persist envelope than this build supports".to_string(),
         ),
         crate::persistence::LoadStatus::Unreadable => {
             Err("Could not open operation journal: unreadable".to_string())
@@ -921,6 +920,7 @@ fn save_journal_at(
     }
 }
 
+#[cfg(test)]
 fn save_at(path: &Path, journal: &Journal) -> Result<(), String> {
     let persist = crate::persistence::FsPersist::default();
     let mut gate = crate::persistence::load_enveloped::<Journal>(&persist, path, STORE).gate;

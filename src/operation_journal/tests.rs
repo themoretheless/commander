@@ -309,8 +309,7 @@ fn journal_round_trips_atomically() {
     assert_eq!(load_at(&path).unwrap().schema, JOURNAL_SCHEMA);
     assert!(!path.with_extension("json.tmp").exists());
 
-    let root: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let root: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(root["format"], "commander.persist");
     assert_eq!(root["store"], "commander.operation_journal");
     assert_eq!(root["schema"], 1);
@@ -326,10 +325,7 @@ fn journal_envelope_upgrades_legacy_on_save_and_rejects_stale_revision() {
     std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
 
     let mut first = load_journal_at(&path).unwrap();
-    assert_eq!(
-        first.gate.status(),
-        crate::persistence::LoadStatus::Legacy
-    );
+    assert_eq!(first.gate.status(), crate::persistence::LoadStatus::Legacy);
     first.journal.schema = JOURNAL_SCHEMA;
     save_journal_at(&path, &first.journal, &mut first.gate).unwrap();
 
