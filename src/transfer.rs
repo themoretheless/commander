@@ -1884,6 +1884,63 @@ mod tests {
     }
 
     #[test]
+    fn failed_gather_transfer_restores_sources_and_removes_orphan_folder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = TempDir::new();
+        let first = root.file("a.txt", "aaa");
+        let second = root.file("b.txt", "bbb");
+        let folder = root.dir("Gathered");
+        let rollback_cleanup_identity = PathIdentity::observe_deep(&folder).unwrap();
+
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(
+            total_bytes(&[entry_for(&first), entry_for(&second)]),
+            2,
+        )));
+        let progress_for_hook = Arc::clone(&progress);
+        let commits = Arc::new(AtomicUsize::new(0));
+        let commits_for_hook = Arc::clone(&commits);
+
+        let mut request = spec(
+            TransferKind::Move,
+            CopyMethod::Native,
+            vec![entry_for(&first), entry_for(&second)],
+            &folder,
+            vec![],
+            OverwritePolicy::Ask,
+        );
+        request.rollback_cleanup = Some(folder.clone());
+        request.rollback_cleanup_identity = Some(rollback_cleanup_identity);
+        request.before_commit = Some(Arc::new(move |_, _| {
+            // Let the first Gather placement commit, then abort before the
+            // second lands so failure rollback must restore sources and
+            // remove the orphan container.
+            if commits_for_hook.fetch_add(1, Ordering::SeqCst) >= 1 {
+                crate::lock_util::recover(&progress_for_hook).cancelled = true;
+            }
+        }));
+
+        spawn_transfer(request, Arc::clone(&progress), || {});
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if crate::lock_util::recover(&progress).finished {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "transfer timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let state = crate::lock_util::recover(&progress);
+
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "aaa");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "bbb");
+        assert!(!folder.exists(), "orphan gather folder must be removed");
+        assert!(!folder.join("a.txt").exists());
+        assert!(!folder.join("b.txt").exists());
+        assert!(state.placements.is_empty(), "{:?}", state.placements);
+        assert!(commits.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
     fn successful_post_action_removes_the_empty_source_folder() {
         let root = TempDir::new();
         let folder = root.dir("Gathered");

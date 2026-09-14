@@ -455,9 +455,13 @@ Three mechanisms connect the core to the shell:
   `Trash`/`RestoreTrash` are undoable. Trash undo restores through
   `version_store` (not Finder put-back): user deletes always run the Versioned
   durability profile so a restore copy exists before the Trash port runs.
-  Gather folder cleanup remains a transfer-owned post-success action. Rollback
-  of a partially failed initial Gather remains separate integrity work. Undo
-  coverage should become an invariant checked for every mutating command.
+  Gather folder cleanup is a transfer-owned post-success action: undo removes
+  only an empty folder, reports cleanup failure normally, and redo recreates
+  the exact path before moving. Partially failed Gather rolls completed
+  placements back out of the operation container and removes the orphan
+  folder; cancel/mount-retry paths surface `undo_placement` failures instead
+  of dropping them. Undo coverage should become an invariant checked for every
+  mutating command.
 - **The drag-and-drop bug cluster was closed as one ownership change.**
   `PanelState::begin_drag` now owns selection semantics, both panel renderers
   receive the global drag state so destination rows can advertise targets,
