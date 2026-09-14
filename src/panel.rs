@@ -28,7 +28,7 @@ use listing_job::{ListingJobController, PendingFocus};
 // Re-export preview/visit public API under `crate::panel::...` for stable paths.
 #[allow(unused_imports)]
 pub use preview::{
-    format_mode, make_info, make_preview, InfoCard, PreviewContent, PreviewIdentity,
+    InfoCard, PreviewContent, PreviewIdentity, format_mode, make_info, make_preview,
 };
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
@@ -40,8 +40,8 @@ pub use view::ViewConfig;
 use view::{ViewSettings, ViewState};
 #[allow(unused_imports)]
 pub use visit::{
-    push_visit, rank_visited, record_visit, restore_visit_snapshot, visit_snapshot, visited_paths,
-    RecentMatch, RecentOrder, VisitStats, VisitUsage, VISITED_CAP,
+    RecentMatch, RecentOrder, VISITED_CAP, VisitStats, VisitUsage, push_visit, rank_visited,
+    record_visit, restore_visit_snapshot, visit_snapshot, visited_paths,
 };
 use watcher::DirectoryWatcherState;
 

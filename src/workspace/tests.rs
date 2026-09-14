@@ -2987,7 +2987,10 @@ fn conflict_free_drag_does_not_auto_start_with_unknown_space() {
     workspace.left.refresh();
     workspace.right.refresh();
     workspace.left.drag.set(vec![file]);
-    workspace.right.drag.set_drop_target(right.path().to_path_buf());
+    workspace
+        .right
+        .drag
+        .set_drop_target(right.path().to_path_buf());
 
     workspace.drop_dragged(|| {});
     workspace.finish_space_probe();

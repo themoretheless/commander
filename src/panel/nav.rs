@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use super::PanelState;
 use super::listing_job::PendingFocus;
 use super::visit::record_visit;
-use super::PanelState;
 
 impl PanelState {
     pub fn navigate_to(&mut self, path: PathBuf) {
