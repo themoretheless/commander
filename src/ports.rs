@@ -1,6 +1,7 @@
 //! Narrow provider ports used at expensive or failure-prone boundaries.
 
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -416,9 +417,40 @@ pub enum FileSystemEffect {
     },
 }
 
+/// Descriptor-relative sibling of [`FileSystemEffect`].
+///
+/// Names are single path components applied under a held
+/// [`crate::fs_at::BoundDirectory`] after `observe` + open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelativeFileSystemEffect {
+    CreateDirectory {
+        name: OsString,
+    },
+    WriteFile {
+        name: OsString,
+        bytes: Vec<u8>,
+    },
+    Rename {
+        source: OsString,
+        destination: OsString,
+        replace: bool,
+    },
+    Remove {
+        name: OsString,
+    },
+}
+
 pub trait FileSystemProvider: Send + Sync {
     fn observe(&self, path: &Path) -> std::io::Result<crate::path_identity::PathIdentity>;
     fn apply(&self, effect: &FileSystemEffect) -> std::io::Result<()>;
+
+    /// Apply a Create/Write/Rename/Remove effect under a proven directory
+    /// binding without re-opening the parent by path.
+    fn apply_at(
+        &self,
+        directory: &crate::fs_at::BoundDirectory,
+        effect: &RelativeFileSystemEffect,
+    ) -> std::io::Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -460,6 +492,27 @@ impl FileSystemProvider for NativeFileSystemProvider {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error),
             },
+        }
+    }
+
+    fn apply_at(
+        &self,
+        directory: &crate::fs_at::BoundDirectory,
+        effect: &RelativeFileSystemEffect,
+    ) -> std::io::Result<()> {
+        match effect {
+            RelativeFileSystemEffect::CreateDirectory { name } => {
+                directory.create_directory(name.as_os_str())
+            }
+            RelativeFileSystemEffect::WriteFile { name, bytes } => {
+                directory.write_file(name.as_os_str(), bytes)
+            }
+            RelativeFileSystemEffect::Rename {
+                source,
+                destination,
+                replace,
+            } => directory.rename(source.as_os_str(), destination.as_os_str(), *replace),
+            RelativeFileSystemEffect::Remove { name } => directory.remove(name.as_os_str()),
         }
     }
 }
@@ -541,5 +594,46 @@ mod tests {
             })
             .unwrap();
         assert!(provider.observe(&destination).unwrap().exists);
+    }
+
+    #[test]
+    fn filesystem_port_applies_relative_effects_under_bound_directory() {
+        let temp = TempDir::new();
+        let provider = NativeFileSystemProvider;
+        let bound = crate::fs_at::BoundDirectory::bind(&provider, temp.path()).unwrap();
+        provider
+            .apply_at(
+                &bound,
+                &RelativeFileSystemEffect::WriteFile {
+                    name: "staging.txt".into(),
+                    bytes: b"value".to_vec(),
+                },
+            )
+            .unwrap();
+        provider
+            .apply_at(
+                &bound,
+                &RelativeFileSystemEffect::Rename {
+                    source: "staging.txt".into(),
+                    destination: "final.txt".into(),
+                    replace: false,
+                },
+            )
+            .unwrap();
+        assert!(
+            provider
+                .observe(&temp.path().join("final.txt"))
+                .unwrap()
+                .exists
+        );
+        provider
+            .apply_at(
+                &bound,
+                &RelativeFileSystemEffect::Remove {
+                    name: "final.txt".into(),
+                },
+            )
+            .unwrap();
+        assert!(!temp.path().join("final.txt").exists());
     }
 }

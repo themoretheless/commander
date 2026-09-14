@@ -135,7 +135,9 @@ Verified against `main` after PRs #7–#13 merged (2026-09-14).
 
 **Accepted residuals only:**
 
-1. Descriptor-relative filesystem effect port
+1. Descriptor-relative filesystem effect port — **first slice landed**
+   (`fs_at::BoundDirectory` + `FileSystemProvider::apply_at`; transfer
+   placement rewire still follow-up)
 2. Streaming tree planner
 3. Cross-process CAS / Persist envelope for journal + content-index
 
@@ -158,7 +160,8 @@ Highest-value next steps, in order:
    Buffered/sparse/parallel-tree byte paths live under
    `transfer::{buffered,sparse,parallel_tree}` (PR #10; public
    `TransferSpec` / progress API unchanged). Next among accepted residuals:
-   descriptor-relative namespace effects and a streaming parallel-directory
+   finish descriptor-relative namespace effects (DirFd + provider `*at` apply
+   landed; transfer rewire still open) and a streaming parallel-directory
    planner.
 4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries (`panel/{drag,visit,preview,nav}` and
