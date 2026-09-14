@@ -454,10 +454,12 @@ Three mechanisms connect the core to the shell:
   `BatchRename`, path-stable `Rename`, and typed `Gather`/`Ungather` are now
   undoable. Gather folder cleanup is a transfer-owned post-success action:
   undo removes only an empty folder, reports cleanup failure normally, and
-  redo recreates the exact path before moving. Delete-to-Trash and rollback of
-  a partially failed initial Gather remain separate integrity work. Undo
-  coverage should become an invariant checked for every mutating command,
-  rather than continuing to grow action-by-action.
+  redo recreates the exact path before moving. Partially failed Gather now
+  rolls completed placements back out of the operation container and removes
+  the orphan folder; cancel/mount-retry paths surface `undo_placement`
+  failures instead of dropping them. Delete-to-Trash undo remains separate
+  integrity work. Undo coverage should become an invariant checked for every
+  mutating command, rather than continuing to grow action-by-action.
 - **The drag-and-drop bug cluster was closed as one ownership change.**
   `PanelState::begin_drag` now owns selection semantics, both panel renderers
   receive the global drag state so destination rows can advertise targets,

@@ -924,8 +924,19 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                             // For a rename this is a no-op (a failed rename never
                             // created `copy_target`); for a copy it drops the
                             // partial. Either way the source is left intact.
-                            if !resumable_partial {
-                                let _ = undo_placement(&copy_target, &entry.path, renamed);
+                            if !resumable_partial
+                                && let Some(msg) =
+                                    undo_placement(&copy_target, &entry.path, renamed)
+                            {
+                                record_failure(
+                                    &progress,
+                                    &entry.name,
+                                    ClassifiedFailure::message(
+                                        FailureClass::IntegrityUncertain,
+                                        Some(copy_target.clone()),
+                                        msg,
+                                    ),
+                                );
                             }
                             break; // fall through to the finished-setter below
                         }
@@ -948,8 +959,19 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 &notify,
                             ) {
                                 Ok(()) => {
-                                    if checkpoint.is_none() {
-                                        let _ = undo_placement(&copy_target, &entry.path, renamed);
+                                    if checkpoint.is_none()
+                                        && let Some(msg) =
+                                            undo_placement(&copy_target, &entry.path, renamed)
+                                    {
+                                        record_failure(
+                                            &progress,
+                                            &entry.name,
+                                            ClassifiedFailure::message(
+                                                FailureClass::IntegrityUncertain,
+                                                Some(copy_target.clone()),
+                                                msg,
+                                            ),
+                                        );
                                     }
                                     work_item.expectation.resume = checkpoint;
                                     work_item.mount_retries += 1;
@@ -964,8 +986,19 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                     continue 'work;
                                 }
                                 Err(MountWaitError::Interrupted) => {
-                                    if !resumable_partial {
-                                        let _ = undo_placement(&copy_target, &entry.path, renamed);
+                                    if !resumable_partial
+                                        && let Some(msg) =
+                                            undo_placement(&copy_target, &entry.path, renamed)
+                                    {
+                                        record_failure(
+                                            &progress,
+                                            &entry.name,
+                                            ClassifiedFailure::message(
+                                                FailureClass::IntegrityUncertain,
+                                                Some(copy_target.clone()),
+                                                msg,
+                                            ),
+                                        );
                                     }
                                     break 'work;
                                 }
