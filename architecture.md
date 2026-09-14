@@ -159,7 +159,7 @@ policy.
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/transfer.rs` | 4,851 | Largest production facade; staging, commit and copy backends still need a narrower executor boundary |
+| `src/transfer.rs` | ~3,050 | Public progress/spec facade; byte-copy primitives live under `transfer::{buffered,sparse,parallel_tree}` |
 | `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
 | `src/operation_journal.rs` | 3,974 | Durable transitions, proof validation, migration, recovery and fault-oriented tests |
 | `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the 2,925-line production facade |
@@ -368,17 +368,17 @@ Three mechanisms connect the core to the shell:
   listing/revision/filter cache, view config/memory, selection, watcher, and
   size index are separate owners. The next useful reductions are smaller
   command/file-operation facades, not another state-field shuffle.
-- **Transfer ownership is split; byte-copy primitives remain concentrated.**
+- **Transfer ownership is split; byte-copy primitives are module-local.**
   `TransferExecutor` is the single transactional coordinator and
-  `transfer::backend` is the staging-only port boundary. The buffered,
-  sparse, and parallel tree-copy primitives still live in `transfer.rs`
-  beside the public progress/spec facade. Moving those primitives into
-  backend-specific files is now a mechanical readability pass, not an
-  ownership prerequisite. Overwrite and non-overwrite resume now observe a
-  proven placement that crashed before `mark_completed` and write the
-  terminal effect proof instead of failing closed. Remaining residual work
-  is a descriptor-relative filesystem effect port and a streaming tree
-  planner that does not materialize every file before parallel copy.
+  `transfer::backend` is the staging-only port boundary. Buffered,
+  sparse, and parallel tree-copy primitives now live in
+  `transfer::{buffered,sparse,parallel_tree}` beside that boundary; the
+  public `TransferSpec` / progress API is unchanged. Overwrite and
+  non-overwrite resume now observe a proven placement that crashed before
+  `mark_completed` and write the terminal effect proof instead of failing
+  closed. Remaining residual work is a descriptor-relative filesystem
+  effect port and a streaming tree planner that does not materialize every
+  file before parallel copy.
 - **The request catalogue remains shared vocabulary.** The old 25-field flag
   bus is gone, but adding a new shell intent still adds one `UiRequest` variant
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
