@@ -3128,8 +3128,8 @@ impl Workspace {
     }
 
     pub(crate) fn cancel_drag(&mut self) {
-        self.left.drag.clear();
-        self.right.drag.clear();
+        let _ = self.left.drag.take();
+        let _ = self.right.drag.take();
     }
 }
 
