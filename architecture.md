@@ -98,11 +98,12 @@ Grouped by the bounded context each module really belongs to:
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
 - **Operation contract / recovery**: `operation` owns IDs, durability, and
-  failure classes; `operation_journal` owns serializable event transitions and recovery;
-  `path_identity`, `filesystem_policy`, `mount_guard`, `version_store`, `undo`,
-  and `sync_guard` supply identity proof, filesystem capability policy,
-  remount safety, bounded version retention, reversible history, and circuit
-  breakers.
+  failure classes; `operation_journal` owns serializable event transitions and
+  recovery (production in `operation_journal.rs`, tests in
+  `operation_journal/tests.rs`); `path_identity`, `filesystem_policy`,
+  `mount_guard`, `version_store`, `undo`, and `sync_guard` supply identity
+  proof, filesystem capability policy, remount safety, bounded version
+  retention, reversible history, and circuit breakers.
 - **Transfer execution**: `transfer::executor::TransferExecutor` exclusively
   coordinates preflight, conflict review, identity and mount fences, journal
   transitions, placement, source cleanup, rollback, and terminal publication.
@@ -161,7 +162,8 @@ policy.
 | --- | --- | --- |
 | `src/transfer.rs` | 4,851 | Largest production facade; staging, commit and copy backends still need a narrower executor boundary |
 | `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
-| `src/operation_journal.rs` | 3,974 | Durable transitions, proof validation, migration, recovery and fault-oriented tests |
+| `src/operation_journal.rs` | ~3,090 | Durable transitions, proof validation, migration, and recovery; production facade only |
+| `src/operation_journal/tests.rs` | ~1,545 | Fault/model suite intentionally separated (workspace-style `#[cfg(test)] mod tests;`); CAS and persist-envelope adoption remain follow-ups |
 | `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the 2,925-line production facade |
 | `src/workspace.rs` | 2,925 | Two-panel orchestration; queue/delete/space state lives in owned controllers |
 | `src/app/update.rs` | 2,118 | Per-frame hub and typed request dispatcher; dialog buffers live in `UiState` |
@@ -394,7 +396,11 @@ Three mechanisms connect the core to the shell:
   Bookmarks/session receive the same injected port through `App`/`Workspace`;
   feature flags and the version manifest use the boundary and fail closed.
   Cross-process CAS, descriptor-relative opens, and migration of the operation
-  journal/content index remain explicit follow-ups.
+  journal/content index onto the shared persist envelope remain explicit
+  follow-ups. Journal production code and its fault/model suite are already
+  split the same way as workspace (`operation_journal.rs` +
+  `operation_journal/tests.rs`); that split does not change resume/reconcile
+  ownership.
 - **Supply-chain acceptance is explicit and CI-enforced.** `deny.toml` checks
   the full all-features lockfile for advisories, yanked crates, licenses,
   wildcard requirements, and unapproved registries or Git sources. The current
