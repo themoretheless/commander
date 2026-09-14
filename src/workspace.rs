@@ -2108,31 +2108,6 @@ impl Workspace {
         self.bookmarks.add(name, dir);
     }
 
-    fn dir_names(dir: &Path) -> std::collections::HashSet<String> {
-        fileops::dir_names(dir)
-    }
-
-    fn apply_rename_order(
-        dir: &Path,
-        map: &[(String, String)],
-        existing: &std::collections::HashSet<String>,
-    ) -> Result<usize, fileops::RenameExecutionError> {
-        fileops::apply_rename_order(dir, map, existing)
-    }
-
-    fn apply_rename_order_using<E: std::fmt::Display>(
-        dir: &Path,
-        map: &[(String, String)],
-        existing: &std::collections::HashSet<String>,
-        rename: impl FnMut(&str, &str) -> Result<(), E>,
-    ) -> Result<usize, fileops::RenameExecutionError> {
-        fileops::apply_rename_order_using(dir, map, existing, rename)
-    }
-
-    fn latch_rename_execution_error(&mut self, error: &fileops::RenameExecutionError) {
-        fileops::latch_rename_execution_error(self, error)
-    }
-
     /// Confirm the pending op. Both transfers and deletes report completion
     /// asynchronously through their controller poll methods.
     pub fn confirm_pending_op(&mut self, notify: impl Fn() + Send + 'static) -> bool {
