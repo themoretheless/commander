@@ -66,11 +66,20 @@ impl ScriptedTrashPort {
 impl crate::ports::TrashPort for ScriptedTrashPort {
     fn move_to_trash(&self, target: &crate::ports::TrashTarget) -> crate::ports::TrashItemOutcome {
         self.calls.lock().unwrap().push(target.path.clone());
-        self.outcomes
+        let outcome = self
+            .outcomes
             .lock()
             .unwrap()
             .pop_front()
-            .expect("scripted Trash outcome")
+            .expect("scripted Trash outcome");
+        if outcome == crate::ports::TrashItemOutcome::Trashed {
+            let _ = if target.path.is_dir() {
+                std::fs::remove_dir_all(&target.path)
+            } else {
+                std::fs::remove_file(&target.path)
+            };
+        }
+        outcome
     }
 }
 
@@ -1214,6 +1223,49 @@ fn context_menu_trash_routes_through_confirmation_and_background_port() {
     let outcome = workspace.finish_delete().expect("delete outcome");
     assert_eq!(outcome.trashed, 1);
     assert_eq!(*trash.calls.lock().unwrap(), [path]);
+}
+
+#[test]
+fn versioned_trash_delete_records_undo_and_restores_through_version_store() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let path = left.file("keep-me.txt", "payload");
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed, // redo
+    ]));
+    let mut workspace = Workspace::with_versioned_delete_ports(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        trash.clone(),
+        Arc::new(TestFreeSpacePort),
+    );
+    workspace.left.refresh();
+    workspace.right.refresh();
+    workspace.left.set_cursor(1);
+    workspace.request_delete();
+    assert!(workspace.confirm_pending_op(|| {}));
+    let outcome = workspace.finish_delete().expect("delete outcome");
+    assert_eq!(outcome.trashed, 1);
+    assert!(!path.exists(), "scripted trash removes the live file");
+    assert!(
+        matches!(
+            workspace.top_undo_action(),
+            Some(crate::undo::Action::Trash { .. })
+        ),
+        "Versioned trash must land on the undo stack"
+    );
+
+    workspace
+        .perform_undo(|| {})
+        .expect("restore from version store");
+    assert!(path.is_file(), "undo restores the original path");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "payload");
+
+    workspace.perform_redo(|| {}).expect("re-trash");
+    assert!(!path.exists(), "redo trashes the restored file again");
+    assert_eq!(trash.calls.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -2986,8 +3038,11 @@ fn conflict_free_drag_does_not_auto_start_with_unknown_space() {
     );
     workspace.left.refresh();
     workspace.right.refresh();
-    workspace.left.drag_entries = vec![file];
-    workspace.right.drop_target = Some(right.path().to_path_buf());
+    workspace.left.drag.set(vec![file]);
+    workspace
+        .right
+        .drag
+        .set_drop_target(right.path().to_path_buf());
 
     workspace.drop_dragged(|| {});
     workspace.finish_space_probe();
@@ -3133,8 +3188,8 @@ fn apply_rename_order_refuses_to_clobber_unrelated_target() {
     tmp.file("a.txt", "1");
     tmp.file("b.txt", "2"); // not part of the batch
     let map = vec![("a.txt".to_string(), "b.txt".to_string())];
-    let existing = Workspace::dir_names(tmp.path());
-    let r = Workspace::apply_rename_order(tmp.path(), &map, &existing);
+    let existing = fileops::dir_names(tmp.path());
+    let r = fileops::apply_rename_order(tmp.path(), &map, &existing);
     assert!(r.is_err(), "renaming onto an untouched sibling is refused");
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
@@ -3185,7 +3240,7 @@ fn failed_batch_rename_rollback_enters_safe_state_without_advancing_history() {
         ("b".to_string(), "y".to_string()),
     ];
     let existing = names.clone();
-    let error = Workspace::apply_rename_order_using(left.path(), &map, &existing, |from, to| {
+    let error = fileops::apply_rename_order_using(left.path(), &map, &existing, |from, to| {
         if (from, to) == ("b", "y") {
             return Err("forward failure");
         }
@@ -3212,7 +3267,7 @@ fn failed_batch_rename_rollback_enters_safe_state_without_advancing_history() {
         pairs: map,
     });
     let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
-    workspace.latch_rename_execution_error(&error);
+    fileops::latch_rename_execution_error(&mut workspace, &error);
     workspace.undo.abort_immediate(replay.reservation).unwrap();
 
     assert!(workspace.can_undo());
@@ -3594,8 +3649,8 @@ fn apply_rename_order_swaps_two_files() {
         ("a.txt".to_string(), "b.txt".to_string()),
         ("b.txt".to_string(), "a.txt".to_string()),
     ];
-    let existing = Workspace::dir_names(tmp.path());
-    let n = Workspace::apply_rename_order(tmp.path(), &map, &existing).unwrap();
+    let existing = fileops::dir_names(tmp.path());
+    let n = fileops::apply_rename_order(tmp.path(), &map, &existing).unwrap();
     assert_eq!(n, 2);
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
@@ -3622,7 +3677,7 @@ fn apply_batch_rename_allows_case_only_rename() {
     let n = apply_batch_rename(&mut ws, &rule).unwrap();
     assert_eq!(n, 1);
     // The on-disk name now reads with the upper-cased stem.
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("README.md"), "names: {names:?}");
 }
 
@@ -3637,10 +3692,10 @@ fn apply_batch_rename_undo_restores_a_case_only_rename() {
         ..Default::default()
     };
     apply_batch_rename(&mut ws, &rule).unwrap();
-    assert!(Workspace::dir_names(l.path()).contains("README.md"));
+    assert!(fileops::dir_names(l.path()).contains("README.md"));
     // Undo puts the lower-case name back (itself a case-only rename).
     let _ = ws.perform_undo(|| {});
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("readme.md"), "after undo: {names:?}");
     assert!(!names.contains("README.md"));
 }
@@ -3664,12 +3719,12 @@ fn commit_rename_allows_a_case_only_change() {
     // inline rename used to refuse this legitimate change as "Name already in
     // use". Staging through a temp makes the case actually flip.
     ws.commit_rename(&f, "README.md").unwrap();
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("README.md"), "names: {names:?}");
     assert!(!names.contains("readme.md"), "old case gone: {names:?}");
 
     ws.perform_undo(|| {}).unwrap();
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("readme.md"), "after undo: {names:?}");
     assert!(!names.contains("README.md"));
 }
@@ -3683,8 +3738,8 @@ fn drop_prefers_source_panel_target() {
 
     // Dragging within the left panel onto its own subdirectory:
     // the right panel must not steal the drop.
-    ws.left.drag_entries = vec![file.clone()];
-    ws.left.drop_target = Some(sub.clone());
+    ws.left.drag.set(vec![file.clone()]);
+    ws.left.drag.set_drop_target(sub.clone());
     ws.drop_dragged(|| {});
     wait_transfer(&mut ws);
 
@@ -3693,24 +3748,24 @@ fn drop_prefers_source_panel_target() {
         "file lands in the hovered subdir"
     );
     assert!(!r.path().join("a.txt").exists());
-    assert!(ws.left.drag_entries.is_empty());
+    assert!(ws.left.drag.is_empty());
 }
 
 #[test]
 fn cancel_drag_clears_both_sources_and_targets() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&l, &r);
-    ws.left.drag_entries = vec![l.path().join("left.txt")];
-    ws.right.drag_entries = vec![r.path().join("right.txt")];
-    ws.left.drop_target = Some(l.path().join("left-target"));
-    ws.right.drop_target = Some(r.path().join("right-target"));
+    ws.left.drag.set(vec![l.path().join("left.txt")]);
+    ws.right.drag.set(vec![r.path().join("right.txt")]);
+    ws.left.drag.set_drop_target(l.path().join("left-target"));
+    ws.right.drag.set_drop_target(r.path().join("right-target"));
 
     ws.cancel_drag();
 
-    assert!(ws.left.drag_entries.is_empty());
-    assert!(ws.right.drag_entries.is_empty());
-    assert!(ws.left.drop_target.is_none());
-    assert!(ws.right.drop_target.is_none());
+    assert!(ws.left.drag.is_empty());
+    assert!(ws.right.drag.is_empty());
+    assert!(!ws.left.drag.has_drop_target());
+    assert!(!ws.right.drag.has_drop_target());
 }
 
 #[test]
@@ -3760,8 +3815,8 @@ fn drop_to_explicit_other_panel_target_moves_the_file() {
     let file = l.file("a.txt", "x");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file];
-    ws.right.drop_target = Some(r.path().to_path_buf());
+    ws.left.drag.set(vec![file]);
+    ws.right.drag.set_drop_target(r.path().to_path_buf());
     ws.drop_dragged(|| {});
     wait_transfer(&mut ws);
 
@@ -3775,8 +3830,8 @@ fn option_drop_copy_effect_keeps_the_source() {
     let file = l.file("a.txt", "x");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file.clone()];
-    ws.right.drop_target = Some(r.path().to_path_buf());
+    ws.left.drag.set(vec![file.clone()]);
+    ws.right.drag.set_drop_target(r.path().to_path_buf());
     ws.drop_dragged_as(TransferKind::Copy, || {});
     wait_transfer(&mut ws);
 
@@ -3846,13 +3901,13 @@ fn drop_without_an_explicit_target_is_cancelled() {
     let file = l.file("a.txt", "x");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file.clone()];
+    ws.left.drag.set(vec![file.clone()]);
     ws.drop_dragged(|| {});
 
     assert!(file.exists());
     assert!(ws.active_transfer().is_none());
     assert!(ws.pending_op.is_none());
-    assert!(ws.left.drag_entries.is_empty());
+    assert!(ws.left.drag.is_empty());
 }
 
 #[test]
@@ -3862,8 +3917,8 @@ fn drop_with_conflict_opens_dialog_instead_of_moving() {
     r.file("a.txt", "old");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file];
-    ws.right.drop_target = Some(r.path().to_path_buf());
+    ws.left.drag.set(vec![file]);
+    ws.right.drag.set_drop_target(r.path().to_path_buf());
     ws.drop_dragged(|| {});
 
     // A conflicting drop must NOT move immediately; it stages a
@@ -3885,8 +3940,8 @@ fn skip_conflict_in_unopened_subfolder_handles_a_broken_symlink() {
     std::os::unix::fs::symlink("missing-target", sub.join("a.txt")).unwrap();
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file.clone()];
-    ws.right.drop_target = Some(sub);
+    ws.left.drag.set(vec![file.clone()]);
+    ws.right.drag.set_drop_target(sub);
     ws.drop_dragged(|| {});
 
     assert_eq!(ws.pending_conflicts().len(), 1);

@@ -84,8 +84,11 @@ bookmark input before explicit upgrade, and blocks destructive version-store
 actions when the manifest is corrupt, incompatible, forged, or path-escaping.
 The accepted scope deliberately leaves the operation journal/content index,
 cross-process CAS, and descriptor-relative filesystem traversal for dedicated
-migrations (still the only long-term persistence/FS residuals after the open
-facade/integrity stack lands).
+migrations. Phase 5's journal test split is done: production stays in
+`operation_journal.rs` with `use_test_journal` path guards under `#[cfg(test)]`,
+and the fault/model suite lives in `operation_journal/tests.rs` (workspace-style
+child module). Adopting CAS and the shared persist envelope for the journal
+remain follow-ups; resume/reconcile logic is unchanged.
 The following four-role pass checked in the full-lockfile `cargo-deny` policy
 and an Ubuntu gate for pull requests, main-branch pushes, and a weekly refresh.
 It currently reports zero known vulnerabilities, accepts only the unmaintained
@@ -119,19 +122,18 @@ three intentional ignores.
 
 ### Structural Ideal Definition of Done (Phase 6)
 
-Verified against current `main` plus open PR stack intent (2026-09-14). In-flight
-PRs are not claimed done on `main`.
+Verified against `main` after PRs #7–#13 merged (2026-09-14).
 
 | Gate | Status |
 | --- | --- |
-| Hotspot facades ≤ ~600–800 lines of coordination; byte-path/tests extracted | **In progress** — PR #10 transfer byte-path, PR #11 journal tests split, PR #12 panel op-boundary, PR #13 workspace fileops |
-| Mutating commands write undo or documented non-goal | **Partial on `main`** — Trash undo PR #7, Gather cleanup PR #8, native-copy D23 PR #9 **in flight** |
+| Hotspot facades ≤ ~600–800 lines of coordination; byte-path/tests extracted | **Structure done on `main`** — PR #10 transfer byte-path, PR #11 journal tests split, PR #12 panel op-boundary, PR #13 workspace fileops. Absolute facade line counts still exceed the coordination target; further shrink is hygiene, not a blocking residual. |
+| Mutating commands write undo or documented non-goal | **Done on `main` for Phase1 residuals** — Trash undo PR #7, Gather cleanup PR #8, native-copy D23 PR #9 |
 | Listing off UI thread; probe→listing TOCTOU closed | **Done on `main`** (PR #4) |
 | Placement→`mark_completed` crash window (overwrite + non-overwrite) | **Done on `main`** (PRs #5/#6) |
 | New shell intents do not drag dialog details into `UiRequest` | **Standing policy shipped** |
-| Docs residuals = three accepted items only | **This pass** (see below) |
+| Docs residuals = three accepted items only | **Done** (see below) |
 
-**Accepted residuals only** (after the open stack merges and facade lines re-measure):
+**Accepted residuals only:**
 
 1. Descriptor-relative filesystem effect port
 2. Streaming tree planner
@@ -147,25 +149,21 @@ Highest-value next steps, in order:
    VoiceOver/popup/multi-monitor attestation without requesting TCC access.
    File rows expose AccessKit `ShowContextMenu`; the queued exact-row route also
    works from an inactive pane and publishes focus before AppKit blocks.
-2. Completed on `main` (PR #4): `PanelState::navigate_to` listing/publication
-   is off the UI thread and the probe-to-listing TOCTOU is closed. Separately,
-   design an `OsStr` plus volume-capability-aware naming policy for non-UTF-8,
-   case-sensitivity and Unicode normalization remains a product follow-up, not
-   a structural residual.
-3. Completed on `main` (PRs #5/#6): transfer resume closes the crash window
-   between successful placement and `mark_completed` for both overwrite and
-   non-overwrite landings. Remaining transfer residuals are the
-   descriptor-relative namespace-effect port and a streaming parallel-directory
-   planner (byte-path module split is **in flight as PR #10**, not a residual).
-4. Facade shrinks along coherent operation boundaries only — **in flight**:
-   panel DragState/op-boundary (PR #12), workspace fileops (PR #13), journal
-   tests split (PR #11). Do not mechanical-field-move state owners that are
-   already settled.
-5. Integrity stack **in flight, not on `main`**: Delete-to-Trash undo via
-   `version_store` (PR #7), Gather cleanup propagation (PR #8), native-copy
-   D23 residuals (PR #9).
-6. After #7–#13 merge: re-measure hotspot facades against the ≤ ~600–800 line
-   gate, then leave only the three accepted residuals in these docs.
+2. Completed: `PanelState::navigate_to` listing/publication is off the UI
+   thread and the probe-to-listing TOCTOU is closed (PR #4). Separately,
+   design an `OsStr` plus volume-capability-aware naming policy for
+   non-UTF-8, case-sensitivity and Unicode normalization.
+3. Transfer resume closes the crash window between successful placement and
+   `mark_completed` for both overwrite and non-overwrite landings (PRs #5/#6).
+   Buffered/sparse/parallel-tree byte paths live under
+   `transfer::{buffered,sparse,parallel_tree}` (PR #10; public
+   `TransferSpec` / progress API unchanged). Next among accepted residuals:
+   descriptor-relative namespace effects and a streaming parallel-directory
+   planner.
+4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
+   operation boundaries (`panel/{drag,visit,preview,nav}` and
+   `workspace/fileops/` already landed). Their state ownership is already
+   split; mechanical field moves would now make the design worse.
 
 The 500-point digest below remains a dated audit snapshot. Its old line numbers
 are evidence of what was reviewed, not a claim that every location still has
@@ -249,7 +247,7 @@ intentional, not a dropped row.)
 | D5 | Make the dir-size index race-safe (generation counter or staged swap), drop the redundant nested `install()`, and bound `walk_log`/`dir_size_cache` | 26, 45, below the cut (x3) | medium; pairs with the `DirIndex` extraction | open |
 | D6 | Fix reachable panics and overflow: `lock().unwrap()` poisoning (transfer, image_cache/confirm_dialog, and the `copyfile` C callback), ObjC `unwrap`, `batch_rename` unwrap, unchecked `keep[gi]`, `checked_mul` the thumbnail buffers | 9, 10, 11, 12, 21, below the cut (x2) | small | **done:** shared poison recovery, fallible ObjC/state access, bounded indices, checked/fallible RGBA allocation |
 | D8 | Rename temp-name correctness: homogenise the reserved-set casing and make the rollback composite-error / atomic | 15, 16 | medium; one pass with tests | open |
-| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | **partial on `main`:** no-clobber rename, case-only rollback, and all-source Move replay preflight done; transfer cleanup propagation + failed-Gather rollback **in flight (PR #8)** |
+| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | **partial:** no-clobber rename, case-only rollback, all-source Move replay preflight, transfer cleanup propagation, and failed-Gather rollback (incl. cancel/mount-retry `undo_placement` surfacing) done; other D9 items remain as tracked elsewhere |
 | D10 | Panel filter/cursor invariants: `ensure_cursor_valid()` after every filter/facet/sort change, bounds-checked `filtered_entries`, and an explicit (not silent-empty) `selected_or_cursor` miss | 18, 19, below the cut | small; strongest case for the `ViewState` encapsulation in Track A | **done:** filter/facet/sort re-clamp immediately; cached indices are bounded; stale cursor is typed `Result` |
 | D11 | egui widget-Id hygiene: add `id_salt` to the three dialog `ScrollArea`s and derive toast Ids from stable identity | below the cut (x4) | trivial | **done:** dialog scroll areas use stable salts/nonces and toasts carry queue-assigned stable IDs |
 | D12 | **Security: escape or eliminate the AppleScript injection in `action_get_info`** (interpolated filename breaks out of the AppleScript string literal into `do shell script`) | 1 | small; escape `"`/`\` or drop the AppleScript call for a native `NSWorkspace`/Finder API | **done in this pass** (`escape_for_applescript_literal` + unit tests) |
@@ -263,7 +261,7 @@ intentional, not a dropped row.)
 | D20 | Undo coverage gaps: add a `Rename` variant to `undo::Action` so F2 single-file rename is undoable (and toast when an action genuinely can't be undone, instead of silently reverting something else or no-op'ing); make "Gather into Folder"'s undo also remove the now-empty folder it created | 8, below the cut | medium | **done:** F2 rename undo/redo + feedback; typed Gather/Ungather removes/recreates the folder safely |
 | D21 | Conflict-resolution UI deadlock: recompute `need_bytes`/`overflow` after `resolve_pending_conflicts` shrinks `tr.entries`, so a chosen policy (Skip Existing, Keep Newer, ...) can actually un-stick the disabled buttons it was meant to fix | 7 | small-medium | **done:** policies remain selectable and rebuild entries/size/conflicts/scan |
 | D22 | Drag-and-drop plumbing rewrite: capture the actual dragged row(s) explicitly instead of falling back to a stale `panel.selected` when the drag starts on an unselected row; mirror drag state so the destination panel can render its own drop-target highlight; clear `drag_entries`/`drop_target` on `drop_dragged`'s early-return concurrency guard instead of leaving a phantom overlay | 4, 43, 44 | medium; one rewrite closes all three plus the already-tracked #6 | **done:** explicit anchor, cross-panel target feedback, cancel path, full cleanup |
-| D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | **in flight (PR #9)** — not yet on `main` |
+| D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | **done:** space probe is off-UI with a 5s `statvfs` timeout; `copy_dir_all` preserves dir symlinks; native dir child failures fail-loud and preserve successful staging siblings; `rename_noreplace` falls back when `RENAME_EXCL` is unsupported |
 | D24 | Silent no-op cleanup: toast when `JumpSlot` targets a missing directory; toast on copy-path commands with an empty selection; give `JumpList` a way to prune a dead entry instead of only bypassing it; fix `select_by_mask`'s live-count preview to agree with what Select will actually do for a subtraction-only mask | 46, 47, below the cut (x2) | small each | **done:** missing quick-jump targets and empty copy-path selections report feedback; mask preview reports actual selection changes; back/forward navigation prunes disappeared directories |
 
 Severity caveats from manual verification (do not act on these as written):
@@ -284,7 +282,8 @@ permanent trap but the existing "Go up" affordance on the Gone-state screen
 already escapes it each time, so it's a recurring papercut, not a dead end;
 round-4 **#50** (`rename_noreplace` `ENOTSUP` fallback) rests on an honestly
 un-reproduced OS behavior (no exotic filesystem was available to test against)
-- real gap, narrow trigger. See the corrections tables in
+- real gap, narrow trigger; closed with a check-then-rename fallback plus a
+`cfg(test)` errno injection hook. See the corrections tables in
 [audit.md](audit.md).
 
 ## Track E - ideas backlog (unscoped, not yet prioritised)
@@ -320,7 +319,7 @@ at a time):
 | Post-copy size/checksum verification with one-click re-copy of just the failed files | medium | Reuses the existing `content_hash` primitive |
 | Append-only crash-survivable operation journal, with a "resume cleanup" dialog on next launch | large | Distinct from B5 (receipts are UX/history; this is crash recovery for operations that never finished) |
 | Dry-run/preview step for Sync and large batch Delete/Move | medium | Sync can delete destination-only files; today the only inspection surface is the tinted row list |
-| Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | **in flight (PR #7)** via `version_store` restore — not yet on `main` |
+| Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | **done:** `Action::Trash`/`RestoreTrash` via `version_store` restore |
 | Pre-flight collision/permission/path-length scan before a transfer starts, not discovered file-by-file mid-transfer | medium | Reuses the walk the free-space preflight already does |
 | Route move/overwrite cleanup removals through Trash (or a quarantine dir) instead of a hard `remove_file`/`remove_dir_all` | medium | Today only explicit Delete goes through Trash; implicit removals inside Move/overwrite don't |
 
@@ -341,7 +340,7 @@ at a time):
 | --- | --- | --- |
 | Move directory listing (`read_dir`/`jwalk`) off the main thread | medium | **done on `main` (PR #4)** — async `ListingJobController`; distinct from virtualised file-list rendering |
 | Cap/pool image-preload thread spawns and gate them by volume speed | small | **partial (I001-I002):** worker/decoder slots are bounded; volume-speed admission remains |
-| Make the free-space preflight non-blocking with a timeout | small | Same root cause as D23's `free_space()` hang fix, framed as a proactive UX improvement |
+| Make the free-space preflight non-blocking with a timeout | small | **done via D23:** probe runs on the space-probe worker with a 5s `statvfs` timeout |
 | Make the recursive fs watcher opt-out/shallow on non-local volumes | done | **shipped (I004-I005):** backend policy selects recursive native, shallow native, or paced shallow polling with fallback |
 | Surface the already-computed `walk_log` cost as a "slow volume" indicator | small | The measurement exists today and is silently discarded after driving an internal skip decision |
 | Roll up (not just truncate) the confirmation-dialog scan past `MAX_FLAT_ENTRIES` | small | A 100k-file tree currently just shows "... (truncated)" with no size/count summary of what was cut |
