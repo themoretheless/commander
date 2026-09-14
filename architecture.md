@@ -47,9 +47,13 @@ These constraints reinforce, rather than replace, the shipped `ViewConfig`,
 `TransferQueueController`, `UiState`, journal proof model, and injected native
 effect ports. `UndoCenter` now owns the in-memory history timeline and
 identity-bound replay reservations. The shared persistence boundary and
-versioned envelope are now shipped too. The remaining architectural work is
-narrower: native release QA, asynchronous listing publication, and smaller
-execution facades.
+versioned envelope are now shipped too. Asynchronous listing publication and
+the placement→`mark_completed` crash windows (overwrite and non-overwrite) are
+on `main`. The remaining structural work is the open facade/integrity PR stack
+plus three accepted residuals: a descriptor-relative filesystem effect port, a
+streaming tree planner, and cross-process CAS / Persist-envelope migration for
+the operation journal and content index. See
+[Structural Ideal Definition of Done](#structural-ideal-definition-of-done).
 The typed queue portion is shipped as `ui_request::UiRequestQueue`; historical
 roadmap references to an Effect bus describe that completed migration. `G044`
 has an owner in `volume_profile`; `path_identity` supplies the core of `G057`.
@@ -157,6 +161,11 @@ export commands; it does not own measurement, persistence, watcher, or rollout
 policy.
 
 ### Size hot-spots
+
+Line counts are approximate on current `main` (2026-09-14). Ideal coordination
+facades are ~600–800 lines once byte-path/tests and coherent command modules
+are extracted; the open PR stack below is the path there, not another field
+shuffle.
 
 | File | Lines | Note |
 | --- | --- | --- |
@@ -388,7 +397,7 @@ Three mechanisms connect the core to the shell:
   bus is gone, but adding a new shell intent still adds one `UiRequest` variant
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
   presentation state in `app`; do not let the enum grow dialog implementation
-  details.
+  details. This is a standing ideal gate, not an open defect.
 - **The primary desktop and persistence boundaries are explicit.** Preview,
   filesystem, hash, context-menu, Clipboard, Trash, opener and free-space calls
   sit behind narrow typed ports/adapters. Native menu callbacks cannot mutate
@@ -415,8 +424,8 @@ Three mechanisms connect the core to the shell:
   duplicate-crate groups stay at warning severity as explicit dependency debt;
   there are no broad duplicate skips or GPL/LGPL license allowances. Run the
   same gate with the command shown in the README.
-- **Go-to-path probing has an asynchronous owner.** `pathname` performs only
-  lexical parsing and exact tilde expansion; injected
+- **Go-to-path probing and panel listing are asynchronous on `main`.**
+  `pathname` performs only lexical parsing and exact tilde expansion; injected
   `DirectoryProbePort::probe` owns the one filesystem `metadata` call.
   `PathProbeController` captures home and opening-panel context, debounces for
   200 ms, and admits at most two tasks through the dedicated two-worker
@@ -427,16 +436,17 @@ Three mechanisms connect the core to the shell:
   roots in the scheduler's persistent generation map. Stale A-to-B-to-A
   outcomes only retire their slot; current cancelled, abandoned, panicked and
   disconnected outcomes terminate explicitly. `Go` and Enter consume only an
-  exact current `Valid` binding. This removes pathname I/O from frame
-  rendering, but
-  `PanelState::navigate_to` still reads/publishes the directory synchronously
-  and there is an advisory-probe TOCTOU window before that read.
-- **Panel async ownership is split but the facade is not yet small.**
+  exact current `Valid` binding. PR #4 moved `PanelState::navigate_to` /
+  refresh listing publication onto `TaskKind::Listing` with generation-checked
+  publish, retires prior rows under `DirStatus::Loading` on binding change, and
+  treats listing (not the advisory probe) as the navigability source of truth —
+  closing the probe-to-listing TOCTOU for the ideal gate.
+- **Panel async ownership is split; the facade is still large on `main`.**
   `DirectoryWatcherState` and `SizeIndex` own generation, binding, retry and
   bounded-cache state; `ListingState` owns rows and filter invalidation.
-  `PanelState` intentionally coordinates their atomic publication. Future work
-  should extract coherent operations such as navigation/drag or expose a
-  snapshot reducer, rather than moving their fields back together.
+  `PanelState` intentionally coordinates their atomic publication. Further
+  shrinks must extract coherent operations (DragState + visit/preview/nav
+  already live under `panel/`), not move fields back together.
 - **The comparison bounded context is directory-blind.** `sync::compare`,
   `compare::classify_entry`, and `conflict::detect` all classify entries using
   only `FileEntry.size`/`modified`, and every directory's `size` is hardcoded
@@ -451,7 +461,8 @@ Three mechanisms connect the core to the shell:
   future-schema input without replacing it. Legacy utility stores such as
   smart folders, command templates and the panel cache still use the atomic
   compatibility facade; the operation journal and content index need their own
-  streaming/schema migrations before they can adopt the envelope safely.
+  streaming/schema migrations before they can adopt the envelope safely
+  (accepted residual alongside cross-process CAS).
 - **Dialog buffers are centralized, while visual modality remains an egui
   composition contract.** `UiState` owns every transient modal buffer and the
   FIFO/Escape router; opening contexts capture panel/directory/path identity.
@@ -476,9 +487,35 @@ Three mechanisms connect the core to the shell:
   receive the global drag state so destination rows can advertise targets,
   panel backgrounds explicitly target their current directory, and
   `Workspace::take_drop_plan` treats a missing target as cancellation. Busy
-  early returns clear the whole drag session. Drag session fields now live in
-  the `DragState` value object (`panel::drag`) composed by `PanelState`, with
-  set/take/clear accessors used by app, workspace, and tests.
+  early returns clear the whole drag session. Those fields live in a
+  `DragState` value object under `panel/drag.rs` (PR #12).
+
+## Structural Ideal Definition of Done
+
+Structure is “ideal” for this repo when the gates below hold. Status below is
+against `main` after PRs #7–#13 merged (2026-09-14).
+
+| Gate | Status |
+| --- | --- |
+| Hotspot facades ≤ ~600–800 lines of coordination; byte-path/tests extracted | **Structure done on `main`.** Byte-path (`transfer/{buffered,sparse,parallel_tree}`, PR #10), journal tests split (PR #11), panel op-boundary (`panel/{drag,visit,preview,nav}`, PR #12), and workspace fileops (PR #13) are extracted. Absolute facade line counts still exceed the coordination target; further shrink is ongoing hygiene, not a blocking residual. |
+| Mutating commands write undo or a documented non-goal | **Done on `main` for Phase1 residuals.** Move/Rename/BatchRename/Gather covered; Delete-to-Trash undo via `version_store` (PR #7); Gather `undo_placement` surfaced (PR #8); native-copy D23 closed or accepted (PR #9). |
+| Listing off the UI thread; probe→listing TOCTOU closed | **Done on `main`** (PR #4). |
+| Placement→`mark_completed` crash window closed for overwrite + non-overwrite | **Done on `main`** (PRs #5 and #6). |
+| New shell intents do not drag dialog details into `UiRequest` | **Standing policy shipped**; keep presentation in `app`, payloads/ordering in `ui_request`. |
+| Docs residuals = only the three accepted items below | **Done.** Only the three accepted residuals remain open. |
+
+### Accepted residuals (only)
+
+1. **Descriptor-relative filesystem effect port** — namespace effects that do not
+   re-open by path after a proven binding.
+2. **Streaming tree planner** — parallel copy that does not materialize every
+   file before planning.
+3. **Cross-process CAS / Persist envelope for journal + content-index** — if
+   those stores are not already solely on the shared versioned envelope with
+   cross-process compare-and-swap commits.
+
+Phase1 integrity and facade-extraction items from PRs #7–#13 are closed on
+`main`; they are not additional long-term residuals.
 
 ## 2026-07-09 SOLID/DRY reading slices
 
@@ -849,7 +886,7 @@ can be taken on faith until that port is read.
 
 1. Step 0 (A2, **done 2026-07-28**): the inline test body moved mechanically to `src/workspace/tests.rs` behind `#[cfg(test)] mod tests;`. `src/workspace.rs` deliberately remains a file; converting it to `workspace/mod.rs` would add rename churn with no ownership benefit. The move preserved all `workspace::tests::*` paths and the exact 855-test baseline before later focused tests were added.
 
-2. Step 1 (A2, **done 2026-07-28; async follow-up and lifecycle hardening done 2026-07-28**): `src/pathname.rs` owns pure `parse_dir_input`, `validate_new_name`, typed `DirInputError`/`NewNameError`, and the injected `DirectoryProbePort`. `src/path_probe.rs` owns the debounced worker/controller lifecycle; `AppServices` injects its filesystem and workload adapters. Nineteen focused tests freeze lexical relative/symlink behavior, exact tilde expansion, stable UI copy, universal NUL rejection, debounce/admission bounds, blocking-worker replacement, 100-edit submission bounds, synchronous completion ordering, worker-thread execution, opening-context capture, cancellation/reopen, disconnect/panic retirement, A-to-B-to-A freshness, and same-frame edit-before-Enter ordering. Commit-time live sibling validation and `rename_noreplace` remain unchanged; async panel listing is a separate follow-up.
+2. Step 1 (A2, **done 2026-07-28; async follow-up and lifecycle hardening done 2026-07-28**): `src/pathname.rs` owns pure `parse_dir_input`, `validate_new_name`, typed `DirInputError`/`NewNameError`, and the injected `DirectoryProbePort`. `src/path_probe.rs` owns the debounced worker/controller lifecycle; `AppServices` injects its filesystem and workload adapters. Nineteen focused tests freeze lexical relative/symlink behavior, exact tilde expansion, stable UI copy, universal NUL rejection, debounce/admission bounds, blocking-worker replacement, 100-edit submission bounds, synchronous completion ordering, worker-thread execution, opening-context capture, cancellation/reopen, disconnect/panic retirement, A-to-B-to-A freshness, and same-frame edit-before-Enter ordering. Commit-time live sibling validation and `rename_noreplace` remain unchanged; async panel listing later landed on `main` via PR #4.
 
 3. Step 2: extract pending_op (PendingTransfer+impl, QueuedJob, PendingOp, DeleteOutcome, ShelfDrainOutcome, move_pairs, faithfully_undoable, fit_stats -- workspace.rs:22-230) into src/pending_op.rs. All pure data types/functions, compiler-verified with zero logic change. FIX vs round 2 (ISP smell the critique found, verified: QueuedJob only clones/pattern-matches its stored Action at the poll_transfer call site outside pending_op itself -- pending_op's own logic never branches on which Action variant is stored): change QueuedJob's field from `undo: Option<undo::Action>` to a module-private opaque carrier `undo: Option<UndoPayload>` where `UndoPayload` is a thin newtype wrapping `undo::Action` with no methods of its own beyond construction/unwrap -- this keeps pending_op's own code from needing to know Action's variants while still being honest that the payload IS an undo::Action underneath (a real newtype, not a type-erased Box<dyn Any>, since the consumer -- undo_center -- always knows the concrete type it put in). pending_op's dependsOn keeps `undo (Action, wrapped by UndoPayload, held opaquely by QueuedJob)` but the module doc-comment states explicitly that pending_op never matches on Action's variants, so a future Action variant addition (e.g. D20's Rename) touches undo_center and fileops, never pending_op. Also depends on fs_util (OpClass/SpaceVerdict/space_verdict), transfer (TransferKind/OverwritePolicy/CopyMethod), and scan (FlatList/FileEntry) as round 2 already corrected.
 

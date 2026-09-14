@@ -108,9 +108,10 @@ roots in the scheduler generation map. Ten deterministic controller tests
 cover blocked workers, 100-edit bounds, synchronous completion, cancellation,
 admission, panic and disconnect paths, bringing the full serial all-feature
 suite to 964 passing with three intentional ignores. The isolated performance
-smoke remains green. Synchronous
-`PanelState::navigate_to` listing and the probe-to-listing TOCTOU remain
-explicitly outside this scoped change.
+smoke remains green. A later pass (PR #4, merged) moved
+`PanelState::navigate_to` / refresh listing off the UI thread with
+generation-checked publish and closed the probe-to-listing TOCTOU by treating
+listing as the navigability source of truth.
 
 The final native-release adversarial pass adds compile-time Git provenance,
 stale-dirty-build regressions, strict deny-unknown attestation parsing, private
@@ -118,6 +119,25 @@ descriptor-relative artifacts, canonical topology identity, recursive 22-item
 NSMenu inspection with RAII ownership, and the exact-row AccessKit context-menu
 route. The current all-target/all-feature serial result is 979 passing with
 three intentional ignores.
+
+### Structural Ideal Definition of Done (Phase 6)
+
+Verified against `main` after PRs #7–#13 merged (2026-09-14).
+
+| Gate | Status |
+| --- | --- |
+| Hotspot facades ≤ ~600–800 lines of coordination; byte-path/tests extracted | **Structure done on `main`** — PR #10 transfer byte-path, PR #11 journal tests split, PR #12 panel op-boundary, PR #13 workspace fileops. Absolute facade line counts still exceed the coordination target; further shrink is hygiene, not a blocking residual. |
+| Mutating commands write undo or documented non-goal | **Done on `main` for Phase1 residuals** — Trash undo PR #7, Gather cleanup PR #8, native-copy D23 PR #9 |
+| Listing off UI thread; probe→listing TOCTOU closed | **Done on `main`** (PR #4) |
+| Placement→`mark_completed` crash window (overwrite + non-overwrite) | **Done on `main`** (PRs #5/#6) |
+| New shell intents do not drag dialog details into `UiRequest` | **Standing policy shipped** |
+| Docs residuals = three accepted items only | **Done** (see below) |
+
+**Accepted residuals only:**
+
+1. Descriptor-relative filesystem effect port
+2. Streaming tree planner
+3. Cross-process CAS / Persist envelope for journal + content-index
 
 Highest-value next steps, in order:
 
@@ -129,20 +149,21 @@ Highest-value next steps, in order:
    VoiceOver/popup/multi-monitor attestation without requesting TCC access.
    File rows expose AccessKit `ShowContextMenu`; the queued exact-row route also
    works from an inactive pane and publishes focus before AppKit blocks.
-2. Move `PanelState::navigate_to` listing/publication off the UI thread and
-   close the probe-to-listing TOCTOU; separately design an `OsStr` plus
-   volume-capability-aware naming policy for non-UTF-8, case-sensitivity and
-   Unicode normalization.
-3. Transfer resume now closes the crash window between successful placement
-   and `mark_completed` for both overwrite and non-overwrite landings. The
-   buffered/sparse/parallel-tree byte paths are split out of `transfer.rs`
-   into `transfer::{buffered,sparse,parallel_tree}` (readability only;
-   public `TransferSpec` / progress API unchanged). Next:
+2. Completed: `PanelState::navigate_to` listing/publication is off the UI
+   thread and the probe-to-listing TOCTOU is closed (PR #4). Separately,
+   design an `OsStr` plus volume-capability-aware naming policy for
+   non-UTF-8, case-sensitivity and Unicode normalization.
+3. Transfer resume closes the crash window between successful placement and
+   `mark_completed` for both overwrite and non-overwrite landings (PRs #5/#6).
+   Buffered/sparse/parallel-tree byte paths live under
+   `transfer::{buffered,sparse,parallel_tree}` (PR #10; public
+   `TransferSpec` / progress API unchanged). Next among accepted residuals:
    descriptor-relative namespace effects and a streaming parallel-directory
    planner.
 4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
-   operation boundaries. Their state ownership is already split; mechanical
-   field moves would now make the design worse.
+   operation boundaries (`panel/{drag,visit,preview,nav}` and
+   `workspace/fileops/` already landed). Their state ownership is already
+   split; mechanical field moves would now make the design worse.
 
 The 500-point digest below remains a dated audit snapshot. Its old line numbers
 are evidence of what was reviewed, not a claim that every location still has
@@ -317,7 +338,7 @@ at a time):
 
 | Idea | Effort | Note |
 | --- | --- | --- |
-| Move directory listing (`read_dir`/`jwalk`) off the main thread | medium | Distinct from the deferred "virtualised file list" - this is about the synchronous read, not render cost |
+| Move directory listing (`read_dir`/`jwalk`) off the main thread | medium | **done on `main` (PR #4)** — async `ListingJobController`; distinct from virtualised file-list rendering |
 | Cap/pool image-preload thread spawns and gate them by volume speed | small | **partial (I001-I002):** worker/decoder slots are bounded; volume-speed admission remains |
 | Make the free-space preflight non-blocking with a timeout | small | **done via D23:** probe runs on the space-probe worker with a 5s `statvfs` timeout |
 | Make the recursive fs watcher opt-out/shallow on non-local volumes | done | **shipped (I004-I005):** backend policy selects recursive native, shallow native, or paced shallow polling with fallback |
