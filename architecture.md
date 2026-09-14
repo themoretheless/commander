@@ -463,9 +463,9 @@ Three mechanisms connect the core to the shell:
   receive the global drag state so destination rows can advertise targets,
   panel backgrounds explicitly target their current directory, and
   `Workspace::take_drop_plan` treats a missing target as cancellation. Busy
-  early returns clear the whole drag session. The remaining structural debt is
-  only placement: these fields still belong in the planned `DragState` value
-  object rather than directly on `PanelState`.
+  early returns clear the whole drag session. Drag session fields now live in
+  the `DragState` value object (`panel::drag`) composed by `PanelState`, with
+  set/take/clear accessors used by app, workspace, and tests.
 
 ## 2026-07-09 SOLID/DRY reading slices
 
@@ -512,8 +512,8 @@ this time landing four bounded changes instead of expanding the backlog:
   collision set captured at open time. The UI renders that directory and the
   core re-reads it only at commit for a current collision check.
 - `PanelState::begin_drag` owns which files a row drag means; rendering owns
-  hover feedback; `Workspace` owns consuming or cancelling the drop. This is a
-  small SRP boundary that can move unchanged into the planned `DragState`.
+  hover feedback; `Workspace` owns consuming or cancelling the drop. That
+  boundary now lives in the `DragState` value object on `PanelState`.
 - `textdiff` owns its complexity budget. Its LCS matrix is one flat allocation
   with checked dimensions, and the dialog handles an over-budget result as a
   normal user-visible state rather than risking process termination.

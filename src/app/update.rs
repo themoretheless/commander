@@ -537,8 +537,8 @@ impl App {
 
         // Drop targets are only valid for the frame that set them
         // (rows re-assert them while hovered during render).
-        self.ws.left.drop_target = None;
-        self.ws.right.drop_target = None;
+        self.ws.left.drag.clear_drop_target();
+        self.ws.right.drag.clear_drop_target();
 
         self.handle_keys(ctx);
         self.preload_images(ctx);
@@ -1434,9 +1434,9 @@ impl App {
         };
         let left_metrics = crate::density::metrics(self.ws.left.density());
         let right_metrics = crate::density::metrics(self.ws.right.density());
-        let drag_source = if !self.ws.left.drag_entries.is_empty() {
+        let drag_source = if !self.ws.left.drag.is_empty() {
             Some(ActivePanel::Left)
-        } else if !self.ws.right.drag_entries.is_empty() {
+        } else if !self.ws.right.drag.is_empty() {
             Some(ActivePanel::Right)
         } else {
             None
@@ -1565,11 +1565,14 @@ impl App {
             dragging
                 && drag_source != Some(ActivePanel::Left)
                 && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
-                && self.ws.left.drop_target.is_none(),
+                && !self.ws.left.drag.has_drop_target(),
         ) {
-            self.ws.left.drop_target = Some(self.ws.left.current_path.clone());
+            self.ws
+                .left
+                .drag
+                .set_drop_target(self.ws.left.current_path.clone());
         }
-        if self.ws.left.drop_target.is_some() {
+        if self.ws.left.drag.has_drop_target() {
             ctx.layer_painter(left_resp.response.layer_id).rect_stroke(
                 left_resp.response.rect.shrink(1.0),
                 CornerRadius::ZERO,
@@ -1657,11 +1660,14 @@ impl App {
             dragging
                 && drag_source != Some(ActivePanel::Right)
                 && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
-                && self.ws.right.drop_target.is_none(),
+                && !self.ws.right.drag.has_drop_target(),
         ) {
-            self.ws.right.drop_target = Some(self.ws.right.current_path.clone());
+            self.ws
+                .right
+                .drag
+                .set_drop_target(self.ws.right.current_path.clone());
         }
-        if self.ws.right.drop_target.is_some() {
+        if self.ws.right.drag.has_drop_target() {
             ctx.layer_painter(right_resp.response.layer_id).rect_stroke(
                 right_resp.response.rect.shrink(1.0),
                 CornerRadius::ZERO,
@@ -1689,14 +1695,14 @@ impl App {
     /// Floating label with the dragged file count next to the pointer.
     fn show_drag_overlay(&mut self, ctx: &egui::Context) {
         let t = self.colors;
-        let drag_entries = if !self.ws.left.drag_entries.is_empty() {
-            &self.ws.left.drag_entries
-        } else if !self.ws.right.drag_entries.is_empty() {
-            &self.ws.right.drag_entries
+        let drag_entries = if !self.ws.left.drag.is_empty() {
+            self.ws.left.drag.entries()
+        } else if !self.ws.right.drag.is_empty() {
+            self.ws.right.drag.entries()
         } else {
             return;
         };
-        let (source, other) = if !self.ws.left.drag_entries.is_empty() {
+        let (source, other) = if !self.ws.left.drag.is_empty() {
             (&self.ws.left, &self.ws.right)
         } else {
             (&self.ws.right, &self.ws.left)
@@ -1711,7 +1717,10 @@ impl App {
             } else {
                 format!("{} items", count)
             };
-            let explicit_target = source.drop_target.as_ref().or(other.drop_target.as_ref());
+            let explicit_target = source
+                .drag
+                .drop_target()
+                .or_else(|| other.drag.drop_target());
             let announcement = if let Some(target) = explicit_target {
                 if !target.is_dir() {
                     crate::operation_view::DragAnnouncement::rejected("destination is not a folder")

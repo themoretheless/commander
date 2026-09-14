@@ -715,7 +715,7 @@ impl App {
                     panel.begin_drag(anchor);
                 }
                 if let Some(target) = pending_drop_target {
-                    panel.drop_target = Some(target);
+                    panel.drag.set_drop_target(target);
                 }
                 if let Some(path) = open_path {
                     opener(crate::ports::OpenRequest::OpenPath(path));

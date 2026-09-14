@@ -10,16 +10,26 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
+mod drag;
 mod listing;
 mod listing_job;
+mod nav;
+mod preview;
 mod selection;
 mod size_index;
 mod sort;
 mod view;
+mod visit;
 mod watcher;
 
+pub use drag::DragState;
 use listing::ListingState;
 use listing_job::{ListingJobController, PendingFocus};
+// Re-export preview/visit public API under `crate::panel::...` for stable paths.
+#[allow(unused_imports)]
+pub use preview::{
+    format_mode, make_info, make_preview, InfoCard, PreviewContent, PreviewIdentity,
+};
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
 use size_index::{SizeIndex, SizeScanInput};
@@ -28,6 +38,11 @@ use sort::natural_cmp;
 use sort::sort_entries;
 pub use view::ViewConfig;
 use view::{ViewSettings, ViewState};
+#[allow(unused_imports)]
+pub use visit::{
+    push_visit, rank_visited, record_visit, restore_visit_snapshot, visit_snapshot, visited_paths,
+    RecentMatch, RecentOrder, VisitStats, VisitUsage, VISITED_CAP,
+};
 use watcher::DirectoryWatcherState;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -808,150 +823,6 @@ pub(crate) fn reset_walk_log() {
     lock_recover(walk_log()).clear();
 }
 
-/// Session-wide most-recent-first list of visited directories (for the
-/// Cmd+P quick switcher), distinct from each panel's linear history.
-fn visited_log() -> &'static Mutex<Vec<PathBuf>> {
-    static V: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
-    V.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn visit_stats() -> &'static Mutex<VisitStats> {
-    static STATS: OnceLock<Mutex<VisitStats>> = OnceLock::new();
-    STATS.get_or_init(|| Mutex::new(VisitStats::default()))
-}
-
-pub const VISITED_CAP: usize = 200;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisitUsage {
-    pub count: u32,
-    pub last: u64,
-}
-
-/// Persisted frequency and recency information for the `Cmd+P` destination
-/// switcher. Paths remain in a separate ordered list so chronological mode is
-/// exact and old session files can default this field independently.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisitStats {
-    pub uses: HashMap<PathBuf, VisitUsage>,
-    pub tick: u64,
-}
-
-impl VisitStats {
-    pub fn record(&mut self, path: &Path) {
-        self.tick = self.tick.saturating_add(1);
-        let usage = self.uses.entry(path.to_path_buf()).or_default();
-        usage.count = usage.count.saturating_add(1);
-        usage.last = self.tick;
-    }
-
-    fn usage(&self, path: &Path) -> VisitUsage {
-        self.uses.get(path).cloned().unwrap_or_default()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RecentOrder {
-    #[default]
-    Frecency,
-    Chronological,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecentMatch {
-    pub path: PathBuf,
-    pub count: u32,
-    pub last: u64,
-    pub score: i64,
-}
-
-/// Push `path` to the front of `list`, de-duplicating and capping. Pure, so
-/// the ordering logic is unit-testable without the global.
-pub fn push_visit(list: &mut Vec<PathBuf>, path: &Path, cap: usize) {
-    list.retain(|p| p != path);
-    list.insert(0, path.to_path_buf());
-    list.truncate(cap);
-}
-
-/// Record a visit to `path` in the global recent list.
-pub fn record_visit(path: &Path) {
-    if let Ok(mut v) = visited_log().lock() {
-        push_visit(&mut v, path, VISITED_CAP);
-    }
-    if let Ok(mut stats) = visit_stats().lock() {
-        stats.record(path);
-    }
-}
-
-/// Snapshot of recently visited directories, most recent first.
-pub fn visited_paths() -> Vec<PathBuf> {
-    visited_log().lock().map(|v| v.clone()).unwrap_or_default()
-}
-
-pub fn visit_snapshot() -> (Vec<PathBuf>, VisitStats) {
-    (
-        visited_paths(),
-        visit_stats().lock().map(|s| s.clone()).unwrap_or_default(),
-    )
-}
-
-pub fn restore_visit_snapshot(paths: &[PathBuf], stats: &VisitStats) {
-    if let Ok(mut log) = visited_log().lock() {
-        *log = paths.iter().take(VISITED_CAP).cloned().collect();
-    }
-    if let Ok(mut current) = visit_stats().lock() {
-        *current = stats.clone();
-        current.uses.retain(|path, _| paths.contains(path));
-    }
-}
-
-/// Rank recent destinations by a bounded frequency/recency score. The fuzzy
-/// component only affects a non-empty query; chronological mode preserves the
-/// exact most-recent-first ordering of `paths`.
-pub fn rank_visited(
-    paths: &[PathBuf],
-    query: &str,
-    order: RecentOrder,
-    stats: &VisitStats,
-) -> Vec<RecentMatch> {
-    let query = query.trim();
-    let mut matches: Vec<(usize, RecentMatch)> = paths
-        .iter()
-        .enumerate()
-        .filter_map(|(index, path)| {
-            let label = path.to_string_lossy();
-            let fuzzy = if query.is_empty() {
-                0
-            } else {
-                crate::fuzzy::score(query, &label)?.score as i64
-            };
-            let usage = stats.usage(path);
-            let age = stats.tick.saturating_sub(usage.last).min(64) as i64;
-            let recency = 64 - age;
-            let frequency = i64::from(usage.count.min(32)) * 4;
-            Some((
-                index,
-                RecentMatch {
-                    path: path.clone(),
-                    count: usage.count,
-                    last: usage.last,
-                    score: fuzzy + recency + frequency,
-                },
-            ))
-        })
-        .collect();
-
-    if order == RecentOrder::Frecency {
-        matches.sort_by(|(index_a, a), (index_b, b)| {
-            b.score
-                .cmp(&a.score)
-                .then(b.last.cmp(&a.last))
-                .then(index_a.cmp(index_b))
-        });
-    }
-    matches.into_iter().map(|(_, item)| item).collect()
-}
-
 /// Invalidate cached sizes for every directory that contains `path`.
 /// A change at `path` (watcher event) makes all its ancestors' sizes stale,
 /// even though their mtimes don't move (mtime only reflects direct children).
@@ -1180,119 +1051,6 @@ pub fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PreviewIdentity {
-    pub path: PathBuf,
-    pub size: u64,
-    pub modified: Option<SystemTime>,
-}
-
-impl PreviewIdentity {
-    pub fn from_entry(entry: &FileEntry) -> Self {
-        Self {
-            path: entry.path.clone(),
-            size: entry.size,
-            modified: entry.modified,
-        }
-    }
-
-    pub fn matches_entry(&self, entry: &FileEntry) -> bool {
-        self.path == entry.path && self.size == entry.size && self.modified == entry.modified
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PreviewContent {
-    Image(PathBuf),
-    Pending(PreviewIdentity),
-    Text {
-        identity: PreviewIdentity,
-        content: Arc<str>,
-    },
-    Info(InfoCard),
-}
-
-/// Precomputed metadata card for the Get-Info inspector (display-only).
-#[derive(Debug, Clone, PartialEq)]
-pub struct InfoCard {
-    pub name: String,
-    pub path: String,
-    pub kind: String,
-    pub size: String,
-    pub children: Option<usize>,
-    pub modified: String,
-    pub permissions: String,
-}
-
-/// Format the low 9 bits of a unix mode as "rwxr-xr-x".
-pub fn format_mode(mode: u32) -> String {
-    let mut s = String::with_capacity(9);
-    for shift in [6, 3, 0] {
-        let triplet = (mode >> shift) & 0o7;
-        s.push(if triplet & 0o4 != 0 { 'r' } else { '-' });
-        s.push(if triplet & 0o2 != 0 { 'w' } else { '-' });
-        s.push(if triplet & 0o1 != 0 { 'x' } else { '-' });
-    }
-    s
-}
-
-/// Build a Get-Info card for `entry`. `dir_size`/`children` come from the
-/// panel's already-computed maps (None while still measuring).
-pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usize>) -> InfoCard {
-    let kind = if entry.is_dir {
-        "Folder".to_string()
-    } else if entry.extension.is_empty() {
-        "Document".to_string()
-    } else {
-        format!("{} file", entry.extension.to_uppercase())
-    };
-    let size = if entry.is_dir {
-        dir_size.map_or_else(|| "\u{2026}".to_string(), format_size)
-    } else {
-        format_size(entry.size)
-    };
-    let permissions = {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(&entry.path)
-            .map(|m| format_mode(m.permissions().mode()))
-            .unwrap_or_else(|_| "---------".to_string())
-    };
-    InfoCard {
-        name: entry.name.clone(),
-        path: entry.path.display().to_string(),
-        kind,
-        size,
-        children: if entry.is_dir { children } else { None },
-        modified: entry.modified_str.clone(),
-        permissions,
-    }
-}
-
-/// Create a preview marker without reading file contents. Text is resolved by
-/// the app's cancellable background preview pipeline.
-pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
-    if entry.is_dir {
-        return None;
-    }
-    if !entry.is_image() {
-        return Some(PreviewContent::Pending(PreviewIdentity::from_entry(entry)));
-    }
-
-    let root = entry.path.parent().unwrap_or(Path::new("/"));
-    if !crate::provider_runtime::activate_builtin(
-        "native-preview",
-        &crate::provider_runtime::ActivationRequest {
-            capability: crate::provider_runtime::ProviderCapability::PreviewImage,
-            root,
-            extension: (!entry.extension.is_empty()).then_some(entry.extension.as_str()),
-            bytes: Some(entry.size),
-        },
-    ) {
-        return None;
-    }
-    Some(PreviewContent::Image(entry.path.clone()))
 }
 
 /// Glob match supporting `*` (any run) and `?` (one char). Inputs are
@@ -1531,8 +1289,7 @@ pub struct PanelState {
     view: ViewState,
     sizes: SizeIndex,
     watcher: DirectoryWatcherState,
-    pub drag_entries: Vec<PathBuf>,
-    pub drop_target: Option<PathBuf>,
+    pub drag: DragState,
     listing_job: ListingJobController,
     workload: Option<crate::workload::WorkloadHandle>,
 }
@@ -1563,8 +1320,7 @@ impl PanelState {
             view: ViewState::with_config(config),
             sizes: SizeIndex::new(path.clone()),
             watcher: DirectoryWatcherState::default(),
-            drag_entries: Vec::new(),
-            drop_target: None,
+            drag: DragState::new(),
             listing_job: ListingJobController::default(),
             workload: None,
         }
@@ -1835,8 +1591,7 @@ impl PanelState {
         let ticket = self.watcher.snapshot_ticket();
         if binding_changed {
             self.selection.bind(&path);
-            self.drag_entries.clear();
-            self.drop_target = None;
+            self.drag.clear();
             self.listing.begin_loading(path.clone());
         }
         self.listing_job.request(path, show_hidden, ticket, focus);
@@ -1936,8 +1691,7 @@ impl PanelState {
                 if binding_changed {
                     self.selection.bind(&binding);
                     self.sizes.bind(&binding);
-                    self.drag_entries.clear();
-                    self.drop_target = None;
+                    self.drag.clear();
                 }
                 let changed = self.listing.mark_incomplete(binding, status);
                 debug_assert_eq!(changed, binding_changed);
@@ -1955,8 +1709,7 @@ impl PanelState {
         if binding_changed {
             self.selection.bind(&binding);
             self.sizes.bind(&binding);
-            self.drag_entries.clear();
-            self.drop_target = None;
+            self.drag.clear();
         }
 
         let status = if entries.is_empty() {
@@ -2138,17 +1891,6 @@ impl PanelState {
         self.sort_entries();
     }
 
-    pub fn navigate_to(&mut self, path: PathBuf) {
-        // Remember the outgoing directory's view before leaving it, then
-        // restore the incoming one's if we've seen it before this session.
-        self.stash_view_settings();
-        // The jump trail truncates any forward tail and collapses a repeat of
-        // the current directory, so every navigation entry point records here.
-        self.history.push(path.clone());
-        record_visit(&path);
-        self.load_remembered_path(path);
-    }
-
     fn snapshot_view_settings(&self) -> ViewSettings {
         ViewSettings {
             config: self.view.config(),
@@ -2193,27 +1935,6 @@ impl PanelState {
             }
         };
         self.schedule_or_reload(focus);
-    }
-
-    pub fn go_up(&mut self) {
-        // Remember the directory we are leaving so the cursor can land on it
-        // in the parent (classic dual-pane behaviour).
-        let child = self
-            .current_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string());
-        if let Some(parent) = self.current_path.parent().map(|p| p.to_path_buf()) {
-            self.navigate_to(parent);
-            if let Some(name) = child {
-                // Prefer the child-name landing over any remembered parent focus.
-                if self.can_async_list() && self.listing_job.is_awaiting() {
-                    self.listing_job.set_focus(PendingFocus::NamedChild(name));
-                } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
-                    self.set_cursor(idx + 1);
-                    self.set_scroll_to_cursor(true);
-                }
-            }
-        }
     }
 
     /// Move the cursor to the first filtered entry whose name matches `buffer`
@@ -2406,40 +2127,6 @@ impl PanelState {
         }
     }
 
-    pub fn can_go_back(&self) -> bool {
-        self.history.can_back()
-    }
-
-    pub fn can_go_forward(&self) -> bool {
-        self.history.can_forward()
-    }
-
-    pub fn go_back(&mut self) {
-        // Walk the existing trail without recording a new jump. Directories
-        // can disappear after being visited, so prune dead entries on sight.
-        self.stash_view_settings();
-        if let Some(path) = self
-            .history
-            .back_pruning(Path::is_dir)
-            .map(|p| p.to_path_buf())
-        {
-            record_visit(&path);
-            self.load_remembered_path(path);
-        }
-    }
-
-    pub fn go_forward(&mut self) {
-        self.stash_view_settings();
-        if let Some(path) = self
-            .history
-            .forward_pruning(Path::is_dir)
-            .map(|p| p.to_path_buf())
-        {
-            record_visit(&path);
-            self.load_remembered_path(path);
-        }
-    }
-
     fn filtered_snapshot(&self) -> Arc<[usize]> {
         self.listing
             .filtered_snapshot(self.view.search_query(), self.view.facets())
@@ -2542,7 +2229,7 @@ impl PanelState {
     /// Start a row drag. An unselected anchor always drags only itself; a
     /// selected anchor drags the visible selected set in listing order.
     pub fn begin_drag(&mut self, anchor: PathBuf) {
-        self.drag_entries = if self.selection.selected().contains(&anchor) {
+        let entries = if self.selection.selected().contains(&anchor) {
             self.filtered_entries()
                 .into_iter()
                 .filter(|entry| self.selection.selected().contains(&entry.path))
@@ -2551,6 +2238,7 @@ impl PanelState {
         } else {
             vec![anchor]
         };
+        self.drag.set(entries);
     }
 
     /// Flip `path`'s membership in the mark set. Unlike `toggle_select`,
@@ -2776,7 +2464,7 @@ mod tests {
 
         panel.begin_drag(PathBuf::from("/test/dragged.txt"));
 
-        assert_eq!(panel.drag_entries, [PathBuf::from("/test/dragged.txt")]);
+        assert_eq!(panel.drag.entries(), [PathBuf::from("/test/dragged.txt")]);
     }
 
     #[test]
@@ -2787,7 +2475,7 @@ mod tests {
         panel.begin_drag(PathBuf::from("/test/b.txt"));
 
         assert_eq!(
-            panel.drag_entries,
+            panel.drag.entries(),
             [PathBuf::from("/test/a.txt"), PathBuf::from("/test/b.txt")]
         );
     }
@@ -3177,7 +2865,7 @@ mod tests {
         panel.toggle_mark(old_path.clone());
         panel.set_cursor(1);
         panel.begin_drag(old_path.clone());
-        panel.drop_target = Some(PathBuf::from("/test"));
+        panel.drag.set_drop_target(PathBuf::from("/test"));
 
         let old_listing_revision = panel.entries_gen();
         let old_size_revision = panel.size_snapshot().revision();
@@ -3206,8 +2894,8 @@ mod tests {
         assert!(panel.selected_or_cursor().unwrap().is_empty());
         assert_eq!(panel.cursor(), 0);
         assert!(panel.cursor_entry().is_none());
-        assert!(panel.drag_entries.is_empty());
-        assert!(panel.drop_target.is_none());
+        assert!(panel.drag.is_empty());
+        assert!(!panel.drag.has_drop_target());
 
         panel.current_path = PathBuf::from("/test");
         assert!(panel.apply_directory_read(DirectoryRead::Complete(vec![old_entry])));
