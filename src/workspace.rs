@@ -195,6 +195,8 @@ pub enum DeleteOrigin {
 pub struct DeleteItemResult {
     pub path: PathBuf,
     pub outcome: crate::ports::TrashItemOutcome,
+    /// Present when a Versioned delete preserved a restore copy before Trash.
+    pub version: Option<crate::version_store::VersionRecord>,
 }
 
 /// Ordered, per-path result of one background delete batch.
@@ -218,6 +220,29 @@ impl DeleteOutcome {
     pub fn refresh_required(&self) -> bool {
         self.trashed > 0
     }
+}
+
+fn trash_undo_action(outcome: &DeleteOutcome) -> Option<crate::undo::Action> {
+    if outcome.indeterminate || outcome.trashed == 0 {
+        return None;
+    }
+    let items = outcome
+        .items
+        .iter()
+        .filter(|item| item.outcome == crate::ports::TrashItemOutcome::Trashed)
+        .filter_map(|item| {
+            let version = item.version.clone()?;
+            Some(crate::undo::TrashedItem {
+                path: item.path.clone(),
+                version,
+            })
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() || items.len() != outcome.trashed {
+        // Missing version records means Fast/Verified/no-op store: not undoable.
+        return None;
+    }
+    Some(crate::undo::Action::Trash { items })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -448,6 +473,18 @@ impl Workspace {
             free_space,
             crate::persistence::ephemeral_persist(),
         )
+    }
+
+    #[cfg(test)]
+    pub fn with_versioned_delete_ports(
+        left: PathBuf,
+        right: PathBuf,
+        trash: std::sync::Arc<dyn crate::ports::TrashPort>,
+        free_space: std::sync::Arc<dyn crate::ports::FreeSpacePort>,
+    ) -> Self {
+        let mut workspace = Self::with_ports(left, right, trash.clone(), free_space);
+        workspace.deletes = delete::DeleteController::with_native_versions(trash);
+        workspace
     }
 
     pub(crate) fn with_ports_and_views(
@@ -2058,6 +2095,53 @@ impl Workspace {
                     }
                 })
             }
+            crate::undo::Action::RestoreTrash { items } => {
+                let _ = reservation;
+                let _ = notify;
+                for item in &items {
+                    crate::version_store::restore(&item.version).map_err(|error| {
+                        format!(
+                            "Could not restore {}: {error}",
+                            item.version.original.display()
+                        )
+                    })?;
+                }
+                self.left.refresh();
+                self.right.refresh();
+                Ok(ActionExecution::Completed)
+            }
+            crate::undo::Action::Trash { items } => {
+                let _ = reservation;
+                let _ = notify;
+                for item in &items {
+                    let expected = crate::path_identity::PathIdentity::observe(&item.path)
+                        .map_err(|error| {
+                            format!("Could not inspect {} for Trash redo: {error}", item.path.display())
+                        })?;
+                    if !expected.exists {
+                        return Err(format!(
+                            "Trash redo source no longer exists: {}",
+                            item.path.display()
+                        ));
+                    }
+                    let target = crate::ports::TrashTarget {
+                        path: item.path.clone(),
+                        expected,
+                    };
+                    match self.deletes.trash_one(&target) {
+                        crate::ports::TrashItemOutcome::Trashed => {}
+                        other => {
+                            return Err(format!(
+                                "Could not re-trash {}: {other:?}",
+                                item.path.display()
+                            ));
+                        }
+                    }
+                }
+                self.left.refresh();
+                self.right.refresh();
+                Ok(ActionExecution::Completed)
+            }
         }
     }
 
@@ -2224,10 +2308,12 @@ impl Workspace {
                     return false;
                 }
                 if let Some(PendingOp::Delete { targets, .. }) = self.pending_op.take() {
+                    // Trash undo restores through version_store, so user deletes
+                    // always run Versioned regardless of the transfer profile.
                     return self.deletes.start(
                         targets,
                         DeleteOrigin::Confirmation,
-                        self.durability_profile,
+                        crate::operation::DurabilityProfile::Versioned,
                         self.version_retention,
                         notify,
                     );
@@ -2597,7 +2683,7 @@ impl Workspace {
         self.deletes.start(
             items,
             DeleteOrigin::Duplicates,
-            self.durability_profile,
+            crate::operation::DurabilityProfile::Versioned,
             self.version_retention,
             notify,
         )
@@ -2605,19 +2691,28 @@ impl Workspace {
 
     pub fn poll_delete(&mut self) -> Option<DeleteOutcome> {
         let outcome = self.deletes.poll()?;
-        if outcome.refresh_required() {
-            self.left.refresh();
-            self.right.refresh();
-        }
-        Some(outcome)
+        self.settle_delete_outcome(outcome)
     }
 
     #[cfg(test)]
     fn finish_delete(&mut self) -> Option<DeleteOutcome> {
         let outcome = self.deletes.finish()?;
+        self.settle_delete_outcome(outcome)
+    }
+
+    fn settle_delete_outcome(&mut self, outcome: DeleteOutcome) -> Option<DeleteOutcome> {
         if outcome.refresh_required() {
             self.left.refresh();
             self.right.refresh();
+        }
+        if let Some(action) = trash_undo_action(&outcome) {
+            match self.undo.record(action) {
+                Ok(()) => {}
+                Err(error) => {
+                    // History refusal must not hide a completed Trash mutation.
+                    let _ = error;
+                }
+            }
         }
         Some(outcome)
     }

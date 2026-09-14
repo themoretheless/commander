@@ -37,6 +37,19 @@ pub enum Action {
         folder: PathBuf,
         pairs: Vec<(PathBuf, PathBuf)>,
     },
+    /// Move-to-Trash with a preserved version-store copy for each item.
+    /// Undo restores through `version_store` (not Finder put-back).
+    Trash { items: Vec<TrashedItem> },
+    /// Inverse of [`Action::Trash`]: restore preserved versions to their
+    /// original paths without clobbering an occupied destination.
+    RestoreTrash { items: Vec<TrashedItem> },
+}
+
+/// One successfully trashed path plus the version-store record that can restore it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TrashedItem {
+    pub path: PathBuf,
+    pub version: crate::version_store::VersionRecord,
 }
 
 impl Action {
@@ -47,6 +60,7 @@ impl Action {
             Action::BatchRename { pairs, .. } => pairs.len(),
             Action::Rename { .. } => 1,
             Action::Gather { pairs, .. } | Action::Ungather { pairs, .. } => pairs.len(),
+            Action::Trash { items } | Action::RestoreTrash { items } => items.len(),
         }
     }
 
@@ -56,6 +70,8 @@ impl Action {
             Action::Move { .. } => "Moved",
             Action::BatchRename { .. } | Action::Rename { .. } => "Renamed",
             Action::Gather { .. } | Action::Ungather { .. } => "Gathered",
+            Action::Trash { .. } => "Deleted",
+            Action::RestoreTrash { .. } => "Restored",
         }
     }
 
@@ -73,6 +89,10 @@ impl Action {
             Action::Ungather { pairs, .. } => pairs
                 .first()
                 .and_then(|(_, to)| to.parent())
+                .map(PathBuf::from),
+            Action::Trash { items } | Action::RestoreTrash { items } => items
+                .first()
+                .and_then(|item| item.path.parent())
                 .map(PathBuf::from),
         }
     }
@@ -135,6 +155,7 @@ fn action_pairs(action: &Action) -> Vec<(PathBuf, PathBuf)> {
             .map(|(from, to)| (dir.join(from), dir.join(to)))
             .collect(),
         Action::Rename { from, to } => vec![(from.clone(), to.clone())],
+        Action::Trash { .. } | Action::RestoreTrash { .. } => Vec::new(),
     }
 }
 
@@ -159,6 +180,11 @@ fn same_entry(left: &Path, right: &Path) -> bool {
 /// Inspect every replay path against the live filesystem. Occupied targets are
 /// allowed only when another source in the same atomic rename set vacates them.
 pub fn preview(action: &Action) -> ReplayPreview {
+    match action {
+        Action::Trash { items } => return preview_trash(items, false),
+        Action::RestoreTrash { items } => return preview_trash(items, true),
+        _ => {}
+    }
     let pairs = action_pairs(action);
     let sources = pairs
         .iter()
@@ -241,6 +267,49 @@ pub fn preview(action: &Action) -> ReplayPreview {
     }
 }
 
+fn preview_trash(items: &[TrashedItem], restoring: bool) -> ReplayPreview {
+    let paths = items
+        .iter()
+        .map(|item| {
+            let blocked = if restoring {
+                if !path_is_taken(&item.version.stored) {
+                    Some("Preserved version no longer exists".to_string())
+                } else if path_is_taken(&item.version.original) {
+                    Some("Restore destination is occupied".to_string())
+                } else {
+                    None
+                }
+            } else if !path_is_taken(&item.path) {
+                Some("Source no longer exists".to_string())
+            } else {
+                None
+            };
+            ReplayPath {
+                from: if restoring {
+                    item.version.stored.clone()
+                } else {
+                    item.path.clone()
+                },
+                to: item.version.original.clone(),
+                eligibility: blocked.map_or(ReplayEligibility::Ready, ReplayEligibility::Blocked),
+            }
+        })
+        .collect();
+    ReplayPreview {
+        action: if restoring {
+            Action::RestoreTrash {
+                items: items.to_vec(),
+            }
+        } else {
+            Action::Trash {
+                items: items.to_vec(),
+            }
+        },
+        paths,
+        warnings: Vec::new(),
+    }
+}
+
 /// The action that reverses `action`, or `None` if it cannot be inverted.
 /// Every current variant inverts by swapping its source and destination.
 pub fn invert(action: &Action) -> Option<Action> {
@@ -263,6 +332,12 @@ pub fn invert(action: &Action) -> Option<Action> {
         Action::Ungather { folder, pairs } => Some(Action::Gather {
             folder: folder.clone(),
             pairs: pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect(),
+        }),
+        Action::Trash { items } => Some(Action::RestoreTrash {
+            items: items.clone(),
+        }),
+        Action::RestoreTrash { items } => Some(Action::Trash {
+            items: items.clone(),
         }),
     }
 }
@@ -516,6 +591,38 @@ mod tests {
         assert_eq!(inverse.verb(), "Gathered");
         assert_eq!(inverse.jump_to(), Some(PathBuf::from("/d")));
     }
+
+    #[test]
+    fn invert_trash_restores_through_version_records() {
+        let version = crate::version_store::VersionRecord {
+            operation_id: crate::operation::OperationId("op".into()),
+            key: crate::operation::IdempotencyKey("key".into()),
+            original: PathBuf::from("/d/a.txt"),
+            stored: PathBuf::from("/versions/a.txt"),
+            created_at_secs: 1,
+        };
+        let action = Action::Trash {
+            items: vec![TrashedItem {
+                path: PathBuf::from("/d/a.txt"),
+                version: version.clone(),
+            }],
+        };
+        let inverse = invert(&action).unwrap();
+        assert_eq!(
+            inverse,
+            Action::RestoreTrash {
+                items: vec![TrashedItem {
+                    path: PathBuf::from("/d/a.txt"),
+                    version,
+                }],
+            }
+        );
+        assert_eq!(invert(&inverse), Some(action));
+        assert_eq!(inverse.item_count(), 1);
+        assert_eq!(inverse.verb(), "Restored");
+        assert_eq!(inverse.jump_to(), Some(PathBuf::from("/d")));
+    }
+
 
     #[test]
     fn undo_returns_inverse_and_enables_redo() {

@@ -290,7 +290,7 @@ at a time):
 | Post-copy size/checksum verification with one-click re-copy of just the failed files | medium | Reuses the existing `content_hash` primitive |
 | Append-only crash-survivable operation journal, with a "resume cleanup" dialog on next launch | large | Distinct from B5 (receipts are UX/history; this is crash recovery for operations that never finished) |
 | Dry-run/preview step for Sync and large batch Delete/Move | medium | Sync can delete destination-only files; today the only inspection surface is the tinted row list |
-| Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | `trash_paths`'s own doc comment admits deletes aren't undoable today |
+| Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | **done:** `Action::Trash`/`RestoreTrash` via `version_store` restore |
 | Pre-flight collision/permission/path-length scan before a transfer starts, not discovered file-by-file mid-transfer | medium | Reuses the walk the free-space preflight already does |
 | Route move/overwrite cleanup removals through Trash (or a quarantine dir) instead of a hard `remove_file`/`remove_dir_all` | medium | Today only explicit Delete goes through Trash; implicit removals inside Move/overwrite don't |
 
