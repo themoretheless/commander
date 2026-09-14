@@ -1,6 +1,6 @@
 //! Deterministic fault, crash-restart, and small-state verification harness.
 
-use crate::fs_at::{leaf_name, BoundDirectory};
+use crate::fs_at::{BoundDirectory, leaf_name};
 use crate::ports::{
     FileSystemEffect, FileSystemProvider, NativeFileSystemProvider, RelativeFileSystemEffect,
 };

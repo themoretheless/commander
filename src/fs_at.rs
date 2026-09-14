@@ -63,10 +63,7 @@ impl BoundDirectory {
 
     /// Observe `path` through `provider`, then open a descriptor-relative
     /// binding when the observation still names an existing directory.
-    pub fn bind(
-        provider: &dyn crate::ports::FileSystemProvider,
-        path: &Path,
-    ) -> io::Result<Self> {
+    pub fn bind(provider: &dyn crate::ports::FileSystemProvider, path: &Path) -> io::Result<Self> {
         let identity = provider.observe(path)?;
         if !identity.exists || identity.kind != Some(crate::path_identity::PathKind::Directory) {
             return Err(io::Error::new(
@@ -339,6 +336,10 @@ fn renameat_noreplace_fallback(
 }
 
 /// Leaf name of `path` suitable for a relative `*at` effect.
+///
+/// Kept for the upcoming transfer placement rewire; the verification harness
+/// is the only in-tree consumer in this first slice.
+#[allow(dead_code)]
 pub fn leaf_name(path: &Path) -> io::Result<OsString> {
     path.file_name().map(OsStr::to_os_string).ok_or_else(|| {
         io::Error::new(
