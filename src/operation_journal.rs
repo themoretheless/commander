@@ -18,6 +18,11 @@ use std::sync::{Mutex, OnceLock};
 
 const JOURNAL_SCHEMA: u32 = 4;
 const MAX_OPERATIONS: usize = 500;
+/// Persist-envelope contract for this store. Domain schema stays on
+/// [`Journal::schema`] / [`JOURNAL_SCHEMA`] and migrates independently.
+const STORE: crate::persistence::StoreSpec =
+    crate::persistence::StoreSpec::new("commander.operation_journal", 1, 32 * 1024 * 1024)
+        .allow_legacy_schema_marker();
 
 pub const fn schema_version() -> u32 {
     JOURNAL_SCHEMA
@@ -824,43 +829,102 @@ fn prune_terminal_history(journal: &mut Journal) -> Result<(), String> {
     Ok(())
 }
 
-fn load_at(path: &Path) -> Result<Journal, String> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    match options.open(path) {
-        Ok(file) => {
-            let journal: Journal = serde_json::from_reader(file)
-                .map_err(|error| format!("Operation journal is corrupt: {error}"))?;
+struct LoadedJournal {
+    journal: Journal,
+    gate: crate::persistence::StoreGate,
+}
+
+fn load_journal_at(path: &Path) -> Result<LoadedJournal, String> {
+    let persist = crate::persistence::FsPersist::default();
+    let loaded = crate::persistence::load_enveloped::<Journal>(&persist, path, STORE);
+    let status = loaded.gate.status();
+    match status {
+        crate::persistence::LoadStatus::Missing => Ok(LoadedJournal {
+            journal: Journal::default(),
+            gate: loaded.gate,
+        }),
+        crate::persistence::LoadStatus::Legacy
+        | crate::persistence::LoadStatus::Current
+        | crate::persistence::LoadStatus::Recovered => {
+            let Some(journal) = loaded.value else {
+                return Err("Operation journal is corrupt: payload did not decode".to_string());
+            };
             if !(1..=JOURNAL_SCHEMA).contains(&journal.schema) {
                 return Err(format!(
                     "Unsupported operation journal schema {}; expected {JOURNAL_SCHEMA}",
                     journal.schema
                 ));
             }
-            migrate_and_validate(journal)
+            Ok(LoadedJournal {
+                journal: migrate_and_validate(journal)?,
+                gate: loaded.gate,
+            })
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Journal::default()),
-        Err(error) => Err(format!("Could not open operation journal: {error}")),
+        crate::persistence::LoadStatus::Corrupt => {
+            Err("Operation journal is corrupt: envelope or payload rejected".to_string())
+        }
+        crate::persistence::LoadStatus::FutureVersion => Err(
+            "Operation journal uses a newer persist envelope than this build supports".to_string(),
+        ),
+        crate::persistence::LoadStatus::Unreadable => {
+            Err("Could not open operation journal: unreadable".to_string())
+        }
     }
 }
 
-fn save_at(path: &Path, journal: &Journal) -> Result<(), String> {
+fn load_at(path: &Path) -> Result<Journal, String> {
+    Ok(load_journal_at(path)?.journal)
+}
+
+fn map_journal_save_error(error: crate::persistence::JsonSaveError) -> String {
+    match error {
+        crate::persistence::JsonSaveError::PreCommit(
+            crate::persistence::PreCommitError::Conflict,
+        ) => "Operation journal revision mismatch: another writer changed the store".to_string(),
+        crate::persistence::JsonSaveError::PreCommit(error) => format!(
+            "Operation journal was not committed at {:?}: {error:?}",
+            error.stage()
+        ),
+        crate::persistence::JsonSaveError::Blocked(status) => {
+            format!("Operation journal save blocked ({status:?})")
+        }
+        crate::persistence::JsonSaveError::GenerationExhausted => {
+            "Operation journal generation counter exhausted".to_string()
+        }
+        crate::persistence::JsonSaveError::RecoveryPreservation => {
+            "Operation journal could not preserve recovered source before upgrade".to_string()
+        }
+    }
+}
+
+fn save_journal_at(
+    path: &Path,
+    journal: &Journal,
+    gate: &mut crate::persistence::StoreGate,
+) -> Result<(), String> {
     validate_journal(journal)?;
-    match crate::persistence::save_json_atomic(path, journal) {
+    let persist = crate::persistence::FsPersist::default();
+    match crate::persistence::save_enveloped(
+        &persist,
+        path,
+        STORE,
+        journal,
+        gate,
+        crate::persistence::SaveIntent::Automatic,
+    ) {
         Ok(crate::persistence::AtomicWriteOutcome::Durable) => Ok(()),
         Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => Err(format!(
             "Operation journal commit is ambiguous across a crash: target was replaced but its directory could not be synced: {error}"
         )),
-        Err(error) => Err(format!(
-            "Operation journal was not committed at {:?}: {error:?}",
-            error.stage()
-        )),
+        Err(error) => Err(map_journal_save_error(error)),
     }
+}
+
+#[cfg(test)]
+fn save_at(path: &Path, journal: &Journal) -> Result<(), String> {
+    let persist = crate::persistence::FsPersist::default();
+    let mut gate = crate::persistence::load_enveloped::<Journal>(&persist, path, STORE).gate;
+    save_journal_at(path, journal, &mut gate)
 }
 
 fn mutate<T>(change: impl FnOnce(&mut Journal) -> Result<T, String>) -> Result<T, String> {
@@ -868,11 +932,11 @@ fn mutate<T>(change: impl FnOnce(&mut Journal) -> Result<T, String>) -> Result<T
     let _guard = crate::lock_util::recover(lock);
     let path = journal_path();
     let _store_lock = acquire_store_lock(&path)?;
-    let mut journal = load_at(&path)?;
-    journal.schema = JOURNAL_SCHEMA;
-    let result = change(&mut journal)?;
-    prune_terminal_history(&mut journal)?;
-    save_at(&path, &journal)?;
+    let mut loaded = load_journal_at(&path)?;
+    loaded.journal.schema = JOURNAL_SCHEMA;
+    let result = change(&mut loaded.journal)?;
+    prune_terminal_history(&mut loaded.journal)?;
+    save_journal_at(&path, &loaded.journal, &mut loaded.gate)?;
     Ok(result)
 }
 
