@@ -308,6 +308,45 @@ fn journal_round_trips_atomically() {
     save_at(&path, &journal).unwrap();
     assert_eq!(load_at(&path).unwrap().schema, JOURNAL_SCHEMA);
     assert!(!path.with_extension("json.tmp").exists());
+
+    let root: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(root["format"], "commander.persist");
+    assert_eq!(root["store"], "commander.operation_journal");
+    assert_eq!(root["schema"], 1);
+    assert_eq!(root["payload"]["schema"], JOURNAL_SCHEMA);
+    assert!(root["generation"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn journal_envelope_upgrades_legacy_on_save_and_rejects_stale_revision() {
+    let temp = TempDir::new();
+    let path = temp.path().join("legacy-journal.json");
+    let legacy = Journal::default();
+    std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+    let mut first = load_journal_at(&path).unwrap();
+    assert_eq!(first.gate.status(), crate::persistence::LoadStatus::Legacy);
+    first.journal.schema = JOURNAL_SCHEMA;
+    save_journal_at(&path, &first.journal, &mut first.gate).unwrap();
+
+    let current = load_journal_at(&path).unwrap();
+    assert_eq!(
+        current.gate.status(),
+        crate::persistence::LoadStatus::Current
+    );
+    assert_eq!(current.journal.schema, JOURNAL_SCHEMA);
+
+    let mut stale = load_journal_at(&path).unwrap();
+    let mut winner = load_journal_at(&path).unwrap();
+    winner.journal.operations.clear();
+    save_journal_at(&path, &winner.journal, &mut winner.gate).unwrap();
+
+    stale.journal.operations.clear();
+    let error = save_journal_at(&path, &stale.journal, &mut stale.gate).unwrap_err();
+    assert!(
+        error.contains("revision mismatch"),
+        "expected revision mismatch, got {error}"
+    );
 }
 
 #[test]

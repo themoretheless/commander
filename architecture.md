@@ -51,8 +51,10 @@ versioned envelope are now shipped too. Asynchronous listing publication and
 the placement→`mark_completed` crash windows (overwrite and non-overwrite) are
 on `main`. The remaining structural work is the open facade/integrity PR stack
 plus three accepted residuals: a descriptor-relative filesystem effect port, a
-streaming tree planner, and cross-process CAS / Persist-envelope migration for
-the operation journal and content index. See
+streaming tree planner, and the remainder of residual #3 (content-index Persist
+envelope plus fuller cross-process CAS). The operation journal's first Persist
+envelope slice is landed (`commander.operation_journal` via
+`load_enveloped`/`save_enveloped`, flock retained). See
 [Structural Ideal Definition of Done](#structural-ideal-definition-of-done).
 The typed queue portion is shipped as `ui_request::UiRequestQueue`; historical
 roadmap references to an Effect bus describe that completed migration. `G044`
@@ -172,7 +174,7 @@ shuffle.
 | `src/transfer.rs` | ~3,050 | Public progress/spec facade; byte-copy primitives live under `transfer::{buffered,sparse,parallel_tree}` |
 | `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
 | `src/operation_journal.rs` | ~3,090 | Durable transitions, proof validation, migration, and recovery; production facade only |
-| `src/operation_journal/tests.rs` | ~1,545 | Fault/model suite intentionally separated (workspace-style `#[cfg(test)] mod tests;`); CAS and persist-envelope adoption remain follow-ups |
+| `src/operation_journal/tests.rs` | ~1,545 | Fault/model suite intentionally separated (workspace-style `#[cfg(test)] mod tests;`); journal Persist envelope round-trip/revision tests included; content-index envelope and fuller cross-process CAS remain follow-ups |
 | `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the production facade |
 | `src/workspace.rs` | ~2,800 | Two-panel orchestration; fileops facades + queue/delete/space/undo controllers |
 | `src/app/update.rs` | 2,118 | Per-frame hub and typed request dispatcher; dialog buffers live in `UiState` |
@@ -407,9 +409,11 @@ Three mechanisms connect the core to the shell:
   stores own schema and recovery policy through one versioned envelope.
   Bookmarks/session receive the same injected port through `App`/`Workspace`;
   feature flags and the version manifest use the boundary and fail closed.
-  Cross-process CAS, descriptor-relative opens, and migration of the operation
-  journal/content index onto the shared persist envelope remain explicit
-  follow-ups. Journal production code and its fault/model suite are already
+  The operation journal now loads/saves through `load_enveloped`/`save_enveloped`
+  (`commander.operation_journal`) while retaining its flock; content-index
+  Persist adoption (needs streaming Persist) and fuller cross-process CAS
+  remain explicit follow-ups. Descriptor-relative opens remain an accepted
+  residual. Journal production code and its fault/model suite are already
   split the same way as workspace (`operation_journal.rs` +
   `operation_journal/tests.rs`); that split does not change resume/reconcile
   ownership.
@@ -458,11 +462,14 @@ Three mechanisms connect the core to the shell:
   item-level recovery and source quarantine, while session state is strict;
   both share the injected port and envelope without write-on-read. Feature
   flags and the version manifest reject corrupt, unreadable, wrong-store, and
-  future-schema input without replacing it. Legacy utility stores such as
-  smart folders, command templates and the panel cache still use the atomic
-  compatibility facade; the operation journal and content index need their own
-  streaming/schema migrations before they can adopt the envelope safely
-  (accepted residual alongside cross-process CAS).
+  future-schema input without replacing it. The operation journal now uses the
+  shared Persist envelope (`commander.operation_journal`) with flock retained
+  and domain schema migration still on `Journal::schema`; legacy journals
+  upgrade on the next save. Content index still needs a streaming Persist
+  before it can adopt the envelope safely (accepted residual remainder
+  alongside fuller cross-process CAS). Legacy utility stores such as smart
+  folders, command templates and the panel cache still use the atomic
+  compatibility facade.
 - **Dialog buffers are centralized, while visual modality remains an egui
   composition contract.** `UiState` owns every transient modal buffer and the
   FIFO/Escape router; opening contexts capture panel/directory/path identity.
@@ -511,13 +518,16 @@ against `main` after PRs #7–#13 merged (2026-09-14).
 2. **Streaming tree planner** — **done** (`transfer/parallel_tree`): parallel
    copy streams the walk into a bounded job queue; it no longer materializes
    every leaf path before the first copy.
-3. **Cross-process CAS / Persist envelope for journal + content-index** — if
-   those stores are not already solely on the shared versioned envelope with
-   cross-process compare-and-swap commits.
+3. **Cross-process CAS / Persist envelope for journal + content-index** —
+   **partial:** operation journal Persist envelope slice landed
+   (`commander.operation_journal`, flock retained, `StoreGate.expected` →
+   `Persist::commit`). Content-index envelope (needs streaming Persist) and
+   fuller cross-process CAS remain open.
 
 Phase1 integrity and facade-extraction items from PRs #7–#13 are closed on
 `main`; they are not additional long-term residuals. Residual (2) closes with
-the streaming parallel-tree change; residuals (1) and (3) remain open.
+the streaming parallel-tree change; residual (1) remains open and residual (3)
+is partial (journal landed; content-index + fuller CAS still open).
 
 ## 2026-07-09 SOLID/DRY reading slices
 
