@@ -7,9 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::backend::CheckpointSink;
-use super::{
-    CheckpointLayout, ResumeCheckpoint, TransferState, prefix_digest,
-};
+use super::{CheckpointLayout, ResumeCheckpoint, TransferState, prefix_digest};
 use crate::path_identity::PathIdentity;
 
 pub(super) const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer

@@ -973,7 +973,6 @@ use executor::{FailureRollback, TransferExecutor, finish_progress, run_failure_r
 #[cfg(test)]
 use executor::{cleanup_moved_source, quarantine_expected_path, undo_placement};
 
-
 #[cfg(test)]
 use buffered::{copy_file_buffered_with_limiter, copy_symlink};
 #[cfg(test)]
@@ -984,8 +983,8 @@ use sparse::{copy_file_sparse, is_sparse_file};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Seek, SeekFrom, Write};
     use crate::testutil::TempDir;
+    use std::io::{Seek, SeekFrom, Write};
     use std::sync::atomic::Ordering;
 
     fn entry_for(path: &Path) -> FileEntry {
