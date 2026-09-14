@@ -1997,7 +1997,8 @@ fn complete_interrupted_placement(
                 .destination_after
                 .as_ref()
                 .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
-            if step.landing.as_deref() != Some(landing) || !existing.same_binding(&destination_after)
+            if step.landing.as_deref() != Some(landing)
+                || !existing.same_binding(&destination_after)
             {
                 return Err(format!(
                     "Duplicate completion for step {} conflicts with its immutable proof",
