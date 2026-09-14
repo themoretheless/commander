@@ -1,0 +1,5 @@
+# Pin the nightly that ships rustc 1.100. Floating `nightly` would drift past
+# 1.100 on the next train; CI and local builds should share this exact channel.
+[toolchain]
+channel = "nightly-2026-09-11"
+components = ["rustfmt", "clippy"]

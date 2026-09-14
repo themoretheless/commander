@@ -52,6 +52,7 @@ impl PreviewTarget {
         self.width >= other.width && self.height >= other.height
     }
 
+    #[cfg(target_os = "macos")]
     const fn max_dimension(self) -> u32 {
         if self.width > self.height {
             self.width
@@ -983,8 +984,10 @@ struct ProviderAtomicTally {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DecoderProvider {
+    #[cfg(target_os = "macos")]
     ImageIo,
     Standard,
+    #[cfg(target_os = "macos")]
     Video,
 }
 
@@ -996,8 +999,10 @@ fn provider_counters() -> &'static ProviderCounters {
 fn provider_tally(provider: DecoderProvider) -> &'static ProviderAtomicTally {
     let counters = provider_counters();
     match provider {
+        #[cfg(target_os = "macos")]
         DecoderProvider::ImageIo => &counters.image_io,
         DecoderProvider::Standard => &counters.standard,
+        #[cfg(target_os = "macos")]
         DecoderProvider::Video => &counters.video,
     }
 }
@@ -1368,6 +1373,7 @@ fn classify_failure(error: &str) -> PreviewFailure {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn is_video_ext(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -1380,6 +1386,7 @@ fn is_video_ext(path: &Path) -> bool {
 /// Allocate a zeroed RGBA buffer without integer wrap or an aborting reserve.
 /// CoreGraphics dimensions are trusted only after both multiplications and the
 /// allocation request have succeeded.
+#[cfg(any(target_os = "macos", test))]
 fn allocate_rgba_pixels(width: usize, height: usize) -> Result<(usize, Vec<u8>), String> {
     if width > MAX_IMAGE_DIMENSION as usize || height > MAX_IMAGE_DIMENSION as usize {
         return Err("image dimensions exceed the preview limit".to_string());
@@ -1422,7 +1429,9 @@ fn color_image_from_rgba(size: [usize; 2], rgba: Vec<u8>) -> Result<(ColorImage,
         .try_reserve_exact(pixel_count)
         .map_err(|_| "image color buffer allocation failed".to_string())?;
     pixels.extend(
-        rgba.chunks_exact(4)
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])),
     );
     Ok((ColorImage::new(size, pixels), byte_size))
@@ -1435,7 +1444,7 @@ struct DecoderPermit;
 impl DecoderPermit {
     fn acquire() -> Option<Self> {
         ACTIVE_DECODERS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < MAX_PRELOAD_WORKERS).then_some(active + 1)
             })
             .ok()
@@ -1722,7 +1731,7 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
         CGContextDrawImage(cg_ctx, rect, cg_image);
 
         // Unpremultiply alpha (premultiplied → straight)
-        for chunk in pixels.chunks_exact_mut(4) {
+        for chunk in pixels.as_chunks_mut::<4>().0 {
             let a = chunk[3] as u16;
             if a > 0 && a < 255 {
                 chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
@@ -1920,7 +1929,7 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         CGContextDrawImage(cg_ctx, rect, cg_image);
 
         // Unpremultiply
-        for chunk in pixels.chunks_exact_mut(4) {
+        for chunk in pixels.as_chunks_mut::<4>().0 {
             let a = chunk[3] as u16;
             if a > 0 && a < 255 {
                 chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;

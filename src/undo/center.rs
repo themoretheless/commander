@@ -105,7 +105,7 @@ pub(crate) struct UndoCenter {
 impl Default for UndoCenter {
     fn default() -> Self {
         let owner = NEXT_OWNER_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .unwrap_or_else(|_| panic!("history owner identity exhausted"));
