@@ -82,13 +82,15 @@ envelope. It separates byte I/O from typed schema policy, performs bounded
 no-follow reads, rejects stale in-process revisions, preserves recovered
 bookmark input before explicit upgrade, and blocks destructive version-store
 actions when the manifest is corrupt, incompatible, forged, or path-escaping.
-The accepted scope deliberately leaves the operation journal/content index,
-cross-process CAS, and descriptor-relative filesystem traversal for dedicated
-migrations. Phase 5's journal test split is done: production stays in
+The accepted scope deliberately leaves the content index Persist migration,
+fuller cross-process CAS, and descriptor-relative filesystem traversal for
+dedicated migrations. Phase 5's journal test split is done: production stays in
 `operation_journal.rs` with `use_test_journal` path guards under `#[cfg(test)]`,
 and the fault/model suite lives in `operation_journal/tests.rs` (workspace-style
-child module). Adopting CAS and the shared persist envelope for the journal
-remain follow-ups; resume/reconcile logic is unchanged.
+child module). The journal's first Persist envelope slice is landed
+(`commander.operation_journal` via `load_enveloped`/`save_enveloped`, flock
+retained, revision checked through `StoreGate.expected`); resume/reconcile
+logic is unchanged. Content-index envelope adoption remains a follow-up.
 The following four-role pass checked in the full-lockfile `cargo-deny` policy
 and an Ubuntu gate for pull requests, main-branch pushes, and a weekly refresh.
 It currently reports zero known vulnerabilities, accepts only the unmaintained
@@ -137,7 +139,9 @@ Verified against `main` after PRs #7–#13 merged (2026-09-14).
 
 1. Descriptor-relative filesystem effect port
 2. Streaming tree planner
-3. Cross-process CAS / Persist envelope for journal + content-index
+3. Cross-process CAS / Persist envelope for journal + content-index —
+   **partial:** journal Persist envelope slice landed; content-index + fuller
+   cross-process CAS still open
 
 Highest-value next steps, in order:
 
@@ -158,8 +162,9 @@ Highest-value next steps, in order:
    Buffered/sparse/parallel-tree byte paths live under
    `transfer::{buffered,sparse,parallel_tree}` (PR #10; public
    `TransferSpec` / progress API unchanged). Next among accepted residuals:
-   descriptor-relative namespace effects and a streaming parallel-directory
-   planner.
+   descriptor-relative namespace effects, a streaming parallel-directory
+   planner, content-index Persist envelope (streaming Persist), and fuller
+   cross-process CAS. Journal Persist envelope slice already landed.
 4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries (`panel/{drag,visit,preview,nav}` and
    `workspace/fileops/` already landed). Their state ownership is already
