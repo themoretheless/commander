@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
 mod listing;
+mod listing_job;
 mod selection;
 mod size_index;
 mod sort;
@@ -18,6 +19,7 @@ mod view;
 mod watcher;
 
 use listing::ListingState;
+use listing_job::{ListingJobController, PendingFocus};
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
 use size_index::{SizeIndex, SizeScanInput};
@@ -1019,6 +1021,8 @@ pub enum DirStatus {
     /// The directory opened, but at least one child could not be observed.
     /// The previous complete snapshot remains authoritative.
     Partial,
+    /// An asynchronous listing for this binding is in flight; rows are empty.
+    Loading,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1028,7 +1032,7 @@ pub enum ViewApplyOutcome {
     ReadRejected(DirStatus),
 }
 
-enum DirectoryRead {
+pub(super) enum DirectoryRead {
     Complete(Vec<FileEntry>),
     Incomplete(DirStatus),
 }
@@ -1529,6 +1533,8 @@ pub struct PanelState {
     watcher: DirectoryWatcherState,
     pub drag_entries: Vec<PathBuf>,
     pub drop_target: Option<PathBuf>,
+    listing_job: ListingJobController,
+    workload: Option<crate::workload::WorkloadHandle>,
 }
 
 impl PanelState {
@@ -1559,7 +1565,14 @@ impl PanelState {
             watcher: DirectoryWatcherState::default(),
             drag_entries: Vec::new(),
             drop_target: None,
+            listing_job: ListingJobController::default(),
+            workload: None,
         }
+    }
+
+    /// Attach the shared workload handle used for off-thread listings.
+    pub fn set_workload(&mut self, workload: crate::workload::WorkloadHandle) {
+        self.workload = Some(workload);
     }
 
     /// Wire the UI wake-up callback and restart the watcher so its
@@ -1781,6 +1794,22 @@ impl PanelState {
     }
 
     pub fn refresh(&mut self) {
+        self.schedule_or_reload(PendingFocus::None);
+    }
+
+    fn can_async_list(&self) -> bool {
+        self.workload.is_some() && self.watcher.notify().is_some()
+    }
+
+    fn schedule_or_reload(&mut self, focus: PendingFocus) {
+        if self.can_async_list() {
+            self.schedule_listing(focus);
+        } else {
+            self.refresh_sync(focus);
+        }
+    }
+
+    fn refresh_sync(&mut self, focus: PendingFocus) {
         let path = self.current_path.clone();
         self.sizes.bind(&path);
         // Subscribe before taking the snapshot. A callback racing with the
@@ -1791,8 +1820,100 @@ impl PanelState {
             let listing_binding = self.listing.binding().to_path_buf();
             self.watcher.acknowledge_snapshot(ticket, &listing_binding);
             self.refresh_sizes(true);
+            self.apply_pending_focus(focus);
         } else {
             self.watcher.defer_snapshot(ticket.as_ref());
+        }
+    }
+
+    fn schedule_listing(&mut self, focus: PendingFocus) {
+        let path = self.current_path.clone();
+        let show_hidden = self.view.show_hidden();
+        let binding_changed = self.listing.binding() != path;
+        self.sizes.bind(&path);
+        self.watcher.ensure_binding(&path);
+        let ticket = self.watcher.snapshot_ticket();
+        if binding_changed {
+            self.selection.bind(&path);
+            self.drag_entries.clear();
+            self.drop_target = None;
+            self.listing.begin_loading(path.clone());
+        }
+        self.listing_job.request(path, show_hidden, ticket, focus);
+        // Opportunistically admit/poll within this call so fast local disks
+        // still settle before the next frame when the worker is free.
+        let _ = self.poll_listing_results();
+    }
+
+    /// Drive in-flight listings and publish generation-checked results.
+    /// Returns `true` when a listing was applied.
+    pub fn poll_listing(&mut self) -> bool {
+        self.poll_listing_results()
+    }
+
+    fn poll_listing_results(&mut self) -> bool {
+        let Some(workload) = self.workload.clone() else {
+            return false;
+        };
+        let Some(notify) = self.watcher.notify() else {
+            return false;
+        };
+        self.listing_job
+            .drive(&workload, notify, PanelState::read_dir);
+        let Some(ready) = self.listing_job.take_ready() else {
+            return false;
+        };
+        if ready.binding.path != self.current_path
+            || ready.binding.show_hidden != self.view.show_hidden()
+            || self
+                .listing_job
+                .desired_binding()
+                .is_some_and(|desired| desired.generation > ready.binding.generation)
+        {
+            // Stale relative to panel intent; keep waiting for the current job.
+            return false;
+        }
+        let applied = self.apply_directory_read(ready.read);
+        if applied {
+            let listing_binding = self.listing.binding().to_path_buf();
+            self.watcher
+                .acknowledge_snapshot(ready.ticket, &listing_binding);
+            self.refresh_sizes(true);
+            self.apply_pending_focus(ready.focus);
+        } else if let Some(ticket) = ready.ticket.as_ref() {
+            self.watcher.defer_snapshot(Some(ticket));
+            let _ = ready.focus;
+        } else {
+            let _ = ready.focus;
+        }
+        applied
+    }
+
+    fn apply_pending_focus(&mut self, focus: PendingFocus) {
+        match focus {
+            PendingFocus::None => {}
+            PendingFocus::Remembered {
+                cursor_path,
+                scroll_anchor,
+            } => {
+                self.set_scroll_anchor(scroll_anchor.min(self.filtered_count().saturating_sub(1)));
+                let cursor = cursor_path
+                    .and_then(|path| self.filtered_position(|entry| entry.path == path))
+                    .map(|index| index + 1)
+                    .unwrap_or_else(|| {
+                        self.scroll_anchor()
+                            .saturating_add(1)
+                            .min(self.filtered_count())
+                    });
+                self.set_cursor(cursor);
+                self.set_scroll_to_cursor(self.cursor() > 0);
+            }
+            PendingFocus::NamedChild(name) => {
+                if let Some(idx) = self.filtered_position(|entry| entry.name == name) {
+                    self.set_cursor(idx + 1);
+                    self.set_scroll_to_cursor(true);
+                }
+            }
         }
     }
 
@@ -1866,6 +1987,16 @@ impl PanelState {
             self.sizes.mark_dirty();
         }
         if let Some(ticket) = outcome.ticket {
+            if self.can_async_list() {
+                let show_hidden = self.view.show_hidden();
+                self.listing_job
+                    .request(path, show_hidden, Some(ticket), PendingFocus::None);
+                let applied = self.poll_listing_results();
+                if applied {
+                    crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
+                }
+                return applied;
+            }
             if self.reload_entries() {
                 let listing_binding = self.listing.binding().to_path_buf();
                 self.watcher
@@ -1917,7 +2048,7 @@ impl PanelState {
         };
         self.sizes.poll(input);
     }
-    fn read_dir(path: &Path, show_hidden: bool) -> DirectoryRead {
+    pub(super) fn read_dir(path: &Path, show_hidden: bool) -> DirectoryRead {
         let entries = match fs::read_dir(path) {
             Ok(entries) => entries,
             Err(error) => {
@@ -2048,25 +2179,20 @@ impl PanelState {
         if remembered.is_none() {
             self.view.clear_filters();
         }
-        if let Some((_, scroll_anchor)) = &remembered {
-            self.set_scroll_anchor(*scroll_anchor);
-        }
-        self.refresh();
-        if let Some((cursor_path, scroll_anchor)) = remembered {
-            self.set_scroll_anchor(scroll_anchor.min(self.filtered_count().saturating_sub(1)));
-            let cursor = cursor_path
-                .and_then(|path| self.filtered_position(|entry| entry.path == path))
-                .map(|index| index + 1)
-                .unwrap_or_else(|| {
-                    self.scroll_anchor()
-                        .saturating_add(1)
-                        .min(self.filtered_count())
-                });
-            self.set_cursor(cursor);
-            self.set_scroll_to_cursor(self.cursor() > 0);
-        } else {
-            self.set_scroll_anchor(0);
-        }
+        let focus = match remembered {
+            Some((cursor_path, scroll_anchor)) => {
+                self.set_scroll_anchor(scroll_anchor);
+                PendingFocus::Remembered {
+                    cursor_path,
+                    scroll_anchor,
+                }
+            }
+            None => {
+                self.set_scroll_anchor(0);
+                PendingFocus::None
+            }
+        };
+        self.schedule_or_reload(focus);
     }
 
     pub fn go_up(&mut self) {
@@ -2078,11 +2204,14 @@ impl PanelState {
             .map(|n| n.to_string_lossy().to_string());
         if let Some(parent) = self.current_path.parent().map(|p| p.to_path_buf()) {
             self.navigate_to(parent);
-            if let Some(name) = child
-                && let Some(idx) = self.filtered_position(|e| e.name == name)
-            {
-                self.set_cursor(idx + 1);
-                self.set_scroll_to_cursor(true);
+            if let Some(name) = child {
+                // Prefer the child-name landing over any remembered parent focus.
+                if self.can_async_list() && self.listing_job.is_awaiting() {
+                    self.listing_job.set_focus(PendingFocus::NamedChild(name));
+                } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
+                    self.set_cursor(idx + 1);
+                    self.set_scroll_to_cursor(true);
+                }
             }
         }
     }
