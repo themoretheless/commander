@@ -10,9 +10,10 @@ mod mkdir;
 mod pending;
 mod rename;
 
+#[cfg(test)]
+pub(crate) use batch_rename::apply_rename_order_using;
 pub(crate) use batch_rename::{
-    apply_batch_rename_in, apply_rename_order, apply_rename_order_using, batch_rename_context,
-    dir_names,
+    apply_batch_rename_in, apply_rename_order, batch_rename_context, dir_names,
 };
 pub(crate) use drop::{
     cancel_drag, drop_dragged, drop_dragged_as, transfer_selection_into_cursor_folder,
@@ -20,6 +21,5 @@ pub(crate) use drop::{
 pub(crate) use mkdir::create_dir;
 pub(crate) use pending::confirm_pending_op;
 pub(crate) use rename::{
-    RenameExecutionError, commit_rename, latch_rename_execution_error, rename_path_no_clobber,
-    rename_siblings,
+    commit_rename, latch_rename_execution_error, rename_path_no_clobber, rename_siblings,
 };
