@@ -233,7 +233,7 @@ intentional, not a dropped row.)
 | D20 | Undo coverage gaps: add a `Rename` variant to `undo::Action` so F2 single-file rename is undoable (and toast when an action genuinely can't be undone, instead of silently reverting something else or no-op'ing); make "Gather into Folder"'s undo also remove the now-empty folder it created | 8, below the cut | medium | **done:** F2 rename undo/redo + feedback; typed Gather/Ungather removes/recreates the folder safely |
 | D21 | Conflict-resolution UI deadlock: recompute `need_bytes`/`overflow` after `resolve_pending_conflicts` shrinks `tr.entries`, so a chosen policy (Skip Existing, Keep Newer, ...) can actually un-stick the disabled buttons it was meant to fix | 7 | small-medium | **done:** policies remain selectable and rebuild entries/size/conflicts/scan |
 | D22 | Drag-and-drop plumbing rewrite: capture the actual dragged row(s) explicitly instead of falling back to a stale `panel.selected` when the drag starts on an unselected row; mirror drag state so the destination panel can render its own drop-target highlight; clear `drag_entries`/`drop_target` on `drop_dragged`'s early-return concurrency guard instead of leaving a phantom overlay | 4, 43, 44 | medium; one rewrite closes all three plus the already-tracked #6 | **done:** explicit anchor, cross-panel target feedback, cancel path, full cleanup |
-| D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | open |
+| D23 | Filesystem edge-case hardening: run `free_space()`'s `df` call off the UI thread with a timeout; make `copy_dir_all` handle a directory symlink the way `transfer.rs`'s `copy_dir_buffered` already does; don't delete a whole partially-copied destination tree over one `copy_dir_native` file error; add an `ENOTSUP` fallback to `rename_noreplace` | 39, 40, 41, 50 | medium | **done:** space probe is off-UI with a 5s `statvfs` timeout; `copy_dir_all` preserves dir symlinks; native dir child failures fail-loud and preserve successful staging siblings; `rename_noreplace` falls back when `RENAME_EXCL` is unsupported |
 | D24 | Silent no-op cleanup: toast when `JumpSlot` targets a missing directory; toast on copy-path commands with an empty selection; give `JumpList` a way to prune a dead entry instead of only bypassing it; fix `select_by_mask`'s live-count preview to agree with what Select will actually do for a subtraction-only mask | 46, 47, below the cut (x2) | small each | **done:** missing quick-jump targets and empty copy-path selections report feedback; mask preview reports actual selection changes; back/forward navigation prunes disappeared directories |
 
 Severity caveats from manual verification (do not act on these as written):
@@ -254,7 +254,8 @@ permanent trap but the existing "Go up" affordance on the Gone-state screen
 already escapes it each time, so it's a recurring papercut, not a dead end;
 round-4 **#50** (`rename_noreplace` `ENOTSUP` fallback) rests on an honestly
 un-reproduced OS behavior (no exotic filesystem was available to test against)
-- real gap, narrow trigger. See the corrections tables in
+- real gap, narrow trigger; closed with a check-then-rename fallback plus a
+`cfg(test)` errno injection hook. See the corrections tables in
 [audit.md](audit.md).
 
 ## Track E - ideas backlog (unscoped, not yet prioritised)
@@ -290,7 +291,7 @@ at a time):
 | Post-copy size/checksum verification with one-click re-copy of just the failed files | medium | Reuses the existing `content_hash` primitive |
 | Append-only crash-survivable operation journal, with a "resume cleanup" dialog on next launch | large | Distinct from B5 (receipts are UX/history; this is crash recovery for operations that never finished) |
 | Dry-run/preview step for Sync and large batch Delete/Move | medium | Sync can delete destination-only files; today the only inspection surface is the tinted row list |
-| Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | `trash_paths`'s own doc comment admits deletes aren't undoable today |
+| Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | **done:** `Action::Trash`/`RestoreTrash` via `version_store` restore |
 | Pre-flight collision/permission/path-length scan before a transfer starts, not discovered file-by-file mid-transfer | medium | Reuses the walk the free-space preflight already does |
 | Route move/overwrite cleanup removals through Trash (or a quarantine dir) instead of a hard `remove_file`/`remove_dir_all` | medium | Today only explicit Delete goes through Trash; implicit removals inside Move/overwrite don't |
 
@@ -311,7 +312,7 @@ at a time):
 | --- | --- | --- |
 | Move directory listing (`read_dir`/`jwalk`) off the main thread | medium | Distinct from the deferred "virtualised file list" - this is about the synchronous read, not render cost |
 | Cap/pool image-preload thread spawns and gate them by volume speed | small | **partial (I001-I002):** worker/decoder slots are bounded; volume-speed admission remains |
-| Make the free-space preflight non-blocking with a timeout | small | Same root cause as D23's `free_space()` hang fix, framed as a proactive UX improvement |
+| Make the free-space preflight non-blocking with a timeout | small | **done via D23:** probe runs on the space-probe worker with a 5s `statvfs` timeout |
 | Make the recursive fs watcher opt-out/shallow on non-local volumes | done | **shipped (I004-I005):** backend policy selects recursive native, shallow native, or paced shallow polling with fallback |
 | Surface the already-computed `walk_log` cost as a "slow volume" indicator | small | The measurement exists today and is silently discarded after driving an internal skip decision |
 | Roll up (not just truncate) the confirmation-dialog scan past `MAX_FLAT_ENTRIES` | small | A 100k-file tree currently just shows "... (truncated)" with no size/count summary of what was cut |

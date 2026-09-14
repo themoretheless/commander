@@ -642,8 +642,18 @@ impl App {
                 crate::toasts::ToastKind::Error,
             )
         };
-        self.toasts
-            .push(crate::toasts::Toast::new(message, kind, false, now));
+        let undo_action = self
+            .ws
+            .top_undo_action()
+            .filter(|action| matches!(action, crate::undo::Action::Trash { .. }))
+            .filter(|_| outcome.trashed > 0 && !outcome.indeterminate)
+            .cloned();
+        self.toasts.push(crate::toasts::Toast::new(
+            message,
+            kind,
+            undo_action.is_some(),
+            now,
+        ));
 
         if outcome.trashed > 0 {
             let jump_to = outcome
@@ -657,7 +667,7 @@ impl App {
                 item_count: outcome.trashed,
                 timestamp: now,
                 jump_to,
-                undo_action: None,
+                undo_action,
             });
         }
 

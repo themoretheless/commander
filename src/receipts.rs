@@ -15,7 +15,7 @@ pub struct Receipt {
     /// Where "Jump" navigates the active panel.
     pub jump_to: PathBuf,
     /// The action to replay for "Undo", cloned at push time. `None` for a
-    /// Delete, which has no undo path in this app today. The undo button is
+    /// delete that did not preserve restore versions. The undo button is
     /// only live while this is still the exact top of the undo stack (see
     /// [`Receipt::still_undoable`]), so undoing an older receipt out of
     /// order can never desync from what Cmd+Z would actually do.
