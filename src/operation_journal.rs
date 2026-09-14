@@ -1571,10 +1571,16 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not inspect interrupted overwrite backup: {error}"))?;
         if destination.exists && replacement.replacement.same_version(&destination) {
-            return Err(format!(
-                "Overwrite placement completed before its terminal proof; original is preserved at {} and requires review",
-                replacement.path.display()
-            ));
+            // Placement already landed; close the crash window before
+            // `mark_completed` rather than failing closed for review.
+            complete_interrupted_overwrite_placement(
+                operation_id,
+                &step.key,
+                replacement,
+                &destination,
+                &backup,
+            )?;
+            continue;
         }
         if backup.exists {
             if !replacement.original.same_version(&backup) {
@@ -1628,6 +1634,131 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
         })?;
     }
     Ok(())
+}
+
+/// Promote a proven overwrite placement that crashed before `mark_completed`.
+///
+/// Durable `ReplacementPlaced` (or live destination matching the staged
+/// replacement after `OriginalBackedUp`) is enough to write the terminal
+/// effect proof, clean the backup, and leave the step completed.
+fn complete_interrupted_overwrite_placement(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    replacement: &ReplacementBackup,
+    destination: &PathIdentity,
+    backup: &PathIdentity,
+) -> Result<(), String> {
+    match replacement.phase {
+        ReplacementPhase::Prepared => {
+            return Err(format!(
+                "Overwrite placement completed before its terminal proof; original is preserved at {} and requires review",
+                replacement.path.display()
+            ));
+        }
+        ReplacementPhase::OriginalBackedUp => {
+            if !backup.exists {
+                return Err(format!(
+                    "Overwrite placement landed without its proven backup; inspect {}",
+                    replacement.original.path.display()
+                ));
+            }
+            if !replacement.original.same_version(backup) {
+                return Err(format!(
+                    "Interrupted overwrite backup changed and requires review: {}",
+                    replacement.path.display()
+                ));
+            }
+        }
+        ReplacementPhase::ReplacementPlaced => {
+            if backup.exists && !replacement.original.same_version(backup) {
+                return Err(format!(
+                    "Interrupted overwrite backup changed and requires review: {}",
+                    replacement.path.display()
+                ));
+            }
+        }
+    }
+
+    let destination_after = destination.clone();
+    let landing = replacement.original.path.clone();
+    mutate(|journal| {
+        let operation = journal
+            .operations
+            .iter_mut()
+            .find(|operation| &operation.id == operation_id)
+            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let step = operation
+            .steps
+            .iter_mut()
+            .find(|step| &step.key == key)
+            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        if step.replacement.as_ref() != Some(replacement) {
+            return Err(format!(
+                "Overwrite proof changed while completing step {}",
+                key.0
+            ));
+        }
+        if step.status == StepStatus::Completed {
+            let existing = step
+                .destination_after
+                .as_ref()
+                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
+            if step.landing.as_deref() != Some(landing.as_path())
+                || !existing.same_binding(&destination_after)
+            {
+                return Err(format!(
+                    "Duplicate completion for step {} conflicts with its immutable proof",
+                    key.0
+                ));
+            }
+            return Ok(());
+        }
+        step.status = step
+            .status
+            .transition(StepEvent::Complete)
+            .map_err(|error| error.to_string())?;
+        step.landing = Some(landing);
+        step.destination_after = Some(destination_after);
+        step.checkpoint = None;
+        if step.fast_path.is_none() {
+            step.fast_path = Some(crate::transfer_tuning::FastPath::Resumed);
+        }
+        step.failure = None;
+        operation.updated_at_secs = now_secs();
+        Ok(())
+    })?;
+
+    if backup.exists {
+        if !replacement.original.same_version(backup) {
+            return Err(
+                "Overwrite backup was replaced before cleanup; foreign data was preserved"
+                    .to_string(),
+            );
+        }
+        remove_expected_path(&replacement.path, &replacement.original)?;
+    }
+    mutate(|journal| {
+        let operation = journal
+            .operations
+            .iter_mut()
+            .find(|operation| &operation.id == operation_id)
+            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let step = operation
+            .steps
+            .iter_mut()
+            .find(|step| &step.key == key)
+            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        if step.status != StepStatus::Completed || step.replacement.as_ref() != Some(replacement) {
+            return Err(format!(
+                "Overwrite proof for step {} changed before backup cleanup",
+                key.0
+            ));
+        }
+        step.replacement = None;
+        step.staging = None;
+        operation.updated_at_secs = now_secs();
+        Ok(())
+    })
 }
 
 fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, String> {
@@ -3559,6 +3690,133 @@ mod tests {
         assert_eq!(
             resumed.expectations[0].resume.as_ref().unwrap().offset,
             offset
+        );
+    }
+
+    #[test]
+    fn restart_completes_overwrite_after_placement_before_mark_completed() {
+        let temp = TempDir::new();
+        let _journal = use_test_journal(temp.path().join("placed-journal.json"));
+        let target = temp.dir("placed-target");
+        let source = temp.file("source.txt", "new bytes");
+        let destination = temp.file("placed-target/source.txt", "old bytes");
+        let staging = temp.file("placed-target/.source.txt.cmdr-tmp.0", "new bytes");
+        let entry =
+            FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+        let spec = transfer_spec("overwrite-placed", vec![entry], &target);
+        begin(&spec).unwrap();
+        let key = step_key(&spec, 0, &destination);
+        let destination_before = PathIdentity::observe_deep(&destination).unwrap();
+        mark_running(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            destination_before.clone(),
+        )
+        .unwrap();
+        let backup = target.join(".source.txt.cmdr-tmp.backup");
+        prepare_replacement(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            &backup,
+            &destination_before,
+        )
+        .unwrap();
+        crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
+        crate::fs_util::sync_parent_namespace(&destination).unwrap();
+        mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
+        crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+        crate::fs_util::sync_parent_namespace(&destination).unwrap();
+        mark_replacement_placed(&spec.operation_id, &key).unwrap();
+        finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+
+        let resumed = build_resume_spec(&spec.operation_id).unwrap();
+
+        assert!(resumed.entries.is_empty(), "{:?}", resumed.entries);
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new bytes");
+        assert!(!backup.exists());
+        let record = operation(&spec.operation_id).unwrap();
+        assert_eq!(record.steps[0].status, StepStatus::Completed);
+        assert!(record.steps[0].replacement.is_none());
+        assert!(record.steps[0].staging.is_none());
+        assert_eq!(
+            record.steps[0].fast_path,
+            Some(crate::transfer_tuning::FastPath::Resumed)
+        );
+        assert!(
+            record.steps[0]
+                .destination_after
+                .as_ref()
+                .unwrap()
+                .same_binding(&PathIdentity::observe_deep(&destination).unwrap())
+        );
+    }
+
+    #[test]
+    fn restart_completes_overwrite_when_placement_landed_before_placed_phase() {
+        let temp = TempDir::new();
+        let _journal = use_test_journal(temp.path().join("landed-journal.json"));
+        let target = temp.dir("landed-target");
+        let source = temp.file("source.txt", "new bytes");
+        let destination = temp.file("landed-target/source.txt", "old bytes");
+        let staging = temp.file("landed-target/.source.txt.cmdr-tmp.0", "new bytes");
+        let entry =
+            FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+        let spec = transfer_spec("overwrite-landed", vec![entry], &target);
+        begin(&spec).unwrap();
+        let key = step_key(&spec, 0, &destination);
+        let destination_before = PathIdentity::observe_deep(&destination).unwrap();
+        mark_running(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            destination_before.clone(),
+        )
+        .unwrap();
+        let backup = target.join(".source.txt.cmdr-tmp.backup");
+        prepare_replacement(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            &backup,
+            &destination_before,
+        )
+        .unwrap();
+        crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
+        crate::fs_util::sync_parent_namespace(&destination).unwrap();
+        mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
+        // Crash between rename-into-place and `mark_replacement_placed`.
+        crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+        crate::fs_util::sync_parent_namespace(&destination).unwrap();
+        finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+        assert_eq!(
+            operation(&spec.operation_id).unwrap().steps[0]
+                .replacement
+                .as_ref()
+                .unwrap()
+                .phase,
+            ReplacementPhase::OriginalBackedUp
+        );
+
+        let resumed = build_resume_spec(&spec.operation_id).unwrap();
+
+        assert!(resumed.entries.is_empty(), "{:?}", resumed.entries);
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new bytes");
+        assert!(!backup.exists());
+        let record = operation(&spec.operation_id).unwrap();
+        assert_eq!(record.steps[0].status, StepStatus::Completed);
+        assert!(record.steps[0].replacement.is_none());
+        assert!(
+            record.steps[0]
+                .destination_after
+                .as_ref()
+                .unwrap()
+                .same_binding(&PathIdentity::observe_deep(&destination).unwrap())
         );
     }
 
