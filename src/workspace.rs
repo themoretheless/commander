@@ -3182,8 +3182,8 @@ impl Workspace {
             return;
         };
         let panel = self.active_panel();
-        panel.drag_entries = paths;
-        panel.drop_target = Some(target);
+        panel.drag.set(paths);
+        panel.drag.set_drop_target(target);
         self.drop_dragged_as(kind, notify);
     }
 
@@ -3207,20 +3207,18 @@ impl Workspace {
     /// itself (drag onto its own subdirectory) takes priority over the other
     /// panel. With no explicit target the drag is consumed as a cancellation.
     fn take_drop_plan(&mut self) -> Option<(Vec<PathBuf>, PathBuf)> {
-        let (source, other) = if !self.left.drag_entries.is_empty() {
-            (&mut self.left, &mut self.right)
-        } else if !self.right.drag_entries.is_empty() {
-            (&mut self.right, &mut self.left)
+        let (source, other) = if !self.left.drag.is_empty() {
+            (&mut self.left.drag, &mut self.right.drag)
+        } else if !self.right.drag.is_empty() {
+            (&mut self.right.drag, &mut self.left.drag)
         } else {
             return None;
         };
         let target = source
-            .drop_target
-            .take()
-            .or_else(|| other.drop_target.take());
-        let paths = std::mem::take(&mut source.drag_entries);
-        source.drop_target = None;
-        other.drop_target = None;
+            .take_drop_target()
+            .or_else(|| other.take_drop_target());
+        let paths = source.take_entries();
+        other.clear_drop_target();
         if paths.is_empty() {
             return None;
         }
@@ -3228,10 +3226,8 @@ impl Workspace {
     }
 
     pub(crate) fn cancel_drag(&mut self) {
-        self.left.drag_entries.clear();
-        self.right.drag_entries.clear();
-        self.left.drop_target = None;
-        self.right.drop_target = None;
+        let _ = self.left.drag.take();
+        let _ = self.right.drag.take();
     }
 }
 

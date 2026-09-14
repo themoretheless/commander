@@ -3038,8 +3038,11 @@ fn conflict_free_drag_does_not_auto_start_with_unknown_space() {
     );
     workspace.left.refresh();
     workspace.right.refresh();
-    workspace.left.drag_entries = vec![file];
-    workspace.right.drop_target = Some(right.path().to_path_buf());
+    workspace.left.drag.set(vec![file]);
+    workspace
+        .right
+        .drag
+        .set_drop_target(right.path().to_path_buf());
 
     workspace.drop_dragged(|| {});
     workspace.finish_space_probe();
@@ -3735,8 +3738,8 @@ fn drop_prefers_source_panel_target() {
 
     // Dragging within the left panel onto its own subdirectory:
     // the right panel must not steal the drop.
-    ws.left.drag_entries = vec![file.clone()];
-    ws.left.drop_target = Some(sub.clone());
+    ws.left.drag.set(vec![file.clone()]);
+    ws.left.drag.set_drop_target(sub.clone());
     ws.drop_dragged(|| {});
     wait_transfer(&mut ws);
 
@@ -3745,24 +3748,24 @@ fn drop_prefers_source_panel_target() {
         "file lands in the hovered subdir"
     );
     assert!(!r.path().join("a.txt").exists());
-    assert!(ws.left.drag_entries.is_empty());
+    assert!(ws.left.drag.is_empty());
 }
 
 #[test]
 fn cancel_drag_clears_both_sources_and_targets() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&l, &r);
-    ws.left.drag_entries = vec![l.path().join("left.txt")];
-    ws.right.drag_entries = vec![r.path().join("right.txt")];
-    ws.left.drop_target = Some(l.path().join("left-target"));
-    ws.right.drop_target = Some(r.path().join("right-target"));
+    ws.left.drag.set(vec![l.path().join("left.txt")]);
+    ws.right.drag.set(vec![r.path().join("right.txt")]);
+    ws.left.drag.set_drop_target(l.path().join("left-target"));
+    ws.right.drag.set_drop_target(r.path().join("right-target"));
 
     ws.cancel_drag();
 
-    assert!(ws.left.drag_entries.is_empty());
-    assert!(ws.right.drag_entries.is_empty());
-    assert!(ws.left.drop_target.is_none());
-    assert!(ws.right.drop_target.is_none());
+    assert!(ws.left.drag.is_empty());
+    assert!(ws.right.drag.is_empty());
+    assert!(!ws.left.drag.has_drop_target());
+    assert!(!ws.right.drag.has_drop_target());
 }
 
 #[test]
@@ -3812,8 +3815,8 @@ fn drop_to_explicit_other_panel_target_moves_the_file() {
     let file = l.file("a.txt", "x");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file];
-    ws.right.drop_target = Some(r.path().to_path_buf());
+    ws.left.drag.set(vec![file]);
+    ws.right.drag.set_drop_target(r.path().to_path_buf());
     ws.drop_dragged(|| {});
     wait_transfer(&mut ws);
 
@@ -3827,8 +3830,8 @@ fn option_drop_copy_effect_keeps_the_source() {
     let file = l.file("a.txt", "x");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file.clone()];
-    ws.right.drop_target = Some(r.path().to_path_buf());
+    ws.left.drag.set(vec![file.clone()]);
+    ws.right.drag.set_drop_target(r.path().to_path_buf());
     ws.drop_dragged_as(TransferKind::Copy, || {});
     wait_transfer(&mut ws);
 
@@ -3898,13 +3901,13 @@ fn drop_without_an_explicit_target_is_cancelled() {
     let file = l.file("a.txt", "x");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file.clone()];
+    ws.left.drag.set(vec![file.clone()]);
     ws.drop_dragged(|| {});
 
     assert!(file.exists());
     assert!(ws.active_transfer().is_none());
     assert!(ws.pending_op.is_none());
-    assert!(ws.left.drag_entries.is_empty());
+    assert!(ws.left.drag.is_empty());
 }
 
 #[test]
@@ -3914,8 +3917,8 @@ fn drop_with_conflict_opens_dialog_instead_of_moving() {
     r.file("a.txt", "old");
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file];
-    ws.right.drop_target = Some(r.path().to_path_buf());
+    ws.left.drag.set(vec![file]);
+    ws.right.drag.set_drop_target(r.path().to_path_buf());
     ws.drop_dragged(|| {});
 
     // A conflicting drop must NOT move immediately; it stages a
@@ -3937,8 +3940,8 @@ fn skip_conflict_in_unopened_subfolder_handles_a_broken_symlink() {
     std::os::unix::fs::symlink("missing-target", sub.join("a.txt")).unwrap();
     let mut ws = workspace(&l, &r);
 
-    ws.left.drag_entries = vec![file.clone()];
-    ws.right.drop_target = Some(sub);
+    ws.left.drag.set(vec![file.clone()]);
+    ws.right.drag.set_drop_target(sub);
     ws.drop_dragged(|| {});
 
     assert_eq!(ws.pending_conflicts().len(), 1);
