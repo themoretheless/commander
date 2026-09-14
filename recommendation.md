@@ -84,7 +84,11 @@ bookmark input before explicit upgrade, and blocks destructive version-store
 actions when the manifest is corrupt, incompatible, forged, or path-escaping.
 The accepted scope deliberately leaves the operation journal/content index,
 cross-process CAS, and descriptor-relative filesystem traversal for dedicated
-migrations.
+migrations. Phase 5's journal test split is done: production stays in
+`operation_journal.rs` with `use_test_journal` path guards under `#[cfg(test)]`,
+and the fault/model suite lives in `operation_journal/tests.rs` (workspace-style
+child module). Adopting CAS and the shared persist envelope for the journal
+remain follow-ups; resume/reconcile logic is unchanged.
 The following four-role pass checked in the full-lockfile `cargo-deny` policy
 and an Ubuntu gate for pull requests, main-branch pushes, and a weekly refresh.
 It currently reports zero known vulnerabilities, accepts only the unmaintained
