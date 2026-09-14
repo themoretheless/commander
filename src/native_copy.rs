@@ -88,14 +88,66 @@ pub struct NativeCopyOutcome {
 /// This backs the same-volume move fast path, preserving the no-clobber
 /// guarantee the copy path gets from `COPYFILE_EXCL`/`O_EXCL` without a
 /// check-then-rename TOCTOU window.
+///
+/// When the filesystem rejects `RENAME_EXCL` with `ENOTSUP`/`EOPNOTSUPP`,
+/// falls back to a check-then-rename path that still refuses to clobber an
+/// occupied destination (best-effort on volumes that lack an exclusive rename).
 pub fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
     let src_c = path_cstring(src)?;
     let dst_c = path_cstring(dst)?;
-    let rc = unsafe { renamex_np(src_c.as_ptr(), dst_c.as_ptr(), RENAME_EXCL) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
+    let excl = rename_excl_result(src_c.as_ptr(), dst_c.as_ptr());
+    match excl {
+        Ok(()) => Ok(()),
+        Err(error) if is_rename_excl_unsupported(&error) => rename_noreplace_fallback(src, dst),
+        Err(error) => Err(error),
     }
-    Ok(())
+}
+
+fn rename_excl_result(src: *const c_char, dst: *const c_char) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = rename_excl_hook::take() {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    let rc = unsafe { renamex_np(src, dst, RENAME_EXCL) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn is_rename_excl_unsupported(error: &std::io::Error) -> bool {
+    error
+        .raw_os_error()
+        .is_some_and(|code| code == libc::ENOTSUP || code == libc::EOPNOTSUPP)
+}
+
+/// Best-effort no-clobber rename for volumes that cannot honor `RENAME_EXCL`.
+fn rename_noreplace_fallback(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if crate::fs_util::path_is_taken(dst) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        ));
+    }
+    std::fs::rename(src, dst)
+}
+
+#[cfg(test)]
+mod rename_excl_hook {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCE_ERRNO: Cell<Option<i32>> = const { Cell::new(None) };
+    }
+
+    pub fn force(errno: i32) {
+        FORCE_ERRNO.with(|cell| cell.set(Some(errno)));
+    }
+
+    pub fn take() -> Option<i32> {
+        FORCE_ERRNO.with(Cell::take)
+    }
 }
 
 struct CallbackCtx {
@@ -162,12 +214,13 @@ extern "C" fn progress_callback(
         (COPYFILE_RECURSE_FILE, COPYFILE_ERR)
         | (COPYFILE_RECURSE_DIR, COPYFILE_ERR)
         | (COPYFILE_RECURSE_ERROR, _) => {
-            // Record the failure and keep copying the rest; the caller
-            // checks the error list before treating the op as successful.
+            // Fail fast: leave already-copied siblings on disk and surface the
+            // failure so `copy_dir_native` returns Err before the executor can
+            // treat the tree as disposable.
             let mut s = crate::lock_util::recover(&ctx.state);
             let name = cstr_to_string(src).unwrap_or_else(|| s.current_file.clone());
             s.errors.push(format!("Failed to copy: {}", name));
-            COPYFILE_CONTINUE
+            COPYFILE_QUIT
         }
         (COPYFILE_COPY_DATA, COPYFILE_PROGRESS) => {
             unsafe {
@@ -349,13 +402,14 @@ pub fn copy_dir_native(
     let src_c = path_cstring(src)?;
     let dst_c = path_cstring(dst)?;
 
-    {
+    let errors_before = {
         let mut s = crate::lock_util::recover(state);
         s.current_file = src
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-    }
+        s.errors.len()
+    };
 
     unsafe {
         let cstate = copyfile_state_alloc();
@@ -387,22 +441,40 @@ pub fn copy_dir_native(
 
         copyfile_state_free(cstate);
 
-        if result != 0 {
-            let s = crate::lock_util::recover(state);
-            if s.cancelled {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "cancelled",
-                ));
-            }
-            return Err(std::io::Error::last_os_error());
-        }
-
         let copied = ctx.done_in_call;
-        let mut s = crate::lock_util::recover(state);
-        s.copied_bytes = base_bytes.saturating_add(copied);
-        Ok(copied)
+        finish_dir_copy(state, base_bytes, errors_before, result, copied)
     }
+}
+
+/// Finalize a recursive native directory copy. Per-file callback failures must
+/// become `Err` even if `copyfile()` itself returned success, so the executor
+/// never treats a partial tree as a clean placement candidate.
+fn finish_dir_copy(
+    state: &Arc<Mutex<TransferProgress>>,
+    base_bytes: u64,
+    errors_before: usize,
+    copyfile_rc: c_int,
+    copied: u64,
+) -> std::io::Result<u64> {
+    if copyfile_rc != 0 {
+        let os_error = std::io::Error::last_os_error();
+        let s = crate::lock_util::recover(state);
+        if s.cancelled {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        return Err(os_error);
+    }
+    let mut s = crate::lock_util::recover(state);
+    if s.errors.len() > errors_before {
+        return Err(std::io::Error::other(
+            "native directory copy reported per-file failures",
+        ));
+    }
+    s.copied_bytes = base_bytes.saturating_add(copied);
+    Ok(copied)
 }
 
 #[cfg(test)]
@@ -430,5 +502,49 @@ mod tests {
         // Nothing was moved or clobbered.
         assert!(src.exists());
         assert_eq!(std::fs::read_to_string(&dst).unwrap(), "old");
+    }
+
+    #[test]
+    fn rename_noreplace_falls_back_when_excl_is_unsupported() {
+        let tmp = TempDir::new();
+        let src = tmp.file("a.txt", "hi");
+        let dst = tmp.path().join("b.txt");
+        rename_excl_hook::force(libc::ENOTSUP);
+        rename_noreplace(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hi");
+    }
+
+    #[test]
+    fn rename_noreplace_fallback_still_refuses_to_clobber() {
+        let tmp = TempDir::new();
+        let src = tmp.file("a.txt", "new");
+        let dst = tmp.file("b.txt", "old");
+        rename_excl_hook::force(libc::EOPNOTSUPP);
+        let err = rename_noreplace(&src, &dst).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "old");
+    }
+
+    #[test]
+    fn finish_dir_copy_returns_err_when_callback_recorded_child_failures() {
+        let progress = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.errors.push("Failed to copy: bad.txt".to_string());
+        }
+        let err = finish_dir_copy(&progress, 0, 0, 0, 12).unwrap_err();
+        assert!(err.to_string().contains("per-file failures"));
+        // Successful siblings' byte progress must not be committed as clean.
+        assert_eq!(crate::lock_util::recover(&progress).copied_bytes, 0);
+    }
+
+    #[test]
+    fn finish_dir_copy_accepts_a_clean_recursive_success() {
+        let progress = Arc::new(Mutex::new(TransferProgress::new(12, 1)));
+        let copied = finish_dir_copy(&progress, 0, 0, 0, 12).unwrap();
+        assert_eq!(copied, 12);
+        assert_eq!(crate::lock_util::recover(&progress).copied_bytes, 12);
     }
 }

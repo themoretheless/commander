@@ -1122,11 +1122,18 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                         journal_enabled,
                     )
                     .is_some();
+                // A failed native (or other) directory stage may already hold
+                // successfully copied siblings under the staging root. Wiping
+                // that whole tree would discard recoverable work; leave it in
+                // place and report the failure instead.
+                let preserve_partial_dir =
+                    !clean && !renamed && entry.is_dir && fs_util::path_is_taken(&copy_target);
                 let placed = if !clean {
                     // Undo our placement; a pre-existing dest is untouched. For a
                     // rename this restores the source rather than deleting its only
                     // copy.
                     if !resumable_partial
+                        && !preserve_partial_dir
                         && let Some(msg) = undo_placement(&copy_target, &entry.path, renamed)
                     {
                         record_failure(

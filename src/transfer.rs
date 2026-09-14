@@ -1671,6 +1671,102 @@ mod tests {
         backend::BackendPorts::new(fake.clone(), fake.clone(), fake.clone(), fake)
     }
 
+    /// Native directory stage that leaves a successful sibling on disk, then
+    /// fails — the D23 residual the executor must not wipe away.
+    struct PartialDirNativeBackend;
+
+    impl backend::NativeCloneBackend for PartialDirNativeBackend {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+        ) -> std::io::Result<backend::StageReceipt> {
+            assert!(
+                request.is_dir,
+                "partial-dir fixture stages directories only"
+            );
+            std::fs::create_dir(request.staging)?;
+            std::fs::write(request.staging.join("good.txt"), "kept sibling")?;
+            Err(std::io::Error::other("Failed to copy: bad.txt"))
+        }
+    }
+
+    struct UnusedBackend(&'static str);
+
+    impl backend::DeltaBackend for UnusedBackend {
+        fn stage(
+            &self,
+            _mode: crate::delta_copy::DeltaMode,
+            _request: backend::StageRequest<'_>,
+            _checkpoints: &mut dyn backend::CheckpointSink,
+        ) -> std::io::Result<backend::StageReceipt> {
+            unreachable!("{} backend must not be selected", self.0)
+        }
+    }
+
+    impl backend::SparseBackend for UnusedBackend {
+        fn stage(
+            &self,
+            _request: backend::StageRequest<'_>,
+        ) -> std::io::Result<backend::StageReceipt> {
+            unreachable!("{} backend must not be selected", self.0)
+        }
+    }
+
+    impl backend::BufferedBackend for UnusedBackend {
+        fn stage(
+            &self,
+            _request: backend::StageRequest<'_>,
+            _checkpoints: &mut dyn backend::CheckpointSink,
+        ) -> std::io::Result<backend::StageReceipt> {
+            unreachable!("{} backend must not be selected", self.0)
+        }
+    }
+
+    #[test]
+    fn native_dir_child_failure_preserves_successful_staging_siblings() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let dir = src.dir("folder");
+        src.file("folder/good.txt", "kept sibling");
+        src.file("folder/bad.txt", "will fail in the fake backend");
+
+        let state = run_with_backends(
+            spec(
+                TransferKind::Copy,
+                CopyMethod::Native,
+                vec![entry_for(&dir)],
+                dst.path(),
+                vec![],
+                OverwritePolicy::Ask,
+            ),
+            backend::BackendPorts::new(
+                Arc::new(PartialDirNativeBackend),
+                Arc::new(UnusedBackend("delta")),
+                Arc::new(UnusedBackend("sparse")),
+                Arc::new(UnusedBackend("buffered")),
+            ),
+        );
+
+        assert!(!state.errors.is_empty(), "{:?}", state.errors);
+        assert!(
+            !dst.path().join("folder").exists(),
+            "incomplete tree must not be placed at the landing name"
+        );
+        let staging = std::fs::read_dir(dst.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains(".cmdr-tmp."))
+            })
+            .expect("partial staging tree must be preserved");
+        assert_eq!(
+            std::fs::read_to_string(staging.join("good.txt")).unwrap(),
+            "kept sibling",
+            "successfully copied siblings must survive the child failure"
+        );
+    }
+
     #[test]
     fn finish_normalizes_only_after_complete_or_unneeded_post_success() {
         let completed = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
