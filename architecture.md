@@ -374,12 +374,11 @@ Three mechanisms connect the core to the shell:
   sparse, and parallel tree-copy primitives still live in `transfer.rs`
   beside the public progress/spec facade. Moving those primitives into
   backend-specific files is now a mechanical readability pass, not an
-  ownership prerequisite. Overwrite resume now observes a proven placement
-  that crashed before `mark_completed` and writes the terminal effect proof
-  instead of failing closed. Remaining residual work is a durable placed
-  phase for non-overwrite landings, a descriptor-relative filesystem effect
-  port, and a streaming tree planner that does not materialize every file
-  before parallel copy.
+  ownership prerequisite. Overwrite and non-overwrite resume now observe a
+  proven placement that crashed before `mark_completed` and write the
+  terminal effect proof instead of failing closed. Remaining residual work
+  is a descriptor-relative filesystem effect port and a streaming tree
+  planner that does not materialize every file before parallel copy.
 - **The request catalogue remains shared vocabulary.** The old 25-field flag
   bus is gone, but adding a new shell intent still adds one `UiRequest` variant
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and

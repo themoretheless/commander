@@ -129,10 +129,10 @@ Highest-value next steps, in order:
    close the probe-to-listing TOCTOU; separately design an `OsStr` plus
    volume-capability-aware naming policy for non-UTF-8, case-sensitivity and
    Unicode normalization.
-3. Overwrite resume now closes the crash window between successful placement
-   and `mark_completed`. Next: a durable placed phase for non-overwrite
-   landings, then descriptor-relative namespace effects and a streaming
-   parallel-directory planner.
+3. Transfer resume now closes the crash window between successful placement
+   and `mark_completed` for both overwrite and non-overwrite landings. Next:
+   descriptor-relative namespace effects and a streaming parallel-directory
+   planner.
 4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries. Their state ownership is already split; mechanical
    field moves would now make the design worse.
