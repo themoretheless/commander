@@ -3133,8 +3133,8 @@ fn apply_rename_order_refuses_to_clobber_unrelated_target() {
     tmp.file("a.txt", "1");
     tmp.file("b.txt", "2"); // not part of the batch
     let map = vec![("a.txt".to_string(), "b.txt".to_string())];
-    let existing = Workspace::dir_names(tmp.path());
-    let r = Workspace::apply_rename_order(tmp.path(), &map, &existing);
+    let existing = fileops::dir_names(tmp.path());
+    let r = fileops::apply_rename_order(tmp.path(), &map, &existing);
     assert!(r.is_err(), "renaming onto an untouched sibling is refused");
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
@@ -3185,7 +3185,7 @@ fn failed_batch_rename_rollback_enters_safe_state_without_advancing_history() {
         ("b".to_string(), "y".to_string()),
     ];
     let existing = names.clone();
-    let error = Workspace::apply_rename_order_using(left.path(), &map, &existing, |from, to| {
+    let error = fileops::apply_rename_order_using(left.path(), &map, &existing, |from, to| {
         if (from, to) == ("b", "y") {
             return Err("forward failure");
         }
@@ -3212,7 +3212,7 @@ fn failed_batch_rename_rollback_enters_safe_state_without_advancing_history() {
         pairs: map,
     });
     let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
-    workspace.latch_rename_execution_error(&error);
+    fileops::latch_rename_execution_error(&mut workspace, &error);
     workspace.undo.abort_immediate(replay.reservation).unwrap();
 
     assert!(workspace.can_undo());
@@ -3594,8 +3594,8 @@ fn apply_rename_order_swaps_two_files() {
         ("a.txt".to_string(), "b.txt".to_string()),
         ("b.txt".to_string(), "a.txt".to_string()),
     ];
-    let existing = Workspace::dir_names(tmp.path());
-    let n = Workspace::apply_rename_order(tmp.path(), &map, &existing).unwrap();
+    let existing = fileops::dir_names(tmp.path());
+    let n = fileops::apply_rename_order(tmp.path(), &map, &existing).unwrap();
     assert_eq!(n, 2);
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
@@ -3622,7 +3622,7 @@ fn apply_batch_rename_allows_case_only_rename() {
     let n = apply_batch_rename(&mut ws, &rule).unwrap();
     assert_eq!(n, 1);
     // The on-disk name now reads with the upper-cased stem.
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("README.md"), "names: {names:?}");
 }
 
@@ -3637,10 +3637,10 @@ fn apply_batch_rename_undo_restores_a_case_only_rename() {
         ..Default::default()
     };
     apply_batch_rename(&mut ws, &rule).unwrap();
-    assert!(Workspace::dir_names(l.path()).contains("README.md"));
+    assert!(fileops::dir_names(l.path()).contains("README.md"));
     // Undo puts the lower-case name back (itself a case-only rename).
     let _ = ws.perform_undo(|| {});
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("readme.md"), "after undo: {names:?}");
     assert!(!names.contains("README.md"));
 }
@@ -3664,12 +3664,12 @@ fn commit_rename_allows_a_case_only_change() {
     // inline rename used to refuse this legitimate change as "Name already in
     // use". Staging through a temp makes the case actually flip.
     ws.commit_rename(&f, "README.md").unwrap();
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("README.md"), "names: {names:?}");
     assert!(!names.contains("readme.md"), "old case gone: {names:?}");
 
     ws.perform_undo(|| {}).unwrap();
-    let names = Workspace::dir_names(l.path());
+    let names = fileops::dir_names(l.path());
     assert!(names.contains("readme.md"), "after undo: {names:?}");
     assert!(!names.contains("README.md"));
 }
