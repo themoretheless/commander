@@ -508,14 +508,16 @@ against `main` after PRs #7–#13 merged (2026-09-14).
 
 1. **Descriptor-relative filesystem effect port** — namespace effects that do not
    re-open by path after a proven binding.
-2. **Streaming tree planner** — parallel copy that does not materialize every
-   file before planning.
+2. **Streaming tree planner** — **done** (`transfer/parallel_tree`): parallel
+   copy streams the walk into a bounded job queue; it no longer materializes
+   every leaf path before the first copy.
 3. **Cross-process CAS / Persist envelope for journal + content-index** — if
    those stores are not already solely on the shared versioned envelope with
    cross-process compare-and-swap commits.
 
 Phase1 integrity and facade-extraction items from PRs #7–#13 are closed on
-`main`; they are not additional long-term residuals.
+`main`; they are not additional long-term residuals. Residual (2) closes with
+the streaming parallel-tree change; residuals (1) and (3) remain open.
 
 ## 2026-07-09 SOLID/DRY reading slices
 

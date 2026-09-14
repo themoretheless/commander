@@ -1,15 +1,25 @@
 //! Parallel buffered directory tree copy.
 //!
-//! Scans the source tree first, then copies leaf files on a sized rayon pool.
-//! Symlink policy is Preserve-only; other policies use sequential buffered walk.
+//! Streams the source walk: destination directories are created as discovered,
+//! and leaf file jobs are fed through a bounded queue so workers start copying
+//! before the scan finishes. Symlink policy is Preserve-only; other policies
+//! use the sequential buffered walk.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use rayon::prelude::*;
 
 use super::TransferState;
 use super::buffered::{copy_file_buffered_with_limiter, copy_symlink};
+
+/// Bound the scan→worker queue so a deep tree cannot materialize every leaf
+/// path pair in memory before the first copy runs.
+fn file_job_queue_bound(workers: usize) -> usize {
+    workers.saturating_mul(8).max(8)
+}
 
 pub(super) fn copy_dir_buffered_parallel(
     src: &Path,
@@ -18,49 +28,97 @@ pub(super) fn copy_dir_buffered_parallel(
     workers: usize,
     preserve_sparse: bool,
 ) -> std::io::Result<u64> {
-    let mut files = Vec::new();
-    let mut permissions = Vec::new();
-    prepare_buffered_tree(src, dst, state, &mut files, &mut permissions)?;
-    let workers = workers.max(1).min(files.len().max(1));
+    let workers = workers.max(1);
     let pool = directory_copy_pool(workers)?;
     {
         let mut progress = crate::lock_util::recover(state);
         progress.active_workers = workers;
         progress.peak_workers = progress.peak_workers.max(workers);
     }
-    let results = pool.install(|| {
-        files
-            .par_iter()
-            .map(|(source, destination)| {
+
+    let (tx, rx) =
+        std::sync::mpsc::sync_channel::<(PathBuf, PathBuf)>(file_job_queue_bound(workers));
+    let permissions = Arc::new(Mutex::new(Vec::new()));
+    let scan_error = Arc::new(Mutex::new(None::<std::io::Error>));
+
+    let scan_state = Arc::clone(state);
+    let scan_permissions = Arc::clone(&permissions);
+    let scan_error_slot = Arc::clone(&scan_error);
+    let scan_src = src.to_path_buf();
+    let scan_dst = dst.to_path_buf();
+    let scan = thread::Builder::new()
+        .name("commander-copy-scan".into())
+        .spawn(move || {
+            let outcome =
+                stream_buffered_tree(&scan_src, &scan_dst, &scan_state, &tx, &scan_permissions);
+            // Drop the sender so the worker iterator ends once the scan finishes.
+            drop(tx);
+            if let Err(error) = outcome {
+                let mut slot = crate::lock_util::recover(&scan_error_slot);
+                if slot.is_none() {
+                    *slot = Some(error);
+                }
+            }
+        })
+        .map_err(std::io::Error::other)?;
+
+    // Mutex so rayon::par_bridge can pull jobs from multiple worker threads.
+    // Intake is serialized; the buffered copy work still runs in parallel.
+    let rx = Mutex::new(rx);
+    let copied = AtomicU64::new(0);
+    let copy_result = pool.install(|| {
+        std::iter::from_fn(|| crate::lock_util::recover(&rx).recv().ok())
+            .par_bridge()
+            .try_for_each(|(source, destination)| {
+                if crate::lock_util::recover(state).cancelled {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "cancelled while copying the directory tree",
+                    ));
+                }
                 let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
-                copy_file_buffered_with_limiter(
-                    source,
-                    destination,
+                let bytes = copy_file_buffered_with_limiter(
+                    &source,
+                    &destination,
                     state,
                     &mut limiter,
                     None,
                     None,
                     preserve_sparse,
-                )
+                )?;
+                copied.fetch_add(bytes, Ordering::Relaxed);
+                Ok(())
             })
-            .collect::<Vec<_>>()
     });
+
+    // Drop the receiver so a scan thread blocked on a full queue can exit
+    // after workers stop early (copy failure / cancel).
+    drop(rx);
+    scan.join()
+        .map_err(|_| std::io::Error::other("directory copy scan thread panicked"))?;
+
     crate::lock_util::recover(state).active_workers = 1;
-    let copied = results
-        .into_iter()
-        .try_fold(0_u64, |total, result| result.map(|bytes| total + bytes))?;
-    for (path, mode) in permissions.into_iter().rev() {
+
+    copy_result?;
+    if let Some(error) = crate::lock_util::recover(&scan_error).take() {
+        return Err(error);
+    }
+
+    let modes = std::mem::take(&mut *crate::lock_util::recover(&permissions));
+    for (path, mode) in modes.into_iter().rev() {
         std::fs::set_permissions(path, mode)?;
     }
-    Ok(copied)
+    Ok(copied.load(Ordering::Relaxed))
 }
 
-fn prepare_buffered_tree(
+/// Walk `src`, create destination directories / preserve symlinks as discovered,
+/// and enqueue leaf file jobs without building a complete leaf vector first.
+fn stream_buffered_tree(
     src: &Path,
     dst: &Path,
     state: &TransferState,
-    files: &mut Vec<(PathBuf, PathBuf)>,
-    permissions: &mut Vec<(PathBuf, std::fs::Permissions)>,
+    tx: &std::sync::mpsc::SyncSender<(PathBuf, PathBuf)>,
+    permissions: &Mutex<Vec<(PathBuf, std::fs::Permissions)>>,
 ) -> std::io::Result<()> {
     let mut tasks = vec![(src.to_path_buf(), dst.to_path_buf())];
     while let Some((source, destination)) = tasks.pop() {
@@ -76,11 +134,16 @@ fn prepare_buffered_tree(
             continue;
         }
         if !metadata.is_dir() {
-            files.push((source, destination));
+            // Bounded send: back-pressures the scan so queued path pairs stay
+            // O(workers), not O(tree).
+            if tx.send((source, destination)).is_err() {
+                // Workers disconnected after a copy failure or cancel.
+                return Ok(());
+            }
             continue;
         }
         std::fs::create_dir(&destination)?;
-        permissions.push((destination.clone(), metadata.permissions()));
+        crate::lock_util::recover(permissions).push((destination.clone(), metadata.permissions()));
         let mut children = std::fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
         children.sort_by_key(|entry| entry.file_name());
         for entry in children.into_iter().rev() {
@@ -109,4 +172,18 @@ fn directory_copy_pool(workers: usize) -> std::io::Result<Arc<rayon::ThreadPool>
     Ok(Arc::clone(
         pools.entry(workers).or_insert_with(|| candidate),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_job_queue_bound_scales_with_workers_and_stays_small() {
+        assert_eq!(file_job_queue_bound(1), 8);
+        assert_eq!(file_job_queue_bound(2), 16);
+        assert_eq!(file_job_queue_bound(8), 64);
+        // Never grows with tree size — only with worker count.
+        assert!(file_job_queue_bound(32) < 1_000);
+    }
 }
