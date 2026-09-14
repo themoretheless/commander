@@ -130,7 +130,10 @@ Highest-value next steps, in order:
    volume-capability-aware naming policy for non-UTF-8, case-sensitivity and
    Unicode normalization.
 3. Transfer resume now closes the crash window between successful placement
-   and `mark_completed` for both overwrite and non-overwrite landings. Next:
+   and `mark_completed` for both overwrite and non-overwrite landings. The
+   buffered/sparse/parallel-tree byte paths are split out of `transfer.rs`
+   into `transfer::{buffered,sparse,parallel_tree}` (readability only;
+   public `TransferSpec` / progress API unchanged). Next:
    descriptor-relative namespace effects and a streaming parallel-directory
    planner.
 4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
