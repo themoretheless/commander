@@ -232,7 +232,7 @@ impl BackendPorts {
             basis_size,
             source_is_sparse: !request.is_dir
                 && !is_symlink
-                && super::is_sparse_file(request.source),
+                && super::sparse::is_sparse_file(request.source),
             resume_layout: request.resume.map(|checkpoint| checkpoint.layout),
             symlink_policy: request.symlink_policy,
             delta_capable: request.profile.capabilities.delta,
@@ -369,7 +369,7 @@ struct ProductionSparse;
 impl SparseBackend for ProductionSparse {
     fn stage(&self, request: StageRequest<'_>) -> std::io::Result<StageReceipt> {
         let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(request.rule);
-        let bytes = super::copy_file_sparse(
+        let bytes = super::sparse::copy_file_sparse(
             request.source,
             request.staging,
             request.progress.state(),
@@ -391,7 +391,7 @@ impl BufferedBackend for ProductionBuffered {
         if metadata.file_type().is_symlink() {
             return match request.symlink_policy {
                 SymlinkPolicy::Preserve => {
-                    super::copy_symlink(request.source, request.staging)?;
+                    super::buffered::copy_symlink(request.source, request.staging)?;
                     receipt(request.staging, 0, FastPath::Buffered, request.durability)
                 }
                 SymlinkPolicy::Follow => {
@@ -420,7 +420,7 @@ impl BufferedBackend for ProductionBuffered {
                 && request.rule.max_bytes_per_second.is_none()
                 && request.symlink_policy == SymlinkPolicy::Preserve
             {
-                super::copy_dir_buffered_parallel(
+                super::parallel_tree::copy_dir_buffered_parallel(
                     request.source,
                     request.staging,
                     request.progress.state(),
@@ -428,7 +428,7 @@ impl BufferedBackend for ProductionBuffered {
                     request.profile.capabilities.sparse,
                 )
             } else {
-                super::copy_dir_buffered_with_limiter(
+                super::buffered::copy_dir_buffered_with_limiter(
                     request.source,
                     request.staging,
                     request.progress.state(),
@@ -438,7 +438,7 @@ impl BufferedBackend for ProductionBuffered {
                 )
             }?
         } else {
-            super::copy_file_buffered_with_limiter(
+            super::buffered::copy_file_buffered_with_limiter(
                 request.source,
                 request.staging,
                 request.progress.state(),

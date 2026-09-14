@@ -242,6 +242,43 @@ impl FreeSpacePort for NativeFreeSpace {
 
 #[cfg(unix)]
 fn probe_free_space(path: &Path) -> SpaceProbeOutcome {
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    let path = path.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let spawn = std::thread::Builder::new()
+        .name("statvfs-probe".to_string())
+        .spawn(move || {
+            let _ = sender.send(probe_free_space_blocking(&path));
+        });
+    if let Err(error) = spawn {
+        return SpaceProbeOutcome::Unknown(NativeFailure {
+            kind: NativeFailureKind::Unknown,
+            message: format!("Could not start free-space probe: {error}"),
+        });
+    }
+    match receiver.recv_timeout(PROBE_TIMEOUT) {
+        Ok(outcome) => outcome,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            SpaceProbeOutcome::Unknown(NativeFailure {
+                kind: NativeFailureKind::Busy,
+                message: format!(
+                    "free-space probe timed out after {}s",
+                    PROBE_TIMEOUT.as_secs()
+                ),
+            })
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            SpaceProbeOutcome::Unknown(NativeFailure {
+                kind: NativeFailureKind::Unknown,
+                message: "free-space probe stopped before publishing a result".to_string(),
+            })
+        }
+    }
+}
+
+#[cfg(unix)]
+fn probe_free_space_blocking(path: &Path) -> SpaceProbeOutcome {
     use std::os::unix::ffi::OsStrExt;
 
     let path = match CString::new(path.as_os_str().as_bytes()) {

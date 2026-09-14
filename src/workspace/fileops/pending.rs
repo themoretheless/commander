@@ -17,10 +17,12 @@ pub(crate) fn confirm_pending_op(
                 return false;
             }
             if let Some(PendingOp::Delete { targets, .. }) = workspace.pending_op.take() {
+                // Trash undo restores through version_store, so user deletes
+                // always run Versioned regardless of the transfer profile.
                 return workspace.deletes.start(
                     targets,
                     DeleteOrigin::Confirmation,
-                    workspace.durability_profile,
+                    crate::operation::DurabilityProfile::Versioned,
                     workspace.version_retention,
                     notify,
                 );

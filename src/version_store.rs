@@ -10,10 +10,12 @@ use std::sync::{Mutex, OnceLock};
 const MANIFEST_STORE: crate::persistence::StoreSpec =
     crate::persistence::StoreSpec::new("commander.version_manifest", 1, 16 * 1024 * 1024);
 
+// Process-wide (not thread-local): delete/transfer workers preserve versions on
+// background threads, while tests install the override on the test thread.
 #[cfg(test)]
-thread_local! {
-    static TEST_VERSIONS_DIR: std::cell::RefCell<Option<PathBuf>> =
-        const { std::cell::RefCell::new(None) };
+fn test_versions_dir_slot() -> &'static Mutex<Option<PathBuf>> {
+    static SLOT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
 }
 
 #[cfg(test)]
@@ -24,15 +26,13 @@ pub(crate) struct TestVersionsDirGuard {
 #[cfg(test)]
 impl Drop for TestVersionsDirGuard {
     fn drop(&mut self) {
-        TEST_VERSIONS_DIR.with(|directory| {
-            *directory.borrow_mut() = self.previous.take();
-        });
+        *crate::lock_util::recover(test_versions_dir_slot()) = self.previous.take();
     }
 }
 
 #[cfg(test)]
 pub(crate) fn use_test_versions_dir(path: PathBuf) -> TestVersionsDirGuard {
-    let previous = TEST_VERSIONS_DIR.with(|directory| directory.borrow_mut().replace(path));
+    let previous = crate::lock_util::recover(test_versions_dir_slot()).replace(path);
     TestVersionsDirGuard { previous }
 }
 
@@ -581,7 +581,7 @@ pub fn record_for_key(key: &IdempotencyKey) -> Option<VersionRecord> {
 
 fn versions_dir() -> PathBuf {
     #[cfg(test)]
-    if let Some(path) = TEST_VERSIONS_DIR.with(|directory| directory.borrow().clone()) {
+    if let Some(path) = crate::lock_util::recover(test_versions_dir_slot()).clone() {
         return path;
     }
     crate::fs_util::config_dir().join("versions")
@@ -1048,6 +1048,17 @@ fn create_symlink(_target: &Path, _destination: &Path, _directory: bool) -> std:
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn test_versions_dir_override_is_visible_to_worker_threads() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let _guard = use_test_versions_dir(versions.clone());
+        let observed = std::thread::spawn(versions_dir)
+            .join()
+            .expect("worker thread");
+        assert_eq!(observed, versions);
+    }
 
     #[test]
     fn copy_and_verify_handles_nested_directories() {

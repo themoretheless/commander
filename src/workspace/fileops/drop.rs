@@ -1,36 +1,32 @@
 //! Drag-and-drop completion into the transfer confirmation pipeline.
 //!
-//! Uses the raw `PanelState::{drag_entries, drop_target}` fields present on
-//! main. A future DragState API can replace those field accesses without
-//! changing the drop preflight contract.
+//! Consumes [`crate::panel::DragState`] on each panel so drop/cancel share one
+//! session API with the rest of the workspace.
 
 use std::path::PathBuf;
 
 use super::super::{
-    PendingOp, PendingTransfer, TransferSpaceState, Workspace, filesystem_preflight,
+    CopyMethod, FileEntry, OverwritePolicy, PendingOp, PendingTransfer, TransferKind,
+    TransferSpaceState, Workspace, filesystem_preflight,
 };
-use crate::panel::FileEntry;
 use crate::scan;
-use crate::transfer::{CopyMethod, OverwritePolicy, TransferKind};
 
-/// Handle a completed drag (mouse released). The dragged entries are
-/// routed through the same Move engine as F6 instead of a raw rename, so
-/// conflicts are confirmed, cross-volume moves work, self/descendant drops
-/// are rejected and errors surface. A clean, conflict-free drop runs
-/// immediately; a conflicting one opens the confirmation dialog.
+/// Handle a completed drag (mouse released). The dragged entries are routed
+/// through the same Move engine as F6 instead of a raw rename, so conflicts
+/// are confirmed, cross-volume moves work, self/descendant drops are rejected
+/// and errors surface. A clean, conflict-free drop runs immediately; a
+/// conflicting one opens the confirmation dialog.
 pub(crate) fn drop_dragged(workspace: &mut Workspace, notify: impl Fn() + Send + 'static) {
     drop_dragged_as(workspace, TransferKind::Move, notify);
 }
 
-/// Complete a drag using its announced effect. Option-drag copies; the
-/// default and keyboard equivalent move. Both share identical preflight.
+/// Complete a drag using its announced effect. Option-drag copies; the default
+/// and keyboard equivalent move. Both share identical preflight.
 pub(crate) fn drop_dragged_as(
     workspace: &mut Workspace,
     kind: TransferKind,
     notify: impl Fn() + Send + 'static,
 ) {
-    // Ignore drops while a transfer or another dialog is in flight, so we
-    // never stack a second operation over the first.
     if workspace.has_unfinished_transfer_work()
         || workspace.pending_op.is_some()
         || workspace.mutation_commits_blocked()
@@ -43,9 +39,9 @@ pub(crate) fn drop_dragged_as(
     };
     let entries: Vec<FileEntry> = paths
         .iter()
-        .filter_map(|p| {
-            let meta = std::fs::metadata(p).ok()?;
-            FileEntry::from_meta(p.clone(), &meta)
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok()?;
+            FileEntry::from_meta(path.clone(), &meta)
         })
         .collect();
     if entries.is_empty() {
@@ -86,9 +82,9 @@ pub(crate) fn drop_dragged_as(
     }));
 }
 
-/// Keyboard equivalent of dropping the active selection onto the folder
-/// under the cursor. The synthesized drag plan deliberately enters the
-/// normal drop pipeline, preserving every safety check and confirmation.
+/// Keyboard equivalent of dropping the active selection onto the folder under
+/// the cursor. The synthesized drag plan deliberately enters the normal drop
+/// pipeline, preserving every safety check and confirmation.
 pub(crate) fn transfer_selection_into_cursor_folder(
     workspace: &mut Workspace,
     kind: TransferKind,
@@ -104,8 +100,8 @@ pub(crate) fn transfer_selection_into_cursor_folder(
         return;
     };
     let panel = workspace.active_panel();
-    panel.drag_entries = paths;
-    panel.drop_target = Some(target);
+    panel.drag.set(paths);
+    panel.drag.set_drop_target(target);
     drop_dragged_as(workspace, kind, notify);
 }
 
@@ -124,25 +120,23 @@ fn keyboard_drop_plan(workspace: &Workspace) -> Option<(Vec<PathBuf>, PathBuf)> 
     (!paths.is_empty()).then(|| (paths, target.path.clone()))
 }
 
-/// Resolve which panel is the drag source and where the drop lands,
-/// consuming the drag/drop state. A target hovered in the source panel
-/// itself (drag onto its own subdirectory) takes priority over the other
-/// panel. With no explicit target the drag is consumed as a cancellation.
+/// Resolve which panel is the drag source and where the drop lands, consuming
+/// the drag/drop state. A target hovered in the source panel itself (drag onto
+/// its own subdirectory) takes priority over the other panel. With no explicit
+/// target the drag is consumed as a cancellation.
 pub(crate) fn take_drop_plan(workspace: &mut Workspace) -> Option<(Vec<PathBuf>, PathBuf)> {
-    let (source, other) = if !workspace.left.drag_entries.is_empty() {
-        (&mut workspace.left, &mut workspace.right)
-    } else if !workspace.right.drag_entries.is_empty() {
-        (&mut workspace.right, &mut workspace.left)
+    let (source, other) = if !workspace.left.drag.is_empty() {
+        (&mut workspace.left.drag, &mut workspace.right.drag)
+    } else if !workspace.right.drag.is_empty() {
+        (&mut workspace.right.drag, &mut workspace.left.drag)
     } else {
         return None;
     };
     let target = source
-        .drop_target
-        .take()
-        .or_else(|| other.drop_target.take());
-    let paths = std::mem::take(&mut source.drag_entries);
-    source.drop_target = None;
-    other.drop_target = None;
+        .take_drop_target()
+        .or_else(|| other.take_drop_target());
+    let paths = source.take_entries();
+    other.clear_drop_target();
     if paths.is_empty() {
         return None;
     }
@@ -150,8 +144,6 @@ pub(crate) fn take_drop_plan(workspace: &mut Workspace) -> Option<(Vec<PathBuf>,
 }
 
 pub(crate) fn cancel_drag(workspace: &mut Workspace) {
-    workspace.left.drag_entries.clear();
-    workspace.right.drag_entries.clear();
-    workspace.left.drop_target = None;
-    workspace.right.drop_target = None;
+    let _ = workspace.left.drag.take();
+    let _ = workspace.right.drag.take();
 }

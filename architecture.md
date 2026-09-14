@@ -98,11 +98,12 @@ Grouped by the bounded context each module really belongs to:
   set logic, extracted from `workspace`), `selset`, `selection_summary`,
   `dedup`, `textdiff`.
 - **Operation contract / recovery**: `operation` owns IDs, durability, and
-  failure classes; `operation_journal` owns serializable event transitions and recovery;
-  `path_identity`, `filesystem_policy`, `mount_guard`, `version_store`, `undo`,
-  and `sync_guard` supply identity proof, filesystem capability policy,
-  remount safety, bounded version retention, reversible history, and circuit
-  breakers.
+  failure classes; `operation_journal` owns serializable event transitions and
+  recovery (production in `operation_journal.rs`, tests in
+  `operation_journal/tests.rs`); `path_identity`, `filesystem_policy`,
+  `mount_guard`, `version_store`, `undo`, and `sync_guard` supply identity
+  proof, filesystem capability policy, remount safety, bounded version
+  retention, reversible history, and circuit breakers.
 - **Transfer execution**: `transfer::executor::TransferExecutor` exclusively
   coordinates preflight, conflict review, identity and mount fences, journal
   transitions, placement, source cleanup, rollback, and terminal publication.
@@ -159,11 +160,12 @@ policy.
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/transfer.rs` | 4,851 | Largest production facade; staging, commit and copy backends still need a narrower executor boundary |
+| `src/transfer.rs` | ~3,050 | Public progress/spec facade; byte-copy primitives live under `transfer::{buffered,sparse,parallel_tree}` |
 | `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
-| `src/operation_journal.rs` | 3,974 | Durable transitions, proof validation, migration, recovery and fault-oriented tests |
+| `src/operation_journal.rs` | ~3,090 | Durable transitions, proof validation, migration, and recovery; production facade only |
+| `src/operation_journal/tests.rs` | ~1,545 | Fault/model suite intentionally separated (workspace-style `#[cfg(test)] mod tests;`); CAS and persist-envelope adoption remain follow-ups |
 | `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the production facade |
-| `src/workspace.rs` | 2,788 | Two-panel orchestration; fileops facades + queue/delete/space/undo controllers |
+| `src/workspace.rs` | ~2,800 | Two-panel orchestration; fileops facades + queue/delete/space/undo controllers |
 | `src/app/update.rs` | 2,118 | Per-frame hub and typed request dispatcher; dialog buffers live in `UiState` |
 
 ## Agent/critic remediation sequence (2026-07-21 to 2026-07-28)
@@ -371,17 +373,17 @@ Three mechanisms connect the core to the shell:
   size index are separate owners. The next useful reductions are gather/
   duplicates facades and a later `workspace/mod.rs` assembly, not another
   state-field shuffle.
-- **Transfer ownership is split; byte-copy primitives remain concentrated.**
+- **Transfer ownership is split; byte-copy primitives are module-local.**
   `TransferExecutor` is the single transactional coordinator and
-  `transfer::backend` is the staging-only port boundary. The buffered,
-  sparse, and parallel tree-copy primitives still live in `transfer.rs`
-  beside the public progress/spec facade. Moving those primitives into
-  backend-specific files is now a mechanical readability pass, not an
-  ownership prerequisite. Overwrite and non-overwrite resume now observe a
-  proven placement that crashed before `mark_completed` and write the
-  terminal effect proof instead of failing closed. Remaining residual work
-  is a descriptor-relative filesystem effect port and a streaming tree
-  planner that does not materialize every file before parallel copy.
+  `transfer::backend` is the staging-only port boundary. Buffered,
+  sparse, and parallel tree-copy primitives now live in
+  `transfer::{buffered,sparse,parallel_tree}` beside that boundary; the
+  public `TransferSpec` / progress API is unchanged. Overwrite and
+  non-overwrite resume now observe a proven placement that crashed before
+  `mark_completed` and write the terminal effect proof instead of failing
+  closed. Remaining residual work is a descriptor-relative filesystem
+  effect port and a streaming tree planner that does not materialize every
+  file before parallel copy.
 - **The request catalogue remains shared vocabulary.** The old 25-field flag
   bus is gone, but adding a new shell intent still adds one `UiRequest` variant
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
@@ -397,7 +399,11 @@ Three mechanisms connect the core to the shell:
   Bookmarks/session receive the same injected port through `App`/`Workspace`;
   feature flags and the version manifest use the boundary and fail closed.
   Cross-process CAS, descriptor-relative opens, and migration of the operation
-  journal/content index remain explicit follow-ups.
+  journal/content index onto the shared persist envelope remain explicit
+  follow-ups. Journal production code and its fault/model suite are already
+  split the same way as workspace (`operation_journal.rs` +
+  `operation_journal/tests.rs`); that split does not change resume/reconcile
+  ownership.
 - **Supply-chain acceptance is explicit and CI-enforced.** `deny.toml` checks
   the full all-features lockfile for advisories, yanked crates, licenses,
   wildcard requirements, and unapproved registries or Git sources. The current
@@ -453,22 +459,26 @@ Three mechanisms connect the core to the shell:
   and background disabling remain explicit application policy. Headless tests
   cover ownership and the running-app visual gate covers the real frame; native
   VoiceOver navigation remains a release check.
-- **`undo::Action` still does not cover every filesystem mutation.** `Move`,
-  `BatchRename`, path-stable `Rename`, and typed `Gather`/`Ungather` are now
-  undoable. Gather folder cleanup is a transfer-owned post-success action:
-  undo removes only an empty folder, reports cleanup failure normally, and
-  redo recreates the exact path before moving. Delete-to-Trash and rollback of
-  a partially failed initial Gather remain separate integrity work. Undo
-  coverage should become an invariant checked for every mutating command,
-  rather than continuing to grow action-by-action.
+- **`undo::Action` covers Move/Rename/Gather and Delete-to-Trash.** `Move`,
+  `BatchRename`, path-stable `Rename`, typed `Gather`/`Ungather`, and
+  `Trash`/`RestoreTrash` are undoable. Trash undo restores through
+  `version_store` (not Finder put-back): user deletes always run the Versioned
+  durability profile so a restore copy exists before the Trash port runs.
+  Gather folder cleanup is a transfer-owned post-success action: undo removes
+  only an empty folder, reports cleanup failure normally, and redo recreates
+  the exact path before moving. Partially failed Gather rolls completed
+  placements back out of the operation container and removes the orphan
+  folder; cancel/mount-retry paths surface `undo_placement` failures instead
+  of dropping them. Undo coverage should become an invariant checked for every
+  mutating command.
 - **The drag-and-drop bug cluster was closed as one ownership change.**
   `PanelState::begin_drag` now owns selection semantics, both panel renderers
   receive the global drag state so destination rows can advertise targets,
   panel backgrounds explicitly target their current directory, and
   `Workspace::take_drop_plan` treats a missing target as cancellation. Busy
-  early returns clear the whole drag session. The remaining structural debt is
-  only placement: these fields still belong in the planned `DragState` value
-  object rather than directly on `PanelState`.
+  early returns clear the whole drag session. Drag session fields now live in
+  the `DragState` value object (`panel::drag`) composed by `PanelState`, with
+  set/take/clear accessors used by app, workspace, and tests.
 
 ## 2026-07-09 SOLID/DRY reading slices
 
@@ -515,8 +525,8 @@ this time landing four bounded changes instead of expanding the backlog:
   collision set captured at open time. The UI renders that directory and the
   core re-reads it only at commit for a current collision check.
 - `PanelState::begin_drag` owns which files a row drag means; rendering owns
-  hover feedback; `Workspace` owns consuming or cancelling the drop. This is a
-  small SRP boundary that can move unchanged into the planned `DragState`.
+  hover feedback; `Workspace` owns consuming or cancelling the drop. That
+  boundary now lives in the `DragState` value object on `PanelState`.
 - `textdiff` owns its complexity budget. Its LCS matrix is one flat allocation
   with checked dimensions, and the dialog handles an over-budget result as a
   normal user-visible state rather than risking process termination.
