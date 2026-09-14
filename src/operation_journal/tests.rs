@@ -333,8 +333,7 @@ fn journal_persists_transfer_lifecycle_actions() {
     let source = temp.file("source.txt", "source");
     let folder = temp.path().join("gathered");
     std::fs::create_dir(&folder).unwrap();
-    let mut record =
-        incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
+    let mut record = incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
     record.post_success = Some(PostTransferAction::RemoveEmptyDir(folder.clone()));
     record.rollback_cleanup = Some(folder.clone());
     record.rollback_cleanup_identity = Some(PathIdentity::observe_deep(&folder).unwrap());
@@ -409,8 +408,7 @@ fn schema_3_terminal_legacy_containers_become_reviewable_without_blocking_load()
     completed.status = OperationStatus::Completed;
     completed.rollback_cleanup = Some(cleanup.clone());
     completed.steps[0].landing = Some(destination.clone());
-    completed.steps[0].destination_after =
-        Some(PathIdentity::observe_deep(&destination).unwrap());
+    completed.steps[0].destination_after = Some(PathIdentity::observe_deep(&destination).unwrap());
     completed.steps[0].fast_path = Some(crate::transfer_tuning::FastPath::Buffered);
 
     let mut rolled_back = completed.clone();
@@ -557,8 +555,7 @@ fn follow_source_proof_round_trips_through_recovery() {
     symlink(&nested_target, followed.join("nested-link")).unwrap();
     let source = temp.path().join("source-link");
     symlink(&followed, &source).unwrap();
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let scan = crate::scan::transfer_preflight(
         std::slice::from_ref(&entry),
         crate::filesystem_policy::SymlinkPolicy::Follow,
@@ -614,8 +611,7 @@ fn terminal_completion_proof_is_structural_immutable_and_stale_safe() {
     let _journal = use_test_journal(journal_path);
     let target = temp.dir("target");
     let source = temp.file("source.txt", "source");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("terminal-proof", vec![entry], &target);
     begin(&spec).unwrap();
     assert!(
@@ -731,8 +727,7 @@ fn resume_accepts_an_appended_tail_but_rejects_a_replaced_staging_inode() {
         partial: PathIdentity::observe_deep(&staging).unwrap(),
         layout: crate::transfer::CheckpointLayout::Prefix,
         content_digest: Some(
-            crate::transfer::prefix_digest(&staging, staging.metadata().unwrap().len())
-                .unwrap(),
+            crate::transfer::prefix_digest(&staging, staging.metadata().unwrap().len()).unwrap(),
         ),
     });
 
@@ -798,8 +793,7 @@ fn restart_restores_a_journaled_overwrite_backup_before_resuming() {
     let source = temp.file("source.txt", "new bytes");
     let destination = temp.file("target/source.txt", "old bytes");
     let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("overwrite-restart", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -874,8 +868,7 @@ fn restart_completes_overwrite_after_placement_before_mark_completed() {
     let source = temp.file("source.txt", "new bytes");
     let destination = temp.file("placed-target/source.txt", "old bytes");
     let staging = temp.file("placed-target/.source.txt.cmdr-tmp.0", "new bytes");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("overwrite-placed", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -936,8 +929,7 @@ fn restart_completes_overwrite_when_placement_landed_before_placed_phase() {
     let source = temp.file("source.txt", "new bytes");
     let destination = temp.file("landed-target/source.txt", "old bytes");
     let staging = temp.file("landed-target/.source.txt.cmdr-tmp.0", "new bytes");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("overwrite-landed", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -1001,8 +993,7 @@ fn restart_completes_non_overwrite_after_placement_before_mark_completed() {
     let source = temp.file("source.txt", "new bytes");
     let destination = target.join("source.txt");
     let staging = temp.file("place-target/.source.txt.cmdr-tmp.0", "new bytes");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("place-placed", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -1049,8 +1040,7 @@ fn restart_completes_non_overwrite_when_placement_landed_before_placed_phase() {
     let source = temp.file("source.txt", "new bytes");
     let destination = target.join("source.txt");
     let staging = temp.file("place-landed-target/.source.txt.cmdr-tmp.0", "new bytes");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("place-landed", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -1100,8 +1090,7 @@ fn overwrite_backup_proof_rejects_same_inode_content_tampering() {
     let source = temp.file("source.txt", "new bytes");
     let destination = temp.file("target/source.txt", "old bytes");
     let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("overwrite-tamper", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -1143,8 +1132,7 @@ fn overwrite_preparation_rejects_a_replacement_after_version_review() {
     let source = temp.file("source.txt", "new bytes");
     let destination = temp.file("target/source.txt", "reviewed bytes");
     let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("overwrite-stale", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -1193,8 +1181,7 @@ fn restart_finishes_a_rollback_from_its_proven_quarantine() {
     let target = temp.dir("target");
     let source = temp.file("source.txt", "source");
     let destination = target.join("source.txt");
-    let entry =
-        FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
     let spec = transfer_spec("rollback-restart", vec![entry], &target);
     begin(&spec).unwrap();
     let key = step_key(&spec, 0, &destination);
@@ -1462,8 +1449,7 @@ fn rollback_removes_only_an_empty_operation_created_container() {
     let source = temp.file("source.txt", "source");
     let folder = temp.path().join("gathered");
     std::fs::create_dir(&folder).unwrap();
-    let mut record =
-        incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
+    let mut record = incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
     record.rollback_cleanup = Some(folder.clone());
     record.rollback_cleanup_identity = Some(PathIdentity::observe_deep(&folder).unwrap());
     let journal_path = temp.path().join("journal.json");
@@ -1492,8 +1478,7 @@ fn rollback_preserves_a_created_container_with_foreign_content() {
     let folder = temp.path().join("gathered");
     std::fs::create_dir(&folder).unwrap();
     temp.file("gathered/foreign.txt", "foreign");
-    let mut record =
-        incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
+    let mut record = incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
     record.rollback_cleanup = Some(folder.clone());
     record.rollback_cleanup_identity = Some(PathIdentity::observe_deep(&folder).unwrap());
     let journal_path = temp.path().join("journal.json");
