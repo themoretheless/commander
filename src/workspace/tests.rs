@@ -1225,7 +1225,6 @@ fn context_menu_trash_routes_through_confirmation_and_background_port() {
     assert_eq!(*trash.calls.lock().unwrap(), [path]);
 }
 
-
 #[test]
 fn versioned_trash_delete_records_undo_and_restores_through_version_store() {
     let (left, right) = (TempDir::new(), TempDir::new());
@@ -1258,7 +1257,9 @@ fn versioned_trash_delete_records_undo_and_restores_through_version_store() {
         "Versioned trash must land on the undo stack"
     );
 
-    workspace.perform_undo(|| {}).expect("restore from version store");
+    workspace
+        .perform_undo(|| {})
+        .expect("restore from version store");
     assert!(path.is_file(), "undo restores the original path");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "payload");
 
@@ -1266,7 +1267,6 @@ fn versioned_trash_delete_records_undo_and_restores_through_version_store() {
     assert!(!path.exists(), "redo trashes the restored file again");
     assert_eq!(trash.calls.lock().unwrap().len(), 2);
 }
-
 
 #[test]
 fn delete_uses_visible_listing_identity_and_rejects_a_replacement() {

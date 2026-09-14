@@ -2116,7 +2116,10 @@ impl Workspace {
                 for item in &items {
                     let expected = crate::path_identity::PathIdentity::observe(&item.path)
                         .map_err(|error| {
-                            format!("Could not inspect {} for Trash redo: {error}", item.path.display())
+                            format!(
+                                "Could not inspect {} for Trash redo: {error}",
+                                item.path.display()
+                            )
                         })?;
                     if !expected.exists {
                         return Err(format!(

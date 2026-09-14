@@ -623,7 +623,6 @@ mod tests {
         assert_eq!(inverse.jump_to(), Some(PathBuf::from("/d")));
     }
 
-
     #[test]
     fn undo_returns_inverse_and_enables_redo() {
         let mut s = UndoStack::default();

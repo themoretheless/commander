@@ -384,7 +384,10 @@ fn process_ready_target(
     target: &TrashTarget,
     index: usize,
     runtime: &DeleteBatchRuntime<'_>,
-) -> (TrashItemOutcome, Option<crate::version_store::VersionRecord>) {
+) -> (
+    TrashItemOutcome,
+    Option<crate::version_store::VersionRecord>,
+) {
     if let Err(outcome) = validate_target(target) {
         return (outcome, None);
     }
@@ -833,7 +836,7 @@ mod tests {
                 path,
                 outcome: TrashItemOutcome::Failed(failure),
                 version: None,
-        }]
+            }]
         );
         assert!(port.calls.lock().unwrap().is_empty());
     }
