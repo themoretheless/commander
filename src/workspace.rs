@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 mod delete;
+mod fileops;
 mod space_probe;
 mod transfer_queue;
 
@@ -271,37 +272,6 @@ pub struct TransferPollOutcome {
 enum ActionExecution {
     Completed,
     Started,
-}
-
-#[derive(Debug)]
-struct RenameExecutionError {
-    message: String,
-    integrity_uncertain: bool,
-    paths: Vec<PathBuf>,
-}
-
-impl RenameExecutionError {
-    fn unchanged(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            integrity_uncertain: false,
-            paths: Vec::new(),
-        }
-    }
-
-    fn uncertain(message: impl Into<String>, paths: Vec<PathBuf>) -> Self {
-        Self {
-            message: message.into(),
-            integrity_uncertain: true,
-            paths,
-        }
-    }
-}
-
-impl std::fmt::Display for RenameExecutionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
 }
 
 struct CommandCapabilityCache {
@@ -1929,27 +1899,6 @@ impl Workspace {
         reason
     }
 
-    fn latch_rename_execution_error(&mut self, error: &RenameExecutionError) {
-        if !error.integrity_uncertain || self.safe_state.is_some() {
-            return;
-        }
-        let reason = format!(
-            "Rename rollback did not restore the original namespace: {}",
-            error.message
-        );
-        let failure = crate::operation::ClassifiedFailure::message(
-            crate::operation::FailureClass::IntegrityUncertain,
-            error.paths.first().cloned(),
-            reason.clone(),
-        );
-        self.safe_state = Some(crate::operation::SafeState {
-            operation_id: crate::operation::OperationId::new(),
-            reason,
-            paths: error.paths.clone(),
-            failures: vec![failure],
-        });
-    }
-
     /// Execute `action` forward against the filesystem. Used by undo (with an
     /// inverted action) and redo (with the original). It records no new history
     /// of its own; the matching reservation settles only after execution.
@@ -1992,12 +1941,12 @@ impl Workspace {
                 // Undo/redo replays recorded pairs without re-planning, so order
                 // them against the live directory (the inverse of a swap or a
                 // case-only rename is itself a swap/case-only and needs staging).
-                let existing = Self::dir_names(&dir);
-                let result = Self::apply_rename_order(&dir, &pairs, &existing);
+                let existing = fileops::dir_names(&dir);
+                let result = fileops::apply_rename_order(&dir, &pairs, &existing);
                 self.left.refresh();
                 self.right.refresh();
                 if let Err(error) = &result {
-                    self.latch_rename_execution_error(error);
+                    fileops::latch_rename_execution_error(self, error);
                 }
                 // A failed rename undo/redo leaves the filesystem out of step
                 // with the stack: surface it rather than swallowing the error.
@@ -2006,11 +1955,11 @@ impl Workspace {
                     .map_err(|error| error.to_string())
             }
             crate::undo::Action::Rename { from, to } => {
-                let result = Self::rename_path_no_clobber(&from, &to);
+                let result = fileops::rename_path_no_clobber(&from, &to);
                 self.left.refresh();
                 self.right.refresh();
                 if let Err(error) = &result {
-                    self.latch_rename_execution_error(error);
+                    fileops::latch_rename_execution_error(self, error);
                 }
                 result
                     .map(|_| ActionExecution::Completed)
@@ -2159,30 +2108,16 @@ impl Workspace {
         self.bookmarks.add(name, dir);
     }
 
-    /// Every name currently in `dir` (best-effort), so a rename batch can be
-    /// ordered against the live directory at apply/replay time.
     fn dir_names(dir: &Path) -> std::collections::HashSet<String> {
-        std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect()
+        fileops::dir_names(dir)
     }
 
-    /// Apply a `(from, to)` rename map in `dir` by computing a mid-batch-safe
-    /// order (swaps, rotations and case-only renames are staged through a temp;
-    /// see [`crate::rename_order`]) and executing it, rolling back on an OS
-    /// failure. Returns how many entries were renamed, or a user-facing error
-    /// (an unresolvable conflict, or the first OS error).
     fn apply_rename_order(
         dir: &Path,
         map: &[(String, String)],
         existing: &std::collections::HashSet<String>,
-    ) -> Result<usize, RenameExecutionError> {
-        Self::apply_rename_order_using(dir, map, existing, |from, to| {
-            crate::native_copy::rename_noreplace(&dir.join(from), &dir.join(to))
-        })
+    ) -> Result<usize, fileops::RenameExecutionError> {
+        fileops::apply_rename_order(dir, map, existing)
     }
 
     fn apply_rename_order_using<E: std::fmt::Display>(
@@ -2190,73 +2125,22 @@ impl Workspace {
         map: &[(String, String)],
         existing: &std::collections::HashSet<String>,
         rename: impl FnMut(&str, &str) -> Result<(), E>,
-    ) -> Result<usize, RenameExecutionError> {
-        use crate::rename_order::{RenameOrder, apply_steps, safe_rename_order};
-        match safe_rename_order(map, existing) {
-            RenameOrder::Conflict(why) => Err(RenameExecutionError::unchanged(why)),
-            RenameOrder::Steps(steps) => apply_steps(&steps, rename).map_err(|error| {
-                let message = error.to_string();
-                if error.rollback_failures.is_empty() {
-                    RenameExecutionError::unchanged(message)
-                } else {
-                    let mut paths = error
-                        .rollback_failures
-                        .iter()
-                        .flat_map(|failure| [dir.join(&failure.from), dir.join(&failure.to)])
-                        .collect::<Vec<_>>();
-                    paths.sort();
-                    paths.dedup();
-                    RenameExecutionError::uncertain(message, paths)
-                }
-            }),
-        }
+    ) -> Result<usize, fileops::RenameExecutionError> {
+        fileops::apply_rename_order_using(dir, map, existing, rename)
+    }
+
+    fn latch_rename_execution_error(&mut self, error: &fileops::RenameExecutionError) {
+        fileops::latch_rename_execution_error(self, error)
     }
 
     /// Confirm the pending op. Both transfers and deletes report completion
     /// asynchronously through their controller poll methods.
     pub fn confirm_pending_op(&mut self, notify: impl Fn() + Send + 'static) -> bool {
-        if self.mutation_commits_blocked() {
-            return false;
-        }
-        match &self.pending_op {
-            Some(PendingOp::Delete { .. }) => {
-                if self.has_unfinished_transfer_work() || self.deletes.is_active() {
-                    return false;
-                }
-                if let Some(PendingOp::Delete { targets, .. }) = self.pending_op.take() {
-                    return self.deletes.start(
-                        targets,
-                        DeleteOrigin::Confirmation,
-                        self.durability_profile,
-                        self.version_retention,
-                        notify,
-                    );
-                }
-                false
-            }
-            Some(PendingOp::Transfer(_)) => {
-                self.start_transfer(notify);
-                self.pending_op.is_none()
-            }
-            None => false,
-        }
+        fileops::confirm_pending_op(self, notify)
     }
 
     pub fn create_dir(&mut self) {
-        if self.mutation_commits_blocked() {
-            return;
-        }
-        let base = self.active_panel_ref().current_path.clone();
-        let path = crate::fs_util::first_available(|i| {
-            if i == 0 {
-                base.join("New Folder")
-            } else {
-                base.join(format!("New Folder {}", i))
-            }
-        });
-        let _ = std::fs::create_dir(&path);
-        self.left.refresh();
-        self.right.refresh();
+        fileops::create_dir(self)
     }
 
     /// Gather the active panel's selection into a fresh subfolder (Finder's
@@ -2331,120 +2215,24 @@ impl Workspace {
     /// Names beside `old`, excluding `old` itself. Captured by the rename UI at
     /// open time; commit performs the same check again against the live disk.
     pub fn rename_siblings(old: &Path) -> Vec<String> {
-        let old_name = old.file_name().map(|n| n.to_string_lossy().to_string());
-        old.parent()
-            .map(Self::dir_names)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|name| Some(name) != old_name.as_ref())
-            .collect()
-    }
-
-    /// Rename one path without replacing an unrelated destination. Case-only
-    /// changes stage through a temporary name and roll back if the second move
-    /// fails, preserving the recovery path in a composite error if rollback
-    /// itself also fails.
-    fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecutionError> {
-        if from == to {
-            return Ok(());
-        }
-        let dest_meta = to.symlink_metadata().ok();
-        let same_file = match &dest_meta {
-            Some(dest) => from.symlink_metadata().ok().is_some_and(|source| {
-                use std::os::unix::fs::MetadataExt;
-                source.ino() == dest.ino() && source.dev() == dest.dev()
-            }),
-            None => false,
-        };
-        if dest_meta.is_some() && !same_file {
-            return Err(RenameExecutionError::unchanged("Name already in use"));
-        }
-        if !same_file {
-            return crate::native_copy::rename_noreplace(from, to)
-                .map_err(|error| RenameExecutionError::unchanged(error.to_string()));
-        }
-
-        let parent = to
-            .parent()
-            .ok_or_else(|| RenameExecutionError::unchanged("Path has no parent"))?;
-        let tmp = crate::fs_util::first_available(|i| parent.join(format!(".cmdr-rename.{i}")));
-        crate::native_copy::rename_noreplace(from, &tmp)
-            .map_err(|error| RenameExecutionError::unchanged(error.to_string()))?;
-        match crate::native_copy::rename_noreplace(&tmp, to) {
-            Ok(()) => Ok(()),
-            Err(rename_error) => match crate::native_copy::rename_noreplace(&tmp, from) {
-                Ok(()) => Err(RenameExecutionError::unchanged(rename_error.to_string())),
-                Err(rollback_error) => Err(RenameExecutionError::uncertain(
-                    format!(
-                        "{rename_error}; rollback failed: {rollback_error}; file preserved at {}",
-                        tmp.display()
-                    ),
-                    vec![from.to_path_buf(), to.to_path_buf(), tmp],
-                )),
-            },
-        }
+        fileops::rename_siblings(old)
     }
 
     /// Rename `old` to `new_name` in the same directory. A no-op (unchanged
     /// name) succeeds silently. Successful changes are recorded for undo/redo.
     pub fn commit_rename(&mut self, old: &Path, new_name: &str) -> Result<(), String> {
-        if let Some(reason) = self.mutation_block_reason("rename") {
-            return Err(reason);
-        }
-        let new_name = new_name.trim();
-        let old_name = old
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if new_name == old_name {
-            return Ok(()); // nothing to do
-        }
-        let siblings = Self::rename_siblings(old);
-        crate::pathname::validate_new_name(new_name, &siblings)
-            .map_err(|error| error.to_string())?;
-        let dest = old
-            .parent()
-            .map(|p| p.join(new_name))
-            .ok_or("Path has no parent")?;
-        if let Err(error) = Self::rename_path_no_clobber(old, &dest) {
-            self.latch_rename_execution_error(&error);
-            return Err(error.to_string());
-        }
-        self.undo
-            .record(crate::undo::Action::Rename {
-                from: old.to_path_buf(),
-                to: dest,
-            })
-            .map_err(|error| self.history_invariant_error(error))?;
-        self.left.refresh();
-        self.right.refresh();
-        Ok(())
+        fileops::commit_rename(self, old, new_name)
     }
 
     // ── Batch rename ────────────────────────────────────────────────────
 
     pub fn batch_rename_context(&self) -> Option<BatchRenameContext> {
-        let panel = self.active_panel_ref();
-        let targets: Vec<String> = panel
-            .selected_or_cursor()
-            .ok()?
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
-        if targets.is_empty() {
-            return None;
-        }
-        Some(BatchRenameContext {
-            panel: self.active,
-            dir: panel.current_path.clone(),
-            targets,
-            existing: panel.entries().iter().map(|e| e.name.clone()).collect(),
-        })
+        fileops::batch_rename_context(self)
     }
 
     /// Apply a batch rename to the active panel. Genuine swaps, rotations and
     /// case-only renames are now allowed: they are ordered safely (staging
-    /// through a temp where needed) by [`Self::apply_rename_order`]. Only
+    /// through a temp where needed) by [`fileops::apply_rename_order`]. Only
     /// invalid target names and unresolvable conflicts (a target landing on an
     /// untouched sibling, or two rows clashing) are refused. Returns the number
     /// of entries renamed, or a user-facing error.
@@ -2456,66 +2244,7 @@ impl Workspace {
         context: &BatchRenameContext,
         rule: &crate::rename::RenameRule,
     ) -> Result<usize, String> {
-        if let Some(reason) = self.mutation_block_reason("batch rename") {
-            return Err(reason);
-        }
-        if context.targets.is_empty() {
-            return Err("Nothing selected to rename".into());
-        }
-        if let Some(error) = crate::rename::regex_error(rule) {
-            return Err(format!("Invalid regex: {error}"));
-        }
-        let existing = Self::dir_names(&context.dir);
-        let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule);
-        if plans
-            .iter()
-            .any(|p| p.status == crate::rename::PlanStatus::Invalid)
-        {
-            return Err("Fix the invalid names first".into());
-        }
-        // Every row whose name actually changes (Ok or a resolvable collision).
-        let changes: Vec<(String, String)> = plans
-            .iter()
-            .filter(|p| p.to != p.from)
-            .map(|p| (p.from.clone(), p.to.clone()))
-            .collect();
-        if changes.is_empty() {
-            return Ok(0);
-        }
-        let dir = context.dir.clone();
-
-        let done = match Self::apply_rename_order(&dir, &changes, &existing) {
-            Ok(done) => done,
-            Err(error) => {
-                self.latch_rename_execution_error(&error);
-                let panel = match context.panel {
-                    ActivePanel::Left => &mut self.left,
-                    ActivePanel::Right => &mut self.right,
-                };
-                if panel.current_path == context.dir {
-                    panel.refresh();
-                }
-                return Err(error.to_string());
-            }
-        };
-        // Record the batch as one undoable unit (Cmd+Z reverts the whole run).
-        if done > 0 {
-            self.undo
-                .record(crate::undo::Action::BatchRename {
-                    dir,
-                    pairs: changes,
-                })
-                .map_err(|error| self.history_invariant_error(error))?;
-        }
-        let panel = match context.panel {
-            ActivePanel::Left => &mut self.left,
-            ActivePanel::Right => &mut self.right,
-        };
-        if panel.current_path == context.dir {
-            panel.clear_selection();
-            panel.refresh();
-        }
-        Ok(done)
+        fileops::apply_batch_rename_in(self, context, rule)
     }
 
     // ── Duplicates ──────────────────────────────────────────────────────
@@ -3003,67 +2732,13 @@ impl Workspace {
     /// are rejected and errors surface. A clean, conflict-free drop runs
     /// immediately; a conflicting one opens the confirmation dialog.
     pub fn drop_dragged(&mut self, notify: impl Fn() + Send + 'static) {
-        self.drop_dragged_as(TransferKind::Move, notify);
+        fileops::drop_dragged(self, notify)
     }
 
     /// Complete a drag using its announced effect. Option-drag copies; the
     /// default and keyboard equivalent move. Both share identical preflight.
     pub fn drop_dragged_as(&mut self, kind: TransferKind, notify: impl Fn() + Send + 'static) {
-        // Ignore drops while a transfer or another dialog is in flight, so we
-        // never stack a second operation over the first.
-        if self.has_unfinished_transfer_work()
-            || self.pending_op.is_some()
-            || self.mutation_commits_blocked()
-        {
-            self.cancel_drag();
-            return;
-        }
-        let Some((paths, target)) = self.take_drop_plan() else {
-            return;
-        };
-        let entries: Vec<FileEntry> = paths
-            .iter()
-            .filter_map(|p| {
-                let meta = std::fs::metadata(p).ok()?;
-                FileEntry::from_meta(p.clone(), &meta)
-            })
-            .collect();
-        if entries.is_empty() {
-            return;
-        }
-        let conflicts = scan::find_conflicts(&entries, &target);
-        let flat = scan::pending_flat_list();
-        let policy = match self.name_policy.collision {
-            crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
-            crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
-            crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
-        };
-        let has_conflicts = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
-        let generation = self.start_space_probe(
-            entries.clone(),
-            target.clone(),
-            flat.clone(),
-            self.symlink_policy,
-            notify,
-        );
-        let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
-        self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
-            kind,
-            entries,
-            expectations: Vec::new(),
-            target,
-            conflicts,
-            policy,
-            method: CopyMethod::Native,
-            durability: self.durability_profile,
-            version_retention: self.version_retention,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            filesystem,
-            flat,
-            space: TransferSpaceState::Pending { generation },
-            start_when_ready: !has_conflicts,
-        }));
+        fileops::drop_dragged_as(self, kind, notify)
     }
 
     /// Keyboard equivalent of dropping the active selection onto the folder
@@ -3074,66 +2749,11 @@ impl Workspace {
         kind: TransferKind,
         notify: impl Fn() + Send + 'static,
     ) {
-        if self.has_unfinished_transfer_work()
-            || self.pending_op.is_some()
-            || self.mutation_commits_blocked()
-        {
-            return;
-        }
-        let Some((paths, target)) = self.keyboard_drop_plan() else {
-            return;
-        };
-        let panel = self.active_panel();
-        panel.drag_entries = paths;
-        panel.drop_target = Some(target);
-        self.drop_dragged_as(kind, notify);
-    }
-
-    fn keyboard_drop_plan(&self) -> Option<(Vec<PathBuf>, PathBuf)> {
-        let panel = self.active_panel_ref();
-        let target = panel.cursor_entry()?;
-        if !target.is_dir || panel.selection_is_empty() {
-            return None;
-        }
-        let paths = panel
-            .selected_entries()
-            .into_iter()
-            .map(|entry| entry.path)
-            .filter(|path| path != &target.path)
-            .collect::<Vec<_>>();
-        (!paths.is_empty()).then(|| (paths, target.path.clone()))
-    }
-
-    /// Resolve which panel is the drag source and where the drop lands,
-    /// consuming the drag/drop state. A target hovered in the source panel
-    /// itself (drag onto its own subdirectory) takes priority over the other
-    /// panel. With no explicit target the drag is consumed as a cancellation.
-    fn take_drop_plan(&mut self) -> Option<(Vec<PathBuf>, PathBuf)> {
-        let (source, other) = if !self.left.drag_entries.is_empty() {
-            (&mut self.left, &mut self.right)
-        } else if !self.right.drag_entries.is_empty() {
-            (&mut self.right, &mut self.left)
-        } else {
-            return None;
-        };
-        let target = source
-            .drop_target
-            .take()
-            .or_else(|| other.drop_target.take());
-        let paths = std::mem::take(&mut source.drag_entries);
-        source.drop_target = None;
-        other.drop_target = None;
-        if paths.is_empty() {
-            return None;
-        }
-        Some((paths, target?))
+        fileops::transfer_selection_into_cursor_folder(self, kind, notify)
     }
 
     pub(crate) fn cancel_drag(&mut self) {
-        self.left.drag_entries.clear();
-        self.right.drag_entries.clear();
-        self.left.drop_target = None;
-        self.right.drop_target = None;
+        fileops::cancel_drag(self)
     }
 }
 

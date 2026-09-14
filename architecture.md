@@ -162,8 +162,8 @@ policy.
 | `src/transfer.rs` | 4,851 | Largest production facade; staging, commit and copy backends still need a narrower executor boundary |
 | `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
 | `src/operation_journal.rs` | 3,974 | Durable transitions, proof validation, migration, recovery and fault-oriented tests |
-| `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the 2,925-line production facade |
-| `src/workspace.rs` | 2,925 | Two-panel orchestration; queue/delete/space state lives in owned controllers |
+| `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the production facade |
+| `src/workspace.rs` | 2,788 | Two-panel orchestration; fileops facades + queue/delete/space/undo controllers |
 | `src/app/update.rs` | 2,118 | Per-frame hub and typed request dispatcher; dialog buffers live in `UiState` |
 
 ## Agent/critic remediation sequence (2026-07-21 to 2026-07-28)
@@ -174,7 +174,7 @@ track was accepted; one unsafe journal patch was rejected rather than merged.
 
 | Track | Result | Remaining boundary |
 | --- | --- | --- |
-| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, `SpaceProbeController`, and `UndoCenter` own their state; only coherent command/file-operation facades remain |
+| Workspace decomposition | accepted | `TransferQueueController`, `DeleteController`, `SpaceProbeController`, and `UndoCenter` own their state; `workspace::fileops` owns mkdir/rename/batch-rename/pending-confirm/drop; gather/duplicates and `workspace/mod.rs` assembly remain |
 | Transfer executor/backend boundary | accepted after adversarial hardening | `TransferExecutor` owns transactional effects; native/clone, delta, sparse, and buffered ports only stage artifacts and return typed receipts |
 | Typed UI request queue + `UiState` | accepted | FIFO/modal/Escape ownership and dialog buffers are centralized; `App` retains presentation-only state |
 | Operation journal/recovery proof model | accepted after a fresh redesign | stable path identities, explicit transitions, migration validation, restart/fault/model tests; UI repair decisions remain explicit |
@@ -361,13 +361,16 @@ Three mechanisms connect the core to the shell:
 ## Known structural debt
 
 - **Two oversized coordination facades remain.** `Workspace` still coordinates
-  panels, pending operations, history action execution, compare/sync, batch
-  rename and drop glue, but queue, delete, free-space, and undo timeline state
-  now live in owned controllers and its tests are out of the production file.
+  panels, pending operations, history action execution, compare/sync, and
+  gather/duplicates glue, but queue, delete, free-space, and undo timeline
+  state live in owned controllers, and coherent mkdir/rename/batch-rename/
+  pending-confirm/drop commands now live under `workspace::fileops` with thin
+  `Workspace` wrappers. Its tests remain out of the production file.
   `PanelState` still exposes a broad method surface, but
   listing/revision/filter cache, view config/memory, selection, watcher, and
-  size index are separate owners. The next useful reductions are smaller
-  command/file-operation facades, not another state-field shuffle.
+  size index are separate owners. The next useful reductions are gather/
+  duplicates facades and a later `workspace/mod.rs` assembly, not another
+  state-field shuffle.
 - **Transfer ownership is split; byte-copy primitives remain concentrated.**
   `TransferExecutor` is the single transactional coordinator and
   `transfer::backend` is the staging-only port boundary. The buffered,
