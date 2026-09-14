@@ -1170,8 +1170,24 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 },
                             )
                         } else {
+                            if journal_enabled {
+                                crate::operation_journal::prepare_placement(
+                                    &spec.operation_id,
+                                    &work_item.key,
+                                    &copy_target,
+                                    &landing,
+                                )
+                                .map_err(std::io::Error::other)?;
+                            }
                             crate::native_copy::rename_noreplace(&copy_target, &landing)?;
                             fs_util::sync_parent_namespace(&landing)?;
+                            if journal_enabled {
+                                crate::operation_journal::mark_placement_placed(
+                                    &spec.operation_id,
+                                    &work_item.key,
+                                )
+                                .map_err(std::io::Error::other)?;
+                            }
                             Ok(None)
                         }
                     });
@@ -1879,8 +1895,21 @@ fn swap_into_place(
         ));
     }
     if !current.exists {
+        if journal.enabled {
+            crate::operation_journal::prepare_placement(
+                journal.operation_id,
+                journal.key,
+                staged,
+                dest,
+            )
+            .map_err(std::io::Error::other)?;
+        }
         crate::native_copy::rename_noreplace(staged, dest)?;
         fs_util::sync_parent_namespace(dest)?;
+        if journal.enabled {
+            crate::operation_journal::mark_placement_placed(journal.operation_id, journal.key)
+                .map_err(std::io::Error::other)?;
+        }
         return Ok(None);
     }
     let backup = staging_path(dest);

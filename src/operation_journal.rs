@@ -225,6 +225,11 @@ pub struct OperationStep {
     pub fast_path: Option<crate::transfer_tuning::FastPath>,
     #[serde(default)]
     pub replacement: Option<ReplacementBackup>,
+    /// Durable proof for non-overwrite placement (empty destination).
+    /// Seals the staged identity before rename so resume can complete a
+    /// crash between successful placement and `mark_completed`.
+    #[serde(default)]
+    pub placement: Option<PlacementProof>,
     #[serde(default)]
     pub rollback: Option<RollbackReceipt>,
     /// Schema-4 compatibility for journals written before rollback gained an
@@ -251,6 +256,19 @@ pub struct ReplacementBackup {
     pub original: PathIdentity,
     pub replacement: PathIdentity,
     pub phase: ReplacementPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlacementPhase {
+    Prepared,
+    Placed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementProof {
+    /// Deep identity of the staged object sealed before rename-into-place.
+    pub staged: PathIdentity,
+    pub phase: PlacementPhase,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -688,6 +706,30 @@ fn validate_step(operation: &OperationRecord, step: &OperationStep) -> Result<()
             operation.id.0, step.key.0
         ));
     }
+    if let Some(placement) = &step.placement {
+        if step.replacement.is_some() {
+            return Err(format!(
+                "Operation {} step {} has both overwrite and placement proofs",
+                operation.id.0, step.key.0
+            ));
+        }
+        let staging_ok = step
+            .staging
+            .as_ref()
+            .is_some_and(|path| placement.staged.path == *path);
+        if !staging_ok && !(placement.phase == PlacementPhase::Placed && step.landing.is_some()) {
+            return Err(format!(
+                "Operation {} step {} has an invalid placement proof",
+                operation.id.0, step.key.0
+            ));
+        }
+        if matches!(step.status, StepStatus::Completed | StepStatus::RolledBack) {
+            return Err(format!(
+                "Operation {} step {} still has an unreconciled placement proof",
+                operation.id.0, step.key.0
+            ));
+        }
+    }
     if step.rollback_quarantine.is_some() {
         return Err(format!(
             "Operation {} step {} contains an unmigrated rollback quarantine",
@@ -984,6 +1026,7 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                     checkpoint: None,
                     fast_path: None,
                     replacement: None,
+                    placement: None,
                     rollback: None,
                     rollback_quarantine: None,
                     status: StepStatus::Planned,
@@ -1227,6 +1270,103 @@ pub fn mark_replacement_placed(
     })
 }
 
+pub fn prepare_placement(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    staged: &Path,
+    destination: &Path,
+) -> Result<PlacementProof, String> {
+    let staged_identity = PathIdentity::observe_deep(staged)
+        .map_err(|error| format!("Could not prove non-overwrite staging: {error}"))?;
+    if !staged_identity.exists {
+        return Err("Non-overwrite placement requires a staged object".to_string());
+    }
+    let destination_identity = PathIdentity::observe(destination)
+        .map_err(|error| format!("Could not prove empty destination: {error}"))?;
+    if destination_identity.exists {
+        return Err("Non-overwrite destination is already occupied".to_string());
+    }
+    mutate(|journal| {
+        let operation = journal
+            .operations
+            .iter_mut()
+            .find(|operation| &operation.id == operation_id)
+            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        if operation.status != OperationStatus::Running {
+            return Err(format!(
+                "Operation {} cannot prepare placement while {}",
+                operation_id.0,
+                operation.status.label()
+            ));
+        }
+        let step = operation
+            .steps
+            .iter_mut()
+            .find(|step| &step.key == key)
+            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        if step.status != StepStatus::Running
+            || step.staging.as_deref() != Some(staged)
+            || step.landing.as_deref() != Some(destination)
+        {
+            return Err(format!(
+                "Operation step {} is not prepared for this placement",
+                key.0
+            ));
+        }
+        if step.replacement.is_some() {
+            return Err(format!(
+                "Operation step {} already has an overwrite proof",
+                key.0
+            ));
+        }
+        if let Some(existing) = &step.placement {
+            if existing.staged.same_binding(&staged_identity) {
+                return Ok(existing.clone());
+            }
+            return Err(format!(
+                "Operation step {} already has a different placement proof",
+                key.0
+            ));
+        }
+        let prepared = PlacementProof {
+            staged: staged_identity,
+            phase: PlacementPhase::Prepared,
+        };
+        step.placement = Some(prepared.clone());
+        operation.updated_at_secs = now_secs();
+        Ok(prepared)
+    })
+}
+
+pub fn mark_placement_placed(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+) -> Result<(), String> {
+    update_step(operation_id, key, &[OperationStatus::Running], |step| {
+        let placement = step
+            .placement
+            .as_mut()
+            .ok_or_else(|| "Non-overwrite placement was not prepared".to_string())?;
+        if placement.phase == PlacementPhase::Placed {
+            return Ok(());
+        }
+        if placement.phase != PlacementPhase::Prepared {
+            return Err("Non-overwrite placement callback arrived in a stale phase".to_string());
+        }
+        let landing = step
+            .landing
+            .as_deref()
+            .ok_or_else(|| "Non-overwrite placement has no landing".to_string())?;
+        let destination = PathIdentity::observe_deep(landing)
+            .map_err(|error| format!("Could not prove non-overwrite placement: {error}"))?;
+        if !placement.staged.same_version(&destination) {
+            return Err("Non-overwrite destination is not the proven staged object".to_string());
+        }
+        placement.phase = PlacementPhase::Placed;
+        Ok(())
+    })
+}
+
 pub fn mark_completed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
@@ -1278,6 +1418,14 @@ pub fn mark_completed(
                 key.0
             ));
         }
+        if let Some(placement) = &step.placement
+            && placement.phase != PlacementPhase::Placed
+        {
+            return Err(format!(
+                "Placement step {} reached completion before landing was proven",
+                key.0
+            ));
+        }
         step.status = step
             .status
             .transition(StepEvent::Complete)
@@ -1287,6 +1435,7 @@ pub fn mark_completed(
         if step.replacement.is_none() {
             step.staging = None;
         }
+        step.placement = None;
         step.checkpoint = None;
         step.fast_path = Some(fast_path);
         step.failure = None;
@@ -1556,6 +1705,7 @@ fn effect_path(step: &OperationStep) -> &Path {
 
 pub fn build_resume_spec(operation_id: &OperationId) -> Result<TransferSpec, String> {
     reconcile_prepared_replacements(operation_id)?;
+    reconcile_interrupted_placements(operation_id)?;
     let record = operation(operation_id)?;
     build_resume_spec_from(record)
 }
@@ -1755,6 +1905,119 @@ fn complete_interrupted_overwrite_placement(
             ));
         }
         step.replacement = None;
+        step.staging = None;
+        operation.updated_at_secs = now_secs();
+        Ok(())
+    })
+}
+
+/// Promote a proven non-overwrite placement that crashed before `mark_completed`.
+///
+/// Durable `Placed` (or live destination matching the sealed staged identity
+/// after `Prepared`) is enough to write the terminal effect proof and leave
+/// the step completed without re-copying.
+fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), String> {
+    let record = operation(operation_id)?;
+    for step in &record.steps {
+        let Some(placement) = &step.placement else {
+            continue;
+        };
+        let landing = step
+            .landing
+            .as_deref()
+            .ok_or_else(|| format!("Placement step {} has no landing", step.key.0))?;
+        let destination = PathIdentity::observe_deep(landing)
+            .map_err(|error| format!("Could not inspect interrupted placement: {error}"))?;
+        let staging_gone = step
+            .staging
+            .as_ref()
+            .map(|path| {
+                PathIdentity::observe(path)
+                    .map(|identity| !identity.exists)
+                    .map_err(|error| format!("Could not inspect interrupted staging: {error}"))
+            })
+            .transpose()?
+            .unwrap_or(true);
+        if destination.exists && placement.staged.same_version(&destination) {
+            complete_interrupted_placement(
+                operation_id,
+                &step.key,
+                placement,
+                landing,
+                &destination,
+            )?;
+            continue;
+        }
+        match placement.phase {
+            PlacementPhase::Prepared if !destination.exists && !staging_gone => {
+                // Staging still holds the sealed object; resume can retry rename.
+            }
+            PlacementPhase::Prepared | PlacementPhase::Placed => {
+                return Err(format!(
+                    "Interrupted placement for {} lost its proven staged object and requires review",
+                    landing.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn complete_interrupted_placement(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    placement: &PlacementProof,
+    landing: &Path,
+    destination: &PathIdentity,
+) -> Result<(), String> {
+    match placement.phase {
+        PlacementPhase::Prepared | PlacementPhase::Placed => {}
+    }
+
+    let destination_after = destination.clone();
+    mutate(|journal| {
+        let operation = journal
+            .operations
+            .iter_mut()
+            .find(|operation| &operation.id == operation_id)
+            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let step = operation
+            .steps
+            .iter_mut()
+            .find(|step| &step.key == key)
+            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        if step.placement.as_ref() != Some(placement) {
+            return Err(format!(
+                "Placement proof changed while completing step {}",
+                key.0
+            ));
+        }
+        if step.status == StepStatus::Completed {
+            let existing = step
+                .destination_after
+                .as_ref()
+                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
+            if step.landing.as_deref() != Some(landing) || !existing.same_binding(&destination_after)
+            {
+                return Err(format!(
+                    "Duplicate completion for step {} conflicts with its immutable proof",
+                    key.0
+                ));
+            }
+            return Ok(());
+        }
+        step.status = step
+            .status
+            .transition(StepEvent::Complete)
+            .map_err(|error| error.to_string())?;
+        step.landing = Some(landing.to_path_buf());
+        step.destination_after = Some(destination_after);
+        step.checkpoint = None;
+        if step.fast_path.is_none() {
+            step.fast_path = Some(crate::transfer_tuning::FastPath::Resumed);
+        }
+        step.failure = None;
+        step.placement = None;
         step.staging = None;
         operation.updated_at_secs = now_secs();
         Ok(())
@@ -2997,6 +3260,7 @@ mod tests {
                 checkpoint: None,
                 fast_path: None,
                 replacement: None,
+                placement: None,
                 rollback: None,
                 rollback_quarantine: None,
                 status,
@@ -3811,6 +4075,105 @@ mod tests {
         let record = operation(&spec.operation_id).unwrap();
         assert_eq!(record.steps[0].status, StepStatus::Completed);
         assert!(record.steps[0].replacement.is_none());
+        assert!(
+            record.steps[0]
+                .destination_after
+                .as_ref()
+                .unwrap()
+                .same_binding(&PathIdentity::observe_deep(&destination).unwrap())
+        );
+    }
+
+    #[test]
+    fn restart_completes_non_overwrite_after_placement_before_mark_completed() {
+        let temp = TempDir::new();
+        let _journal = use_test_journal(temp.path().join("place-journal.json"));
+        let target = temp.dir("place-target");
+        let source = temp.file("source.txt", "new bytes");
+        let destination = target.join("source.txt");
+        let staging = temp.file("place-target/.source.txt.cmdr-tmp.0", "new bytes");
+        let entry =
+            FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+        let spec = transfer_spec("place-placed", vec![entry], &target);
+        begin(&spec).unwrap();
+        let key = step_key(&spec, 0, &destination);
+        mark_running(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            PathIdentity::missing(&destination),
+        )
+        .unwrap();
+        prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+        crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+        crate::fs_util::sync_parent_namespace(&destination).unwrap();
+        mark_placement_placed(&spec.operation_id, &key).unwrap();
+        finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+
+        let resumed = build_resume_spec(&spec.operation_id).unwrap();
+
+        assert!(resumed.entries.is_empty(), "{:?}", resumed.entries);
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new bytes");
+        let record = operation(&spec.operation_id).unwrap();
+        assert_eq!(record.steps[0].status, StepStatus::Completed);
+        assert!(record.steps[0].placement.is_none());
+        assert!(record.steps[0].staging.is_none());
+        assert_eq!(
+            record.steps[0].fast_path,
+            Some(crate::transfer_tuning::FastPath::Resumed)
+        );
+        assert!(
+            record.steps[0]
+                .destination_after
+                .as_ref()
+                .unwrap()
+                .same_binding(&PathIdentity::observe_deep(&destination).unwrap())
+        );
+    }
+
+    #[test]
+    fn restart_completes_non_overwrite_when_placement_landed_before_placed_phase() {
+        let temp = TempDir::new();
+        let _journal = use_test_journal(temp.path().join("place-landed-journal.json"));
+        let target = temp.dir("place-landed-target");
+        let source = temp.file("source.txt", "new bytes");
+        let destination = target.join("source.txt");
+        let staging = temp.file("place-landed-target/.source.txt.cmdr-tmp.0", "new bytes");
+        let entry =
+            FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+        let spec = transfer_spec("place-landed", vec![entry], &target);
+        begin(&spec).unwrap();
+        let key = step_key(&spec, 0, &destination);
+        mark_running(
+            &spec.operation_id,
+            &key,
+            &staging,
+            &destination,
+            PathIdentity::missing(&destination),
+        )
+        .unwrap();
+        prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+        // Crash between rename-into-place and `mark_placement_placed`.
+        crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+        crate::fs_util::sync_parent_namespace(&destination).unwrap();
+        finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+        assert_eq!(
+            operation(&spec.operation_id).unwrap().steps[0]
+                .placement
+                .as_ref()
+                .unwrap()
+                .phase,
+            PlacementPhase::Prepared
+        );
+
+        let resumed = build_resume_spec(&spec.operation_id).unwrap();
+
+        assert!(resumed.entries.is_empty(), "{:?}", resumed.entries);
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new bytes");
+        let record = operation(&spec.operation_id).unwrap();
+        assert_eq!(record.steps[0].status, StepStatus::Completed);
+        assert!(record.steps[0].placement.is_none());
         assert!(
             record.steps[0]
                 .destination_after
