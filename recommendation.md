@@ -137,7 +137,9 @@ Verified against `main` after PRs #7–#13 merged (2026-09-14).
 
 **Accepted residuals only:**
 
-1. Descriptor-relative filesystem effect port
+1. Descriptor-relative filesystem effect port — **first slice landed**
+   (`fs_at::BoundDirectory` + `FileSystemProvider::apply_at`; transfer
+   placement rewire still follow-up)
 2. Streaming tree planner — **done** (`transfer/parallel_tree` streams the walk
    into a bounded job queue; no full leaf materialization before copy)
 3. Cross-process CAS / Persist envelope for journal + content-index —
@@ -163,9 +165,10 @@ Highest-value next steps, in order:
    Buffered/sparse/parallel-tree byte paths live under
    `transfer::{buffered,sparse,parallel_tree}` (PR #10). Parallel tree copy
    now streams the walk (bounded job queue) instead of materializing every
-   leaf first. Next among accepted residuals: descriptor-relative namespace
-   effects, then content-index Persist envelope (streaming Persist) and fuller
-   cross-process CAS. Journal Persist envelope slice already landed.
+   leaf first. Next among accepted residuals: finish descriptor-relative
+   transfer placement rewire, then content-index Persist envelope (streaming
+   Persist) and fuller cross-process CAS. Journal Persist envelope slice
+   already landed.
 4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries (`panel/{drag,visit,preview,nav}` and
    `workspace/fileops/` already landed). Their state ownership is already

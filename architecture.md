@@ -392,9 +392,11 @@ Three mechanisms connect the core to the shell:
   public `TransferSpec` / progress API is unchanged. Overwrite and
   non-overwrite resume now observe a proven placement that crashed before
   `mark_completed` and write the terminal effect proof instead of failing
-  closed. Remaining residual work is a descriptor-relative filesystem
-  effect port and a streaming tree planner that does not materialize every
-  file before parallel copy.
+  closed. Remaining residual work is finishing the descriptor-relative
+  filesystem effect port (first slice landed: `fs_at::BoundDirectory` +
+  `FileSystemProvider::apply_at`; transfer placement rewire still open) and a
+  streaming tree planner that does not materialize every file before parallel
+  copy.
 - **The request catalogue remains shared vocabulary.** The old 25-field flag
   bus is gone, but adding a new shell intent still adds one `UiRequest` variant
   and one dispatcher arm. Keep payload and ordering policy in `ui_request` and
@@ -514,7 +516,11 @@ against `main` after PRs #7–#13 merged (2026-09-14).
 ### Accepted residuals (only)
 
 1. **Descriptor-relative filesystem effect port** — namespace effects that do not
-   re-open by path after a proven binding.
+   re-open by path after a proven binding. **First slice landed:**
+   `fs_at::BoundDirectory` plus `FileSystemProvider::apply_at` /
+   `RelativeFileSystemEffect` (Create/Write/Rename/Remove under a held dirfd).
+   Proven in `operation_verification` fault injection. Transfer placement path
+   rewire remains a follow-up; residual is not fully closed.
 2. **Streaming tree planner** — **done** (`transfer/parallel_tree`): parallel
    copy streams the walk into a bounded job queue; it no longer materializes
    every leaf path before the first copy.
@@ -526,8 +532,10 @@ against `main` after PRs #7–#13 merged (2026-09-14).
 
 Phase1 integrity and facade-extraction items from PRs #7–#13 are closed on
 `main`; they are not additional long-term residuals. Residual (2) closes with
-the streaming parallel-tree change; residual (1) remains open and residual (3)
-is partial (journal landed; content-index + fuller CAS still open).
+the streaming parallel-tree change; residual (1) is partial (first
+DirFd/`apply_at` slice landed; transfer rewire remains); residual (3) is
+partial (journal Persist envelope landed; content-index + fuller CAS still
+open).
 
 ## 2026-07-09 SOLID/DRY reading slices
 

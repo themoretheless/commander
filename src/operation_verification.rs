@@ -1,6 +1,9 @@
 //! Deterministic fault, crash-restart, and small-state verification harness.
 
-use crate::ports::{FileSystemEffect, FileSystemProvider, NativeFileSystemProvider};
+use crate::fs_at::{BoundDirectory, leaf_name};
+use crate::ports::{
+    FileSystemEffect, FileSystemProvider, NativeFileSystemProvider, RelativeFileSystemEffect,
+};
 use crate::testutil::TempDir;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -108,44 +111,83 @@ impl DurableMachine {
         if self.should_skip() { 1 } else { 6 }
     }
 
-    fn step(&mut self, file_system: &dyn FileSystemProvider) -> std::io::Result<bool> {
+    fn destination_parent(&self) -> &Path {
+        self.destination
+            .parent()
+            .expect("destination always has a parent in fixtures")
+    }
+
+    fn source_parent(&self) -> &Path {
+        self.source
+            .parent()
+            .expect("source always has a parent in fixtures")
+    }
+
+    fn bind_parents(
+        &self,
+        file_system: &dyn FileSystemProvider,
+    ) -> std::io::Result<(BoundDirectory, BoundDirectory)> {
+        Ok((
+            BoundDirectory::bind(file_system, self.destination_parent())?,
+            BoundDirectory::bind(file_system, self.source_parent())?,
+        ))
+    }
+
+    fn step(
+        &mut self,
+        file_system: &dyn FileSystemProvider,
+        destination_dir: &BoundDirectory,
+        source_dir: &BoundDirectory,
+    ) -> std::io::Result<bool> {
         match self.phase {
             Phase::Planned if self.should_skip() => self.phase = Phase::Skipped,
             Phase::Planned => {
                 if !path_has(&self.staging, SOURCE_BYTES) {
-                    file_system.apply(&FileSystemEffect::WriteFile {
-                        path: self.staging.clone(),
-                        bytes: SOURCE_BYTES.to_vec(),
-                    })?;
+                    file_system.apply_at(
+                        destination_dir,
+                        &RelativeFileSystemEffect::WriteFile {
+                            name: leaf_name(&self.staging)?,
+                            bytes: SOURCE_BYTES.to_vec(),
+                        },
+                    )?;
                 }
                 self.phase = Phase::Staged;
             }
             Phase::Staged if self.needs_backup() => {
                 if !(path_has(&self.backup, DESTINATION_BYTES) && !self.destination.exists()) {
-                    file_system.apply(&FileSystemEffect::Rename {
-                        source: self.destination.clone(),
-                        destination: self.backup.clone(),
-                        replace: false,
-                    })?;
+                    file_system.apply_at(
+                        destination_dir,
+                        &RelativeFileSystemEffect::Rename {
+                            source: leaf_name(&self.destination)?,
+                            destination: leaf_name(&self.backup)?,
+                            replace: false,
+                        },
+                    )?;
                 }
                 self.phase = Phase::DestinationBackedUp;
             }
             Phase::Staged => self.phase = Phase::DestinationBackedUp,
             Phase::DestinationBackedUp => {
                 if !(path_has(&self.landing, SOURCE_BYTES) && !self.staging.exists()) {
-                    file_system.apply(&FileSystemEffect::Rename {
-                        source: self.staging.clone(),
-                        destination: self.landing.clone(),
-                        replace: false,
-                    })?;
+                    file_system.apply_at(
+                        destination_dir,
+                        &RelativeFileSystemEffect::Rename {
+                            source: leaf_name(&self.staging)?,
+                            destination: leaf_name(&self.landing)?,
+                            replace: false,
+                        },
+                    )?;
                 }
                 self.phase = Phase::Installed;
             }
             Phase::Installed if self.operation == ModelOperation::Move => {
                 if self.source.exists() {
-                    file_system.apply(&FileSystemEffect::Remove {
-                        path: self.source.clone(),
-                    })?;
+                    file_system.apply_at(
+                        source_dir,
+                        &RelativeFileSystemEffect::Remove {
+                            name: leaf_name(&self.source)?,
+                        },
+                    )?;
                 }
                 self.phase = Phase::SourceRemoved;
             }
@@ -153,9 +195,12 @@ impl DurableMachine {
             Phase::SourceRemoved => self.phase = Phase::Committed,
             Phase::Committed => {
                 if self.backup.exists() {
-                    file_system.apply(&FileSystemEffect::Remove {
-                        path: self.backup.clone(),
-                    })?;
+                    file_system.apply_at(
+                        destination_dir,
+                        &RelativeFileSystemEffect::Remove {
+                            name: leaf_name(&self.backup)?,
+                        },
+                    )?;
                 }
                 self.phase = Phase::Completed;
             }
@@ -165,11 +210,12 @@ impl DurableMachine {
     }
 
     fn run(&mut self, file_system: &dyn FileSystemProvider) -> std::io::Result<()> {
+        let (destination_dir, source_dir) = self.bind_parents(file_system)?;
         for _ in 0..16 {
             if self.phase.is_terminal() {
                 return Ok(());
             }
-            self.step(file_system)?;
+            self.step(file_system, &destination_dir, &source_dir)?;
         }
         Err(std::io::Error::other(
             "verification state machine did not terminate",
@@ -245,6 +291,18 @@ impl<P> FaultInjectingFileSystem<P> {
         self.effect == index
             && std::mem::discriminant(&self.moment) == std::mem::discriminant(&moment)
     }
+
+    fn around_effect<T>(&self, body: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+        let index = self.calls.fetch_add(1, Ordering::AcqRel);
+        if self.injected(index, InjectionMoment::Before) {
+            return Err(std::io::Error::other("injected before side effect"));
+        }
+        let result = body()?;
+        if self.injected(index, InjectionMoment::After) {
+            return Err(std::io::Error::other("injected after side effect"));
+        }
+        Ok(result)
+    }
 }
 
 impl<P: FileSystemProvider> FileSystemProvider for FaultInjectingFileSystem<P> {
@@ -253,15 +311,15 @@ impl<P: FileSystemProvider> FileSystemProvider for FaultInjectingFileSystem<P> {
     }
 
     fn apply(&self, effect: &FileSystemEffect) -> std::io::Result<()> {
-        let index = self.calls.fetch_add(1, Ordering::AcqRel);
-        if self.injected(index, InjectionMoment::Before) {
-            return Err(std::io::Error::other("injected before side effect"));
-        }
-        self.inner.apply(effect)?;
-        if self.injected(index, InjectionMoment::After) {
-            return Err(std::io::Error::other("injected after side effect"));
-        }
-        Ok(())
+        self.around_effect(|| self.inner.apply(effect))
+    }
+
+    fn apply_at(
+        &self,
+        directory: &BoundDirectory,
+        effect: &RelativeFileSystemEffect,
+    ) -> std::io::Result<()> {
+        self.around_effect(|| self.inner.apply_at(directory, effect))
     }
 }
 
@@ -340,15 +398,23 @@ fn crash_kill_harness_restarts_at_every_journal_transition() {
                     let temp = TempDir::new();
                     let mut machine =
                         DurableMachine::fixture(&temp, operation, policy, destination_existed);
+                    let (mut destination_dir, mut source_dir) =
+                        machine.bind_parents(&NativeFileSystemProvider).unwrap();
                     let mut transitions = 0;
                     let mut restarted = false;
                     while !machine.phase.is_terminal() {
-                        machine.step(&NativeFileSystemProvider).unwrap();
+                        machine
+                            .step(&NativeFileSystemProvider, &destination_dir, &source_dir)
+                            .unwrap();
                         transitions += 1;
                         assert!(machine.no_loss());
                         if transitions == kill_after {
                             let persisted = serde_json::to_vec(&machine).unwrap();
                             machine = serde_json::from_slice(&persisted).unwrap();
+                            // A restarted process must observe + open a fresh
+                            // binding; it does not inherit the prior dirfd.
+                            (destination_dir, source_dir) =
+                                machine.bind_parents(&NativeFileSystemProvider).unwrap();
                             restarted = true;
                         }
                     }
@@ -376,10 +442,14 @@ fn model_checks_small_copy_move_sync_conflict_state_space() {
                 let temp = TempDir::new();
                 let mut machine =
                     DurableMachine::fixture(&temp, operation, policy, destination_existed);
+                let (destination_dir, source_dir) =
+                    machine.bind_parents(&NativeFileSystemProvider).unwrap();
                 while !machine.phase.is_terminal() {
                     let encoded = serde_json::to_vec(&machine).unwrap();
                     machine = serde_json::from_slice(&encoded).unwrap();
-                    machine.step(&NativeFileSystemProvider).unwrap();
+                    machine
+                        .step(&NativeFileSystemProvider, &destination_dir, &source_dir)
+                        .unwrap();
                     assert!(machine.no_loss());
                 }
                 machine.assert_terminal_contract();

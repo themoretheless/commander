@@ -22,6 +22,7 @@ pub mod feature_flags;
 mod file_color;
 mod filesystem_policy;
 mod focus_mode;
+mod fs_at;
 mod fs_util;
 mod fuzzy;
 mod image_cache;
