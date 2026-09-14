@@ -1054,7 +1054,7 @@ mod tests {
         let temp = TempDir::new();
         let versions = temp.path().join("versions");
         let _guard = use_test_versions_dir(versions.clone());
-        let observed = std::thread::spawn(|| versions_dir())
+        let observed = std::thread::spawn(versions_dir)
             .join()
             .expect("worker thread");
         assert_eq!(observed, versions);
