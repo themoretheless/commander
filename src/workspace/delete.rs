@@ -22,10 +22,8 @@ trait DeleteVersionStore: Send + Sync {
     fn discard(&self, record: &crate::version_store::VersionRecord) -> Result<(), NativeFailure>;
 }
 
-#[cfg(not(test))]
 struct NativeDeleteVersionStore;
 
-#[cfg(not(test))]
 impl DeleteVersionStore for NativeDeleteVersionStore {
     fn preserve(
         &self,
@@ -135,6 +133,11 @@ impl DeleteController {
         Self::with_version_store(port, versions)
     }
 
+    #[cfg(test)]
+    pub(super) fn with_native_versions(port: Arc<dyn TrashPort>) -> Self {
+        Self::with_version_store(port, Arc::new(NativeDeleteVersionStore))
+    }
+
     fn with_version_store(port: Arc<dyn TrashPort>, versions: Arc<dyn DeleteVersionStore>) -> Self {
         Self {
             generation: 0,
@@ -142,6 +145,10 @@ impl DeleteController {
             port,
             versions,
         }
+    }
+
+    pub(super) fn trash_one(&self, target: &TrashTarget) -> TrashItemOutcome {
+        self.port.move_to_trash(target)
     }
 
     pub(super) fn is_active(&self) -> bool {
@@ -335,19 +342,23 @@ fn run_batch(items: Vec<TrashBatchItem>, runtime: DeleteBatchRuntime<'_>) -> Del
             );
             break;
         }
-        let (path, outcome) = match item {
+        let (path, outcome, version) = match item {
             TrashBatchItem::CaptureFailed { path, failure } => {
-                (path, TrashItemOutcome::Failed(failure))
+                (path, TrashItemOutcome::Failed(failure), None)
             }
             TrashBatchItem::Ready(target) => {
-                let outcome = process_ready_target(&target, index, &runtime);
-                (target.path, outcome)
+                let (outcome, version) = process_ready_target(&target, index, &runtime);
+                (target.path, outcome, version)
             }
         };
         let indeterminate = matches!(outcome, TrashItemOutcome::Indeterminate(_));
         {
             let mut state = crate::lock_util::recover(runtime.progress);
-            state.results.push(DeleteItemResult { path, outcome });
+            state.results.push(DeleteItemResult {
+                path,
+                outcome,
+                version,
+            });
         }
         (runtime.notify)();
         if indeterminate {
@@ -373,9 +384,12 @@ fn process_ready_target(
     target: &TrashTarget,
     index: usize,
     runtime: &DeleteBatchRuntime<'_>,
-) -> TrashItemOutcome {
+) -> (
+    TrashItemOutcome,
+    Option<crate::version_store::VersionRecord>,
+) {
     if let Err(outcome) = validate_target(target) {
-        return outcome;
+        return (outcome, None);
     }
     let record = if runtime.durability.keeps_versions() {
         match runtime.versions.preserve(
@@ -386,15 +400,18 @@ fn process_ready_target(
         ) {
             Ok(record) => record,
             Err(failure) if failure.kind == NativeFailureKind::Stale => {
-                return TrashItemOutcome::StaleBinding;
+                return (TrashItemOutcome::StaleBinding, None);
             }
-            Err(failure) => return TrashItemOutcome::Failed(failure),
+            Err(failure) => return (TrashItemOutcome::Failed(failure), None),
         }
     } else {
         None
     };
     if let Err(outcome) = validate_target(target) {
-        return discard_rejected_version(outcome, record.as_ref(), runtime.versions);
+        return (
+            discard_rejected_version(outcome, record.as_ref(), runtime.versions),
+            None,
+        );
     }
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.port.move_to_trash(target)
@@ -412,9 +429,27 @@ fn process_ready_target(
         outcome,
         TrashItemOutcome::Missing | TrashItemOutcome::StaleBinding
     ) {
-        discard_rejected_version(outcome, record.as_ref(), runtime.versions)
+        (
+            discard_rejected_version(outcome, record.as_ref(), runtime.versions),
+            None,
+        )
+    } else if outcome == TrashItemOutcome::Trashed {
+        (outcome, record)
     } else {
-        outcome
+        // Discard unused versions on hard failure; keep them for indeterminate results.
+        if matches!(
+            outcome,
+            TrashItemOutcome::Failed(_)
+                | TrashItemOutcome::Unsupported(_)
+                | TrashItemOutcome::Cancelled
+        ) {
+            (
+                discard_rejected_version(outcome, record.as_ref(), runtime.versions),
+                None,
+            )
+        } else {
+            (outcome, record)
+        }
     }
 }
 
@@ -443,6 +478,7 @@ fn append_remaining(
         state.results.push(DeleteItemResult {
             path: item.path().to_path_buf(),
             outcome: outcome.clone(),
+            version: None,
         });
         drop(state);
         notify();
@@ -517,6 +553,7 @@ fn indeterminate_outcome(
                 kind: NativeFailureKind::Unknown,
                 message: message.to_string(),
             }),
+            version: None,
         });
     }
     outcome_from_results(context, results)
@@ -534,6 +571,7 @@ fn failed_outcome(
         .map(|path| DeleteItemResult {
             path,
             outcome: TrashItemOutcome::Failed(failure.clone()),
+            version: None,
         })
         .collect::<Vec<_>>();
     let class = if indeterminate {
@@ -797,6 +835,7 @@ mod tests {
             vec![DeleteItemResult {
                 path,
                 outcome: TrashItemOutcome::Failed(failure),
+                version: None,
             }]
         );
         assert!(port.calls.lock().unwrap().is_empty());

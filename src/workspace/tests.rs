@@ -66,11 +66,20 @@ impl ScriptedTrashPort {
 impl crate::ports::TrashPort for ScriptedTrashPort {
     fn move_to_trash(&self, target: &crate::ports::TrashTarget) -> crate::ports::TrashItemOutcome {
         self.calls.lock().unwrap().push(target.path.clone());
-        self.outcomes
+        let outcome = self
+            .outcomes
             .lock()
             .unwrap()
             .pop_front()
-            .expect("scripted Trash outcome")
+            .expect("scripted Trash outcome");
+        if outcome == crate::ports::TrashItemOutcome::Trashed {
+            let _ = if target.path.is_dir() {
+                std::fs::remove_dir_all(&target.path)
+            } else {
+                std::fs::remove_file(&target.path)
+            };
+        }
+        outcome
     }
 }
 
@@ -1214,6 +1223,49 @@ fn context_menu_trash_routes_through_confirmation_and_background_port() {
     let outcome = workspace.finish_delete().expect("delete outcome");
     assert_eq!(outcome.trashed, 1);
     assert_eq!(*trash.calls.lock().unwrap(), [path]);
+}
+
+#[test]
+fn versioned_trash_delete_records_undo_and_restores_through_version_store() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let path = left.file("keep-me.txt", "payload");
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed, // redo
+    ]));
+    let mut workspace = Workspace::with_versioned_delete_ports(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        trash.clone(),
+        Arc::new(TestFreeSpacePort),
+    );
+    workspace.left.refresh();
+    workspace.right.refresh();
+    workspace.left.set_cursor(1);
+    workspace.request_delete();
+    assert!(workspace.confirm_pending_op(|| {}));
+    let outcome = workspace.finish_delete().expect("delete outcome");
+    assert_eq!(outcome.trashed, 1);
+    assert!(!path.exists(), "scripted trash removes the live file");
+    assert!(
+        matches!(
+            workspace.top_undo_action(),
+            Some(crate::undo::Action::Trash { .. })
+        ),
+        "Versioned trash must land on the undo stack"
+    );
+
+    workspace
+        .perform_undo(|| {})
+        .expect("restore from version store");
+    assert!(path.is_file(), "undo restores the original path");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "payload");
+
+    workspace.perform_redo(|| {}).expect("re-trash");
+    assert!(!path.exists(), "redo trashes the restored file again");
+    assert_eq!(trash.calls.lock().unwrap().len(), 2);
 }
 
 #[test]
