@@ -56,46 +56,46 @@ impl App {
                 }
             }
         });
-        if let Some(result) = extract_event {
-            if let Some(state) = self.ui.modals.archive.as_mut() {
-                state.extract = None;
-                match result {
-                    Ok(report) => {
-                        let status = format!(
-                            "Extracted {} · skipped existing {} · dirs {}",
-                            report.extracted, report.skipped_existing, report.skipped_dirs
-                        );
-                        state.status = Some(status.clone());
-                        if report.errors.is_empty() {
-                            state.error = None;
-                            self.toasts.push(crate::toasts::Toast::new(
-                                status,
-                                crate::toasts::ToastKind::Info,
-                                false,
-                                now,
-                            ));
-                        } else {
-                            let detail = report.errors.join("; ");
-                            state.error = Some(detail.clone());
-                            self.toasts.push(crate::toasts::Toast::new(
-                                detail,
-                                crate::toasts::ToastKind::Error,
-                                false,
-                                now,
-                            ));
-                        }
-                        self.ws.left.refresh();
-                        self.ws.right.refresh();
-                    }
-                    Err(error) => {
-                        state.error = Some(error.clone());
+        if let Some(result) = extract_event
+            && let Some(state) = self.ui.modals.archive.as_mut()
+        {
+            state.extract = None;
+            match result {
+                Ok(report) => {
+                    let status = format!(
+                        "Extracted {} · skipped existing {} · dirs {}",
+                        report.extracted, report.skipped_existing, report.skipped_dirs
+                    );
+                    state.status = Some(status.clone());
+                    if report.errors.is_empty() {
+                        state.error = None;
                         self.toasts.push(crate::toasts::Toast::new(
-                            error,
+                            status,
+                            crate::toasts::ToastKind::Info,
+                            false,
+                            now,
+                        ));
+                    } else {
+                        let detail = report.errors.join("; ");
+                        state.error = Some(detail.clone());
+                        self.toasts.push(crate::toasts::Toast::new(
+                            detail,
                             crate::toasts::ToastKind::Error,
                             false,
                             now,
                         ));
                     }
+                    self.ws.left.refresh();
+                    self.ws.right.refresh();
+                }
+                Err(error) => {
+                    state.error = Some(error.clone());
+                    self.toasts.push(crate::toasts::Toast::new(
+                        error,
+                        crate::toasts::ToastKind::Error,
+                        false,
+                        now,
+                    ));
                 }
             }
         }
@@ -224,7 +224,8 @@ impl App {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "{} of {} members  |  {} unpacked",
+                                    "{} · {} of {} members  |  {} unpacked",
+                                    listing.kind.label(),
                                     visible.len(),
                                     listing.declared_members,
                                     format_size(declared_bytes)

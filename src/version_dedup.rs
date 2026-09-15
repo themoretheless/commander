@@ -159,10 +159,8 @@ fn hardlink_replace(exemplar: &Path, target: &Path) -> Result<(), String> {
     }
     let tmp = target.with_extension("commander-dedup-tmp");
     let _ = fs::remove_file(&tmp);
-    if fs::hard_link(exemplar, &tmp).is_ok() {
-        if fs::rename(&tmp, target).is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
+    if fs::hard_link(exemplar, &tmp).is_ok() && fs::rename(&tmp, target).is_err() {
+        let _ = fs::remove_file(&tmp);
     }
     Ok(())
 }

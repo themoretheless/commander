@@ -6,7 +6,7 @@
 use crate::encrypted_bundle::{DEFAULT_TTL_SECS, EncryptRequest, EncryptedBundleManifest};
 use std::path::{Path, PathBuf};
 
-pub use crate::encrypted_bundle::{decrypt, encrypt, load_manifest};
+pub use crate::encrypted_bundle::{decrypt, encrypt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealedBundle {
@@ -66,6 +66,7 @@ pub fn open_support_bytes(
     decrypt(&sealed.manifest, recipient_id, now_secs)
 }
 
+#[allow(dead_code)] // Alternate J005 writer for tests; production uses encrypted_bundle::export_to
 pub fn write_sealed_bundle(dir: &Path, sealed: &SealedBundle) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let stem = format!(
@@ -103,7 +104,7 @@ fn sanitize_component(value: &str) -> String {
 }
 
 fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("invalid hex length".into());
     }
     let mut out = Vec::with_capacity(hex.len() / 2);

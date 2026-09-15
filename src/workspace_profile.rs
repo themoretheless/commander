@@ -111,25 +111,31 @@ pub fn upsert(profile: WorkspaceProfile) {
     save(&book);
 }
 
-pub fn capture(
-    name: impl Into<String>,
-    left_root: &Path,
-    right_root: &Path,
-    left_filter: impl Into<String>,
-    right_filter: impl Into<String>,
-    durability: DurabilityProfile,
-    name_policy: NamePolicy,
-    symlink_policy: SymlinkPolicy,
-    trusted_command_templates: Vec<String>,
-) -> WorkspaceProfile {
-    let mut profile =
-        WorkspaceProfile::new(name, left_root.to_path_buf(), right_root.to_path_buf());
-    profile.left_filter = left_filter.into();
-    profile.right_filter = right_filter.into();
-    profile.durability = durability;
-    profile.name_policy = name_policy;
-    profile.symlink_policy = symlink_policy;
-    profile.trusted_command_templates = trusted_command_templates;
+#[derive(Clone, Debug)]
+pub struct CaptureParams<'a> {
+    pub name: String,
+    pub left_root: &'a Path,
+    pub right_root: &'a Path,
+    pub left_filter: String,
+    pub right_filter: String,
+    pub durability: DurabilityProfile,
+    pub name_policy: NamePolicy,
+    pub symlink_policy: SymlinkPolicy,
+    pub trusted_command_templates: Vec<String>,
+}
+
+pub fn capture(params: CaptureParams<'_>) -> WorkspaceProfile {
+    let mut profile = WorkspaceProfile::new(
+        params.name,
+        params.left_root.to_path_buf(),
+        params.right_root.to_path_buf(),
+    );
+    profile.left_filter = params.left_filter;
+    profile.right_filter = params.right_filter;
+    profile.durability = params.durability;
+    profile.name_policy = params.name_policy;
+    profile.symlink_policy = params.symlink_policy;
+    profile.trusted_command_templates = params.trusted_command_templates;
     upsert(profile.clone());
     profile
 }

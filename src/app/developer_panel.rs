@@ -94,7 +94,37 @@ impl App {
                             text_row(
                                 ui,
                                 "Version store",
-                                &crate::version_store::store_usage().label(),
+                                &{
+                                    let usage = crate::version_store::store_usage();
+                                    let quota = crate::version_store::store_quota();
+                                    if usage.over_quota() {
+                                        format!(
+                                            "{} · {} · OVER QUOTA",
+                                            usage.label(),
+                                            quota.label()
+                                        )
+                                    } else {
+                                        format!("{} · {}", usage.label(), quota.label())
+                                    }
+                                },
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Trust labels",
+                                &crate::trust::TrustLabel::ALL
+                                    .map(|label| label.label())
+                                    .join(" / "),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Listing provenance",
+                                &format!(
+                                    "L {} · R {}",
+                                    self.ws.left.change_provenance.source.label(),
+                                    self.ws.right.change_provenance.source.label()
+                                ),
                                 t.text_primary,
                             );
                             text_row(
@@ -444,7 +474,7 @@ impl App {
                                     &paths,
                                     &recipient,
                                     &secret,
-                                    crate::encrypted_bundle::DEFAULT_TTL_SECS,
+                                    crate::support_encrypt::default_ttl_secs(),
                                 ) {
                                     Ok((path, manifest)) => DeveloperNotice::success(
                                         format!(
@@ -459,15 +489,17 @@ impl App {
                         }
                         if ui.button("Save workspace profile").clicked() {
                             let profile = crate::workspace_profile::capture(
-                                "current",
-                                &self.ws.left.current_path,
-                                &self.ws.right.current_path,
-                                String::new(),
-                                String::new(),
-                                self.ws.durability_profile,
-                                self.ws.name_policy,
-                                self.ws.symlink_policy,
-                                Vec::new(),
+                                crate::workspace_profile::CaptureParams {
+                                    name: "current".to_string(),
+                                    left_root: &self.ws.left.current_path,
+                                    right_root: &self.ws.right.current_path,
+                                    left_filter: String::new(),
+                                    right_filter: String::new(),
+                                    durability: self.ws.durability_profile,
+                                    name_policy: self.ws.name_policy,
+                                    symlink_policy: self.ws.symlink_policy,
+                                    trusted_command_templates: Vec::new(),
+                                },
                             );
                             self.developer_notice = Some(DeveloperNotice::success(
                                 format!("Workspace profile saved: {}", profile.name),

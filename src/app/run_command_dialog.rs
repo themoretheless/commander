@@ -230,8 +230,10 @@ impl App {
                         .unwrap_or_else(|| "no exit code".to_string());
                     let header = if let Some(error) = &output.error {
                         format!("Failed · {error}")
-                    } else {
+                    } else if output.cmdline.trim().is_empty() {
                         format!("Finished · {exit}")
+                    } else {
+                        format!("Finished · {exit} · {}", output.cmdline.trim())
                     };
                     let header_color = if output.error.is_some()
                         || output.exit_code.is_some_and(|code| code != 0)

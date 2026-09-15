@@ -119,11 +119,16 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_panel).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
                 let timeline_message = self.assistive_timeline.current().to_string();
+                let timeline_events = self.assistive_timeline.events().count();
                 if !timeline_message.is_empty() {
                     let live = ui.label(
-                        egui::RichText::new(&timeline_message)
-                            .size(10.0)
-                            .color(t.text_muted),
+                        egui::RichText::new(if timeline_events > 1 {
+                            format!("{timeline_message} · {timeline_events} events")
+                        } else {
+                            timeline_message.clone()
+                        })
+                        .size(10.0)
+                        .color(t.text_muted),
                     );
                     ui.ctx().accesskit_node_builder(live.id, |node| {
                         node.set_role(egui::accesskit::Role::Status);

@@ -1606,7 +1606,11 @@ fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         .map(|ext| ext.to_string_lossy().into_owned())
         .unwrap_or_default();
     let (space, hdr) = crate::color_manage::hint_from_extension(&extension);
-    let (image, byte_size) = color_image_from_rgba_managed(size, pixels, space, hdr)?;
+    let (image, byte_size) = if matches!(space, crate::color_manage::ColorSpaceHint::Srgb) && !hdr {
+        color_image_from_rgba(size, pixels)?
+    } else {
+        color_image_from_rgba_managed(size, pixels, space, hdr)?
+    };
     Ok(DecodedPreview {
         image,
         byte_size,

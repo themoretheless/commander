@@ -519,10 +519,14 @@ impl App {
                     ui.add_space(5.0);
                 }
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Version store {}",
-                        crate::version_store::store_usage().label()
-                    ))
+                    egui::RichText::new({
+                        let usage = crate::version_store::store_usage();
+                        if usage.over_quota() {
+                            format!("Version store {} · over quota", usage.label())
+                        } else {
+                            format!("Version store {}", usage.label())
+                        }
+                    })
                     .size(10.0)
                     .color(t.text_muted),
                 );

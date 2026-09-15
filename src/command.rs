@@ -183,7 +183,7 @@ pub enum Command {
     /// Toggle synchronized dual-pane navigation lock.
     ToggleNavLock,
     /// Repeat the last workspace command (dot-repeat).
-    RepeatLastCommand,
+    RepeatLast,
     /// Browse the archive under the cursor (ZIP / tar.gz).
     BrowseArchive,
     /// Mark the active panel root as Trusted (research J003).
@@ -704,7 +704,7 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
             Command::CreateHardlink,
         ),
         ("Toggle navigation lock", "", Command::ToggleNavLock),
-        ("Repeat last command", ".", Command::RepeatLastCommand),
+        ("Repeat last command", ".", Command::RepeatLast),
         ("Browse archive", "", Command::BrowseArchive),
         ("Trust: mark Trusted", "", Command::SetTrustTrusted),
         ("Trust: mark Restricted", "", Command::SetTrustRestricted),
@@ -949,7 +949,7 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::CreateSymlink => &["file symlink soft link alias create other panel"],
         Command::CreateHardlink => &["file hardlink hard link create other panel"],
         Command::ToggleNavLock => &["panels navigation lock sync mirror lockstep dual"],
-        Command::RepeatLastCommand => &["repeat last command again dot redo"],
+        Command::RepeatLast => &["repeat last command again dot redo"],
         Command::BrowseArchive => &["archive zip tar gz browse extract inspect members"],
         Command::SetTrustTrusted => &["trust trusted root allow run command providers archive"],
         Command::SetTrustRestricted => &["trust restricted root gate providers archive inspect"],
@@ -1052,7 +1052,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         Digit(n) if press.command && press.shift => Some(Command::AssignSlot(n)),
         Digit(n) if press.command => Some(Command::JumpSlot(n)),
         Space => Some(Command::ToggleSelect),
-        Period => Some(Command::RepeatLastCommand),
+        Period => Some(Command::RepeatLast),
         F2 => Some(Command::BeginRename),
         R if press.command && press.shift => Some(Command::BeginBatchRename),
         R if press.command => Some(Command::BeginRename),

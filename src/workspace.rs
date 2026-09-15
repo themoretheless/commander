@@ -943,7 +943,7 @@ impl Workspace {
         if self.mutation_commits_blocked() && cmd.mutates_filesystem() {
             return;
         }
-        let cmd = if matches!(cmd, Command::RepeatLastCommand) {
+        let cmd = if matches!(cmd, Command::RepeatLast) {
             match self.last_command {
                 Some(previous) => previous,
                 None => return,
@@ -1268,7 +1268,7 @@ impl Workspace {
                     error: false,
                 });
             }
-            Command::RepeatLastCommand => {}
+            Command::RepeatLast => {}
             Command::BrowseArchive => {
                 if let Some(entry) = self.active_panel_ref().cursor_entry().cloned() {
                     if crate::archive::is_supported(&entry.path) {
@@ -1307,17 +1307,17 @@ impl Workspace {
         let right = self.right.current_path.clone();
         let left_filter = self.left.search_query().to_string();
         let right_filter = self.right.search_query().to_string();
-        let _profile = crate::workspace_profile::capture(
-            "default",
-            &left,
-            &right,
+        let _profile = crate::workspace_profile::capture(crate::workspace_profile::CaptureParams {
+            name: "default".to_string(),
+            left_root: &left,
+            right_root: &right,
             left_filter,
             right_filter,
-            self.durability_profile,
-            self.name_policy,
-            self.symlink_policy,
-            Vec::new(),
-        );
+            durability: self.durability_profile,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
+            trusted_command_templates: Vec::new(),
+        });
         self.emit_ui_request(UiRequest::Notice {
             message: "Saved workspace profile \"default\"".to_string(),
             error: false,

@@ -24,6 +24,15 @@ pub enum ArchiveKind {
     TarGz,
 }
 
+impl ArchiveKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Zip => "ZIP",
+            Self::TarGz => "tar.gz",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ArchiveMember {
     pub index: usize,

@@ -58,7 +58,7 @@ impl ColorManagedFrame {
         if (scale - 1.0).abs() < f32::EPSILON {
             return;
         }
-        for chunk in rgba.chunks_exact_mut(4) {
+        for chunk in rgba.as_chunks_mut::<4>().0 {
             chunk[0] = scale_channel(chunk[0], scale);
             chunk[1] = scale_channel(chunk[1], scale);
             chunk[2] = scale_channel(chunk[2], scale);
@@ -73,6 +73,8 @@ fn scale_channel(value: u8, scale: f32) -> u8 {
 pub fn hint_from_extension(extension: &str) -> (ColorSpaceHint, bool) {
     match extension.to_ascii_lowercase().as_str() {
         "exr" | "hdr" => (ColorSpaceHint::Other, true),
+        "heic" | "heif" => (ColorSpaceHint::DisplayP3, false),
+        "psd" => (ColorSpaceHint::AdobeRgb, false),
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "tif" | "tiff" => {
             (ColorSpaceHint::Srgb, false)
         }

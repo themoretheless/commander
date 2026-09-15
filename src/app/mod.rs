@@ -653,6 +653,7 @@ impl App {
             crate::content_index::ContentIndex::load(crate::workload::global_handle());
         let project_collections = crate::collections::load();
         startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
+        crate::version_store::set_store_quota(crate::operation::VersionStoreQuota::default());
         let mut app = App {
             ws,
             ui: ui_state::UiState::default(),
