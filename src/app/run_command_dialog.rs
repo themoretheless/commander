@@ -45,7 +45,8 @@ impl App {
         if self.ui.modals.run_command.is_none() {
             return;
         }
-        self.poll_run_command_output();
+        let now = ctx.input(|input| input.time);
+        self.poll_run_command_output(now);
         let t = self.colors;
 
         let opening = self
@@ -74,9 +75,12 @@ impl App {
         let state = self.ui.modals.run_command.as_mut().unwrap();
         egui::Window::new("Run command")
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .title_bar(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_size([560.0, 420.0])
+            .min_width(480.0)
+            .min_height(280.0)
             .frame(
                 Frame::NONE
                     .fill(t.bg_panel)
@@ -84,7 +88,7 @@ impl App {
                     .stroke(Stroke::new(1.0_f32, t.border)),
             )
             .show(ctx, |ui| {
-                ui.set_width(560.0);
+                ui.set_min_width(520.0);
                 let item = if sel_count == 1 { "item" } else { "items" };
                 ui.label(
                     egui::RichText::new(format!(
@@ -155,7 +159,7 @@ impl App {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let can_run = !state.line.trim().is_empty();
+                    let can_run = !state.line.trim().is_empty() && state.run.is_none();
                     if ui
                         .add_enabled(
                             can_run,
@@ -206,6 +210,75 @@ impl App {
                         cancel = true;
                     }
                 });
+
+                if state.run.is_some() {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Running…")
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                    });
+                }
+                if let Some(output) = &state.output {
+                    ui.add_space(10.0);
+                    let exit = output
+                        .exit_code
+                        .map(|code| format!("exit {code}"))
+                        .unwrap_or_else(|| "no exit code".to_string());
+                    let header = if let Some(error) = &output.error {
+                        format!("Failed · {error}")
+                    } else {
+                        format!("Finished · {exit}")
+                    };
+                    let header_color = if output.error.is_some()
+                        || output.exit_code.is_some_and(|code| code != 0)
+                    {
+                        t.accent_red
+                    } else {
+                        t.text_secondary
+                    };
+                    ui.label(
+                        egui::RichText::new(header)
+                            .size(11.0)
+                            .color(header_color),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt(("run_command_output", state.scroll_nonce))
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if !output.stdout.trim().is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&output.stdout)
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(t.text_primary),
+                                );
+                            }
+                            if !output.stderr.trim().is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&output.stderr)
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(t.accent_warning),
+                                );
+                            }
+                            if output.stdout.trim().is_empty()
+                                && output.stderr.trim().is_empty()
+                                && output.error.is_none()
+                            {
+                                ui.label(
+                                    egui::RichText::new("(no output)")
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(t.text_muted),
+                                );
+                            }
+                        });
+                }
             });
 
         if cancel {
@@ -312,10 +385,16 @@ impl App {
                 state.run = Some(CommandOutputRun { receiver });
                 state.output = None;
             }
+            self.toasts.push(crate::toasts::Toast::new(
+                "Command started",
+                crate::toasts::ToastKind::Info,
+                false,
+                now,
+            ));
         }
     }
 
-    fn poll_run_command_output(&mut self) {
+    fn poll_run_command_output(&mut self, now: f64) {
         let ready = self.ui.modals.run_command.as_ref().and_then(|state| {
             let run = state.run.as_ref()?;
             match run.receiver.try_recv() {
@@ -334,7 +413,25 @@ impl App {
             && let Some(state) = self.ui.modals.run_command.as_mut()
         {
             state.run = None;
+            let (text, kind) = if let Some(error) = &output.error {
+                (error.clone(), crate::toasts::ToastKind::Error)
+            } else if output.exit_code.is_some_and(|code| code != 0) {
+                (
+                    format!(
+                        "Command exited {}",
+                        output.exit_code.unwrap_or_default()
+                    ),
+                    crate::toasts::ToastKind::Error,
+                )
+            } else {
+                (
+                    "Command finished".to_string(),
+                    crate::toasts::ToastKind::Info,
+                )
+            };
             state.output = Some(output);
+            self.toasts
+                .push(crate::toasts::Toast::new(text, kind, false, now));
         }
     }
 }
