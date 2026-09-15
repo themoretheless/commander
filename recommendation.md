@@ -951,9 +951,12 @@ so post-copy verification, crash journaling, dry-run, archive browsing,
 virtualization, logging, and remote-watcher work are not double-counted.
 The refresh adds a separate `H001-H012` ledger for concrete gaps closed in
 comparison, persistence, command availability, preview, and watcher recovery.
-The former deferred list is now the implemented `I001-I010` ledger; a fresh
-`J001-J010` list remains explicitly unimplemented so future work is not
-mislabeled as shipped.
+The former deferred list is now the implemented `I001-I010` ledger. The
+`J001-J010` research queue is also implemented (see `research.md`'s follow-up
+ledger): color-managed previews, version-store chunk dedup + quota, per-root
+trust labels, battery/thermal admission, encrypted support-bundle envelopes,
+assistive operation timeline, path-free change provenance, workspace profiles,
+scoped conflict rules, and per-format decoder circuit breakers.
 
 ## Tracking
 

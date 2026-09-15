@@ -505,8 +505,9 @@ independently tested commits. They remain separate from `G001-G100` and
 
 ### Next ten evidence-backed candidates
 
-These candidates were the Phase 4 research queue. Delivery is recorded in the
-ledger below; the table is retained for evidence lineage.
+These candidates were the Phase 4 research queue. **All ten are implemented** on
+the development line; delivery is recorded in the ledger below, and the table is
+retained for evidence lineage.
 
 | ID | Candidate | Evidence and boundary |
 | --- | --- | --- |
