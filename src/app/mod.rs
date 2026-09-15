@@ -401,6 +401,8 @@ pub(crate) struct SyncState {
     pub marker_enabled: bool,
     pub marker_input: String,
     pub error: Option<String>,
+    /// When true, Apply only reports the planned actions without transferring.
+    pub dry_run: bool,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in

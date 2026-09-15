@@ -22,6 +22,7 @@ impl App {
         // below does not conflict with reading the usage history).
         let query = self.ui.modals.palette_input.clone().unwrap();
         let matches = crate::command::rank(&query, &self.palette_usage, self.palette_tick);
+        let bookmark_hits = self.palette_bookmark_matches(&query);
         let command_context = self.ws.command_context();
         let availabilities: Vec<crate::command::CommandAvailability> = matches
             .iter()
@@ -36,6 +37,7 @@ impl App {
             .collect();
         let buffer = self.ui.modals.palette_input.as_mut().unwrap();
         let mut run: Option<(&'static str, crate::command::Command)> = None;
+        let mut jump_bookmark: Option<std::path::PathBuf> = None;
         let mut cancel = false;
 
         egui::Window::new("Command palette")
@@ -78,10 +80,10 @@ impl App {
                 }
                 ui.add_space(6.0);
 
-                if matches.is_empty() {
+                if matches.is_empty() && bookmark_hits.is_empty() {
                     ui.label(
                         egui::RichText::new(
-                            "No matching command. Try file, view, select, or cmd h.",
+                            "No matching command. Try file, view, select, bookmark, or cmd h.",
                         )
                         .size(11.0)
                         .color(t.text_muted),
@@ -178,14 +180,46 @@ impl App {
                                     run = Some((m.label, m.command));
                                 }
                             }
+                            if !bookmark_hits.is_empty() {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new("Bookmarks")
+                                        .size(10.0)
+                                        .color(t.text_muted),
+                                );
+                                for (name, path) in &bookmark_hits {
+                                    let label = format!("Jump to {name}");
+                                    let row = ui.add(
+                                        egui::Button::new(
+                                            egui::RichText::new(format!(
+                                                "{label}    {}",
+                                                path.display()
+                                            ))
+                                            .size(12.0)
+                                            .color(t.text_primary),
+                                        )
+                                        .fill(t.bg_card)
+                                        .corner_radius(CornerRadius::ZERO)
+                                        .min_size(egui::vec2(ui.available_width(), 28.0)),
+                                    );
+                                    if row.clicked() {
+                                        jump_bookmark = Some(path.clone());
+                                    }
+                                }
+                            }
                         });
                 }
 
                 if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && let Some(index) = primary_index
+                    && run.is_none()
+                    && jump_bookmark.is_none()
                 {
-                    let m = &matches[index];
-                    run = Some((m.label, m.command));
+                    if let Some(index) = primary_index {
+                        let m = &matches[index];
+                        run = Some((m.label, m.command));
+                    } else if let Some((_, path)) = bookmark_hits.first() {
+                        jump_bookmark = Some(path.clone());
+                    }
                 }
                 if escape_requested {
                     cancel = true;
@@ -196,6 +230,13 @@ impl App {
             self.ui.modals.palette_input = None;
             return;
         }
+        if let Some(path) = jump_bookmark {
+            self.ui.modals.palette_input = None;
+            if path.is_dir() {
+                self.ws.active_panel().navigate_to(path);
+            }
+            return;
+        }
         if let Some((label, cmd)) = run {
             // Close the palette first; the command may open another dialog.
             self.ui.modals.palette_input = None;
@@ -204,6 +245,26 @@ impl App {
             self.palette_usage.record(label, self.palette_tick);
             self.ws.execute(cmd);
         }
+    }
+
+    fn palette_bookmark_matches(&self, query: &str) -> Vec<(String, std::path::PathBuf)> {
+        let needle = query.trim().to_lowercase();
+        self.ws
+            .bookmarks
+            .items
+            .iter()
+            .filter(|bookmark| {
+                needle.is_empty()
+                    || bookmark.name.to_lowercase().contains(&needle)
+                    || bookmark
+                        .path
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&needle)
+            })
+            .map(|bookmark| (bookmark.name.clone(), bookmark.path.clone()))
+            .take(12)
+            .collect()
     }
 
     fn palette_command_preview(&self, command: crate::command::Command) -> String {

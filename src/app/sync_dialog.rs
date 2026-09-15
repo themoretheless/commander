@@ -41,6 +41,7 @@ impl App {
             marker_enabled,
             marker_input,
             error,
+            dry_run: false,
         });
     }
 
@@ -274,6 +275,12 @@ impl App {
                         && state.stamp.is_some()
                         && (assessment.circuit_breaker.is_none() || state.allow_large_plan);
 
+                    ui.add_space(6.0);
+                    ui.checkbox(
+                        &mut state.dry_run,
+                        "Dry run (preview only — do not copy or delete)",
+                    );
+
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label(
@@ -300,11 +307,16 @@ impl App {
                                 cancel = true;
                             }
                             ui.add_space(8.0);
+                            let apply_label = if state.dry_run {
+                                format!("Preview {pending}")
+                            } else {
+                                format!("Sync {pending}")
+                            };
                             if ui
                                 .add_enabled(
                                     pending > 0 && guard_ready,
                                     egui::Button::new(
-                                        egui::RichText::new(format!("Sync {pending}"))
+                                        egui::RichText::new(apply_label)
                                             .size(13.0)
                                             .color(Color32::WHITE),
                                     )
@@ -374,6 +386,21 @@ impl App {
                 self.ui.modals.sync = Some(state);
                 return;
             };
+            if state.dry_run {
+                let pending = state
+                    .actions
+                    .iter()
+                    .filter(|action| action.direction != SyncDirection::Skip)
+                    .count();
+                let now = ctx.input(|i| i.time);
+                self.toasts.push(crate::toasts::Toast::new(
+                    format!("Dry run: {pending} planned action(s), nothing changed"),
+                    crate::toasts::ToastKind::Info,
+                    false,
+                    now,
+                ));
+                return;
+            }
             let c = ctx.clone();
             self.ws.durability_profile = state.durability;
             self.ws.version_retention = state.version_retention;
