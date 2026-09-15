@@ -1968,32 +1968,35 @@ impl PanelState {
             "desktop.ini",
             "Icon\r",
         ];
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir && JUNK_NAMES.contains(&e.name.as_str()))
-            .map(|e| e.path.clone())
-            .collect();
+        let mut paths = Vec::new();
+        self.visit_filtered(|_, entry| {
+            if !entry.is_dir && JUNK_NAMES.contains(&entry.name.as_str()) {
+                paths.push(entry.path.clone());
+            }
+            true
+        });
         let added = paths.len();
-        for p in paths {
-            self.selection.insert_selected(p);
-        }
+        self.selection.extend_selected(paths);
         added
     }
 
     /// Select the `n` largest files in the filtered view (folders excluded).
     /// Returns how many entries were newly added to the selection.
     pub fn select_largest(&mut self, n: usize) -> usize {
-        let mut sized: Vec<(PathBuf, u64)> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir)
-            .map(|e| (e.path.clone(), e.size))
-            .collect();
-        sized.sort_by_key(|e| std::cmp::Reverse(e.1)); // largest first
+        if n == 0 {
+            return 0;
+        }
+        let mut sized = Vec::new();
+        self.visit_filtered(|_, entry| {
+            if !entry.is_dir {
+                sized.push((entry.path.clone(), entry.size));
+            }
+            true
+        });
+        sized.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         let mut added = 0;
-        for (p, _) in sized.into_iter().take(n) {
-            if self.selection.insert_selected(p) {
+        for (path, _) in sized.into_iter().take(n) {
+            if self.selection.insert_selected(path) {
                 added += 1;
             }
         }
@@ -2008,32 +2011,30 @@ impl PanelState {
             Some(e) if !e.is_dir && !e.extension.is_empty() => e.extension.clone(),
             _ => return 0,
         };
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir && e.extension == ext)
-            .map(|e| e.path.clone())
-            .collect();
+        let mut paths = Vec::new();
+        self.visit_filtered(|_, entry| {
+            if !entry.is_dir && entry.extension == ext {
+                paths.push(entry.path.clone());
+            }
+            true
+        });
         let added = paths.len();
-        for p in paths {
-            self.selection.insert_selected(p);
-        }
+        self.selection.extend_selected(paths);
         added
     }
 
     /// Select the zero-byte files in the filtered view (folders excluded).
     /// Returns how many entries were added.
     pub fn select_empty_files(&mut self) -> usize {
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir && e.size == 0)
-            .map(|e| e.path.clone())
-            .collect();
+        let mut paths = Vec::new();
+        self.visit_filtered(|_, entry| {
+            if !entry.is_dir && entry.size == 0 {
+                paths.push(entry.path.clone());
+            }
+            true
+        });
         let added = paths.len();
-        for p in paths {
-            self.selection.insert_selected(p);
-        }
+        self.selection.extend_selected(paths);
         added
     }
 
@@ -2064,20 +2065,21 @@ impl PanelState {
         if terms.is_empty() {
             return 0;
         }
-        let mut decisions: Vec<(PathBuf, bool)> = Vec::new();
-        for e in self.filtered_entries() {
-            let add = terms
-                .iter()
-                .any(|(t, sub)| !sub && term_matches(t, &e.name_lower, &e.extension));
-            let rem = terms
-                .iter()
-                .any(|(t, sub)| *sub && term_matches(t, &e.name_lower, &e.extension));
+        let mut decisions = Vec::new();
+        self.visit_filtered(|_, entry| {
+            let add = terms.iter().any(|(term, subtract)| {
+                !subtract && term_matches(term, &entry.name_lower, &entry.extension)
+            });
+            let rem = terms.iter().any(|(term, subtract)| {
+                *subtract && term_matches(term, &entry.name_lower, &entry.extension)
+            });
             if rem {
-                decisions.push((e.path.clone(), false));
+                decisions.push((entry.path.clone(), false));
             } else if add {
-                decisions.push((e.path.clone(), true));
+                decisions.push((entry.path.clone(), true));
             }
-        }
+            true
+        });
         let mut added = 0;
         for (path, is_add) in decisions {
             if is_add {
@@ -2252,14 +2254,15 @@ impl PanelState {
     }
 
     pub fn select_all(&mut self) {
-        let visible: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .map(|e| e.path.clone())
-            .collect();
-        let all_selected = visible
-            .iter()
-            .all(|path| self.selection.selected().contains(path));
+        let mut visible = Vec::new();
+        let mut all_selected = true;
+        self.visit_filtered(|_, entry| {
+            if !self.selection.selected().contains(&entry.path) {
+                all_selected = false;
+            }
+            visible.push(entry.path.clone());
+            true
+        });
         if all_selected {
             for path in visible {
                 self.selection.remove_selected(&path);
@@ -2273,13 +2276,13 @@ impl PanelState {
     /// become unselected and vice versa. Entries hidden by the current filter
     /// keep their state, so an invert respects what the user can actually see.
     pub fn invert_selection(&mut self) {
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .map(|e| e.path.clone())
-            .collect();
-        for p in paths {
-            self.selection.toggle_selected(p);
+        let mut paths = Vec::new();
+        self.visit_filtered(|_, entry| {
+            paths.push(entry.path.clone());
+            true
+        });
+        for path in paths {
+            self.selection.toggle_selected(path);
         }
     }
 
