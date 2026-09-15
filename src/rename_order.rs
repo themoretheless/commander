@@ -236,6 +236,8 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     }
 
     // Whatever remains is a set of simple cycles; break each with one temp.
+    // Occupancy for temps is the same case-folded set used for conflict checks:
+    // never mix original-case names into this set (that was the D8 mismatch).
     let mut reserved: HashSet<String> = existing_keys.clone();
     for (f, t) in &pairs {
         reserved.insert(key(f));
@@ -246,11 +248,7 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
         if emitted[start] {
             continue;
         }
-        // A scratch name that collides with nothing, case-insensitively.
-        let base = format!(".cmdr-rename-{tmp_seq}");
-        tmp_seq += 1;
-        let tmp = crate::fs_util::free_name_against(&base, &reserved);
-        reserved.insert(key(&tmp));
+        let tmp = mint_temp_name(&mut tmp_seq, &mut reserved);
 
         steps.push(RenameStep::ToTemp {
             from: pairs[start].0.clone(),
@@ -277,6 +275,20 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     }
 
     RenameOrder::Steps(steps)
+}
+
+/// Next free `.cmdr-rename-N` scratch name against a case-folded reserved set.
+/// Increments `seq` past every collision so two cycles never share a temp, even
+/// when an existing sibling already occupies a mixed-case variant of the base.
+fn mint_temp_name(seq: &mut usize, reserved: &mut HashSet<String>) -> String {
+    loop {
+        let candidate = format!(".cmdr-rename-{seq}");
+        *seq += 1;
+        let folded = key(&candidate);
+        if reserved.insert(folded) {
+            return candidate;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -559,6 +571,7 @@ mod tests {
                 tmp, ".cmdr-rename-0",
                 "temp must dodge the existing scratch"
             );
+            assert_eq!(tmp, ".cmdr-rename-1");
         } else {
             panic!("expected a ToTemp step");
         }
@@ -566,5 +579,31 @@ mod tests {
         let mut final_set = expected_final(&["a", "b"], &pairs);
         final_set.insert(".cmdr-rename-0".to_string());
         assert_eq!(simulate(&order, &["a", "b", ".cmdr-rename-0"]), final_set);
+    }
+
+    #[test]
+    fn temp_name_dodges_a_case_variant_of_an_existing_scratch() {
+        // Reserved occupancy is case-folded; a differently-cased sibling must
+        // still block the same temp base on a case-insensitive volume.
+        let pairs = [("a", "b"), ("b", "a")];
+        let order = safe_rename_order(&map(&pairs), &existing(&["a", "b", ".CMDR-RENAME-0"]));
+        let s = steps(&order);
+        let RenameStep::ToTemp { tmp, .. } = s
+            .iter()
+            .find(|st| matches!(st, RenameStep::ToTemp { .. }))
+            .expect("expected a ToTemp step")
+        else {
+            unreachable!();
+        };
+        assert_eq!(tmp, ".cmdr-rename-1");
+        assert_ne!(key(tmp), key(".CMDR-RENAME-0"));
+    }
+
+    #[test]
+    fn mint_temp_name_skips_every_case_folded_collision() {
+        let mut reserved = existing(&[".cmdr-rename-0", ".CMDR-RENAME-1"]);
+        let mut seq = 0;
+        assert_eq!(mint_temp_name(&mut seq, &mut reserved), ".cmdr-rename-2");
+        assert!(reserved.contains(&key(".cmdr-rename-2")));
     }
 }

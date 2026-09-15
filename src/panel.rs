@@ -1968,15 +1968,16 @@ impl PanelState {
             "desktop.ini",
             "Icon\r",
         ];
-        let mut paths = Vec::new();
-        self.visit_filtered(|_, entry| {
+        let snapshot = self.filtered_snapshot();
+        let mut added = 0;
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
             if !entry.is_dir && JUNK_NAMES.contains(&entry.name.as_str()) {
-                paths.push(entry.path.clone());
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
             }
-            true
-        });
-        let added = paths.len();
-        self.selection.extend_selected(paths);
+        }
         added
     }
 
@@ -1986,19 +1987,25 @@ impl PanelState {
         if n == 0 {
             return 0;
         }
-        let mut sized = Vec::new();
-        self.visit_filtered(|_, entry| {
-            if !entry.is_dir {
-                sized.push((entry.path.clone(), entry.size));
+        // Top-n needs sizes before mutation; keep a bounded heap instead of a
+        // full filtered `Vec<&FileEntry>` plus a second path list.
+        let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<(u64, PathBuf)>>::new();
+        let snapshot = self.filtered_snapshot();
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            if entry.is_dir {
+                continue;
             }
-            true
-        });
-        sized.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+            heap.push(std::cmp::Reverse((entry.size, entry.path.clone())));
+            if heap.len() > n {
+                heap.pop();
+            }
+        }
         let mut added = 0;
-        for (path, _) in sized.into_iter().take(n) {
-            if self.selection.insert_selected(path) {
-                added += 1;
-            }
+        while let Some(std::cmp::Reverse((_, path))) = heap.pop() {
+            added += usize::from(self.selection.insert_selected(path));
         }
         added
     }
@@ -2011,30 +2018,32 @@ impl PanelState {
             Some(e) if !e.is_dir && !e.extension.is_empty() => e.extension.clone(),
             _ => return 0,
         };
-        let mut paths = Vec::new();
-        self.visit_filtered(|_, entry| {
+        let snapshot = self.filtered_snapshot();
+        let mut added = 0;
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
             if !entry.is_dir && entry.extension == ext {
-                paths.push(entry.path.clone());
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
             }
-            true
-        });
-        let added = paths.len();
-        self.selection.extend_selected(paths);
+        }
         added
     }
 
     /// Select the zero-byte files in the filtered view (folders excluded).
     /// Returns how many entries were added.
     pub fn select_empty_files(&mut self) -> usize {
-        let mut paths = Vec::new();
-        self.visit_filtered(|_, entry| {
+        let snapshot = self.filtered_snapshot();
+        let mut added = 0;
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
             if !entry.is_dir && entry.size == 0 {
-                paths.push(entry.path.clone());
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
             }
-            true
-        });
-        let added = paths.len();
-        self.selection.extend_selected(paths);
+        }
         added
     }
 
@@ -2065,8 +2074,12 @@ impl PanelState {
         if terms.is_empty() {
             return 0;
         }
-        let mut decisions = Vec::new();
-        self.visit_filtered(|_, entry| {
+        let snapshot = self.filtered_snapshot();
+        let mut added = 0;
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
             let add = terms.iter().any(|(term, subtract)| {
                 !subtract && term_matches(term, &entry.name_lower, &entry.extension)
             });
@@ -2074,19 +2087,9 @@ impl PanelState {
                 *subtract && term_matches(term, &entry.name_lower, &entry.extension)
             });
             if rem {
-                decisions.push((entry.path.clone(), false));
+                self.selection.remove_selected(&entry.path);
             } else if add {
-                decisions.push((entry.path.clone(), true));
-            }
-            true
-        });
-        let mut added = 0;
-        for (path, is_add) in decisions {
-            if is_add {
-                self.selection.insert_selected(path);
-                added += 1;
-            } else {
-                self.selection.remove_selected(&path);
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
             }
         }
         added
@@ -2232,11 +2235,17 @@ impl PanelState {
     /// selected anchor drags the visible selected set in listing order.
     pub fn begin_drag(&mut self, anchor: PathBuf) {
         let entries = if self.selection.selected().contains(&anchor) {
-            self.filtered_entries()
-                .into_iter()
-                .filter(|entry| self.selection.selected().contains(&entry.path))
-                .map(|entry| entry.path.clone())
-                .collect()
+            let snapshot = self.filtered_snapshot();
+            let mut paths = Vec::new();
+            for &index in snapshot.iter() {
+                let Some(entry) = self.listing.entries().get(index) else {
+                    continue;
+                };
+                if self.selection.selected().contains(&entry.path) {
+                    paths.push(entry.path.clone());
+                }
+            }
+            paths
         } else {
             vec![anchor]
         };
@@ -2254,21 +2263,22 @@ impl PanelState {
     }
 
     pub fn select_all(&mut self) {
-        let mut visible = Vec::new();
-        let mut all_selected = true;
-        self.visit_filtered(|_, entry| {
-            if !self.selection.selected().contains(&entry.path) {
-                all_selected = false;
-            }
-            visible.push(entry.path.clone());
-            true
+        let snapshot = self.filtered_snapshot();
+        let all_selected = snapshot.iter().all(|&index| {
+            self.listing
+                .entries()
+                .get(index)
+                .is_none_or(|entry| self.selection.selected().contains(&entry.path))
         });
-        if all_selected {
-            for path in visible {
-                self.selection.remove_selected(&path);
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            if all_selected {
+                self.selection.remove_selected(&entry.path);
+            } else {
+                self.selection.insert_selected(entry.path.clone());
             }
-        } else {
-            self.selection.extend_selected(visible);
         }
     }
 
@@ -2276,13 +2286,12 @@ impl PanelState {
     /// become unselected and vice versa. Entries hidden by the current filter
     /// keep their state, so an invert respects what the user can actually see.
     pub fn invert_selection(&mut self) {
-        let mut paths = Vec::new();
-        self.visit_filtered(|_, entry| {
-            paths.push(entry.path.clone());
-            true
-        });
-        for path in paths {
-            self.selection.toggle_selected(path);
+        let snapshot = self.filtered_snapshot();
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            self.selection.toggle_selected(entry.path.clone());
         }
     }
 

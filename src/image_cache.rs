@@ -2257,6 +2257,97 @@ mod tests {
     }
 
     #[test]
+    fn standard_decoder_rejects_undecodable_formats_for_negative_cache() {
+        let dir = TempDir::new();
+        let svg = dir.path().join("vector.svg");
+        std::fs::write(&svg, b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").unwrap();
+        let error = load_via_image_crate(
+            &svg,
+            PreviewTarget {
+                width: 64,
+                height: 64,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Unsupported);
+
+        let mkv = dir.path().join("clip.mkv");
+        std::fs::write(&mkv, b"not a matroska container").unwrap();
+        let error = load_via_image_crate(
+            &mkv,
+            PreviewTarget {
+                width: 64,
+                height: 64,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Unsupported);
+    }
+
+    #[test]
+    fn standard_decoder_applies_exif_orientation_from_jpeg() {
+        // Minimal baseline JPEG (2x1) with EXIF Orientation=6 (rotate 90 CW).
+        // Portable proof that the standard decoder path honours EXIF without
+        // needing ImageIO fixtures; HEIF/ImageIO color parity remains macOS-only.
+        let dir = TempDir::new();
+        let path = dir.path().join("oriented.jpg");
+        std::fs::write(&path, oriented_jpeg_2x1_rotate90()).unwrap();
+
+        let decoded = load_via_image_crate(
+            &path,
+            PreviewTarget {
+                width: 16,
+                height: 16,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decoded.image.size,
+            [1, 2],
+            "Orientation=6 must swap the 2x1 source into a 1x2 preview"
+        );
+    }
+
+    /// Tiny JPEG with EXIF Orientation tag = 6 (90° CW). Built by hand so the
+    /// test stays fixture-free and runs on Linux CI without ImageIO.
+    fn oriented_jpeg_2x1_rotate90() -> Vec<u8> {
+        let pixels = image::RgbImage::from_fn(2, 1, |x, _| {
+            if x == 0 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
+        let mut jpeg = Vec::new();
+        {
+            let mut cursor = std::io::Cursor::new(&mut jpeg);
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
+            encoder
+                .encode(pixels.as_raw(), 2, 1, image::ExtendedColorType::Rgb8)
+                .unwrap();
+        }
+
+        // APP1 / Exif: "Exif\0\0" + TIFF LE IFD with Orientation SHORT = 6.
+        let app1: &[u8] = &[
+            0xFF, 0xE1, 0x00, 0x22, // APP1 + length 34
+            b'E', b'x', b'i', b'f', 0x00, 0x00, // Exif header
+            b'I', b'I', 0x2A, 0x00, // TIFF LE
+            0x08, 0x00, 0x00, 0x00, // IFD0 offset
+            0x01, 0x00, // one entry
+            0x12, 0x01, // Orientation
+            0x03, 0x00, // SHORT
+            0x01, 0x00, 0x00, 0x00, // count
+            0x06, 0x00, 0x00, 0x00, // value = 6
+            0x00, 0x00, 0x00, 0x00, // next IFD
+        ];
+        let mut out = Vec::with_capacity(jpeg.len() + app1.len());
+        out.extend_from_slice(&jpeg[..2]); // SOI
+        out.extend_from_slice(app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    #[test]
     fn standard_decoder_downsamples_to_preview_target() {
         let dir = TempDir::new();
         let path = dir.path().join("large-preview.png");
