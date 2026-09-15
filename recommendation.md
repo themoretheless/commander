@@ -137,14 +137,15 @@ Verified against `main` after PRs #7–#13 merged (2026-09-14).
 
 **Accepted residuals only:**
 
-1. Descriptor-relative filesystem effect port — **first slice landed**
-   (`fs_at::BoundDirectory` + `FileSystemProvider::apply_at`; transfer
-   placement rewire still follow-up)
+1. Descriptor-relative filesystem effect port — **done**
+   (`fs_at::BoundDirectory` + `FileSystemProvider::apply_at` + transfer
+   placement via `fs_at::rename_sibling`)
 2. Streaming tree planner — **done** (`transfer/parallel_tree` streams the walk
    into a bounded job queue; no full leaf materialization before copy)
 3. Cross-process CAS / Persist envelope for journal + content-index —
-   **partial:** journal Persist envelope slice landed; content-index + fuller
-   cross-process CAS still open
+   **done:** journal + content-index Persist envelopes; `FsPersist` holds a
+   per-store flock across revision check and atomic replace; content-index
+   saves through `save_enveloped_streaming`
 
 Highest-value next steps, in order:
 
@@ -165,10 +166,10 @@ Highest-value next steps, in order:
    Buffered/sparse/parallel-tree byte paths live under
    `transfer::{buffered,sparse,parallel_tree}` (PR #10). Parallel tree copy
    now streams the walk (bounded job queue) instead of materializing every
-   leaf first. Next among accepted residuals: finish descriptor-relative
-   transfer placement rewire, then content-index Persist envelope (streaming
-   Persist) and fuller cross-process CAS. Journal Persist envelope slice
-   already landed.
+   leaf first. Accepted residuals are closed: descriptor-relative transfer
+   placement (`fs_at::rename_sibling`), content-index Persist envelope via
+   streaming save, and fuller cross-process CAS (per-store flock in
+   `FsPersist`) are on `main`.
 4. Continue shrinking the `PanelState`/`Workspace` facades only along coherent
    operation boundaries (`panel/{drag,visit,preview,nav}` and
    `workspace/fileops/` already landed). Their state ownership is already
@@ -252,18 +253,18 @@ intentional, not a dropped row.)
 | D1 | Surface save failures: check `write_atomic`'s return and toast | (was r1 #7) | small | **done** (`177e67c`) |
 | D2 | Stop swallowing `Result` in the undo/redo apply path; toast | (was r1 #20) | small | **done** (`177e67c`) |
 | D3 | Evict the image cache on directory change (honour the docstring) | (was r1 #2) | trivial | **done** (`177e67c`) |
-| D4 | Cheap per-frame perf: clone `FontId` once per row; `HashSet`-back the shelf; pre-lowercase `NameContains`; avoid the per-call/per-keystroke `filtered_entries` Vec | 24, 25, below the cut (x3) | small | **partial:** shelf membership, cached filtered-index snapshots, compiled text matchers, and allocation-free compiled metadata predicates are shipped; a few selection helpers still materialize result collections before mutation |
-| D5 | Make the dir-size index race-safe (generation counter or staged swap), drop the redundant nested `install()`, and bound `walk_log`/`dir_size_cache` | 26, 45, below the cut (x3) | medium; pairs with the `DirIndex` extraction | open |
+| D4 | Cheap per-frame perf: clone `FontId` once per row; `HashSet`-back the shelf; pre-lowercase `NameContains`; avoid the per-call/per-keystroke `filtered_entries` Vec | 24, 25, below the cut (x3) | small | **done:** shelf membership, cached filtered-index snapshots, compiled text matchers, allocation-free metadata predicates, and selection helpers mutate through `filtered_snapshot()` (no intermediate `filtered_entries()` / decision Vecs; `select_largest` uses a bounded top-n heap) |
+| D5 | Make the dir-size index race-safe (generation counter or staged swap), drop the redundant nested `install()`, and bound `walk_log`/`dir_size_cache` | 26, 45, below the cut (x3) | medium; pairs with the `DirIndex` extraction | **done:** `ScanEpoch` cancels stale publishes; `walk_log`/`dir_size_cache` prune via `extend_bounded_by` (`WALK_LOG_LIMIT`/`DIR_SIZE_CACHE_LIMIT`); nested install removed |
 | D6 | Fix reachable panics and overflow: `lock().unwrap()` poisoning (transfer, image_cache/confirm_dialog, and the `copyfile` C callback), ObjC `unwrap`, `batch_rename` unwrap, unchecked `keep[gi]`, `checked_mul` the thumbnail buffers | 9, 10, 11, 12, 21, below the cut (x2) | small | **done:** shared poison recovery, fallible ObjC/state access, bounded indices, checked/fallible RGBA allocation |
-| D8 | Rename temp-name correctness: homogenise the reserved-set casing and make the rollback composite-error / atomic | 15, 16 | medium; one pass with tests | open |
-| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | **partial:** no-clobber rename, case-only rollback, all-source Move replay preflight, transfer cleanup propagation, and failed-Gather rollback (incl. cancel/mount-retry `undo_placement` surfacing) done; other D9 items remain as tracked elsewhere |
+| D8 | Rename temp-name correctness: homogenise the reserved-set casing and make the rollback composite-error / atomic | 15, 16 | medium; one pass with tests | **done:** temps mint against a case-folded reserved set (`.cmdr-rename-N`, dodging mixed-case collisions); rollback failures surface as composite `ApplyStepsError` / `RenameExecutionError::uncertain` with preserved paths |
+| D9 | Destructive-op partial-failure integrity: consistent `path_is_taken` + no-clobber swap, fail-loud partial undo of Move, propagate `copy_symlink`/`cleanup_path` errors, roll back the orphan gather, add rollback to `commit_rename`'s case-only path, and add the on-disk undo round-trip test | 13, 14, 20, 22, 34, 23, below the cut | medium; with integration tests | **done:** no-clobber/`path_is_taken` swap, case-only rename rollback, all-source Move replay preflight, `cleanup_path`/`copy_symlink` error propagation (no silent `remove_file`), failed-Gather rollback, and on-disk Move undo/redo round-trip (`move_then_undo_restores_the_source`) |
 | D10 | Panel filter/cursor invariants: `ensure_cursor_valid()` after every filter/facet/sort change, bounds-checked `filtered_entries`, and an explicit (not silent-empty) `selected_or_cursor` miss | 18, 19, below the cut | small; strongest case for the `ViewState` encapsulation in Track A | **done:** filter/facet/sort re-clamp immediately; cached indices are bounded; stale cursor is typed `Result` |
 | D11 | egui widget-Id hygiene: add `id_salt` to the three dialog `ScrollArea`s and derive toast Ids from stable identity | below the cut (x4) | trivial | **done:** dialog scroll areas use stable salts/nonces and toasts carry queue-assigned stable IDs |
 | D12 | **Security: escape or eliminate the AppleScript injection in `action_get_info`** (interpolated filename breaks out of the AppleScript string literal into `do shell script`) | 1 | small; escape `"`/`\` or drop the AppleScript call for a native `NSWorkspace`/Finder API | **done in this pass** (`escape_for_applescript_literal` + unit tests) |
 | D13 | Cross-pane comparison directory-blindness: add `is_dir` checks to `sync::compare`/`compare::classify_entry`/`conflict::detect`, and key `apply_sync`'s name-collision resolution by path/index instead of lowercased name | 2, 27, 28 | medium | **done (2026-07-18):** typed fingerprints, explicit folder-pair/type-conflict rows, and fail-closed conditional conflict policies |
 | D14 | Cap `textdiff`'s line count (or switch to a linear-space diff) before the O(n·m) DP allocation, so two ordinary text files can't abort the process | 5 | small | **done:** checked 8M-cell budget + flat matrix + regression test |
 | D15 | Data-safety gating: require an explicit drop-target (or a confirmation) before `drop_dragged` falls back to Move-into-other-panel, and gate toolbar Copy/Move/Delete on `pending_op`/`active_transfer` like the keyboard and drag-drop paths already do | 6, 32 | small-medium | **done:** explicit drop target/cancel plus queue-aware toolbar/core guards and disabled-state reasons |
-| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | **partial:** budget-aware preload, four-worker/decoder bounds, viewport downsampling, persistent failures, typed fallback/timeouts, streamed decode, memory limits, and native/standard orientation transforms are done; fixture-backed color/orientation parity remains |
+| D16 | Image pipeline: shrink the preload window by remaining cache budget instead of a hardcoded floor of 50, cap concurrent decode threads, add a negative-cache for undecodable formats (SVG/MKV/WebM), and apply EXIF/HEIF orientation | 17, 36, 37, 38 | medium | **partial:** budget-aware preload, decoder bounds, negative-cache classification (portable SVG/MKV/WebM coverage), and standard-path EXIF orientation (hand-built JPEG) are done; ImageIO/HEIF/color-management parity still needs macOS-only fixtures |
 | D17 | Persistence hardening: bound `MaxAgeDays`/`MinAgeDays` (or use `checked_mul`/`saturating_mul`), and give the four config-store loaders item-level fault tolerance instead of discarding the whole file on one bad field | 29, 31 | small-medium | **done (2026-07-18):** day matching avoids duration multiplication; shared item-level recovery preserves valid records and reports aggregate health |
 | D18 | Small UI/data-integrity fixes: `select_all` should preserve filtered-out selections like `invert_selection` does; run Find's directory walk off the UI thread; clear the batch-rename dialog's stale error on rule edit; scope `Escape` to the active panel's preview only | 33, 35, 49, below the cut | small each | **done:** visible-only selection transitions, background Find, rule-bound errors, and routed Escape ownership are shipped |
 | D19 | **Non-modal dialog retargeting: snapshot the working panel/selection/directory once at dialog-open time** instead of re-deriving it live from `Workspace` every frame, for the batch-rename studio and the treemap dialog | 3, 42 | medium; natural fit for the `UiState` extraction (A5) | **done:** Batch Rename and treemap snapshots retain their opening context |
@@ -307,16 +308,16 @@ Track A/B by giving it a letter once it's actually prioritised.
 
 | Idea | Effort | Note |
 | --- | --- | --- |
-| Archive browsing/extraction (list a .zip/.tar.gz as a pseudo-folder, extract selected entries) | large | The one clear asymmetry vs. every competitor: the app can compress but not decompress/browse |
-| Expose the existing `content_hash`/dedup hashing as a user-facing checksum/verify command | small | Plumbing already exists internally for dedup |
-| Symlink/alias/hardlink creation from the selection | small | Only "Copy Path as text" exists today, no "make a link here" |
-| Synchronized dual-pane navigation lock (distinct from the existing one-shot Sync sheet) | medium | For parallel tree browsing (source/build, or two snapshots) |
+| Archive browsing/extraction (list a .zip/.tar.gz as a pseudo-folder, extract selected entries) | large | **done (Phase 3):** ZIP in-process browse/extract; `.tar.gz` via system `tar`; trust-gate hooks for auto-inspect (J003) |
+| Expose the existing `content_hash`/dedup hashing as a user-facing checksum/verify command | small | **done (Phase 3):** palette "Verify checksum" + clipboard report (content hash + BLAKE3) |
+| Symlink/alias/hardlink creation from the selection | small | **done (Phase 3):** symlink and hardlink into the other panel |
+| Synchronized dual-pane navigation lock (distinct from the existing one-shot Sync sheet) | medium | **done (Phase 3):** Toggle navigation lock mirrors enter/up across panes |
 | Format-specific extra columns (image dimensions, audio duration) shown for free using the already-paid-for ImageIO decode | medium | Narrower than the deferred general "configurable columns" |
-| Capture and show run-command output (stdout/stderr/exit code) instead of fire-and-forget spawn | medium | The run bar currently gives zero feedback beyond "started" |
+| Capture and show run-command output (stdout/stderr/exit code) instead of fire-and-forget spawn | medium | **done (Phase 3):** background capture with exit/stdout/stderr in the run dialog |
 | Per-template working-directory and foreground/background flag on `cmdtemplate::Template` | small | Small typed addition to an already-reusable templating engine |
-| "Repeat last command" / dot-repeat binding | small | `command.rs` already tracks `UsageStats`; distinct from B6's vim chords |
-| Palette entries for named bookmarks/recents beyond the 9 numbered slots | medium | Named bookmarks beyond slot 9 are currently mouse-only |
-| CLI launch args (`commander <left> [right]`) for a terminal-to-GUI handoff | small | No `env::args()` handling exists today |
+| "Repeat last command" / dot-repeat binding | small | **done (Phase 3):** `.` repeats the last workspace command |
+| Palette entries for named bookmarks/recents beyond the 9 numbered slots | medium | **done (Phase 3):** palette lists matching named bookmarks for jump |
+| CLI launch args (`commander <left> [right]`) for a terminal-to-GUI handoff | small | **done (Phase 3):** `launch` parses `env::args` and overrides session paths |
 | Export/import command templates and keymap as shareable dotfiles | small | `cmdtemplate` already round-trips through serde_json |
 
 **Reliability / data-safety ideas** (the product-level answer to the audit's
@@ -327,7 +328,7 @@ at a time):
 | --- | --- | --- |
 | Post-copy size/checksum verification with one-click re-copy of just the failed files | medium | Reuses the existing `content_hash` primitive |
 | Append-only crash-survivable operation journal, with a "resume cleanup" dialog on next launch | large | Distinct from B5 (receipts are UX/history; this is crash recovery for operations that never finished) |
-| Dry-run/preview step for Sync and large batch Delete/Move | medium | Sync can delete destination-only files; today the only inspection surface is the tinted row list |
+| Dry-run/preview step for Sync and large batch Delete/Move | medium | **done (Phase 3):** Sync dry-run checkbox; Delete/Move confirmation dialog offers dry-run preview (toast summary, no mutation) |
 | Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | **done:** `Action::Trash`/`RestoreTrash` via `version_store` restore |
 | Pre-flight collision/permission/path-length scan before a transfer starts, not discovered file-by-file mid-transfer | medium | Reuses the walk the free-space preflight already does |
 | Route move/overwrite cleanup removals through Trash (or a quarantine dir) instead of a hard `remove_file`/`remove_dir_all` | medium | Today only explicit Delete goes through Trash; implicit removals inside Move/overwrite don't |
@@ -337,8 +338,8 @@ at a time):
 | Idea | Effort | Note |
 | --- | --- | --- |
 | Panic containment on the three raw background threads (`catch_unwind` or switch to `parking_lot::Mutex`, which doesn't poison) | small | A single background panic today can poison a Mutex and cascade into a full app crash |
-| A structured logging facade (the `log` crate + a file-backed subscriber) | small | Currently one `eprintln!` in the whole tree; background failures leave no durable trail |
-| A headless `egui_kittest`-based test harness for `app/` | medium | `src/app/` has zero `#[test]`s; architecture.md already flags the dialog focus edge-trigger as "invisible to the test suite" |
+| A structured logging facade (the `log` crate + a file-backed subscriber) | small | **done (Phase 5):** `logging` dual stderr+file sink; background failures write durable trails |
+| A headless `egui_kittest`-based test harness for `app/` | medium | **partial (Phase 5):** `app/smoke.rs` documents the future egui_kittest path and ships a method-tabs `run_ui` smoke without a native window |
 | A command-replay log (record the `Vec<Command>` stream) for crash diagnostics and, later, macros | medium | `Workspace::execute(Command)` is already the one chokepoint everything flows through |
 | An explicit `schema_version` field on the four persisted JSON stores | small | Cheap now, expensive to retrofit once real user data is on disk in an unmarked format |
 | Property/generative tests for `PanelState` invariants once `ViewConfig`/`DirIndex` land | medium | Closes the *class* of bug D10 fixes one instance at a time |
@@ -950,9 +951,12 @@ so post-copy verification, crash journaling, dry-run, archive browsing,
 virtualization, logging, and remote-watcher work are not double-counted.
 The refresh adds a separate `H001-H012` ledger for concrete gaps closed in
 comparison, persistence, command availability, preview, and watcher recovery.
-The former deferred list is now the implemented `I001-I010` ledger; a fresh
-`J001-J010` list remains explicitly unimplemented so future work is not
-mislabeled as shipped.
+The former deferred list is now the implemented `I001-I010` ledger. The
+`J001-J010` research queue is also implemented (see `research.md`'s follow-up
+ledger): color-managed previews, version-store chunk dedup + quota, per-root
+trust labels, battery/thermal admission, XChaCha20-Poly1305 encrypted support-bundle envelopes,
+assistive operation timeline, path-free change provenance, workspace profiles,
+scoped conflict rules, and per-format decoder circuit breakers.
 
 ## Tracking
 
@@ -977,8 +981,8 @@ Watcher bursts publish bounded generations; volume policy chooses recursive
 native, shallow native, or shallow polling with fallback. Compact rows retain
 regular/compound extensions; visible mutations use a cached capability matrix;
 Versioned operations expose persisted Compact/Recent/Archive/Forever retention
-and prune only after manifest commit. The new `J001-J010` list covers the next
-distinct ideas rather than recycling these shipped items. Three review passes
+and prune only after manifest commit. The `J001-J010` research queue from that
+round is now implemented (see `research.md`). Three review passes
 then bypassed the full context snapshot for unconditional keys, removed a
 per-row suffix-case allocation, made compact-name width conservative, and
 separated decoder saturation from damaged-file failures. Full verification:
@@ -1121,9 +1125,9 @@ destructive-op partial-failure integrity, with
 on-disk undo tests) and **D23** (filesystem edge cases) as dedicated passes;
 finish **D16** with a fixture-backed orientation/color-management audit now
 that decode-time downsampling is shipped, and place **D5** alongside the
-`DirIndex` extraction. The best bounded follow-ups from `J001-J010` are the
-per-format decoder circuit breaker, a visible deduplicated version-store quota,
-and per-root trust labels. D10 is also the strongest concrete motivation for
+`DirIndex` extraction. Phase 4 has since shipped the per-format decoder circuit
+breaker, visible deduplicated version-store quota, and per-root trust labels
+from that `J001-J010` shortlist. D10 is also the strongest concrete motivation for
 the `ViewState` encapsulation in Track A, and D19's dialog-snapshot fix is the
 strongest concrete motivation for the `UiState` extraction (A5).
 

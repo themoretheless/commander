@@ -518,6 +518,19 @@ impl App {
                     );
                     ui.add_space(5.0);
                 }
+                ui.label(
+                    egui::RichText::new({
+                        let usage = crate::version_store::store_usage();
+                        if usage.over_quota() {
+                            format!("Version store {} · over quota", usage.label())
+                        } else {
+                            format!("Version store {}", usage.label())
+                        }
+                    })
+                    .size(10.0)
+                    .color(t.text_muted),
+                );
+                ui.add_space(4.0);
 
                 match state.section {
                     RecoverySection::Operations => {
@@ -682,6 +695,24 @@ impl App {
         if let Some(operation_id) = rollback {
             match self.ws.rollback_recovery(&operation_id) {
                 Ok(plan) => {
+                    let now_millis = (ctx.input(|input| input.time) * 1_000.0) as u64;
+                    self.assistive_timeline.note_recovery(
+                        Some(operation_id.clone()),
+                        format!(
+                            "Rollback completed {} step(s); {} remaining",
+                            plan.completed.len(),
+                            plan.remaining.len()
+                        ),
+                        now_millis,
+                    );
+                    self.ws
+                        .left
+                        .change_provenance
+                        .record(crate::change_provenance::ChangeProvenance::Recovery);
+                    self.ws
+                        .right
+                        .change_provenance
+                        .record(crate::change_provenance::ChangeProvenance::Recovery);
                     state.outcome = Some(format!(
                         "Rollback completed {} step{}; {} item{} need review",
                         plan.completed.len(),
@@ -703,16 +734,19 @@ impl App {
                 .resume_recovery(&operation_id, move || repaint.request_repaint())
             {
                 Ok(count) => {
-                    self.ui.modals.recovery_open = false;
-                    self.push_recovery_toast(
-                        ctx,
-                        if count == 0 {
-                            "Finalizing verified operation".to_string()
-                        } else {
-                            format!("Resuming {count} manifest entries")
-                        },
-                        false,
+                    let message = if count == 0 {
+                        "Finalizing verified operation".to_string()
+                    } else {
+                        format!("Resuming {count} manifest entries")
+                    };
+                    let now_millis = (ctx.input(|input| input.time) * 1_000.0) as u64;
+                    self.assistive_timeline.note_recovery(
+                        Some(operation_id.clone()),
+                        message.clone(),
+                        now_millis,
                     );
+                    self.ui.modals.recovery_open = false;
+                    self.push_recovery_toast(ctx, message, false);
                 }
                 Err(error) => state.error = Some(error),
             }

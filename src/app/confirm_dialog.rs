@@ -2,7 +2,7 @@
 
 use super::*;
 
-mod method_tabs;
+pub(crate) mod method_tabs;
 use crate::scan::FlatFileEntry;
 use crate::transfer::OverwritePolicy;
 
@@ -328,6 +328,41 @@ impl App {
                         ui.add_space(4.0);
                     }
 
+                    {
+                        let left_root = self.ws.left.current_path.clone();
+                        let right_root = self.ws.right.current_path.clone();
+                        let names: Vec<String> =
+                            rich_conflicts.iter().map(|c| c.name.clone()).collect();
+                        let kind = names
+                            .first()
+                            .map(|name| {
+                                crate::conflict_rules::ConflictRuleBook::kind_for_name(name)
+                            })
+                            .unwrap_or_else(|| "other".into());
+                        if let Some(preview) = crate::conflict_rules::preview_for(
+                            &left_root,
+                            &right_root,
+                            &kind,
+                            &names,
+                            5,
+                        ) {
+                            ui.label(egui::RichText::new(preview).size(11.0).color(t.text_muted));
+                            ui.add_space(4.0);
+                        } else if !names.is_empty() {
+                            let sample = crate::conflict_rules::ConflictRuleBook::sample_preview(
+                                crate::conflict_rules::StoredRelationPolicy::KeepBoth,
+                                &names,
+                                5,
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("Sample before apply: {sample}"))
+                                    .size(11.0)
+                                    .color(t.text_muted),
+                            );
+                            ui.add_space(4.0);
+                        }
+                    }
+
                     use crate::conflict::RelationPolicy;
                     let mut chosen: Option<RelationPolicy> = None;
                     ui.horizontal_wrapped(|ui| {
@@ -383,6 +418,29 @@ impl App {
                         );
                     });
                     if let Some(policy) = chosen {
+                        {
+                            let left_root = self.ws.left.current_path.clone();
+                            let right_root = self.ws.right.current_path.clone();
+                            let names: Vec<String> =
+                                rich_conflicts.iter().map(|c| c.name.clone()).collect();
+                            let kind = names
+                                .first()
+                                .map(|name| {
+                                    crate::conflict_rules::ConflictRuleBook::kind_for_name(name)
+                                })
+                                .unwrap_or_else(|| "other".into());
+                            let _ = crate::conflict_rules::ConflictRuleBook::sample_preview(
+                                policy.into(),
+                                &names,
+                                5,
+                            );
+                            crate::conflict_rules::upsert(crate::conflict_rules::ConflictRule {
+                                left_root,
+                                right_root,
+                                file_kind: kind,
+                                policy: policy.into(),
+                            });
+                        }
                         if self.ws.resolve_pending_conflicts(policy) {
                             let still_overflows = matches!(
                                 &self.ws.pending_op,
@@ -399,6 +457,34 @@ impl App {
                 }
 
                 ui.add_space(12.0);
+
+                // Dry-run preview for Delete/Move: toast summary without mutating.
+                let supports_dry_run = is_delete || title == "Move";
+                let dry_run_id = egui::Id::new("confirm_dry_run");
+                let mut dry_run = if supports_dry_run {
+                    ui.ctx()
+                        .data_mut(|d| *d.get_temp_mut_or_insert_with(dry_run_id, || false))
+                } else {
+                    false
+                };
+                if supports_dry_run {
+                    ui.checkbox(&mut dry_run, "Dry run (preview only — do not change files)");
+                    ui.ctx().data_mut(|d| d.insert_temp(dry_run_id, dry_run));
+                    ui.add_space(6.0);
+                }
+
+                let can_preview = flat_ready && resource_ready && !overflow && !preflight_blocked;
+                let can_apply = can_preview && !mutations_blocked;
+                let primary_label = if dry_run && supports_dry_run {
+                    "Preview"
+                } else {
+                    action_label
+                };
+                let primary_enabled = if dry_run && supports_dry_run {
+                    can_preview
+                } else {
+                    can_apply
+                };
 
                 // Action buttons
                 ui.horizontal(|ui| {
@@ -420,12 +506,9 @@ impl App {
                         ui.add_space(8.0);
                         if ui
                             .add_enabled(
-                                resource_ready
-                                    && !overflow
-                                    && !preflight_blocked
-                                    && !mutations_blocked,
+                                primary_enabled,
                                 egui::Button::new(
-                                    egui::RichText::new(action_label)
+                                    egui::RichText::new(primary_label)
                                         .size(13.0)
                                         .color(Color32::WHITE),
                                 )
@@ -434,7 +517,11 @@ impl App {
                             )
                             .clicked()
                         {
-                            self.confirm_pending_op(ctx);
+                            if dry_run && supports_dry_run {
+                                self.dry_run_pending_op(ctx, title, count, total);
+                            } else {
+                                self.confirm_pending_op(ctx);
+                            }
                         }
                     }
                 });
@@ -443,13 +530,15 @@ impl App {
                     self.dismiss_pending_op(ctx);
                 }
                 if !has_conflicts
-                    && resource_ready
-                    && !overflow
-                    && !preflight_blocked
-                    && !mutations_blocked
+                    && primary_enabled
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
-                    self.confirm_pending_op(ctx);
+                    // Enter must honor dry-run: preview toast only, never mutate.
+                    if dry_run && supports_dry_run {
+                        self.dry_run_pending_op(ctx, title, count, total);
+                    } else {
+                        self.confirm_pending_op(ctx);
+                    }
                 }
             });
         #[cfg(not(feature = "visual-qa"))]
@@ -464,11 +553,35 @@ impl App {
         }
     }
 
+    /// Toast a Delete/Move dry-run summary and close without mutating.
+    fn dry_run_pending_op(
+        &mut self,
+        ctx: &egui::Context,
+        title: &str,
+        count: usize,
+        total_bytes: u64,
+    ) {
+        let now = ctx.input(|i| i.time);
+        let size = if total_bytes > 0 {
+            format!(" ({})", format_size(total_bytes))
+        } else {
+            String::new()
+        };
+        self.toasts.push(crate::toasts::Toast::new(
+            format!("Dry run: {title} {count} item(s){size} — nothing changed"),
+            crate::toasts::ToastKind::Info,
+            false,
+            now,
+        ));
+        self.dismiss_pending_op(ctx);
+    }
+
     /// Close the dialog and reset its per-dialog egui state.
     fn dismiss_pending_op(&mut self, ctx: &egui::Context) {
         self.ws.dismiss_pending_op();
         ctx.data_mut(|d| {
             d.remove::<f64>(egui::Id::new("pending_flow_start"));
+            d.remove::<bool>(egui::Id::new("confirm_dry_run"));
         });
     }
 

@@ -86,6 +86,11 @@ impl App {
         if !mark_failure_notice_seen(&mut self.failure_notice_seen, notice.attempt_id) {
             return;
         }
+        self.assistive_timeline.note_failure(
+            Some(notice.operation_id.clone()),
+            notice.title(),
+            notice.created_at_millis,
+        );
         self.operation_failures.upsert(notice);
         self.show_operations_center = true;
         self.operations_tab = OperationsTab::Errors;
@@ -113,6 +118,41 @@ impl App {
             .resizable(true)
             .frame(Frame::NONE.fill(t.bg_panel).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
+                let timeline_message = self.assistive_timeline.current().to_string();
+                let timeline_events = self.assistive_timeline.events().count();
+                if !timeline_message.is_empty() {
+                    let live = ui.label(
+                        egui::RichText::new(if timeline_events > 1 {
+                            format!("{timeline_message} · {timeline_events} events")
+                        } else {
+                            timeline_message.clone()
+                        })
+                        .size(10.0)
+                        .color(t.text_muted),
+                    );
+                    ui.ctx().accesskit_node_builder(live.id, |node| {
+                        node.set_role(egui::accesskit::Role::Status);
+                        node.set_live(egui::accesskit::Live::Polite);
+                    });
+                }
+                if let Some(active) = self.ws.active_transfer_view() {
+                    let progress = crate::lock_util::recover(&active.progress);
+                    let now_millis = (ui.input(|input| input.time) * 1_000.0) as u64;
+                    if let Some(reason) = progress.pause_reason.as_ref() {
+                        self.assistive_timeline.note_pause(
+                            Some(active.operation_id.clone()),
+                            reason.label(),
+                            now_millis,
+                        );
+                    } else if !progress.finished {
+                        self.assistive_timeline.note_phase(
+                            active.operation_id.clone(),
+                            progress.phase,
+                            active.submitted.label(),
+                            now_millis,
+                        );
+                    }
+                }
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Operations")

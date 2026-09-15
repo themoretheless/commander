@@ -1292,6 +1292,8 @@ pub struct PanelState {
     pub drag: DragState,
     listing_job: ListingJobController,
     workload: Option<crate::workload::WorkloadHandle>,
+    /// Why the most recent listing refresh landed (path-free, research J007).
+    pub change_provenance: crate::change_provenance::RowProvenance,
 }
 
 impl PanelState {
@@ -1323,6 +1325,7 @@ impl PanelState {
             drag: DragState::new(),
             listing_job: ListingJobController::default(),
             workload: None,
+            change_provenance: crate::change_provenance::RowProvenance::default(),
         }
     }
 
@@ -1550,6 +1553,8 @@ impl PanelState {
     }
 
     pub fn refresh(&mut self) {
+        self.change_provenance
+            .record(crate::change_provenance::ChangeProvenance::Commander);
         self.schedule_or_reload(PendingFocus::None);
     }
 
@@ -1740,12 +1745,18 @@ impl PanelState {
             self.sizes.mark_dirty();
         }
         if let Some(ticket) = outcome.ticket {
+            let source = if outcome.recovered_gap {
+                crate::change_provenance::ChangeProvenance::Reconciliation
+            } else {
+                crate::change_provenance::ChangeProvenance::ExternalWatcher
+            };
             if self.can_async_list() {
                 let show_hidden = self.view.show_hidden();
                 self.listing_job
                     .request(path, show_hidden, Some(ticket), PendingFocus::None);
                 let applied = self.poll_listing_results();
                 if applied {
+                    self.change_provenance.record(source);
                     crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 }
                 return applied;
@@ -1755,6 +1766,7 @@ impl PanelState {
                 self.watcher
                     .acknowledge_snapshot(Some(ticket), &listing_binding);
                 self.refresh_sizes(true);
+                self.change_provenance.record(source);
                 crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 return true;
             }
@@ -1968,15 +1980,15 @@ impl PanelState {
             "desktop.ini",
             "Icon\r",
         ];
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir && JUNK_NAMES.contains(&e.name.as_str()))
-            .map(|e| e.path.clone())
-            .collect();
-        let added = paths.len();
-        for p in paths {
-            self.selection.insert_selected(p);
+        let snapshot = self.filtered_snapshot();
+        let mut added = 0;
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            if !entry.is_dir && JUNK_NAMES.contains(&entry.name.as_str()) {
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
+            }
         }
         added
     }
@@ -1984,18 +1996,28 @@ impl PanelState {
     /// Select the `n` largest files in the filtered view (folders excluded).
     /// Returns how many entries were newly added to the selection.
     pub fn select_largest(&mut self, n: usize) -> usize {
-        let mut sized: Vec<(PathBuf, u64)> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir)
-            .map(|e| (e.path.clone(), e.size))
-            .collect();
-        sized.sort_by_key(|e| std::cmp::Reverse(e.1)); // largest first
-        let mut added = 0;
-        for (p, _) in sized.into_iter().take(n) {
-            if self.selection.insert_selected(p) {
-                added += 1;
+        if n == 0 {
+            return 0;
+        }
+        // Top-n needs sizes before mutation; keep a bounded heap instead of a
+        // full filtered `Vec<&FileEntry>` plus a second path list.
+        let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<(u64, PathBuf)>>::new();
+        let snapshot = self.filtered_snapshot();
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            if entry.is_dir {
+                continue;
             }
+            heap.push(std::cmp::Reverse((entry.size, entry.path.clone())));
+            if heap.len() > n {
+                heap.pop();
+            }
+        }
+        let mut added = 0;
+        while let Some(std::cmp::Reverse((_, path))) = heap.pop() {
+            added += usize::from(self.selection.insert_selected(path));
         }
         added
     }
@@ -2008,15 +2030,15 @@ impl PanelState {
             Some(e) if !e.is_dir && !e.extension.is_empty() => e.extension.clone(),
             _ => return 0,
         };
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir && e.extension == ext)
-            .map(|e| e.path.clone())
-            .collect();
-        let added = paths.len();
-        for p in paths {
-            self.selection.insert_selected(p);
+        let snapshot = self.filtered_snapshot();
+        let mut added = 0;
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            if !entry.is_dir && entry.extension == ext {
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
+            }
         }
         added
     }
@@ -2024,15 +2046,15 @@ impl PanelState {
     /// Select the zero-byte files in the filtered view (folders excluded).
     /// Returns how many entries were added.
     pub fn select_empty_files(&mut self) -> usize {
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| !e.is_dir && e.size == 0)
-            .map(|e| e.path.clone())
-            .collect();
-        let added = paths.len();
-        for p in paths {
-            self.selection.insert_selected(p);
+        let snapshot = self.filtered_snapshot();
+        let mut added = 0;
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            if !entry.is_dir && entry.size == 0 {
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
+            }
         }
         added
     }
@@ -2064,27 +2086,22 @@ impl PanelState {
         if terms.is_empty() {
             return 0;
         }
-        let mut decisions: Vec<(PathBuf, bool)> = Vec::new();
-        for e in self.filtered_entries() {
-            let add = terms
-                .iter()
-                .any(|(t, sub)| !sub && term_matches(t, &e.name_lower, &e.extension));
-            let rem = terms
-                .iter()
-                .any(|(t, sub)| *sub && term_matches(t, &e.name_lower, &e.extension));
-            if rem {
-                decisions.push((e.path.clone(), false));
-            } else if add {
-                decisions.push((e.path.clone(), true));
-            }
-        }
+        let snapshot = self.filtered_snapshot();
         let mut added = 0;
-        for (path, is_add) in decisions {
-            if is_add {
-                self.selection.insert_selected(path);
-                added += 1;
-            } else {
-                self.selection.remove_selected(&path);
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            let add = terms.iter().any(|(term, subtract)| {
+                !subtract && term_matches(term, &entry.name_lower, &entry.extension)
+            });
+            let rem = terms.iter().any(|(term, subtract)| {
+                *subtract && term_matches(term, &entry.name_lower, &entry.extension)
+            });
+            if rem {
+                self.selection.remove_selected(&entry.path);
+            } else if add {
+                added += usize::from(self.selection.insert_selected(entry.path.clone()));
             }
         }
         added
@@ -2230,11 +2247,17 @@ impl PanelState {
     /// selected anchor drags the visible selected set in listing order.
     pub fn begin_drag(&mut self, anchor: PathBuf) {
         let entries = if self.selection.selected().contains(&anchor) {
-            self.filtered_entries()
-                .into_iter()
-                .filter(|entry| self.selection.selected().contains(&entry.path))
-                .map(|entry| entry.path.clone())
-                .collect()
+            let snapshot = self.filtered_snapshot();
+            let mut paths = Vec::new();
+            for &index in snapshot.iter() {
+                let Some(entry) = self.listing.entries().get(index) else {
+                    continue;
+                };
+                if self.selection.selected().contains(&entry.path) {
+                    paths.push(entry.path.clone());
+                }
+            }
+            paths
         } else {
             vec![anchor]
         };
@@ -2252,20 +2275,22 @@ impl PanelState {
     }
 
     pub fn select_all(&mut self) {
-        let visible: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .map(|e| e.path.clone())
-            .collect();
-        let all_selected = visible
-            .iter()
-            .all(|path| self.selection.selected().contains(path));
-        if all_selected {
-            for path in visible {
-                self.selection.remove_selected(&path);
+        let snapshot = self.filtered_snapshot();
+        let all_selected = snapshot.iter().all(|&index| {
+            self.listing
+                .entries()
+                .get(index)
+                .is_none_or(|entry| self.selection.selected().contains(&entry.path))
+        });
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            if all_selected {
+                self.selection.remove_selected(&entry.path);
+            } else {
+                self.selection.insert_selected(entry.path.clone());
             }
-        } else {
-            self.selection.extend_selected(visible);
         }
     }
 
@@ -2273,13 +2298,12 @@ impl PanelState {
     /// become unselected and vice versa. Entries hidden by the current filter
     /// keep their state, so an invert respects what the user can actually see.
     pub fn invert_selection(&mut self) {
-        let paths: Vec<PathBuf> = self
-            .filtered_entries()
-            .iter()
-            .map(|e| e.path.clone())
-            .collect();
-        for p in paths {
-            self.selection.toggle_selected(p);
+        let snapshot = self.filtered_snapshot();
+        for &index in snapshot.iter() {
+            let Some(entry) = self.listing.entries().get(index) else {
+                continue;
+            };
+            self.selection.toggle_selected(entry.path.clone());
         }
     }
 

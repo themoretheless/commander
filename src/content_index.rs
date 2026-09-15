@@ -4,7 +4,7 @@ use crate::panel::{FileEntry, format_size};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, ReadDir};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -260,6 +260,13 @@ impl ContentIndex {
             );
             return false;
         }
+        if !crate::machine_pressure::snapshot().allows_background_index() {
+            self.load_errors.insert(
+                root,
+                "Content index deferred under battery/thermal pressure".to_string(),
+            );
+            return false;
+        }
         if !self.is_enabled(&root) {
             return false;
         }
@@ -292,7 +299,13 @@ impl ContentIndex {
             .find(|settings| settings.root == root)
         {
             settings.last_error = None;
-            let _ = save_settings_to(&settings_path(), &self.settings);
+            if !save_settings_to(&settings_path(), &self.settings) {
+                log::warn!(
+                    target: "commander::content_index",
+                    "failed to persist content-index settings after enqueueing build for {}",
+                    root.display()
+                );
+            }
         }
         true
     }
@@ -498,7 +511,13 @@ impl ContentIndex {
 
     fn set_last_error(&mut self, root: &Path, error: Option<String>) {
         self.settings_for_mut(root.to_path_buf()).last_error = error;
-        let _ = save_settings_to(&settings_path(), &self.settings);
+        if !save_settings_to(&settings_path(), &self.settings) {
+            log::warn!(
+                target: "commander::content_index",
+                "failed to persist content-index settings for {}",
+                root.display()
+            );
+        }
     }
 }
 
@@ -773,50 +792,56 @@ fn save_settings_to(path: &Path, settings: &SettingsStore) -> bool {
         .is_some_and(|json| crate::fs_util::write_atomic(path, &json))
 }
 
+const INDEX_STORE: crate::persistence::StoreSpec =
+    crate::persistence::StoreSpec::new("commander.content_index", 1, 64 * 1024 * 1024)
+        .allow_legacy_schema_marker();
+
 fn load_index_from(path: &Path, expected_root: &Path) -> Result<Option<RootIndex>, String> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("Could not open content index: {error}")),
-    };
-    let index: RootIndex = serde_json::from_reader(BufReader::new(file))
-        .map_err(|error| format!("Could not read content index: {error}"))?;
-    if index.schema != SCHEMA_VERSION || index.root != expected_root {
-        return Err("Content index schema or root does not match".to_string());
+    let persist = crate::persistence::FsPersist::default();
+    let loaded = crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE);
+    match loaded.gate.status() {
+        crate::persistence::LoadStatus::Missing => Ok(None),
+        crate::persistence::LoadStatus::Corrupt => {
+            Err("Content index is corrupt: envelope or payload rejected".to_string())
+        }
+        crate::persistence::LoadStatus::FutureVersion => {
+            Err("Content index uses a newer persist envelope than this build supports".to_string())
+        }
+        crate::persistence::LoadStatus::Unreadable => {
+            Err("Could not open content index: unreadable".to_string())
+        }
+        crate::persistence::LoadStatus::Legacy
+        | crate::persistence::LoadStatus::Current
+        | crate::persistence::LoadStatus::Recovered => {
+            let Some(index) = loaded.value else {
+                return Err("Content index is corrupt: payload did not decode".to_string());
+            };
+            if index.schema != SCHEMA_VERSION || index.root != expected_root {
+                return Err("Content index schema or root does not match".to_string());
+            }
+            Ok(Some(index))
+        }
     }
-    Ok(Some(index))
 }
 
 fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
-    let Some(parent) = path.parent() else {
-        return Err("Content index path has no parent".to_string());
-    };
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Could not create index folder: {error}"))?;
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    let result = (|| {
-        let file = fs::File::create(&temporary)
-            .map_err(|error| format!("Could not create content index: {error}"))?;
-        let mut writer = BufWriter::new(file);
-        serde_json::to_writer(&mut writer, index)
-            .map_err(|error| format!("Could not serialize content index: {error}"))?;
-        writer
-            .flush()
-            .map_err(|error| format!("Could not flush content index: {error}"))?;
-        writer
-            .get_ref()
-            .sync_all()
-            .map_err(|error| format!("Could not sync content index: {error}"))?;
-        fs::rename(&temporary, path)
-            .map_err(|error| format!("Could not install content index: {error}"))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    let persist = crate::persistence::FsPersist::default();
+    let mut gate =
+        crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+    match crate::persistence::save_enveloped_streaming(
+        &persist,
+        path,
+        INDEX_STORE,
+        index,
+        &mut gate,
+        crate::persistence::SaveIntent::Automatic,
+    ) {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => Ok(()),
+        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => Err(format!(
+            "Content index commit is ambiguous across a crash: target was replaced but its directory could not be synced: {error}"
+        )),
+        Err(error) => Err(format!("Could not save content index: {error:?}")),
     }
-    result
 }
 
 #[cfg(test)]

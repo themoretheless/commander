@@ -6,6 +6,7 @@
 
 mod batch_rename;
 mod drop;
+mod link;
 mod mkdir;
 mod pending;
 mod rename;
@@ -18,6 +19,7 @@ pub(crate) use batch_rename::{
 pub(crate) use drop::{
     cancel_drag, drop_dragged, drop_dragged_as, transfer_selection_into_cursor_folder,
 };
+pub(crate) use link::{create_hardlinks, create_symlinks};
 pub(crate) use mkdir::create_dir;
 pub(crate) use pending::confirm_pending_op;
 pub(crate) use rename::{
