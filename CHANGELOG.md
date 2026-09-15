@@ -13,6 +13,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Headless `app/` smoke harness stub documenting a future `egui_kittest` path,
   plus a method-tabs render smoke test that runs without a native window.
 - README notes for macOS Developer ID signing and notarization next steps.
+- Phase 3 product surface: archive browse/extract, CLI launch paths, checksum
+  verify, symlink/hardlink creation, run-command output capture, nav lock,
+  dot-repeat, and Sync dry-run.
+- Phase 4 research `J001-J010`: color-managed previews, version-store dedup
+  quota, per-root trust labels, machine-pressure admission, encrypted support
+  envelopes, assistive timeline, change provenance, workspace profiles,
+  conflict rules, and decoder circuit breakers.
 
 ### Changed
 
