@@ -3,20 +3,28 @@
 mod accessibility;
 mod app;
 mod archive;
+mod assistive_timeline;
+mod trust;
+mod launch;
+mod checksum;
 pub mod benchmark_fixture;
 mod bookmarks;
 pub mod capability_diagnostic;
 mod clipboard;
+mod change_provenance;
 mod cmdtemplate;
 mod collections;
+mod color_manage;
 mod command;
 mod compare;
 mod conflict;
+mod conflict_rules;
 mod content_index;
 mod crumbs;
 mod dedup;
 mod delta_copy;
 mod density;
+mod decoder_breaker;
 mod display_name;
 pub mod feature_flags;
 mod file_color;
@@ -30,6 +38,7 @@ mod io_budget;
 mod jumplist;
 pub mod klm;
 mod listing_export;
+mod machine_pressure;
 mod lock_util;
 mod logging;
 pub mod measurement;
@@ -63,6 +72,7 @@ mod session;
 mod shelf;
 mod smart_folder;
 pub mod support_bundle;
+mod support_encrypt;
 mod sync;
 mod sync_guard;
 mod textdiff;
@@ -75,6 +85,7 @@ mod treemap;
 mod ui_request;
 mod undo;
 mod verified_hash;
+mod version_dedup;
 mod version_store;
 #[cfg(feature = "visual-qa")]
 mod visual_qa;
@@ -82,6 +93,7 @@ mod volume_profile;
 mod watcher_health;
 mod watcher_policy;
 pub mod workload;
+mod workspace_profile;
 mod workspace;
 
 #[cfg(test)]
@@ -94,6 +106,8 @@ use egui::ViewportBuilder;
 
 fn main() -> eframe::Result<()> {
     logging::init();
+
+    let launch = launch::sanitize_launch_paths(launch::parse_launch_args(std::env::args()));
 
     #[cfg(feature = "visual-qa")]
     if let Some(result) = visual_qa::maybe_run() {
@@ -117,7 +131,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Commander",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             let context_menu = native_menu::MacOsContextMenu::new().map_err(|error| {
                 std::io::Error::other(format!(
@@ -146,6 +160,7 @@ fn main() -> eframe::Result<()> {
                     workload: workload::global_handle(),
                     directory_probe: std::sync::Arc::new(pathname::FsDirectoryProbe),
                 },
+                launch.clone(),
             )))
         }),
     )

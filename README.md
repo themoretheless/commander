@@ -76,6 +76,16 @@ module is a thin egui layer over it.
   engine as the keyboard. `Cmd+Enter` moves into the highlighted folder and
   `Cmd+Shift+Enter` copies into it; both actions are also available from the
   toolbar overflow menu for single-pointer use.
+- **Archive browse / extract**: open `.zip` (and `.tar.gz` / `.tgz`) as a
+  member browser, multi-select entries, and extract into the other panel.
+  Automatic ZIP inspection in search consults trust-gate hooks (J003).
+- **Checksum / verify** (palette): hash the selection with the existing
+  content-hash plus BLAKE3 and copy a report.
+- **Create symlink / hard link** in the other panel from the selection.
+- **CLI launch**: `commander <left> [right]` opens those folders on startup.
+- **Run command output**: captures stdout/stderr/exit instead of fire-and-forget.
+- **Navigation lock**, **`.` repeat last command**, **named bookmarks in the
+  palette**, and **Sync dry-run** preview.
 - **Gather into a new subfolder** (`Cmd+Shift+N`): move the selection into a
   freshly-named folder in one undoable step (Finder's New Folder with
   Selection). Undo moves the files back and removes the empty folder; redo

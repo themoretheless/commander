@@ -1,7 +1,9 @@
 //! Local verified versions for the `Versioned` durability profile.
+//! Content-chunk digests and store quota: [`crate::version_dedup`] (J002).
 
-use crate::operation::{IdempotencyKey, OperationId, VersionRetentionPolicy};
+use crate::operation::{IdempotencyKey, OperationId, VersionRetentionPolicy, VersionStoreQuota};
 use crate::path_identity::PathIdentity;
+use crate::version_dedup::{ContentBlob, PayloadFile};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -50,12 +52,41 @@ struct VersionManifest {
     records: Vec<VersionRecord>,
     #[serde(default)]
     identities: std::collections::BTreeMap<String, PathIdentity>,
+    #[serde(default)]
+    blobs: std::collections::BTreeMap<String, ContentBlob>,
+    #[serde(default)]
+    payload_files: std::collections::BTreeMap<String, Vec<PayloadFile>>,
 }
 
 struct LoadedManifest {
     manifest: VersionManifest,
     gate: crate::persistence::StoreGate,
     blocked: bool,
+}
+
+fn store_quota_slot() -> &'static Mutex<VersionStoreQuota> {
+    static SLOT: OnceLock<Mutex<VersionStoreQuota>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(VersionStoreQuota::default()))
+}
+
+pub fn store_quota() -> VersionStoreQuota {
+    *crate::lock_util::recover(store_quota_slot())
+}
+
+pub fn set_store_quota(quota: VersionStoreQuota) {
+    *crate::lock_util::recover(store_quota_slot()) = quota;
+}
+
+pub fn store_usage() -> crate::version_dedup::VersionStoreUsage {
+    let root = versions_dir();
+    let loaded = load_manifest_with(manifest_persist(), &root);
+    if loaded.blocked {
+        return crate::version_dedup::VersionStoreUsage {
+            bytes_quota: store_quota().max_bytes,
+            ..Default::default()
+        };
+    }
+    crate::version_dedup::usage_of(&loaded.manifest.blobs, loaded.manifest.records.len(), store_quota())
 }
 
 fn manifest_persist() -> &'static crate::persistence::FsPersist {
@@ -252,6 +283,30 @@ fn preserve_at_inner(
             .map_or(0, |duration| duration.as_secs()),
     };
     let mut loaded = loaded;
+    if let Err(message) = crate::version_dedup::register_payload_dedup(
+        &stored,
+        &record.key.0,
+        &mut loaded.manifest.blobs,
+        &mut loaded.manifest.payload_files,
+    ) {
+        remove_path_if_identity_matches(&stored, &created_identity);
+        return Err(version_failure(message));
+    }
+    let created_identity = match PathIdentity::observe_deep(&stored) {
+        Ok(identity) => identity,
+        Err(error) => {
+            crate::version_dedup::release_payload_refs(
+                &mut loaded.manifest.blobs,
+                &mut loaded.manifest.payload_files,
+                &record.key.0,
+            );
+            remove_path_if_identity_matches(&stored, &created_identity);
+            return Err(version_failure(format!(
+                "Could not rebind version after content dedup {}: {error}",
+                stored.display()
+            )));
+        }
+    };
     loaded.manifest.records.push(record.clone());
     loaded
         .manifest
@@ -272,6 +327,11 @@ fn preserve_at_inner(
             crate::persistence::record_durability_warning("Version manifest", &error);
         }
         Err(error) => {
+            crate::version_dedup::release_payload_refs(
+                &mut loaded.manifest.blobs,
+                &mut loaded.manifest.payload_files,
+                &record.key.0,
+            );
             remove_path_if_identity_matches(&stored, &created_identity);
             crate::persistence::record_json_save_failure("Version manifest", &error);
             return Err(version_failure("Could not save version manifest"));
@@ -327,6 +387,11 @@ pub(crate) fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(
         .records
         .retain(|candidate| candidate.key != record.key);
     loaded.manifest.identities.remove(&record.key.0);
+    crate::version_dedup::release_payload_refs(
+        &mut loaded.manifest.blobs,
+        &mut loaded.manifest.payload_files,
+        &record.key.0,
+    );
     match save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate) {
         Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
             validate_stored_path(root, &authoritative.stored)?;
@@ -407,7 +472,52 @@ fn prune_manifest(
     policy: VersionRetentionPolicy,
     now_secs: u64,
 ) {
-    let (retained, expired) = retained_records(&manifest.records, policy, now_secs);
+    let (retained, mut expired) = retained_records(&manifest.records, policy, now_secs);
+    let retained_keys: std::collections::HashSet<_> =
+        retained.iter().map(|record| record.key.0.clone()).collect();
+    let mut working = VersionManifest {
+        records: retained,
+        identities: manifest
+            .identities
+            .iter()
+            .filter(|(key, _)| retained_keys.contains(*key))
+            .map(|(key, identity)| (key.clone(), identity.clone()))
+            .collect(),
+        blobs: manifest.blobs.clone(),
+        payload_files: manifest
+            .payload_files
+            .iter()
+            .filter(|(key, _)| retained_keys.contains(*key))
+            .map(|(key, files)| (key.clone(), files.clone()))
+            .collect(),
+    };
+    for record in &expired {
+        crate::version_dedup::release_payload_refs(
+            &mut working.blobs,
+            &mut working.payload_files,
+            &record.key.0,
+        );
+    }
+    let mut indexed = working.records.clone();
+    indexed.sort_by(|a, b| a.created_at_secs.cmp(&b.created_at_secs).then_with(|| a.key.0.cmp(&b.key.0)));
+    let ordered: Vec<String> = indexed.iter().map(|r| r.key.0.clone()).collect();
+    for key in crate::version_dedup::quota_overflow_keys(
+        &ordered,
+        &working.blobs,
+        &working.payload_files,
+        store_quota(),
+    ) {
+        if let Some(record) = working.records.iter().find(|r| r.key.0 == key).cloned() {
+            crate::version_dedup::release_payload_refs(
+                &mut working.blobs,
+                &mut working.payload_files,
+                &key,
+            );
+            working.identities.remove(&key);
+            working.records.retain(|c| c.key.0 != key);
+            expired.push(record);
+        }
+    }
     if expired.is_empty() {
         return;
     }
@@ -421,20 +531,7 @@ fn prune_manifest(
         };
         expired_identities.push(identity);
     }
-    let retained_keys = retained
-        .iter()
-        .map(|record| record.key.0.clone())
-        .collect::<std::collections::HashSet<_>>();
-    let identities = manifest
-        .identities
-        .iter()
-        .filter(|(key, _)| retained_keys.contains(*key))
-        .map(|(key, identity)| (key.clone(), identity.clone()))
-        .collect();
-    let pruned = VersionManifest {
-        records: retained,
-        identities,
-    };
+    let pruned = working;
     // Publish the manifest before deleting data. A failed policy update keeps
     // extra recovery data; it never leaves a manifest pointing at a deleted
     // version.
@@ -1234,7 +1331,7 @@ mod tests {
         .unwrap();
         let legacy = serde_json::to_vec_pretty(&VersionManifest {
             records: vec![record],
-            identities: Default::default(),
+            ..Default::default()
         })
         .unwrap();
         std::fs::write(manifest_path(&versions), &legacy).unwrap();
@@ -1443,7 +1540,7 @@ mod tests {
         };
         let legacy = VersionManifest {
             records: vec![record.clone()],
-            identities: Default::default(),
+            ..Default::default()
         };
         std::fs::write(
             manifest_path(&versions),
@@ -1473,7 +1570,7 @@ mod tests {
         };
         let bytes = serde_json::to_vec_pretty(&VersionManifest {
             records: vec![record.clone()],
-            identities: Default::default(),
+            ..Default::default()
         })
         .unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -1509,7 +1606,7 @@ mod tests {
             manifest_path(&versions),
             serde_json::to_vec_pretty(&VersionManifest {
                 records: vec![first.clone(), second.clone()],
-                identities: Default::default(),
+                ..Default::default()
             })
             .unwrap(),
         )
@@ -1542,7 +1639,7 @@ mod tests {
             manifest_path(&versions),
             serde_json::to_vec_pretty(&VersionManifest {
                 records: vec![record.clone()],
-                identities: Default::default(),
+                ..Default::default()
             })
             .unwrap(),
         )

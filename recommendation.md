@@ -308,16 +308,16 @@ Track A/B by giving it a letter once it's actually prioritised.
 
 | Idea | Effort | Note |
 | --- | --- | --- |
-| Archive browsing/extraction (list a .zip/.tar.gz as a pseudo-folder, extract selected entries) | large | The one clear asymmetry vs. every competitor: the app can compress but not decompress/browse |
-| Expose the existing `content_hash`/dedup hashing as a user-facing checksum/verify command | small | Plumbing already exists internally for dedup |
-| Symlink/alias/hardlink creation from the selection | small | Only "Copy Path as text" exists today, no "make a link here" |
-| Synchronized dual-pane navigation lock (distinct from the existing one-shot Sync sheet) | medium | For parallel tree browsing (source/build, or two snapshots) |
+| Archive browsing/extraction (list a .zip/.tar.gz as a pseudo-folder, extract selected entries) | large | **done (Phase 3):** ZIP in-process browse/extract; `.tar.gz` via system `tar`; trust-gate hooks for auto-inspect (J003) |
+| Expose the existing `content_hash`/dedup hashing as a user-facing checksum/verify command | small | **done (Phase 3):** palette "Verify checksum" + clipboard report (content hash + BLAKE3) |
+| Symlink/alias/hardlink creation from the selection | small | **done (Phase 3):** symlink and hardlink into the other panel |
+| Synchronized dual-pane navigation lock (distinct from the existing one-shot Sync sheet) | medium | **done (Phase 3):** Toggle navigation lock mirrors enter/up across panes |
 | Format-specific extra columns (image dimensions, audio duration) shown for free using the already-paid-for ImageIO decode | medium | Narrower than the deferred general "configurable columns" |
-| Capture and show run-command output (stdout/stderr/exit code) instead of fire-and-forget spawn | medium | The run bar currently gives zero feedback beyond "started" |
+| Capture and show run-command output (stdout/stderr/exit code) instead of fire-and-forget spawn | medium | **done (Phase 3):** background capture with exit/stdout/stderr in the run dialog |
 | Per-template working-directory and foreground/background flag on `cmdtemplate::Template` | small | Small typed addition to an already-reusable templating engine |
-| "Repeat last command" / dot-repeat binding | small | `command.rs` already tracks `UsageStats`; distinct from B6's vim chords |
-| Palette entries for named bookmarks/recents beyond the 9 numbered slots | medium | Named bookmarks beyond slot 9 are currently mouse-only |
-| CLI launch args (`commander <left> [right]`) for a terminal-to-GUI handoff | small | No `env::args()` handling exists today |
+| "Repeat last command" / dot-repeat binding | small | **done (Phase 3):** `.` repeats the last workspace command |
+| Palette entries for named bookmarks/recents beyond the 9 numbered slots | medium | **done (Phase 3):** palette lists matching named bookmarks for jump |
+| CLI launch args (`commander <left> [right]`) for a terminal-to-GUI handoff | small | **done (Phase 3):** `launch` parses `env::args` and overrides session paths |
 | Export/import command templates and keymap as shareable dotfiles | small | `cmdtemplate` already round-trips through serde_json |
 
 **Reliability / data-safety ideas** (the product-level answer to the audit's
@@ -328,7 +328,7 @@ at a time):
 | --- | --- | --- |
 | Post-copy size/checksum verification with one-click re-copy of just the failed files | medium | Reuses the existing `content_hash` primitive |
 | Append-only crash-survivable operation journal, with a "resume cleanup" dialog on next launch | large | Distinct from B5 (receipts are UX/history; this is crash recovery for operations that never finished) |
-| Dry-run/preview step for Sync and large batch Delete/Move | medium | Sync can delete destination-only files; today the only inspection surface is the tinted row list |
+| Dry-run/preview step for Sync and large batch Delete/Move | medium | **partial (Phase 3):** Sync dry-run checkbox previews without transferring; Delete/Move dry-run still open |
 | Route Delete-to-Trash undo through the same `UndoStack` as Move/Rename | small | **done:** `Action::Trash`/`RestoreTrash` via `version_store` restore |
 | Pre-flight collision/permission/path-length scan before a transfer starts, not discovered file-by-file mid-transfer | medium | Reuses the walk the free-space preflight already does |
 | Route move/overwrite cleanup removals through Trash (or a quarantine dir) instead of a hard `remove_file`/`remove_dir_all` | medium | Today only explicit Delete goes through Trash; implicit removals inside Move/overwrite don't |

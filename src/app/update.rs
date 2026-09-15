@@ -737,6 +737,25 @@ impl App {
                     ctx.input(|input| input.time),
                 ));
             }
+            UiRequest::ChecksumReport(report) => {
+                let now = ctx.input(|input| input.time);
+                let summary = report.summary_line();
+                let detail = report.detailed_text();
+                let failed = report.rows.iter().any(|row| row.error.is_some());
+                self.toasts.push(crate::toasts::Toast::new(
+                    summary,
+                    if failed {
+                        crate::toasts::ToastKind::Error
+                    } else {
+                        crate::toasts::ToastKind::Info
+                    },
+                    false,
+                    now,
+                ));
+                if !detail.is_empty() {
+                    self.write_clipboard(&detail, "checksum report", ctx);
+                }
+            }
             UiRequest::HiddenFilesOutcome(outcome) => {
                 self.apply_hidden_files_outcome(outcome, ctx);
             }

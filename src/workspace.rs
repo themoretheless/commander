@@ -338,6 +338,8 @@ pub struct Workspace {
     /// Sole owner of reversible-operation history and replay reservations.
     undo: crate::undo::UndoCenter,
     command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
+    pub nav_lock: bool,
+    last_command: Option<Command>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -533,6 +535,8 @@ impl Workspace {
             deletes: delete::DeleteController::new(trash),
             undo: crate::undo::UndoCenter::default(),
             command_capabilities: std::cell::RefCell::new(None),
+            nav_lock: false,
+            last_command: None,
         }
     }
 
@@ -939,6 +943,30 @@ impl Workspace {
         if self.mutation_commits_blocked() && cmd.mutates_filesystem() {
             return;
         }
+        let cmd = if matches!(cmd, Command::RepeatLastCommand) {
+            match self.last_command {
+                Some(previous) => previous,
+                None => return,
+            }
+        } else {
+            if !matches!(
+                cmd,
+                Command::CursorUp
+                    | Command::CursorDown
+                    | Command::CursorHome
+                    | Command::CursorEnd
+                    | Command::CursorPageUp
+                    | Command::CursorPageDown
+                    | Command::CursorMove(_)
+                    | Command::ExtendSelectUp
+                    | Command::ExtendSelectDown
+                    | Command::ToggleSelect
+                    | Command::SwitchPanel
+            ) {
+                self.last_command = Some(cmd);
+            }
+            cmd
+        };
         match cmd {
             Command::SwitchPanel => {
                 self.active = match self.active {
@@ -1013,14 +1041,27 @@ impl Workspace {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
                 if self.active_panel_ref().cursor() == 0 {
                     self.active_panel().go_up();
+                    self.mirror_nav_locked_up();
                 } else if let Some(entry) = {
                     let panel = self.active_panel_ref();
                     panel.cursor_entry().cloned()
                 } {
                     if entry.is_dir {
+                        let name = entry.name.clone();
                         self.active_panel().navigate_to(entry.path);
+                        self.mirror_nav_locked_enter(&name);
                     } else if crate::archive::is_supported(&entry.path) {
-                        self.emit_ui_request(UiRequest::Archive(entry.path));
+                        if crate::trust::allows_auto_archive_inspect(&entry.path) {
+                            self.emit_ui_request(UiRequest::Archive(entry.path));
+                        } else {
+                            self.emit_ui_request(UiRequest::Notice {
+                                message: format!(
+                                    "Automatic archive inspection blocked by {} trust",
+                                    crate::trust::label_for(&entry.path).label()
+                                ),
+                                error: true,
+                            });
+                        }
                     } else {
                         self.emit_ui_request(UiRequest::OpenExternal(
                             crate::ports::OpenRequest::OpenPath(entry.path),
@@ -1030,6 +1071,7 @@ impl Workspace {
             }
             Command::GoUp => {
                 self.active_panel().go_up();
+                self.mirror_nav_locked_up();
             }
             Command::JumpBack => {
                 self.active_panel().go_back();
@@ -1220,7 +1262,94 @@ impl Workspace {
             Command::CopyListingMarkdown => {
                 self.request_listing_copy(crate::listing_export::ListingFormat::Markdown)
             }
+            Command::VerifyChecksum => self.verify_checksum(),
+            Command::CreateSymlink => self.create_symlinks(),
+            Command::CreateHardlink => self.create_hardlinks(),
+            Command::ToggleNavLock => {
+                self.nav_lock = !self.nav_lock;
+                self.emit_ui_request(UiRequest::Notice {
+                    message: if self.nav_lock {
+                        "Navigation lock on".to_string()
+                    } else {
+                        "Navigation lock off".to_string()
+                    },
+                    error: false,
+                });
+            }
+            Command::RepeatLastCommand => {}
+            Command::BrowseArchive => {
+                if let Some(entry) = self.active_panel_ref().cursor_entry().cloned() {
+                    if crate::archive::is_supported(&entry.path) {
+                        self.emit_ui_request(UiRequest::Archive(entry.path));
+                    } else {
+                        self.emit_ui_request(UiRequest::Notice {
+                            message: "Highlight a ZIP or tar.gz archive first".to_string(),
+                            error: true,
+                        });
+                    }
+                }
+            }
         }
+    }
+
+    fn mirror_nav_locked_enter(&mut self, child_name: &str) {
+        if !self.nav_lock {
+            return;
+        }
+        let candidate = self.inactive_panel().current_path.join(child_name);
+        if candidate.is_dir() {
+            self.inactive_panel_mut().navigate_to(candidate);
+        }
+    }
+
+    fn mirror_nav_locked_up(&mut self) {
+        if !self.nav_lock {
+            return;
+        }
+        self.inactive_panel_mut().go_up();
+    }
+
+    fn verify_checksum(&mut self) {
+        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+            return;
+        };
+        let paths = entries.into_iter().map(|entry| entry.path).collect::<Vec<_>>();
+        let report = crate::checksum::verify_paths(paths);
+        self.emit_ui_request(UiRequest::ChecksumReport(report));
+    }
+
+    fn create_symlinks(&mut self) {
+        let report = fileops::create_symlinks(self);
+        let message = if report.errors.is_empty() {
+            format!("Created {} symlink(s)", report.created)
+        } else {
+            format!(
+                "Created {} symlink(s); {} issue(s)",
+                report.created,
+                report.errors.len()
+            )
+        };
+        self.emit_ui_request(UiRequest::Notice {
+            message,
+            error: !report.errors.is_empty() && report.created == 0,
+        });
+    }
+
+    fn create_hardlinks(&mut self) {
+        let report = fileops::create_hardlinks(self);
+        let message = if report.errors.is_empty() {
+            format!("Created {} hard link(s)", report.created)
+        } else {
+            format!(
+                "Created {} hard link(s); {} issue(s)",
+                report.created,
+                report.errors.len()
+            )
+        };
+        self.emit_ui_request(UiRequest::Notice {
+            message,
+            error: !report.errors.is_empty() && report.created == 0,
+        });
     }
 
     /// Build the active panel's filtered listing in `fmt` and stage it for the

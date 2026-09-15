@@ -89,6 +89,7 @@ pub struct App {
     pub(crate) operations_tab: OperationsTab,
     pub(crate) operations_search: String,
     pub(crate) operation_failures: crate::operation_view::FailureInbox,
+    pub(crate) assistive_timeline: crate::assistive_timeline::AssistiveTimeline,
     pub(crate) failure_notice_seen: std::collections::HashSet<crate::operation::TransferAttemptId>,
     /// Ranking mode for recent destinations: habitual (frecency) or strictly
     /// chronological. Persisted with the session.
@@ -172,6 +173,21 @@ pub(crate) struct RunCommandState {
     pub scroll_nonce: u64,
     /// Immutable panel/selection context captured when the dialog opens.
     pub opening: RunCommandOpeningContext,
+    pub run: Option<CommandOutputRun>,
+    pub output: Option<CommandOutput>,
+}
+
+pub(crate) struct CommandOutputRun {
+    pub receiver: std::sync::mpsc::Receiver<CommandOutput>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CommandOutput {
+    pub cmdline: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -242,8 +258,10 @@ pub(crate) struct ArchiveState {
     pub path: PathBuf,
     pub filter: String,
     pub run: Option<crate::archive::ListingRun>,
+    pub extract: Option<crate::archive::ExtractRun>,
     pub listing: Option<crate::archive::ArchiveListing>,
-    pub selected: Option<usize>,
+    pub selected: std::collections::BTreeSet<usize>,
+    pub status: Option<String>,
     pub error: Option<String>,
     pub focused: bool,
 }
@@ -526,7 +544,7 @@ pub(crate) struct RecoveryScanResult {
 }
 
 impl App {
-    pub(crate) fn new(cc: &eframe::CreationContext<'_>, services: AppServices) -> Self {
+    pub(crate) fn new(cc: &eframe::CreationContext<'_>, services: AppServices, launch: crate::launch::LaunchPaths) -> Self {
         let AppServices {
             context_menu,
             clipboard,
@@ -579,10 +597,20 @@ impl App {
         apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
         startup.checkpoint(crate::measurement::StartupPhase::Appearance);
 
-        let (left, right) = session
+        let (mut left, mut right) = session
             .as_ref()
             .map(|s| s.sanitized_paths(&home))
             .unwrap_or_else(|| (home.clone(), home.clone()));
+        let launch_left = launch.left;
+        let launch_right = launch.right;
+        if let Some(path) = launch_left.clone() {
+            left = path;
+        }
+        if let Some(path) = launch_right {
+            right = path;
+        } else if launch_left.is_some() {
+            right = left.clone();
+        }
         let views = session
             .as_ref()
             .map(crate::session::Session::view_configs)
@@ -647,6 +675,7 @@ impl App {
             operations_tab: OperationsTab::default(),
             operations_search: String::new(),
             operation_failures: crate::operation_view::FailureInbox::default(),
+            assistive_timeline: crate::assistive_timeline::AssistiveTimeline::default(),
             failure_notice_seen: std::collections::HashSet::new(),
             recent_order: session
                 .as_ref()
@@ -731,6 +760,7 @@ impl App {
             operations_tab: OperationsTab::default(),
             operations_search: String::new(),
             operation_failures: crate::operation_view::FailureInbox::default(),
+            assistive_timeline: crate::assistive_timeline::AssistiveTimeline::default(),
             failure_notice_seen: std::collections::HashSet::new(),
             recent_order: crate::panel::RecentOrder::Frecency,
             search_engine: crate::search::SearchEngine::default(),

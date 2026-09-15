@@ -275,6 +275,19 @@ impl ProviderRegistry {
         id: &str,
         request: &ActivationRequest<'_>,
     ) -> Result<ActivatedProvider, ActivationError> {
+        if self
+            .descriptors
+            .iter()
+            .find(|d| d.id == id)
+            .is_some_and(|d| matches!(d.isolation, ProviderIsolation::ExternalProcess { .. }))
+            && !crate::trust::allows_external_providers(request.root)
+        {
+            return Err(ActivationError::CapabilityMismatch(format!(
+                "external providers blocked by {} trust",
+                crate::trust::label_for(request.root).label()
+            )));
+        }
+
         let descriptor = self
             .descriptors
             .iter()

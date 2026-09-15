@@ -84,6 +84,25 @@ impl VersionRetentionPolicy {
     }
 }
 
+/// Visible upper bound on unique preserved-version bytes (research J002).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionStoreQuota {
+    pub max_bytes: u64,
+}
+
+impl Default for VersionStoreQuota {
+    fn default() -> Self {
+        Self { max_bytes: 2 * 1024 * 1024 * 1024 }
+    }
+}
+
+impl VersionStoreQuota {
+    pub fn label(self) -> String {
+        let gib = self.max_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        format!("Store quota {gib:.1} GiB")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailureClass {
     Retryable,

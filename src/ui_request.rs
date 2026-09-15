@@ -57,6 +57,7 @@ pub(crate) enum UiRequest {
     CopyPaths(PathStyle),
     CopyText { text: String, label: String },
     Notice { message: String, error: bool },
+    ChecksumReport(crate::checksum::ChecksumReport),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
     DrainShelf,
@@ -91,6 +92,7 @@ impl UiRequest {
             | Self::CopyPaths(_)
             | Self::CopyText { .. }
             | Self::Notice { .. }
+            | Self::ChecksumReport(_)
             | Self::HiddenFilesOutcome(_)
             | Self::DrainShelf => None,
         }

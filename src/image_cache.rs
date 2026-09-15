@@ -1493,8 +1493,26 @@ fn run_decode_with_timeout(
 }
 
 fn load_image_with_timeout(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
-    let path = path.to_path_buf();
-    run_decode_with_timeout(DECODE_TIMEOUT, move || load_image_from_disk(&path, target))
+    if !crate::machine_pressure::snapshot().allows_background_preview() {
+        return Err("preview deferred under battery/thermal pressure".to_string());
+    }
+    match crate::decoder_breaker::admit(path) {
+        crate::decoder_breaker::AdmitDecision::Quarantined => {
+            return Err("preview format is temporarily quarantined after repeated decode failures".to_string());
+        }
+        crate::decoder_breaker::AdmitDecision::ProbeRetry
+        | crate::decoder_breaker::AdmitDecision::Allow => {}
+    }
+    let path_buf = path.to_path_buf();
+    let result = run_decode_with_timeout(DECODE_TIMEOUT, {
+        let path_buf = path_buf.clone();
+        move || load_image_from_disk(&path_buf, target)
+    });
+    match &result {
+        Ok(_) => crate::decoder_breaker::record_success(&path_buf),
+        Err(_) => crate::decoder_breaker::record_failure(&path_buf),
+    }
+    result
 }
 
 fn load_image_from_disk(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {

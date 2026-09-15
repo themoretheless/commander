@@ -505,8 +505,8 @@ independently tested commits. They remain separate from `G001-G100` and
 
 ### Next ten evidence-backed candidates
 
-These are new proposals, ordered by expected value versus coupling. They are
-not counted as implemented.
+These candidates were the Phase 4 research queue. Delivery is recorded in the
+ledger below; the table is retained for evidence lineage.
 
 | ID | Candidate | Evidence and boundary |
 | --- | --- | --- |
@@ -520,6 +520,22 @@ not counted as implemented.
 | J008 | Add named workspace profiles that bind two roots, view filters, transfer policies, and trusted command templates. | Collections bind roots and sessions bind settings; a typed profile would compose them without making virtual views own files (repos 16, 42, 50). |
 | J009 | Save conflict rules scoped by root pair and file kind, always with a deterministic sample preview before first use. | Relation policies are typed but ephemeral; rsync-style itemization keeps automation inspectable (repos 53, 67; S10, S15). |
 | J010 | Add per-format decoder circuit breakers with quarantine, cooldown, and one explicit probe retry. | Provider timeout/health is global; repeated failures in one format should not suppress healthy formats (repos 7, 30, 84; E03). |
+
+
+### J001-J010 follow-up implementation ledger
+
+| ID | Implemented delta | Primary owner |
+| --- | --- | --- |
+| J001 | Bounded ICC/HDR tone-map contract for display-referred preview frames. | `color_manage` |
+| J002 | Deduplicate preserved versions by verified content-chunk digests and enforce a visible store quota. | `version_dedup`, `version_store`, `operation` |
+| J003 | Persist per-root trust labels that gate run-command, external providers, and automatic archive inspection. | `trust`, `workspace`, `run_command_dialog`, `provider_runtime`, `search` |
+| J004 | Battery/thermal admission hints for background preview/index/hash work. | `machine_pressure`, `image_cache` |
+| J005 | Recipient-encrypted support-bundle envelope with explicit expiry and plaintext preview. | `support_encrypt` |
+| J006 | Rate-limited assistive operation timeline for phase changes, failures, and recovery decisions. | `assistive_timeline`, Operations Center |
+| J007 | Path-free change provenance markers for refreshed rows. | `change_provenance` |
+| J008 | Named workspace profiles binding two roots, filters, transfer policies, and trusted command templates. | `workspace_profile` |
+| J009 | Saved conflict rules scoped by root pair and file kind with deterministic sample preview. | `conflict_rules` |
+| J010 | Per-format decoder circuit breakers with quarantine, cooldown, and one explicit probe retry. | `decoder_breaker`, `image_cache` |
 
 ## Original promotion candidates
 

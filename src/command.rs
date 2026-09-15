@@ -174,6 +174,18 @@ pub enum Command {
     CopyListingCsv,
     /// Copy the active listing to the clipboard as a Markdown table.
     CopyListingMarkdown,
+    /// Verify content hashes for the selection (user-facing checksum).
+    VerifyChecksum,
+    /// Create symlinks in the other panel pointing at the selection.
+    CreateSymlink,
+    /// Create hard links in the other panel for selected regular files.
+    CreateHardlink,
+    /// Toggle synchronized dual-pane navigation lock.
+    ToggleNavLock,
+    /// Repeat the last workspace command (dot-repeat).
+    RepeatLastCommand,
+    /// Browse the archive under the cursor (ZIP / tar.gz).
+    BrowseArchive,
 }
 
 impl Command {
@@ -191,6 +203,8 @@ impl Command {
                 | Self::GatherIntoFolder
                 | Self::MoveIntoCursorFolder
                 | Self::CopyIntoCursorFolder
+                | Self::CreateSymlink
+                | Self::CreateHardlink
                 | Self::Undo
                 | Self::Redo
                 | Self::ShelfDrain
@@ -436,7 +450,9 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
         BeginSync => SYNC,
         BeginRename => RENAME,
         BeginBatchRename | GatherIntoFolder => MUTATE_SELECTION,
+        CreateSymlink | CreateHardlink => COPY,
         BeginRunBar => RUN_SELECTION,
+        VerifyChecksum | BrowseArchive => PICKED,
         ShelfDrain => SHELF_DRAIN,
         Undo => UNDO,
         Redo => REDO,
@@ -670,6 +686,12 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Copy listing as text", "", Command::CopyListingText),
         ("Copy listing as CSV", "", Command::CopyListingCsv),
         ("Copy listing as Markdown", "", Command::CopyListingMarkdown),
+        ("Verify checksum", "", Command::VerifyChecksum),
+        ("Create symlink in other panel", "", Command::CreateSymlink),
+        ("Create hard link in other panel", "", Command::CreateHardlink),
+        ("Toggle navigation lock", "", Command::ToggleNavLock),
+        ("Repeat last command", ".", Command::RepeatLastCommand),
+        ("Browse archive", "", Command::BrowseArchive),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Run command on selection", "", Command::BeginRunBar),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
@@ -900,6 +922,12 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::CopyListingText => &["clipboard copy listing export text list folder contents"],
         Command::CopyListingCsv => &["clipboard copy listing export csv spreadsheet folder"],
         Command::CopyListingMarkdown => &["clipboard copy listing export markdown table folder"],
+        Command::VerifyChecksum => &["file checksum hash verify blake content integrity digests"],
+        Command::CreateSymlink => &["file symlink soft link alias create other panel"],
+        Command::CreateHardlink => &["file hardlink hard link create other panel"],
+        Command::ToggleNavLock => &["panels navigation lock sync mirror lockstep dual"],
+        Command::RepeatLastCommand => &["repeat last command again dot redo"],
+        Command::BrowseArchive => &["archive zip tar gz browse extract inspect members"],
         Command::CycleDensity => &["view density rows compact comfortable spacious"],
         Command::TogglePreview => &["view preview quick look viewer inspect"],
         Command::EqualizePanels => &["panels equalize same folder mirror"],
@@ -957,6 +985,8 @@ pub enum KeyCode {
     Z,
     BracketLeft,
     BracketRight,
+    /// Period / `.` for vim-style repeat-last-command.
+    Period,
     /// Number-row digits 1..9 (0 is intentionally excluded; slots are 1..9).
     Digit(u8),
 }
@@ -994,6 +1024,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         Digit(n) if press.command && press.shift => Some(Command::AssignSlot(n)),
         Digit(n) if press.command => Some(Command::JumpSlot(n)),
         Space => Some(Command::ToggleSelect),
+        Period => Some(Command::RepeatLastCommand),
         F2 => Some(Command::BeginRename),
         R if press.command && press.shift => Some(Command::BeginBatchRename),
         R if press.command => Some(Command::BeginRename),
