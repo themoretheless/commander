@@ -26,6 +26,8 @@ mod render;
 mod run_command_dialog;
 mod safe_state_dialog;
 mod saved_search_dialog;
+#[cfg(test)]
+mod smoke;
 mod sync_dialog;
 mod toolbar;
 mod transfer_dialog;

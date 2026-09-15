@@ -292,7 +292,13 @@ impl ContentIndex {
             .find(|settings| settings.root == root)
         {
             settings.last_error = None;
-            let _ = save_settings_to(&settings_path(), &self.settings);
+            if !save_settings_to(&settings_path(), &self.settings) {
+                log::warn!(
+                    target: "commander::content_index",
+                    "failed to persist content-index settings after enqueueing build for {}",
+                    root.display()
+                );
+            }
         }
         true
     }
@@ -498,7 +504,13 @@ impl ContentIndex {
 
     fn set_last_error(&mut self, root: &Path, error: Option<String>) {
         self.settings_for_mut(root.to_path_buf()).last_error = error;
-        let _ = save_settings_to(&settings_path(), &self.settings);
+        if !save_settings_to(&settings_path(), &self.settings) {
+            log::warn!(
+                target: "commander::content_index",
+                "failed to persist content-index settings for {}",
+                root.display()
+            );
+        }
     }
 }
 

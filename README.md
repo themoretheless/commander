@@ -291,7 +291,25 @@ cargo run --release
 
 Requires Rust nightly 1.100 (`rust-toolchain.toml` pins
 `nightly-2026-09-11`) and macOS (the app links AppKit / AVFoundation /
-ImageIO).
+ImageIO). See [`CHANGELOG.md`](CHANGELOG.md) for the current package version
+and release notes.
+
+### macOS distribution (signing and notarization)
+
+Commander is a native macOS binary. Before shipping outside your own machine:
+
+1. **Sign** the release binary (and any `.app` bundle wrapper) with a Developer
+   ID Application certificate, for example
+   `codesign --force --options runtime --sign "Developer ID Application: …" path/to/commander`.
+2. **Notarize** with Apple (`notarytool submit` against the signed artifact, then
+   `stapler staple` for a local ticket) so Gatekeeper accepts downloads.
+3. Keep the signed identity, Team ID, and notarization credentials out of the
+   repo; CI should inject them from a secrets store. Hardened Runtime is
+   required for notarization; grant only the entitlements the app actually uses.
+
+Local `cargo run` builds are unsigned and fine for development. The native
+release QA path verifies a running binary's code signature when present; it does
+not replace the Developer ID + notarization steps above.
 
 ## Development
 
@@ -368,8 +386,9 @@ by enabling only the image decoders Commander uses. The checked-in
 a weekly refresh report zero known vulnerabilities and explicitly accept one
 unmaintained advisory, `RUSTSEC-2026-0192`, for `ttf-parser` in the Linux
 Wayland/winit stack. The waiver is owned by
-`@themoretheless`, its review is due on 2026-10-21, and it hard-expires at
-00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
+`@themoretheless`, was re-reviewed for Phase 5 on 2026-09-15 (still required at
+`ttf-parser` 0.25.1), its next review is due on 2026-10-21, and it hard-expires
+at 00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
 `0.20.2` before executing it. Forty-one duplicate-crate groups remain a warning
 and tracked dependency debt. Run the same full-lockfile policy locally with:
 

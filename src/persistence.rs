@@ -1182,6 +1182,9 @@ fn publish_issue(health: &mut PersistenceHealth) {
         })
         .unwrap_or_else(|generation| generation);
     health.issue_generation = previous.saturating_add(1);
+    if let Some(issue) = &health.last_issue {
+        log::warn!(target: "commander::persistence", "{issue}");
+    }
 }
 
 pub(crate) fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {

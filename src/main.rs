@@ -31,6 +31,7 @@ mod jumplist;
 pub mod klm;
 mod listing_export;
 mod lock_util;
+mod logging;
 pub mod measurement;
 mod mount_guard;
 mod native_copy;
@@ -92,6 +93,8 @@ use eframe::NativeOptions;
 use egui::ViewportBuilder;
 
 fn main() -> eframe::Result<()> {
+    logging::init();
+
     #[cfg(feature = "visual-qa")]
     if let Some(result) = visual_qa::maybe_run() {
         return result;

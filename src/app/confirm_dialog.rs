@@ -2,7 +2,7 @@
 
 use super::*;
 
-mod method_tabs;
+pub(crate) mod method_tabs;
 use crate::scan::FlatFileEntry;
 use crate::transfer::OverwritePolicy;
 
