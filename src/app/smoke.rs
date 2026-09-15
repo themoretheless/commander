@@ -27,13 +27,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut selected = None;
         crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
-            selected = method_tabs::show(
-                ui,
-                &ThemeColors::light(),
-                "Copy",
-                3,
-                CopyMethod::Native,
-            );
+            selected = method_tabs::show(ui, &ThemeColors::light(), "Copy", 3, CopyMethod::Native);
         }));
         assert_eq!(selected, None);
     }

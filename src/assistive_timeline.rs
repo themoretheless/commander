@@ -7,7 +7,12 @@ const DEFAULT_MIN_INTERVAL_MILLIS: u64 = 750;
 const MAX_EVENTS: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TimelineKind { Phase, Failure, Recovery, Pause }
+pub enum TimelineKind {
+    Phase,
+    Failure,
+    Recovery,
+    Pause,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineEvent {
@@ -39,38 +44,103 @@ impl Default for AssistiveTimeline {
 }
 
 impl AssistiveTimeline {
-    pub fn current(&self) -> &str { &self.current }
-    pub fn events(&self) -> impl Iterator<Item = &TimelineEvent> { self.events.iter() }
+    pub fn current(&self) -> &str {
+        &self.current
+    }
+    pub fn events(&self) -> impl Iterator<Item = &TimelineEvent> {
+        self.events.iter()
+    }
 
-    pub fn note_phase(&mut self, operation_id: OperationId, phase: OperationPhase, detail: impl Into<String>, now_millis: u64) {
-        if self.last_phase.as_ref().is_some_and(|(id, prev)| id == &operation_id && *prev == phase) {
+    pub fn note_phase(
+        &mut self,
+        operation_id: OperationId,
+        phase: OperationPhase,
+        detail: impl Into<String>,
+        now_millis: u64,
+    ) {
+        if self
+            .last_phase
+            .as_ref()
+            .is_some_and(|(id, prev)| id == &operation_id && *prev == phase)
+        {
             return;
         }
         self.last_phase = Some((operation_id.clone(), phase));
-        self.push(TimelineKind::Phase, Some(operation_id), format!("{}: {}", phase.label(), detail.into()), now_millis);
+        self.push(
+            TimelineKind::Phase,
+            Some(operation_id),
+            format!("{}: {}", phase.label(), detail.into()),
+            now_millis,
+        );
     }
 
-    pub fn note_failure(&mut self, operation_id: Option<OperationId>, message: impl Into<String>, now_millis: u64) {
-        self.push(TimelineKind::Failure, operation_id, message.into(), now_millis);
+    pub fn note_failure(
+        &mut self,
+        operation_id: Option<OperationId>,
+        message: impl Into<String>,
+        now_millis: u64,
+    ) {
+        self.push(
+            TimelineKind::Failure,
+            operation_id,
+            message.into(),
+            now_millis,
+        );
     }
 
-    pub fn note_recovery(&mut self, operation_id: Option<OperationId>, message: impl Into<String>, now_millis: u64) {
-        self.push(TimelineKind::Recovery, operation_id, message.into(), now_millis);
+    pub fn note_recovery(
+        &mut self,
+        operation_id: Option<OperationId>,
+        message: impl Into<String>,
+        now_millis: u64,
+    ) {
+        self.push(
+            TimelineKind::Recovery,
+            operation_id,
+            message.into(),
+            now_millis,
+        );
     }
 
-    pub fn note_pause(&mut self, operation_id: Option<OperationId>, message: impl Into<String>, now_millis: u64) {
-        self.push(TimelineKind::Pause, operation_id, message.into(), now_millis);
+    pub fn note_pause(
+        &mut self,
+        operation_id: Option<OperationId>,
+        message: impl Into<String>,
+        now_millis: u64,
+    ) {
+        self.push(
+            TimelineKind::Pause,
+            operation_id,
+            message.into(),
+            now_millis,
+        );
     }
 
-    fn push(&mut self, kind: TimelineKind, operation_id: Option<OperationId>, message: String, now_millis: u64) {
+    fn push(
+        &mut self,
+        kind: TimelineKind,
+        operation_id: Option<OperationId>,
+        message: String,
+        now_millis: u64,
+    ) {
         let force = matches!(kind, TimelineKind::Failure | TimelineKind::Recovery);
-        if !force && now_millis.saturating_sub(self.last_emit_millis) < self.min_interval_millis && !self.current.is_empty() {
+        if !force
+            && now_millis.saturating_sub(self.last_emit_millis) < self.min_interval_millis
+            && !self.current.is_empty()
+        {
             return;
         }
         self.last_emit_millis = now_millis;
         self.current = message.clone();
-        self.events.push_front(TimelineEvent { kind, operation_id, message, at_millis: now_millis });
-        while self.events.len() > MAX_EVENTS { self.events.pop_back(); }
+        self.events.push_front(TimelineEvent {
+            kind,
+            operation_id,
+            message,
+            at_millis: now_millis,
+        });
+        while self.events.len() > MAX_EVENTS {
+            self.events.pop_back();
+        }
     }
 }
 

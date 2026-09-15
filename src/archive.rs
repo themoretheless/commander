@@ -220,7 +220,6 @@ pub fn visit_members(
     Ok(summary)
 }
 
-
 fn visit_tar_gz_list(
     archive_path: &Path,
     budget: &mut SearchBudget,
@@ -320,9 +319,8 @@ fn suspicious_ratio(size: u64, compressed_size: u64) -> bool {
 }
 
 fn list_archive(path: PathBuf, cancelled: &AtomicBool) -> Result<ArchiveListing, String> {
-    let kind = kind_of(&path).ok_or_else(|| {
-        format!("Unsupported archive format: {}", path.display())
-    })?;
+    let kind =
+        kind_of(&path).ok_or_else(|| format!("Unsupported archive format: {}", path.display()))?;
     let mut budget = SearchBudget::default();
     let mut members = Vec::new();
     let summary = visit_members(
@@ -366,7 +364,9 @@ pub fn extract_members(
         )
     })?;
     match kind_of(archive_path) {
-        Some(ArchiveKind::Zip) => extract_zip_members(archive_path, dest_dir, member_indexes, cancelled),
+        Some(ArchiveKind::Zip) => {
+            extract_zip_members(archive_path, dest_dir, member_indexes, cancelled)
+        }
         Some(ArchiveKind::TarGz) => {
             extract_tar_gz_members(archive_path, dest_dir, member_indexes, cancelled)
         }
@@ -411,10 +411,9 @@ fn extract_zip_members(
         let out_path = dest_dir.join(&enclosed);
         if entry.is_dir() {
             if let Err(error) = fs::create_dir_all(&out_path) {
-                report.errors.push(format!(
-                    "Could not create {}: {error}",
-                    out_path.display()
-                ));
+                report
+                    .errors
+                    .push(format!("Could not create {}: {error}", out_path.display()));
             } else {
                 report.skipped_dirs += 1;
             }
@@ -427,10 +426,9 @@ fn extract_zip_members(
         if let Some(parent) = out_path.parent()
             && let Err(error) = fs::create_dir_all(parent)
         {
-            report.errors.push(format!(
-                "Could not create {}: {error}",
-                parent.display()
-            ));
+            report
+                .errors
+                .push(format!("Could not create {}: {error}", parent.display()));
             continue;
         }
         match fs::File::create(&out_path) {
@@ -438,16 +436,14 @@ fn extract_zip_members(
                 Ok(_) => report.extracted += 1,
                 Err(error) => {
                     let _ = fs::remove_file(&out_path);
-                    report.errors.push(format!(
-                        "Could not write {}: {error}",
-                        out_path.display()
-                    ));
+                    report
+                        .errors
+                        .push(format!("Could not write {}: {error}", out_path.display()));
                 }
             },
-            Err(error) => report.errors.push(format!(
-                "Could not create {}: {error}",
-                out_path.display()
-            )),
+            Err(error) => report
+                .errors
+                .push(format!("Could not create {}: {error}", out_path.display())),
         }
     }
     Ok(report)
@@ -511,7 +507,11 @@ fn extract_tar_gz_members(
         let detail = stderr.trim();
         report.errors.push(format!(
             "tar extract failed: {}",
-            if detail.is_empty() { "unknown error" } else { detail }
+            if detail.is_empty() {
+                "unknown error"
+            } else {
+                detail
+            }
         ));
     }
     Ok(report)
@@ -634,7 +634,10 @@ mod tests {
             .collect();
         let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
         assert_eq!(report.extracted, 2);
-        assert_eq!(fs::read_to_string(dest.join("readme.txt")).unwrap(), "hello");
+        assert_eq!(
+            fs::read_to_string(dest.join("readme.txt")).unwrap(),
+            "hello"
+        );
         let again = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
         assert_eq!(again.extracted, 0);
         assert_eq!(again.skipped_existing, 2);

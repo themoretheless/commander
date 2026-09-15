@@ -122,7 +122,8 @@ pub fn capture(
     symlink_policy: SymlinkPolicy,
     trusted_command_templates: Vec<String>,
 ) -> WorkspaceProfile {
-    let mut profile = WorkspaceProfile::new(name, left_root.to_path_buf(), right_root.to_path_buf());
+    let mut profile =
+        WorkspaceProfile::new(name, left_root.to_path_buf(), right_root.to_path_buf());
     profile.left_filter = left_filter.into();
     profile.right_filter = right_filter.into();
     profile.durability = durability;

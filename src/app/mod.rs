@@ -544,7 +544,11 @@ pub(crate) struct RecoveryScanResult {
 }
 
 impl App {
-    pub(crate) fn new(cc: &eframe::CreationContext<'_>, services: AppServices, launch: crate::launch::LaunchPaths) -> Self {
+    pub(crate) fn new(
+        cc: &eframe::CreationContext<'_>,
+        services: AppServices,
+        launch: crate::launch::LaunchPaths,
+    ) -> Self {
         let AppServices {
             context_menu,
             clipboard,

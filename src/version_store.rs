@@ -86,7 +86,11 @@ pub fn store_usage() -> crate::version_dedup::VersionStoreUsage {
             ..Default::default()
         };
     }
-    crate::version_dedup::usage_of(&loaded.manifest.blobs, loaded.manifest.records.len(), store_quota())
+    crate::version_dedup::usage_of(
+        &loaded.manifest.blobs,
+        loaded.manifest.records.len(),
+        store_quota(),
+    )
 }
 
 fn manifest_persist() -> &'static crate::persistence::FsPersist {
@@ -499,7 +503,11 @@ fn prune_manifest(
         );
     }
     let mut indexed = working.records.clone();
-    indexed.sort_by(|a, b| a.created_at_secs.cmp(&b.created_at_secs).then_with(|| a.key.0.cmp(&b.key.0)));
+    indexed.sort_by(|a, b| {
+        a.created_at_secs
+            .cmp(&b.created_at_secs)
+            .then_with(|| a.key.0.cmp(&b.key.0))
+    });
     let ordered: Vec<String> = indexed.iter().map(|r| r.key.0.clone()).collect();
     for key in crate::version_dedup::quota_overflow_keys(
         &ordered,

@@ -78,7 +78,10 @@ pub fn write_sealed_bundle(dir: &Path, sealed: &SealedBundle) -> Result<PathBuf,
     if crate::fs_util::write_atomic(&path, &json) {
         Ok(path)
     } else {
-        Err(format!("Could not write sealed bundle to {}", path.display()))
+        Err(format!(
+            "Could not write sealed bundle to {}",
+            path.display()
+        ))
     }
 }
 
@@ -131,8 +134,8 @@ mod tests {
 
     #[test]
     fn legacy_seal_api_round_trips_through_xchacha() {
-        let sealed = seal_support_bytes("alice", b"secret-support", "redacted preview", 1_000, 30)
-            .unwrap();
+        let sealed =
+            seal_support_bytes("alice", b"secret-support", "redacted preview", 1_000, 30).unwrap();
         assert!(!sealed.manifest.expired(1_010));
         assert!(sealed.manifest.expired(1_040));
         let opened = open_support_bytes(&sealed, "alice", 1_010).unwrap();

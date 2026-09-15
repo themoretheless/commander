@@ -5,11 +5,11 @@
 //! effects use the held dirfd and a single relative name component instead
 //! of re-resolving absolute paths.
 
+use crate::ports::FileSystemProvider;
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use crate::ports::FileSystemProvider;
 
 #[cfg(unix)]
 use std::os::{
@@ -420,7 +420,6 @@ mod tests {
         nested.remove(OsStr::new("final")).unwrap();
         assert!(!temp.path().join("nested/final").exists());
     }
-
 
     #[test]
     fn rename_sibling_uses_bound_parent() {

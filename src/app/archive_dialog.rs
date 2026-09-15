@@ -360,7 +360,11 @@ impl App {
                                         .response
                                         .interact(Sense::click());
                                     if response.clicked() {
-                                        if state.selected.contains(&index) { state.selected.remove(&index); } else { state.selected.insert(index); }
+                                        if state.selected.contains(&index) {
+                                            state.selected.remove(&index);
+                                        } else {
+                                            state.selected.insert(index);
+                                        }
                                     }
                                 }
                             });
@@ -371,8 +375,11 @@ impl App {
                                     .color(t.text_muted),
                             );
                         }
-                        if let Some(selected) =
-                            state.selected.iter().next().and_then(|index| listing.members.get(*index))
+                        if let Some(selected) = state
+                            .selected
+                            .iter()
+                            .next()
+                            .and_then(|index| listing.members.get(*index))
                         {
                             ui.separator();
                             ui.label(

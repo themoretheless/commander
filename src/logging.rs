@@ -20,11 +20,7 @@ impl DualLogger {
         let path = default_log_path();
         let dir = path.parent()?;
         std::fs::create_dir_all(dir).ok()?;
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok()
+        OpenOptions::new().create(true).append(true).open(path).ok()
     }
 }
 
@@ -63,7 +59,9 @@ impl Log for DualLogger {
 }
 
 fn default_log_path() -> PathBuf {
-    crate::fs_util::config_dir().join("logs").join("commander.log")
+    crate::fs_util::config_dir()
+        .join("logs")
+        .join("commander.log")
 }
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);

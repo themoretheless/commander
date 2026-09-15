@@ -15,7 +15,9 @@ struct FormatState {
 }
 
 #[derive(Default)]
-struct BreakerTable { formats: HashMap<String, FormatState> }
+struct BreakerTable {
+    formats: HashMap<String, FormatState>,
+}
 
 fn table() -> &'static Mutex<BreakerTable> {
     static TABLE: OnceLock<Mutex<BreakerTable>> = OnceLock::new();
@@ -30,7 +32,11 @@ fn format_key(path: &Path) -> String {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AdmitDecision { Allow, Quarantined, ProbeRetry }
+pub enum AdmitDecision {
+    Allow,
+    Quarantined,
+    ProbeRetry,
+}
 
 pub fn admit(path: &Path) -> AdmitDecision {
     let key = format_key(path);
@@ -64,7 +70,9 @@ pub fn arm_probe_retry(path: &Path) {
 
 pub fn record_success(path: &Path) {
     let key = format_key(path);
-    crate::lock_util::recover(table()).formats.insert(key, FormatState::default());
+    crate::lock_util::recover(table())
+        .formats
+        .insert(key, FormatState::default());
 }
 
 pub fn record_failure(path: &Path) {
@@ -85,7 +93,9 @@ mod tests {
     #[test]
     fn repeated_failures_quarantine_until_probe_retry() {
         let path = PathBuf::from("/tmp/sample.j010fmt");
-        for _ in 0..FAILURE_THRESHOLD { record_failure(&path); }
+        for _ in 0..FAILURE_THRESHOLD {
+            record_failure(&path);
+        }
         assert_eq!(admit(&path), AdmitDecision::Quarantined);
         arm_probe_retry(&path);
         assert_eq!(admit(&path), AdmitDecision::ProbeRetry);

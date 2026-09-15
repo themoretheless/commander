@@ -92,7 +92,10 @@ pub fn decrypt(
     now_secs: u64,
 ) -> Result<Vec<u8>, String> {
     if manifest.format != FORMAT {
-        return Err(format!("unsupported encrypted bundle format {}", manifest.format));
+        return Err(format!(
+            "unsupported encrypted bundle format {}",
+            manifest.format
+        ));
     }
     if manifest.expired(now_secs) {
         return Err("encrypted support bundle has expired".into());
@@ -109,11 +112,9 @@ pub fn decrypt(
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|_| "could not initialize XChaCha20-Poly1305".to_string())?;
     let nonce = XNonce::from_slice(&nonce_bytes);
-    cipher
-        .decrypt(nonce, ciphertext.as_ref())
-        .map_err(|_| {
-            "support bundle decryption failed (wrong secret or tampered ciphertext)".into()
-        })
+    cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
+        "support bundle decryption failed (wrong secret or tampered ciphertext)".into()
+    })
 }
 
 pub fn export_to(

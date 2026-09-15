@@ -258,7 +258,7 @@ impl SearchProvider for FilesystemProvider {
             let archive_path = (!entry.is_dir
                 && crate::archive::is_supported(&entry.path)
                 && crate::trust::allows_auto_archive_inspect(&entry.path))
-                .then(|| entry.path.clone());
+            .then(|| entry.path.clone());
             if !emit(Some(SearchCandidate {
                 location: SearchLocation::Native(entry.path.clone()),
                 entry,
@@ -420,7 +420,7 @@ impl SearchProvider for IndexedProvider {
             let archive_path = (!entry.is_dir
                 && crate::archive::is_supported(&entry.path)
                 && crate::trust::allows_auto_archive_inspect(&entry.path))
-                .then(|| entry.path.clone());
+            .then(|| entry.path.clone());
             if !emit(Some(SearchCandidate {
                 location: SearchLocation::Native(entry.path.clone()),
                 entry,

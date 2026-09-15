@@ -335,7 +335,9 @@ impl App {
                             rich_conflicts.iter().map(|c| c.name.clone()).collect();
                         let kind = names
                             .first()
-                            .map(|name| crate::conflict_rules::ConflictRuleBook::kind_for_name(name))
+                            .map(|name| {
+                                crate::conflict_rules::ConflictRuleBook::kind_for_name(name)
+                            })
                             .unwrap_or_else(|| "other".into());
                         if let Some(preview) = crate::conflict_rules::preview_for(
                             &left_root,
@@ -344,11 +346,7 @@ impl App {
                             &names,
                             5,
                         ) {
-                            ui.label(
-                                egui::RichText::new(preview)
-                                    .size(11.0)
-                                    .color(t.text_muted),
-                            );
+                            ui.label(egui::RichText::new(preview).size(11.0).color(t.text_muted));
                             ui.add_space(4.0);
                         } else if !names.is_empty() {
                             let sample = crate::conflict_rules::ConflictRuleBook::sample_preview(
@@ -470,10 +468,7 @@ impl App {
                     false
                 };
                 if supports_dry_run {
-                    ui.checkbox(
-                        &mut dry_run,
-                        "Dry run (preview only — do not change files)",
-                    );
+                    ui.checkbox(&mut dry_run, "Dry run (preview only — do not change files)");
                     ui.ctx().data_mut(|d| d.insert_temp(dry_run_id, dry_run));
                     ui.add_space(6.0);
                 }

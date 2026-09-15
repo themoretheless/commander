@@ -92,7 +92,9 @@ pub struct VersionStoreQuota {
 
 impl Default for VersionStoreQuota {
     fn default() -> Self {
-        Self { max_bytes: 2 * 1024 * 1024 * 1024 }
+        Self {
+            max_bytes: 2 * 1024 * 1024 * 1024,
+        }
     }
 }
 

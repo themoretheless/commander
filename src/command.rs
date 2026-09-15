@@ -698,18 +698,18 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Copy listing as Markdown", "", Command::CopyListingMarkdown),
         ("Verify checksum", "", Command::VerifyChecksum),
         ("Create symlink in other panel", "", Command::CreateSymlink),
-        ("Create hard link in other panel", "", Command::CreateHardlink),
+        (
+            "Create hard link in other panel",
+            "",
+            Command::CreateHardlink,
+        ),
         ("Toggle navigation lock", "", Command::ToggleNavLock),
         ("Repeat last command", ".", Command::RepeatLastCommand),
         ("Browse archive", "", Command::BrowseArchive),
         ("Trust: mark Trusted", "", Command::SetTrustTrusted),
         ("Trust: mark Restricted", "", Command::SetTrustRestricted),
         ("Trust: mark Untrusted", "", Command::SetTrustUntrusted),
-        (
-            "Save workspace profile",
-            "",
-            Command::SaveWorkspaceProfile,
-        ),
+        ("Save workspace profile", "", Command::SaveWorkspaceProfile),
         (
             "Apply workspace profile",
             "",
@@ -952,16 +952,10 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::RepeatLastCommand => &["repeat last command again dot redo"],
         Command::BrowseArchive => &["archive zip tar gz browse extract inspect members"],
         Command::SetTrustTrusted => &["trust trusted root allow run command providers archive"],
-        Command::SetTrustRestricted => {
-            &["trust restricted root gate providers archive inspect"]
-        }
+        Command::SetTrustRestricted => &["trust restricted root gate providers archive inspect"],
         Command::SetTrustUntrusted => &["trust untrusted root block run command providers"],
-        Command::SaveWorkspaceProfile => {
-            &["workspace profile save roots filters layout remember"]
-        }
-        Command::ApplyWorkspaceProfile => {
-            &["workspace profile apply load roots filters restore"]
-        }
+        Command::SaveWorkspaceProfile => &["workspace profile save roots filters layout remember"],
+        Command::ApplyWorkspaceProfile => &["workspace profile apply load roots filters restore"],
         Command::CycleDensity => &["view density rows compact comfortable spacious"],
         Command::TogglePreview => &["view preview quick look viewer inspect"],
         Command::EqualizePanels => &["panels equalize same folder mirror"],

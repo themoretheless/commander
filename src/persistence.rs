@@ -225,7 +225,6 @@ fn path_lock(path: &Path) -> Arc<Mutex<()>> {
     lock
 }
 
-
 /// Exclusive cross-process lock for one Persist path.
 ///
 /// Held across revision verification and the atomic replace so two processes
@@ -235,7 +234,9 @@ struct ProcessStoreLock {
 }
 
 fn store_lock_path(path: &Path) -> PathBuf {
-    let file_name = path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("store"));
+    let file_name = path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("store"));
     let mut name = std::ffi::OsString::from(".");
     name.push(file_name);
     name.push(".persist.lock");
@@ -258,7 +259,9 @@ fn acquire_process_store_lock(path: &Path) -> io::Result<ProcessStoreLock> {
     {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
         let file = options.open(&lock_path)?;
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
             return Err(io::Error::last_os_error());

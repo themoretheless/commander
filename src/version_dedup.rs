@@ -185,8 +185,12 @@ fn collect_regular_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         for entry in fs::read_dir(&dir)
             .map_err(|e| format!("Could not list version payload {}: {e}", dir.display()))?
         {
-            let entry = entry
-                .map_err(|e| format!("Could not read version payload under {}: {e}", dir.display()))?;
+            let entry = entry.map_err(|e| {
+                format!(
+                    "Could not read version payload under {}: {e}",
+                    dir.display()
+                )
+            })?;
             let path = entry.path();
             let meta = fs::symlink_metadata(&path)
                 .map_err(|e| format!("Could not inspect {}: {e}", path.display()))?;

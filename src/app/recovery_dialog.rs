@@ -701,12 +701,14 @@ impl App {
                         ),
                         now_millis,
                     );
-                    self.ws.left.change_provenance.record(
-                        crate::change_provenance::ChangeProvenance::Recovery,
-                    );
-                    self.ws.right.change_provenance.record(
-                        crate::change_provenance::ChangeProvenance::Recovery,
-                    );
+                    self.ws
+                        .left
+                        .change_provenance
+                        .record(crate::change_provenance::ChangeProvenance::Recovery);
+                    self.ws
+                        .right
+                        .change_provenance
+                        .record(crate::change_provenance::ChangeProvenance::Recovery);
                     state.outcome = Some(format!(
                         "Rollback completed {} step{}; {} item{} need review",
                         plan.completed.len(),

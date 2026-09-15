@@ -1518,7 +1518,10 @@ fn load_image_with_timeout(path: &Path, target: PreviewTarget) -> Result<Decoded
     }
     match crate::decoder_breaker::admit(path) {
         crate::decoder_breaker::AdmitDecision::Quarantined => {
-            return Err("preview format is temporarily quarantined after repeated decode failures".to_string());
+            return Err(
+                "preview format is temporarily quarantined after repeated decode failures"
+                    .to_string(),
+            );
         }
         crate::decoder_breaker::AdmitDecision::ProbeRetry
         | crate::decoder_breaker::AdmitDecision::Allow => {}
@@ -2318,6 +2321,18 @@ mod tests {
         std::fs::write(&mkv, b"not a matroska container").unwrap();
         let error = load_via_image_crate(
             &mkv,
+            PreviewTarget {
+                width: 64,
+                height: 64,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Unsupported);
+
+        let webm = dir.path().join("clip.webm");
+        std::fs::write(&webm, b"not a webm container").unwrap();
+        let error = load_via_image_crate(
+            &webm,
             PreviewTarget {
                 width: 64,
                 height: 64,

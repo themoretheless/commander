@@ -804,9 +804,9 @@ fn load_index_from(path: &Path, expected_root: &Path) -> Result<Option<RootIndex
         crate::persistence::LoadStatus::Corrupt => {
             Err("Content index is corrupt: envelope or payload rejected".to_string())
         }
-        crate::persistence::LoadStatus::FutureVersion => Err(
-            "Content index uses a newer persist envelope than this build supports".to_string(),
-        ),
+        crate::persistence::LoadStatus::FutureVersion => {
+            Err("Content index uses a newer persist envelope than this build supports".to_string())
+        }
         crate::persistence::LoadStatus::Unreadable => {
             Err("Could not open content index: unreadable".to_string())
         }
@@ -826,7 +826,8 @@ fn load_index_from(path: &Path, expected_root: &Path) -> Result<Option<RootIndex
 
 fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
     let persist = crate::persistence::FsPersist::default();
-    let mut gate = crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+    let mut gate =
+        crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
     match crate::persistence::save_enveloped_streaming(
         &persist,
         path,

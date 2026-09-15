@@ -178,11 +178,21 @@ mod tests {
             policy: StoredRelationPolicy::KeepBoth,
         });
         save(&book);
-        assert!(load().find(Path::new("/a"), Path::new("/b"), "txt").is_some());
         assert!(
-            preview_for(Path::new("/a"), Path::new("/b"), "txt", &["x.txt".into()], 3)
-                .unwrap()
-                .contains("KeepBoth")
+            load()
+                .find(Path::new("/a"), Path::new("/b"), "txt")
+                .is_some()
+        );
+        assert!(
+            preview_for(
+                Path::new("/a"),
+                Path::new("/b"),
+                "txt",
+                &["x.txt".into()],
+                3
+            )
+            .unwrap()
+            .contains("KeepBoth")
         );
     }
 }

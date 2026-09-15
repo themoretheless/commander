@@ -417,10 +417,7 @@ impl App {
                 (error.clone(), crate::toasts::ToastKind::Error)
             } else if output.exit_code.is_some_and(|code| code != 0) {
                 (
-                    format!(
-                        "Command exited {}",
-                        output.exit_code.unwrap_or_default()
-                    ),
+                    format!("Command exited {}", output.exit_code.unwrap_or_default()),
                     crate::toasts::ToastKind::Error,
                 )
             } else {

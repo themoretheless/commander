@@ -417,9 +417,8 @@ impl App {
                     .is_none()
                 {
                     let policy = crate::conflict_rules::StoredRelationPolicy::KeepNewer;
-                    let preview = crate::conflict_rules::ConflictRuleBook::sample_preview(
-                        policy, &names, 5,
-                    );
+                    let preview =
+                        crate::conflict_rules::ConflictRuleBook::sample_preview(policy, &names, 5);
                     let now = ctx.input(|i| i.time);
                     self.toasts.push(crate::toasts::Toast::new(
                         preview,

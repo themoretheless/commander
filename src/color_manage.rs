@@ -20,7 +20,9 @@ pub struct HdrToneMapBudget {
 
 impl HdrToneMapBudget {
     pub const fn bounded_default() -> Self {
-        Self { max_nits_bps: 10_000 }
+        Self {
+            max_nits_bps: 10_000,
+        }
     }
 }
 

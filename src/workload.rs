@@ -218,7 +218,10 @@ impl std::fmt::Display for AdmissionError {
                 "workload generation {submitted} is older than active generation {active}"
             ),
             Self::MachinePressure(reason) => {
-                write!(formatter, "workload deferred under machine pressure: {reason}")
+                write!(
+                    formatter,
+                    "workload deferred under machine pressure: {reason}"
+                )
             }
         }
     }

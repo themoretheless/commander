@@ -1371,7 +1371,10 @@ impl Workspace {
         let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
             return;
         };
-        let paths = entries.into_iter().map(|entry| entry.path).collect::<Vec<_>>();
+        let paths = entries
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
         let report = crate::checksum::verify_paths(paths);
         self.emit_ui_request(UiRequest::ChecksumReport(report));
     }
