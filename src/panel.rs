@@ -1292,6 +1292,8 @@ pub struct PanelState {
     pub drag: DragState,
     listing_job: ListingJobController,
     workload: Option<crate::workload::WorkloadHandle>,
+    /// Why the most recent listing refresh landed (path-free, research J007).
+    pub change_provenance: crate::change_provenance::RowProvenance,
 }
 
 impl PanelState {
@@ -1323,6 +1325,7 @@ impl PanelState {
             drag: DragState::new(),
             listing_job: ListingJobController::default(),
             workload: None,
+            change_provenance: crate::change_provenance::RowProvenance::default(),
         }
     }
 
@@ -1550,6 +1553,8 @@ impl PanelState {
     }
 
     pub fn refresh(&mut self) {
+        self.change_provenance
+            .record(crate::change_provenance::ChangeProvenance::Commander);
         self.schedule_or_reload(PendingFocus::None);
     }
 
@@ -1740,12 +1745,18 @@ impl PanelState {
             self.sizes.mark_dirty();
         }
         if let Some(ticket) = outcome.ticket {
+            let source = if outcome.recovered_gap {
+                crate::change_provenance::ChangeProvenance::Reconciliation
+            } else {
+                crate::change_provenance::ChangeProvenance::ExternalWatcher
+            };
             if self.can_async_list() {
                 let show_hidden = self.view.show_hidden();
                 self.listing_job
                     .request(path, show_hidden, Some(ticket), PendingFocus::None);
                 let applied = self.poll_listing_results();
                 if applied {
+                    self.change_provenance.record(source);
                     crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 }
                 return applied;
@@ -1755,6 +1766,7 @@ impl PanelState {
                 self.watcher
                     .acknowledge_snapshot(Some(ticket), &listing_binding);
                 self.refresh_sizes(true);
+                self.change_provenance.record(source);
                 crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 return true;
             }

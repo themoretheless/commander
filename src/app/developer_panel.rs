@@ -427,6 +427,47 @@ impl App {
                                     Err(error) => DeveloperNotice::error(error),
                                 });
                         }
+                        if ui.button("Create encrypted support bundle").clicked() {
+                            let paths = self.diagnostic_paths();
+                            let recipient = std::env::var("COMMANDER_SUPPORT_BUNDLE_RECIPIENT")
+                                .unwrap_or_else(|_| "local-dev".to_string());
+                            let secret = std::env::var("COMMANDER_SUPPORT_BUNDLE_SECRET")
+                                .unwrap_or_else(|_| recipient.clone());
+                            self.developer_notice = Some(
+                                match crate::support_bundle::export_encrypted(
+                                    &paths,
+                                    &recipient,
+                                    &secret,
+                                    crate::encrypted_bundle::DEFAULT_TTL_SECS,
+                                ) {
+                                    Ok((path, manifest)) => DeveloperNotice::success(
+                                        format!(
+                                            "Encrypted support bundle created ({})",
+                                            manifest.preview_line()
+                                        ),
+                                        path,
+                                    ),
+                                    Err(error) => DeveloperNotice::error(error),
+                                },
+                            );
+                        }
+                        if ui.button("Save workspace profile").clicked() {
+                            let profile = crate::workspace_profile::capture(
+                                "current",
+                                &self.ws.left.current_path,
+                                &self.ws.right.current_path,
+                                String::new(),
+                                String::new(),
+                                self.ws.durability_profile,
+                                self.ws.name_policy,
+                                self.ws.symlink_policy,
+                                Vec::new(),
+                            );
+                            self.developer_notice = Some(DeveloperNotice::success(
+                                format!("Workspace profile saved: {}", profile.name),
+                                crate::fs_util::config_dir().join("workspace_profiles.json"),
+                            ));
+                        }
                     });
                     if let Some(notice) = &self.developer_notice {
                         ui.add_space(6.0);

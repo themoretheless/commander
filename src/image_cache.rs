@@ -1412,6 +1412,15 @@ fn allocate_rgba_pixels(width: usize, height: usize) -> Result<(usize, Vec<u8>),
 /// Convert a checked RGBA allocation into egui pixels without letting the
 /// second allocation panic on an oversized or malformed buffer.
 fn color_image_from_rgba(size: [usize; 2], rgba: Vec<u8>) -> Result<(ColorImage, usize), String> {
+    color_image_from_rgba_managed(size, rgba, crate::color_manage::ColorSpaceHint::Srgb, false)
+}
+
+fn color_image_from_rgba_managed(
+    size: [usize; 2],
+    mut rgba: Vec<u8>,
+    space: crate::color_manage::ColorSpaceHint,
+    hdr: bool,
+) -> Result<(ColorImage, usize), String> {
     let pixel_count = size[0]
         .checked_mul(size[1])
         .ok_or_else(|| "image dimensions are too large".to_string())?;
@@ -1424,6 +1433,14 @@ fn color_image_from_rgba(size: [usize; 2], rgba: Vec<u8>) -> Result<(ColorImage,
     if rgba.len() != byte_size {
         return Err("decoder returned an incomplete RGBA buffer".to_string());
     }
+
+    let frame = crate::color_manage::ColorManagedFrame::display_referred(
+        size[0] as u32,
+        size[1] as u32,
+        space,
+        hdr,
+    );
+    frame.apply_rgba8(&mut rgba);
 
     let mut pixels = Vec::new();
     pixels
@@ -1579,7 +1596,12 @@ fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     let rgba = img.into_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
-    let (image, byte_size) = color_image_from_rgba(size, pixels)?;
+    let extension = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (space, hdr) = crate::color_manage::hint_from_extension(&extension);
+    let (image, byte_size) = color_image_from_rgba_managed(size, pixels, space, hdr)?;
     Ok(DecodedPreview {
         image,
         byte_size,

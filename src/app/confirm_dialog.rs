@@ -328,6 +328,43 @@ impl App {
                         ui.add_space(4.0);
                     }
 
+                    {
+                        let left_root = self.ws.left.current_path.clone();
+                        let right_root = self.ws.right.current_path.clone();
+                        let names: Vec<String> =
+                            rich_conflicts.iter().map(|c| c.name.clone()).collect();
+                        let kind = names
+                            .first()
+                            .map(|name| crate::conflict_rules::ConflictRuleBook::kind_for_name(name))
+                            .unwrap_or_else(|| "other".into());
+                        if let Some(preview) = crate::conflict_rules::preview_for(
+                            &left_root,
+                            &right_root,
+                            &kind,
+                            &names,
+                            5,
+                        ) {
+                            ui.label(
+                                egui::RichText::new(preview)
+                                    .size(11.0)
+                                    .color(t.text_muted),
+                            );
+                            ui.add_space(4.0);
+                        } else if !names.is_empty() {
+                            let sample = crate::conflict_rules::ConflictRuleBook::sample_preview(
+                                crate::conflict_rules::StoredRelationPolicy::KeepBoth,
+                                &names,
+                                5,
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("Sample before apply: {sample}"))
+                                    .size(11.0)
+                                    .color(t.text_muted),
+                            );
+                            ui.add_space(4.0);
+                        }
+                    }
+
                     use crate::conflict::RelationPolicy;
                     let mut chosen: Option<RelationPolicy> = None;
                     ui.horizontal_wrapped(|ui| {
@@ -383,6 +420,29 @@ impl App {
                         );
                     });
                     if let Some(policy) = chosen {
+                        {
+                            let left_root = self.ws.left.current_path.clone();
+                            let right_root = self.ws.right.current_path.clone();
+                            let names: Vec<String> =
+                                rich_conflicts.iter().map(|c| c.name.clone()).collect();
+                            let kind = names
+                                .first()
+                                .map(|name| {
+                                    crate::conflict_rules::ConflictRuleBook::kind_for_name(name)
+                                })
+                                .unwrap_or_else(|| "other".into());
+                            let _ = crate::conflict_rules::ConflictRuleBook::sample_preview(
+                                policy.into(),
+                                &names,
+                                5,
+                            );
+                            crate::conflict_rules::upsert(crate::conflict_rules::ConflictRule {
+                                left_root,
+                                right_root,
+                                file_kind: kind,
+                                policy: policy.into(),
+                            });
+                        }
                         if self.ws.resolve_pending_conflicts(policy) {
                             let still_overflows = matches!(
                                 &self.ws.pending_op,

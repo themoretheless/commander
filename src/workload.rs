@@ -198,6 +198,7 @@ pub enum AdmissionError {
     ByteBudgetExceeded,
     RootDisconnected(PathBuf),
     StaleGeneration { active: u64, submitted: u64 },
+    MachinePressure(&'static str),
 }
 
 impl std::fmt::Display for AdmissionError {
@@ -216,7 +217,25 @@ impl std::fmt::Display for AdmissionError {
                 formatter,
                 "workload generation {submitted} is older than active generation {active}"
             ),
+            Self::MachinePressure(reason) => {
+                write!(formatter, "workload deferred under machine pressure: {reason}")
+            }
         }
+    }
+}
+
+fn background_pressure_block(kind: TaskKind, priority: Priority) -> Option<&'static str> {
+    if !matches!(priority, Priority::Background | Priority::Maintenance) {
+        return None;
+    }
+    let pressure = crate::machine_pressure::snapshot();
+    match kind {
+        TaskKind::Preview if !pressure.allows_background_preview() => {
+            Some("preview admission blocked")
+        }
+        TaskKind::Index if !pressure.allows_background_index() => Some("index admission blocked"),
+        TaskKind::Hash if !pressure.allows_background_hash() => Some("hash admission blocked"),
+        _ => None,
     }
 }
 
@@ -288,6 +307,10 @@ impl Scheduler {
         {
             self.counters.backpressured = self.counters.backpressured.saturating_add(1);
             return Err(AdmissionError::RootDisconnected(spec.root));
+        }
+        if let Some(reason) = background_pressure_block(spec.kind, spec.priority) {
+            self.counters.backpressured = self.counters.backpressured.saturating_add(1);
+            return Err(AdmissionError::MachinePressure(reason));
         }
         if self.queued_count() >= self.limits.max_queued {
             self.counters.backpressured = self.counters.backpressured.saturating_add(1);

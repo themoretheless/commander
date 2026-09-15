@@ -682,6 +682,22 @@ impl App {
         if let Some(operation_id) = rollback {
             match self.ws.rollback_recovery(&operation_id) {
                 Ok(plan) => {
+                    let now_millis = (ctx.input(|input| input.time) * 1_000.0) as u64;
+                    self.assistive_timeline.note_recovery(
+                        Some(operation_id.clone()),
+                        format!(
+                            "Rollback completed {} step(s); {} remaining",
+                            plan.completed.len(),
+                            plan.remaining.len()
+                        ),
+                        now_millis,
+                    );
+                    self.ws.left.change_provenance.record(
+                        crate::change_provenance::ChangeProvenance::Recovery,
+                    );
+                    self.ws.right.change_provenance.record(
+                        crate::change_provenance::ChangeProvenance::Recovery,
+                    );
                     state.outcome = Some(format!(
                         "Rollback completed {} step{}; {} item{} need review",
                         plan.completed.len(),

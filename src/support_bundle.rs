@@ -262,6 +262,47 @@ pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Recipient-encrypted export with explicit expiry and plaintext preview (J005).
+pub fn export_encrypted(
+    paths: &[PathBuf],
+    recipient_id: &str,
+    recipient_secret: &str,
+    ttl_secs: u64,
+) -> Result<(PathBuf, crate::encrypted_bundle::EncryptedBundleManifest), String> {
+    let directory = crate::fs_util::config_dir().join("support-bundles");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create support bundle directory: {error}"))?;
+    let path = crate::encrypted_bundle::default_export_path(
+        &crate::fs_util::config_dir(),
+        now_millis(),
+    );
+    let bundle = collect(paths);
+    let preview = plaintext_preview(&bundle);
+    let json = serde_json::to_vec_pretty(&bundle)
+        .map_err(|error| format!("Could not encode support bundle: {error}"))?;
+    let manifest = crate::encrypted_bundle::export_to(
+        &path,
+        &json,
+        recipient_id,
+        recipient_secret,
+        &preview,
+        now_secs(),
+        ttl_secs,
+    )?;
+    Ok((path, manifest))
+}
+
+pub fn plaintext_preview(bundle: &SupportBundle) -> String {
+    format!(
+        "schema={} ops={} versions={} volumes={} warnings={}",
+        bundle.schema,
+        bundle.operation_spans.len(),
+        bundle.preserved_versions.len(),
+        bundle.volumes.len(),
+        bundle.collection_warnings.len()
+    )
+}
+
 fn export_to(path: &Path, bundle: &SupportBundle) -> Result<(), String> {
     let json = serde_json::to_string_pretty(bundle)
         .map_err(|error| format!("Could not encode support bundle: {error}"))?;
@@ -392,5 +433,29 @@ mod tests {
         let decoded: SupportBundle = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(decoded.schema, 2);
         assert_eq!(decoded.collection_warnings, vec!["journal unavailable"]);
+    }
+
+    #[test]
+    fn encrypted_export_keeps_plaintext_preview_and_round_trips() {
+        let bundle = build(&[], &[], &[], Vec::new());
+        let preview = plaintext_preview(&bundle);
+        assert!(preview.contains("schema=2"));
+        let temp = TempDir::new();
+        let path = temp.path().join("bundle.cmeb.json");
+        let json = serde_json::to_vec_pretty(&bundle).unwrap();
+        let manifest = crate::encrypted_bundle::export_to(
+            &path,
+            &json,
+            "qa",
+            "qa-secret",
+            &preview,
+            50,
+            100,
+        )
+        .unwrap();
+        assert!(!manifest.expired(100));
+        let recovered = crate::encrypted_bundle::decrypt(&manifest, "qa-secret", 100).unwrap();
+        let decoded: SupportBundle = serde_json::from_slice(&recovered).unwrap();
+        assert_eq!(decoded.schema, bundle.schema);
     }
 }

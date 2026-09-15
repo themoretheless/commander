@@ -72,6 +72,7 @@ mod session;
 mod shelf;
 mod smart_folder;
 pub mod support_bundle;
+mod encrypted_bundle;
 mod support_encrypt;
 mod sync;
 mod sync_guard;

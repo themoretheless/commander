@@ -260,6 +260,13 @@ impl ContentIndex {
             );
             return false;
         }
+        if !crate::machine_pressure::snapshot().allows_background_index() {
+            self.load_errors.insert(
+                root,
+                "Content index deferred under battery/thermal pressure".to_string(),
+            );
+            return false;
+        }
         if !self.is_enabled(&root) {
             return false;
         }
