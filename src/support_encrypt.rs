@@ -3,7 +3,7 @@
 //! Keeps the older `seal_support_bytes` / `write_sealed_bundle` names while
 //! routing through XChaCha20-Poly1305 envelopes.
 
-use crate::encrypted_bundle::{self, DEFAULT_TTL_SECS, EncryptRequest, EncryptedBundleManifest};
+use crate::encrypted_bundle::{DEFAULT_TTL_SECS, EncryptRequest, EncryptedBundleManifest};
 use std::path::{Path, PathBuf};
 
 pub use crate::encrypted_bundle::{DEFAULT_TTL_SECS as TTL_DEFAULT, FORMAT, decrypt, encrypt, export_to, load_manifest};
@@ -22,9 +22,27 @@ pub fn seal_support_bytes(
     ttl_secs: u64,
 ) -> Result<SealedBundle, String> {
     // Recipient id doubles as the shared secret when callers use the legacy API.
+    seal_support_bytes_with_secret(
+        recipient_id,
+        recipient_id,
+        plaintext,
+        preview,
+        created_at_secs,
+        ttl_secs,
+    )
+}
+
+pub fn seal_support_bytes_with_secret(
+    recipient_id: &str,
+    recipient_secret: &str,
+    plaintext: &[u8],
+    preview: &str,
+    created_at_secs: u64,
+    ttl_secs: u64,
+) -> Result<SealedBundle, String> {
     let manifest = encrypt(EncryptRequest {
         recipient_id,
-        recipient_secret: recipient_id,
+        recipient_secret,
         created_at_secs,
         ttl_secs,
         plaintext_preview: preview,

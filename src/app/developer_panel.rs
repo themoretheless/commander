@@ -93,6 +93,12 @@ impl App {
                             );
                             text_row(
                                 ui,
+                                "Version store",
+                                &crate::version_store::store_usage().label(),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
                                 "Preview jobs",
                                 &format!(
                                     "{} loading / {} failed",

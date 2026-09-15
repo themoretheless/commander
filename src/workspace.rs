@@ -1281,7 +1281,73 @@ impl Workspace {
                     }
                 }
             }
+            Command::SetTrustTrusted => self.set_active_trust(crate::trust::TrustLabel::Trusted),
+            Command::SetTrustRestricted => {
+                self.set_active_trust(crate::trust::TrustLabel::Restricted)
+            }
+            Command::SetTrustUntrusted => {
+                self.set_active_trust(crate::trust::TrustLabel::Untrusted)
+            }
+            Command::SaveWorkspaceProfile => self.save_workspace_profile(),
+            Command::ApplyWorkspaceProfile => self.apply_workspace_profile(),
         }
+    }
+
+    fn set_active_trust(&mut self, label: crate::trust::TrustLabel) {
+        let root = self.active_panel_ref().current_path.clone();
+        crate::trust::set_label(&root, label);
+        self.emit_ui_request(UiRequest::Notice {
+            message: format!("{} → trust {}", root.display(), label.label()),
+            error: false,
+        });
+    }
+
+    fn save_workspace_profile(&mut self) {
+        let left = self.left.current_path.clone();
+        let right = self.right.current_path.clone();
+        let left_filter = self.left.search_query().to_string();
+        let right_filter = self.right.search_query().to_string();
+        let _profile = crate::workspace_profile::capture(
+            "default",
+            &left,
+            &right,
+            left_filter,
+            right_filter,
+            self.durability_profile,
+            self.name_policy,
+            self.symlink_policy,
+            Vec::new(),
+        );
+        self.emit_ui_request(UiRequest::Notice {
+            message: "Saved workspace profile \"default\"".to_string(),
+            error: false,
+        });
+    }
+
+    fn apply_workspace_profile(&mut self) {
+        let book = crate::workspace_profile::load();
+        let Some(profile) = book.get("default").cloned() else {
+            self.emit_ui_request(UiRequest::Notice {
+                message: "No saved workspace profile named \"default\"".to_string(),
+                error: true,
+            });
+            return;
+        };
+        if profile.left_root.is_dir() {
+            self.left.navigate_to(profile.left_root.clone());
+        }
+        if profile.right_root.is_dir() {
+            self.right.navigate_to(profile.right_root.clone());
+        }
+        self.left.set_search_query(profile.left_filter.clone());
+        self.right.set_search_query(profile.right_filter.clone());
+        self.durability_profile = profile.durability;
+        self.name_policy = profile.name_policy;
+        self.symlink_policy = profile.symlink_policy;
+        self.emit_ui_request(UiRequest::Notice {
+            message: format!("Applied workspace profile \"{}\"", profile.name),
+            error: false,
+        });
     }
 
     fn mirror_nav_locked_enter(&mut self, child_name: &str) {

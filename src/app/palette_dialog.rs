@@ -369,7 +369,12 @@ impl App {
             | Command::OpenSavedSearch
             | Command::OpenProjectCollections => "File",
             Command::BeginGoToPath | Command::BeginRecent => "Navigation",
-            Command::BeginSync | Command::EqualizePanels | Command::SwapPanels => "Panels",
+            Command::BeginSync | Command::EqualizePanels | Command::SwapPanels
+            | Command::SaveWorkspaceProfile
+            | Command::ApplyWorkspaceProfile => "Panels",
+            Command::SetTrustTrusted
+            | Command::SetTrustRestricted
+            | Command::SetTrustUntrusted => "Trust",
             Command::SelectAll
             | Command::InvertSelection
             | Command::SelectSameNamed

@@ -263,6 +263,9 @@ pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
 }
 
 /// Recipient-encrypted export with explicit expiry and plaintext preview (J005).
+///
+/// Seals via [`crate::support_encrypt::seal_support_bytes_with_secret`] and
+/// persists with [`crate::support_encrypt::write_sealed_bundle`].
 pub fn export_encrypted(
     paths: &[PathBuf],
     recipient_id: &str,
@@ -272,24 +275,20 @@ pub fn export_encrypted(
     let directory = crate::fs_util::config_dir().join("support-bundles");
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create support bundle directory: {error}"))?;
-    let path = crate::encrypted_bundle::default_export_path(
-        &crate::fs_util::config_dir(),
-        now_millis(),
-    );
     let bundle = collect(paths);
     let preview = plaintext_preview(&bundle);
     let json = serde_json::to_vec_pretty(&bundle)
         .map_err(|error| format!("Could not encode support bundle: {error}"))?;
-    let manifest = crate::encrypted_bundle::export_to(
-        &path,
-        &json,
+    let sealed = crate::support_encrypt::seal_support_bytes_with_secret(
         recipient_id,
         recipient_secret,
+        &json,
         &preview,
         now_secs(),
         ttl_secs,
     )?;
-    Ok((path, manifest))
+    let path = crate::support_encrypt::write_sealed_bundle(&directory, &sealed)?;
+    Ok((path, sealed.manifest))
 }
 
 pub fn plaintext_preview(bundle: &SupportBundle) -> String {
@@ -441,20 +440,20 @@ mod tests {
         let preview = plaintext_preview(&bundle);
         assert!(preview.contains("schema=2"));
         let temp = TempDir::new();
-        let path = temp.path().join("bundle.cmeb.json");
         let json = serde_json::to_vec_pretty(&bundle).unwrap();
-        let manifest = crate::encrypted_bundle::export_to(
-            &path,
-            &json,
+        let sealed = crate::support_encrypt::seal_support_bytes_with_secret(
             "qa",
             "qa-secret",
+            &json,
             &preview,
             50,
             100,
         )
         .unwrap();
-        assert!(!manifest.expired(100));
-        let recovered = crate::encrypted_bundle::decrypt(&manifest, "qa-secret", 100).unwrap();
+        assert!(!sealed.manifest.expired(100));
+        let path = crate::support_encrypt::write_sealed_bundle(temp.path(), &sealed).unwrap();
+        let loaded = crate::support_encrypt::load_manifest(&path).unwrap();
+        let recovered = crate::support_encrypt::decrypt(&loaded, "qa-secret", 100).unwrap();
         let decoded: SupportBundle = serde_json::from_slice(&recovered).unwrap();
         assert_eq!(decoded.schema, bundle.schema);
     }

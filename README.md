@@ -194,7 +194,11 @@ papers/standards, and 100 deduplicated proposals. The whole cohort was
 revalidated on 2026-07-18 with 100 reachable and zero archived projects. Its
 implementation ledger records G001-G050 as the first shipped research
 milestone and G051-G100 as the second; H001-H012 and I001-I010 record the two
-comparative hardening slices. J001-J010 is the current unimplemented idea set.
+comparative hardening slices. J001-J010 is shipped (see `research.md`'s Phase 4
+ledger): color-managed previews, version-store quota visibility, trust labels,
+machine-pressure admission, encrypted support bundles, assistive recovery
+timeline notes, change provenance, workspace profiles, conflict rules, and
+decoder circuit breakers.
 
 ## Review backlog
 

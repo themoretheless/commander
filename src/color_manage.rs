@@ -91,4 +91,13 @@ mod tests {
         assert_eq!(rgba[3], 255);
         assert!(hint_from_extension("HDR").1);
     }
+
+    #[test]
+    fn sdr_path_preserves_bytes() {
+        let frame = ColorManagedFrame::display_referred(2, 1, ColorSpaceHint::Srgb, false);
+        let mut rgba = [12, 34, 56, 255, 7, 8, 9, 128];
+        let before = rgba;
+        frame.apply_rgba8(&mut rgba);
+        assert_eq!(rgba, before);
+    }
 }

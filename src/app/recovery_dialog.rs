@@ -518,6 +518,15 @@ impl App {
                     );
                     ui.add_space(5.0);
                 }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Version store {}",
+                        crate::version_store::store_usage().label()
+                    ))
+                    .size(10.0)
+                    .color(t.text_muted),
+                );
+                ui.add_space(4.0);
 
                 match state.section {
                     RecoverySection::Operations => {
@@ -719,16 +728,19 @@ impl App {
                 .resume_recovery(&operation_id, move || repaint.request_repaint())
             {
                 Ok(count) => {
-                    self.ui.modals.recovery_open = false;
-                    self.push_recovery_toast(
-                        ctx,
-                        if count == 0 {
-                            "Finalizing verified operation".to_string()
-                        } else {
-                            format!("Resuming {count} manifest entries")
-                        },
-                        false,
+                    let message = if count == 0 {
+                        "Finalizing verified operation".to_string()
+                    } else {
+                        format!("Resuming {count} manifest entries")
+                    };
+                    let now_millis = (ctx.input(|input| input.time) * 1_000.0) as u64;
+                    self.assistive_timeline.note_recovery(
+                        Some(operation_id.clone()),
+                        message.clone(),
+                        now_millis,
                     );
+                    self.ui.modals.recovery_open = false;
+                    self.push_recovery_toast(ctx, message, false);
                 }
                 Err(error) => state.error = Some(error),
             }

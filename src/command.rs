@@ -186,6 +186,16 @@ pub enum Command {
     RepeatLastCommand,
     /// Browse the archive under the cursor (ZIP / tar.gz).
     BrowseArchive,
+    /// Mark the active panel root as Trusted (research J003).
+    SetTrustTrusted,
+    /// Mark the active panel root as Restricted (research J003).
+    SetTrustRestricted,
+    /// Mark the active panel root as Untrusted (research J003).
+    SetTrustUntrusted,
+    /// Persist the current dual-pane roots/filters as the default workspace profile (J008).
+    SaveWorkspaceProfile,
+    /// Apply the saved default workspace profile to both panels (J008).
+    ApplyWorkspaceProfile,
 }
 
 impl Command {
@@ -692,6 +702,19 @@ pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
         ("Toggle navigation lock", "", Command::ToggleNavLock),
         ("Repeat last command", ".", Command::RepeatLastCommand),
         ("Browse archive", "", Command::BrowseArchive),
+        ("Trust: mark Trusted", "", Command::SetTrustTrusted),
+        ("Trust: mark Restricted", "", Command::SetTrustRestricted),
+        ("Trust: mark Untrusted", "", Command::SetTrustUntrusted),
+        (
+            "Save workspace profile",
+            "",
+            Command::SaveWorkspaceProfile,
+        ),
+        (
+            "Apply workspace profile",
+            "",
+            Command::ApplyWorkspaceProfile,
+        ),
         ("Select by mask", "Cmd+G", Command::BeginSelectMask),
         ("Run command on selection", "", Command::BeginRunBar),
         ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
@@ -928,6 +951,17 @@ fn command_aliases(command: Command) -> &'static [&'static str] {
         Command::ToggleNavLock => &["panels navigation lock sync mirror lockstep dual"],
         Command::RepeatLastCommand => &["repeat last command again dot redo"],
         Command::BrowseArchive => &["archive zip tar gz browse extract inspect members"],
+        Command::SetTrustTrusted => &["trust trusted root allow run command providers archive"],
+        Command::SetTrustRestricted => {
+            &["trust restricted root gate providers archive inspect"]
+        }
+        Command::SetTrustUntrusted => &["trust untrusted root block run command providers"],
+        Command::SaveWorkspaceProfile => {
+            &["workspace profile save roots filters layout remember"]
+        }
+        Command::ApplyWorkspaceProfile => {
+            &["workspace profile apply load roots filters restore"]
+        }
         Command::CycleDensity => &["view density rows compact comfortable spacious"],
         Command::TogglePreview => &["view preview quick look viewer inspect"],
         Command::EqualizePanels => &["panels equalize same folder mirror"],

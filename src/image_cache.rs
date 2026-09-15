@@ -1325,7 +1325,9 @@ impl ImageCache {
     }
 
     /// Clear a negative cache entry so the next preload pass can try again.
+    /// Arms a one-shot decoder probe retry when the format is quarantined (J010).
     pub fn retry(&mut self, path: &Path) {
+        crate::decoder_breaker::arm_probe_retry(path);
         crate::lock_util::recover(&self.failed).remove(path);
         crate::lock_util::recover(&self.pending).remove(path);
         if let Some(entry) = self.entries.remove(path) {

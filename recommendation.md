@@ -954,7 +954,7 @@ comparison, persistence, command availability, preview, and watcher recovery.
 The former deferred list is now the implemented `I001-I010` ledger. The
 `J001-J010` research queue is also implemented (see `research.md`'s follow-up
 ledger): color-managed previews, version-store chunk dedup + quota, per-root
-trust labels, battery/thermal admission, encrypted support-bundle envelopes,
+trust labels, battery/thermal admission, XChaCha20-Poly1305 encrypted support-bundle envelopes,
 assistive operation timeline, path-free change provenance, workspace profiles,
 scoped conflict rules, and per-format decoder circuit breakers.
 

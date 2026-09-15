@@ -68,7 +68,8 @@ The fixed 100-repository cohort was refreshed in full on 2026-07-18: every
 entry remained reachable and non-archived. That pass produced the smaller
 `H001-H012` hardening ledger in `research.md`; the subsequent `I001-I010`
 follow-up closes preview, command, watcher, naming, capability, and retention
-gaps. `J001-J010` is the new unimplemented idea set. None changes the
+gaps. `J001-J010` is shipped as the Phase 4 research ledger in
+`research.md` (wired owner modules plus unit tests). None changes the
 longer-term module migration order below.
 
 ## Module map (current)
