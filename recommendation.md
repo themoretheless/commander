@@ -338,8 +338,8 @@ at a time):
 | Idea | Effort | Note |
 | --- | --- | --- |
 | Panic containment on the three raw background threads (`catch_unwind` or switch to `parking_lot::Mutex`, which doesn't poison) | small | A single background panic today can poison a Mutex and cascade into a full app crash |
-| A structured logging facade (the `log` crate + a file-backed subscriber) | small | Currently one `eprintln!` in the whole tree; background failures leave no durable trail |
-| A headless `egui_kittest`-based test harness for `app/` | medium | `src/app/` has zero `#[test]`s; architecture.md already flags the dialog focus edge-trigger as "invisible to the test suite" |
+| A structured logging facade (the `log` crate + a file-backed subscriber) | small | **done (Phase 5):** `logging` dual stderr+file sink; background failures write durable trails |
+| A headless `egui_kittest`-based test harness for `app/` | medium | **partial (Phase 5):** `app/smoke.rs` documents the future egui_kittest path and ships a method-tabs `run_ui` smoke without a native window |
 | A command-replay log (record the `Vec<Command>` stream) for crash diagnostics and, later, macros | medium | `Workspace::execute(Command)` is already the one chokepoint everything flows through |
 | An explicit `schema_version` field on the four persisted JSON stores | small | Cheap now, expensive to retrofit once real user data is on disk in an unmarked format |
 | Property/generative tests for `PanelState` invariants once `ViewConfig`/`DirIndex` land | medium | Closes the *class* of bug D10 fixes one instance at a time |
@@ -981,8 +981,8 @@ Watcher bursts publish bounded generations; volume policy chooses recursive
 native, shallow native, or shallow polling with fallback. Compact rows retain
 regular/compound extensions; visible mutations use a cached capability matrix;
 Versioned operations expose persisted Compact/Recent/Archive/Forever retention
-and prune only after manifest commit. The new `J001-J010` list covers the next
-distinct ideas rather than recycling these shipped items. Three review passes
+and prune only after manifest commit. The `J001-J010` research queue from that
+round is now implemented (see `research.md`). Three review passes
 then bypassed the full context snapshot for unconditional keys, removed a
 per-row suffix-case allocation, made compact-name width conservative, and
 separated decoder saturation from damaged-file failures. Full verification:
@@ -1125,9 +1125,9 @@ destructive-op partial-failure integrity, with
 on-disk undo tests) and **D23** (filesystem edge cases) as dedicated passes;
 finish **D16** with a fixture-backed orientation/color-management audit now
 that decode-time downsampling is shipped, and place **D5** alongside the
-`DirIndex` extraction. The best bounded follow-ups from `J001-J010` are the
-per-format decoder circuit breaker, a visible deduplicated version-store quota,
-and per-root trust labels. D10 is also the strongest concrete motivation for
+`DirIndex` extraction. Phase 4 has since shipped the per-format decoder circuit
+breaker, visible deduplicated version-store quota, and per-root trust labels
+from that `J001-J010` shortlist. D10 is also the strongest concrete motivation for
 the `ViewState` encapsulation in Track A, and D19's dialog-snapshot fix is the
 strongest concrete motivation for the `UiState` extraction (A5).
 

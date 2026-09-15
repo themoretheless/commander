@@ -416,7 +416,7 @@ impl App {
                     .find(&state.left_dir, &state.right_dir, &file_kind)
                     .is_none()
                 {
-                    let policy = crate::conflict_rules::StoredRelationPolicy::KeepBoth;
+                    let policy = crate::conflict_rules::StoredRelationPolicy::KeepNewer;
                     let preview = crate::conflict_rules::ConflictRuleBook::sample_preview(
                         policy, &names, 5,
                     );

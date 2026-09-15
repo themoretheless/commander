@@ -6,7 +6,7 @@
 use crate::encrypted_bundle::{DEFAULT_TTL_SECS, EncryptRequest, EncryptedBundleManifest};
 use std::path::{Path, PathBuf};
 
-pub use crate::encrypted_bundle::{DEFAULT_TTL_SECS as TTL_DEFAULT, FORMAT, decrypt, encrypt, export_to, load_manifest};
+pub use crate::encrypted_bundle::{decrypt, encrypt, load_manifest};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealedBundle {
@@ -146,7 +146,7 @@ mod tests {
         let sealed = seal_support_bytes("ops", b"{}", "empty", 42, 3600).unwrap();
         let path = write_sealed_bundle(temp.path(), &sealed).unwrap();
         assert!(path.exists());
-        let loaded = load_manifest(&path).unwrap();
+        let loaded = crate::encrypted_bundle::load_manifest(&path).unwrap();
         assert_eq!(loaded.recipient_id, "ops");
     }
 }
