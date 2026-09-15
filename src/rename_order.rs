@@ -303,7 +303,7 @@ mod tests {
     }
 
     fn existing(list: &[&str]) -> HashSet<String> {
-        list.iter().map(|s| s.to_string()).collect()
+        list.iter().map(|s| key(s)).collect()
     }
 
     fn steps(order: &RenameOrder) -> &[RenameStep] {

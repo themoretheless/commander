@@ -1386,6 +1386,17 @@ fn is_video_ext(path: &Path) -> bool {
     )
 }
 
+/// Extensions the standard `image` crate path cannot decode. Early-reject so
+/// callers classify as Unsupported even when platform error strings differ.
+fn is_undecodable_standard_ext(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .as_deref(),
+        Some("svg" | "mkv" | "webm" | "mp4" | "mov" | "avi" | "m4v" | "wmv" | "flv")
+    )
+}
+
 /// Allocate a zeroed RGBA buffer without integer wrap or an aborting reserve.
 /// CoreGraphics dimensions are trusted only after both multiplications and the
 /// allocation request have succeeded.
@@ -1577,6 +1588,13 @@ fn load_image_from_disk(path: &Path, target: PreviewTarget) -> Result<DecodedPre
 /// full compressed copy beside the decoded pixels.
 fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
     use image::ImageDecoder as _;
+
+    // Formats the standard crate path must never claim to decode: reject up
+    // front so negative-cache classification stays Unsupported across platforms
+    // (macOS ImageIO/AVFoundation error strings often omit "unsupported").
+    if is_undecodable_standard_ext(path) {
+        return Err("unsupported image format".into());
+    }
 
     let mut reader = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?

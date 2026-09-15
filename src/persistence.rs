@@ -1734,9 +1734,10 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .find(|candidate| {
-                candidate
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().contains(".recovered-"))
+                candidate.file_name().is_some_and(|name| {
+                    let name = name.to_string_lossy();
+                    name.contains(".recovered-") && !name.contains(".persist.lock")
+                })
             })
             .unwrap();
         assert_eq!(std::fs::read(quarantine).unwrap(), original);
@@ -1784,7 +1785,7 @@ mod tests {
 
         assert!(matches!(error, PreCommitError::Serialize(_)));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(non_lock_entry_count(temp.path()), 1);
     }
 
     #[test]
@@ -1801,7 +1802,7 @@ mod tests {
             AtomicWriteOutcome::Durable
         ));
         assert_eq!(load_json::<Item>(&path, "Test"), Some(expected));
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(non_lock_entry_count(temp.path()), 1);
 
         #[cfg(unix)]
         {
@@ -1964,6 +1965,19 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(value["payload"], "complete");
         assert!(value["writer"].as_u64().is_some_and(|writer| writer < 8));
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(non_lock_entry_count(temp.path()), 1);
+    }
+
+    fn non_lock_entry_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| {
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".persist.lock")
+            })
+            .count()
     }
 }

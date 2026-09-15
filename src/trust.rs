@@ -134,10 +134,22 @@ pub fn allows_external_providers(path: &Path) -> bool {
     label_for(path).allows_external_providers()
 }
 
+/// Clear the in-process trust cache so a test can start from an empty store.
+/// Does not rewrite `root_trust.json`; pair with a serial mutex when mutating
+/// labels so parallel tests cannot observe a half-updated cache.
+#[cfg(test)]
+pub fn reset_for_test() {
+    let mut store = crate::lock_util::recover(cache());
+    *store = TrustStore::default();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use std::sync::Mutex;
+
+    static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
     fn restricted_blocks_auto_inspect_but_not_run_command() {
@@ -149,14 +161,21 @@ mod tests {
 
     #[test]
     fn assigned_labels_gate_descendant_paths() {
+        let _guard = crate::lock_util::recover(&TEST_SERIAL);
+        reset_for_test();
+
         let temp = TempDir::new();
         let root = temp.dir("project");
-        let child = root.join("nested/file.zip");
+        // Create the descendant so canonicalize succeeds on macOS (/var →
+        // /private/var); otherwise label_for falls back to a non-canonical
+        // absolute path that no longer prefixes the stored root.
+        let child = temp.file("project/nested/file.zip", "");
         set_label(&root, TrustLabel::Restricted);
         assert_eq!(label_for(&child), TrustLabel::Restricted);
         assert!(!allows_auto_archive_inspect(&child));
         assert!(allows_run_command(&child));
         set_label(&root, TrustLabel::Trusted);
         assert_eq!(label_for(&child), TrustLabel::Trusted);
+        reset_for_test();
     }
 }

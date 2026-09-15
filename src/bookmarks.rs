@@ -395,9 +395,10 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .find(|candidate| {
-                candidate
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().contains(".recovered-"))
+                candidate.file_name().is_some_and(|name| {
+                    let name = name.to_string_lossy();
+                    name.contains(".recovered-") && !name.contains(".persist.lock")
+                })
             })
             .unwrap();
         assert_eq!(std::fs::read(quarantine).unwrap(), original);
