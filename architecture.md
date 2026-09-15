@@ -515,27 +515,25 @@ against `main` after PRs #7–#13 merged (2026-09-14).
 
 ### Accepted residuals (only)
 
-1. **Descriptor-relative filesystem effect port** — namespace effects that do not
-   re-open by path after a proven binding. **First slice landed:**
-   `fs_at::BoundDirectory` plus `FileSystemProvider::apply_at` /
-   `RelativeFileSystemEffect` (Create/Write/Rename/Remove under a held dirfd).
-   Proven in `operation_verification` fault injection. Transfer placement path
-   rewire remains a follow-up; residual is not fully closed.
+1. **Descriptor-relative filesystem effect port** — **done.** Namespace effects
+   use `fs_at::BoundDirectory` plus `FileSystemProvider::apply_at` /
+   `RelativeFileSystemEffect`. Transfer placement renames go through
+   `fs_at::rename_sibling` (dirfd-relative when source and destination share a
+   parent).
 2. **Streaming tree planner** — **done** (`transfer/parallel_tree`): parallel
    copy streams the walk into a bounded job queue; it no longer materializes
    every leaf path before the first copy.
 3. **Cross-process CAS / Persist envelope for journal + content-index** —
-   **partial:** operation journal Persist envelope slice landed
-   (`commander.operation_journal`, flock retained, `StoreGate.expected` →
-   `Persist::commit`). Content-index envelope (needs streaming Persist) and
-   fuller cross-process CAS remain open.
+   **done.** Journal and content-index use Persist envelopes
+   (`commander.operation_journal`, `commander.content_index`). `FsPersist`
+   takes a per-store flock across revision verification and atomic replace.
+   Content-index saves via `save_enveloped_streaming` so large indexes are not
+   fully buffered as a pretty-printed envelope `Vec`.
 
 Phase1 integrity and facade-extraction items from PRs #7–#13 are closed on
-`main`; they are not additional long-term residuals. Residual (2) closes with
-the streaming parallel-tree change; residual (1) is partial (first
-DirFd/`apply_at` slice landed; transfer rewire remains); residual (3) is
-partial (journal Persist envelope landed; content-index + fuller CAS still
-open).
+`main`; they are not additional long-term residuals. Residuals (1)–(3) are closed: descriptor-relative transfer placement,
+streaming parallel-tree planning, and journal/content-index Persist envelopes
+with flock-backed cross-process CAS.
 
 ## 2026-07-09 SOLID/DRY reading slices
 

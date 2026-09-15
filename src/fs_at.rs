@@ -9,6 +9,7 @@ use std::ffi::{CString, OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use crate::ports::FileSystemProvider;
 
 #[cfg(unix)]
 use std::os::{
@@ -336,10 +337,6 @@ fn renameat_noreplace_fallback(
 }
 
 /// Leaf name of `path` suitable for a relative `*at` effect.
-///
-/// Kept for the upcoming transfer placement rewire; the verification harness
-/// is the only in-tree consumer in this first slice.
-#[allow(dead_code)]
 pub fn leaf_name(path: &Path) -> io::Result<OsString> {
     path.file_name().map(OsStr::to_os_string).ok_or_else(|| {
         io::Error::new(
@@ -347,6 +344,43 @@ pub fn leaf_name(path: &Path) -> io::Result<OsString> {
             format!("path has no leaf name: {}", path.display()),
         )
     })
+}
+
+/// Rename `from` → `to` under a proven parent binding when both share a parent.
+///
+/// Same-directory placement (staging → landing, overwrite quarantine, undo)
+/// stays descriptor-relative. Cross-directory callers fall back to the
+/// path-based exclusive rename.
+pub fn rename_sibling(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
+    let from_parent = from.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source has no parent: {}", from.display()),
+        )
+    })?;
+    let to_parent = to.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("destination has no parent: {}", to.display()),
+        )
+    })?;
+    if from_parent != to_parent {
+        return if replace {
+            std::fs::rename(from, to)
+        } else {
+            crate::native_copy::rename_noreplace(from, to)
+        };
+    }
+    let provider = crate::ports::NativeFileSystemProvider;
+    let bound = BoundDirectory::bind(&provider, from_parent)?;
+    provider.apply_at(
+        &bound,
+        &crate::ports::RelativeFileSystemEffect::Rename {
+            source: leaf_name(from)?,
+            destination: leaf_name(to)?,
+            replace,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -385,6 +419,20 @@ mod tests {
         );
         nested.remove(OsStr::new("final")).unwrap();
         assert!(!temp.path().join("nested/final").exists());
+    }
+
+
+    #[test]
+    fn rename_sibling_uses_bound_parent() {
+        let temp = crate::testutil::TempDir::new();
+        let provider = NativeFileSystemProvider;
+        let bound = BoundDirectory::bind(&provider, temp.path()).unwrap();
+        bound.write_file(OsStr::new("staged"), b"payload").unwrap();
+        let from = temp.path().join("staged");
+        let to = temp.path().join("final");
+        rename_sibling(&from, &to, false).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"payload");
+        assert!(!from.exists());
     }
 
     #[cfg(unix)]
