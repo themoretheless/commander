@@ -62,6 +62,7 @@ impl PreviewTarget {
     }
 }
 
+#[derive(Debug)]
 struct DecodedPreview {
     image: ColorImage,
     byte_size: usize,

@@ -1051,17 +1051,9 @@ impl Workspace {
                         self.active_panel().navigate_to(entry.path);
                         self.mirror_nav_locked_enter(&name);
                     } else if crate::archive::is_supported(&entry.path) {
-                        if crate::trust::allows_auto_archive_inspect(&entry.path) {
-                            self.emit_ui_request(UiRequest::Archive(entry.path));
-                        } else {
-                            self.emit_ui_request(UiRequest::Notice {
-                                message: format!(
-                                    "Automatic archive inspection blocked by {} trust",
-                                    crate::trust::label_for(&entry.path).label()
-                                ),
-                                error: true,
-                            });
-                        }
+                        // Interactive browse stays available; trust gates only
+                        // automatic inspection (search), not explicit open.
+                        self.emit_ui_request(UiRequest::Archive(entry.path));
                     } else {
                         self.emit_ui_request(UiRequest::OpenExternal(
                             crate::ports::OpenRequest::OpenPath(entry.path),

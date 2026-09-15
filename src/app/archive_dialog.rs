@@ -22,7 +22,7 @@ impl App {
         });
     }
 
-    fn poll_archive(&mut self) {
+    fn poll_archive(&mut self, now: f64) {
         let event = self.ui.modals.archive.as_ref().and_then(|state| {
             let run = state.run.as_ref()?;
             match run.try_recv() {
@@ -56,23 +56,47 @@ impl App {
                 }
             }
         });
-        if let Some(result) = extract_event
-            && let Some(state) = self.ui.modals.archive.as_mut()
-        {
-            state.extract = None;
-            match result {
-                Ok(report) => {
-                    state.status = Some(format!(
-                        "Extracted {} · skipped existing {} · dirs {}",
-                        report.extracted, report.skipped_existing, report.skipped_dirs
-                    ));
-                    if !report.errors.is_empty() {
-                        state.error = Some(report.errors.join("; "));
+        if let Some(result) = extract_event {
+            if let Some(state) = self.ui.modals.archive.as_mut() {
+                state.extract = None;
+                match result {
+                    Ok(report) => {
+                        let status = format!(
+                            "Extracted {} · skipped existing {} · dirs {}",
+                            report.extracted, report.skipped_existing, report.skipped_dirs
+                        );
+                        state.status = Some(status.clone());
+                        if report.errors.is_empty() {
+                            state.error = None;
+                            self.toasts.push(crate::toasts::Toast::new(
+                                status,
+                                crate::toasts::ToastKind::Info,
+                                false,
+                                now,
+                            ));
+                        } else {
+                            let detail = report.errors.join("; ");
+                            state.error = Some(detail.clone());
+                            self.toasts.push(crate::toasts::Toast::new(
+                                detail,
+                                crate::toasts::ToastKind::Error,
+                                false,
+                                now,
+                            ));
+                        }
+                        self.ws.left.refresh();
+                        self.ws.right.refresh();
                     }
-                    self.ws.left.refresh();
-                    self.ws.right.refresh();
+                    Err(error) => {
+                        state.error = Some(error.clone());
+                        self.toasts.push(crate::toasts::Toast::new(
+                            error,
+                            crate::toasts::ToastKind::Error,
+                            false,
+                            now,
+                        ));
+                    }
                 }
-                Err(error) => state.error = Some(error),
             }
         }
     }
@@ -82,7 +106,8 @@ impl App {
         if self.ui.modals.archive.is_none() {
             return;
         }
-        self.poll_archive();
+        let now = ctx.input(|input| input.time);
+        self.poll_archive(now);
 
         let t = self.colors;
         let mut window_open = true;
@@ -148,6 +173,24 @@ impl App {
                                     .color(t.text_muted),
                             );
                         });
+                    }
+                    if state.extract.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new(
+                                    state.status.as_deref().unwrap_or("Extracting…"),
+                                )
+                                .size(11.0)
+                                .color(t.text_muted),
+                            );
+                        });
+                    } else if let Some(status) = &state.status {
+                        ui.label(
+                            egui::RichText::new(status)
+                                .size(11.0)
+                                .color(t.text_secondary),
+                        );
                     }
                     if let Some(error) = &state.error {
                         ui.horizontal(|ui| {
