@@ -93,6 +93,42 @@ impl App {
                             );
                             text_row(
                                 ui,
+                                "Version store",
+                                &{
+                                    let usage = crate::version_store::store_usage();
+                                    let quota = crate::version_store::store_quota();
+                                    if usage.over_quota() {
+                                        format!(
+                                            "{} · {} · OVER QUOTA",
+                                            usage.label(),
+                                            quota.label()
+                                        )
+                                    } else {
+                                        format!("{} · {}", usage.label(), quota.label())
+                                    }
+                                },
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Trust labels",
+                                &crate::trust::TrustLabel::ALL
+                                    .map(|label| label.label())
+                                    .join(" / "),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
+                                "Listing provenance",
+                                &format!(
+                                    "L {} · R {}",
+                                    self.ws.left.change_provenance.source.label(),
+                                    self.ws.right.change_provenance.source.label()
+                                ),
+                                t.text_primary,
+                            );
+                            text_row(
+                                ui,
                                 "Preview jobs",
                                 &format!(
                                     "{} loading / {} failed",
@@ -426,6 +462,49 @@ impl App {
                                     }
                                     Err(error) => DeveloperNotice::error(error),
                                 });
+                        }
+                        if ui.button("Create encrypted support bundle").clicked() {
+                            let paths = self.diagnostic_paths();
+                            let recipient = std::env::var("COMMANDER_SUPPORT_BUNDLE_RECIPIENT")
+                                .unwrap_or_else(|_| "local-dev".to_string());
+                            let secret = std::env::var("COMMANDER_SUPPORT_BUNDLE_SECRET")
+                                .unwrap_or_else(|_| recipient.clone());
+                            self.developer_notice = Some(
+                                match crate::support_bundle::export_encrypted(
+                                    &paths,
+                                    &recipient,
+                                    &secret,
+                                    crate::support_encrypt::default_ttl_secs(),
+                                ) {
+                                    Ok((path, manifest)) => DeveloperNotice::success(
+                                        format!(
+                                            "Encrypted support bundle created ({})",
+                                            manifest.preview_line()
+                                        ),
+                                        path,
+                                    ),
+                                    Err(error) => DeveloperNotice::error(error),
+                                },
+                            );
+                        }
+                        if ui.button("Save workspace profile").clicked() {
+                            let profile = crate::workspace_profile::capture(
+                                crate::workspace_profile::CaptureParams {
+                                    name: "current".to_string(),
+                                    left_root: &self.ws.left.current_path,
+                                    right_root: &self.ws.right.current_path,
+                                    left_filter: String::new(),
+                                    right_filter: String::new(),
+                                    durability: self.ws.durability_profile,
+                                    name_policy: self.ws.name_policy,
+                                    symlink_policy: self.ws.symlink_policy,
+                                    trusted_command_templates: Vec::new(),
+                                },
+                            );
+                            self.developer_notice = Some(DeveloperNotice::success(
+                                format!("Workspace profile saved: {}", profile.name),
+                                crate::fs_util::config_dir().join("workspace_profiles.json"),
+                            ));
                         }
                     });
                     if let Some(notice) = &self.developer_notice {

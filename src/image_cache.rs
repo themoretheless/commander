@@ -62,6 +62,7 @@ impl PreviewTarget {
     }
 }
 
+#[derive(Debug)]
 struct DecodedPreview {
     image: ColorImage,
     byte_size: usize,
@@ -1324,7 +1325,9 @@ impl ImageCache {
     }
 
     /// Clear a negative cache entry so the next preload pass can try again.
+    /// Arms a one-shot decoder probe retry when the format is quarantined (J010).
     pub fn retry(&mut self, path: &Path) {
+        crate::decoder_breaker::arm_probe_retry(path);
         crate::lock_util::recover(&self.failed).remove(path);
         crate::lock_util::recover(&self.pending).remove(path);
         if let Some(entry) = self.entries.remove(path) {
@@ -1383,6 +1386,17 @@ fn is_video_ext(path: &Path) -> bool {
     )
 }
 
+/// Extensions the standard `image` crate path cannot decode. Early-reject so
+/// callers classify as Unsupported even when platform error strings differ.
+fn is_undecodable_standard_ext(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .as_deref(),
+        Some("svg" | "mkv" | "webm" | "mp4" | "mov" | "avi" | "m4v" | "wmv" | "flv")
+    )
+}
+
 /// Allocate a zeroed RGBA buffer without integer wrap or an aborting reserve.
 /// CoreGraphics dimensions are trusted only after both multiplications and the
 /// allocation request have succeeded.
@@ -1411,6 +1425,15 @@ fn allocate_rgba_pixels(width: usize, height: usize) -> Result<(usize, Vec<u8>),
 /// Convert a checked RGBA allocation into egui pixels without letting the
 /// second allocation panic on an oversized or malformed buffer.
 fn color_image_from_rgba(size: [usize; 2], rgba: Vec<u8>) -> Result<(ColorImage, usize), String> {
+    color_image_from_rgba_managed(size, rgba, crate::color_manage::ColorSpaceHint::Srgb, false)
+}
+
+fn color_image_from_rgba_managed(
+    size: [usize; 2],
+    mut rgba: Vec<u8>,
+    space: crate::color_manage::ColorSpaceHint,
+    hdr: bool,
+) -> Result<(ColorImage, usize), String> {
     let pixel_count = size[0]
         .checked_mul(size[1])
         .ok_or_else(|| "image dimensions are too large".to_string())?;
@@ -1423,6 +1446,14 @@ fn color_image_from_rgba(size: [usize; 2], rgba: Vec<u8>) -> Result<(ColorImage,
     if rgba.len() != byte_size {
         return Err("decoder returned an incomplete RGBA buffer".to_string());
     }
+
+    let frame = crate::color_manage::ColorManagedFrame::display_referred(
+        size[0] as u32,
+        size[1] as u32,
+        space,
+        hdr,
+    );
+    frame.apply_rgba8(&mut rgba);
 
     let mut pixels = Vec::new();
     pixels
@@ -1493,8 +1524,29 @@ fn run_decode_with_timeout(
 }
 
 fn load_image_with_timeout(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
-    let path = path.to_path_buf();
-    run_decode_with_timeout(DECODE_TIMEOUT, move || load_image_from_disk(&path, target))
+    if !crate::machine_pressure::snapshot().allows_background_preview() {
+        return Err("preview deferred under battery/thermal pressure".to_string());
+    }
+    match crate::decoder_breaker::admit(path) {
+        crate::decoder_breaker::AdmitDecision::Quarantined => {
+            return Err(
+                "preview format is temporarily quarantined after repeated decode failures"
+                    .to_string(),
+            );
+        }
+        crate::decoder_breaker::AdmitDecision::ProbeRetry
+        | crate::decoder_breaker::AdmitDecision::Allow => {}
+    }
+    let path_buf = path.to_path_buf();
+    let result = run_decode_with_timeout(DECODE_TIMEOUT, {
+        let path_buf = path_buf.clone();
+        move || load_image_from_disk(&path_buf, target)
+    });
+    match &result {
+        Ok(_) => crate::decoder_breaker::record_success(&path_buf),
+        Err(_) => crate::decoder_breaker::record_failure(&path_buf),
+    }
+    result
 }
 
 fn load_image_from_disk(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
@@ -1537,6 +1589,13 @@ fn load_image_from_disk(path: &Path, target: PreviewTarget) -> Result<DecodedPre
 fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
     use image::ImageDecoder as _;
 
+    // Formats the standard crate path must never claim to decode: reject up
+    // front so negative-cache classification stays Unsupported across platforms
+    // (macOS ImageIO/AVFoundation error strings often omit "unsupported").
+    if is_undecodable_standard_ext(path) {
+        return Err("unsupported image format".into());
+    }
+
     let mut reader = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
@@ -1560,7 +1619,16 @@ fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     let rgba = img.into_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
-    let (image, byte_size) = color_image_from_rgba(size, pixels)?;
+    let extension = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (space, hdr) = crate::color_manage::hint_from_extension(&extension);
+    let (image, byte_size) = if matches!(space, crate::color_manage::ColorSpaceHint::Srgb) && !hdr {
+        color_image_from_rgba(size, pixels)?
+    } else {
+        color_image_from_rgba_managed(size, pixels, space, hdr)?
+    };
     Ok(DecodedPreview {
         image,
         byte_size,
@@ -2254,6 +2322,109 @@ mod tests {
         .unwrap();
         assert_eq!(decoded.image.size, [3, 2]);
         assert_eq!(decoded.byte_size, 3 * 2 * 4);
+    }
+
+    #[test]
+    fn standard_decoder_rejects_undecodable_formats_for_negative_cache() {
+        let dir = TempDir::new();
+        let svg = dir.path().join("vector.svg");
+        std::fs::write(&svg, b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").unwrap();
+        let error = load_via_image_crate(
+            &svg,
+            PreviewTarget {
+                width: 64,
+                height: 64,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Unsupported);
+
+        let mkv = dir.path().join("clip.mkv");
+        std::fs::write(&mkv, b"not a matroska container").unwrap();
+        let error = load_via_image_crate(
+            &mkv,
+            PreviewTarget {
+                width: 64,
+                height: 64,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Unsupported);
+
+        let webm = dir.path().join("clip.webm");
+        std::fs::write(&webm, b"not a webm container").unwrap();
+        let error = load_via_image_crate(
+            &webm,
+            PreviewTarget {
+                width: 64,
+                height: 64,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Unsupported);
+    }
+
+    #[test]
+    fn standard_decoder_applies_exif_orientation_from_jpeg() {
+        // Minimal baseline JPEG (2x1) with EXIF Orientation=6 (rotate 90 CW).
+        // Portable proof that the standard decoder path honours EXIF without
+        // needing ImageIO fixtures; HEIF/ImageIO color parity remains macOS-only.
+        let dir = TempDir::new();
+        let path = dir.path().join("oriented.jpg");
+        std::fs::write(&path, oriented_jpeg_2x1_rotate90()).unwrap();
+
+        let decoded = load_via_image_crate(
+            &path,
+            PreviewTarget {
+                width: 16,
+                height: 16,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decoded.image.size,
+            [1, 2],
+            "Orientation=6 must swap the 2x1 source into a 1x2 preview"
+        );
+    }
+
+    /// Tiny JPEG with EXIF Orientation tag = 6 (90° CW). Built by hand so the
+    /// test stays fixture-free and runs on Linux CI without ImageIO.
+    fn oriented_jpeg_2x1_rotate90() -> Vec<u8> {
+        let pixels = image::RgbImage::from_fn(2, 1, |x, _| {
+            if x == 0 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
+        let mut jpeg = Vec::new();
+        {
+            let mut cursor = std::io::Cursor::new(&mut jpeg);
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 90);
+            encoder
+                .encode(pixels.as_raw(), 2, 1, image::ExtendedColorType::Rgb8)
+                .unwrap();
+        }
+
+        // APP1 / Exif: "Exif\0\0" + TIFF LE IFD with Orientation SHORT = 6.
+        let app1: &[u8] = &[
+            0xFF, 0xE1, 0x00, 0x22, // APP1 + length 34
+            b'E', b'x', b'i', b'f', 0x00, 0x00, // Exif header
+            b'I', b'I', 0x2A, 0x00, // TIFF LE
+            0x08, 0x00, 0x00, 0x00, // IFD0 offset
+            0x01, 0x00, // one entry
+            0x12, 0x01, // Orientation
+            0x03, 0x00, // SHORT
+            0x01, 0x00, 0x00, 0x00, // count
+            0x06, 0x00, 0x00, 0x00, // value = 6
+            0x00, 0x00, 0x00, 0x00, // next IFD
+        ];
+        let mut out = Vec::with_capacity(jpeg.len() + app1.len());
+        out.extend_from_slice(&jpeg[..2]); // SOI
+        out.extend_from_slice(app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
     }
 
     #[test]

@@ -76,6 +76,16 @@ module is a thin egui layer over it.
   engine as the keyboard. `Cmd+Enter` moves into the highlighted folder and
   `Cmd+Shift+Enter` copies into it; both actions are also available from the
   toolbar overflow menu for single-pointer use.
+- **Archive browse / extract**: open `.zip` (and `.tar.gz` / `.tgz`) as a
+  member browser, multi-select entries, and extract into the other panel.
+  Automatic ZIP inspection in search consults trust-gate hooks (J003).
+- **Checksum / verify** (palette): hash the selection with the existing
+  content-hash plus BLAKE3 and copy a report.
+- **Create symlink / hard link** in the other panel from the selection.
+- **CLI launch**: `commander <left> [right]` opens those folders on startup.
+- **Run command output**: captures stdout/stderr/exit instead of fire-and-forget.
+- **Navigation lock**, **`.` repeat last command**, **named bookmarks in the
+  palette**, and **Sync dry-run** preview.
 - **Gather into a new subfolder** (`Cmd+Shift+N`): move the selection into a
   freshly-named folder in one undoable step (Finder's New Folder with
   Selection). Undo moves the files back and removes the empty folder; redo
@@ -184,7 +194,11 @@ papers/standards, and 100 deduplicated proposals. The whole cohort was
 revalidated on 2026-07-18 with 100 reachable and zero archived projects. Its
 implementation ledger records G001-G050 as the first shipped research
 milestone and G051-G100 as the second; H001-H012 and I001-I010 record the two
-comparative hardening slices. J001-J010 is the current unimplemented idea set.
+comparative hardening slices. J001-J010 is shipped (see `research.md`'s Phase 4
+ledger): color-managed previews, version-store quota visibility, trust labels,
+machine-pressure admission, encrypted support bundles, assistive recovery
+timeline notes, change provenance, workspace profiles, conflict rules, and
+decoder circuit breakers.
 
 ## Review backlog
 
@@ -291,7 +305,25 @@ cargo run --release
 
 Requires Rust nightly 1.100 (`rust-toolchain.toml` pins
 `nightly-2026-09-11`) and macOS (the app links AppKit / AVFoundation /
-ImageIO).
+ImageIO). See [`CHANGELOG.md`](CHANGELOG.md) for the current package version
+and release notes.
+
+### macOS distribution (signing and notarization)
+
+Commander is a native macOS binary. Before shipping outside your own machine:
+
+1. **Sign** the release binary (and any `.app` bundle wrapper) with a Developer
+   ID Application certificate, for example
+   `codesign --force --options runtime --sign "Developer ID Application: …" path/to/commander`.
+2. **Notarize** with Apple (`notarytool submit` against the signed artifact, then
+   `stapler staple` for a local ticket) so Gatekeeper accepts downloads.
+3. Keep the signed identity, Team ID, and notarization credentials out of the
+   repo; CI should inject them from a secrets store. Hardened Runtime is
+   required for notarization; grant only the entitlements the app actually uses.
+
+Local `cargo run` builds are unsigned and fine for development. The native
+release QA path verifies a running binary's code signature when present; it does
+not replace the Developer ID + notarization steps above.
 
 ## Development
 
@@ -368,8 +400,9 @@ by enabling only the image decoders Commander uses. The checked-in
 a weekly refresh report zero known vulnerabilities and explicitly accept one
 unmaintained advisory, `RUSTSEC-2026-0192`, for `ttf-parser` in the Linux
 Wayland/winit stack. The waiver is owned by
-`@themoretheless`, its review is due on 2026-10-21, and it hard-expires at
-00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
+`@themoretheless`, was re-reviewed for Phase 5 on 2026-09-15 (still required at
+`ttf-parser` 0.25.1), its next review is due on 2026-10-21, and it hard-expires
+at 00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
 `0.20.2` before executing it. Forty-one duplicate-crate groups remain a warning
 and tracked dependency debt. Run the same full-lockfile policy locally with:
 

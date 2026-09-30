@@ -264,6 +264,7 @@ impl App {
             (egui::Key::Enter, KeyCode::Enter),
             (egui::Key::Backspace, KeyCode::Backspace),
             (egui::Key::Space, KeyCode::Space),
+            (egui::Key::Period, KeyCode::Period),
             (egui::Key::F2, KeyCode::F2),
             (egui::Key::F3, KeyCode::F3),
             (egui::Key::F5, KeyCode::F5),

@@ -1219,7 +1219,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 )
                                 .map_err(std::io::Error::other)?;
                             }
-                            crate::native_copy::rename_noreplace(&copy_target, &landing)?;
+                            crate::fs_at::rename_sibling(&copy_target, &landing, false)?;
                             fs_util::sync_parent_namespace(&landing)?;
                             if journal_enabled {
                                 crate::operation_journal::mark_placement_placed(
@@ -1621,7 +1621,7 @@ pub(super) fn run_failure_rollback(
             continue;
         }
 
-        if let Err(error) = crate::native_copy::rename_noreplace(&landing, &source) {
+        if let Err(error) = crate::fs_at::rename_sibling(&landing, &source, false) {
             complete = false;
             record_failure(
                 progress,
@@ -1750,7 +1750,7 @@ fn rename_entry(
         s.current_file_size = size;
         s.current_file_copied = 0;
     }
-    crate::native_copy::rename_noreplace(src, dst)?;
+    crate::fs_at::rename_sibling(src, dst, false)?;
     let mut s = crate::lock_util::recover(progress);
     s.current_file_copied = size;
     s.copied_bytes = base_bytes + size;
@@ -1797,7 +1797,7 @@ pub(super) fn cleanup_moved_source(
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 ) -> std::io::Result<()> {
     let quarantine = source_cleanup_path(path);
-    crate::native_copy::rename_noreplace(path, &quarantine)?;
+    crate::fs_at::rename_sibling(path, &quarantine, false)?;
     let observed = if expected.tree_fingerprint.is_some() {
         PathIdentity::observe_deep(&quarantine)
     } else {
@@ -1828,7 +1828,7 @@ pub(super) fn cleanup_moved_source(
     }
     match cleanup_transferred_tree(&quarantine) {
         Ok(true) => fs_util::sync_parent_namespace(&quarantine),
-        Ok(false) => crate::native_copy::rename_noreplace(&quarantine, path)
+        Ok(false) => crate::fs_at::rename_sibling(&quarantine, path, false)
             .and_then(|()| fs_util::sync_parent_namespace(path)),
         Err(error) => Err(restore_cleanup_quarantine(
             path,
@@ -1848,7 +1848,7 @@ fn source_cleanup_path(path: &Path) -> PathBuf {
 }
 
 fn restore_cleanup_quarantine(path: &Path, quarantine: &Path, reason: &str) -> std::io::Error {
-    match crate::native_copy::rename_noreplace(quarantine, path) {
+    match crate::fs_at::rename_sibling(quarantine, path, false) {
         Ok(()) => {
             let _ = fs_util::sync_parent_namespace(path);
             std::io::Error::other(reason.to_string())
@@ -1905,7 +1905,7 @@ pub(super) fn undo_placement(staged: &Path, source: &Path, was_renamed: bool) ->
             )
         });
     }
-    if crate::native_copy::rename_noreplace(staged, source).is_ok() {
+    if crate::fs_at::rename_sibling(staged, source, false).is_ok() {
         return None;
     }
     if staged.symlink_metadata().is_ok() {
@@ -1944,7 +1944,7 @@ fn swap_into_place(
             )
             .map_err(std::io::Error::other)?;
         }
-        crate::native_copy::rename_noreplace(staged, dest)?;
+        crate::fs_at::rename_sibling(staged, dest, false)?;
         fs_util::sync_parent_namespace(dest)?;
         if journal.enabled {
             crate::operation_journal::mark_placement_placed(journal.operation_id, journal.key)
@@ -1985,7 +1985,7 @@ fn swap_into_place(
             .and_then(|step| step.replacement)
             .ok_or_else(|| std::io::Error::other("overwrite proof disappeared"))?;
         if current.phase == crate::operation_journal::ReplacementPhase::OriginalBackedUp {
-            crate::native_copy::rename_noreplace(staged, dest)?;
+            crate::fs_at::rename_sibling(staged, dest, false)?;
             fs_util::sync_parent_namespace(dest)?;
             crate::operation_journal::mark_replacement_placed(journal.operation_id, journal.key)
                 .map_err(std::io::Error::other)?;
@@ -1995,7 +1995,7 @@ fn swap_into_place(
 
     quarantine_expected_path(dest, &backup, &current)?;
     fs_util::sync_parent_namespace(dest)?;
-    match crate::native_copy::rename_noreplace(staged, dest) {
+    match crate::fs_at::rename_sibling(staged, dest, false) {
         Ok(()) => {
             fs_util::sync_parent_namespace(dest)?;
             Ok(cleanup_moved_source(
@@ -2015,7 +2015,7 @@ fn swap_into_place(
             // Put the original back. If even that fails, the original now
             // lives only at the hidden backup path; name it in the error so
             // it can be recovered rather than vanishing silently.
-            if crate::native_copy::rename_noreplace(&backup, dest).is_err() {
+            if crate::fs_at::rename_sibling(&backup, dest, false).is_err() {
                 return Err(std::io::Error::other(format!(
                     "{e}; original preserved at {}",
                     backup.display()
@@ -2031,7 +2031,7 @@ pub(super) fn quarantine_expected_path(
     quarantine: &Path,
     expected: &PathIdentity,
 ) -> std::io::Result<()> {
-    crate::native_copy::rename_noreplace(path, quarantine)?;
+    crate::fs_at::rename_sibling(path, quarantine, false)?;
     let observed = if expected.tree_fingerprint.is_some() {
         PathIdentity::observe_deep(quarantine)
     } else {
@@ -2053,7 +2053,7 @@ pub(super) fn quarantine_expected_path(
 }
 
 fn restore_overwrite_quarantine(path: &Path, quarantine: &Path, reason: &str) -> std::io::Error {
-    match crate::native_copy::rename_noreplace(quarantine, path) {
+    match crate::fs_at::rename_sibling(quarantine, path, false) {
         Ok(()) => {
             let _ = fs_util::sync_parent_namespace(path);
             std::io::Error::other(reason.to_string())

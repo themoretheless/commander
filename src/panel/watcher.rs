@@ -319,13 +319,18 @@ impl DirectoryWatcherState {
     pub(super) fn defer_snapshot(&mut self, ticket: Option<&ReconciliationTicket>) {
         if ticket.is_some_and(|ticket| self.binding.as_ref() == Some(&ticket.binding)) {
             self.retry_reconciliation_at = Some(Instant::now() + WATCHER_RETRY_BACKOFF);
-            if let Some(wake) = self.notify.clone() {
-                let _ = std::thread::Builder::new()
+            if let Some(wake) = self.notify.clone()
+                && let Err(error) = std::thread::Builder::new()
                     .name("commander-listing-retry".to_string())
                     .spawn(move || {
                         std::thread::sleep(WATCHER_RETRY_BACKOFF);
                         wake();
-                    });
+                    })
+            {
+                log::warn!(
+                    target: "commander::watcher",
+                    "failed to spawn listing retry wake thread: {error}"
+                );
             }
         }
     }

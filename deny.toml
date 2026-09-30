@@ -11,7 +11,7 @@ unsound = "all"
 maximum-db-staleness = "P7D"
 unused-ignored-advisory = "deny"
 ignore = [
-  { id = "RUSTSEC-2026-0192", reason = "TEMPORARY: Linux Wayland path via winit/sctk-adwaita has no patched release; owner=@themoretheless; review-by=2026-10-21; expires=2026-10-28; remove after an upstream migration or an intentional Linux support decision." },
+  { id = "RUSTSEC-2026-0192", reason = "TEMPORARY: Phase 5 review 2026-09-15 — Linux Wayland path via winit/sctk-adwaita still resolves unmaintained ttf-parser 0.25.1 with no patched release; owner=@themoretheless; review-by=2026-10-21; expires=2026-10-28; remove after an upstream migration or an intentional Linux support decision." },
 ]
 
 [licenses]

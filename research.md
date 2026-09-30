@@ -505,8 +505,9 @@ independently tested commits. They remain separate from `G001-G100` and
 
 ### Next ten evidence-backed candidates
 
-These are new proposals, ordered by expected value versus coupling. They are
-not counted as implemented.
+These candidates were the Phase 4 research queue. **All ten are implemented** on
+the development line; delivery is recorded in the ledger below, and the table is
+retained for evidence lineage.
 
 | ID | Candidate | Evidence and boundary |
 | --- | --- | --- |
@@ -520,6 +521,25 @@ not counted as implemented.
 | J008 | Add named workspace profiles that bind two roots, view filters, transfer policies, and trusted command templates. | Collections bind roots and sessions bind settings; a typed profile would compose them without making virtual views own files (repos 16, 42, 50). |
 | J009 | Save conflict rules scoped by root pair and file kind, always with a deterministic sample preview before first use. | Relation policies are typed but ephemeral; rsync-style itemization keeps automation inspectable (repos 53, 67; S10, S15). |
 | J010 | Add per-format decoder circuit breakers with quarantine, cooldown, and one explicit probe retry. | Provider timeout/health is global; repeated failures in one format should not suppress healthy formats (repos 7, 30, 84; E03). |
+
+
+### J001-J010 follow-up implementation ledger
+
+Status: **shipped** (Phase 4). Each owner module is unit-tested and wired into
+the runtime paths listed below.
+
+| ID | Status | Implemented delta | Primary owner |
+| --- | --- | --- | --- |
+| J001 | done | Bounded ICC/HDR tone-map contract applied on display-referred preview RGBA frames. | `color_manage`, `image_cache` |
+| J002 | done | Deduplicate preserved versions by verified content-chunk digests and enforce a visible store quota. | `version_dedup`, `version_store`, `operation` |
+| J003 | done | Persist per-root trust labels that gate run-command, external providers, and automatic archive inspection. | `trust`, `run_command_dialog`, `provider_runtime`, `search` |
+| J004 | done | Battery/thermal admission hints for background preview/index/hash work. | `machine_pressure`, `image_cache`, `content_index`, `workload` |
+| J005 | done | Recipient-encrypted support-bundle envelope (XChaCha20-Poly1305) with explicit expiry and plaintext preview. | `encrypted_bundle`, `support_bundle`, `support_encrypt` |
+| J006 | done | Rate-limited assistive operation timeline for phase changes, failures, pauses, and recovery decisions. | `assistive_timeline`, Operations Center, `recovery_dialog` |
+| J007 | done | Path-free change provenance markers for refreshed rows (Commander / watcher / reconciliation / recovery). | `change_provenance`, `panel` |
+| J008 | done | Named workspace profiles binding two roots, filters, transfer policies, and trusted command templates (load/save). | `workspace_profile` |
+| J009 | done | Saved conflict rules scoped by root pair and file kind with deterministic sample preview before apply. | `conflict_rules`, `confirm_dialog`, `sync_dialog` |
+| J010 | done | Per-format decoder circuit breakers with quarantine, cooldown, and one explicit probe retry. | `decoder_breaker`, `image_cache` |
 
 ## Original promotion candidates
 

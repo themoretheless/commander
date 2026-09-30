@@ -13,14 +13,16 @@ impl App {
             path,
             filter: String::new(),
             run: Some(run),
+            extract: None,
             listing: None,
-            selected: None,
+            selected: std::collections::BTreeSet::new(),
+            status: None,
             error: None,
             focused: false,
         });
     }
 
-    fn poll_archive(&mut self) {
+    fn poll_archive(&mut self, now: f64) {
         let event = self.ui.modals.archive.as_ref().and_then(|state| {
             let run = state.run.as_ref()?;
             match run.try_recv() {
@@ -43,6 +45,60 @@ impl App {
                 Err(error) => state.error = Some(error),
             }
         }
+
+        let extract_event = self.ui.modals.archive.as_ref().and_then(|state| {
+            let run = state.extract.as_ref()?;
+            match run.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Extract worker stopped before completion".to_string()))
+                }
+            }
+        });
+        if let Some(result) = extract_event
+            && let Some(state) = self.ui.modals.archive.as_mut()
+        {
+            state.extract = None;
+            match result {
+                Ok(report) => {
+                    let status = format!(
+                        "Extracted {} · skipped existing {} · dirs {}",
+                        report.extracted, report.skipped_existing, report.skipped_dirs
+                    );
+                    state.status = Some(status.clone());
+                    if report.errors.is_empty() {
+                        state.error = None;
+                        self.toasts.push(crate::toasts::Toast::new(
+                            status,
+                            crate::toasts::ToastKind::Info,
+                            false,
+                            now,
+                        ));
+                    } else {
+                        let detail = report.errors.join("; ");
+                        state.error = Some(detail.clone());
+                        self.toasts.push(crate::toasts::Toast::new(
+                            detail,
+                            crate::toasts::ToastKind::Error,
+                            false,
+                            now,
+                        ));
+                    }
+                    self.ws.left.refresh();
+                    self.ws.right.refresh();
+                }
+                Err(error) => {
+                    state.error = Some(error.clone());
+                    self.toasts.push(crate::toasts::Toast::new(
+                        error,
+                        crate::toasts::ToastKind::Error,
+                        false,
+                        now,
+                    ));
+                }
+            }
+        }
     }
 
     pub(crate) fn show_archive_dialog(&mut self, ctx: &egui::Context) {
@@ -50,12 +106,15 @@ impl App {
         if self.ui.modals.archive.is_none() {
             return;
         }
-        self.poll_archive();
+        let now = ctx.input(|input| input.time);
+        self.poll_archive(now);
 
         let t = self.colors;
         let mut window_open = true;
         let mut reveal = false;
         let mut retry = false;
+        let mut extract_selected = false;
+        let mut extract_all = false;
         {
             let state = self.ui.modals.archive.as_mut().unwrap();
             let title = state.path.file_name().map_or_else(
@@ -115,6 +174,24 @@ impl App {
                             );
                         });
                     }
+                    if state.extract.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new(
+                                    state.status.as_deref().unwrap_or("Extracting…"),
+                                )
+                                .size(11.0)
+                                .color(t.text_muted),
+                            );
+                        });
+                    } else if let Some(status) = &state.status {
+                        ui.label(
+                            egui::RichText::new(status)
+                                .size(11.0)
+                                .color(t.text_secondary),
+                        );
+                    }
                     if let Some(error) = &state.error {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(error).size(11.0).color(t.accent_red));
@@ -147,7 +224,8 @@ impl App {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "{} of {} members  |  {} unpacked",
+                                    "{} · {} of {} members  |  {} unpacked",
+                                    listing.kind.label(),
                                     visible.len(),
                                     listing.declared_members,
                                     format_size(declared_bytes)
@@ -220,7 +298,7 @@ impl App {
                                 for row in rows {
                                     let index = visible[row];
                                     let member = &listing.members[index];
-                                    let selected = state.selected == Some(index);
+                                    let selected = state.selected.contains(&index);
                                     let response = Frame::NONE
                                         .fill(if selected {
                                             t.bg_selected.linear_multiply(0.55)
@@ -283,7 +361,11 @@ impl App {
                                         .response
                                         .interact(Sense::click());
                                     if response.clicked() {
-                                        state.selected = Some(index);
+                                        if state.selected.contains(&index) {
+                                            state.selected.remove(&index);
+                                        } else {
+                                            state.selected.insert(index);
+                                        }
                                     }
                                 }
                             });
@@ -294,8 +376,11 @@ impl App {
                                     .color(t.text_muted),
                             );
                         }
-                        if let Some(selected) =
-                            state.selected.and_then(|index| listing.members.get(index))
+                        if let Some(selected) = state
+                            .selected
+                            .iter()
+                            .next()
+                            .and_then(|index| listing.members.get(*index))
                         {
                             ui.separator();
                             ui.label(
@@ -308,6 +393,41 @@ impl App {
                                 .color(t.text_muted),
                             );
                         }
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            let n = state.selected.len();
+                            if ui
+                                .add_enabled(
+                                    n > 0 && state.extract.is_none(),
+                                    egui::Button::new(
+                                        egui::RichText::new(format!("Extract {n} to other panel"))
+                                            .size(13.0)
+                                            .color(Color32::WHITE),
+                                    )
+                                    .fill(t.accent)
+                                    .corner_radius(CornerRadius::ZERO),
+                                )
+                                .clicked()
+                            {
+                                extract_selected = true;
+                            }
+                            if ui
+                                .add_enabled(
+                                    state.extract.is_none(),
+                                    egui::Button::new(
+                                        egui::RichText::new("Extract all")
+                                            .size(13.0)
+                                            .color(t.text_primary),
+                                    )
+                                    .fill(t.bg_card)
+                                    .corner_radius(CornerRadius::ZERO),
+                                )
+                                .clicked()
+                            {
+                                extract_all = true;
+                            }
+                        });
                     }
                 });
         }
@@ -328,6 +448,45 @@ impl App {
                 .map(|state| state.path.clone())
         {
             self.open_archive(path, ctx);
+            return;
+        }
+        if extract_selected || extract_all {
+            self.start_archive_extract(ctx, extract_all);
+        }
+    }
+
+    fn start_archive_extract(&mut self, ctx: &egui::Context, all: bool) {
+        let Some(state) = self.ui.modals.archive.as_ref() else {
+            return;
+        };
+        let Some(listing) = state.listing.as_ref() else {
+            return;
+        };
+        let indexes: Vec<usize> = if all {
+            listing.members.iter().map(|m| m.index).collect()
+        } else {
+            state
+                .selected
+                .iter()
+                .filter_map(|row| listing.members.get(*row).map(|m| m.index))
+                .collect()
+        };
+        if indexes.is_empty() {
+            return;
+        }
+        let archive = state.path.clone();
+        let dest = self.ws.inactive_panel().current_path.clone();
+        let repaint = ctx.clone();
+        let run = crate::archive::start_extract(
+            archive,
+            dest,
+            indexes,
+            std::sync::Arc::new(move || repaint.request_repaint()),
+        );
+        if let Some(state) = self.ui.modals.archive.as_mut() {
+            state.extract = Some(run);
+            state.error = None;
+            state.status = Some("Extracting…".to_string());
         }
     }
 }

@@ -309,5 +309,8 @@ pub(super) fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 pub(super) fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
-    Ok(())
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "preserving symlinks is not supported on this platform",
+    ))
 }

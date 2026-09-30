@@ -11,12 +11,28 @@ const TEMPLATES_SCROLL_ID: &str = "run_command_templates";
 
 impl App {
     pub(crate) fn open_run_command(&mut self, ctx: &egui::Context) {
+        let dir = self.ws.active_panel_ref().current_path.clone();
+        if !crate::trust::allows_run_command(&dir) {
+            let now = ctx.input(|input| input.time);
+            self.toasts.push(crate::toasts::Toast::new(
+                format!(
+                    "Run command blocked by {} trust",
+                    crate::trust::label_for(&dir).label()
+                ),
+                crate::toasts::ToastKind::Error,
+                false,
+                now,
+            ));
+            return;
+        }
         self.command_templates_mut();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.run_command = Some(RunCommandState {
             line: String::new(),
             scroll_nonce,
             opening: RunCommandOpeningContext::capture(&self.ws),
+            run: None,
+            output: None,
         });
         Self::mark_modal_opened(ctx, UiModal::RunCommand);
     }
@@ -29,6 +45,8 @@ impl App {
         if self.ui.modals.run_command.is_none() {
             return;
         }
+        let now = ctx.input(|input| input.time);
+        self.poll_run_command_output(now);
         let t = self.colors;
 
         let opening = self
@@ -57,9 +75,12 @@ impl App {
         let state = self.ui.modals.run_command.as_mut().unwrap();
         egui::Window::new("Run command")
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .title_bar(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_size([560.0, 420.0])
+            .min_width(480.0)
+            .min_height(280.0)
             .frame(
                 Frame::NONE
                     .fill(t.bg_panel)
@@ -67,7 +88,7 @@ impl App {
                     .stroke(Stroke::new(1.0_f32, t.border)),
             )
             .show(ctx, |ui| {
-                ui.set_width(560.0);
+                ui.set_min_width(520.0);
                 let item = if sel_count == 1 { "item" } else { "items" };
                 ui.label(
                     egui::RichText::new(format!(
@@ -138,7 +159,7 @@ impl App {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let can_run = !state.line.trim().is_empty();
+                    let can_run = !state.line.trim().is_empty() && state.run.is_none();
                     if ui
                         .add_enabled(
                             can_run,
@@ -189,6 +210,77 @@ impl App {
                         cancel = true;
                     }
                 });
+
+                if state.run.is_some() {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Running…")
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                    });
+                }
+                if let Some(output) = &state.output {
+                    ui.add_space(10.0);
+                    let exit = output
+                        .exit_code
+                        .map(|code| format!("exit {code}"))
+                        .unwrap_or_else(|| "no exit code".to_string());
+                    let header = if let Some(error) = &output.error {
+                        format!("Failed · {error}")
+                    } else if output.cmdline.trim().is_empty() {
+                        format!("Finished · {exit}")
+                    } else {
+                        format!("Finished · {exit} · {}", output.cmdline.trim())
+                    };
+                    let header_color = if output.error.is_some()
+                        || output.exit_code.is_some_and(|code| code != 0)
+                    {
+                        t.accent_red
+                    } else {
+                        t.text_secondary
+                    };
+                    ui.label(
+                        egui::RichText::new(header)
+                            .size(11.0)
+                            .color(header_color),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt(("run_command_output", state.scroll_nonce))
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if !output.stdout.trim().is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&output.stdout)
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(t.text_primary),
+                                );
+                            }
+                            if !output.stderr.trim().is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&output.stderr)
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(t.accent_warning),
+                                );
+                            }
+                            if output.stdout.trim().is_empty()
+                                && output.stderr.trim().is_empty()
+                                && output.error.is_none()
+                            {
+                                ui.label(
+                                    egui::RichText::new("(no output)")
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(t.text_muted),
+                                );
+                            }
+                        });
+                }
             });
 
         if cancel {
@@ -241,7 +333,6 @@ impl App {
             return; // keep the bar open after saving
         }
         if let Some(cmdline) = run {
-            self.ui.modals.run_command = None;
             if cmdline.trim().is_empty() {
                 return;
             }
@@ -255,29 +346,91 @@ impl App {
                 ));
                 return;
             }
-            match std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&cmdline)
-                .current_dir(opening.dir())
-                .spawn()
-            {
-                Ok(_) => {
-                    self.toasts.push(crate::toasts::Toast::new(
-                        "Command started",
-                        crate::toasts::ToastKind::Info,
-                        false,
-                        now,
-                    ));
-                }
-                Err(e) => {
-                    self.toasts.push(crate::toasts::Toast::new(
-                        format!("Command failed to start: {e}"),
-                        crate::toasts::ToastKind::Error,
-                        false,
-                        now,
-                    ));
-                }
+            if !crate::trust::allows_run_command(opening.dir()) {
+                self.toasts.push(crate::toasts::Toast::new(
+                    "Run command is blocked for this folder's trust label",
+                    crate::toasts::ToastKind::Error,
+                    false,
+                    now,
+                ));
+                return;
             }
+            let cwd = opening.dir().to_path_buf();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let repaint = ctx.clone();
+            std::thread::spawn(move || {
+                let output = match std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmdline)
+                    .current_dir(&cwd)
+                    .output()
+                {
+                    Ok(output) => CommandOutput {
+                        cmdline,
+                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                        exit_code: output.status.code(),
+                        error: None,
+                    },
+                    Err(error) => CommandOutput {
+                        cmdline,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        exit_code: None,
+                        error: Some(error.to_string()),
+                    },
+                };
+                let _ = sender.send(output);
+                repaint.request_repaint();
+            });
+            if let Some(state) = self.ui.modals.run_command.as_mut() {
+                state.run = Some(CommandOutputRun { receiver });
+                state.output = None;
+            }
+            self.toasts.push(crate::toasts::Toast::new(
+                "Command started",
+                crate::toasts::ToastKind::Info,
+                false,
+                now,
+            ));
+        }
+    }
+
+    fn poll_run_command_output(&mut self, now: f64) {
+        let ready = self.ui.modals.run_command.as_ref().and_then(|state| {
+            let run = state.run.as_ref()?;
+            match run.receiver.try_recv() {
+                Ok(output) => Some(output),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(CommandOutput {
+                    cmdline: String::new(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: None,
+                    error: Some("Command worker stopped before completion".to_string()),
+                }),
+            }
+        });
+        if let Some(output) = ready
+            && let Some(state) = self.ui.modals.run_command.as_mut()
+        {
+            state.run = None;
+            let (text, kind) = if let Some(error) = &output.error {
+                (error.clone(), crate::toasts::ToastKind::Error)
+            } else if output.exit_code.is_some_and(|code| code != 0) {
+                (
+                    format!("Command exited {}", output.exit_code.unwrap_or_default()),
+                    crate::toasts::ToastKind::Error,
+                )
+            } else {
+                (
+                    "Command finished".to_string(),
+                    crate::toasts::ToastKind::Info,
+                )
+            };
+            state.output = Some(output);
+            self.toasts
+                .push(crate::toasts::Toast::new(text, kind, false, now));
         }
     }
 }

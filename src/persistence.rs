@@ -136,6 +136,13 @@ impl Revision {
             digest: *blake3::hash(bytes).as_bytes(),
         }
     }
+
+    pub(crate) fn from_hasher(len: u64, hasher: blake3::Hasher) -> Self {
+        Self {
+            len,
+            digest: *hasher.finalize().as_bytes(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,8 +225,70 @@ fn path_lock(path: &Path) -> Arc<Mutex<()>> {
     lock
 }
 
+/// Exclusive cross-process lock for one Persist path.
+///
+/// Held across revision verification and the atomic replace so two processes
+/// cannot both observe the same expected revision and race the rename.
+struct ProcessStoreLock {
+    _file: File,
+}
+
+fn store_lock_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("store"));
+    let mut name = std::ffi::OsString::from(".");
+    name.push(file_name);
+    name.push(".persist.lock");
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
+fn acquire_process_store_lock(path: &Path) -> io::Result<ProcessStoreLock> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_path = store_lock_path(path);
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        let file = options.open(&lock_path)?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ProcessStoreLock { _file: file })
+    }
+    #[cfg(not(unix))]
+    {
+        let file = options.open(&lock_path)?;
+        Ok(ProcessStoreLock { _file: file })
+    }
+}
+
+fn process_lock_io(error: io::Error) -> PreCommitError {
+    PreCommitError::Io {
+        stage: SaveStage::ValidatePath,
+        source: error,
+        cleanup: None,
+    }
+}
+
 impl Persist for FsPersist {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure> {
+        let _process_lock = acquire_process_store_lock(path).map_err(|error| ReadFailure {
+            kind: ReadFailureKind::Io,
+            source: error,
+        })?;
         let path_lock = path_lock(path);
         let _guard = crate::lock_util::recover(&path_lock);
         read_file_bounded(path, max_bytes)
@@ -231,10 +300,31 @@ impl Persist for FsPersist {
         bytes: &[u8],
         expected: ExpectedRevision,
     ) -> Result<AtomicWriteOutcome, PreCommitError> {
+        let _process_lock = acquire_process_store_lock(path).map_err(process_lock_io)?;
         let path_lock = path_lock(path);
         let _guard = crate::lock_util::recover(&path_lock);
         verify_expected_revision(path, &expected)?;
         write_bytes_atomic_with(path, bytes, &StdFsOps)
+    }
+}
+
+impl FsPersist {
+    /// Stream bytes into an atomic commit without buffering the full payload
+    /// in memory. Used by large stores such as the content index.
+    pub fn commit_with_writer<F>(
+        &self,
+        path: &Path,
+        expected: ExpectedRevision,
+        write: F,
+    ) -> Result<AtomicWriteOutcome, PreCommitError>
+    where
+        F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
+    {
+        let _process_lock = acquire_process_store_lock(path).map_err(process_lock_io)?;
+        let path_lock = path_lock(path);
+        let _guard = crate::lock_util::recover(&path_lock);
+        verify_expected_revision(path, &expected)?;
+        write_stream_atomic_with(path, write, &StdFsOps)
     }
 }
 
@@ -693,6 +783,76 @@ pub fn save_enveloped<T: Serialize>(
     Ok(outcome)
 }
 
+/// Save an enveloped document through a streaming writer so large payloads
+/// (content index) never require a full in-memory `to_vec` of the envelope.
+pub fn save_enveloped_streaming<T: Serialize>(
+    persist: &FsPersist,
+    path: &Path,
+    spec: StoreSpec,
+    value: &T,
+    gate: &mut StoreGate,
+    intent: SaveIntent,
+) -> Result<AtomicWriteOutcome, JsonSaveError> {
+    if !gate.allows(intent) {
+        return Err(JsonSaveError::Blocked(gate.status));
+    }
+    let generation = gate
+        .generation
+        .checked_add(1)
+        .ok_or(JsonSaveError::GenerationExhausted)?;
+    preserve_recovered_source(persist, path, spec.max_bytes, gate)?;
+    let mut written = 0u64;
+    let mut hasher = blake3::Hasher::new();
+    let expected = gate.expected.clone();
+    let outcome = persist
+        .commit_with_writer(path, expected, |writer| {
+            let mut hashing = HashingWriter {
+                inner: writer,
+                hasher: &mut hasher,
+                written: &mut written,
+            };
+            let envelope = Envelope {
+                format: spec.format,
+                store: spec.store,
+                schema: spec.schema,
+                generation,
+                payload: value,
+            };
+            serde_json::to_writer_pretty(&mut hashing, &envelope)
+                .map_err(PreCommitError::Serialize)?;
+            hashing.flush().map_err(|source| PreCommitError::Io {
+                stage: SaveStage::Write,
+                source,
+                cleanup: None,
+            })?;
+            Ok(())
+        })
+        .map_err(JsonSaveError::PreCommit)?;
+    gate.status = LoadStatus::Current;
+    gate.generation = generation;
+    gate.expected = ExpectedRevision::Exact(Revision::from_hasher(written, hasher));
+    Ok(outcome)
+}
+
+struct HashingWriter<'a> {
+    inner: &'a mut dyn Write,
+    hasher: &'a mut blake3::Hasher,
+    written: &'a mut u64,
+}
+
+impl Write for HashingWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        *self.written = (*self.written).saturating_add(n as u64);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 fn preserve_recovered_source(
     persist: &dyn Persist,
     path: &Path,
@@ -792,8 +952,9 @@ impl FsOps for StdFsOps {}
 
 /// Atomically replace one JSON file on Commander's supported macOS/POSIX
 /// target. Concurrent writers in this process are serialized per pathname.
-/// The port remains last-writer-wins and does not promise a multi-file
-/// transaction or cross-process compare-and-swap.
+/// Concurrent writers are excluded with a per-store flock plus the
+/// revision token checked under that lock (cross-process CAS). The port
+/// still does not promise a multi-file transaction.
 /// Compatibility facade for stores that keep their schema and concurrency
 /// policy outside [`Persist`]. Versioned stores should use `save_enveloped`
 /// so stale snapshots are rejected.
@@ -863,6 +1024,49 @@ fn write_bytes_atomic_with(
     }
     drop(temp);
 
+    if let Err(source) = fs.rename(&temp_path, path) {
+        return Err(precommit_with_cleanup(
+            fs,
+            &temp_path,
+            SaveStage::Rename,
+            source,
+        ));
+    }
+    match fs.sync_directory(parent) {
+        Ok(()) => Ok(AtomicWriteOutcome::Durable),
+        Err(source) => Ok(AtomicWriteOutcome::CommittedButNotDurable(source)),
+    }
+}
+
+fn write_stream_atomic_with<F>(
+    path: &Path,
+    write: F,
+    fs: &impl FsOps,
+) -> Result<AtomicWriteOutcome, PreCommitError>
+where
+    F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
+{
+    let (parent, prefix) = store_location(path)?;
+    fs.create_dir_all(parent)
+        .map_err(|source| precommit_io(SaveStage::CreateDirectory, source, None))?;
+    let (temp_path, mut temp) = create_unique_temp(fs, parent, &prefix)?;
+    if let Err(error) = write(&mut temp) {
+        drop(temp);
+        let _ = fs.remove_file(&temp_path);
+        return Err(error);
+    }
+    let prepare = fs
+        .flush(&mut temp)
+        .map_err(|source| (SaveStage::Flush, source))
+        .and_then(|()| {
+            fs.sync_file(&temp)
+                .map_err(|source| (SaveStage::SyncFile, source))
+        });
+    if let Err((stage, source)) = prepare {
+        drop(temp);
+        return Err(precommit_with_cleanup(fs, &temp_path, stage, source));
+    }
+    drop(temp);
     if let Err(source) = fs.rename(&temp_path, path) {
         return Err(precommit_with_cleanup(
             fs,
@@ -981,6 +1185,9 @@ fn publish_issue(health: &mut PersistenceHealth) {
         })
         .unwrap_or_else(|generation| generation);
     health.issue_generation = previous.saturating_add(1);
+    if let Some(issue) = &health.last_issue {
+        log::warn!(target: "commander::persistence", "{issue}");
+    }
 }
 
 pub(crate) fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
@@ -1527,9 +1734,10 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .find(|candidate| {
-                candidate
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().contains(".recovered-"))
+                candidate.file_name().is_some_and(|name| {
+                    let name = name.to_string_lossy();
+                    name.contains(".recovered-") && !name.contains(".persist.lock")
+                })
             })
             .unwrap();
         assert_eq!(std::fs::read(quarantine).unwrap(), original);
@@ -1577,7 +1785,7 @@ mod tests {
 
         assert!(matches!(error, PreCommitError::Serialize(_)));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(non_lock_entry_count(temp.path()), 1);
     }
 
     #[test]
@@ -1594,7 +1802,7 @@ mod tests {
             AtomicWriteOutcome::Durable
         ));
         assert_eq!(load_json::<Item>(&path, "Test"), Some(expected));
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(non_lock_entry_count(temp.path()), 1);
 
         #[cfg(unix)]
         {
@@ -1757,6 +1965,19 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(value["payload"], "complete");
         assert!(value["writer"].as_u64().is_some_and(|writer| writer < 8));
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(non_lock_entry_count(temp.path()), 1);
+    }
+
+    fn non_lock_entry_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| {
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".persist.lock")
+            })
+            .count()
     }
 }
