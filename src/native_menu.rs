@@ -164,7 +164,7 @@ unsafe fn file_url(path: &Path) -> Option<*mut Object> {
 
 #[cfg(not(unix))]
 unsafe fn file_url(path: &Path) -> Option<*mut Object> {
-    let value = nsstring(&path.display().to_string()).ok()?;
+    let value = unsafe { nsstring(&path.display().to_string()) }.ok()?;
     let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: value];
     (!url.is_null()).then_some(url)
 }
@@ -191,7 +191,7 @@ unsafe fn path_from_file_url(url: *mut Object) -> Option<PathBuf> {
         return None;
     }
     let path: *mut Object = msg_send![url, path];
-    string_from_nsstring(path).map(PathBuf::from)
+    unsafe { string_from_nsstring(path) }.map(PathBuf::from)
 }
 
 static REGISTERED: OnceLock<bool> = OnceLock::new();

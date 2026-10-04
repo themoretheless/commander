@@ -128,8 +128,6 @@ macro_rules! modal_registry {
 modal_registry!(
     Palette,
     RunCommand,
-    Recent,
-    Path,
     Mask,
     Collections,
     SavedSearch,
@@ -492,20 +490,6 @@ pub fn sanitize_text_scale(scale: f32) -> f32 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToolbarMode {
-    Full,
-    Compact,
-}
-
-pub fn toolbar_mode(available_width: f32) -> ToolbarMode {
-    if available_width >= 1_180.0 {
-        ToolbarMode::Full
-    } else {
-        ToolbarMode::Compact
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationsPlacement {
     Right,
     Bottom,
@@ -743,7 +727,6 @@ mod tests {
         assert_eq!(MIN_CONTROL_POINTS * scale, 48.0);
         let logical_pane_width = 900.0 / scale / 2.0;
         let row = file_row_layout(logical_pane_width);
-        assert_eq!(toolbar_mode(900.0 / scale), ToolbarMode::Compact);
         assert_eq!(
             operations_placement(900.0 / scale),
             OperationsPlacement::Bottom

@@ -3932,6 +3932,7 @@ fn drop_with_conflict_opens_dialog_instead_of_moving() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn skip_conflict_in_unopened_subfolder_handles_a_broken_symlink() {
     let (l, r) = (TempDir::new(), TempDir::new());

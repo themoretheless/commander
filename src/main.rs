@@ -1,4 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// AppKit adapters and macOS-only fast paths are compiled everywhere so the
+// shared contracts stay type-checked, but they are only wired up on macOS.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_imports, unused_variables)
+)]
 
 mod accessibility;
 mod app;
@@ -23,6 +29,8 @@ mod decoder_breaker;
 mod dedup;
 mod delta_copy;
 mod density;
+#[cfg(not(target_os = "macos"))]
+mod desktop_portable;
 mod display_name;
 mod encrypted_bundle;
 pub mod feature_flags;
@@ -43,10 +51,12 @@ mod logging;
 mod machine_pressure;
 pub mod measurement;
 mod mount_guard;
+#[cfg_attr(not(target_os = "macos"), path = "native_copy_portable.rs")]
 mod native_copy;
 mod native_effect;
 mod native_menu;
 mod native_release_qa;
+mod omnibar;
 mod operation;
 mod operation_journal;
 mod operation_view;
@@ -59,7 +69,6 @@ mod persistence;
 pub mod ports;
 pub mod provider_runtime;
 mod query;
-mod quick_actions;
 mod receipts;
 mod reldate;
 mod rename;
@@ -134,27 +143,13 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            let context_menu = native_menu::MacOsContextMenu::new().map_err(|error| {
-                std::io::Error::other(format!(
-                    "could not construct the main-thread AppKit adapter: {error:?}"
-                ))
-            })?;
-            let clipboard = native_effect::MacOsClipboard::new().map_err(|error| {
-                std::io::Error::other(format!(
-                    "could not construct the main-thread clipboard adapter: {error:?}"
-                ))
-            })?;
-            let opener = native_effect::MacOsOpener::new().map_err(|error| {
-                std::io::Error::other(format!(
-                    "could not construct the main-thread opener adapter: {error:?}"
-                ))
-            })?;
+            let (context_menu, clipboard, opener) = desktop_adapters()?;
             Ok(Box::new(app::App::new(
                 cc,
                 app::AppServices {
-                    context_menu: std::rc::Rc::new(context_menu),
-                    clipboard: std::rc::Rc::new(clipboard),
-                    opener: std::rc::Rc::new(opener),
+                    context_menu,
+                    clipboard,
+                    opener,
                     trash: std::sync::Arc::new(native_effect::NativeTrash),
                     free_space: std::sync::Arc::new(native_effect::NativeFreeSpace),
                     persistence: persistence::fs_persist(),
@@ -165,4 +160,43 @@ fn main() -> eframe::Result<()> {
             )))
         }),
     )
+}
+
+type DesktopAdapters = (
+    std::rc::Rc<dyn ports::ContextMenuPort>,
+    std::rc::Rc<dyn ports::ClipboardPort>,
+    std::rc::Rc<dyn ports::OpenerPort>,
+);
+
+#[cfg(target_os = "macos")]
+fn desktop_adapters() -> Result<DesktopAdapters, Box<dyn std::error::Error + Send + Sync>> {
+    let context_menu = native_menu::MacOsContextMenu::new().map_err(|error| {
+        std::io::Error::other(format!(
+            "could not construct the main-thread AppKit adapter: {error:?}"
+        ))
+    })?;
+    let clipboard = native_effect::MacOsClipboard::new().map_err(|error| {
+        std::io::Error::other(format!(
+            "could not construct the main-thread clipboard adapter: {error:?}"
+        ))
+    })?;
+    let opener = native_effect::MacOsOpener::new().map_err(|error| {
+        std::io::Error::other(format!(
+            "could not construct the main-thread opener adapter: {error:?}"
+        ))
+    })?;
+    Ok((
+        std::rc::Rc::new(context_menu),
+        std::rc::Rc::new(clipboard),
+        std::rc::Rc::new(opener),
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_adapters() -> Result<DesktopAdapters, Box<dyn std::error::Error + Send + Sync>> {
+    Ok((
+        std::rc::Rc::new(desktop_portable::PortableContextMenu),
+        std::rc::Rc::new(desktop_portable::PortableClipboard),
+        std::rc::Rc::new(desktop_portable::PortableOpener),
+    ))
 }

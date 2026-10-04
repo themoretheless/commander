@@ -15,11 +15,9 @@ pub(crate) mod glyphs;
 mod history_dialog;
 mod keys;
 mod mask_dialog;
-mod palette_dialog;
-mod path_dialog;
+mod omnibar_dialog;
 mod preload;
 mod queue_dialog;
-mod recent_dialog;
 mod recovery_dialog;
 mod rename_dialog;
 mod render;
@@ -84,6 +82,11 @@ pub struct App {
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
     pub(crate) show_compare: bool,
+    /// Keep the key bar visible; otherwise it appears while a modifier is held.
+    pub(crate) show_key_bar: bool,
+    /// Open egui context menu (panel, target, anchor) on platforms without
+    /// a native one.
+    pub(crate) fallback_menu: Option<(ActivePanel, PathBuf, egui::Pos2)>,
     /// Whether the unified queue/history/errors/recovery surface is visible.
     pub(crate) show_operations_center: bool,
     pub(crate) operations_tab: OperationsTab,
@@ -676,6 +679,8 @@ impl App {
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
+            show_key_bar: session.as_ref().is_some_and(|s| s.show_key_bar),
+            fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
             operations_search: String::new(),
@@ -761,6 +766,8 @@ impl App {
             tree_width: 200.0,
             show_size_bars: true,
             show_compare: false,
+            show_key_bar: false,
+            fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
             operations_search: String::new(),
@@ -840,6 +847,7 @@ impl App {
             tree_width: self.tree_width,
             show_size_bars: self.show_size_bars,
             show_compare: self.show_compare,
+            show_key_bar: self.show_key_bar,
             left_view: crate::session::PersistedLeftView::from(left_view),
             right_view: crate::session::PersistedRightView::from(right_view),
             palette_usage: self.palette_usage.clone(),

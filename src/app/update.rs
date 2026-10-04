@@ -188,6 +188,9 @@ fn any_modal_surface_open(
     safe_state_open || transfer_open || confirmation_open || app_modal_open
 }
 
+/// Seconds a modifier must be held before the key bar floats in.
+const KEY_BAR_REVEAL_DELAY: f64 = 0.45;
+
 fn clipped_label(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
@@ -226,8 +229,6 @@ impl eframe::App for App {
         self.show_saved_search_dialog(&ctx);
         self.show_collections_dialog(&ctx);
         self.show_mask_dialog(&ctx);
-        self.show_path_dialog(&ctx);
-        self.show_recent_dialog(&ctx);
         self.show_run_command_dialog(&ctx);
         self.show_palette_dialog(&ctx);
         // Keep the background disabled on the close frame too, so the pointer
@@ -283,6 +284,7 @@ impl eframe::App for App {
         self.show_drag_overlay(&ctx);
         self.show_type_ahead_overlay(&ctx, input_policy.background_enabled());
         self.show_toasts(&ctx, input_policy.background_enabled());
+        self.show_fallback_context_menu(&ctx);
         self.show_developer_panel(&ctx, input_policy.background_enabled());
         self.handle_drop(&ctx, input_policy);
     }
@@ -321,6 +323,13 @@ impl App {
         if self.ws.active != request.panel {
             return;
         }
+        if !cfg!(target_os = "macos") {
+            let pos = ctx
+                .pointer_latest_pos()
+                .unwrap_or_else(|| ctx.content_rect().center());
+            self.fallback_menu = Some((request.panel, request.invocation.target.path.clone(), pos));
+            return;
+        }
         let context_menu = std::rc::Rc::clone(&self.context_menu);
         let effect = crate::provider_runtime::request_context_menu(
             context_menu.as_ref(),
@@ -329,6 +338,65 @@ impl App {
         self.apply_context_menu_effect(request.panel, effect, ctx);
         if !self.has_modal_surface() {
             ctx.memory_mut(|memory| memory.request_focus(request.focus_id));
+        }
+    }
+
+    /// Context menu drawn by egui where no native menu exists (Linux, Windows).
+    fn show_fallback_context_menu(&mut self, ctx: &egui::Context) {
+        use crate::provider_runtime::ContextMenuUiEffect as Effect;
+        let Some((panel, path, pos)) = self.fallback_menu.clone() else {
+            return;
+        };
+        let t = self.colors;
+        let mut effect: Option<Effect> = None;
+        let area = egui::Area::new(egui::Id::new("fallback_context_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                Frame::NONE
+                    .fill(t.bg_panel)
+                    .stroke(Stroke::new(1.0_f32, t.border))
+                    .corner_radius(crate::theme::ROUNDING_MD)
+                    .inner_margin(Margin::same(4))
+                    .show(ui, |ui| {
+                        ui.set_min_width(180.0);
+                        let mut item = |ui: &mut egui::Ui, label: &str, value: Effect| {
+                            if ui
+                                .add(
+                                    egui::Button::new(label)
+                                        .fill(Color32::TRANSPARENT)
+                                        .stroke(Stroke::NONE)
+                                        .min_size(Vec2::new(ui.available_width(), 24.0)),
+                                )
+                                .clicked()
+                            {
+                                effect = Some(value);
+                            }
+                        };
+                        item(
+                            ui,
+                            "Open",
+                            Effect::Open(crate::ports::OpenRequest::OpenPath(path.clone())),
+                        );
+                        item(
+                            ui,
+                            "Show in file manager",
+                            Effect::Open(crate::ports::OpenRequest::Reveal(path.clone())),
+                        );
+                        item(ui, "Copy path", Effect::CopyPath(path.clone()));
+                        ui.separator();
+                        item(ui, "Move to Trash", Effect::MoveToTrash(path.clone()));
+                        ui.separator();
+                        item(ui, "Refresh", Effect::RefreshPanels);
+                    });
+            });
+        let dismissed = ctx.input(|input| input.key_pressed(egui::Key::Escape))
+            || (area.response.clicked_elsewhere() && effect.is_none());
+        if effect.is_some() || dismissed {
+            self.fallback_menu = None;
+        }
+        if effect.is_some() {
+            self.apply_context_menu_effect(panel, effect, ctx);
         }
     }
 
@@ -899,178 +967,84 @@ impl App {
             });
     }
 
+    /// The F-key bar. Pinned at the bottom when the user asks for it;
+    /// otherwise it floats over the panels while a modifier key is held, so
+    /// the default screen is only the two panels.
     fn show_shortcut_bar(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
         let ctx = ui.ctx().clone();
-        let quick_context = self.quick_action_context();
-        let quick_actions = crate::quick_actions::actions(quick_context);
-        let next_hint = crate::quick_actions::next_hint(quick_context);
-        let shortcut_context = self.ws.action_bar_command_context();
-        let shortcut_hints = crate::command::contextual_shortcuts(&shortcut_context);
-        // Top/bottom panels don't reduce the panel-carving `Ui`'s width, so
-        // this doubles as "the window's content width" for the inner
-        // `>= 1280.0` check below, deep inside nested layout closures where
-        // `ui.available_width()` would only see the narrow nested region.
-        let panel_width = ui.available_width();
-        let compact = crate::accessibility::toolbar_mode(panel_width)
-            == crate::accessibility::ToolbarMode::Compact;
-        let max_quick_actions = if panel_width < 1120.0 { 2 } else { 4 };
-        let mut quick_action: Option<crate::quick_actions::QuickAction> = None;
-        egui::Panel::bottom("shortcuts")
-            .frame(Frame::NONE.fill(t.bg_toolbar))
-            .show(ui, |ui| {
-                Frame::NONE
-                    .inner_margin(Margin::symmetric(12, 6))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let key_limit = if compact {
-                                if panel_width < 600.0 { 2 } else { 4 }
-                            } else {
-                                8
-                            };
-                            for hint in shortcut_hints.iter().take(key_limit) {
-                                ui.label(
-                                    egui::RichText::new(hint.key)
-                                        .size(11.0)
-                                        .strong()
-                                        .color(t.accent),
-                                );
-                                ui.label(
-                                    egui::RichText::new(hint.label)
-                                        .size(11.0)
-                                        .color(t.text_muted),
-                                );
-                                ui.add_space(8.0);
-                            }
-
-                            // Scale slider on the right
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add_space(12.0);
-                                let chip = |ui: &mut egui::Ui, label: String, active: bool| {
-                                    let fill = if active {
-                                        t.accent.linear_multiply(0.14)
-                                    } else {
-                                        t.bg_card
-                                    };
-                                    let color = if active { t.accent } else { t.text_muted };
-                                    Frame::NONE
-                                        .fill(fill)
-                                        .corner_radius(crate::theme::ROUNDING_SM)
-                                        .inner_margin(Margin::symmetric(7, 2))
-                                        .show(ui, |ui| {
-                                            ui.label(
-                                                egui::RichText::new(label).size(10.0).color(color),
-                                            );
-                                        });
-                                };
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{}%",
-                                        (self.ui_scale * 100.0) as u32
-                                    ))
-                                    .size(11.0)
-                                    .color(t.text_muted),
-                                );
-                                if compact {
-                                    return;
-                                }
-                                let mut preview = self.ui_scale;
-                                let slider = egui::Slider::new(&mut preview, 0.8..=2.0)
-                                    .step_by(0.05)
-                                    .show_value(false)
-                                    .trailing_fill(true);
-                                let resp = ui.add_sized(egui::vec2(120.0, 16.0), slider);
-                                self.ui_scale = crate::accessibility::sanitize_text_scale(preview);
-                                // Apply only when released
-                                if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                                    if (self.ui_scale - 1.0).abs() < 0.03 {
-                                        self.ui_scale = 1.0;
-                                    }
-                                    ctx.set_zoom_factor(self.ui_scale);
-                                }
-                                ui.label(
-                                    egui::RichText::new("\u{1f50d}")
-                                        .size(12.0)
-                                        .color(t.text_muted),
-                                );
-                                ui.add_space(10.0);
-                                chip(
-                                    ui,
-                                    format!(
-                                        "Rows {}",
-                                        crate::density::short_label(
-                                            self.ws.active_panel_ref().density()
-                                        )
-                                    ),
-                                    true,
-                                );
-                                chip(ui, "Tree".to_string(), self.show_tree);
-                                chip(ui, "Compare".to_string(), self.show_compare);
-                                chip(
-                                    ui,
-                                    "Hidden".to_string(),
-                                    self.ws.active_panel_ref().show_hidden(),
-                                );
-                                if !self.ws.shelf.is_empty() {
-                                    chip(ui, format!("Shelf {}", self.ws.shelf.len()), true);
-                                }
-                                if !quick_actions.is_empty() {
-                                    ui.add_space(8.0);
-                                    for spec in quick_actions.iter().take(max_quick_actions).rev() {
-                                        let fill = match spec.action {
-                                            crate::quick_actions::QuickAction::DrainShelf
-                                            | crate::quick_actions::QuickAction::AddToShelf => {
-                                                t.accent.linear_multiply(0.22)
-                                            }
-                                            crate::quick_actions::QuickAction::ClearFilters
-                                            | crate::quick_actions::QuickAction::ClearSelection => {
-                                                t.accent_red.linear_multiply(0.12)
-                                            }
-                                            crate::quick_actions::QuickAction::FocusMode => {
-                                                t.accent_purple.linear_multiply(0.14)
-                                            }
-                                            _ => t.bg_card,
-                                        };
-                                        if ui
-                                            .add(
-                                                egui::Button::new(
-                                                    egui::RichText::new(&spec.label)
-                                                        .size(11.0)
-                                                        .color(t.text_primary),
-                                                )
-                                                .fill(fill)
-                                                .corner_radius(crate::theme::ROUNDING_SM),
-                                            )
-                                            .on_hover_text(spec.hint)
-                                            .clicked()
-                                        {
-                                            quick_action = Some(spec.action);
-                                        }
-                                    }
-                                }
-                                if panel_width >= 1280.0 {
-                                    ui.add_space(8.0);
-                                    ui.label(
-                                        egui::RichText::new(format!("Next: {next_hint}"))
-                                            .size(11.0)
-                                            .color(t.text_muted),
-                                    );
-                                }
-                            });
-                        });
-                    });
-            });
-        if let Some(action) = quick_action {
-            self.run_quick_action(action, &ctx);
+        let now = ctx.input(|input| input.time);
+        let held = ctx.input(|input| {
+            let m = input.modifiers;
+            m.command || m.shift || m.alt || m.ctrl
+        });
+        self.ui.modifier_held_since = match (held, self.ui.modifier_held_since) {
+            (true, None) => Some(now),
+            (true, since) => since,
+            (false, _) => None,
+        };
+        let reveal = self
+            .ui
+            .modifier_held_since
+            .is_some_and(|since| now - since >= KEY_BAR_REVEAL_DELAY);
+        if held && !reveal {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(KEY_BAR_REVEAL_DELAY));
         }
-    }
-
-    fn quick_action_context(&self) -> crate::quick_actions::QuickActionContext {
-        let active = self.ws.active_panel_ref();
-        crate::quick_actions::QuickActionContext {
-            selected_count: active.selected_count(),
-            shelf_count: self.ws.shelf.len(),
-            has_filters: crate::panel::filter_is_active(active.search_query(), &active.facets()),
+        if !self.show_key_bar && !reveal {
+            return;
+        }
+        let shortcut_context = self.ws.action_bar_command_context();
+        let hints = crate::command::contextual_shortcuts(&shortcut_context);
+        let mut run: Option<crate::command::Command> = None;
+        let draw = |ui: &mut egui::Ui, run: &mut Option<crate::command::Command>| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for hint in &hints {
+                    let response = ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(format!("{}  {}", hint.key, hint.label))
+                                    .size(11.0)
+                                    .color(t.text_secondary),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE)
+                            .corner_radius(crate::theme::ROUNDING_SM),
+                        )
+                        .on_hover_text(hint.label);
+                    if response.clicked() {
+                        *run = Some(hint.command);
+                    }
+                }
+            });
+        };
+        if self.show_key_bar {
+            egui::Panel::bottom("shortcuts")
+                .frame(
+                    Frame::NONE
+                        .fill(t.bg_toolbar)
+                        .inner_margin(Margin::symmetric(8, 3)),
+                )
+                .show(ui, |ui| draw(ui, &mut run));
+        } else {
+            egui::Area::new(egui::Id::new("shortcuts_overlay"))
+                .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(&ctx, |ui| {
+                    Frame::NONE
+                        .fill(t.bg_panel)
+                        .stroke(Stroke::new(1.0_f32, t.border))
+                        .corner_radius(crate::theme::ROUNDING_MD)
+                        .inner_margin(Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.set_max_width(ctx.content_rect().width() - 32.0);
+                            draw(ui, &mut run);
+                        });
+                });
+        }
+        if let Some(command) = run {
+            self.ws.execute(command);
         }
     }
 
@@ -1098,36 +1072,7 @@ impl App {
         }
     }
 
-    fn run_quick_action(&mut self, action: crate::quick_actions::QuickAction, ctx: &egui::Context) {
-        use crate::quick_actions::QuickAction;
-        match action {
-            QuickAction::AddToShelf => self.ws.execute(crate::command::Command::ShelfAdd),
-            QuickAction::DrainShelf => self.ws.execute(crate::command::Command::ShelfDrain),
-            QuickAction::CopyNames => {
-                self.ws.execute(crate::command::Command::CopyName);
-            }
-            QuickAction::BatchRename => {
-                self.ws.execute(crate::command::Command::BeginBatchRename);
-            }
-            QuickAction::ClearSelection => {
-                self.ws.active_panel().clear_selection();
-            }
-            QuickAction::ClearFilters => {
-                self.ws.active_panel().clear_filters();
-            }
-            QuickAction::SaveFilter => self.save_active_filter_as_smart_folder(ctx),
-            QuickAction::OpenPalette => self.ws.execute(crate::command::Command::BeginPalette),
-            QuickAction::FindFiles => self.ws.execute(crate::command::Command::BeginFind),
-            QuickAction::RecentFolders => self.ws.execute(crate::command::Command::BeginRecent),
-            QuickAction::FocusMode => {
-                self.ui.focus_mode = true;
-                self.ui.focus_started_at = ctx.input(|i| i.time);
-                self.ui.focus_moved = 0.0;
-            }
-        }
-    }
-
-    fn save_active_filter_as_smart_folder(&mut self, ctx: &egui::Context) {
+    pub(crate) fn save_active_filter_as_smart_folder(&mut self, ctx: &egui::Context) {
         let (name, root, query) = {
             let active = self.ws.active_panel_ref();
             let query = crate::query::from_panel_filter(active.search_query(), &active.facets());

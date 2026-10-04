@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn an_open_modal_keeps_priority_over_a_deferred_request() {
         let mut queue = crate::ui_request::UiRequestQueue::default();
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
         queue.emit(UiRequest::Palette);
         let modal = prioritized_modal(
             |surface| surface == ModalSurface::Palette,
@@ -375,18 +375,18 @@ mod tests {
     #[test]
     fn first_pending_modal_reserves_escape_in_fifo_order() {
         let mut queue = crate::ui_request::UiRequestQueue::default();
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
         queue.emit(UiRequest::Palette);
         let modal = prioritized_modal(|_| false, queue.first_pending_modal().map(UiModal::surface));
 
-        assert_eq!(modal, Some(ModalSurface::Recent));
+        assert_eq!(modal, Some(ModalSurface::RunCommand));
         assert_eq!(
             resolve_ui_contract(UiContractState {
                 modal,
                 ..Default::default()
             })
             .escape,
-            EscapeRoute::Modal(ModalSurface::Recent)
+            EscapeRoute::Modal(ModalSurface::RunCommand)
         );
     }
 
