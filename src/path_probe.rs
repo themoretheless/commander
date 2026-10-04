@@ -4,7 +4,6 @@ use crate::pathname::{DirInputError, DirectoryProbePort, parse_dir_input};
 use crate::workload::{
     AbandonReason, AdmissionError, Priority, TaskHandle, TaskKind, TaskSpec, WorkloadHandle,
 };
-use crate::workspace::ActivePanel;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -127,10 +126,6 @@ impl PathProbeController {
         &self.raw_input
     }
 
-    pub(crate) fn input_mut(&mut self) -> &mut String {
-        &mut self.raw_input
-    }
-
     pub(crate) fn status(&self) -> &ProbeStatus {
         &self.status
     }
@@ -156,8 +151,7 @@ impl PathProbeController {
         self.edited_at = now;
     }
 
-    #[cfg(test)]
-    fn replace_input(&mut self, input: impl Into<String>, now: f64) {
+    pub(crate) fn replace_input(&mut self, input: impl Into<String>, now: f64) {
         self.raw_input = input.into();
         self.input_changed(now);
     }
@@ -338,26 +332,6 @@ impl Drop for PathProbeController {
 
 fn admission_message(error: &AdmissionError) -> String {
     format!("Folder check could not start: {error}")
-}
-
-pub(crate) struct PathDialogState {
-    pub(crate) opening_panel: ActivePanel,
-    pub(crate) probe: PathProbeController,
-}
-
-impl PathDialogState {
-    pub(crate) fn new(
-        dialog_id: u64,
-        opening_panel: ActivePanel,
-        raw_input: String,
-        home: PathBuf,
-        now: f64,
-    ) -> Self {
-        Self {
-            opening_panel,
-            probe: PathProbeController::new(dialog_id, raw_input, home, now),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -592,25 +566,17 @@ mod tests {
     }
 
     #[test]
-    fn dialog_context_keeps_its_opening_panel_and_home_snapshot() {
-        let external_active_panel = ActivePanel::Right;
-        let mut state = PathDialogState::new(
-            7,
-            ActivePanel::Left,
-            "~".to_string(),
-            PathBuf::from("/captured-home"),
-            0.0,
-        );
-        assert_eq!(state.opening_panel, ActivePanel::Left);
-        assert_ne!(state.opening_panel, external_active_panel);
+    fn controller_keeps_its_home_snapshot() {
+        let mut probe =
+            PathProbeController::new(7, "~".to_string(), PathBuf::from("/captured-home"), 0.0);
         assert_eq!(
-            state.probe.current_binding().unwrap().lexical_path,
+            probe.current_binding().unwrap().lexical_path,
             PathBuf::from("/captured-home")
         );
 
-        state.probe.replace_input("~/Documents", 1.0);
+        probe.replace_input("~/Documents", 1.0);
         assert_eq!(
-            state.probe.current_binding().unwrap().lexical_path,
+            probe.current_binding().unwrap().lexical_path,
             PathBuf::from("/captured-home/Documents")
         );
     }
@@ -808,8 +774,7 @@ mod tests {
         controller.drive(0.2, &runtime.handle(), probe, silent_notify());
         assert!(controller.validated_path("valid").is_some());
 
-        *controller.input_mut() = "edited".to_string();
-        controller.input_changed(0.21);
+        controller.replace_input("edited", 0.21);
         assert!(controller.validated_path("edited").is_none());
         assert_eq!(controller.status(), &ProbeStatus::Waiting);
     }

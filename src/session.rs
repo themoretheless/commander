@@ -103,6 +103,9 @@ pub struct Session {
     pub tree_width: f32,
     pub show_size_bars: bool,
     pub show_compare: bool,
+    /// Keep the F-key bar visible instead of revealing it on modifier hold.
+    #[serde(default)]
+    pub show_key_bar: bool,
     /// Flattened to the legacy `left_*`/`right_*` JSON keys so old sessions
     /// remain readable while Rust code handles each panel view as one value.
     #[serde(flatten)]
@@ -247,6 +250,7 @@ mod tests {
             tree_width: 220.0,
             show_size_bars: false,
             show_compare: true,
+            show_key_bar: false,
             left_view: PersistedLeftView::from(
                 crate::panel::ViewConfig::default()
                     .with_sort(SortColumn::Size, SortOrder::Desc)

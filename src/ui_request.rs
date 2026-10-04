@@ -23,8 +23,6 @@ pub(crate) enum UiModal {
     SavedSearch,
     Collections,
     Mask,
-    Path,
-    Recent,
     RunCommand,
     Palette,
 }
@@ -79,8 +77,7 @@ impl UiRequest {
             Self::SavedSearch => Some(UiModal::SavedSearch),
             Self::ProjectCollections => Some(UiModal::Collections),
             Self::SelectMask => Some(UiModal::Mask),
-            Self::GoToPath => Some(UiModal::Path),
-            Self::Recent => Some(UiModal::Recent),
+            Self::GoToPath | Self::Recent => Some(UiModal::Palette),
             Self::RunCommand => Some(UiModal::RunCommand),
             Self::Palette => Some(UiModal::Palette),
             Self::GatherIntoFolder
@@ -286,17 +283,17 @@ mod tests {
         queue.emit(UiRequest::Palette);
 
         let frame = queue.drain_snapshot();
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
 
         assert_eq!(frame, vec![UiRequest::Palette]);
-        assert_eq!(queue.snapshot(), vec![UiRequest::Recent]);
+        assert_eq!(queue.snapshot(), vec![UiRequest::RunCommand]);
     }
 
     #[test]
     fn deferred_snapshot_items_stay_ahead_of_new_dispatch_emissions() {
         let mut queue = UiRequestQueue::default();
         queue.emit(UiRequest::Palette);
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
 
         let frame = queue.drain_snapshot();
         queue.emit(UiRequest::CopyPaths(PathStyle::NameOnly));
@@ -304,7 +301,7 @@ mod tests {
 
         assert_eq!(
             queue.snapshot(),
-            vec![UiRequest::Recent, UiRequest::CopyPaths(PathStyle::NameOnly),]
+            vec![UiRequest::RunCommand, UiRequest::CopyPaths(PathStyle::NameOnly),]
         );
     }
 
@@ -326,10 +323,10 @@ mod tests {
     fn first_pending_modal_uses_fifo_instead_of_modal_registry_priority() {
         let mut queue = UiRequestQueue::default();
         queue.emit(UiRequest::CopyPaths(PathStyle::FullPath));
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
         queue.emit(UiRequest::Palette);
 
-        assert_eq!(queue.first_pending_modal(), Some(UiModal::Recent));
+        assert_eq!(queue.first_pending_modal(), Some(UiModal::RunCommand));
     }
 
     #[test]
@@ -355,16 +352,16 @@ mod tests {
     fn dispatcher_defers_then_opens_modals_across_frames() {
         let mut queue = UiRequestQueue::default();
         let mut sink = FakeSink::default();
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
         queue.emit(UiRequest::Palette);
 
         dispatch_frame(&mut queue, &mut sink);
-        assert_eq!(sink.applied, vec![UiRequest::Recent]);
+        assert_eq!(sink.applied, vec![UiRequest::RunCommand]);
         assert_eq!(queue.snapshot(), vec![UiRequest::Palette]);
 
         sink.open_modal = None;
         dispatch_frame(&mut queue, &mut sink);
-        assert_eq!(sink.applied, vec![UiRequest::Recent, UiRequest::Palette]);
+        assert_eq!(sink.applied, vec![UiRequest::RunCommand, UiRequest::Palette]);
     }
 
     #[test]
@@ -391,12 +388,12 @@ mod tests {
             crate::panel::DirStatus::Gone,
         ));
         queue.emit(feedback.clone());
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
 
         dispatch_frame(&mut queue, &mut sink);
 
         assert_eq!(sink.applied, vec![feedback]);
-        assert_eq!(queue.snapshot(), vec![UiRequest::Recent]);
+        assert_eq!(queue.snapshot(), vec![UiRequest::RunCommand]);
         assert_eq!(sink.open_modal, Some(UiModal::Palette));
     }
 
@@ -444,10 +441,10 @@ mod tests {
         let emitted = UiRequest::Archive(PathBuf::from("/tmp/emitted.zip"));
         let mut queue = UiRequestQueue::default();
         let mut sink = FakeSink {
-            emit_after: Some((UiRequest::Recent, emitted.clone())),
+            emit_after: Some((UiRequest::RunCommand, emitted.clone())),
             ..Default::default()
         };
-        queue.emit(UiRequest::Recent);
+        queue.emit(UiRequest::RunCommand);
         queue.emit(UiRequest::Palette);
 
         dispatch_frame(&mut queue, &mut sink);

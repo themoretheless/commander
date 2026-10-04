@@ -146,17 +146,11 @@ define_modal_store!(
     Mask => Mask {
         mask_input: Option<String>, option
     },
-    Path => Path {
-        path_input: Option<crate::path_probe::PathDialogState>, option
-    },
-    Recent => Recent {
-        recent_input: Option<String>, option
-    },
     RunCommand => RunCommand {
         run_command: Option<RunCommandState>, option
     },
     Palette => Palette {
-        palette_input: Option<String>, option
+        palette_input: Option<super::omnibar_dialog::OmnibarState>, option
     },
 );
 
@@ -166,6 +160,8 @@ pub(crate) struct UiState {
     pub(crate) type_ahead: Option<(String, f64)>,
     /// Pending vim-style chord leader and the input time it was pressed.
     pub(crate) chord: Option<(char, f64)>,
+    /// Input time a modifier key started being held (key bar reveal).
+    pub(crate) modifier_held_since: Option<f64>,
     pub(crate) focus_mode: bool,
     pub(crate) focus_started_at: f64,
     /// Pointer distance accumulated since focus mode was armed.
@@ -185,6 +181,7 @@ impl Default for UiState {
             modals: ModalStore::default(),
             type_ahead: None,
             chord: None,
+            modifier_held_since: None,
             focus_mode: false,
             focus_started_at: 0.0,
             focus_moved: 0.0,
@@ -242,7 +239,7 @@ mod tests {
 
     #[test]
     fn registry_covers_all_ui_modals_with_unique_surfaces() {
-        assert_eq!(UI_MODAL_REGISTRY.len(), 17);
+        assert_eq!(UI_MODAL_REGISTRY.len(), 15);
         for (index, (modal, surface)) in UI_MODAL_REGISTRY.iter().enumerate() {
             assert_eq!(modal.surface(), *surface);
             assert_eq!(UiModal::from_surface(*surface), Some(*modal));
