@@ -3394,6 +3394,7 @@ mod tests {
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn classify_dir_distinguishes_empty_denied_gone() {
         use std::os::unix::fs::PermissionsExt;

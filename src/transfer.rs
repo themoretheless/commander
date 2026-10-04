@@ -1982,6 +1982,7 @@ mod tests {
         assert!(!file.exists(), "clean move removes the source");
     }
 
+    #[cfg(unix)]
     #[test]
     fn move_keeps_source_when_placement_fails() {
         use std::os::unix::fs::PermissionsExt;
@@ -2042,6 +2043,7 @@ mod tests {
         assert_eq!(s.copied_bytes, s.total_bytes);
     }
 
+    #[cfg(unix)]
     #[test]
     fn same_volume_move_needs_no_read_access_to_contents() {
         use std::os::unix::fs::PermissionsExt;
@@ -2487,6 +2489,7 @@ mod tests {
         assert!(!dst.path().join("b.txt").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn failed_buffered_copy_removes_partial_destination() {
         use std::os::unix::fs::PermissionsExt;
@@ -2710,6 +2713,7 @@ mod tests {
         assert!(!s.errors.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn failed_overwrite_preserves_existing_destination() {
         use std::os::unix::fs::PermissionsExt;
@@ -2875,6 +2879,7 @@ mod tests {
         assert!(!s.errors.is_empty(), "copy into own subtree must error");
     }
 
+    #[cfg(unix)]
     #[test]
     fn buffered_copy_recreates_symlink_without_following() {
         let (src, dst) = (TempDir::new(), TempDir::new());
@@ -3176,6 +3181,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn failed_new_dir_copy_cleans_partial_destination() {
         use std::os::unix::fs::PermissionsExt;

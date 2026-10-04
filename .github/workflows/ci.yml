@@ -11,6 +11,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  portable:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          components: clippy
+
+      - name: Linux GUI libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgtk-3-dev
+
+      - name: Clippy
+        run: cargo --locked clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo --locked build --release
+
   check:
     if: github.event_name != 'schedule'
     runs-on: macos-latest

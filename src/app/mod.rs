@@ -84,6 +84,9 @@ pub struct App {
     pub(crate) show_compare: bool,
     /// Keep the key bar visible; otherwise it appears while a modifier is held.
     pub(crate) show_key_bar: bool,
+    /// Open egui context menu (panel, target, anchor) on platforms without
+    /// a native one.
+    pub(crate) fallback_menu: Option<(ActivePanel, PathBuf, egui::Pos2)>,
     /// Whether the unified queue/history/errors/recovery surface is visible.
     pub(crate) show_operations_center: bool,
     pub(crate) operations_tab: OperationsTab,
@@ -677,6 +680,7 @@ impl App {
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
             show_key_bar: session.as_ref().is_some_and(|s| s.show_key_bar),
+            fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
             operations_search: String::new(),
@@ -763,6 +767,7 @@ impl App {
             show_size_bars: true,
             show_compare: false,
             show_key_bar: false,
+            fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
             operations_search: String::new(),

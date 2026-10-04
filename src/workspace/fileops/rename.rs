@@ -58,10 +58,17 @@ pub(crate) fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), Renam
     }
     let dest_meta = to.symlink_metadata().ok();
     let same_file = match &dest_meta {
+        #[cfg(unix)]
         Some(dest) => from.symlink_metadata().ok().is_some_and(|source| {
             use std::os::unix::fs::MetadataExt;
             source.ino() == dest.ino() && source.dev() == dest.dev()
         }),
+        // Case-only renames on case-insensitive volumes resolve to one file.
+        #[cfg(not(unix))]
+        Some(_) => match (from.canonicalize(), to.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        },
         None => false,
     };
     if dest_meta.is_some() && !same_file {

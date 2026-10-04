@@ -76,12 +76,23 @@ pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usiz
     } else {
         format_size(entry.size)
     };
+    #[cfg(unix)]
     let permissions = {
         use std::os::unix::fs::PermissionsExt;
         fs::metadata(&entry.path)
             .map(|m| format_mode(m.permissions().mode()))
             .unwrap_or_else(|_| "---------".to_string())
     };
+    #[cfg(not(unix))]
+    let permissions = fs::metadata(&entry.path)
+        .map(|m| {
+            if m.permissions().readonly() {
+                "read-only".to_string()
+            } else {
+                "read/write".to_string()
+            }
+        })
+        .unwrap_or_else(|_| "---------".to_string());
     InfoCard {
         name: entry.name.clone(),
         path: entry.path.display().to_string(),

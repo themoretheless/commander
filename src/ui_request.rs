@@ -301,7 +301,10 @@ mod tests {
 
         assert_eq!(
             queue.snapshot(),
-            vec![UiRequest::RunCommand, UiRequest::CopyPaths(PathStyle::NameOnly),]
+            vec![
+                UiRequest::RunCommand,
+                UiRequest::CopyPaths(PathStyle::NameOnly),
+            ]
         );
     }
 
@@ -361,7 +364,10 @@ mod tests {
 
         sink.open_modal = None;
         dispatch_frame(&mut queue, &mut sink);
-        assert_eq!(sink.applied, vec![UiRequest::RunCommand, UiRequest::Palette]);
+        assert_eq!(
+            sink.applied,
+            vec![UiRequest::RunCommand, UiRequest::Palette]
+        );
     }
 
     #[test]

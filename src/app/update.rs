@@ -284,6 +284,7 @@ impl eframe::App for App {
         self.show_drag_overlay(&ctx);
         self.show_type_ahead_overlay(&ctx, input_policy.background_enabled());
         self.show_toasts(&ctx, input_policy.background_enabled());
+        self.show_fallback_context_menu(&ctx);
         self.show_developer_panel(&ctx, input_policy.background_enabled());
         self.handle_drop(&ctx, input_policy);
     }
@@ -322,6 +323,13 @@ impl App {
         if self.ws.active != request.panel {
             return;
         }
+        if !cfg!(target_os = "macos") {
+            let pos = ctx
+                .pointer_latest_pos()
+                .unwrap_or_else(|| ctx.content_rect().center());
+            self.fallback_menu = Some((request.panel, request.invocation.target.path.clone(), pos));
+            return;
+        }
         let context_menu = std::rc::Rc::clone(&self.context_menu);
         let effect = crate::provider_runtime::request_context_menu(
             context_menu.as_ref(),
@@ -330,6 +338,65 @@ impl App {
         self.apply_context_menu_effect(request.panel, effect, ctx);
         if !self.has_modal_surface() {
             ctx.memory_mut(|memory| memory.request_focus(request.focus_id));
+        }
+    }
+
+    /// Context menu drawn by egui where no native menu exists (Linux, Windows).
+    fn show_fallback_context_menu(&mut self, ctx: &egui::Context) {
+        use crate::provider_runtime::ContextMenuUiEffect as Effect;
+        let Some((panel, path, pos)) = self.fallback_menu.clone() else {
+            return;
+        };
+        let t = self.colors;
+        let mut effect: Option<Effect> = None;
+        let area = egui::Area::new(egui::Id::new("fallback_context_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                Frame::NONE
+                    .fill(t.bg_panel)
+                    .stroke(Stroke::new(1.0_f32, t.border))
+                    .corner_radius(crate::theme::ROUNDING_MD)
+                    .inner_margin(Margin::same(4))
+                    .show(ui, |ui| {
+                        ui.set_min_width(180.0);
+                        let mut item = |ui: &mut egui::Ui, label: &str, value: Effect| {
+                            if ui
+                                .add(
+                                    egui::Button::new(label)
+                                        .fill(Color32::TRANSPARENT)
+                                        .stroke(Stroke::NONE)
+                                        .min_size(Vec2::new(ui.available_width(), 24.0)),
+                                )
+                                .clicked()
+                            {
+                                effect = Some(value);
+                            }
+                        };
+                        item(
+                            ui,
+                            "Open",
+                            Effect::Open(crate::ports::OpenRequest::OpenPath(path.clone())),
+                        );
+                        item(
+                            ui,
+                            "Show in file manager",
+                            Effect::Open(crate::ports::OpenRequest::Reveal(path.clone())),
+                        );
+                        item(ui, "Copy path", Effect::CopyPath(path.clone()));
+                        ui.separator();
+                        item(ui, "Move to Trash", Effect::MoveToTrash(path.clone()));
+                        ui.separator();
+                        item(ui, "Refresh", Effect::RefreshPanels);
+                    });
+            });
+        let dismissed = ctx.input(|input| input.key_pressed(egui::Key::Escape))
+            || (area.response.clicked_elsewhere() && effect.is_none());
+        if effect.is_some() || dismissed {
+            self.fallback_menu = None;
+        }
+        if effect.is_some() {
+            self.apply_context_menu_effect(panel, effect, ctx);
         }
     }
 
