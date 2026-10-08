@@ -121,7 +121,7 @@ fn copy_file_buffered_inner(
     let mut next_checkpoint = offset.saturating_add(CHECKPOINT_INTERVAL);
 
     loop {
-        // Single mutex acquisition per iteration — O(1) instead of O(2) 
+        // Single mutex acquisition per iteration — O(1) instead of O(2)
         // Acquire once and use for both cancellation check and progress tracking
         let cancelled = {
             let s = crate::lock_util::recover(state);
@@ -152,7 +152,7 @@ fn copy_file_buffered_inner(
         writer.write_all(&buf[..n])?;
         content_hasher.update(&buf[..n]);
         copied = copied.saturating_add(n as u64);
-        
+
         if limiter.consume(n, || false).is_err() {
             persist_checkpoint(
                 src,

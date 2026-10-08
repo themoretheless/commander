@@ -67,9 +67,9 @@ pub fn squarify(weights: &[f64], rect: Rect) -> Vec<Rect> {
         // the newly added element areas[row_end] is always the minimum.
         while row_end < n && areas[row_end] > 0.0 {
             let new_sum = row_sum + areas[row_end];
-            
+
             // O(1) access instead of O(k) fold — reduces entire pass to O(n)
-            let new_min = areas[row_end]; 
+            let new_min = areas[row_end];
             let new_max = areas[i];
             let cand = worst_ratio_sum(new_sum, new_min, new_max, side);
             if cand <= best {
