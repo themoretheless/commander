@@ -1300,7 +1300,7 @@ impl ImageCache {
         while self.total_bytes > MAX_CACHE_BYTES && !self.entries.is_empty() {
             let mut sorted: Vec<_> = self.entries.iter().collect();
             sorted.sort_by_key(|(_, e)| e.last_used);
-            
+
             let oldest_key = sorted[0].0.clone();
             if let Some(entry) = self.entries.remove(&oldest_key) {
                 self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
@@ -1381,8 +1381,24 @@ fn is_video_ext(path: &Path) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
             .map(|s| s.as_bytes()),
-        Some(b"mp4" | b"mov" | b"avi" | b"mkv" | b"webm" | b"m4v" | b"wmv" | b"flv"
-              | b"MP4" | b"MOV" | b"AVI" | b"MKV" | b"WEBM" | b"M4V" | b"WMV" | b"FLV")
+        Some(
+            b"mp4"
+                | b"mov"
+                | b"avi"
+                | b"mkv"
+                | b"webm"
+                | b"m4v"
+                | b"wmv"
+                | b"flv"
+                | b"MP4"
+                | b"MOV"
+                | b"AVI"
+                | b"MKV"
+                | b"WEBM"
+                | b"M4V"
+                | b"WMV"
+                | b"FLV"
+        )
     )
 }
 
@@ -1393,8 +1409,26 @@ fn is_undecodable_standard_ext(path: &Path) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
             .map(|s| s.as_bytes()),
-        Some(b"svg" | b"mkv" | b"webm" | b"mp4" | b"mov" | b"avi" | b"m4v" | b"wmv" | b"flv"
-              | b"SVG" | b"MKV" | b"WEBM" | b"MP4" | b"MOV" | b"AVI" | b"M4V" | b"WMV" | b"FLV")
+        Some(
+            b"svg"
+                | b"mkv"
+                | b"webm"
+                | b"mp4"
+                | b"mov"
+                | b"avi"
+                | b"m4v"
+                | b"wmv"
+                | b"flv"
+                | b"SVG"
+                | b"MKV"
+                | b"WEBM"
+                | b"MP4"
+                | b"MOV"
+                | b"AVI"
+                | b"M4V"
+                | b"WMV"
+                | b"FLV"
+        )
     )
 }
 
