@@ -197,14 +197,25 @@ fn classify(local: Option<bool>, filesystem: &str, mount_point: &Path) -> Backen
     if local.is_none() {
         return BackendKind::Unknown;
     }
-    if mount_point.starts_with("/Volumes") {
+    if ["/Volumes", "/media", "/run/media"]
+        .iter()
+        .any(|root| mount_point.starts_with(root))
+    {
         return BackendKind::Removable;
     }
-    if filesystem.eq_ignore_ascii_case("apfs") {
+    if is_fast_local_filesystem(filesystem) {
         BackendKind::LocalFast
     } else {
         BackendKind::LocalSlow
     }
+}
+
+/// Journaling or copy-on-write filesystems that sit on fixed local storage.
+fn is_fast_local_filesystem(filesystem: &str) -> bool {
+    matches!(
+        filesystem.to_ascii_lowercase().as_str(),
+        "apfs" | "ext4" | "btrfs" | "xfs" | "f2fs" | "zfs" | "tmpfs" | "overlay"
+    )
 }
 
 fn probe(path: &Path, volume_id: u64) -> VolumeProfile {
@@ -212,9 +223,11 @@ fn probe(path: &Path, volume_id: u64) -> VolumeProfile {
     let filesystem = native
         .as_ref()
         .map_or_else(|| "unknown".to_string(), |mount| mount.filesystem.clone());
+    // The mount point is a property of the volume, never of the queried path:
+    // the profile cache is keyed by volume, so every path on it must agree.
     let mount_point = native
         .as_ref()
-        .map_or_else(|| nearest_existing(path), |mount| mount.mount_point.clone());
+        .map_or_else(|| mount_root(path), |mount| mount.mount_point.clone());
     let read_only = native.as_ref().is_some_and(|mount| mount.read_only);
     let case_sensitive = native.as_ref().and_then(|mount| mount.case_sensitive);
     let backend = classify(
@@ -279,9 +292,104 @@ fn native_mount(path: &Path) -> Option<NativeMount> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn native_mount(path: &Path) -> Option<NativeMount> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: `c_path` is NUL-terminated and `stats` is a writable statfs.
+    if unsafe { libc::statfs(c_path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: statfs returned 0, so the struct is initialized.
+    let magic = unsafe { stats.assume_init() }.f_type as u64 as u32;
+    let mut vfs = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    // SAFETY: as above, for statvfs.
+    let read_only = unsafe { libc::statvfs(c_path.as_ptr(), vfs.as_mut_ptr()) } == 0
+        && unsafe { vfs.assume_init() }.f_flag & libc::ST_RDONLY != 0;
+    let (filesystem, local) = linux_filesystem(magic);
+    Some(NativeMount {
+        filesystem: filesystem.to_string(),
+        mount_point: mount_root(path),
+        local,
+        read_only,
+        case_sensitive: None,
+    })
+}
+
+/// Name and locality for a Linux `statfs` magic number (`linux/magic.h`).
+/// Unrecognised filesystems are treated as local but not fast.
+#[cfg(target_os = "linux")]
+fn linux_filesystem(magic: u32) -> (&'static str, bool) {
+    match magic {
+        0xEF53 => ("ext4", true),
+        0x9123_683E => ("btrfs", true),
+        0x5846_5342 => ("xfs", true),
+        0xF2F5_2010 => ("f2fs", true),
+        0x2FC1_2FC1 => ("zfs", true),
+        0x0102_1994 => ("tmpfs", true),
+        0x794C_7630 => ("overlay", true),
+        0x4D44 => ("msdos", true),
+        0x2011_BAB0 => ("exfat", true),
+        0x5346_544E | 0x7366_746E => ("ntfs", true),
+        0x9660 => ("iso9660", true),
+        0x7371_7368 => ("squashfs", true),
+        0x6969 => ("nfs", false),
+        0x517B => ("smb", false),
+        0xFF53_4D42 => ("cifs", false),
+        0xFE53_4D42 => ("smb2", false),
+        0x6573_5546 => ("fuse", false),
+        0x0102_1997 => ("9p", false),
+        0x00C3_6400 => ("ceph", false),
+        _ => ("unknown", true),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn native_mount(_path: &Path) -> Option<NativeMount> {
     None
+}
+
+/// The root of the volume holding `path`: the highest ancestor still on the
+/// same device. Used where the OS gives no mount table entry directly.
+#[cfg(unix)]
+fn mount_root(path: &Path) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+
+    let start = nearest_existing(path);
+    let start = std::fs::canonicalize(&start).unwrap_or(start);
+    let Ok(device) = std::fs::metadata(&start).map(|metadata| metadata.dev()) else {
+        return start;
+    };
+    let mut root = start.as_path();
+    while let Some(parent) = root.parent() {
+        match std::fs::metadata(parent) {
+            Ok(metadata) if metadata.dev() == device => root = parent,
+            _ => break,
+        }
+    }
+    root.to_path_buf()
+}
+
+/// The drive or UNC share root of `path` (`C:\`, `\\server\share\`).
+#[cfg(not(unix))]
+fn mount_root(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut root = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => root.push(component),
+            _ => break,
+        }
+    }
+    if root.as_os_str().is_empty() {
+        nearest_existing(path)
+    } else {
+        root
+    }
 }
 
 #[cfg(test)]
@@ -327,6 +435,55 @@ mod tests {
         let second = profile(temp.path());
         assert_eq!(first.volume_id, second.volume_id);
         assert_eq!(first.generation, second.generation);
+    }
+
+    #[test]
+    fn every_path_on_a_volume_reports_the_same_mount_point() {
+        let (first_dir, second_dir) = (TempDir::new(), TempDir::new());
+        let first = profile(first_dir.path());
+        drop(first_dir);
+        let second = profile(second_dir.path());
+        assert_eq!(first.volume_id, second.volume_id);
+        assert_eq!(first.mount_point, second.mount_point);
+        assert!(second.mount_point.exists());
+        let canonical = std::fs::canonicalize(second_dir.path()).unwrap();
+        assert!(canonical.starts_with(&second.mount_point));
+        // A guard captured after an earlier folder on the volume was deleted
+        // must still see its volume as available.
+        let guard = crate::mount_guard::MountGuard::capture(
+            second_dir.path(),
+            crate::mount_guard::ReconnectPolicy::default(),
+        );
+        assert_eq!(
+            guard.check(),
+            crate::mount_guard::MountAvailability::Available
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_probe_names_the_filesystem_and_marks_it_local() {
+        let temp = TempDir::new();
+        let mount = native_mount(temp.path()).expect("statfs on a temp dir");
+        assert!(mount.mount_point.is_absolute());
+        assert_eq!(linux_filesystem(0x6969), ("nfs", false));
+        assert_eq!(linux_filesystem(0xEF53), ("ext4", true));
+    }
+
+    #[test]
+    fn linux_and_mac_removable_roots_classify_as_removable() {
+        assert_eq!(
+            classify(Some(true), "exfat", Path::new("/run/media/me/card")),
+            BackendKind::Removable
+        );
+        assert_eq!(
+            classify(Some(true), "ext4", Path::new("/")),
+            BackendKind::LocalFast
+        );
+        assert_eq!(
+            classify(Some(true), "unknown", Path::new("/")),
+            BackendKind::LocalSlow
+        );
     }
 
     #[test]
