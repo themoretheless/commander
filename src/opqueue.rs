@@ -87,6 +87,9 @@ pub struct Job<S> {
 #[derive(Debug)]
 pub struct Queue<S> {
     jobs: Vec<Job<S>>,
+    /// Parallel index for O(1) job lookup by id while preserving order.
+    /// Used by state_of() and get() to avoid O(n) scanning.
+    index: std::collections::HashMap<JobId, usize>,
     /// Maximum number of jobs allowed in `Running` at once (at least 1).
     concurrency: usize,
     next_id: u64,
@@ -109,6 +112,7 @@ impl<S> Queue<S> {
     pub fn with_concurrency(concurrency: usize) -> Self {
         Queue {
             jobs: Vec::new(),
+            index: std::collections::HashMap::new(),
             concurrency: concurrency.max(1),
             next_id: 0,
         }
@@ -145,7 +149,8 @@ impl<S> Queue<S> {
     }
 
     pub fn get(&self, id: JobId) -> Option<&Job<S>> {
-        self.jobs.iter().find(|j| j.id == id)
+        // O(1) lookup via index instead of O(n) linear scan
+        self.index.get(&id).and_then(|&pos| self.jobs.get(pos))
     }
 
     /// How many jobs are currently `Running`.
@@ -167,6 +172,7 @@ impl<S> Queue<S> {
     /// Append a new `Pending` job, returning its stable id.
     pub fn enqueue(&mut self, kind: JobKind, spec: S) -> JobId {
         let id = JobId(self.next_id);
+        let pos = self.jobs.len();
         self.next_id += 1;
         self.jobs.push(Job {
             id,
@@ -174,6 +180,8 @@ impl<S> Queue<S> {
             spec,
             state: JobState::Pending,
         });
+        // Maintain O(1) lookup index
+        self.index.insert(id, pos);
         id
     }
 
@@ -260,7 +268,8 @@ impl<S> Queue<S> {
     /// `to_index` is clamped into range.
     #[allow(dead_code)]
     pub fn reorder(&mut self, id: JobId, to_index: usize) -> bool {
-        let Some(from) = self.jobs.iter().position(|j| j.id == id) else {
+        // Use O(1) index lookup instead of iterating
+        let Some(&from) = self.index.get(&id) else {
             return false;
         };
         if self.jobs[from].state != JobState::Pending {
@@ -270,8 +279,34 @@ impl<S> Queue<S> {
         if from == to {
             return true;
         }
+        
+        // Remove old index entry and rebuild for affected indices
+        self.index.remove(&id);
+        
         let job = self.jobs.remove(from);
+        
+        // Update indices for all jobs that shifted
+        if from < to {
+            // Shifting forward: [from+1, to] indices decrease by 1
+            for (_, idx) in self.index.iter_mut() {
+                if *idx > from && *idx <= to {
+                    *idx -= 1;
+                }
+            }
+        } else {
+            // Shifting backward: [to, from) indices increase by 1
+            for (_, idx) in self.index.iter_mut() {
+                if *idx >= to && *idx < from {
+                    *idx += 1;
+                }
+            }
+        }
+        
+        // Insert new position after the insert shifted things
+        let new_pos = to;
         self.jobs.insert(to, job);
+        self.index.insert(id, new_pos);
+        
         true
     }
 
@@ -285,7 +320,19 @@ impl<S> Queue<S> {
     /// user clears finished entries. Returns how many were removed.
     pub fn clear_finished(&mut self) -> usize {
         let before = self.jobs.len();
-        self.jobs.retain(|j| !j.state.is_terminal());
+        
+        // Filter out terminal jobs and rebuild index for correctness
+        let mut new_index = std::collections::HashMap::with_capacity(self.index.len());
+        self.jobs.retain(|job| {
+            let keep = !job.state.is_terminal();
+            if keep {
+                // Assign correct new index position
+                new_index.insert(job.id, new_index.len());
+            }
+            keep
+        });
+        
+        self.index = new_index;
         before - self.jobs.len()
     }
 
@@ -294,8 +341,9 @@ impl<S> Queue<S> {
     }
 
     fn set_state(&mut self, id: JobId, state: JobState) {
-        if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
-            job.state = state;
+        // Use O(1) index lookup
+        if let Some(&pos) = self.index.get(&id) {
+            self.jobs[pos].state = state;
         }
     }
 

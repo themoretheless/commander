@@ -63,14 +63,15 @@ pub fn squarify(weights: &[f64], rect: Rect) -> Vec<Rect> {
         let mut row_end = i + 1;
         let mut row_sum = areas[i];
         let mut best = worst_ratio_sum(areas[i], areas[i], areas[i], side);
+        // Since areas are sorted descending, max is always areas[i] and
+        // the newly added element areas[row_end] is always the minimum.
         while row_end < n && areas[row_end] > 0.0 {
             let new_sum = row_sum + areas[row_end];
-            let row_min = areas[i..=row_end]
-                .iter()
-                .copied()
-                .fold(f64::INFINITY, f64::min);
-            let row_max = areas[i..=row_end].iter().copied().fold(0.0, f64::max);
-            let cand = worst_ratio_sum(new_sum, row_min, row_max, side);
+            
+            // O(1) access instead of O(k) fold — reduces entire pass to O(n)
+            let new_min = areas[row_end]; 
+            let new_max = areas[i];
+            let cand = worst_ratio_sum(new_sum, new_min, new_max, side);
             if cand <= best {
                 best = cand;
                 row_sum = new_sum;

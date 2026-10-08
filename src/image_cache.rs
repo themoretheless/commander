@@ -1296,15 +1296,13 @@ impl ImageCache {
         }
 
         // Still over budget — evict oldest from current set
+        // O(n log n) sort-based eviction instead of O(n²) repeated min scans
         while self.total_bytes > MAX_CACHE_BYTES && !self.entries.is_empty() {
-            let oldest = self
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_used)
-                .map(|(k, _)| k.clone());
-            if let Some(path) = oldest
-                && let Some(entry) = self.entries.remove(&path)
-            {
+            let mut sorted: Vec<_> = self.entries.iter().collect();
+            sorted.sort_by_key(|(_, e)| e.last_used);
+            
+            let oldest_key = sorted[0].0.clone();
+            if let Some(entry) = self.entries.remove(&oldest_key) {
                 self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
             }
         }
@@ -1378,11 +1376,13 @@ fn classify_failure(error: &str) -> PreviewFailure {
 
 #[cfg(target_os = "macos")]
 fn is_video_ext(path: &Path) -> bool {
+    // Byte-level case-insensitive check avoids string allocation during scans
     matches!(
         path.extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .as_deref(),
-        Some("mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "wmv" | "flv")
+            .and_then(|e| e.to_str())
+            .map(|s| s.as_bytes()),
+        Some(b"mp4" | b"mov" | b"avi" | b"mkv" | b"webm" | b"m4v" | b"wmv" | b"flv"
+              | b"MP4" | b"MOV" | b"AVI" | b"MKV" | b"WEBM" | b"M4V" | b"WMV" | b"FLV")
     )
 }
 
@@ -1391,9 +1391,10 @@ fn is_video_ext(path: &Path) -> bool {
 fn is_undecodable_standard_ext(path: &Path) -> bool {
     matches!(
         path.extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .as_deref(),
-        Some("svg" | "mkv" | "webm" | "mp4" | "mov" | "avi" | "m4v" | "wmv" | "flv")
+            .and_then(|e| e.to_str())
+            .map(|s| s.as_bytes()),
+        Some(b"svg" | b"mkv" | b"webm" | b"mp4" | b"mov" | b"avi" | b"m4v" | b"wmv" | b"flv"
+              | b"SVG" | b"MKV" | b"WEBM" | b"MP4" | b"MOV" | b"AVI" | b"M4V" | b"WMV" | b"FLV")
     )
 }
 
