@@ -36,7 +36,7 @@ pub fn run(request: NativeQaRequest) -> Result<(), String> {
     )?;
 
     let capabilities = detect_capabilities(&topology);
-    let renderer = crate::native_menu::native_qa_renderer_check().unwrap_or_else(|error| {
+    let renderer = native_menu_renderer_check().unwrap_or_else(|error| {
         super::contract::NativeMenuRendererEvidence {
             check: CheckEvidence::failed("native_menu_renderer", error),
             popup_size: None,
@@ -103,4 +103,14 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(target_os = "macos")]
+fn native_menu_renderer_check() -> Result<super::contract::NativeMenuRendererEvidence, String> {
+    crate::native_menu::native_qa_renderer_check()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_menu_renderer_check() -> Result<super::contract::NativeMenuRendererEvidence, String> {
+    Err("native menus are macOS-only".to_string())
 }
