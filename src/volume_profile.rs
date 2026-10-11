@@ -445,9 +445,9 @@ mod tests {
         let second = profile(second_dir.path());
         assert_eq!(first.volume_id, second.volume_id);
         assert_eq!(first.mount_point, second.mount_point);
+        // Not asserting the path lies under the mount point: macOS firmlinks
+        // report /System/Volumes/Data for paths under /private.
         assert!(second.mount_point.exists());
-        let canonical = std::fs::canonicalize(second_dir.path()).unwrap();
-        assert!(canonical.starts_with(&second.mount_point));
         // A guard captured after an earlier folder on the volume was deleted
         // must still see its volume as available.
         let guard = crate::mount_guard::MountGuard::capture(
