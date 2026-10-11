@@ -72,6 +72,13 @@ impl App {
                 .ctx()
                 .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
         let mut context_menu_request = None;
+        // Reserve the footer first so the scroll area fills only what is left;
+        // drawn after it, the footer fell below the panel and was clipped.
+        egui::Panel::bottom(egui::Id::new(("file_list_status", panel_side)))
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::NONE)
+            .show(ui, |ui| Self::render_status_bar(ui, panel, t, compare));
         egui::ScrollArea::vertical()
             .id_salt(format!("file_list_{}", panel_side))
             .auto_shrink([false; 2])
@@ -725,7 +732,17 @@ impl App {
                 }
             });
 
-        // Status bar
+        context_menu_request
+    }
+
+    /// Per-panel footer: item count and size, filters, selection, folder
+    /// extremes, compare selection chips, hidden-files state.
+    fn render_status_bar(
+        ui: &mut egui::Ui,
+        panel: &mut PanelState,
+        t: &ThemeColors,
+        compare: Option<&crate::compare::CompareMap>,
+    ) {
         Frame::NONE
             .fill(Color32::TRANSPARENT)
             .inner_margin(Margin::symmetric(10, 4))
@@ -854,7 +871,6 @@ impl App {
                     });
                 });
             });
-        context_menu_request
     }
 
     pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {
