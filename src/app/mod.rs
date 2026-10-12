@@ -326,7 +326,6 @@ pub(crate) struct ArchiveState {
     pub selected: std::collections::BTreeSet<usize>,
     pub status: Option<String>,
     pub error: Option<String>,
-    pub focused: bool,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -340,7 +339,6 @@ pub(crate) struct FindState {
     pub generation: u64,
     pub ran: bool,
     pub searching: bool,
-    pub focused: bool,
     pub scanned: usize,
     pub matched: usize,
     pub elapsed: std::time::Duration,
@@ -403,7 +401,6 @@ impl Default for FindState {
             generation: 0,
             ran: false,
             searching: false,
-            focused: false,
             scanned: 0,
             matched: 0,
             elapsed: std::time::Duration::ZERO,
@@ -502,8 +499,6 @@ pub(crate) struct BatchRenameState {
     pub num_start: u32,
     pub num_step: u32,
     pub num_pad: u32,
-    /// Set once so the first text field grabs focus on the opening frame.
-    pub focused: bool,
     pub error: Option<String>,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
@@ -534,8 +529,6 @@ pub(crate) struct RenameState {
     pub siblings: Vec<String>,
     pub buffer: String,
     pub error: Option<String>,
-    /// Set once so the text field grabs focus on the first frame.
-    pub focused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

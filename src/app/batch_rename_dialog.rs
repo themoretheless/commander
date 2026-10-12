@@ -67,7 +67,7 @@ impl ValidatedBatchRename {
 }
 
 impl App {
-    pub(crate) fn open_batch_rename(&mut self) {
+    pub(crate) fn open_batch_rename(&mut self, ctx: &egui::Context) {
         let Some(context) = self.ws.batch_rename_context() else {
             return;
         };
@@ -84,10 +84,10 @@ impl App {
             num_start: 1,
             num_step: 1,
             num_pad: 2,
-            focused: false,
             error: None,
             scroll_nonce,
         });
+        Self::mark_modal_opened(ctx, UiModal::BatchRename);
     }
 
     pub(crate) fn show_batch_rename_dialog(&mut self, ctx: &egui::Context) {
@@ -140,9 +140,8 @@ impl App {
                         "text or empty"
                     };
                     let first = field(ui, "Find", &mut state.find, find_hint);
-                    if !state.focused {
+                    if Self::take_modal_opened(ui.ctx(), UiModal::BatchRename) {
                         first.request_focus();
-                        state.focused = true;
                     }
                     let replace_hint = if state.regex_mode { "$1 groups ok" } else { "" };
                     field(ui, "Replace", &mut state.replace, replace_hint);

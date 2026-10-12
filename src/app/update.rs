@@ -752,7 +752,7 @@ impl App {
 
     fn dispatch_ui_request(&mut self, request: UiRequest, ctx: &egui::Context) {
         match request {
-            UiRequest::Rename(path) => self.open_rename(path),
+            UiRequest::Rename(path) => self.open_rename(path, ctx),
             UiRequest::SelectMask => self.open_mask(ctx),
             UiRequest::RunCommand => self.open_run_command(ctx),
             UiRequest::GatherIntoFolder => {
@@ -768,12 +768,12 @@ impl App {
             UiRequest::Recent => self.open_recent(ctx),
             UiRequest::Undo => self.open_history_preview(HistoryReplayMode::Undo, ctx),
             UiRequest::Palette => self.open_palette(ctx),
-            UiRequest::BatchRename => self.open_batch_rename(),
+            UiRequest::BatchRename => self.open_batch_rename(ctx),
             UiRequest::Sync => self.open_sync(),
             UiRequest::FindDuplicates => self.open_duplicates(),
             UiRequest::DiffFiles => self.open_diff(ctx),
             UiRequest::DiskTreemap => self.open_treemap(ctx),
-            UiRequest::Find => self.open_find(),
+            UiRequest::Find => self.open_find(ctx),
             UiRequest::Archive(path) => self.open_archive(path, ctx),
             UiRequest::SavedSearch => self.open_saved_search(),
             UiRequest::ProjectCollections => self.open_collections(ctx),

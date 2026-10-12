@@ -5,7 +5,7 @@
 use super::*;
 
 impl App {
-    pub(crate) fn open_rename(&mut self, path: std::path::PathBuf) {
+    pub(crate) fn open_rename(&mut self, path: std::path::PathBuf, ctx: &egui::Context) {
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
@@ -15,8 +15,8 @@ impl App {
             path,
             buffer: name,
             error: None,
-            focused: false,
         });
+        Self::mark_modal_opened(ctx, UiModal::Rename);
     }
 
     pub(crate) fn show_rename_dialog(&mut self, ctx: &egui::Context) {
@@ -45,9 +45,8 @@ impl App {
             let resp = ui.add(edit);
 
             // Grab focus and select the basename on the first frame.
-            if !state.focused {
+            if Self::take_modal_opened(ui.ctx(), UiModal::Rename) {
                 resp.request_focus();
-                state.focused = true;
             }
 
             // Validate against the directory snapshot captured when the

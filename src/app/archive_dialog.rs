@@ -18,8 +18,8 @@ impl App {
             selected: std::collections::BTreeSet::new(),
             status: None,
             error: None,
-            focused: false,
         });
+        Self::mark_modal_opened(ctx, UiModal::Archive);
     }
 
     fn poll_archive(&mut self, now: f64) {
@@ -138,9 +138,8 @@ impl App {
                             .hint_text("Filter archive members...")
                             .margin(egui::vec2(8.0, 6.0)),
                     );
-                    if !state.focused {
+                    if Self::take_modal_opened(ui.ctx(), UiModal::Archive) {
                         filter.request_focus();
-                        state.focused = true;
                     }
 
                     ui.add_space(6.0);

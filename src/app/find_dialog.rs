@@ -235,7 +235,7 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 
-    pub(crate) fn open_find(&mut self) {
+    pub(crate) fn open_find(&mut self, ctx: &egui::Context) {
         self.search_engine.cancel();
         let root = self.ws.active_panel_ref().current_path.clone();
         let index_exclusions =
@@ -245,6 +245,7 @@ impl App {
             index_exclusions,
             ..Default::default()
         });
+        Self::mark_modal_opened(ctx, UiModal::Find);
     }
 
     pub(crate) fn show_find_dialog(&mut self, ctx: &egui::Context) {
@@ -368,9 +369,8 @@ impl App {
                             .hint_text("Search files...")
                             .margin(egui::vec2(8.0, 7.0)),
                     );
-                    if !state.focused {
+                    if Self::take_modal_opened(ui.ctx(), UiModal::Find) {
                         response.request_focus();
-                        state.focused = true;
                     }
                     edited |= response.changed();
                     if response.lost_focus()

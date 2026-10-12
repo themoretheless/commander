@@ -485,7 +485,7 @@ impl App {
                 self.ws.execute(cmd);
             }
             Some(OmniAction::Search(query)) => {
-                self.open_find();
+                self.open_find(ctx);
                 if let Some(find) = self.ui.modals.find.as_mut() {
                     find.expression = query;
                     find.pending_rerun = true;
