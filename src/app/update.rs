@@ -523,12 +523,7 @@ impl App {
             let persistence = crate::persistence::health_snapshot();
             self.persistence_issue_seen = persistence.issue_generation;
             if let Some(message) = persistence.last_issue {
-                self.toasts.push(crate::toasts::Toast::new(
-                    message,
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    ctx.input(|input| input.time),
-                ));
+                self.toast(ctx, crate::toasts::ToastKind::Error, message, false);
             }
         }
         // Static previews do not need a frame loop. Preview workers repaint on
@@ -618,20 +613,20 @@ impl App {
             if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
                 // log a receipt (jump-back + the same live undo affordance).
-                if let Some(a) = self.ws.top_undo_action() {
-                    self.toasts.push(crate::toasts::Toast::new(
-                        format!("{} {} item(s)", a.verb(), a.item_count()),
+                if let Some(a) = self.ws.top_undo_action().cloned() {
+                    self.toast(
+                        ctx,
                         crate::toasts::ToastKind::Success,
+                        format!("{} {} item(s)", a.verb(), a.item_count()),
                         true,
-                        now,
-                    ));
+                    );
                     if let Some(jump_to) = a.jump_to() {
                         self.receipts.push(crate::receipts::Receipt {
                             verb: a.verb(),
                             item_count: a.item_count(),
                             timestamp: now,
                             jump_to,
-                            undo_action: Some(a.clone()),
+                            undo_action: Some(a),
                         });
                     }
                 }
@@ -712,12 +707,7 @@ impl App {
             .filter(|action| matches!(action, crate::undo::Action::Trash { .. }))
             .filter(|_| outcome.trashed > 0 && !outcome.indeterminate)
             .cloned();
-        self.toasts.push(crate::toasts::Toast::new(
-            message,
-            kind,
-            undo_action.is_some(),
-            now,
-        ));
+        self.toast(ctx, kind, message, undo_action.is_some());
 
         if outcome.trashed > 0 {
             let jump_to = outcome
@@ -790,32 +780,31 @@ impl App {
                 self.write_clipboard(&text, &label, ctx);
             }
             UiRequest::Notice { message, error } => {
-                self.toasts.push(crate::toasts::Toast::new(
-                    message,
+                self.toast(
+                    ctx,
                     if error {
                         crate::toasts::ToastKind::Error
                     } else {
                         crate::toasts::ToastKind::Info
                     },
+                    message,
                     false,
-                    ctx.input(|input| input.time),
-                ));
+                );
             }
             UiRequest::ChecksumReport(report) => {
-                let now = ctx.input(|input| input.time);
                 let summary = report.summary_line();
                 let detail = report.detailed_text();
                 let failed = report.rows.iter().any(|row| row.error.is_some());
-                self.toasts.push(crate::toasts::Toast::new(
-                    summary,
+                self.toast(
+                    ctx,
                     if failed {
                         crate::toasts::ToastKind::Error
                     } else {
                         crate::toasts::ToastKind::Info
                     },
+                    summary,
                     false,
-                    now,
-                ));
+                );
                 if !detail.is_empty() {
                     self.write_clipboard(&detail, "checksum report", ctx);
                 }
@@ -838,15 +827,15 @@ impl App {
                 self.tree_children_cache.clear();
             }
             crate::panel::ViewApplyOutcome::ReadRejected(status) => {
-                self.toasts.push(crate::toasts::Toast::new(
+                self.toast(
+                    ctx,
+                    crate::toasts::ToastKind::Error,
                     format!(
                         "Hidden files unchanged: {}",
                         hidden_files_rejection_message(status)
                     ),
-                    crate::toasts::ToastKind::Error,
                     false,
-                    ctx.input(|input| input.time),
-                ));
+                );
             }
         }
     }
@@ -902,12 +891,7 @@ impl App {
             NativeEffectStatus::Submitted => crate::toasts::ToastKind::Info,
             NativeEffectStatus::Failure => crate::toasts::ToastKind::Error,
         };
-        self.toasts.push(crate::toasts::Toast::new(
-            feedback.message,
-            kind,
-            false,
-            ctx.input(|input| input.time),
-        ));
+        self.toast(ctx, kind, feedback.message, false);
     }
 
     pub(crate) fn open_external(
@@ -925,12 +909,12 @@ impl App {
         let Some(feedback) = perform_open(self.opener.as_ref(), &request) else {
             return;
         };
-        self.toasts.push(crate::toasts::Toast::new(
-            feedback.message,
+        self.toast(
+            ctx,
             crate::toasts::ToastKind::Error,
+            feedback.message,
             false,
-            ctx.input(|input| input.time),
-        ));
+        );
     }
 
     fn drain_shelf(&mut self, ctx: &egui::Context) {
@@ -939,18 +923,17 @@ impl App {
         if outcome.unavailable == 0 {
             return;
         }
-        let now = ctx.input(|input| input.time);
         let item = |count: usize| if count == 1 { "item" } else { "items" };
-        self.toasts.push(crate::toasts::Toast::new(
+        self.toast(
+            ctx,
+            crate::toasts::ToastKind::Error,
             format!(
                 "{} shelf {} unavailable, kept on the shelf",
                 outcome.unavailable,
                 item(outcome.unavailable)
             ),
-            crate::toasts::ToastKind::Error,
             false,
-            now,
-        ));
+        );
     }
 
     fn show_toolbar_panel(&mut self, ui: &mut egui::Ui) {
@@ -1103,7 +1086,6 @@ impl App {
                 query,
             });
         let ok = crate::smart_folder::save(self.smart_folders_mut());
-        let now = ctx.input(|i| i.time);
         let (msg, kind) = if ok {
             (
                 format!("Saved smart folder \"{name}\""),
@@ -1115,8 +1097,7 @@ impl App {
                 crate::toasts::ToastKind::Error,
             )
         };
-        self.toasts
-            .push(crate::toasts::Toast::new(msg, kind, false, now));
+        self.toast(ctx, kind, msg, false);
     }
 
     /// Bottom shelf (drop stack) tray, shown only when something is staged:
@@ -1362,16 +1343,15 @@ impl App {
                 self.ws.request_context_delete(panel, &path);
             }
             crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
-                let now = ctx.input(|input| input.time);
-                self.toasts.push(crate::toasts::Toast::new(
+                self.toast(
+                    ctx,
+                    crate::toasts::ToastKind::Error,
                     format!(
                         "Could not {:?}: nested context-menu actions are not allowed",
                         action.command()
                     ),
-                    crate::toasts::ToastKind::Error,
                     false,
-                    now,
-                ));
+                );
             }
             crate::provider_runtime::ContextMenuUiEffect::Notice { level, message } => {
                 let kind = match level {
@@ -1382,9 +1362,7 @@ impl App {
                         crate::toasts::ToastKind::Error
                     }
                 };
-                let now = ctx.input(|input| input.time);
-                self.toasts
-                    .push(crate::toasts::Toast::new(message, kind, false, now));
+                self.toast(ctx, kind, message, false);
             }
         }
     }

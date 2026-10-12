@@ -13,16 +13,15 @@ impl App {
     pub(crate) fn open_run_command(&mut self, ctx: &egui::Context) {
         let dir = self.ws.active_panel_ref().current_path.clone();
         if !crate::trust::allows_run_command(&dir) {
-            let now = ctx.input(|input| input.time);
-            self.toasts.push(crate::toasts::Toast::new(
+            self.toast(
+                ctx,
+                crate::toasts::ToastKind::Error,
                 format!(
                     "Run command blocked by {} trust",
                     crate::trust::label_for(&dir).label()
                 ),
-                crate::toasts::ToastKind::Error,
                 false,
-                now,
-            ));
+            );
             return;
         }
         self.command_templates_mut();
@@ -304,7 +303,6 @@ impl App {
                     .next()
                     .unwrap_or("Command")
                     .to_string();
-                let now = ctx.input(|i| i.time);
                 let added = self
                     .command_templates_mut()
                     .add(crate::cmdtemplate::Template {
@@ -327,8 +325,7 @@ impl App {
                         crate::toasts::ToastKind::Error,
                     )
                 };
-                self.toasts
-                    .push(crate::toasts::Toast::new(text, kind, false, now));
+                self.toast(ctx, kind, text, false);
             }
             return; // keep the bar open after saving
         }
@@ -336,23 +333,17 @@ impl App {
             if cmdline.trim().is_empty() {
                 return;
             }
-            let now = ctx.input(|i| i.time);
             if let Some(reason) = self.ws.mutation_block_reason("running a command") {
-                self.toasts.push(crate::toasts::Toast::new(
-                    reason,
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    now,
-                ));
+                self.toast(ctx, crate::toasts::ToastKind::Error, reason, false);
                 return;
             }
             if !crate::trust::allows_run_command(opening.dir()) {
-                self.toasts.push(crate::toasts::Toast::new(
-                    "Run command is blocked for this folder's trust label",
+                self.toast(
+                    ctx,
                     crate::toasts::ToastKind::Error,
+                    "Run command is blocked for this folder's trust label",
                     false,
-                    now,
-                ));
+                );
                 return;
             }
             let cwd = opening.dir().to_path_buf();
@@ -387,12 +378,12 @@ impl App {
                 state.run = Some(CommandOutputRun { receiver });
                 state.output = None;
             }
-            self.toasts.push(crate::toasts::Toast::new(
-                "Command started",
+            self.toast(
+                ctx,
                 crate::toasts::ToastKind::Info,
+                "Command started",
                 false,
-                now,
-            ));
+            );
         }
     }
 
@@ -429,8 +420,7 @@ impl App {
                 )
             };
             state.output = Some(output);
-            self.toasts
-                .push(crate::toasts::Toast::new(text, kind, false, now));
+            self.toast_at(now, kind, text, false);
         }
     }
 }

@@ -922,7 +922,6 @@ impl App {
                 let name = definition.name.clone();
                 self.smart_folders_mut().add(definition);
                 let saved = crate::smart_folder::save(self.smart_folders_mut());
-                let now = ctx.input(|input| input.time);
                 let (message, kind) = if saved {
                     (
                         format!("Saved search \"{name}\""),
@@ -934,8 +933,7 @@ impl App {
                         crate::toasts::ToastKind::Error,
                     )
                 };
-                self.toasts
-                    .push(crate::toasts::Toast::new(message, kind, false, now));
+                self.toast(ctx, kind, message, false);
             }
         }
     }

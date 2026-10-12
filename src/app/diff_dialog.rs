@@ -20,13 +20,12 @@ impl App {
     pub(crate) fn open_diff(&mut self, ctx: &egui::Context) {
         match self.ws.diff_targets() {
             None => {
-                let now = ctx.input(|input| input.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    "Select a file pair to diff",
+                self.toast(
+                    ctx,
                     crate::toasts::ToastKind::Info,
+                    "Select a file pair to diff",
                     false,
-                    now,
-                ));
+                );
             }
             Some((a, b)) => {
                 let name = |path: &Path| {

@@ -121,12 +121,7 @@ impl App {
     }
 
     fn push_key_feedback(&mut self, ctx: &egui::Context, message: &'static str) {
-        self.toasts.push(crate::toasts::Toast::new(
-            message,
-            crate::toasts::ToastKind::Info,
-            false,
-            ctx.input(|input| input.time),
-        ));
+        self.toast(ctx, crate::toasts::ToastKind::Info, message, false);
     }
 
     /// Vim-style chords, modifier-free: `g g` jumps to the top, `s s`

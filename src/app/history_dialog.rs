@@ -4,16 +4,16 @@ use super::*;
 
 impl App {
     pub(crate) fn push_history_notice(&mut self, ctx: &egui::Context, message: &str, error: bool) {
-        self.toasts.push(crate::toasts::Toast::new(
-            message,
+        self.toast(
+            ctx,
             if error {
                 crate::toasts::ToastKind::Error
             } else {
                 crate::toasts::ToastKind::Info
             },
+            message,
             false,
-            ctx.input(|input| input.time),
-        ));
+        );
     }
 
     pub(crate) fn show_history_dialog(&mut self, ctx: &egui::Context) {

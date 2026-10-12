@@ -149,12 +149,12 @@ impl App {
                     self.ui.modals.renaming = None;
                     if changed {
                         let now = ctx.input(|i| i.time);
-                        self.toasts.push(crate::toasts::Toast::new(
-                            "Renamed 1 item",
+                        self.toast(
+                            ctx,
                             crate::toasts::ToastKind::Success,
+                            "Renamed 1 item",
                             true,
-                            now,
-                        ));
+                        );
                         if let Some(action) = self.ws.top_undo_action().cloned()
                             && let Some(jump_to) = action.jump_to()
                         {

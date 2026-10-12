@@ -561,18 +561,17 @@ impl App {
         count: usize,
         total_bytes: u64,
     ) {
-        let now = ctx.input(|i| i.time);
         let size = if total_bytes > 0 {
             format!(" ({})", format_size(total_bytes))
         } else {
             String::new()
         };
-        self.toasts.push(crate::toasts::Toast::new(
-            format!("Dry run: {title} {count} item(s){size} — nothing changed"),
+        self.toast(
+            ctx,
             crate::toasts::ToastKind::Info,
+            format!("Dry run: {title} {count} item(s){size} — nothing changed"),
             false,
-            now,
-        ));
+        );
         self.dismiss_pending_op(ctx);
     }
 
@@ -895,12 +894,8 @@ impl App {
         if selected != current
             && let Err(error) = crate::transfer_tuning::set_rule(&profile, selected)
         {
-            self.toasts.push(crate::toasts::Toast::new(
-                error,
-                crate::toasts::ToastKind::Error,
-                false,
-                ui.ctx().input(|input| input.time),
-            ));
+            let ctx = ui.ctx().clone();
+            self.toast(&ctx, crate::toasts::ToastKind::Error, error, false);
         }
     }
 

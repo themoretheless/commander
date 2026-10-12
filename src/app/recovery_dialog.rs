@@ -396,16 +396,16 @@ fn show_repair(
 
 impl App {
     fn push_recovery_toast(&mut self, ctx: &egui::Context, message: String, error: bool) {
-        self.toasts.push(crate::toasts::Toast::new(
-            message,
+        self.toast(
+            ctx,
             if error {
                 crate::toasts::ToastKind::Error
             } else {
                 crate::toasts::ToastKind::Success
             },
+            message,
             false,
-            ctx.input(|input| input.time),
-        ));
+        );
     }
 
     pub(crate) fn show_recovery_dialog(&mut self, ctx: &egui::Context) {

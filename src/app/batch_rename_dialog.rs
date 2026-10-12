@@ -320,12 +320,12 @@ impl App {
                     self.ui.modals.batch_rename = None;
                     if n > 0 {
                         let now = ctx.input(|i| i.time);
-                        self.toasts.push(crate::toasts::Toast::new(
-                            format!("Renamed {n} item(s)"),
+                        self.toast(
+                            ctx,
                             crate::toasts::ToastKind::Success,
+                            format!("Renamed {n} item(s)"),
                             true,
-                            now,
-                        ));
+                        );
                         // apply_batch_rename just pushed this run onto the
                         // undo stack; reuse it for the receipt so the undo
                         // affordance stays exactly in sync with Cmd+Z.
@@ -344,13 +344,12 @@ impl App {
                 }
                 Err(msg) => {
                     // Surface the failure both inline and as an error toast.
-                    let now = ctx.input(|i| i.time);
-                    self.toasts.push(crate::toasts::Toast::new(
-                        format!("Rename failed: {msg}"),
+                    self.toast(
+                        ctx,
                         crate::toasts::ToastKind::Error,
+                        format!("Rename failed: {msg}"),
                         false,
-                        now,
-                    ));
+                    );
                     if let Some(s) = &mut self.ui.modals.batch_rename {
                         s.error = Some(msg);
                     }

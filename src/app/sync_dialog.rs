@@ -392,13 +392,12 @@ impl App {
                     .iter()
                     .filter(|action| action.direction != SyncDirection::Skip)
                     .count();
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    format!("Dry run: {pending} planned action(s), nothing changed"),
+                self.toast(
+                    ctx,
                     crate::toasts::ToastKind::Info,
+                    format!("Dry run: {pending} planned action(s), nothing changed"),
                     false,
-                    now,
-                ));
+                );
                 return;
             }
             {
@@ -419,13 +418,7 @@ impl App {
                     let policy = crate::conflict_rules::StoredRelationPolicy::KeepNewer;
                     let preview =
                         crate::conflict_rules::ConflictRuleBook::sample_preview(policy, &names, 5);
-                    let now = ctx.input(|i| i.time);
-                    self.toasts.push(crate::toasts::Toast::new(
-                        preview,
-                        crate::toasts::ToastKind::Info,
-                        false,
-                        now,
-                    ));
+                    self.toast(ctx, crate::toasts::ToastKind::Info, preview, false);
                     crate::conflict_rules::upsert(crate::conflict_rules::ConflictRule {
                         left_root: state.left_dir.clone(),
                         right_root: state.right_dir.clone(),

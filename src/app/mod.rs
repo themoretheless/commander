@@ -796,6 +796,29 @@ impl App {
         }
     }
 
+    /// Show a transient notice. `undoable` toasts carry the Undo affordance.
+    pub(crate) fn toast(
+        &mut self,
+        ctx: &egui::Context,
+        kind: crate::toasts::ToastKind,
+        message: impl Into<String>,
+        undoable: bool,
+    ) {
+        self.toast_at(ctx.input(|input| input.time), kind, message, undoable);
+    }
+
+    /// [`Self::toast`] for callers that only hold the frame time.
+    pub(crate) fn toast_at(
+        &mut self,
+        now: f64,
+        kind: crate::toasts::ToastKind,
+        message: impl Into<String>,
+        undoable: bool,
+    ) {
+        self.toasts
+            .push(crate::toasts::Toast::new(message, kind, undoable, now));
+    }
+
     pub(crate) fn issue_transient_nonce(&mut self) -> u64 {
         self.ui.transient_nonce = self
             .ui

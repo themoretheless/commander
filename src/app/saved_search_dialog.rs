@@ -141,13 +141,12 @@ impl App {
         if let Some(name) = delete {
             self.smart_folders_mut().remove(&name);
             if !crate::smart_folder::save(self.smart_folders_mut()) {
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    "Could not save saved searches to disk",
+                self.toast(
+                    ctx,
                     crate::toasts::ToastKind::Error,
+                    "Could not save saved searches to disk",
                     false,
-                    now,
-                ));
+                );
             }
         }
         if let SavedSearchTransition::Open(def) = transition {

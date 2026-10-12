@@ -69,33 +69,18 @@ impl App {
                     state.status = Some(status.clone());
                     if report.errors.is_empty() {
                         state.error = None;
-                        self.toasts.push(crate::toasts::Toast::new(
-                            status,
-                            crate::toasts::ToastKind::Info,
-                            false,
-                            now,
-                        ));
+                        self.toast_at(now, crate::toasts::ToastKind::Info, status, false);
                     } else {
                         let detail = report.errors.join("; ");
                         state.error = Some(detail.clone());
-                        self.toasts.push(crate::toasts::Toast::new(
-                            detail,
-                            crate::toasts::ToastKind::Error,
-                            false,
-                            now,
-                        ));
+                        self.toast_at(now, crate::toasts::ToastKind::Error, detail, false);
                     }
                     self.ws.left.refresh();
                     self.ws.right.refresh();
                 }
                 Err(error) => {
                     state.error = Some(error.clone());
-                    self.toasts.push(crate::toasts::Toast::new(
-                        error,
-                        crate::toasts::ToastKind::Error,
-                        false,
-                        now,
-                    ));
+                    self.toast_at(now, crate::toasts::ToastKind::Error, error, false);
                 }
             }
         }
