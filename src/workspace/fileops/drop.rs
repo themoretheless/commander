@@ -5,11 +5,7 @@
 
 use std::path::PathBuf;
 
-use super::super::{
-    ActivePanel, CopyMethod, FileEntry, OverwritePolicy, PendingOp, PendingTransfer, TransferKind,
-    TransferSpaceState, Workspace, filesystem_preflight,
-};
-use crate::scan;
+use super::super::{ActivePanel, FileEntry, TransferKind, Workspace};
 
 /// Handle a completed drag (mouse released). The dragged entries are routed
 /// through the same Move engine as F6 instead of a raw rename, so conflicts
@@ -47,39 +43,7 @@ pub(crate) fn drop_dragged_as(
     if entries.is_empty() {
         return;
     }
-    let conflicts = scan::find_conflicts(&entries, &target);
-    let flat = scan::pending_flat_list();
-    let policy = match workspace.name_policy.collision {
-        crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
-        crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
-        crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
-    };
-    let has_conflicts = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
-    let generation = workspace.start_space_probe(
-        entries.clone(),
-        target.clone(),
-        flat.clone(),
-        workspace.symlink_policy,
-        notify,
-    );
-    let filesystem = filesystem_preflight(&entries, &target, workspace.name_policy);
-    workspace.pending_op = Some(PendingOp::Transfer(PendingTransfer {
-        kind,
-        entries,
-        expectations: Vec::new(),
-        target,
-        conflicts,
-        policy,
-        method: CopyMethod::Native,
-        durability: workspace.durability_profile,
-        version_retention: workspace.version_retention,
-        name_policy: workspace.name_policy,
-        symlink_policy: workspace.symlink_policy,
-        filesystem,
-        flat,
-        space: TransferSpaceState::Pending { generation },
-        start_when_ready: !has_conflicts,
-    }));
+    workspace.stage_transfer(kind, entries, target, true, notify);
 }
 
 /// Keyboard equivalent of dropping the active selection onto the folder under

@@ -1603,26 +1603,42 @@ impl Workspace {
         if entries.is_empty() {
             return;
         }
-        let flat = scan::pending_flat_list();
-        let conflicts = scan::find_conflicts(&entries, &target);
         let wake = self.active_panel_ref().notify_callback();
-        let generation = self.start_space_probe(
-            entries.clone(),
-            target.clone(),
-            flat.clone(),
-            self.symlink_policy,
-            move || {
-                if let Some(wake) = &wake {
-                    wake();
-                }
-            },
-        );
-        let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
+        self.stage_transfer(kind, entries, target, false, move || {
+            if let Some(wake) = &wake {
+                wake();
+            }
+        });
+    }
+
+    /// Stage a transfer for confirmation: find conflicts, start the space
+    /// probe and run the filesystem preflight under the current policies.
+    /// With `auto_start`, a transfer with no conflict to ask about starts as
+    /// soon as its space probe settles.
+    pub(crate) fn stage_transfer(
+        &mut self,
+        kind: TransferKind,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        auto_start: bool,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        let conflicts = scan::find_conflicts(&entries, &target);
+        let flat = scan::pending_flat_list();
         let policy = match self.name_policy.collision {
             crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
             crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
             crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
         };
+        let asks = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
+        let generation = self.start_space_probe(
+            entries.clone(),
+            target.clone(),
+            flat.clone(),
+            self.symlink_policy,
+            notify,
+        );
+        let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
@@ -1638,7 +1654,7 @@ impl Workspace {
             filesystem,
             flat,
             space: TransferSpaceState::Pending { generation },
-            start_when_ready: false,
+            start_when_ready: auto_start && !asks,
         }));
     }
 
