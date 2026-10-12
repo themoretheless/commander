@@ -679,10 +679,7 @@ impl PanelState {
     }
 
     pub fn set_search_query(&mut self, query: impl Into<String>) {
-        let focus = self.focused_path();
-        let old_cursor = self.cursor();
-        self.view.set_search_query(query);
-        self.restore_cursor_focus(focus, old_cursor);
+        self.preserving_focus(|panel| panel.view.set_search_query(query));
     }
 
     pub fn facets(&self) -> FacetSet {
@@ -690,10 +687,7 @@ impl PanelState {
     }
 
     pub fn set_facets(&mut self, facets: FacetSet) {
-        let focus = self.focused_path();
-        let old_cursor = self.cursor();
-        *self.view.facets_mut() = facets;
-        self.restore_cursor_focus(focus, old_cursor);
+        self.preserving_focus(|panel| *panel.view.facets_mut() = facets);
     }
 
     #[cfg(test)]
@@ -870,8 +864,7 @@ impl PanelState {
             }
             PendingFocus::NamedChild(name) => {
                 if let Some(idx) = self.filtered_position(|entry| entry.name == name) {
-                    self.set_cursor(idx + 1);
-                    self.set_scroll_to_cursor(true);
+                    self.reveal_cursor(idx + 1);
                 }
             }
         }
@@ -1084,11 +1077,12 @@ impl PanelState {
     }
 
     fn sort_entries(&mut self) {
-        let focus = self.focused_path();
-        let old_cursor = self.cursor();
-        let config = self.view.config();
-        self.listing.resort(|entries| sort_entries(entries, config));
-        self.restore_cursor_focus(focus, old_cursor);
+        self.preserving_focus(|panel| {
+            let config = panel.view.config();
+            panel
+                .listing
+                .resort(|entries| sort_entries(entries, config));
+        });
     }
 
     /// Toggle pinning folders to the top, then re-sort in place.
@@ -1161,8 +1155,7 @@ impl PanelState {
             .filtered_position(|e| e.name_lower.starts_with(&q))
             .or_else(|| self.filtered_position(|e| e.name_lower.contains(&q)));
         if let Some(idx) = pos {
-            self.set_cursor(idx + 1);
-            self.set_scroll_to_cursor(true);
+            self.reveal_cursor(idx + 1);
             true
         } else {
             false
@@ -1293,6 +1286,21 @@ impl PanelState {
         self.selection.focused_path().map(Path::to_path_buf)
     }
 
+    /// Move the cursor and scroll it into view.
+    fn reveal_cursor(&mut self, cursor: usize) {
+        self.set_cursor(cursor);
+        self.set_scroll_to_cursor(true);
+    }
+
+    /// Apply a filter, facet or ordering change, then put the cursor back on
+    /// the entry it focused (or the nearest surviving row).
+    fn preserving_focus(&mut self, change: impl FnOnce(&mut Self)) {
+        let focus = self.focused_path();
+        let old_cursor = self.cursor();
+        change(self);
+        self.restore_cursor_focus(focus, old_cursor);
+    }
+
     fn restore_cursor_focus(&mut self, focused: Option<PathBuf>, old_cursor: usize) {
         if old_cursor == 0 {
             self.set_cursor(0);
@@ -1302,8 +1310,7 @@ impl PanelState {
             .and_then(|path| self.filtered_position(|entry| entry.path == path))
             .map(|index| index + 1)
             .unwrap_or_else(|| old_cursor.min(self.filtered_count()));
-        self.set_cursor(cursor);
-        self.set_scroll_to_cursor(true);
+        self.reveal_cursor(cursor);
     }
 
     /// Number of entries matching the current filter (no allocation).
@@ -1316,17 +1323,13 @@ impl PanelState {
     pub fn ensure_cursor_valid(&mut self) {
         let clamped = self.cursor().min(self.filtered_count());
         if self.cursor() != clamped {
-            self.set_cursor(clamped);
-            self.set_scroll_to_cursor(true);
+            self.reveal_cursor(clamped);
         }
     }
 
     /// Clear both text and facet filters as one invariant-preserving action.
     pub fn clear_filters(&mut self) {
-        let focus = self.focused_path();
-        let old_cursor = self.cursor();
-        self.view.clear_filters();
-        self.restore_cursor_focus(focus, old_cursor);
+        self.preserving_focus(|panel| panel.view.clear_filters());
     }
 
     /// The i-th entry of the filtered view (no allocation).
