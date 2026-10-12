@@ -3499,7 +3499,7 @@ fn journal_rollback_aborts_interrupted_replay_without_advancing_the_cursor() {
         crate::path_identity::PathIdentity::missing(&destination),
     )
     .unwrap();
-    crate::native_copy::rename_noreplace(&source, &destination).unwrap();
+    crate::fs_at::rename_noreplace(&source, &destination).unwrap();
     crate::operation_journal::mark_completed(
         &operation_id,
         &key,

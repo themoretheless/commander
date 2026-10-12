@@ -75,7 +75,7 @@ pub(crate) fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), Renam
         return Err(RenameExecutionError::unchanged("Name already in use"));
     }
     if !same_file {
-        return crate::native_copy::rename_noreplace(from, to)
+        return crate::fs_at::rename_noreplace(from, to)
             .map_err(|error| RenameExecutionError::unchanged(error.to_string()));
     }
 
@@ -83,11 +83,11 @@ pub(crate) fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), Renam
         .parent()
         .ok_or_else(|| RenameExecutionError::unchanged("Path has no parent"))?;
     let tmp = crate::fs_util::first_available(|i| parent.join(format!(".cmdr-rename.{i}")));
-    crate::native_copy::rename_noreplace(from, &tmp)
+    crate::fs_at::rename_noreplace(from, &tmp)
         .map_err(|error| RenameExecutionError::unchanged(error.to_string()))?;
-    match crate::native_copy::rename_noreplace(&tmp, to) {
+    match crate::fs_at::rename_noreplace(&tmp, to) {
         Ok(()) => Ok(()),
-        Err(rename_error) => match crate::native_copy::rename_noreplace(&tmp, from) {
+        Err(rename_error) => match crate::fs_at::rename_noreplace(&tmp, from) {
             Ok(()) => Err(RenameExecutionError::unchanged(rename_error.to_string())),
             Err(rollback_error) => Err(RenameExecutionError::uncertain(
                 format!(

@@ -150,7 +150,7 @@ impl BoundDirectory {
             if replace {
                 std::fs::rename(source, destination)
             } else {
-                crate::native_copy::rename_noreplace(&source, &destination)
+                rename_noreplace(&source, &destination)
             }
         }
     }
@@ -336,6 +336,30 @@ fn renameat_noreplace_fallback(
     renameat_replace(dirfd, source, destination)
 }
 
+/// Rename `from` to `to` without ever replacing an existing destination.
+///
+/// The one no-clobber rename for whole paths: the OS exclusive rename
+/// (`renameatx_np(RENAME_EXCL)` on macOS, `renameat2(RENAME_NOREPLACE)` on
+/// Linux), falling back to check-then-rename where the volume cannot honor it.
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let from = CString::new(from.as_os_str().as_bytes())?;
+        let to = CString::new(to.as_os_str().as_bytes())?;
+        renameat_noreplace(libc::AT_FDCWD, &from, &to)
+    }
+    #[cfg(not(unix))]
+    {
+        if crate::fs_util::path_is_taken(to) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "destination already exists",
+            ));
+        }
+        std::fs::rename(from, to)
+    }
+}
+
 /// Leaf name of `path` suitable for a relative `*at` effect.
 pub fn leaf_name(path: &Path) -> io::Result<OsString> {
     path.file_name().map(OsStr::to_os_string).ok_or_else(|| {
@@ -368,7 +392,7 @@ pub fn rename_sibling(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
         return if replace {
             std::fs::rename(from, to)
         } else {
-            crate::native_copy::rename_noreplace(from, to)
+            rename_noreplace(from, to)
         };
     }
     let provider = crate::ports::NativeFileSystemProvider;
@@ -388,6 +412,42 @@ mod tests {
     use super::*;
     use crate::ports::NativeFileSystemProvider;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn rename_noreplace_moves_into_a_free_name() {
+        let tmp = TempDir::new();
+        let src = tmp.file("a.txt", "hi");
+        let dst = tmp.path().join("b.txt");
+        rename_noreplace(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hi");
+    }
+
+    #[test]
+    fn rename_noreplace_refuses_to_clobber_an_existing_destination() {
+        let tmp = TempDir::new();
+        let src = tmp.file("a.txt", "new");
+        let dst = tmp.file("b.txt", "old");
+        let err = rename_noreplace(&src, &dst).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn noreplace_fallback_moves_and_still_refuses_to_clobber() {
+        let tmp = TempDir::new();
+        let c = |path: &Path| CString::new(path.as_os_str().as_bytes()).unwrap();
+        let src = tmp.file("a.txt", "new");
+        let free = tmp.path().join("free.txt");
+        renameat_noreplace_fallback(libc::AT_FDCWD, &c(&src), &c(&free)).unwrap();
+        assert_eq!(std::fs::read_to_string(&free).unwrap(), "new");
+        let taken = tmp.file("taken.txt", "old");
+        let err = renameat_noreplace_fallback(libc::AT_FDCWD, &c(&free), &c(&taken)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "old");
+    }
 
     #[test]
     fn bound_directory_rejects_escape_names() {

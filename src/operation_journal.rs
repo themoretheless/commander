@@ -1809,13 +1809,14 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
                     replacement.path.display()
                 ));
             }
-            crate::native_copy::rename_noreplace(&replacement.path, &replacement.original.path)
-                .map_err(|error| {
+            crate::fs_at::rename_noreplace(&replacement.path, &replacement.original.path).map_err(
+                |error| {
                     format!(
                         "Could not restore interrupted overwrite from {}: {error}",
                         replacement.path.display()
                     )
-                })?;
+                },
+            )?;
             crate::fs_util::sync_parent_namespace(&replacement.original.path)
                 .map_err(|error| format!("Could not sync restored overwrite: {error}"))?;
         } else if !replacement.original.same_binding(&destination) {
@@ -2451,7 +2452,7 @@ fn detach_expected_path(
     expected: &PathIdentity,
     quarantine: &Path,
 ) -> Result<PathBuf, String> {
-    crate::native_copy::rename_noreplace(path, quarantine)
+    crate::fs_at::rename_noreplace(path, quarantine)
         .map_err(|error| format!("Could not quarantine {}: {error}", path.display()))?;
     crate::fs_util::sync_parent_namespace(path)
         .map_err(|error| format!("Could not sync quarantine rename: {error}"))?;
@@ -2461,7 +2462,7 @@ fn detach_expected_path(
         return Ok(quarantine.to_path_buf());
     }
 
-    let restored = crate::native_copy::rename_noreplace(quarantine, path);
+    let restored = crate::fs_at::rename_noreplace(quarantine, path);
     if restored.is_ok() {
         let _ = crate::fs_util::sync_parent_namespace(path);
     }
@@ -2796,7 +2797,7 @@ fn rollback_step(
                     "Rollback quarantine no longer contains the completed effect".to_string(),
                 );
             }
-            crate::native_copy::rename_noreplace(&receipt.quarantine, &step.source)
+            crate::fs_at::rename_noreplace(&receipt.quarantine, &step.source)
                 .map_err(|error| error.to_string())?;
             crate::fs_util::sync_parent_namespace(&step.source)
                 .map_err(|error| format!("Could not sync restored source: {error}"))?;
@@ -2941,7 +2942,7 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
             });
         }
         Err(error) => {
-            let restored = crate::native_copy::rename_noreplace(&quarantine, cleanup);
+            let restored = crate::fs_at::rename_noreplace(&quarantine, cleanup);
             if restored.is_ok() {
                 let _ = crate::fs_util::sync_parent_namespace(cleanup);
                 let _ = clear_container_quarantine(&record.id, &quarantine);

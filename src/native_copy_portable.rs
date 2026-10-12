@@ -20,50 +20,6 @@ pub struct NativeCopyOutcome {
     pub cloned: bool,
 }
 
-/// Rename `src` to `dst`, failing with `AlreadyExists` instead of replacing
-/// an occupied destination.
-pub fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        let src_c = CString::new(src.as_os_str().as_bytes())?;
-        let dst_c = CString::new(dst.as_os_str().as_bytes())?;
-        // SAFETY: both pointers are valid NUL-terminated paths for the call.
-        let rc = unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                src_c.as_ptr(),
-                libc::AT_FDCWD,
-                dst_c.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        if rc == 0 {
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
-        let unsupported = error
-            .raw_os_error()
-            .is_some_and(|code| code == libc::EINVAL || code == libc::ENOSYS);
-        if !unsupported {
-            return Err(error);
-        }
-    }
-    rename_noreplace_fallback(src, dst)
-}
-
-/// Best-effort no-clobber rename where the OS has no exclusive rename.
-fn rename_noreplace_fallback(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if crate::fs_util::path_is_taken(dst) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "destination already exists",
-        ));
-    }
-    fs::rename(src, dst)
-}
-
 fn cancelled() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
 }
@@ -254,16 +210,6 @@ mod tests {
 
     fn progress() -> Arc<Mutex<TransferProgress>> {
         Arc::new(Mutex::new(TransferProgress::new(0, 1)))
-    }
-
-    #[test]
-    fn rename_noreplace_refuses_to_clobber() {
-        let tmp = TempDir::new();
-        let src = tmp.file("a.txt", "new");
-        let dst = tmp.file("b.txt", "old");
-        let err = rename_noreplace(&src, &dst).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
     }
 
     #[test]

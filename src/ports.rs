@@ -483,7 +483,7 @@ impl FileSystemProvider for NativeFileSystemProvider {
                 if *replace {
                     std::fs::rename(source, destination)
                 } else {
-                    crate::native_copy::rename_noreplace(source, destination)
+                    crate::fs_at::rename_noreplace(source, destination)
                 }
             }
             FileSystemEffect::Remove { path } => match std::fs::symlink_metadata(path) {
