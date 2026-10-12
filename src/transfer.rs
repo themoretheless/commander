@@ -974,7 +974,9 @@ use executor::{FailureRollback, TransferExecutor, finish_progress, run_failure_r
 use executor::{cleanup_moved_source, quarantine_expected_path, undo_placement};
 
 #[cfg(test)]
-use buffered::{copy_file_buffered_with_limiter, copy_symlink};
+use crate::fs_util::copy_symlink;
+#[cfg(test)]
+use buffered::copy_file_buffered_with_limiter;
 #[cfg(test)]
 use parallel_tree::copy_dir_buffered_parallel;
 #[cfg(test)]

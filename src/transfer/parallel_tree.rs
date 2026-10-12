@@ -13,7 +13,8 @@ use std::thread;
 use rayon::prelude::*;
 
 use super::TransferState;
-use super::buffered::{copy_file_buffered_with_limiter, copy_symlink};
+use super::buffered::copy_file_buffered_with_limiter;
+use crate::fs_util::copy_symlink;
 
 /// Bound the scan→worker queue so a deep tree cannot materialize every leaf
 /// path pair in memory before the first copy runs.

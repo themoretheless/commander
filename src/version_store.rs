@@ -1004,7 +1004,7 @@ fn copy_path_tracked(
                     let metadata = fs::symlink_metadata(&source)?;
                     if metadata.file_type().is_symlink() {
                         let target = fs::read_link(&source)?;
-                        create_symlink(&target, &destination, source.is_dir())?;
+                        crate::fs_util::create_symlink(&target, &destination, source.is_dir())?;
                         if destination == root_destination {
                             destination_identity = PathIdentity::observe(&destination).ok();
                         }
@@ -1125,28 +1125,6 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
-}
-
-#[cfg(unix)]
-fn create_symlink(target: &Path, destination: &Path, _directory: bool) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, destination)
-}
-
-#[cfg(windows)]
-fn create_symlink(target: &Path, destination: &Path, directory: bool) -> std::io::Result<()> {
-    if directory {
-        std::os::windows::fs::symlink_dir(target, destination)
-    } else {
-        std::os::windows::fs::symlink_file(target, destination)
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_symlink(_target: &Path, _destination: &Path, _directory: bool) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "symlink versions are unsupported on this platform",
-    ))
 }
 
 #[cfg(test)]

@@ -391,7 +391,7 @@ impl BufferedBackend for ProductionBuffered {
         if metadata.file_type().is_symlink() {
             return match request.symlink_policy {
                 SymlinkPolicy::Preserve => {
-                    super::buffered::copy_symlink(request.source, request.staging)?;
+                    crate::fs_util::copy_symlink(request.source, request.staging)?;
                     receipt(request.staging, 0, FastPath::Buffered, request.durability)
                 }
                 SymlinkPolicy::Follow => {

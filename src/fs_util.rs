@@ -147,16 +147,46 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(std::fs::read_link(src)?, dst)
+/// Recreate the symlink `src` at `dst` without following it.
+pub(crate) fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    // Windows needs to know whether the link points at a directory.
+    let directory = std::fs::metadata(src).is_ok_and(|metadata| metadata.is_dir());
+    create_symlink(&target, dst, directory)
 }
 
-#[cfg(not(unix))]
-fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+/// Create a symlink at `destination` pointing to `target`.
+#[cfg(unix)]
+pub(crate) fn create_symlink(
+    target: &Path,
+    destination: &Path,
+    _directory: bool,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, destination)
+}
+
+#[cfg(windows)]
+pub(crate) fn create_symlink(
+    target: &Path,
+    destination: &Path,
+    directory: bool,
+) -> std::io::Result<()> {
+    if directory {
+        std::os::windows::fs::symlink_dir(target, destination)
+    } else {
+        std::os::windows::fs::symlink_file(target, destination)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_symlink(
+    _target: &Path,
+    _destination: &Path,
+    _directory: bool,
+) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "preserving symlinks is not supported on this platform",
+        "symlinks are unsupported on this platform",
     ))
 }
 

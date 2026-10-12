@@ -262,7 +262,7 @@ pub(super) fn copy_dir_buffered_with_limiter(
                 if metadata.file_type().is_symlink() {
                     match symlink_policy {
                         crate::filesystem_policy::SymlinkPolicy::Preserve => {
-                            copy_symlink(&source, &destination)?;
+                            crate::fs_util::copy_symlink(&source, &destination)?;
                         }
                         crate::filesystem_policy::SymlinkPolicy::Skip => {}
                         crate::filesystem_policy::SymlinkPolicy::Follow => {
@@ -304,19 +304,4 @@ pub(super) fn copy_dir_buffered_with_limiter(
         }
     }
     Ok(copied)
-}
-
-/// Recreate a symlink at `dst` pointing at the same target as `src`.
-#[cfg(unix)]
-pub(super) fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let target = std::fs::read_link(src)?;
-    std::os::unix::fs::symlink(target, dst)
-}
-
-#[cfg(not(unix))]
-pub(super) fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "preserving symlinks is not supported on this platform",
-    ))
 }

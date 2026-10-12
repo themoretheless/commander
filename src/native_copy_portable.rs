@@ -162,7 +162,7 @@ fn copy_tree(
         let to = dst.join(entry.file_name());
         let file_type = entry.file_type()?;
         let outcome = if file_type.is_symlink() {
-            copy_symlink(&from, &to)
+            crate::fs_util::copy_symlink(&from, &to)
         } else if file_type.is_dir() {
             fs::create_dir(&to).and_then(|()| copy_tree(&from, &to, state, base_bytes, copied))
         } else {
@@ -186,21 +186,6 @@ fn copy_tree(
         }
     }
     Ok(())
-}
-
-#[cfg(unix)]
-fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(fs::read_link(from)?, to)
-}
-
-#[cfg(windows)]
-fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
-    let target = fs::read_link(from)?;
-    if fs::metadata(from).is_ok_and(|m| m.is_dir()) {
-        std::os::windows::fs::symlink_dir(target, to)
-    } else {
-        std::os::windows::fs::symlink_file(target, to)
-    }
 }
 
 #[cfg(test)]
