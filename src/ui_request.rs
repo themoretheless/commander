@@ -57,7 +57,6 @@ pub(crate) enum UiRequest {
     ChecksumReport(crate::checksum::ChecksumReport),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
-    DrainShelf,
 }
 
 impl UiRequest {
@@ -89,8 +88,7 @@ impl UiRequest {
             | Self::CopyText { .. }
             | Self::Notice { .. }
             | Self::ChecksumReport(_)
-            | Self::HiddenFilesOutcome(_)
-            | Self::DrainShelf => None,
+            | Self::HiddenFilesOutcome(_) => None,
         }
     }
 

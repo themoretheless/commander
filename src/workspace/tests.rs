@@ -977,12 +977,8 @@ fn toggle_hidden_command_reports_rejection_without_changing_the_view() {
 #[test]
 fn conditional_and_listing_commands_emit_payload_requests() {
     let (left, right) = (TempDir::new(), TempDir::new());
-    let shelf_item = left.file("shelf.txt", "x");
+    left.file("listed.txt", "x");
     let mut ws = workspace(&left, &right);
-    ws.shelf.add(shelf_item);
-
-    ws.execute(Command::ShelfDrain);
-    assert_eq!(ws.drain_ui_requests(), vec![UiRequest::DrainShelf]);
 
     for (command, format_label) in [
         (Command::CopyListingText, "text"),
@@ -994,7 +990,7 @@ fn conditional_and_listing_commands_emit_payload_requests() {
         let [UiRequest::CopyText { text, label }] = requests.as_slice() else {
             panic!("{command:?} did not emit one CopyText request: {requests:?}");
         };
-        assert!(text.contains("shelf.txt"));
+        assert!(text.contains("listed.txt"));
         assert!(label.contains(format_label));
     }
 }
@@ -1455,87 +1451,6 @@ fn select_same_named_adds_common_names_keeping_prior_picks() {
     assert!(ws.left.is_selected(&shared), "common name selected");
     assert!(ws.left.is_selected(&only_here), "prior pick kept");
     assert_eq!(ws.left.selected_count(), 2, "no spurious selections");
-}
-
-#[test]
-fn stash_union_and_subtract_combine_with_current_selection() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let a = l.file("a.txt", "1");
-    let b = l.file("b.txt", "2");
-    let c = l.file("c.txt", "3");
-    let mut ws = workspace(&l, &r);
-
-    // Stash {a, b}, then change the selection to {c}.
-    ws.left.replace_selection([a.clone(), b.clone()]);
-    ws.stash_selection();
-    ws.left.replace_selection([c.clone()]);
-
-    // Union with the stash -> {a, b, c}.
-    ws.stash_union();
-    assert_eq!(ws.left.selected_count(), 3);
-    assert!(ws.left.is_selected(&a) && ws.left.is_selected(&c));
-
-    // Subtract the stash {a, b} from {a, b, c} -> {c}.
-    ws.stash_subtract();
-    assert_eq!(
-        ws.left.selected_paths().clone(),
-        [c.clone()]
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>()
-    );
-}
-
-#[test]
-fn marked_union_and_subtract_combine_with_current_selection() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let a = l.file("a.txt", "1");
-    let b = l.file("b.txt", "2");
-    let c = l.file("c.txt", "3");
-    let mut ws = workspace(&l, &r);
-
-    // Mark {a, b}, then set the selection to {c}.
-    ws.left.replace_marks_for_test([a.clone(), b.clone()]);
-    ws.left.replace_selection([c.clone()]);
-
-    // Union with the marked set -> {a, b, c}.
-    ws.marked_union();
-    assert_eq!(ws.left.selected_count(), 3);
-    assert!(ws.left.is_selected(&a) && ws.left.is_selected(&c));
-
-    // Subtract the marked {a, b} from {a, b, c} -> {c}.
-    ws.marked_subtract();
-    assert_eq!(
-        ws.left.selected_paths().clone(),
-        [c.clone()]
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>()
-    );
-}
-
-#[test]
-fn toggle_mark_flips_the_cursor_entry_and_survives_a_same_dir_refresh() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let a = l.file("a.txt", "1");
-    let mut ws = workspace(&l, &r);
-    let cursor = ws
-        .left
-        .filtered_entries()
-        .iter()
-        .position(|e| e.path == a)
-        .unwrap()
-        + 1;
-    ws.left.set_cursor(cursor);
-
-    ws.toggle_mark();
-    assert!(ws.left.is_marked(&a));
-
-    // Like `selected`, marks are keyed by path: an unrelated refresh of
-    // the same directory (e.g. an external file appearing) keeps them,
-    // same as `reload_preserves_cursor_by_path_and_prunes_selection`
-    // proves for `selected` at the panel level.
-    l.file("b.txt", "2");
-    ws.left.refresh();
-    assert!(ws.left.is_marked(&a));
 }
 
 #[test]
@@ -2484,43 +2399,6 @@ fn find_duplicates_groups_identical_files_in_active_dir() {
         .collect();
     assert!(names.contains(&"a.txt".to_string()));
     assert!(names.contains(&"b.txt".to_string()));
-}
-
-#[test]
-fn drain_shelf_copies_staged_files_into_active_dir() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let src = r.file("gathered.txt", "data"); // lives in the right folder
-    let mut ws = workspace(&l, &r); // active panel is the left
-
-    ws.shelf.add(src);
-    assert_eq!(ws.shelf.len(), 1);
-    ws.drain_shelf(|| {});
-    wait_transfer(&mut ws);
-
-    assert!(
-        l.path().join("gathered.txt").is_file(),
-        "drained into the active (left) folder"
-    );
-    assert!(ws.shelf.is_empty(), "shelf cleared after drain");
-}
-
-#[test]
-fn drain_shelf_keeps_unreadable_items_instead_of_dropping_them() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let src = r.file("ghost.txt", "x"); // staged from the right folder
-    let mut ws = workspace(&l, &r); // active panel is the left
-
-    ws.shelf.add(src.clone());
-    std::fs::remove_file(&src).unwrap(); // source vanishes before the drain
-
-    let outcome = ws.drain_shelf(|| {});
-    assert_eq!(outcome.started, 0);
-    assert_eq!(outcome.unavailable, 1);
-    assert_eq!(ws.shelf.len(), 1, "unreadable item kept for retry");
-    assert!(
-        ws.active_transfer().is_none(),
-        "nothing readable, no transfer"
-    );
 }
 
 #[test]

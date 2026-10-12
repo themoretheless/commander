@@ -253,14 +253,6 @@ pub struct DeleteActivity {
     pub cancel_requested: bool,
 }
 
-/// How a shelf drain turned out: how many copies started, and how many items
-/// could not be read and so were kept on the shelf rather than discarded.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct ShelfDrainOutcome {
-    pub started: usize,
-    pub unavailable: usize,
-}
-
 #[derive(Clone)]
 pub struct ActiveTransferView {
     pub attempt_id: crate::operation::TransferAttemptId,
@@ -321,14 +313,10 @@ pub struct Workspace {
     /// Typed intents waiting for the app shell. This replaces the former
     /// collection of one-shot booleans and optional payload slots.
     ui_requests: crate::ui_request::UiRequestQueue,
-    /// The drop stack: paths gathered across folders to copy in one go.
-    pub shelf: crate::shelf::Shelf,
     /// Persisted directory bookmarks (favorites + quick-jump slots 1..9).
     pub bookmarks: crate::bookmarks::Bookmarks,
     persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     bookmark_gate: crate::persistence::StoreGate,
-    /// A stashed selection for set-algebra combinations (union/intersect/...).
-    pub selection_stash: std::collections::HashSet<PathBuf>,
     /// Atomic owner of the transfer queue, active worker, and per-job history
     /// intent. Workspace applies only the controller's typed outcomes.
     transfers: transfer_queue::TransferQueueController,
@@ -524,11 +512,9 @@ impl Workspace {
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             ui_requests: crate::ui_request::UiRequestQueue::default(),
-            shelf: crate::shelf::Shelf::default(),
             bookmarks: bookmarks.store,
             persistence,
             bookmark_gate: bookmarks.gate,
-            selection_stash: std::collections::HashSet::new(),
             transfers: transfer_queue::TransferQueueController::default(),
             space_probes: space_probe::SpaceProbeController::default(),
             free_space_port: free_space,
@@ -685,27 +671,11 @@ impl Workspace {
             })
         };
 
-        let (marked_entries, stashed_entries) =
-            active
-                .entries()
-                .iter()
-                .fold((0usize, 0usize), |(marked, stashed), entry| {
-                    (
-                        marked.saturating_add(usize::from(active.is_marked(&entry.path))),
-                        stashed.saturating_add(usize::from(
-                            self.selection_stash.contains(&entry.path),
-                        )),
-                    )
-                });
-
         crate::command::CommandContext {
             visible_entries,
             visible_files,
             other_entries: inactive.entries().len(),
             listing_entries,
-            marked_entries,
-            stashed_entries,
-            shelf_entries: self.shelf.len(),
             cursor_has_extension: cursor
                 .is_some_and(|entry| !entry.is_dir && !entry.extension.is_empty()),
             can_diff,
@@ -825,84 +795,6 @@ impl Workspace {
             .filter_map(|&i| active.get(i).map(|e| e.path.clone()))
             .collect();
         self.active_panel().replace_selection(paths);
-    }
-
-    /// Copy the active panel's current selection into the stash.
-    pub fn stash_selection(&mut self) {
-        self.selection_stash = self.active_panel_ref().selected_paths().clone();
-    }
-
-    /// Replace the active panel's selection with `op(current, stash)`, dropping
-    /// any paths no longer present in the panel so the result stays valid.
-    fn combine_with_stash(
-        &mut self,
-        op: fn(
-            &std::collections::HashSet<PathBuf>,
-            &std::collections::HashSet<PathBuf>,
-        ) -> std::collections::HashSet<PathBuf>,
-    ) {
-        let stash = self.selection_stash.clone();
-        let panel = self.active_panel();
-        let present: std::collections::HashSet<PathBuf> =
-            panel.entries().iter().map(|e| e.path.clone()).collect();
-        let combined = op(panel.selected_paths(), &stash);
-        panel.replace_selection(combined.intersection(&present).cloned());
-    }
-
-    pub fn stash_union(&mut self) {
-        self.combine_with_stash(crate::selset::union);
-    }
-    pub fn stash_intersect(&mut self) {
-        self.combine_with_stash(crate::selset::intersect);
-    }
-    pub fn stash_subtract(&mut self) {
-        self.combine_with_stash(crate::selset::difference);
-    }
-    pub fn stash_symmetric_diff(&mut self) {
-        self.combine_with_stash(crate::selset::symmetric_difference);
-    }
-
-    /// Toggle the mark on the cursor entry and advance the cursor,
-    /// mirroring `Command::ToggleSelect`.
-    pub fn toggle_mark(&mut self) {
-        let panel = self.active_panel();
-        if let Some(path) = panel.cursor_entry().map(|entry| entry.path.clone()) {
-            panel.toggle_mark(path);
-        }
-        let max = panel.filtered_count();
-        if panel.cursor() < max {
-            panel.set_cursor(panel.cursor() + 1);
-        }
-    }
-
-    /// Replace the active panel's selection with `op(current, marked)`,
-    /// dropping any paths no longer present in the panel.
-    fn combine_with_marked(
-        &mut self,
-        op: fn(
-            &std::collections::HashSet<PathBuf>,
-            &std::collections::HashSet<PathBuf>,
-        ) -> std::collections::HashSet<PathBuf>,
-    ) {
-        let panel = self.active_panel();
-        let marked = panel.marked_paths().clone();
-        let present: std::collections::HashSet<PathBuf> =
-            panel.entries().iter().map(|e| e.path.clone()).collect();
-        let combined = op(panel.selected_paths(), &marked);
-        panel.replace_selection(combined.intersection(&present).cloned());
-    }
-
-    pub fn marked_union(&mut self) {
-        self.combine_with_marked(crate::selset::union);
-    }
-    pub fn marked_intersect(&mut self) {
-        self.combine_with_marked(crate::selset::intersect);
-    }
-    pub fn marked_subtract(&mut self) {
-        self.combine_with_marked(crate::selset::difference);
-    }
-    pub fn marked_symmetric_diff(&mut self) {
-        self.combine_with_marked(crate::selset::symmetric_difference);
     }
 
     // ── Command dispatch ────────────────────────────────────────────────
@@ -1146,21 +1038,6 @@ impl Workspace {
                 let panel = self.active_panel();
                 panel.set_density(crate::density::cycle(panel.density()));
             }
-            Command::ShelfAdd => {
-                let paths: Vec<PathBuf> = self
-                    .active_panel_ref()
-                    .selected_or_cursor()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|e| e.path)
-                    .collect();
-                self.shelf.add_all(paths);
-            }
-            Command::ShelfDrain => {
-                if !self.shelf.is_empty() {
-                    self.emit_ui_request(UiRequest::DrainShelf);
-                }
-            }
             Command::BeginSelectMask => self.emit_ui_request(UiRequest::SelectMask),
             Command::BeginRunBar => self.emit_ui_request(UiRequest::RunCommand),
             Command::GatherIntoFolder => self.emit_ui_request(UiRequest::GatherIntoFolder),
@@ -1176,18 +1053,7 @@ impl Workspace {
             Command::SelectOnlyHere => self.select_by_relation(|r| &r.only_here),
             Command::SelectDiffering => self.select_by_relation(|r| &r.differing),
             Command::SelectIdentical => self.select_by_relation(|r| &r.identical),
-            Command::StashSelection => self.stash_selection(),
-            Command::StashUnion => self.stash_union(),
-            Command::StashIntersect => self.stash_intersect(),
-            Command::StashSubtract => self.stash_subtract(),
-            Command::StashSymmetricDiff => self.stash_symmetric_diff(),
-            Command::ToggleMark => self.toggle_mark(),
-            Command::ClearMarks => self.active_panel().clear_marks(),
             Command::ClearSelection => self.active_panel().clear_selection_everywhere(),
-            Command::MarkedUnion => self.marked_union(),
-            Command::MarkedIntersect => self.marked_intersect(),
-            Command::MarkedSubtract => self.marked_subtract(),
-            Command::MarkedSymmetricDiff => self.marked_symmetric_diff(),
             Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
             Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
@@ -2641,59 +2507,6 @@ impl Workspace {
         Some((other.path.clone(), one))
     }
 
-    // ── Shelf (drop stack) ──────────────────────────────────────────────
-
-    /// Copy every shelved item into the active panel's directory in one pass,
-    /// dropping self-copies and keeping both on name collisions, then clear the
-    /// shelf. Routes through the transfer engine. Items whose source can no
-    /// longer be read are kept on the shelf (not silently discarded), and the
-    /// outcome reports both how many copies started and how many were left.
-    pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
-        if self.shelf.is_empty()
-            || self.has_unfinished_transfer_work()
-            || self.mutation_commits_blocked()
-        {
-            return ShelfDrainOutcome::default();
-        }
-        let dest = self.active_panel_ref().current_path.clone();
-        let existing: std::collections::HashSet<String> = self
-            .active_panel_ref()
-            .entries()
-            .iter()
-            .map(|e| e.name.clone())
-            .collect();
-        let plan = crate::shelf::drain_plan(self.shelf.items(), &dest, &existing);
-
-        // Build sources for the planned copies, keeping any whose source could
-        // not be read so they stay on the shelf rather than vanishing.
-        let mut entries: Vec<FileEntry> = Vec::new();
-        let mut unavailable: Vec<PathBuf> = Vec::new();
-        for (src, _) in &plan {
-            match std::fs::metadata(src)
-                .ok()
-                .and_then(|m| FileEntry::from_meta(src.clone(), &m))
-            {
-                Some(fe) => entries.push(fe),
-                None => unavailable.push(src.clone()),
-            }
-        }
-
-        // Self-copies (excluded by the plan) and started copies leave the
-        // shelf; only the unreadable items remain for the user to retry.
-        self.shelf.clear();
-        self.shelf.add_all(unavailable.iter().cloned());
-
-        let outcome = ShelfDrainOutcome {
-            started: entries.len(),
-            unavailable: unavailable.len(),
-        };
-        if !entries.is_empty() {
-            // KeepBoth so a drained file never clobbers an existing one.
-            self.start_copy(entries, dest, OverwritePolicy::KeepBoth, notify);
-        }
-        outcome
-    }
-
     // ── Directory sync ──────────────────────────────────────────────────
 
     /// Compute the synchronisation plan between the two panels for `policy`.
@@ -2813,12 +2626,23 @@ impl Workspace {
         self.pump_queue(notify);
     }
 
-    /// Queue a background Copy of `entries` into `target` under `policy` without
-    /// starting it. Used by the sync sheet and shelf drain, which already
-    /// served as the review step (no confirmation dialog). Copies record no
-    /// undo history.
+    /// Queue a copy without starting it.
+    #[cfg(test)]
     fn enqueue_copy(&mut self, entries: Vec<FileEntry>, target: PathBuf, policy: OverwritePolicy) {
         self.enqueue_copy_grouped(entries, target, policy, None);
+    }
+
+    /// Queue a copy and start it if idle.
+    #[cfg(test)]
+    fn start_copy(
+        &mut self,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        policy: OverwritePolicy,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        self.enqueue_copy_grouped(entries, target, policy, None);
+        self.pump_queue(notify);
     }
 
     fn enqueue_copy_grouped(
@@ -2837,18 +2661,6 @@ impl Workspace {
             ..self.queued_spec(TransferKind::Copy, entries, target)
         };
         self.enqueue_only(spec, None);
-    }
-
-    /// Queue a copy and start it if idle (single-copy callers, e.g. shelf drain).
-    fn start_copy(
-        &mut self,
-        entries: Vec<FileEntry>,
-        target: PathBuf,
-        policy: OverwritePolicy,
-        notify: impl Fn() + Send + 'static,
-    ) {
-        self.enqueue_copy(entries, target, policy);
-        self.pump_queue(notify);
     }
 
     // ── Preview ─────────────────────────────────────────────────────────

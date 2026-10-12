@@ -105,10 +105,6 @@ pub enum Command {
     CopyShellPath,
     /// Copy the selection's path(s) relative to the other pane.
     CopyRelativePath,
-    /// Cmd+Shift+A: add the active selection to the shelf (drop stack).
-    ShelfAdd,
-    /// Cmd+Shift+V: copy the whole shelf into the active panel's folder.
-    ShelfDrain,
     /// Flip the selection across the visible rows of the active panel.
     InvertSelection,
     /// Select active-panel entries whose name also exists in the other panel.
@@ -119,31 +115,8 @@ pub enum Command {
     SelectDiffering,
     /// Select entries present in both panels with identical size and mtime.
     SelectIdentical,
-    /// Stash the current selection for later set-algebra combinations.
-    StashSelection,
-    /// Replace the selection with (selection ∪ stash).
-    StashUnion,
-    /// Replace the selection with (selection ∩ stash).
-    StashIntersect,
-    /// Replace the selection with (selection - stash).
-    StashSubtract,
-    /// Replace the selection with (selection symmetric-difference stash).
-    StashSymmetricDiff,
-    /// M: flip whether the cursor entry is in the mark set (distinct from
-    /// `selected`; survives navigation and feeds the selection algebra).
-    ToggleMark,
-    /// Clear all marks in the active panel.
-    ClearMarks,
     /// Clear the selection in this folder and every other folder visited.
     ClearSelection,
-    /// Replace the selection with (selection ∪ marked).
-    MarkedUnion,
-    /// Replace the selection with (selection ∩ marked).
-    MarkedIntersect,
-    /// Replace the selection with (selection - marked).
-    MarkedSubtract,
-    /// Replace the selection with (selection symmetric-difference marked).
-    MarkedSymmetricDiff,
     /// Show/hide the transfer-queue panel (pause/resume/reorder/cancel the
     /// jobs waiting behind the active transfer).
     ToggleQueuePanel,
@@ -219,7 +192,6 @@ impl Command {
                 | Self::CreateHardlink
                 | Self::Undo
                 | Self::Redo
-                | Self::ShelfDrain
         )
     }
 }
@@ -235,9 +207,6 @@ pub struct CommandContext {
     pub picked_entries: usize,
     pub selected_entries: usize,
     pub listing_entries: usize,
-    pub marked_entries: usize,
-    pub stashed_entries: usize,
-    pub shelf_entries: usize,
     pub cursor_entry: bool,
     pub cursor_is_dir: bool,
     pub cursor_is_file: bool,
@@ -302,7 +271,6 @@ pub enum CommandPredicate {
     HasCursorEntry,
     CursorIsDirectory,
     HasTransferSource,
-    HasShelfEntry,
     CanUndo,
     CanRedo,
     CanDiff,
@@ -313,8 +281,6 @@ pub enum CommandPredicate {
     HasOtherEntry,
     HasListingEntry,
     CursorHasExtension,
-    HasStashedEntry,
-    HasMarkedEntry,
     CanGoBack,
     CanGoForward,
     CanGoUp,
@@ -347,7 +313,6 @@ impl CommandPredicate {
                 context.can_transfer_into_cursor_folder,
                 "Choose a source outside the destination folder",
             ),
-            Self::HasShelfEntry => (context.shelf_entries > 0, "The shelf is empty"),
             Self::CanUndo => (context.can_undo, "Nothing to undo"),
             Self::CanRedo => (context.can_redo, "Nothing to redo"),
             Self::CanDiff => (context.can_diff, "Select two files or a matching file pair"),
@@ -364,11 +329,6 @@ impl CommandPredicate {
                 context.cursor_has_extension,
                 "Highlight a file with an extension",
             ),
-            Self::HasStashedEntry => (
-                context.stashed_entries > 0,
-                "No stashed items in this panel",
-            ),
-            Self::HasMarkedEntry => (context.marked_entries > 0, "No marked items in this panel"),
             Self::CanGoBack => (context.can_go_back, "No earlier folder in history"),
             Self::CanGoForward => (context.can_go_forward, "No later folder in history"),
             Self::CanGoUp => (context.can_go_up, "Already at the filesystem root"),
@@ -426,13 +386,6 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
     const RENAME: &[P] = &[P::MutationsAllowed, P::HasCursorEntry, P::ActiveWritable];
     const MUTATE_SELECTION: &[P] = &[P::MutationsAllowed, P::HasPickedEntry, P::ActiveWritable];
     const RUN_SELECTION: &[P] = &[P::MutationsAllowed, P::HasPickedEntry];
-    const SHELF_DRAIN: &[P] = &[
-        P::MutationsAllowed,
-        P::ConfirmationClosed,
-        P::TransferQueueIdle,
-        P::HasShelfEntry,
-        P::ActiveWritable,
-    ];
     const UNDO: &[P] = &[P::MutationsAllowed, P::TransferQueueIdle, P::CanUndo];
     const REDO: &[P] = &[P::MutationsAllowed, P::TransferQueueIdle, P::CanRedo];
     const DIFF: &[P] = &[P::CanDiff];
@@ -444,10 +397,7 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
     const VISIBLE_FILES: &[P] = &[P::HasVisibleFile];
     const EXTENSION: &[P] = &[P::CursorHasExtension];
     const LISTING: &[P] = &[P::HasListingEntry];
-    const SELECTED: &[P] = &[P::HasSelectedEntry];
-    const STASHED: &[P] = &[P::HasStashedEntry];
     const CURSOR: &[P] = &[P::HasCursorEntry];
-    const MARKED: &[P] = &[P::HasMarkedEntry];
     const BACK: &[P] = &[P::CanGoBack];
     const FORWARD: &[P] = &[P::CanGoForward];
     const UP: &[P] = &[P::CanGoUp];
@@ -465,23 +415,20 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
         CreateSymlink | CreateHardlink => COPY,
         BeginRunBar => RUN_SELECTION,
         VerifyChecksum | BrowseArchive => PICKED,
-        ShelfDrain => SHELF_DRAIN,
         Undo => UNDO,
         Redo => REDO,
         DiffFiles => DIFF,
         TogglePreview => PREVIEW,
         ToggleInfo => INFO,
-        CopyPath | CopyName | CopyParentPath | CopyFileUrl | CopyShellPath | CopyRelativePath
-        | ShelfAdd => PICKED,
+        CopyPath | CopyName | CopyParentPath | CopyFileUrl | CopyShellPath | CopyRelativePath => {
+            PICKED
+        }
         SelectAll | InvertSelection | SelectOnlyHere | BeginSelectMask => VISIBLE,
         SelectSameNamed | SelectDiffering | SelectIdentical => COMPARE,
         SelectJunk | SelectLargest | SelectEmptyFiles => VISIBLE_FILES,
         SelectLikeCursor => EXTENSION,
         CopyListingText | CopyListingCsv | CopyListingMarkdown => LISTING,
-        StashSelection => SELECTED,
-        StashUnion | StashIntersect | StashSubtract | StashSymmetricDiff => STASHED,
-        ToggleMark | ToggleSelect | ExtendSelectUp | ExtendSelectDown => CURSOR,
-        ClearMarks | MarkedUnion | MarkedIntersect | MarkedSubtract | MarkedSymmetricDiff => MARKED,
+        ToggleSelect | ExtendSelectUp | ExtendSelectDown => CURSOR,
         JumpBack => BACK,
         JumpForward => FORWARD,
         GoUp => UP,
@@ -637,8 +584,6 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Copy as file URL", "", "clipboard copy url file url", Command::CopyFileUrl),
     entry("Copy shell-escaped path", "", "clipboard copy shell escaped path", Command::CopyShellPath),
     entry("Copy path relative to other pane", "", "clipboard copy relative path other pane", Command::CopyRelativePath),
-    entry("Add to shelf", "Cmd+Shift+A", "shelf stack add stage collect", Command::ShelfAdd),
-    entry("Drain shelf here", "Cmd+Shift+V", "shelf stack drain paste copy here", Command::ShelfDrain),
     entry("Get Info", "Cmd+I", "view info get info properties metadata", Command::ToggleInfo),
     entry("Go to path", "Cmd+L", "navigation go path location jump", Command::BeginGoToPath),
     entry("Back", "Cmd+[", "navigation back history previous jump return", Command::JumpBack),
@@ -651,18 +596,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Select files only in this panel", "", "selection only here unique missing other panel compare diff", Command::SelectOnlyHere),
     entry("Select files differing from other panel", "", "selection differing changed modified other panel compare diff", Command::SelectDiffering),
     entry("Select files identical to other panel", "", "selection identical same equal other panel compare diff dedupe", Command::SelectIdentical),
-    entry("Stash selection", "", "command", Command::StashSelection),
-    entry("Selection: union with stash", "", "command", Command::StashUnion),
-    entry("Selection: intersect with stash", "", "command", Command::StashIntersect),
-    entry("Selection: subtract stash", "", "command", Command::StashSubtract),
-    entry("Selection: symmetric difference with stash", "", "command", Command::StashSymmetricDiff),
-    entry("Toggle mark", "M", "command", Command::ToggleMark),
-    entry("Clear marks", "", "command", Command::ClearMarks),
     entry("Clear selection in all folders", "", "selection clear deselect none reset all folders", Command::ClearSelection),
-    entry("Selection: union with marked", "", "command", Command::MarkedUnion),
-    entry("Selection: intersect with marked", "", "command", Command::MarkedIntersect),
-    entry("Selection: subtract marked", "", "command", Command::MarkedSubtract),
-    entry("Selection: symmetric difference with marked", "", "command", Command::MarkedSymmetricDiff),
     entry("Activity", "Cmd+J", "activity operations queue progress history errors recovery", Command::ToggleQueuePanel),
     entry("Operation history", "", "command", Command::OpenReceipts),
     entry("Recovery center", "", "command", Command::OpenRecoveryCenter),
@@ -926,7 +860,6 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         D if press.command && press.shift => Some(Command::CycleDensity),
         D if press.command => Some(Command::DiffFiles),
         M if press.command && press.shift => Some(Command::DiskTreemap),
-        M => Some(Command::ToggleMark),
         N if press.command && press.shift => Some(Command::GatherIntoFolder),
         F if press.command => Some(Command::BeginFind),
         C if press.command && press.shift => Some(Command::CopyPath),
@@ -935,9 +868,7 @@ pub fn map_key(press: KeyPress) -> Option<Command> {
         F6 => Some(Command::RequestMove),
         F7 => Some(Command::CreateDir),
         F8 | Delete => Some(Command::RequestDelete),
-        A if press.command && press.shift => Some(Command::ShelfAdd),
         A if press.command => Some(Command::SelectAll),
-        V if press.command && press.shift => Some(Command::ShelfDrain),
         E if press.command => Some(Command::EqualizePanels),
         U if press.command => Some(Command::SwapPanels),
         G if press.command => Some(Command::BeginSelectMask),
@@ -1407,20 +1338,6 @@ mod tests {
     }
 
     #[test]
-    fn shelf_binds_to_cmd_shift_a_and_cmd_shift_v() {
-        let cmd_shift = |code| KeyPress {
-            code,
-            command: true,
-            shift: true,
-        };
-        assert_eq!(map_key(cmd_shift(KeyCode::A)), Some(Command::ShelfAdd));
-        assert_eq!(map_key(cmd_shift(KeyCode::V)), Some(Command::ShelfDrain));
-        // Cmd+A without shift stays Select all; plain V types text.
-        assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
-        assert_eq!(map_key(press(KeyCode::V)), None);
-    }
-
-    #[test]
     fn cmd_shift_c_copies_path() {
         let cmd_shift_c = KeyPress {
             code: KeyCode::C,
@@ -1445,8 +1362,8 @@ mod tests {
             shift: true,
         };
         assert_eq!(map_key(cmd_shift_m), Some(Command::DiskTreemap));
-        // Bare M (no modifiers) toggles the mark on the cursor entry.
-        assert_eq!(map_key(press(KeyCode::M)), Some(Command::ToggleMark));
+        // Bare M (no modifiers) is free for type-ahead.
+        assert_eq!(map_key(press(KeyCode::M)), None);
     }
 
     #[test]

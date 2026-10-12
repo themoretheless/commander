@@ -447,16 +447,12 @@ pub fn file_row_semantics(
     size: &str,
     modified: &str,
     selected: bool,
-    marked: bool,
     cursor: bool,
     _is_directory: bool,
 ) -> FileRowSemantics {
     let mut states = Vec::new();
     if selected {
         states.push("selected");
-    }
-    if marked {
-        states.push("marked");
     }
     if cursor {
         states.push("cursor");
@@ -704,12 +700,10 @@ mod tests {
 
     #[test]
     fn file_rows_name_columns_and_publish_selection_and_expansion() {
-        let row = file_row_semantics(
-            "Projects", "Folder", "12 items", "Today", true, true, false, true,
-        );
+        let row = file_row_semantics("Projects", "Folder", "12 items", "Today", true, true, true);
         assert_eq!(
             row.label,
-            "Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected, marked"
+            "Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected, cursor"
         );
         assert!(row.selected);
         assert_eq!(row.expanded, None);

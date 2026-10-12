@@ -249,7 +249,6 @@ impl eframe::App for App {
                         }
                         self.show_activity_strip(ui);
                         if !self.ui.focus_mode {
-                            self.show_shelf_tray(ui);
                             self.show_selection_hud(ui);
                         }
                         self.show_main_area(ui, input_policy);
@@ -708,7 +707,6 @@ impl App {
                 self.apply_hidden_files_outcome(outcome, ctx);
             }
             UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
-            UiRequest::DrainShelf => self.drain_shelf(ctx),
         }
     }
 
@@ -808,25 +806,6 @@ impl App {
             ctx,
             crate::toasts::ToastKind::Error,
             feedback.message,
-            false,
-        );
-    }
-
-    fn drain_shelf(&mut self, ctx: &egui::Context) {
-        let c = ctx.clone();
-        let outcome = self.ws.drain_shelf(move || c.request_repaint());
-        if outcome.unavailable == 0 {
-            return;
-        }
-        let item = |count: usize| if count == 1 { "item" } else { "items" };
-        self.toast(
-            ctx,
-            crate::toasts::ToastKind::Error,
-            format!(
-                "{} shelf {} unavailable, kept on the shelf",
-                outcome.unavailable,
-                item(outcome.unavailable)
-            ),
             false,
         );
     }
@@ -993,106 +972,6 @@ impl App {
             )
         };
         self.toast(ctx, kind, msg, false);
-    }
-
-    /// Bottom shelf (drop stack) tray, shown only when something is staged:
-    /// count + total size, removable chips, Drain-here and Clear.
-    fn show_shelf_tray(&mut self, ui: &mut egui::Ui) {
-        if self.ws.shelf.is_empty() {
-            return;
-        }
-        let t = self.colors;
-        let count = self.ws.shelf.len();
-        let total = self
-            .ws
-            .shelf
-            .total_size(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
-        let items: Vec<std::path::PathBuf> = self.ws.shelf.items().to_vec();
-
-        let mut remove: Option<std::path::PathBuf> = None;
-        let mut clear = false;
-        let mut drain = false;
-
-        egui::Panel::bottom("shelf_tray")
-            .frame(Frame::NONE.fill(t.bg_card))
-            .show(ui, |ui| {
-                Frame::NONE
-                    .inner_margin(Margin::symmetric(12, 6))
-                    .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "\u{1f4cb} Shelf {count} \u{00b7} {}",
-                                    crate::panel::format_size(total)
-                                ))
-                                .size(11.0)
-                                .strong()
-                                .color(t.accent),
-                            );
-                            ui.add_space(8.0);
-                            for p in &items {
-                                let name = p
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                let chip = Frame::NONE
-                                    .fill(t.bg_panel)
-                                    .stroke(Stroke::new(1.0_f32, t.border))
-                                    .inner_margin(Margin::symmetric(6, 2))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(format!("{name}  \u{00d7}"))
-                                                .size(11.0)
-                                                .color(t.text_secondary),
-                                        );
-                                    })
-                                    .response
-                                    .interact(Sense::click());
-                                if chip.clicked() {
-                                    remove = Some(p.clone());
-                                }
-                            }
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("Clear")
-                                                .size(11.0)
-                                                .color(t.text_primary),
-                                        )
-                                        .fill(t.bg_panel)
-                                        .corner_radius(CornerRadius::ZERO),
-                                    )
-                                    .clicked()
-                                {
-                                    clear = true;
-                                }
-                                ui.add_space(6.0);
-                                if ui
-                                    .add(super::dialog_button(
-                                        t,
-                                        super::ButtonRole::Primary,
-                                        egui::RichText::new("Drain here \u{2318}\u{21e7}V")
-                                            .size(11.0),
-                                    ))
-                                    .clicked()
-                                {
-                                    drain = true;
-                                }
-                            });
-                        });
-                    });
-            });
-
-        if let Some(p) = remove {
-            self.ws.shelf.remove(&p);
-        }
-        if clear {
-            self.ws.shelf.clear();
-        }
-        if drain {
-            self.ws.execute(crate::command::Command::ShelfDrain);
-        }
     }
 
     /// A quiet pill near the bottom of the central area summarizing the active

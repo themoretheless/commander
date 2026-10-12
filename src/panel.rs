@@ -462,12 +462,9 @@ impl PanelState {
         self.listing.status()
     }
 
+    #[cfg(test)]
     pub fn selected_paths(&self) -> &HashSet<PathBuf> {
         self.selection.selected()
-    }
-
-    pub fn marked_paths(&self) -> &HashSet<PathBuf> {
-        self.selection.marked()
     }
 
     pub fn selection_is_empty(&self) -> bool {
@@ -480,10 +477,6 @@ impl PanelState {
 
     pub fn is_selected(&self, path: &Path) -> bool {
         self.selection.selected().contains(path)
-    }
-
-    pub fn is_marked(&self, path: &Path) -> bool {
-        self.selection.marked().contains(path)
     }
 
     #[cfg(test)]
@@ -546,12 +539,6 @@ impl PanelState {
     pub fn replace_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         self.selection
             .replace_selected(paths.into_iter().collect::<HashSet<_>>());
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replace_marks_for_test(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
-        self.selection
-            .replace_marked(paths.into_iter().collect::<HashSet<_>>());
     }
 
     pub fn cursor(&self) -> usize {
@@ -1360,16 +1347,6 @@ impl PanelState {
         self.drag.set(entries);
     }
 
-    /// Flip `path`'s membership in the mark set. Unlike `toggle_select`,
-    /// marks are never cleared by select-all/invert/clear-selection.
-    pub fn toggle_mark(&mut self, path: PathBuf) {
-        self.selection.toggle_marked(path);
-    }
-
-    pub fn clear_marks(&mut self) {
-        self.selection.clear_marked();
-    }
-
     pub fn select_all(&mut self) {
         let all_selected = self.visible_selected().count() == self.filtered_available_count();
         self.update_filtered_selection(|entry, selection| {
@@ -1862,30 +1839,6 @@ mod tests {
     }
 
     #[test]
-    fn toggle_mark_adds_then_removes_independently_of_selection() {
-        let mut p = panel_with(vec![entry("a", false, 1)]);
-        let path = p.entries()[0].path.clone();
-        p.toggle_select(path.clone());
-        p.toggle_mark(path.clone());
-        assert!(p.is_marked(&path));
-        assert!(p.is_selected(&path), "marking does not touch selection");
-        p.toggle_mark(path.clone());
-        assert!(!p.is_marked(&path));
-        assert!(p.is_selected(&path), "unmarking does not touch selection");
-    }
-
-    #[test]
-    fn clear_marks_empties_the_set_without_touching_selection() {
-        let mut p = panel_with(vec![entry("a", false, 1)]);
-        let path = p.entries()[0].path.clone();
-        p.toggle_select(path.clone());
-        p.toggle_mark(path.clone());
-        p.clear_marks();
-        assert!(p.marked_paths().is_empty());
-        assert!(p.is_selected(&path));
-    }
-
-    #[test]
     fn select_all_toggles_between_all_and_none() {
         let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
         p.select_all();
@@ -1934,11 +1887,10 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_snapshot_preserves_selection_marks_and_reconciliation() {
+    fn incomplete_snapshot_preserves_selection_and_reconciliation() {
         let mut panel = panel_with(vec![entry("keep.txt", false, 10)]);
         let path = PathBuf::from("/test/keep.txt");
         panel.select_path(path.clone());
-        panel.toggle_mark(path.clone());
         panel.watcher.activate_test_binding(Path::new("/test"));
         let ticket = panel.watcher.snapshot_ticket();
 
@@ -1946,7 +1898,6 @@ mod tests {
             assert!(!panel.apply_directory_read(DirectoryRead::Incomplete(status)));
             assert_eq!(panel.entries().len(), 1);
             assert!(panel.is_selected(&path));
-            assert!(panel.is_marked(&path));
             assert_eq!(panel.dir_status(), status);
         }
         panel.watcher.defer_snapshot(ticket.as_ref());
@@ -1958,7 +1909,6 @@ mod tests {
         let old_path = old_entry.path.clone();
         let mut panel = panel_with(vec![old_entry.clone()]);
         panel.select_path(old_path.clone());
-        panel.toggle_mark(old_path.clone());
         panel.set_cursor(1);
         panel.begin_drag(old_path.clone());
         panel.drag.set_drop_target(PathBuf::from("/test"));
@@ -1986,7 +1936,6 @@ mod tests {
             }
         );
         assert!(panel.selected_paths().is_empty());
-        assert!(panel.marked_paths().is_empty());
         assert!(panel.selected_or_cursor().unwrap().is_empty());
         assert_eq!(panel.cursor(), 0);
         assert!(panel.cursor_entry().is_none());
@@ -1996,7 +1945,6 @@ mod tests {
         panel.current_path = PathBuf::from("/test");
         assert!(panel.apply_directory_read(DirectoryRead::Complete(vec![old_entry])));
         assert!(panel.is_selected(&old_path));
-        assert!(panel.is_marked(&old_path));
         let actionable = panel.selected_or_cursor().unwrap();
         assert_eq!(actionable.len(), 1);
         assert_eq!(actionable[0].path, old_path);
@@ -2124,12 +2072,11 @@ mod tests {
         p.refresh();
         assert_eq!(p.entries().len(), 3);
 
-        // Cursor on "b.txt" (row 2), select and mark "c.txt".
+        // Cursor on "b.txt" (row 2), select "c.txt".
         p.set_cursor(2);
         p.toggle_select(doomed.clone());
-        p.toggle_mark(doomed.clone());
 
-        // A new file shifts sort order; a selected/marked file disappears.
+        // A new file shifts sort order; a selected file disappears.
         tmp.file("0-first.txt", "0");
         std::fs::remove_file(&doomed).unwrap();
         p.refresh();
@@ -2137,7 +2084,6 @@ mod tests {
         let under_cursor = p.filtered_entries()[p.cursor() - 1].path.clone();
         assert!(under_cursor.ends_with("b.txt"), "cursor follows the path");
         assert!(p.selection_is_empty(), "selection drops deleted paths");
-        assert!(p.marked_paths().is_empty(), "marks drop deleted paths");
     }
 
     #[test]
@@ -2196,7 +2142,6 @@ mod tests {
         panel.refresh();
         let selected = panel.entries()[0].path.clone();
         panel.select_path(selected.clone());
-        panel.toggle_mark(selected);
         panel.set_cursor(1);
         panel.set_scroll_anchor(1);
         panel.set_search_query("txt");
@@ -2213,7 +2158,6 @@ mod tests {
         let cursor = panel.cursor();
         let scroll_anchor = panel.scroll_anchor();
         let selected = panel.selected_paths().clone();
-        let marked = panel.marked_paths().clone();
         let filter = panel.filtered_indices();
         let size_revision = panel.size_snapshot().revision();
         let size_binding = panel.sizes.binding_for_test().to_path_buf();
@@ -2231,7 +2175,6 @@ mod tests {
         assert_eq!(panel.cursor(), cursor);
         assert_eq!(panel.scroll_anchor(), scroll_anchor);
         assert_eq!(panel.selected_paths(), &selected);
-        assert_eq!(panel.marked_paths(), &marked);
         assert!(Arc::ptr_eq(&filter, &panel.filtered_indices()));
         assert_eq!(panel.size_snapshot().revision(), size_revision);
         assert_eq!(panel.sizes.binding_for_test(), size_binding);

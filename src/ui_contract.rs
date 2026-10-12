@@ -247,9 +247,8 @@ fn routed_escape_is_consumed_once_by_its_exact_owner() {
 fn file_row_semantics_reach_the_headless_accesskit_tree() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
-    let semantics = file_row_semantics(
-        "Projects", "Folder", "12 items", "Today", true, true, false, true,
-    );
+    let semantics =
+        file_row_semantics("Projects", "Folder", "12 items", "Today", true, false, true);
     let output = crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
         let response = ui.selectable_label(semantics.selected, "Projects");
         response.widget_info(|| {
@@ -282,9 +281,7 @@ fn file_row_semantics_reach_the_headless_accesskit_tree() {
         .expect("file row node");
     assert_eq!(
         row.label(),
-        Some(
-            "Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected, marked"
-        )
+        Some("Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected")
     );
     assert_eq!(row.is_selected(), Some(true));
     assert_eq!(row.is_expanded(), None);

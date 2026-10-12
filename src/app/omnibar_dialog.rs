@@ -574,8 +574,6 @@ impl App {
             | Command::CopyFileUrl
             | Command::CopyShellPath
             | Command::CopyRelativePath => format!("{picked} item(s)"),
-            Command::ShelfAdd => format!("{picked} item(s)"),
-            Command::ShelfDrain => format!("{} staged -> {active_path}", self.ws.shelf.len()),
             Command::ToggleInfo => "opposite panel inspector".to_string(),
             Command::BeginGoToPath => "jump to folder".to_string(),
             Command::BeginRecent => "recent folders".to_string(),

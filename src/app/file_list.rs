@@ -305,7 +305,6 @@ impl App {
                     let row_cursor = idx + 1;
                     let is_cursor = row_cursor == cursor;
                     let is_selected = panel.is_selected(&entry.path);
-                    let is_marked = panel.is_marked(&entry.path);
 
                     let zebra = if idx % 2 == 1 {
                         t.bg_card.linear_multiply(0.3)
@@ -353,7 +352,6 @@ impl App {
                         &size_text,
                         &modified_label,
                         is_selected,
-                        is_marked,
                         is_cursor,
                         entry.is_dir,
                     );
@@ -505,24 +503,6 @@ impl App {
                         );
                     }
 
-                    // Marked indicator: a right-edge stripe, independent of
-                    // selection/cursor and of the left-edge kind/compare stripe.
-                    if is_marked {
-                        let edge = egui::Rect::from_min_size(
-                            egui::pos2(full_rect.right() - 3.0, full_rect.top()),
-                            Vec2::new(3.0, full_rect.height()),
-                        );
-                        ui.painter()
-                            .rect_filled(edge, CornerRadius::ZERO, t.accent_warning);
-                        ui.painter().text(
-                            egui::pos2(full_rect.right() - 10.0, full_rect.center().y),
-                            egui::Align2::CENTER_CENTER,
-                            "\u{25c6}",
-                            egui::FontId::proportional(metrics.meta_pt),
-                            t.accent_warning,
-                        );
-                    }
-
                     // Content
                     let mut child_ui = ui.new_child(
                         egui::UiBuilder::new().max_rect(row_rect.shrink2(egui::vec2(6.0, 3.0))),
@@ -567,9 +547,8 @@ impl App {
                         } else {
                             t.text_secondary
                         };
-                        let responsive = crate::accessibility::file_row_layout(
-                            ui.available_width() - if is_marked { 16.0 } else { 0.0 },
-                        );
+                        let responsive =
+                            crate::accessibility::file_row_layout(ui.available_width());
                         let max_name_chars =
                             (responsive.name_width / metrics.name_pt).floor() as usize;
                         let display_name = crate::display_name::truncate_preserving_extension(
