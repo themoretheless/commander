@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
-use super::{Notify, WATCHER_RETRY_BACKOFF, invalidate_size_cache};
+use super::{Notify, invalidate_size_cache};
+
+pub(crate) const WATCHER_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 
 enum DirectoryWatcher {
     Native(notify::RecommendedWatcher),
