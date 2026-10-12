@@ -752,115 +752,8 @@ impl App {
             .inner_margin(Margin::symmetric(10, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let shown = panel.filtered_count();
-                    let total = panel.entries().len();
-                    let selected_total = panel.selected_count();
-                    let selected_visible = panel.visible_selected_count();
-                    // One pass for the folder total plus its largest/oldest entry.
-                    let overview = panel.folder_overview();
-                    let filters_active =
-                        crate::panel::filter_is_active(panel.search_query(), &panel.facets());
-                    let count_prefix = if filters_active {
-                        format!("{shown} of {total} items")
-                    } else {
-                        format!("{shown} items")
-                    };
-                    let size_str = match overview.total {
-                        Some(s) => format!("{count_prefix} ({})", format_size(s)),
-                        None => format!("{count_prefix} (\u{2026})"),
-                    };
-                    ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
-                    if filters_active {
-                        let active_count = panel.facets().active_count();
-                        let filter_label = if active_count > 0 {
-                            format!("  |  Filters {active_count}")
-                        } else {
-                            "  |  Filter text".to_string()
-                        };
-                        ui.label(egui::RichText::new(filter_label).size(11.0).color(t.accent));
-                    }
-                    if selected_total > 0 {
-                        let selected_size = format_size(panel.visible_selected_size());
-                        let selection_text = if selected_visible == selected_total {
-                            format!("{selected_total} selected ({selected_size})")
-                        } else {
-                            format!(
-                                "{selected_total} selected ({selected_visible} visible, \
-                                 {selected_size})"
-                            )
-                        };
-                        ui.label(
-                            egui::RichText::new(format!("  |  {selection_text}"))
-                                .size(11.0)
-                                .color(t.accent_purple),
-                        );
-                    }
-
-                    // Folder largest/oldest: the always-on complement to the
-                    // selection HUD (which shows the same for the selection).
-                    // Hidden once a selection is active, so the two don't clash.
-                    if selected_total == 0 && total >= 2 {
-                        let short = |name: &str| -> String {
-                            const MAX: usize = 16;
-                            if name.chars().count() > MAX {
-                                let head: String = name.chars().take(MAX - 1).collect();
-                                format!("{head}\u{2026}")
-                            } else {
-                                name.to_string()
-                            }
-                        };
-                        let mut extra = String::new();
-                        if let Some((name, sz)) = &overview.largest
-                            && *sz > 0
-                        {
-                            extra.push_str(&format!(
-                                "  |  largest {} ({})",
-                                short(name),
-                                format_size(*sz)
-                            ));
-                        }
-                        if let Some((name, _)) = &overview.oldest {
-                            extra.push_str(&format!("  |  oldest {}", short(name)));
-                        }
-                        if !extra.is_empty() {
-                            ui.label(egui::RichText::new(extra).size(11.0).color(t.text_muted));
-                        }
-                    }
-
-                    // Compare mode: chips to turn the diff into a selection.
-                    if let Some(map) = compare {
-                        use crate::compare::CompareCriterion;
-                        ui.label(
-                            egui::RichText::new("  |  Select:")
-                                .size(11.0)
-                                .color(t.text_muted),
-                        );
-                        for (label, crit) in [
-                            ("Newer", CompareCriterion::Newer),
-                            ("Differing", CompareCriterion::Differing),
-                            ("Unique", CompareCriterion::Unique),
-                        ] {
-                            let clicked = ui
-                                .add(
-                                    egui::Label::new(
-                                        egui::RichText::new(label).size(11.0).color(t.accent),
-                                    )
-                                    .sense(Sense::click()),
-                                )
-                                .clicked();
-                            if clicked {
-                                panel.replace_selection(crate::compare::select_by_compare(
-                                    panel
-                                        .filtered_indices()
-                                        .iter()
-                                        .filter_map(|&i| panel.entries().get(i)),
-                                    map,
-                                    crit,
-                                ));
-                            }
-                        }
-                    }
-
+                    // "Hidden" is laid out first so it keeps its width; the
+                    // summary on the left gets what remains.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let hidden_label = if panel.show_hidden() {
                             "Hidden: ON"
@@ -872,6 +765,130 @@ impl App {
                                 .size(11.0)
                                 .color(t.text_muted),
                         );
+                        ui.add_space(8.0);
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let shown = panel.filtered_count();
+                            let total = panel.entries().len();
+                            let selected_total = panel.selected_count();
+                            let selected_visible = panel.visible_selected_count();
+                            // One pass for the folder total plus its largest/oldest entry.
+                            let overview = panel.folder_overview();
+                            let filters_active = crate::panel::filter_is_active(
+                                panel.search_query(),
+                                &panel.facets(),
+                            );
+                            let count_prefix = if filters_active {
+                                format!("{shown} of {total} items")
+                            } else {
+                                format!("{shown} items")
+                            };
+                            let size_str = match overview.total {
+                                Some(s) => format!("{count_prefix} ({})", format_size(s)),
+                                None => format!("{count_prefix} (\u{2026})"),
+                            };
+                            ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
+                            if filters_active {
+                                let active_count = panel.facets().active_count();
+                                let filter_label = if active_count > 0 {
+                                    format!("  |  Filters {active_count}")
+                                } else {
+                                    "  |  Filter text".to_string()
+                                };
+                                ui.label(
+                                    egui::RichText::new(filter_label).size(11.0).color(t.accent),
+                                );
+                            }
+                            if selected_total > 0 {
+                                let selected_size = format_size(panel.visible_selected_size());
+                                let selection_text = if selected_visible == selected_total {
+                                    format!("{selected_total} selected ({selected_size})")
+                                } else {
+                                    format!(
+                                        "{selected_total} selected ({selected_visible} visible, \
+                                         {selected_size})"
+                                    )
+                                };
+                                ui.label(
+                                    egui::RichText::new(format!("  |  {selection_text}"))
+                                        .size(11.0)
+                                        .color(t.accent_purple),
+                                );
+                            }
+
+                            // Folder largest/oldest: the always-on complement to the
+                            // selection HUD (which shows the same for the selection).
+                            // Hidden once a selection is active, so the two don't clash.
+                            if selected_total == 0 && total >= 2 {
+                                let short = |name: &str| -> String {
+                                    const MAX: usize = 16;
+                                    if name.chars().count() > MAX {
+                                        let head: String = name.chars().take(MAX - 1).collect();
+                                        format!("{head}\u{2026}")
+                                    } else {
+                                        name.to_string()
+                                    }
+                                };
+                                let mut extra = String::new();
+                                if let Some((name, sz)) = &overview.largest
+                                    && *sz > 0
+                                {
+                                    extra.push_str(&format!(
+                                        "  |  largest {} ({})",
+                                        short(name),
+                                        format_size(*sz)
+                                    ));
+                                }
+                                if let Some((name, _)) = &overview.oldest {
+                                    extra.push_str(&format!("  |  oldest {}", short(name)));
+                                }
+                                if !extra.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(extra)
+                                                .size(11.0)
+                                                .color(t.text_muted),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            }
+
+                            // Compare mode: chips to turn the diff into a selection.
+                            if let Some(map) = compare {
+                                use crate::compare::CompareCriterion;
+                                ui.label(
+                                    egui::RichText::new("  |  Select:")
+                                        .size(11.0)
+                                        .color(t.text_muted),
+                                );
+                                for (label, crit) in [
+                                    ("Newer", CompareCriterion::Newer),
+                                    ("Differing", CompareCriterion::Differing),
+                                    ("Unique", CompareCriterion::Unique),
+                                ] {
+                                    let clicked = ui
+                                        .add(
+                                            egui::Label::new(
+                                                egui::RichText::new(label)
+                                                    .size(11.0)
+                                                    .color(t.accent),
+                                            )
+                                            .sense(Sense::click()),
+                                        )
+                                        .clicked();
+                                    if clicked {
+                                        panel.replace_selection(crate::compare::select_by_compare(
+                                            panel
+                                                .filtered_indices()
+                                                .iter()
+                                                .filter_map(|&i| panel.entries().get(i)),
+                                            map,
+                                            crit,
+                                        ));
+                                    }
+                                }
+                            }
+                        });
                     });
                 });
             });
