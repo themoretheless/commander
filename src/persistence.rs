@@ -283,15 +283,29 @@ fn process_lock_io(error: io::Error) -> PreCommitError {
     }
 }
 
+/// Hold both store locks (cross-process flock, then in-process path lock)
+/// for the duration of `body`.
+fn with_store_locks<T, E>(
+    path: &Path,
+    lock_error: impl FnOnce(io::Error) -> E,
+    body: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let _process_lock = acquire_process_store_lock(path).map_err(lock_error)?;
+    let path_lock = path_lock(path);
+    let _guard = crate::lock_util::recover(&path_lock);
+    body()
+}
+
 impl Persist for FsPersist {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure> {
-        let _process_lock = acquire_process_store_lock(path).map_err(|error| ReadFailure {
-            kind: ReadFailureKind::Io,
-            source: error,
-        })?;
-        let path_lock = path_lock(path);
-        let _guard = crate::lock_util::recover(&path_lock);
-        read_file_bounded(path, max_bytes)
+        with_store_locks(
+            path,
+            |error| ReadFailure {
+                kind: ReadFailureKind::Io,
+                source: error,
+            },
+            || read_file_bounded(path, max_bytes),
+        )
     }
 
     fn commit(
@@ -300,11 +314,10 @@ impl Persist for FsPersist {
         bytes: &[u8],
         expected: ExpectedRevision,
     ) -> Result<AtomicWriteOutcome, PreCommitError> {
-        let _process_lock = acquire_process_store_lock(path).map_err(process_lock_io)?;
-        let path_lock = path_lock(path);
-        let _guard = crate::lock_util::recover(&path_lock);
-        verify_expected_revision(path, &expected)?;
-        write_bytes_atomic_with(path, bytes, &StdFsOps)
+        with_store_locks(path, process_lock_io, || {
+            verify_expected_revision(path, &expected)?;
+            write_bytes_atomic_with(path, bytes, &StdFsOps)
+        })
     }
 }
 
@@ -320,11 +333,10 @@ impl FsPersist {
     where
         F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
     {
-        let _process_lock = acquire_process_store_lock(path).map_err(process_lock_io)?;
-        let path_lock = path_lock(path);
-        let _guard = crate::lock_util::recover(&path_lock);
-        verify_expected_revision(path, &expected)?;
-        write_stream_atomic_with(path, write, &StdFsOps)
+        with_store_locks(path, process_lock_io, || {
+            verify_expected_revision(path, &expected)?;
+            write_stream_atomic_with(path, write, &StdFsOps)
+        })
     }
 }
 
@@ -1002,40 +1014,10 @@ fn write_bytes_atomic_with(
     bytes: &[u8],
     fs: &impl FsOps,
 ) -> Result<AtomicWriteOutcome, PreCommitError> {
-    let (parent, prefix) = store_location(path)?;
-    fs.create_dir_all(parent)
-        .map_err(|source| precommit_io(SaveStage::CreateDirectory, source, None))?;
-    let (temp_path, mut temp) = create_unique_temp(fs, parent, &prefix)?;
-
-    let prepare = fs
-        .write_all(&mut temp, bytes)
-        .map_err(|source| (SaveStage::Write, source))
-        .and_then(|()| {
-            fs.flush(&mut temp)
-                .map_err(|source| (SaveStage::Flush, source))
-        })
-        .and_then(|()| {
-            fs.sync_file(&temp)
-                .map_err(|source| (SaveStage::SyncFile, source))
-        });
-    if let Err((stage, source)) = prepare {
-        drop(temp);
-        return Err(precommit_with_cleanup(fs, &temp_path, stage, source));
-    }
-    drop(temp);
-
-    if let Err(source) = fs.rename(&temp_path, path) {
-        return Err(precommit_with_cleanup(
-            fs,
-            &temp_path,
-            SaveStage::Rename,
-            source,
-        ));
-    }
-    match fs.sync_directory(parent) {
-        Ok(()) => Ok(AtomicWriteOutcome::Durable),
-        Err(source) => Ok(AtomicWriteOutcome::CommittedButNotDurable(source)),
-    }
+    commit_temp_with(path, fs, |temp| {
+        fs.write_all(temp, bytes)
+            .map_err(|source| FillError::Stage(SaveStage::Write, source))
+    })
 }
 
 fn write_stream_atomic_with<F>(
@@ -1046,27 +1028,49 @@ fn write_stream_atomic_with<F>(
 where
     F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
 {
+    commit_temp_with(path, fs, |temp| write(temp).map_err(FillError::Caller))
+}
+
+/// How filling the temp file failed: an I/O stage of ours (cleanup is
+/// recorded on the error) or the caller's own error (temp removed quietly).
+enum FillError {
+    Stage(SaveStage, io::Error),
+    Caller(PreCommitError),
+}
+
+/// The one atomic commit pipeline: unique temp beside `path`, fill, flush,
+/// fsync, rename over `path`, then fsync the directory.
+fn commit_temp_with(
+    path: &Path,
+    fs: &impl FsOps,
+    fill: impl FnOnce(&mut File) -> Result<(), FillError>,
+) -> Result<AtomicWriteOutcome, PreCommitError> {
     let (parent, prefix) = store_location(path)?;
     fs.create_dir_all(parent)
         .map_err(|source| precommit_io(SaveStage::CreateDirectory, source, None))?;
     let (temp_path, mut temp) = create_unique_temp(fs, parent, &prefix)?;
-    if let Err(error) = write(&mut temp) {
-        drop(temp);
-        let _ = fs.remove_file(&temp_path);
-        return Err(error);
-    }
-    let prepare = fs
-        .flush(&mut temp)
-        .map_err(|source| (SaveStage::Flush, source))
+
+    let prepare = fill(&mut temp)
+        .and_then(|()| {
+            fs.flush(&mut temp)
+                .map_err(|source| FillError::Stage(SaveStage::Flush, source))
+        })
         .and_then(|()| {
             fs.sync_file(&temp)
-                .map_err(|source| (SaveStage::SyncFile, source))
+                .map_err(|source| FillError::Stage(SaveStage::SyncFile, source))
         });
-    if let Err((stage, source)) = prepare {
-        drop(temp);
-        return Err(precommit_with_cleanup(fs, &temp_path, stage, source));
-    }
     drop(temp);
+    match prepare {
+        Ok(()) => {}
+        Err(FillError::Stage(stage, source)) => {
+            return Err(precommit_with_cleanup(fs, &temp_path, stage, source));
+        }
+        Err(FillError::Caller(error)) => {
+            let _ = fs.remove_file(&temp_path);
+            return Err(error);
+        }
+    }
+
     if let Err(source) = fs.rename(&temp_path, path) {
         return Err(precommit_with_cleanup(
             fs,
