@@ -447,6 +447,50 @@ pub struct ResumeCheckpoint {
     pub content_digest: Option<[u8; 32]>,
 }
 
+impl ResumeCheckpoint {
+    /// Record a checkpoint for `staging` at `offset`, observing the source and
+    /// partial identities now. `content_digest` is BLAKE3 of the first
+    /// `offset` bytes.
+    pub fn observe(
+        source: &Path,
+        staging: &Path,
+        offset: u64,
+        layout: CheckpointLayout,
+        content_digest: [u8; 32],
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            staging: staging.to_path_buf(),
+            offset,
+            source: PathIdentity::observe_deep(source)?,
+            partial: PathIdentity::observe_deep(staging)?,
+            layout,
+            content_digest: Some(content_digest),
+        })
+    }
+
+    /// Whether the partial file as observed now can still hold this
+    /// checkpoint: a prefix may have grown past the offset, while delta
+    /// layouts preallocate and must keep their recorded size.
+    pub fn size_fits(&self, partial_now: &PathIdentity) -> bool {
+        match self.layout {
+            CheckpointLayout::Prefix => partial_now.size >= self.offset,
+            CheckpointLayout::DeltaFixed | CheckpointLayout::DeltaCdc => {
+                partial_now.size == self.partial.size && partial_now.size >= self.offset
+            }
+        }
+    }
+
+    /// Whether the first `offset` bytes of `source` and `staging` both still
+    /// hash to the recorded proof. A checkpoint without a proof never matches.
+    pub fn proof_matches(&self, source: &Path, staging: &Path) -> std::io::Result<bool> {
+        let Some(expected) = self.content_digest else {
+            return Ok(false);
+        };
+        Ok(prefix_digest(source, self.offset)? == expected
+            && prefix_digest(staging, self.offset)? == expected)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckpointLayout {
     #[default]
@@ -713,18 +757,8 @@ fn valid_runtime_checkpoint(
     {
         return None;
     }
-    let layout_matches = match checkpoint.layout {
-        CheckpointLayout::Prefix => partial_now.size >= checkpoint.offset,
-        CheckpointLayout::DeltaFixed | CheckpointLayout::DeltaCdc => {
-            partial_now.size == checkpoint.partial.size && partial_now.size >= checkpoint.offset
-        }
-    };
-    if !layout_matches {
-        return None;
-    }
-    let expected = checkpoint.content_digest?;
-    if prefix_digest(&checkpoint_source, checkpoint.offset).ok()? != expected
-        || prefix_digest(staging, checkpoint.offset).ok()? != expected
+    if !checkpoint.size_fits(&partial_now)
+        || !checkpoint.proof_matches(&checkpoint_source, staging).ok()?
     {
         return None;
     }
@@ -1796,14 +1830,14 @@ mod tests {
         std::fs::write(&source, &bytes).unwrap();
         let offset = 1024 * 1024 + 7;
         std::fs::write(&staging, &bytes[..offset]).unwrap();
-        let checkpoint = ResumeCheckpoint {
-            staging: staging.clone(),
-            offset: offset as u64,
-            source: PathIdentity::observe_deep(&source).unwrap(),
-            partial: PathIdentity::observe_deep(&staging).unwrap(),
-            layout: CheckpointLayout::Prefix,
-            content_digest: Some(prefix_digest(&staging, offset as u64).unwrap()),
-        };
+        let checkpoint = ResumeCheckpoint::observe(
+            &source,
+            &staging,
+            offset as u64,
+            CheckpointLayout::Prefix,
+            prefix_digest(&staging, offset as u64).unwrap(),
+        )
+        .unwrap();
         std::fs::OpenOptions::new()
             .append(true)
             .open(&staging)

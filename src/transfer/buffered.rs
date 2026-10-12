@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use super::backend::CheckpointSink;
 use super::{CheckpointLayout, ResumeCheckpoint, TransferState, prefix_digest};
-use crate::path_identity::PathIdentity;
 
 pub(super) const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
 const CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
@@ -210,17 +209,13 @@ fn persist_checkpoint(
     let Some(checkpoints) = checkpoints.as_deref_mut() else {
         return Ok(());
     };
-    let source = PathIdentity::observe_deep(src)?;
-    let partial = PathIdentity::observe_deep(dst)?;
-    let checkpoint = ResumeCheckpoint {
-        staging: dst.to_path_buf(),
+    checkpoints.publish(ResumeCheckpoint::observe(
+        src,
+        dst,
         offset,
-        source,
-        partial,
-        layout: CheckpointLayout::Prefix,
-        content_digest: Some(*content_hasher.clone().finalize().as_bytes()),
-    };
-    checkpoints.publish(checkpoint)
+        CheckpointLayout::Prefix,
+        *content_hasher.clone().finalize().as_bytes(),
+    )?)
 }
 
 /// Recursively copy a directory with progress (buffered strategy).

@@ -314,15 +314,13 @@ impl DeltaBackend for ProductionDelta {
             crate::delta_copy::DeltaMode::ContentDefined => CheckpointLayout::DeltaCdc,
         };
         if let Some(checkpoint) = request.resume {
-            let expected = checkpoint.content_digest.ok_or_else(|| {
-                std::io::Error::new(
+            if checkpoint.content_digest.is_none() {
+                return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Delta checkpoint has no content proof",
-                )
-            })?;
-            if super::prefix_digest(request.source, checkpoint.offset)? != expected
-                || super::prefix_digest(request.staging, checkpoint.offset)? != expected
-            {
+                ));
+            }
+            if !checkpoint.proof_matches(request.source, request.staging)? {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Delta checkpoint content proof does not match source and staging",
@@ -333,14 +331,13 @@ impl DeltaBackend for ProductionDelta {
         let source = request.source;
         let staging = request.staging;
         let mut publish = |offset, content_digest| {
-            checkpoints.publish(ResumeCheckpoint {
-                staging: staging.to_path_buf(),
+            checkpoints.publish(ResumeCheckpoint::observe(
+                source,
+                staging,
                 offset,
-                source: PathIdentity::observe_deep(source)?,
-                partial: PathIdentity::observe_deep(staging)?,
                 layout,
-                content_digest: Some(content_digest),
-            })
+                content_digest,
+            )?)
         };
         let stats = crate::delta_copy::copy_file(
             crate::delta_copy::DeltaRequest {

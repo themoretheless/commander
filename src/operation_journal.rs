@@ -2273,14 +2273,9 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
         }
         _ => checkpoint.partial.same_version(&partial),
     };
-    let layout_matches = match checkpoint.layout {
-        crate::transfer::CheckpointLayout::Prefix => partial.size >= checkpoint.offset,
-        crate::transfer::CheckpointLayout::DeltaFixed
-        | crate::transfer::CheckpointLayout::DeltaCdc => {
-            partial.size == checkpoint.partial.size && partial.size >= checkpoint.offset
-        }
-    };
-    if !same_object || partial.kind != Some(crate::path_identity::PathKind::File) || !layout_matches
+    if !same_object
+        || partial.kind != Some(crate::path_identity::PathKind::File)
+        || !checkpoint.size_fits(&partial)
     {
         return Err(format!(
             "Recovery staging changed after checkpoint: {}",
