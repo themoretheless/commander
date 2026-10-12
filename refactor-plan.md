@@ -1,8 +1,7 @@
 # Structure plan: architecture, SOLID, DRY
 
-Status: phases 0–4 and phase 5 item 4 done on PR #20 (2026-10-12); phase 5
-items 1–3 remain, each as its own PR per `ux.md` §7. Written 2026-10-11
-against `main` + PR #20.
+Status: all phases done on PR #20 (2026-10-12). Written 2026-10-11 against
+`main` + PR #20.
 
 ## Progress
 
@@ -34,6 +33,9 @@ against `main` + PR #20.
 | 24 Journal helpers | `operation_mut`, `step_mut`, `release_overwrite_backup` |
 | Phase 0 command catalogue | `command::CATALOG` |
 | Phase 0 platform adapters | per-OS `desktop_adapters()`; AppKit only on macOS |
+| Phase 5.1 Activity strip | `app/activity.rs`; transfer, Trash and safe-state windows gone; Recovery is an Operations tab |
+| Phase 5.2 One selection | `PanelState::picked_entries`; marks, shelf, stash removed |
+| Phase 5.3 Panel modes | `PaneTools`: disk usage, diff, sync, duplicates, archive render in the inactive pane |
 | Phase 5.4 theme tokens | `theme.rs`, `file_color::PALETTE` |
 
 Found along the way: sparse copy trusted `SEEK_HOLE` and could drop data on
