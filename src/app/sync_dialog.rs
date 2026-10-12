@@ -71,269 +71,256 @@ impl App {
             }
             let pending = to_right + to_left;
 
-            egui::Window::new("Synchronize")
-                .collapsible(false)
-                .resizable(false)
-                .title_bar(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .frame(
-                    Frame::NONE
-                        .fill(t.bg_panel)
-                        .inner_margin(Margin::same(16))
-                        .stroke(Stroke::new(1.0_f32, t.border)),
-                )
-                .show(ctx, |ui| {
-                    ui.set_width(640.0);
-                    ui.label(
-                        egui::RichText::new("Synchronize panels")
-                            .size(13.0)
-                            .strong()
-                            .color(t.text_primary),
-                    );
-                    ui.add_space(8.0);
+            super::sheet_window("Synchronize", t, 16).show(ctx, |ui| {
+                ui.set_width(640.0);
+                ui.label(
+                    egui::RichText::new("Synchronize panels")
+                        .size(13.0)
+                        .strong()
+                        .color(t.text_primary),
+                );
+                ui.add_space(8.0);
 
-                    // ── Policy selector ─────────────────────────────────
-                    ui.horizontal(|ui| {
-                        for (p, text) in [
-                            (SyncPolicy::TwoWay, "Two-way"),
-                            (SyncPolicy::MirrorLeftToRight, "Mirror \u{2192}"),
-                            (SyncPolicy::MirrorRightToLeft, "Mirror \u{2190}"),
-                        ] {
-                            if ui
-                                .selectable_label(
-                                    state.policy == p,
-                                    egui::RichText::new(text).size(12.0),
-                                )
-                                .clicked()
-                                && state.policy != p
-                            {
-                                new_policy = Some(p);
-                            }
+                // ── Policy selector ─────────────────────────────────
+                ui.horizontal(|ui| {
+                    for (p, text) in [
+                        (SyncPolicy::TwoWay, "Two-way"),
+                        (SyncPolicy::MirrorLeftToRight, "Mirror \u{2192}"),
+                        (SyncPolicy::MirrorRightToLeft, "Mirror \u{2190}"),
+                    ] {
+                        if ui
+                            .selectable_label(
+                                state.policy == p,
+                                egui::RichText::new(text).size(12.0),
+                            )
+                            .clicked()
+                            && state.policy != p
+                        {
+                            new_policy = Some(p);
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Durability")
-                                .size(10.0)
-                                .color(t.text_muted),
-                        );
-                        for profile in crate::operation::DurabilityProfile::ALL {
-                            ui.selectable_value(&mut state.durability, profile, profile.label());
-                        }
-                        if state.durability == crate::operation::DurabilityProfile::Versioned {
-                            egui::ComboBox::from_id_salt("sync_version_retention")
-                                .selected_text(state.version_retention.label())
-                                .show_ui(ui, |ui| {
-                                    for policy in crate::operation::VersionRetentionPolicy::ALL {
-                                        ui.selectable_value(
-                                            &mut state.version_retention,
-                                            policy,
-                                            policy.label(),
-                                        )
-                                        .on_hover_text(policy.consequence());
-                                    }
-                                });
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Refresh").clicked() {
-                                refresh_plan = true;
-                            }
-                        });
-                    });
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    // ── Per-row plan ────────────────────────────────────
-                    if state.actions.is_empty() {
-                        ui.label(
-                            egui::RichText::new("Both panels already match.")
-                                .size(12.0)
-                                .color(t.text_muted),
-                        );
                     }
-                    egui::ScrollArea::vertical()
-                        .max_height(280.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for a in &mut state.actions {
-                                ui.horizontal(|ui| {
-                                    // Direction control: ← skip → as selectable arrows.
-                                    for (dir, glyph) in [
-                                        (SyncDirection::ToLeft, "\u{2190}"),
-                                        (SyncDirection::Skip, "\u{00b7}"),
-                                        (SyncDirection::ToRight, "\u{2192}"),
-                                    ] {
-                                        let active = a.direction == dir;
-                                        let available = a.allows(dir);
-                                        let hint = match dir {
-                                            SyncDirection::ToLeft => "Copy to left",
-                                            SyncDirection::Skip => "Skip",
-                                            SyncDirection::ToRight => "Copy to right",
-                                        };
-                                        let color = if active { t.accent } else { t.text_muted };
-                                        let response = ui
-                                            .add_enabled(
-                                                available,
-                                                egui::Button::selectable(
-                                                    active,
-                                                    egui::RichText::new(glyph)
-                                                        .size(13.0)
-                                                        .color(color),
-                                                ),
-                                            )
-                                            .on_hover_text(hint);
-                                        if response.clicked() {
-                                            a.direction = dir;
-                                        }
-                                    }
-                                    ui.add_space(6.0);
-                                    ui.label(
-                                        egui::RichText::new(status_label(a.status))
-                                            .size(10.0)
-                                            .color(status_color(a.status, t)),
-                                    );
-                                    ui.add_space(6.0);
-                                    ui.label(
-                                        egui::RichText::new(&a.name)
-                                            .size(12.0)
-                                            .color(t.text_secondary),
-                                    );
-                                });
-                            }
-                        });
-
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    let mut marker_error = configure_marker(state);
-                    ui.horizontal(|ui| {
-                        let changed = ui
-                            .checkbox(&mut state.marker_enabled, "Require health marker")
-                            .changed();
-                        if state.marker_enabled {
-                            let response = ui.add_sized(
-                                [240.0, 22.0],
-                                egui::TextEdit::singleline(&mut state.marker_input)
-                                    .hint_text(".commander-health"),
-                            );
-                            if changed || response.changed() {
-                                marker_error = configure_marker(state);
-                            }
-                        } else if changed {
-                            marker_error = configure_marker(state);
-                        }
-                    });
-
-                    let assessment = crate::sync_guard::assess(&state.actions, &state.guard);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} actions   {} additions   {} replacements   {:.0}% changed",
-                                assessment.planned_actions,
-                                assessment.additions,
-                                assessment.changed_existing,
-                                assessment.change_fraction * 100.0
-                            ))
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Durability")
                             .size(10.0)
                             .color(t.text_muted),
-                        );
-                    });
-                    if let Some(reason) = &assessment.circuit_breaker {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(reason)
-                                    .size(11.0)
-                                    .color(t.accent_warning),
-                            );
-                            ui.checkbox(&mut state.allow_large_plan, "Reviewed");
-                        });
-                    } else {
-                        state.allow_large_plan = false;
+                    );
+                    for profile in crate::operation::DurabilityProfile::ALL {
+                        ui.selectable_value(&mut state.durability, profile, profile.label());
                     }
-                    if let Some(error) = marker_error.as_ref().or(state.error.as_ref()) {
+                    if state.durability == crate::operation::DurabilityProfile::Versioned {
+                        egui::ComboBox::from_id_salt("sync_version_retention")
+                            .selected_text(state.version_retention.label())
+                            .show_ui(ui, |ui| {
+                                for policy in crate::operation::VersionRetentionPolicy::ALL {
+                                    ui.selectable_value(
+                                        &mut state.version_retention,
+                                        policy,
+                                        policy.label(),
+                                    )
+                                    .on_hover_text(policy.consequence());
+                                }
+                            });
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Refresh").clicked() {
+                            refresh_plan = true;
+                        }
+                    });
+                });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                // ── Per-row plan ────────────────────────────────────
+                if state.actions.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Both panels already match.")
+                            .size(12.0)
+                            .color(t.text_muted),
+                    );
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for a in &mut state.actions {
+                            ui.horizontal(|ui| {
+                                // Direction control: ← skip → as selectable arrows.
+                                for (dir, glyph) in [
+                                    (SyncDirection::ToLeft, "\u{2190}"),
+                                    (SyncDirection::Skip, "\u{00b7}"),
+                                    (SyncDirection::ToRight, "\u{2192}"),
+                                ] {
+                                    let active = a.direction == dir;
+                                    let available = a.allows(dir);
+                                    let hint = match dir {
+                                        SyncDirection::ToLeft => "Copy to left",
+                                        SyncDirection::Skip => "Skip",
+                                        SyncDirection::ToRight => "Copy to right",
+                                    };
+                                    let color = if active { t.accent } else { t.text_muted };
+                                    let response = ui
+                                        .add_enabled(
+                                            available,
+                                            egui::Button::selectable(
+                                                active,
+                                                egui::RichText::new(glyph).size(13.0).color(color),
+                                            ),
+                                        )
+                                        .on_hover_text(hint);
+                                    if response.clicked() {
+                                        a.direction = dir;
+                                    }
+                                }
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(status_label(a.status))
+                                        .size(10.0)
+                                        .color(status_color(a.status, t)),
+                                );
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(&a.name)
+                                        .size(12.0)
+                                        .color(t.text_secondary),
+                                );
+                            });
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                let mut marker_error = configure_marker(state);
+                ui.horizontal(|ui| {
+                    let changed = ui
+                        .checkbox(&mut state.marker_enabled, "Require health marker")
+                        .changed();
+                    if state.marker_enabled {
+                        let response = ui.add_sized(
+                            [240.0, 22.0],
+                            egui::TextEdit::singleline(&mut state.marker_input)
+                                .hint_text(".commander-health"),
+                        );
+                        if changed || response.changed() {
+                            marker_error = configure_marker(state);
+                        }
+                    } else if changed {
+                        marker_error = configure_marker(state);
+                    }
+                });
+
+                let assessment = crate::sync_guard::assess(&state.actions, &state.guard);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} actions   {} additions   {} replacements   {:.0}% changed",
+                            assessment.planned_actions,
+                            assessment.additions,
+                            assessment.changed_existing,
+                            assessment.change_fraction * 100.0
+                        ))
+                        .size(10.0)
+                        .color(t.text_muted),
+                    );
+                });
+                if let Some(reason) = &assessment.circuit_breaker {
+                    ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(error)
+                            egui::RichText::new(reason)
                                 .size(11.0)
                                 .color(t.accent_warning),
                         );
-                    }
-                    if marker_error.is_none()
-                        && let Some(stamp) = &state.stamp
-                    {
-                        state.settings_fingerprint = crate::sync_guard::settings_fingerprint(
-                            state.policy,
-                            &state.guard,
-                            stamp.filter_key(),
-                        );
-                    }
-
-                    let guard_ready = marker_error.is_none()
-                        && state.error.is_none()
-                        && state.stamp.is_some()
-                        && (assessment.circuit_breaker.is_none() || state.allow_large_plan);
-
-                    ui.add_space(6.0);
-                    ui.checkbox(
-                        &mut state.dry_run,
-                        "Dry run (preview only — do not copy or delete)",
-                    );
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{to_right} \u{2192}    {to_left} \u{2190}    {} skip",
-                                state.actions.len() - pending
-                            ))
-                            .size(11.0)
-                            .color(t.text_muted),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Cancel")
-                                            .size(13.0)
-                                            .color(t.text_primary),
-                                    )
-                                    .fill(t.bg_card)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
-                                .clicked()
-                            {
-                                cancel = true;
-                            }
-                            ui.add_space(8.0);
-                            let apply_label = if state.dry_run {
-                                format!("Preview {pending}")
-                            } else {
-                                format!("Sync {pending}")
-                            };
-                            if ui
-                                .add_enabled(
-                                    pending > 0 && guard_ready,
-                                    egui::Button::new(
-                                        egui::RichText::new(apply_label)
-                                            .size(13.0)
-                                            .color(Color32::WHITE),
-                                    )
-                                    .fill(t.accent)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
-                                .clicked()
-                            {
-                                commit = true;
-                            }
-                        });
+                        ui.checkbox(&mut state.allow_large_plan, "Reviewed");
                     });
+                } else {
+                    state.allow_large_plan = false;
+                }
+                if let Some(error) = marker_error.as_ref().or(state.error.as_ref()) {
+                    ui.label(
+                        egui::RichText::new(error)
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                }
+                if marker_error.is_none()
+                    && let Some(stamp) = &state.stamp
+                {
+                    state.settings_fingerprint = crate::sync_guard::settings_fingerprint(
+                        state.policy,
+                        &state.guard,
+                        stamp.filter_key(),
+                    );
+                }
 
-                    if escape_requested {
-                        cancel = true;
-                    }
+                let guard_ready = marker_error.is_none()
+                    && state.error.is_none()
+                    && state.stamp.is_some()
+                    && (assessment.circuit_breaker.is_none() || state.allow_large_plan);
+
+                ui.add_space(6.0);
+                ui.checkbox(
+                    &mut state.dry_run,
+                    "Dry run (preview only — do not copy or delete)",
+                );
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{to_right} \u{2192}    {to_left} \u{2190}    {} skip",
+                            state.actions.len() - pending
+                        ))
+                        .size(11.0)
+                        .color(t.text_muted),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Cancel")
+                                        .size(13.0)
+                                        .color(t.text_primary),
+                                )
+                                .fill(t.bg_card)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
+                            cancel = true;
+                        }
+                        ui.add_space(8.0);
+                        let apply_label = if state.dry_run {
+                            format!("Preview {pending}")
+                        } else {
+                            format!("Sync {pending}")
+                        };
+                        if ui
+                            .add_enabled(
+                                pending > 0 && guard_ready,
+                                egui::Button::new(
+                                    egui::RichText::new(apply_label)
+                                        .size(13.0)
+                                        .color(Color32::WHITE),
+                                )
+                                .fill(t.accent)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
+                            commit = true;
+                        }
+                    });
                 });
+
+                if escape_requested {
+                    cancel = true;
+                }
+            });
         }
 
         if cancel {

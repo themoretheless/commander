@@ -120,12 +120,7 @@ impl App {
                 .default_size([780.0, 560.0])
                 .min_width(620.0)
                 .min_height(400.0)
-                .frame(
-                    Frame::NONE
-                        .fill(t.bg_panel)
-                        .inner_margin(Margin::same(14))
-                        .stroke(Stroke::new(1.0_f32, t.border)),
-                )
+                .frame(super::dialog_frame(t, 14))
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.add(

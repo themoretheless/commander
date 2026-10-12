@@ -105,210 +105,196 @@ impl App {
         let mut commit: Option<(RenameRule, BatchRenameContext)> = None;
         let mut cancel = false;
 
-        egui::Window::new("Batch rename")
-            .collapsible(false)
-            .resizable(false)
-            .title_bar(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(
-                Frame::NONE
-                    .fill(t.bg_panel)
-                    .inner_margin(Margin::same(16))
-                    .stroke(Stroke::new(1.0_f32, t.border)),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(560.0);
-                ui.label(
-                    egui::RichText::new(format!("Batch rename {target_count} item(s)"))
-                        .size(13.0)
-                        .strong()
-                        .color(t.text_primary),
-                );
-                ui.label(
-                    egui::RichText::new(state.context.dir.display().to_string())
-                        .size(10.0)
-                        .color(t.text_muted),
-                );
-                ui.add_space(10.0);
+        super::sheet_window("Batch rename", t, 16).show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.label(
+                egui::RichText::new(format!("Batch rename {target_count} item(s)"))
+                    .size(13.0)
+                    .strong()
+                    .color(t.text_primary),
+            );
+            ui.label(
+                egui::RichText::new(state.context.dir.display().to_string())
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
+            ui.add_space(10.0);
 
-                // ── Rule fields ─────────────────────────────────────────
-                let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, hint: &str| {
-                    ui.label(egui::RichText::new(label).size(11.0).color(t.text_muted));
-                    let edit = egui::TextEdit::singleline(buf)
-                        .desired_width(180.0)
-                        .hint_text(hint)
-                        .margin(egui::vec2(6.0, 4.0));
-                    ui.add(edit)
-                };
+            // ── Rule fields ─────────────────────────────────────────
+            let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, hint: &str| {
+                ui.label(egui::RichText::new(label).size(11.0).color(t.text_muted));
+                let edit = egui::TextEdit::singleline(buf)
+                    .desired_width(180.0)
+                    .hint_text(hint)
+                    .margin(egui::vec2(6.0, 4.0));
+                ui.add(edit)
+            };
 
-                egui::Grid::new("batch_rename_fields")
-                    .num_columns(4)
-                    .spacing([10.0, 8.0])
-                    .show(ui, |ui| {
-                        let find_hint = if state.regex_mode {
-                            "regex pattern"
-                        } else {
-                            "text or empty"
-                        };
-                        let first = field(ui, "Find", &mut state.find, find_hint);
-                        if !state.focused {
-                            first.request_focus();
-                            state.focused = true;
-                        }
-                        let replace_hint = if state.regex_mode { "$1 groups ok" } else { "" };
-                        field(ui, "Replace", &mut state.replace, replace_hint);
-                        ui.end_row();
-
-                        field(ui, "Prefix", &mut state.prefix, "before name");
-                        field(ui, "Suffix", &mut state.suffix, "after name");
-                        ui.end_row();
-                    });
-
-                ui.add_space(4.0);
-                ui.checkbox(&mut state.regex_mode, "Find is a regex");
-
-                ui.add_space(8.0);
-
-                // ── Case + numbering ────────────────────────────────────
-                ui.horizontal(|ui| {
-                    use crate::rename::CaseMode;
-                    ui.label(egui::RichText::new("Case").size(11.0).color(t.text_muted));
-                    for (mode, text) in [
-                        (CaseMode::Keep, "Keep"),
-                        (CaseMode::Lower, "lower"),
-                        (CaseMode::Upper, "UPPER"),
-                    ] {
-                        if ui
-                            .selectable_label(
-                                state.case == mode,
-                                egui::RichText::new(text).size(12.0),
-                            )
-                            .clicked()
-                        {
-                            state.case = mode;
-                        }
+            egui::Grid::new("batch_rename_fields")
+                .num_columns(4)
+                .spacing([10.0, 8.0])
+                .show(ui, |ui| {
+                    let find_hint = if state.regex_mode {
+                        "regex pattern"
+                    } else {
+                        "text or empty"
+                    };
+                    let first = field(ui, "Find", &mut state.find, find_hint);
+                    if !state.focused {
+                        first.request_focus();
+                        state.focused = true;
                     }
+                    let replace_hint = if state.regex_mode { "$1 groups ok" } else { "" };
+                    field(ui, "Replace", &mut state.replace, replace_hint);
+                    ui.end_row();
 
-                    ui.add_space(16.0);
-                    ui.checkbox(&mut state.numbering_on, "Number");
-                    ui.add_enabled_ui(state.numbering_on, |ui| {
-                        ui.label(egui::RichText::new("start").size(10.0).color(t.text_muted));
-                        ui.add(egui::DragValue::new(&mut state.num_start).range(0..=100_000));
-                        ui.label(egui::RichText::new("step").size(10.0).color(t.text_muted));
-                        ui.add(egui::DragValue::new(&mut state.num_step).range(1..=1000));
-                        ui.label(egui::RichText::new("pad").size(10.0).color(t.text_muted));
-                        ui.add(egui::DragValue::new(&mut state.num_pad).range(0..=6));
-                    });
+                    field(ui, "Prefix", &mut state.prefix, "before name");
+                    field(ui, "Suffix", &mut state.suffix, "after name");
+                    ui.end_row();
                 });
 
-                let validation = ValidatedBatchRename::build(&state.context, state.rule());
-                clear_error_after_rule_change(
-                    &mut state.error,
-                    &rule_before_controls,
-                    &validation.rule,
-                );
+            ui.add_space(4.0);
+            ui.checkbox(&mut state.regex_mode, "Find is a regex");
 
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(6.0);
+            ui.add_space(8.0);
 
-                // ── Preview ─────────────────────────────────────────────
-                egui::ScrollArea::vertical()
-                    .id_salt((PREVIEW_SCROLL_ID, state.scroll_nonce))
-                    .max_height(240.0)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        for p in &validation.plans {
-                            let (color, mark) = match p.status {
-                                PlanStatus::Ok => (t.accent, "→"),
-                                PlanStatus::Unchanged => (t.text_muted, "="),
-                                PlanStatus::Invalid => (t.accent_red, "✕"),
-                                PlanStatus::Collision => (t.accent_warning, "⚠"),
-                            };
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&p.from)
-                                        .size(12.0)
-                                        .color(t.text_secondary),
-                                );
-                                ui.label(egui::RichText::new(mark).size(12.0).color(color));
-                                ui.label(egui::RichText::new(&p.to).size(12.0).color(color));
-                            });
-                        }
-                    });
+            // ── Case + numbering ────────────────────────────────────
+            ui.horizontal(|ui| {
+                use crate::rename::CaseMode;
+                ui.label(egui::RichText::new("Case").size(11.0).color(t.text_muted));
+                for (mode, text) in [
+                    (CaseMode::Keep, "Keep"),
+                    (CaseMode::Lower, "lower"),
+                    (CaseMode::Upper, "UPPER"),
+                ] {
+                    if ui
+                        .selectable_label(state.case == mode, egui::RichText::new(text).size(12.0))
+                        .clicked()
+                    {
+                        state.case = mode;
+                    }
+                }
 
-                ui.add_space(10.0);
-                let mut submit_requested = false;
-                ui.horizontal(|ui| {
-                    let summary = if validation.applicable {
-                        format!(
-                            "{} of {} will change",
-                            validation.will_change,
-                            validation.plans.len()
-                        )
-                    } else if let Some(reason) = &validation.block_reason {
-                        reason.clone()
-                    } else if validation.will_change == 0 {
-                        "Nothing to change".to_string()
-                    } else {
-                        "Fix the flagged rows to continue".to_string()
-                    };
-                    let summary_color = if validation.applicable {
-                        t.accent
-                    } else {
-                        t.text_muted
-                    };
-                    ui.label(egui::RichText::new(summary).size(11.0).color(summary_color));
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Cancel")
-                                        .size(13.0)
-                                        .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
-                            .clicked()
-                        {
-                            cancel = true;
-                        }
-                        ui.add_space(8.0);
-                        if ui
-                            .add_enabled(
-                                validation.applicable,
-                                egui::Button::new(
-                                    egui::RichText::new("Rename")
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(t.accent)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
-                            .clicked()
-                        {
-                            submit_requested = true;
-                        }
-                    });
+                ui.add_space(16.0);
+                ui.checkbox(&mut state.numbering_on, "Number");
+                ui.add_enabled_ui(state.numbering_on, |ui| {
+                    ui.label(egui::RichText::new("start").size(10.0).color(t.text_muted));
+                    ui.add(egui::DragValue::new(&mut state.num_start).range(0..=100_000));
+                    ui.label(egui::RichText::new("step").size(10.0).color(t.text_muted));
+                    ui.add(egui::DragValue::new(&mut state.num_step).range(1..=1000));
+                    ui.label(egui::RichText::new("pad").size(10.0).color(t.text_muted));
+                    ui.add(egui::DragValue::new(&mut state.num_pad).range(0..=6));
                 });
-
-                if let Some(err) = &state.error {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
-                }
-
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    submit_requested = true;
-                }
-                if let Some(rule) = validation.rule_for_submit(submit_requested) {
-                    commit = Some((rule, state.context.clone()));
-                }
-                if escape_requested {
-                    cancel = true;
-                }
             });
+
+            let validation = ValidatedBatchRename::build(&state.context, state.rule());
+            clear_error_after_rule_change(
+                &mut state.error,
+                &rule_before_controls,
+                &validation.rule,
+            );
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // ── Preview ─────────────────────────────────────────────
+            egui::ScrollArea::vertical()
+                .id_salt((PREVIEW_SCROLL_ID, state.scroll_nonce))
+                .max_height(240.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for p in &validation.plans {
+                        let (color, mark) = match p.status {
+                            PlanStatus::Ok => (t.accent, "→"),
+                            PlanStatus::Unchanged => (t.text_muted, "="),
+                            PlanStatus::Invalid => (t.accent_red, "✕"),
+                            PlanStatus::Collision => (t.accent_warning, "⚠"),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&p.from)
+                                    .size(12.0)
+                                    .color(t.text_secondary),
+                            );
+                            ui.label(egui::RichText::new(mark).size(12.0).color(color));
+                            ui.label(egui::RichText::new(&p.to).size(12.0).color(color));
+                        });
+                    }
+                });
+
+            ui.add_space(10.0);
+            let mut submit_requested = false;
+            ui.horizontal(|ui| {
+                let summary = if validation.applicable {
+                    format!(
+                        "{} of {} will change",
+                        validation.will_change,
+                        validation.plans.len()
+                    )
+                } else if let Some(reason) = &validation.block_reason {
+                    reason.clone()
+                } else if validation.will_change == 0 {
+                    "Nothing to change".to_string()
+                } else {
+                    "Fix the flagged rows to continue".to_string()
+                };
+                let summary_color = if validation.applicable {
+                    t.accent
+                } else {
+                    t.text_muted
+                };
+                ui.label(egui::RichText::new(summary).size(11.0).color(summary_color));
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Cancel")
+                                    .size(13.0)
+                                    .color(t.text_primary),
+                            )
+                            .fill(t.bg_card)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
+                        cancel = true;
+                    }
+                    ui.add_space(8.0);
+                    if ui
+                        .add_enabled(
+                            validation.applicable,
+                            egui::Button::new(
+                                egui::RichText::new("Rename")
+                                    .size(13.0)
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(t.accent)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
+                        submit_requested = true;
+                    }
+                });
+            });
+
+            if let Some(err) = &state.error {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
+            }
+
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                submit_requested = true;
+            }
+            if let Some(rule) = validation.rule_for_submit(submit_requested) {
+                commit = Some((rule, state.context.clone()));
+            }
+            if escape_requested {
+                cancel = true;
+            }
+        });
 
         if cancel {
             self.ui.modals.batch_rename = None;

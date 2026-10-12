@@ -74,12 +74,7 @@ impl App {
             .resizable(true)
             .title_bar(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(
-                Frame::NONE
-                    .fill(t.bg_panel)
-                    .inner_margin(Margin::same(14))
-                    .stroke(Stroke::new(1.0_f32, t.border)),
-            )
+            .frame(super::dialog_frame(t, 14))
             .show(ctx, |ui| {
                 ui.set_width(720.0);
                 ui.horizontal(|ui| {

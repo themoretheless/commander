@@ -62,38 +62,95 @@ impl App {
             let Some(s) = self.ui.modals.duplicates.as_mut() else {
                 return;
             };
-            egui::Window::new("Duplicates")
-                .collapsible(false)
-                .resizable(false)
-                .title_bar(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .frame(
-                    Frame::NONE
-                        .fill(t.bg_panel)
-                        .inner_margin(Margin::same(16))
-                        .stroke(Stroke::new(1.0_f32, t.border)),
-                )
-                .show(ctx, |ui| {
-                    ui.set_width(580.0);
-                    ui.label(
-                        egui::RichText::new("Duplicate files")
-                            .size(13.0)
-                            .strong()
-                            .color(t.text_primary),
-                    );
-                    ui.add_space(8.0);
+            super::sheet_window("Duplicates", t, 16).show(ctx, |ui| {
+                ui.set_width(580.0);
+                ui.label(
+                    egui::RichText::new("Duplicate files")
+                        .size(13.0)
+                        .strong()
+                        .color(t.text_primary),
+                );
+                ui.add_space(8.0);
 
-                    if view.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No duplicate files in this folder.")
-                                .size(12.0)
-                                .color(t.text_muted),
-                        );
-                        ui.add_space(12.0);
+                if view.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No duplicate files in this folder.")
+                            .size(12.0)
+                            .color(t.text_muted),
+                    );
+                    ui.add_space(12.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Close")
+                                    .size(13.0)
+                                    .color(t.text_primary),
+                            )
+                            .fill(t.bg_card)
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                        || escape_requested
+                    {
+                        cancel = true;
+                    }
+                    return;
+                }
+
+                // Keep policy selector.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Keep").size(11.0).color(t.text_muted));
+                    for (p, text) in [
+                        (KeepPolicy::KeepShortestPath, "shortest path"),
+                        (KeepPolicy::KeepOldest, "oldest"),
+                    ] {
+                        if ui
+                            .selectable_label(s.policy == p, egui::RichText::new(text).size(12.0))
+                            .clicked()
+                            && s.policy != p
+                        {
+                            new_policy = Some(p);
+                        }
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for ((size, labels), keep) in view.iter().zip(s.keep.iter_mut()) {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} copies \u{00b7} {} each",
+                                    labels.len(),
+                                    format_size(*size)
+                                ))
+                                .size(11.0)
+                                .color(t.accent),
+                            );
+                            for (fi, label) in labels.iter().enumerate() {
+                                ui.radio_value(keep, fi, label);
+                            }
+                            ui.add_space(6.0);
+                        }
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{delete_total} file(s) will move to Trash"))
+                            .size(11.0)
+                            .color(t.text_muted),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new("Close")
+                                    egui::RichText::new("Cancel")
                                         .size(13.0)
                                         .color(t.text_primary),
                                 )
@@ -101,105 +158,32 @@ impl App {
                                 .corner_radius(CornerRadius::ZERO),
                             )
                             .clicked()
-                            || escape_requested
                         {
                             cancel = true;
                         }
-                        return;
-                    }
-
-                    // Keep policy selector.
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Keep").size(11.0).color(t.text_muted));
-                        for (p, text) in [
-                            (KeepPolicy::KeepShortestPath, "shortest path"),
-                            (KeepPolicy::KeepOldest, "oldest"),
-                        ] {
-                            if ui
-                                .selectable_label(
-                                    s.policy == p,
-                                    egui::RichText::new(text).size(12.0),
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(
+                                delete_total > 0,
+                                egui::Button::new(
+                                    egui::RichText::new("Move others to Trash")
+                                        .size(13.0)
+                                        .color(Color32::WHITE),
                                 )
-                                .clicked()
-                                && s.policy != p
-                            {
-                                new_policy = Some(p);
-                            }
+                                .fill(t.accent_red)
+                                .corner_radius(CornerRadius::ZERO),
+                            )
+                            .clicked()
+                        {
+                            commit = true;
                         }
                     });
-
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    egui::ScrollArea::vertical()
-                        .max_height(320.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for ((size, labels), keep) in view.iter().zip(s.keep.iter_mut()) {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} copies \u{00b7} {} each",
-                                        labels.len(),
-                                        format_size(*size)
-                                    ))
-                                    .size(11.0)
-                                    .color(t.accent),
-                                );
-                                for (fi, label) in labels.iter().enumerate() {
-                                    ui.radio_value(keep, fi, label);
-                                }
-                                ui.add_space(6.0);
-                            }
-                        });
-
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{delete_total} file(s) will move to Trash"
-                            ))
-                            .size(11.0)
-                            .color(t.text_muted),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Cancel")
-                                            .size(13.0)
-                                            .color(t.text_primary),
-                                    )
-                                    .fill(t.bg_card)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
-                                .clicked()
-                            {
-                                cancel = true;
-                            }
-                            ui.add_space(8.0);
-                            if ui
-                                .add_enabled(
-                                    delete_total > 0,
-                                    egui::Button::new(
-                                        egui::RichText::new("Move others to Trash")
-                                            .size(13.0)
-                                            .color(Color32::WHITE),
-                                    )
-                                    .fill(t.accent_red)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
-                                .clicked()
-                            {
-                                commit = true;
-                            }
-                        });
-                    });
-
-                    if escape_requested {
-                        cancel = true;
-                    }
                 });
+
+                if escape_requested {
+                    cancel = true;
+                }
+            });
         }
 
         if cancel {

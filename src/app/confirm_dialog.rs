@@ -121,12 +121,7 @@ impl App {
             .resizable(false)
             .fixed_size(Vec2::new(win_w, win_h))
             .title_bar(false)
-            .frame(
-                Frame::NONE
-                    .fill(t.bg_panel)
-                    .inner_margin(Margin::same(6))
-                    .stroke(Stroke::new(1.0_f32, t.border)),
-            )
+            .frame(super::dialog_frame(t, 6))
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 // Title + tabs on one line

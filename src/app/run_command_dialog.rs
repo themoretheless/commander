@@ -81,10 +81,7 @@ impl App {
             .min_width(480.0)
             .min_height(280.0)
             .frame(
-                Frame::NONE
-                    .fill(t.bg_panel)
-                    .inner_margin(Margin::same(14))
-                    .stroke(Stroke::new(1.0_f32, t.border)),
+                super::dialog_frame(t, 14),
             )
             .show(ctx, |ui| {
                 ui.set_min_width(520.0);

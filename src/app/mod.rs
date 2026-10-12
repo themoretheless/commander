@@ -144,6 +144,30 @@ pub(crate) struct VisualQaSeed {
     pub show_tree: bool,
 }
 
+/// The frame every dialog and sheet draws: panel fill, `margin` points of
+/// padding and a one-point border.
+pub(crate) fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
+    Frame::NONE
+        .fill(t.bg_panel)
+        .inner_margin(Margin::same(margin))
+        .stroke(Stroke::new(1.0_f32, t.border))
+}
+
+/// A fixed-size, untitled sheet centered on the window. `id` names the
+/// window for egui and assistive technology; it is not drawn.
+pub(crate) fn sheet_window(
+    id: impl Into<egui::WidgetText>,
+    t: ThemeColors,
+    margin: i8,
+) -> egui::Window<'static> {
+    egui::Window::new(id)
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(dialog_frame(t, margin))
+}
+
 pub(crate) struct DeveloperNotice {
     pub message: String,
     pub path: Option<PathBuf>,

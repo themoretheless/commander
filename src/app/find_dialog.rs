@@ -319,12 +319,7 @@ impl App {
                 .default_size([720.0, 620.0])
                 .min_width(560.0)
                 .min_height(420.0)
-                .frame(
-                    Frame::NONE
-                        .fill(t.bg_panel)
-                        .inner_margin(Margin::same(14))
-                        .stroke(Stroke::new(1.0_f32, t.border)),
-                )
+                .frame(super::dialog_frame(t, 14))
                 .show(ctx, |ui| {
                     let crumbs = crate::crumbs::crumbs(&state.root);
                     let layout = crate::crumbs::elide_crumbs(&crumbs, 6);

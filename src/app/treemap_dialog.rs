@@ -115,12 +115,7 @@ impl App {
                 .default_size([780.0, 580.0])
                 .min_width(620.0)
                 .min_height(420.0)
-                .frame(
-                    Frame::NONE
-                        .fill(t.bg_panel)
-                        .inner_margin(Margin::same(14))
-                        .stroke(Stroke::new(1.0_f32, t.border)),
-                )
+                .frame(super::dialog_frame(t, 14))
                 .show(ctx, |ui| {
                     show_disk_usage_header(ui, state, t, &mut stop, &mut rescan);
                     ui.add_space(8.0);

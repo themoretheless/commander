@@ -433,17 +433,7 @@ impl App {
             .and_then(|id| state.operations.iter().find(|record| &record.id == id))
             .cloned();
 
-        egui::Window::new("Recovery center")
-            .collapsible(false)
-            .resizable(false)
-            .title_bar(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(
-                Frame::NONE
-                    .fill(t.bg_panel)
-                    .inner_margin(Margin::same(14))
-                    .stroke(Stroke::new(1.0, t.border)),
-            )
+        super::sheet_window("Recovery center", t, 14)
             .show(ctx, |ui| {
                 ui.set_width(790.0);
                 ui.horizontal(|ui| {
