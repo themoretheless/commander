@@ -10,6 +10,24 @@ struct ScriptedTrashPort {
     calls: Mutex<Vec<PathBuf>>,
 }
 
+/// Trashes one item at a time, each only after the test releases it, so the
+/// worker's progress is deterministic while the test inspects it.
+struct GatedTrashPort {
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl crate::ports::TrashPort for GatedTrashPort {
+    fn move_to_trash(&self, target: &crate::ports::TrashTarget) -> crate::ports::TrashItemOutcome {
+        self.release
+            .lock()
+            .unwrap()
+            .recv()
+            .expect("test releases the Trash call");
+        let _ = std::fs::remove_file(&target.path);
+        crate::ports::TrashItemOutcome::Trashed
+    }
+}
+
 struct FixedFreeSpacePort {
     outcome: crate::ports::SpaceProbeOutcome,
     relation: crate::ports::VolumeRelation,
@@ -93,7 +111,7 @@ fn ready_trash_item(path: &Path) -> crate::ports::TrashBatchItem {
 fn workspace_with_trash(
     left: &TempDir,
     right: &TempDir,
-    trash: Arc<ScriptedTrashPort>,
+    trash: Arc<impl crate::ports::TrashPort + 'static>,
 ) -> Workspace {
     let mut workspace = Workspace::with_ports(
         left.path().to_path_buf(),
@@ -1340,9 +1358,10 @@ fn failed_delete_batch_does_not_request_panel_refresh() {
 fn active_delete_blocks_other_mutation_commits_until_retirement() {
     let (left, right) = (TempDir::new(), TempDir::new());
     let path = left.file("a.txt", "x");
-    let trash = Arc::new(ScriptedTrashPort::new([
-        crate::ports::TrashItemOutcome::Trashed,
-    ]));
+    let (release, gate) = mpsc::channel();
+    let trash = Arc::new(GatedTrashPort {
+        release: Mutex::new(gate),
+    });
     let mut workspace = workspace_with_trash(&left, &right, trash);
     workspace.left.set_cursor(1);
     workspace.request_delete();
@@ -1366,6 +1385,7 @@ fn active_delete_blocks_other_mutation_commits_until_retirement() {
     let rename = workspace.commit_rename(&path, "renamed.txt");
     assert!(rename.unwrap_err().contains("Trash operation"));
 
+    release.send(()).unwrap();
     workspace.finish_delete().expect("delete retirement");
     assert!(!workspace.delete_active());
 }
