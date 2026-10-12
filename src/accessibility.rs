@@ -139,7 +139,6 @@ modal_registry!(
     Sync,
     BatchRename,
     Rename,
-    DeleteActivity,
     Confirmation,
     History,
     Recovery,

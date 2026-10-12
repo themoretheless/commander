@@ -216,7 +216,6 @@ impl eframe::App for App {
         self.begin_frame(&ctx);
         self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
-        self.show_delete_activity(&ctx);
         self.show_recovery_dialog(&ctx);
         self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
@@ -424,60 +423,7 @@ impl App {
     }
 
     fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
-        self.ws.pending_op.is_some() || self.ws.delete_active() || self.ui.modals.any_open()
-    }
-
-    fn show_delete_activity(&mut self, ctx: &egui::Context) {
-        let escape_requested =
-            self.take_modal_escape(crate::accessibility::ModalSurface::DeleteActivity);
-        let Some(activity) = self.ws.delete_activity() else {
-            return;
-        };
-        let mut cancel_requested = escape_requested;
-        ctx.request_repaint_after(std::time::Duration::from_millis(125));
-        egui::Window::new("Moving to Trash")
-            .id(egui::Id::new("delete_activity"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .show(ctx, |ui| {
-                ui.set_min_width(320.0);
-                ui.label(format!(
-                    "{} of {} {} processed",
-                    activity.completed,
-                    activity.total,
-                    if activity.total == 1 { "item" } else { "items" }
-                ));
-                let fraction = if activity.total == 0 {
-                    0.0
-                } else {
-                    activity.completed as f32 / activity.total as f32
-                };
-                ui.add(
-                    egui::ProgressBar::new(fraction)
-                        .desired_width(ui.available_width())
-                        .show_percentage(),
-                );
-                ui.add_space(6.0);
-                if ui
-                    .add_enabled(
-                        !activity.cancel_requested,
-                        egui::Button::new(if activity.cancel_requested {
-                            "Cancelling..."
-                        } else {
-                            "Cancel"
-                        })
-                        .corner_radius(egui::CornerRadius::ZERO),
-                    )
-                    .clicked()
-                {
-                    cancel_requested = true;
-                }
-            });
-        if cancel_requested {
-            self.ws.cancel_delete();
-        }
+        self.ws.pending_op.is_some() || self.ui.modals.any_open()
     }
 
     pub(crate) fn is_modal_surface_open(
@@ -486,7 +432,6 @@ impl App {
     ) -> bool {
         match surface {
             crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
-            crate::accessibility::ModalSurface::DeleteActivity => self.ws.delete_active(),
             _ => self.ui.modals.is_surface_open(surface),
         }
     }

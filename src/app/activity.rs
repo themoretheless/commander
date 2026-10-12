@@ -7,6 +7,7 @@ use super::*;
 /// What the Activity strip shows this frame.
 enum ActivityLine {
     SafeState(String),
+    Trash(crate::workspace::DeleteActivity),
     Transfer(TransferLine),
     Errors(usize),
 }
@@ -73,6 +74,61 @@ impl App {
                             }
                         });
                     }
+                    ActivityLine::Trash(activity) => {
+                        ui.label(
+                            egui::RichText::new("Moving to Trash")
+                                .size(11.0)
+                                .strong()
+                                .color(t.text_primary),
+                        );
+                        let fraction = if activity.total == 0 {
+                            0.0
+                        } else {
+                            activity.completed as f32 / activity.total as f32
+                        };
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::new(140.0, 4.0), Sense::hover());
+                        ui.painter()
+                            .rect_filled(rect, CornerRadius::ZERO, t.bg_card);
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                rect.min,
+                                Vec2::new(rect.width() * fraction, 4.0),
+                            ),
+                            CornerRadius::ZERO,
+                            t.accent,
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} of {}",
+                                activity.completed, activity.total
+                            ))
+                            .size(11.0)
+                            .color(t.text_muted),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add_enabled(
+                                    !activity.cancel_requested,
+                                    super::dialog_button(
+                                        t,
+                                        super::ButtonRole::Secondary,
+                                        egui::RichText::new(if activity.cancel_requested {
+                                            "Cancelling..."
+                                        } else {
+                                            "Cancel"
+                                        })
+                                        .size(11.0),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.ws.cancel_delete();
+                            }
+                        });
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(125));
+                    }
                     ActivityLine::Transfer(transfer) => self.show_transfer_line(ui, transfer),
                     ActivityLine::Errors(count) => {
                         ui.label(
@@ -104,6 +160,9 @@ impl App {
     fn activity_line(&self) -> Option<ActivityLine> {
         if let Some(state) = &self.ws.safe_state {
             return Some(ActivityLine::SafeState(state.reason.clone()));
+        }
+        if let Some(activity) = self.ws.delete_activity() {
+            return Some(ActivityLine::Trash(activity));
         }
         if let Some(active) = self.ws.active_transfer_view() {
             let s = crate::lock_util::recover(&active.progress);
