@@ -188,6 +188,15 @@ fn any_modal_surface_open(
     safe_state_open || transfer_open || confirmation_open || app_modal_open
 }
 
+/// Per-frame drag state shared by both panes' drop-target updates.
+struct PaneDropContext {
+    input_policy: FrameInputPolicy,
+    containing_ui_enabled: bool,
+    dragging: bool,
+    drag_source: Option<ActivePanel>,
+    hover_pos: Option<egui::Pos2>,
+}
+
 /// Seconds a modifier must be held before the key bar floats in.
 const KEY_BAR_REVEAL_DELAY: f64 = 0.45;
 
@@ -1474,28 +1483,15 @@ impl App {
             .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
-                if input_policy.allows_raw_input(
-                    ui.is_enabled(),
-                    ui.rect_contains_pointer(ui.max_rect())
-                        && ctx.input(|i| i.pointer.any_pressed()),
-                ) {
-                    self.ws.active = ActivePanel::Left;
-                }
-                Self::render_panel(
-                    &mut self.ws.left,
+                self.render_pane_contents(
+                    ActivePanel::Left,
                     ui,
-                    self.ws.active == ActivePanel::Left,
+                    input_policy,
                     close_left_preview,
-                    &t,
-                    &mut self.image_cache,
-                    "left",
-                    self.show_tree,
-                    self.show_size_bars,
                     left_compare.as_ref(),
                     &opener,
                     dragging,
                     left_metrics,
-                    self.accessibility_preferences.reduced_motion,
                 )
             });
         let left_outcome = left_resp.inner;
@@ -1507,27 +1503,14 @@ impl App {
         );
         tree_toggle |= left_outcome.tree_toggle;
 
-        let hover_pos = ctx.input(|i| i.pointer.hover_pos());
-        if input_policy.allows_drop_target(
+        let pane_drop = PaneDropContext {
+            input_policy,
             containing_ui_enabled,
-            dragging
-                && drag_source != Some(ActivePanel::Left)
-                && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
-                && !self.ws.left.drag.has_drop_target(),
-        ) {
-            self.ws
-                .left
-                .drag
-                .set_drop_target(self.ws.left.current_path.clone());
-        }
-        if self.ws.left.drag.has_drop_target() {
-            ctx.layer_painter(left_resp.response.layer_id).rect_stroke(
-                left_resp.response.rect.shrink(1.0),
-                CornerRadius::ZERO,
-                Stroke::new(1.0, t.accent),
-                egui::StrokeKind::Inside,
-            );
-        }
+            dragging,
+            drag_source,
+            hover_pos: ctx.input(|i| i.pointer.hover_pos()),
+        };
+        self.update_pane_drop_target(ActivePanel::Left, &left_resp.response, &pane_drop);
 
         // Double-click on panel divider → reset to 50/50
         {
@@ -1557,28 +1540,15 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
                 ui.push_id(crate::accessibility::FocusRegion::RightPanel.id(), |ui| {
-                    if input_policy.allows_raw_input(
-                        ui.is_enabled(),
-                        ui.rect_contains_pointer(ui.max_rect())
-                            && ctx.input(|i| i.pointer.any_pressed()),
-                    ) {
-                        self.ws.active = ActivePanel::Right;
-                    }
-                    Self::render_panel(
-                        &mut self.ws.right,
+                    self.render_pane_contents(
+                        ActivePanel::Right,
                         ui,
-                        self.ws.active == ActivePanel::Right,
+                        input_policy,
                         close_right_preview,
-                        &t,
-                        &mut self.image_cache,
-                        "right",
-                        self.show_tree,
-                        self.show_size_bars,
                         right_compare.as_ref(),
                         &opener,
                         dragging,
                         right_metrics,
-                        self.accessibility_preferences.reduced_motion,
                     )
                 })
                 .inner
@@ -1603,26 +1573,7 @@ impl App {
             self.open_external(request, &ctx);
         }
 
-        if input_policy.allows_drop_target(
-            containing_ui_enabled,
-            dragging
-                && drag_source != Some(ActivePanel::Right)
-                && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
-                && !self.ws.right.drag.has_drop_target(),
-        ) {
-            self.ws
-                .right
-                .drag
-                .set_drop_target(self.ws.right.current_path.clone());
-        }
-        if self.ws.right.drag.has_drop_target() {
-            ctx.layer_painter(right_resp.response.layer_id).rect_stroke(
-                right_resp.response.rect.shrink(1.0),
-                CornerRadius::ZERO,
-                Stroke::new(1.0, t.accent),
-                egui::StrokeKind::Inside,
-            );
-        }
+        self.update_pane_drop_target(ActivePanel::Right, &right_resp.response, &pane_drop);
 
         if tree_toggle {
             self.show_tree = !self.show_tree;
@@ -1637,6 +1588,83 @@ impl App {
         // unchanged.
         if let (Some(lmap), Some(rmap)) = (left_compare, right_compare) {
             self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
+        }
+    }
+
+    /// One pane's body: pointer activation, then the panel renderer.
+    #[allow(clippy::too_many_arguments)]
+    fn render_pane_contents(
+        &mut self,
+        side: ActivePanel,
+        ui: &mut egui::Ui,
+        input_policy: FrameInputPolicy,
+        close_preview: bool,
+        compare: Option<&crate::compare::CompareMap>,
+        opener: &dyn Fn(crate::ports::OpenRequest),
+        dragging: bool,
+        metrics: crate::density::DensityMetrics,
+    ) -> super::render::PanelRenderOutcome {
+        if input_policy.allows_raw_input(
+            ui.is_enabled(),
+            ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()),
+        ) {
+            self.ws.active = side;
+        }
+        let t = self.colors;
+        let is_active = self.ws.active == side;
+        let (panel, label) = match side {
+            ActivePanel::Left => (&mut self.ws.left, "left"),
+            ActivePanel::Right => (&mut self.ws.right, "right"),
+        };
+        Self::render_panel(
+            panel,
+            ui,
+            is_active,
+            close_preview,
+            &t,
+            &mut self.image_cache,
+            label,
+            self.show_tree,
+            self.show_size_bars,
+            compare,
+            opener,
+            dragging,
+            metrics,
+            self.accessibility_preferences.reduced_motion,
+        )
+    }
+
+    /// Make a pane's own folder the drop target while a drag from the other
+    /// pane hovers it, and outline the pane that holds the target.
+    fn update_pane_drop_target(
+        &mut self,
+        side: ActivePanel,
+        response: &egui::Response,
+        drop: &PaneDropContext,
+    ) {
+        let accent = self.colors.accent;
+        let panel = match side {
+            ActivePanel::Left => &mut self.ws.left,
+            ActivePanel::Right => &mut self.ws.right,
+        };
+        if drop.input_policy.allows_drop_target(
+            drop.containing_ui_enabled,
+            drop.dragging
+                && drop.drag_source != Some(side)
+                && drop
+                    .hover_pos
+                    .is_some_and(|pos| response.rect.contains(pos))
+                && !panel.drag.has_drop_target(),
+        ) {
+            panel.drag.set_drop_target(panel.current_path.clone());
+        }
+        if panel.drag.has_drop_target() {
+            response.ctx.layer_painter(response.layer_id).rect_stroke(
+                response.rect.shrink(1.0),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, accent),
+                egui::StrokeKind::Inside,
+            );
         }
     }
 
