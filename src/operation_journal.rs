@@ -836,41 +836,28 @@ struct LoadedJournal {
 
 fn load_journal_at(path: &Path) -> Result<LoadedJournal, String> {
     let persist = crate::persistence::FsPersist::default();
-    let loaded = crate::persistence::load_enveloped::<Journal>(&persist, path, STORE);
-    let status = loaded.gate.status();
-    match status {
-        crate::persistence::LoadStatus::Missing => Ok(LoadedJournal {
+    let (journal, gate) =
+        crate::persistence::load_strict::<Journal>(&persist, path, STORE, JOURNAL_NOUN)?;
+    let Some(journal) = journal else {
+        return Ok(LoadedJournal {
             journal: Journal::default(),
-            gate: loaded.gate,
-        }),
-        crate::persistence::LoadStatus::Legacy
-        | crate::persistence::LoadStatus::Current
-        | crate::persistence::LoadStatus::Recovered => {
-            let Some(journal) = loaded.value else {
-                return Err("Operation journal is corrupt: payload did not decode".to_string());
-            };
-            if !(1..=JOURNAL_SCHEMA).contains(&journal.schema) {
-                return Err(format!(
-                    "Unsupported operation journal schema {}; expected {JOURNAL_SCHEMA}",
-                    journal.schema
-                ));
-            }
-            Ok(LoadedJournal {
-                journal: migrate_and_validate(journal)?,
-                gate: loaded.gate,
-            })
-        }
-        crate::persistence::LoadStatus::Corrupt => {
-            Err("Operation journal is corrupt: envelope or payload rejected".to_string())
-        }
-        crate::persistence::LoadStatus::FutureVersion => Err(
-            "Operation journal uses a newer persist envelope than this build supports".to_string(),
-        ),
-        crate::persistence::LoadStatus::Unreadable => {
-            Err("Could not open operation journal: unreadable".to_string())
-        }
+            gate,
+        });
+    };
+    if !(1..=JOURNAL_SCHEMA).contains(&journal.schema) {
+        return Err(format!(
+            "Unsupported operation journal schema {}; expected {JOURNAL_SCHEMA}",
+            journal.schema
+        ));
     }
+    Ok(LoadedJournal {
+        journal: migrate_and_validate(journal)?,
+        gate,
+    })
 }
+
+/// Sentence-case name used in this store's error messages.
+const JOURNAL_NOUN: &str = "Operation journal";
 
 fn load_at(path: &Path) -> Result<Journal, String> {
     Ok(load_journal_at(path)?.journal)
@@ -912,10 +899,7 @@ fn save_journal_at(
         gate,
         crate::persistence::SaveIntent::Automatic,
     ) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => Ok(()),
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => Err(format!(
-            "Operation journal commit is ambiguous across a crash: target was replaced but its directory could not be synced: {error}"
-        )),
+        Ok(outcome) => crate::persistence::require_durable(JOURNAL_NOUN, outcome),
         Err(error) => Err(map_journal_save_error(error)),
     }
 }

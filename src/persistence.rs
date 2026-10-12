@@ -759,6 +759,45 @@ pub fn load_enveloped<T: DeserializeOwned>(
     }
 }
 
+/// Load a store that must never fall back to defaults (operation journal,
+/// content index). `Ok(None)` only when the store is missing; every
+/// fail-closed status becomes an error naming the store. `noun` is the
+/// store's sentence-case name, e.g. "Operation journal".
+pub fn load_strict<T: DeserializeOwned>(
+    persist: &dyn Persist,
+    path: &Path,
+    spec: StoreSpec,
+    noun: &str,
+) -> Result<(Option<T>, StoreGate), String> {
+    let loaded = load_enveloped::<T>(persist, path, spec);
+    match loaded.gate.status() {
+        LoadStatus::Missing => Ok((None, loaded.gate)),
+        LoadStatus::Legacy | LoadStatus::Current | LoadStatus::Recovered => match loaded.value {
+            Some(value) => Ok((Some(value), loaded.gate)),
+            None => Err(format!("{noun} is corrupt: payload did not decode")),
+        },
+        LoadStatus::Corrupt => Err(format!("{noun} is corrupt: envelope or payload rejected")),
+        LoadStatus::FutureVersion => Err(format!(
+            "{noun} uses a newer persist envelope than this build supports"
+        )),
+        LoadStatus::Unreadable => Err(format!(
+            "Could not open {}: unreadable",
+            noun.to_lowercase()
+        )),
+    }
+}
+
+/// A strict store's commit must be durable: a replaced target whose
+/// directory was not synced is ambiguous across a crash.
+pub fn require_durable(noun: &str, outcome: AtomicWriteOutcome) -> Result<(), String> {
+    match outcome {
+        AtomicWriteOutcome::Durable => Ok(()),
+        AtomicWriteOutcome::CommittedButNotDurable(error) => Err(format!(
+            "{noun} commit is ambiguous across a crash: target was replaced but its directory could not be synced: {error}"
+        )),
+    }
+}
+
 pub fn load_enveloped_items<T: DeserializeOwned>(
     persist: &dyn Persist,
     path: &Path,
