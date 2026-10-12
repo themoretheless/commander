@@ -131,12 +131,7 @@ modal_registry!(
     Mask,
     Collections,
     SavedSearch,
-    Archive,
     Find,
-    Treemap,
-    Diff,
-    Duplicates,
-    Sync,
     BatchRename,
     Rename,
     Confirmation,
@@ -245,6 +240,8 @@ pub enum KeyboardRoute {
 pub enum EscapeRoute {
     Modal(ModalSurface),
     TextInput(TextInputMode),
+    /// Close the tool occupying a pane (disk usage, diff, sync, ...).
+    PaneTool,
     ActivePreview,
     FocusMode,
     None,
@@ -262,6 +259,7 @@ pub enum PendingFocusEffect {
 pub struct UiContractState {
     pub text_input: TextInputState,
     pub modal: Option<ModalSurface>,
+    pub pane_tool_open: bool,
     pub active_preview_open: bool,
     pub focus_mode: bool,
 }
@@ -292,6 +290,8 @@ pub fn resolve_ui_contract(state: UiContractState) -> UiContract {
         EscapeRoute::Modal(surface)
     } else if text_input == Some(TextInputMode::TextEdit) {
         EscapeRoute::TextInput(TextInputMode::TextEdit)
+    } else if state.pane_tool_open {
+        EscapeRoute::PaneTool
     } else if state.active_preview_open {
         EscapeRoute::ActivePreview
     } else if state.focus_mode {

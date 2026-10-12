@@ -246,7 +246,7 @@ fn show_inspect(
                         });
                         let effect = step.landing.as_ref().unwrap_or(&step.destination);
                         ui.label(
-                            egui::RichText::new(format!("\u{2192} {}", effect.display()))
+                            egui::RichText::new(format!("\u{00bb} {}", effect.display()))
                                 .size(10.0)
                                 .monospace()
                                 .color(t.text_secondary),

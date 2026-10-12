@@ -117,7 +117,7 @@ impl App {
                                         );
                                         ui.label(
                                             egui::RichText::new(format!(
-                                                "\u{2192} {}",
+                                                "\u{00bb} {}",
                                                 path.to.display()
                                             ))
                                             .size(10.0)

@@ -55,6 +55,7 @@ impl App {
         resolve_ui_contract(UiContractState {
             text_input: text_input_state(ctx),
             modal,
+            pane_tool_open: self.ui.tools.any_open(),
             active_preview_open,
             focus_mode: self.ui.focus_mode,
         })

@@ -887,6 +887,22 @@ impl App {
         });
     }
 
+    /// Note that pane tool `tool` just opened, so its first field takes focus.
+    pub(crate) fn mark_tool_opened(ctx: &egui::Context, tool: &'static str) {
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new(("tool_opened", tool)), true);
+        });
+    }
+
+    pub(crate) fn take_tool_opened(ctx: &egui::Context, tool: &'static str) -> bool {
+        ctx.data_mut(|data| {
+            let id = egui::Id::new(("tool_opened", tool));
+            let opened = data.get_temp::<bool>(id).unwrap_or(false);
+            data.remove::<bool>(id);
+            opened
+        })
+    }
+
     pub(crate) fn take_modal_opened(ctx: &egui::Context, modal: UiModal) -> bool {
         ctx.data_mut(|data| {
             let id = egui::Id::new(("ui_request_opened", modal));

@@ -14,24 +14,27 @@ impl App {
             .iter()
             .map(|group| default_keep(group, policy))
             .collect();
-        self.ui.modals.duplicates = Some(DupState {
+        self.ui.tools.replace_on(self.ws.active.other());
+        self.ui.tools.duplicates = Some(DupState {
             groups,
             keep,
             policy,
         });
     }
 
-    pub(crate) fn show_duplicates_dialog(&mut self, ctx: &egui::Context) {
+    pub(crate) fn show_duplicates_tool(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let escape_requested =
-            self.take_modal_escape(crate::accessibility::ModalSurface::Duplicates);
-        if self.ui.modals.duplicates.is_none() {
+            self.take_escape_request(crate::accessibility::EscapeRoute::PaneTool);
+        if self.ui.tools.duplicates.is_none() {
             return;
         }
         let t = self.colors;
 
         // Snapshot display data so the window body only mutates `keep`.
         let (view, delete_total) = {
-            let Some(s) = self.ui.modals.duplicates.as_ref() else {
+            let Some(s) = self.ui.tools.duplicates.as_ref() else {
                 return;
             };
             let view: Vec<(u64, Vec<String>)> = s
@@ -59,11 +62,10 @@ impl App {
         let mut cancel = false;
 
         {
-            let Some(s) = self.ui.modals.duplicates.as_mut() else {
+            let Some(s) = self.ui.tools.duplicates.as_mut() else {
                 return;
             };
-            super::sheet_window("Duplicates", t, 16).show(ctx, |ui| {
-                ui.set_width(580.0);
+            ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new("Duplicate files")
                         .size(13.0)
@@ -177,11 +179,11 @@ impl App {
         }
 
         if cancel {
-            self.ui.modals.duplicates = None;
+            self.ui.tools.duplicates = None;
             return;
         }
         if let Some(p) = new_policy
-            && let Some(s) = self.ui.modals.duplicates.as_mut()
+            && let Some(s) = self.ui.tools.duplicates.as_mut()
         {
             s.policy = p;
             s.keep = s.groups.iter().map(|g| default_keep(g, p)).collect();
@@ -192,7 +194,7 @@ impl App {
             }
             // Every non-kept file across all groups goes to the Trash.
             let to_trash: Vec<crate::ports::TrashBatchItem> = {
-                let Some(s) = self.ui.modals.duplicates.as_ref() else {
+                let Some(s) = self.ui.tools.duplicates.as_ref() else {
                     return;
                 };
                 s.groups
@@ -221,7 +223,7 @@ impl App {
                 .ws
                 .trash_entries(to_trash, move || repaint.request_repaint())
             {
-                self.ui.modals.duplicates = None;
+                self.ui.tools.duplicates = None;
             }
         }
     }

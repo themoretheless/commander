@@ -13,12 +13,7 @@ pub(crate) enum UiModal {
     History,
     Rename,
     BatchRename,
-    Sync,
-    Duplicates,
-    Diff,
-    Treemap,
     Find,
-    Archive,
     SavedSearch,
     Collections,
     Mask,
@@ -65,12 +60,7 @@ impl UiRequest {
             Self::Undo | Self::Redo => Some(UiModal::History),
             Self::Rename(_) => Some(UiModal::Rename),
             Self::BatchRename => Some(UiModal::BatchRename),
-            Self::Sync => Some(UiModal::Sync),
-            Self::FindDuplicates => Some(UiModal::Duplicates),
-            Self::DiffFiles => Some(UiModal::Diff),
-            Self::DiskTreemap => Some(UiModal::Treemap),
             Self::Find => Some(UiModal::Find),
-            Self::Archive(_) => Some(UiModal::Archive),
             Self::SavedSearch => Some(UiModal::SavedSearch),
             Self::ProjectCollections => Some(UiModal::Collections),
             Self::SelectMask => Some(UiModal::Mask),
@@ -82,6 +72,11 @@ impl UiRequest {
             | Self::ToggleQueuePanel
             | Self::OperationHistory
             | Self::OpenRecoveryCenter
+            | Self::Sync
+            | Self::FindDuplicates
+            | Self::DiffFiles
+            | Self::DiskTreemap
+            | Self::Archive(_)
             | Self::ReviewRecovery(_)
             | Self::OpenExternal(_)
             | Self::CopyPaths(_)
@@ -101,10 +96,6 @@ impl UiRequest {
                 | Self::Recent
                 | Self::Palette
                 | Self::BatchRename
-                | Self::Sync
-                | Self::FindDuplicates
-                | Self::DiffFiles
-                | Self::DiskTreemap
                 | Self::Find
                 | Self::SavedSearch
                 | Self::ProjectCollections
@@ -399,7 +390,7 @@ mod tests {
 
     #[test]
     fn dispatcher_preserves_all_rename_and_archive_payloads_in_order() {
-        let requests = vec![
+        let requests = [
             UiRequest::Rename(PathBuf::from("/tmp/rename-a")),
             UiRequest::Rename(PathBuf::from("/tmp/rename-b")),
             UiRequest::Archive(PathBuf::from("/tmp/archive-a.zip")),
@@ -416,7 +407,17 @@ mod tests {
             sink.open_modal = None;
         }
 
-        assert_eq!(sink.applied, requests);
+        // Renames are modal and keep FIFO order behind each other; archives
+        // open a pane tool and never wait behind a dialog.
+        assert_eq!(
+            sink.applied,
+            vec![
+                requests[0].clone(),
+                requests[2].clone(),
+                requests[3].clone(),
+                requests[1].clone(),
+            ]
+        );
         assert!(queue.snapshot().is_empty());
     }
 

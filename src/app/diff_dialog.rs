@@ -49,7 +49,8 @@ impl App {
                         Some("One or both files are binary, too large, or unreadable.".to_string()),
                     ),
                 };
-                self.ui.modals.diff = Some(DiffState {
+                self.ui.tools.replace_on(self.ws.active.other());
+                self.ui.tools.diff = Some(DiffState {
                     name_a: name(&a),
                     name_b: name(&b),
                     lines,
@@ -59,9 +60,10 @@ impl App {
         }
     }
 
-    pub(crate) fn show_diff_dialog(&mut self, ctx: &egui::Context) {
-        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Diff);
-        let Some(state) = &self.ui.modals.diff else {
+    pub(crate) fn show_diff_tool(&mut self, ui: &mut egui::Ui) {
+        let escape_requested =
+            self.take_escape_request(crate::accessibility::EscapeRoute::PaneTool);
+        let Some(state) = &self.ui.tools.diff else {
             return;
         };
         let t = self.colors;
@@ -69,85 +71,78 @@ impl App {
 
         let (ins, del) = change_counts(&state.lines);
 
-        egui::Window::new("Diff")
-            .collapsible(false)
-            .resizable(true)
-            .title_bar(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(super::dialog_frame(t, 14))
-            .show(ctx, |ui| {
-                ui.set_width(720.0);
-                ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}  vs  {}", state.name_a, state.name_b))
+                        .size(13.0)
+                        .strong()
+                        .color(t.text_primary),
+                );
+                if state.message.is_none() {
+                    ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new(format!("{}  vs  {}", state.name_a, state.name_b))
-                            .size(13.0)
-                            .strong()
-                            .color(t.text_primary),
+                        egui::RichText::new(format!("+{ins}"))
+                            .size(11.0)
+                            .color(t.accent),
                     );
-                    if state.message.is_none() {
-                        ui.add_space(10.0);
-                        ui.label(
-                            egui::RichText::new(format!("+{ins}"))
-                                .size(11.0)
-                                .color(t.accent),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!("-{del}"))
-                                .size(11.0)
-                                .color(t.accent_red),
-                        );
-                    }
-                });
-                ui.add_space(8.0);
-
-                if let Some(msg) = &state.message {
-                    ui.label(egui::RichText::new(msg).size(12.0).color(t.text_muted));
-                } else if state.lines.is_empty() {
                     ui.label(
-                        egui::RichText::new("The files are identical.")
-                            .size(12.0)
-                            .color(t.text_muted),
+                        egui::RichText::new(format!("-{del}"))
+                            .size(11.0)
+                            .color(t.accent_red),
                     );
-                } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(420.0)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            for line in &state.lines {
-                                let (mark, color) = match line.kind {
-                                    DiffKind::Equal => (" ", t.text_muted),
-                                    DiffKind::Insert => ("+", t.accent),
-                                    DiffKind::Delete => ("-", t.accent_red),
-                                };
-                                ui.label(
-                                    egui::RichText::new(format!("{mark} {}", line.text))
-                                        .monospace()
-                                        .size(12.0)
-                                        .color(color),
-                                );
-                            }
-                        });
                 }
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(super::dialog_button(
-                            t,
-                            super::ButtonRole::Secondary,
-                            egui::RichText::new("Close").size(13.0),
-                        ))
-                        .clicked()
-                        || escape_requested
-                    {
-                        close = true;
-                    }
-                });
             });
+            ui.add_space(8.0);
+
+            if let Some(msg) = &state.message {
+                ui.label(egui::RichText::new(msg).size(12.0).color(t.text_muted));
+            } else if state.lines.is_empty() {
+                ui.label(
+                    egui::RichText::new("The files are identical.")
+                        .size(12.0)
+                        .color(t.text_muted),
+                );
+            } else {
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for line in &state.lines {
+                            let (mark, color) = match line.kind {
+                                DiffKind::Equal => (" ", t.text_muted),
+                                DiffKind::Insert => ("+", t.accent),
+                                DiffKind::Delete => ("-", t.accent_red),
+                            };
+                            ui.label(
+                                egui::RichText::new(format!("{mark} {}", line.text))
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(color),
+                            );
+                        }
+                    });
+            }
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Close").size(13.0),
+                    ))
+                    .clicked()
+                    || escape_requested
+                {
+                    close = true;
+                }
+            });
+        });
 
         if close {
-            self.ui.modals.diff = None;
+            self.ui.tools.diff = None;
         }
     }
 }

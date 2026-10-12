@@ -25,7 +25,8 @@ impl App {
         let settings_fingerprint = stamp.as_ref().map_or(0, |stamp| {
             crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key())
         });
-        self.ui.modals.sync = Some(SyncState {
+        self.ui.tools.replace_on(self.ws.active.other());
+        self.ui.tools.sync = Some(SyncState {
             policy,
             durability: self.ws.durability_profile,
             version_retention: self.ws.version_retention,
@@ -45,9 +46,12 @@ impl App {
         });
     }
 
-    pub(crate) fn show_sync_dialog(&mut self, ctx: &egui::Context) {
-        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Sync);
-        if self.ui.modals.sync.is_none() {
+    pub(crate) fn show_sync_tool(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let escape_requested =
+            self.take_escape_request(crate::accessibility::EscapeRoute::PaneTool);
+        if self.ui.tools.sync.is_none() {
             return;
         }
         let t = self.colors;
@@ -59,7 +63,7 @@ impl App {
 
         // Borrow the sync state only for the window body (no `self.ws` use here).
         {
-            let state = self.ui.modals.sync.as_mut().unwrap();
+            let state = self.ui.tools.sync.as_mut().unwrap();
             let mut to_right = 0usize;
             let mut to_left = 0usize;
             for a in &state.actions {
@@ -71,8 +75,7 @@ impl App {
             }
             let pending = to_right + to_left;
 
-            super::sheet_window("Synchronize", t, 16).show(ctx, |ui| {
-                ui.set_width(640.0);
+            ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new("Synchronize panels")
                         .size(13.0)
@@ -85,8 +88,8 @@ impl App {
                 ui.horizontal(|ui| {
                     for (p, text) in [
                         (SyncPolicy::TwoWay, "Two-way"),
-                        (SyncPolicy::MirrorLeftToRight, "Mirror \u{2192}"),
-                        (SyncPolicy::MirrorRightToLeft, "Mirror \u{2190}"),
+                        (SyncPolicy::MirrorLeftToRight, "Mirror \u{00bb}"),
+                        (SyncPolicy::MirrorRightToLeft, "Mirror \u{00ab}"),
                     ] {
                         if ui
                             .selectable_label(
@@ -150,9 +153,9 @@ impl App {
                             ui.horizontal(|ui| {
                                 // Direction control: ← skip → as selectable arrows.
                                 for (dir, glyph) in [
-                                    (SyncDirection::ToLeft, "\u{2190}"),
+                                    (SyncDirection::ToLeft, "\u{00ab}"),
                                     (SyncDirection::Skip, "\u{00b7}"),
-                                    (SyncDirection::ToRight, "\u{2192}"),
+                                    (SyncDirection::ToRight, "\u{00bb}"),
                                 ] {
                                     let active = a.direction == dir;
                                     let available = a.allows(dir);
@@ -272,7 +275,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "{to_right} \u{2192}    {to_left} \u{2190}    {} skip",
+                            "{to_right} \u{00bb}    {to_left} \u{00ab}    {} skip",
                             state.actions.len() - pending
                         ))
                         .size(11.0)
@@ -318,16 +321,16 @@ impl App {
         }
 
         if cancel {
-            self.ui.modals.sync = None;
+            self.ui.tools.sync = None;
             return;
         }
         if let Some(p) = new_policy
-            && let Some(s) = self.ui.modals.sync.as_mut()
+            && let Some(s) = self.ui.tools.sync.as_mut()
         {
             s.policy = p;
             refresh_plan = true;
         }
-        if refresh_plan && let Some(state) = self.ui.modals.sync.as_mut() {
+        if refresh_plan && let Some(state) = self.ui.tools.sync.as_mut() {
             match crate::sync_guard::build_plan(
                 &state.left_dir,
                 &state.right_dir,
@@ -354,17 +357,17 @@ impl App {
             }
         }
         if commit {
-            let Some(mut state) = self.ui.modals.sync.take() else {
+            let Some(mut state) = self.ui.tools.sync.take() else {
                 return;
             };
             if let Some(error) = configure_marker(&mut state) {
                 state.error = Some(error);
-                self.ui.modals.sync = Some(state);
+                self.ui.tools.sync = Some(state);
                 return;
             }
             let Some(stamp) = state.stamp.clone() else {
                 state.error = Some("Refresh the synchronization plan before applying".to_string());
-                self.ui.modals.sync = Some(state);
+                self.ui.tools.sync = Some(state);
                 return;
             };
             if state.dry_run {
@@ -426,7 +429,7 @@ impl App {
                 Ok(_) => {}
                 Err(error) => {
                     state.error = Some(error);
-                    self.ui.modals.sync = Some(state);
+                    self.ui.tools.sync = Some(state);
                 }
             }
         }

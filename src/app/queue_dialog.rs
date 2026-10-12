@@ -342,10 +342,10 @@ impl App {
                             match row.state {
                                 JobState::Pending => {
                                     if pending_count > 1 {
-                                        if icon(ui, "\u{2193}", "Move later") {
+                                        if icon(ui, "\u{25bc}", "Move later") {
                                             move_down = Some(row.id);
                                         }
-                                        if icon(ui, "\u{2191}", "Move earlier") {
+                                        if icon(ui, "\u{25b2}", "Move earlier") {
                                             move_up = Some(row.id);
                                         }
                                         if icon(ui, "\u{23eb}", "Run next") {

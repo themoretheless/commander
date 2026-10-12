@@ -195,12 +195,7 @@ impl eframe::App for App {
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
         self.show_batch_rename_dialog(&ctx);
-        self.show_sync_dialog(&ctx);
-        self.show_duplicates_dialog(&ctx);
-        self.show_diff_dialog(&ctx);
-        self.show_treemap_dialog(&ctx);
         self.show_find_dialog(&ctx);
-        self.show_archive_dialog(&ctx);
         self.show_saved_search_dialog(&ctx);
         self.show_collections_dialog(&ctx);
         self.show_mask_dialog(&ctx);
@@ -1377,6 +1372,10 @@ impl App {
         ) {
             self.ws.active = side;
         }
+        if self.ui.tools.side == Some(side) && self.ui.tools.any_open() {
+            self.show_pane_tool(ui);
+            return super::render::PanelRenderOutcome::default();
+        }
         let t = self.colors;
         let is_active = self.ws.active == side;
         let (panel, label) = match side {
@@ -1399,6 +1398,51 @@ impl App {
             metrics,
             self.accessibility_preferences.reduced_motion,
         )
+    }
+
+    /// Draw the open pane tool (disk usage, diff, sync, duplicates or archive)
+    /// in place of a file list, with a title bar whose close button and
+    /// Escape both return the pane to its listing.
+    fn show_pane_tool(&mut self, ui: &mut egui::Ui) {
+        let t = self.colors;
+        let mut close = false;
+        Frame::NONE
+            .fill(t.bg_panel)
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                // Each tool draws its own heading; the host only adds Close.
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("\u{00d7}").color(t.text_muted),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Close (Esc)")
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+                if self.ui.tools.treemap.is_some() {
+                    self.show_treemap_tool(ui);
+                } else if self.ui.tools.diff.is_some() {
+                    self.show_diff_tool(ui);
+                } else if self.ui.tools.sync.is_some() {
+                    self.show_sync_tool(ui);
+                } else if self.ui.tools.duplicates.is_some() {
+                    self.show_duplicates_tool(ui);
+                } else {
+                    self.show_archive_tool(ui);
+                }
+            });
+        if close {
+            self.ui.tools = super::ui_state::PaneTools::default();
+        }
     }
 
     /// Make a pane's own folder the drop target while a drag from the other
@@ -1523,7 +1567,7 @@ impl App {
             return;
         }
         let t = self.colors;
-        let label = format!("\u{2192} {buffer}");
+        let label = format!("\u{00bb} {buffer}");
         let screen = ctx.input(|i| i.viewport_rect());
         egui::Area::new(egui::Id::new("type_ahead_overlay"))
             .fixed_pos(egui::pos2(screen.center().x - 60.0, screen.bottom() - 80.0))

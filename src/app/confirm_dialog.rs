@@ -314,7 +314,7 @@ impl App {
                                     let dst = if c.dst_newer { "dst newer" } else { "" };
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "{}    src {} {}    \u{2192} dst {} {}",
+                                            "{}    src {} {}    \u{00bb} dst {} {}",
                                             c.name,
                                             format_size(c.src_size),
                                             src,

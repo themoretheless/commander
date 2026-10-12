@@ -8,7 +8,7 @@ const ROW_HEIGHT: f32 = 28.0;
 
 impl App {
     fn start_disk_usage_scan(&mut self, ctx: &egui::Context) {
-        let Some(state) = self.ui.modals.treemap.as_mut() else {
+        let Some(state) = self.ui.tools.treemap.as_mut() else {
             return;
         };
         let root = state.initial.dir.clone();
@@ -31,7 +31,7 @@ impl App {
         let mut disconnected = false;
         if let Some(run) = self
             .ui
-            .modals
+            .tools
             .treemap
             .as_ref()
             .and_then(|state| state.run.as_ref())
@@ -47,7 +47,7 @@ impl App {
                 }
             }
         }
-        if let Some(state) = self.ui.modals.treemap.as_mut() {
+        if let Some(state) = self.ui.tools.treemap.as_mut() {
             for event in events {
                 match event {
                     crate::tree_overview::OverviewEvent::Progress(progress) => {
@@ -72,7 +72,8 @@ impl App {
     pub(crate) fn open_treemap(&mut self, ctx: &egui::Context) {
         let mut initial = self.ws.treemap_snapshot();
         initial.items.retain(|(_, bytes)| *bytes > 0);
-        self.ui.modals.treemap = Some(DiskUsageState {
+        self.ui.tools.replace_on(self.ws.active.other());
+        self.ui.tools.treemap = Some(DiskUsageState {
             progress: crate::tree_overview::ScanProgress {
                 directories: 1,
                 current: initial.dir.clone(),
@@ -88,63 +89,58 @@ impl App {
         self.start_disk_usage_scan(ctx);
     }
 
-    pub(crate) fn show_treemap_dialog(&mut self, ctx: &egui::Context) {
-        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Treemap);
-        if self.ui.modals.treemap.is_none() {
+    pub(crate) fn show_treemap_tool(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let escape_requested =
+            self.take_escape_request(crate::accessibility::EscapeRoute::PaneTool);
+        if self.ui.tools.treemap.is_none() {
             return;
         }
         if super::ui_state::modal_close_requested(true, escape_requested) {
-            self.ui.modals.treemap = None;
+            self.ui.tools.treemap = None;
             return;
         }
         self.poll_disk_usage_scan();
 
         let t = self.colors;
         let dark = (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
-        let mut window_open = true;
+        let window_open = true;
         let mut stop = false;
         let mut rescan = false;
         let mut open_path = None;
 
         {
-            let state = self.ui.modals.treemap.as_mut().expect("checked above");
-            egui::Window::new("Disk usage")
-                .open(&mut window_open)
-                .collapsible(false)
-                .resizable(true)
-                .default_size([780.0, 580.0])
-                .min_width(620.0)
-                .min_height(420.0)
-                .frame(super::dialog_frame(t, 14))
-                .show(ctx, |ui| {
-                    show_disk_usage_header(ui, state, t, &mut stop, &mut rescan);
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(8.0);
+            let state = self.ui.tools.treemap.as_mut().expect("checked above");
+            ui.vertical(|ui| {
+                show_disk_usage_header(ui, state, t, &mut stop, &mut rescan);
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
 
-                    match state.mode {
-                        DiskUsageMode::Map => {
-                            let items = state
-                                .overview
-                                .as_ref()
-                                .map_or(state.initial.items.as_slice(), |snapshot| {
-                                    snapshot.top_level.as_slice()
-                                });
-                            show_map(ui, items, t, dark, &mut open_path);
-                        }
-                        DiskUsageMode::Tree => {
-                            show_tree(ui, state, t, &mut open_path);
-                        }
+                match state.mode {
+                    DiskUsageMode::Map => {
+                        let items = state
+                            .overview
+                            .as_ref()
+                            .map_or(state.initial.items.as_slice(), |snapshot| {
+                                snapshot.top_level.as_slice()
+                            });
+                        show_map(ui, items, t, dark, &mut open_path);
                     }
-                });
+                    DiskUsageMode::Tree => {
+                        show_tree(ui, state, t, &mut open_path);
+                    }
+                }
+            });
         }
 
         if super::ui_state::modal_close_requested(window_open, false) {
-            self.ui.modals.treemap = None;
+            self.ui.tools.treemap = None;
             return;
         }
         if stop
-            && let Some(state) = self.ui.modals.treemap.as_mut()
+            && let Some(state) = self.ui.tools.treemap.as_mut()
             && let Some(run) = state.run.as_ref()
         {
             run.cancel();
@@ -159,7 +155,7 @@ impl App {
             } else {
                 self.ws.reveal(&path);
             }
-            self.ui.modals.treemap = None;
+            self.ui.tools.treemap = None;
         }
     }
 }

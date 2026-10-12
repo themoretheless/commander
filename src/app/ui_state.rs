@@ -116,23 +116,8 @@ define_modal_store!(
     BatchRename => BatchRename {
         batch_rename: Option<BatchRenameState>, option
     },
-    Sync => Sync {
-        sync: Option<SyncState>, option
-    },
-    Duplicates => Duplicates {
-        duplicates: Option<DupState>, option
-    },
-    Diff => Diff {
-        diff: Option<DiffState>, option
-    },
-    Treemap => Treemap {
-        treemap: Option<DiskUsageState>, option
-    },
     Find => Find {
         find: Option<FindState>, option
-    },
-    Archive => Archive {
-        archive: Option<ArchiveState>, option
     },
     SavedSearch => SavedSearch {
         saved_search_open: bool, bool
@@ -151,8 +136,41 @@ define_modal_store!(
     },
 );
 
+/// Tools that take over the inactive pane instead of floating over the
+/// workspace: disk usage, diff, synchronize, duplicates and archive. At most
+/// one is open; the panes stay interactive while it is.
+#[derive(Default)]
+pub(crate) struct PaneTools {
+    /// The pane the open tool replaces, fixed when it opens.
+    pub(crate) side: Option<crate::workspace::ActivePanel>,
+    pub(crate) treemap: Option<DiskUsageState>,
+    pub(crate) diff: Option<DiffState>,
+    pub(crate) sync: Option<SyncState>,
+    pub(crate) duplicates: Option<DupState>,
+    pub(crate) archive: Option<ArchiveState>,
+}
+
+impl PaneTools {
+    pub(crate) fn any_open(&self) -> bool {
+        self.treemap.is_some()
+            || self.diff.is_some()
+            || self.sync.is_some()
+            || self.duplicates.is_some()
+            || self.archive.is_some()
+    }
+
+    /// Close whatever tool is open and claim `side` for the next one.
+    pub(crate) fn replace_on(&mut self, side: crate::workspace::ActivePanel) {
+        *self = Self {
+            side: Some(side),
+            ..Self::default()
+        };
+    }
+}
+
 pub(crate) struct UiState {
     pub(crate) modals: ModalStore,
+    pub(crate) tools: PaneTools,
     /// Type-ahead buffer and the input time of its last keystroke.
     pub(crate) type_ahead: Option<(String, f64)>,
     /// Pending vim-style chord leader and the input time it was pressed.
@@ -176,6 +194,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             modals: ModalStore::default(),
+            tools: PaneTools::default(),
             type_ahead: None,
             chord: None,
             modifier_held_since: None,
@@ -236,7 +255,7 @@ mod tests {
 
     #[test]
     fn registry_covers_all_ui_modals_with_unique_surfaces() {
-        assert_eq!(UI_MODAL_REGISTRY.len(), 14);
+        assert_eq!(UI_MODAL_REGISTRY.len(), 9);
         for (index, (modal, surface)) in UI_MODAL_REGISTRY.iter().enumerate() {
             assert_eq!(modal.surface(), *surface);
             assert_eq!(UiModal::from_surface(*surface), Some(*modal));
@@ -270,17 +289,30 @@ mod tests {
 
     #[test]
     fn async_modals_close_when_their_escape_route_is_consumed() {
-        for surface in [
-            ModalSurface::Find,
-            ModalSurface::Treemap,
-            ModalSurface::Collections,
-        ] {
+        for surface in [ModalSurface::Find, ModalSurface::Collections] {
             assert!(
                 modal_close_requested(true, true),
                 "{surface:?} must close on its routed Escape"
             );
             assert!(!modal_close_requested(true, false));
         }
+    }
+
+    #[test]
+    fn opening_a_pane_tool_replaces_the_previous_one() {
+        let mut tools = PaneTools::default();
+        assert!(!tools.any_open());
+        tools.replace_on(crate::workspace::ActivePanel::Right);
+        tools.diff = Some(DiffState {
+            name_a: "a".into(),
+            name_b: "b".into(),
+            lines: Vec::new(),
+            message: None,
+        });
+        assert!(tools.any_open());
+        tools.replace_on(crate::workspace::ActivePanel::Left);
+        assert!(!tools.any_open(), "the old tool closes");
+        assert_eq!(tools.side, Some(crate::workspace::ActivePanel::Left));
     }
 
     #[test]

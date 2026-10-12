@@ -28,6 +28,15 @@ pub enum ActivePanel {
     Right,
 }
 
+impl ActivePanel {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
 /// Immutable target captured when the batch-rename sheet opens. Keeping the
 /// panel side, directory, names, and collision set together prevents a later
 /// click in the other panel from silently retargeting the operation.
