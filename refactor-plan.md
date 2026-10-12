@@ -1,6 +1,44 @@
 # Structure plan: architecture, SOLID, DRY
 
-Status: plan, not started. Written 2026-10-11 against `main` + PR #20.
+Status: phases 0–4 and phase 5 item 4 done on PR #20 (2026-10-12); phase 5
+items 1–3 remain, each as its own PR per `ux.md` §7. Written 2026-10-11
+against `main` + PR #20.
+
+## Progress
+
+| Item | Commit |
+| --- | --- |
+| 1 No-replace rename owner | in `fs_at::rename_noreplace` |
+| 2 Symlink primitive | `fs_util::{copy_symlink, create_symlink}` |
+| 3 Progress start/cancel helpers | `transfer::{check_cancelled, begin_file}` |
+| 4 Temp-file commit pipeline | `persistence::commit_temp_with` |
+| 5 Save/load health policy | `persistence::report_save`, `LoadStatus::fails_closed` |
+| 6 Fail-closed load mapping | `persistence::{load_strict, require_durable}` |
+| 7 Safe-state latch | `Workspace::latch_safe_state` |
+| 8 Dialog chrome | `app::{dialog_frame, sheet_window}` |
+| 9 Button roles | `app::{ButtonRole, dialog_button}` |
+| 10 One pane renderer | `render_pane_contents` |
+| 11 Feedback facade | `App::{toast, toast_at}` |
+| 12 Drag-session resolver | `Workspace::drag_session` |
+| 13 Context-menu port decides | `ContextMenuPort::presents_native_menu` |
+| 14 One-shot focus | `mark_modal_opened` / `take_modal_opened` everywhere |
+| 15 Flat-list renderer | `render_flat_list` + `FlatListMode` |
+| 16 Dir-size cache | `panel/dir_size_cache.rs` |
+| 17 Filtered-view iterators | `filtered_iter`, `visible_selected`, `update_filtered_selection` |
+| 18 Listing transitions | `preserving_focus`, `reveal_cursor` |
+| 19 Facets | `panel/facet.rs`, `age_deadline` |
+| 20 Stage a transfer | `Workspace::stage_transfer` |
+| 21 TransferSpec builder | `TransferSpec::new`, `Workspace::queued_spec` |
+| 22 Command context base | `Workspace::base_command_context` |
+| 23 ResumeCheckpoint | `observe`, `size_fits`, `proof_matches` |
+| 24 Journal helpers | `operation_mut`, `step_mut`, `release_overwrite_backup` |
+| Phase 0 command catalogue | `command::CATALOG` |
+| Phase 0 platform adapters | per-OS `desktop_adapters()`; AppKit only on macOS |
+| Phase 5.4 theme tokens | `theme.rs`, `file_color::PALETTE` |
+
+Found along the way: sparse copy trusted `SEEK_HOLE` and could drop data on
+APFS (now reads every byte); file names were centered by `add_sized`; the
+status bar overlapped on narrow panes; three tests raced shared state.
 
 `architecture.md` records the earlier structural passes and their accepted
 residuals. This plan covers what is still open after them. It stays within the
