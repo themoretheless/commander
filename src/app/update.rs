@@ -319,7 +319,7 @@ impl App {
         if self.ws.active != request.panel {
             return;
         }
-        if !cfg!(target_os = "macos") {
+        if !self.context_menu.presents_native_menu() {
             let pos = ctx
                 .pointer_latest_pos()
                 .unwrap_or_else(|| ctx.content_rect().center());

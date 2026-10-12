@@ -319,6 +319,12 @@ pub trait ContextMenuPort {
 
     fn show_context_menu(&self, invocation: &ContextMenuInvocation) -> ContextMenuResult;
 
+    /// Whether this adapter presents a native menu. When it does not, the
+    /// shell draws its own in-app menu instead of calling `show_context_menu`.
+    fn presents_native_menu(&self) -> bool {
+        true
+    }
+
     /// Execute a typed action only after the native selector has returned.
     ///
     /// Objective-C callbacks are presentation adapters: they may select an
