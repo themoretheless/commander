@@ -28,16 +28,6 @@ pub struct ThemeColors {
     pub border: Color32,
 }
 
-/// Selection fill is intentionally identical in the standard light and dark
-/// themes: selected rows always draw white text on this blue, so the pair must
-/// keep the same contrast in both modes. The high-contrast themes override it.
-const SELECTION_BLUE: Color32 = Color32::from_rgb(0, 100, 220);
-
-/// Warning amber is intentionally identical in the standard light and dark
-/// themes: conflict and pending badges must read the same in both modes. The
-/// high-contrast themes override it with darker, more legible variants.
-const WARNING_AMBER: Color32 = Color32::from_rgb(230, 160, 40);
-
 impl ThemeColors {
     pub fn for_preferences(
         mode: ThemeMode,
@@ -51,47 +41,45 @@ impl ThemeColors {
         }
     }
 
+    /// Warm paper: neutral surfaces with a slight warm cast; accents dark enough
+    /// for white button text.
     pub fn light() -> Self {
         ThemeColors {
-            bg_deep: Color32::from_rgb(245, 245, 248),
-            bg_panel: Color32::from_rgb(252, 252, 254),
-            bg_card: Color32::from_rgb(235, 235, 240),
-            bg_hover: Color32::from_rgb(225, 225, 232),
-            bg_selected: SELECTION_BLUE,
-            bg_toolbar: Color32::from_rgb(240, 240, 244),
-
-            text_primary: Color32::from_rgb(30, 30, 35),
-            text_secondary: Color32::from_rgb(90, 90, 105),
-            text_muted: Color32::from_rgb(150, 150, 165),
-
-            accent: Color32::from_rgb(0, 122, 255),
-            accent_red: Color32::from_rgb(235, 60, 50),
-            accent_purple: Color32::from_rgb(160, 70, 210),
-            accent_warning: WARNING_AMBER,
-
-            border: Color32::from_rgb(210, 210, 218),
+            bg_deep: Color32::from_rgb(241, 238, 233),
+            bg_panel: Color32::from_rgb(253, 252, 249),
+            bg_card: Color32::from_rgb(241, 238, 233),
+            bg_hover: Color32::from_rgb(235, 231, 226),
+            bg_selected: Color32::from_rgb(22, 102, 170),
+            bg_toolbar: Color32::from_rgb(246, 243, 239),
+            text_primary: Color32::from_rgb(46, 42, 38),
+            text_secondary: Color32::from_rgb(87, 82, 77),
+            text_muted: Color32::from_rgb(108, 104, 100),
+            accent: Color32::from_rgb(22, 102, 170),
+            accent_red: Color32::from_rgb(182, 50, 45),
+            accent_purple: Color32::from_rgb(117, 77, 158),
+            accent_warning: Color32::from_rgb(162, 101, 10),
+            border: Color32::from_rgb(217, 212, 206),
         }
     }
 
+    /// Warm graphite: brown-tinted near-black surfaces with warm off-white text;
+    /// accents stay dark enough for white button text.
     pub fn dark() -> Self {
         ThemeColors {
-            bg_deep: Color32::from_rgb(16, 16, 20),
-            bg_panel: Color32::from_rgb(24, 24, 30),
-            bg_card: Color32::from_rgb(34, 34, 42),
-            bg_hover: Color32::from_rgb(44, 44, 54),
-            bg_selected: SELECTION_BLUE,
-            bg_toolbar: Color32::from_rgb(20, 20, 26),
-
-            text_primary: Color32::from_rgb(230, 230, 240),
-            text_secondary: Color32::from_rgb(150, 150, 170),
-            text_muted: Color32::from_rgb(85, 85, 105),
-
-            accent: Color32::from_rgb(0, 122, 255),
-            accent_red: Color32::from_rgb(255, 69, 58),
-            accent_purple: Color32::from_rgb(175, 82, 222),
-            accent_warning: WARNING_AMBER,
-
-            border: Color32::from_rgb(50, 50, 60),
+            bg_deep: Color32::from_rgb(19, 17, 15),
+            bg_panel: Color32::from_rgb(27, 24, 21),
+            bg_card: Color32::from_rgb(36, 33, 30),
+            bg_hover: Color32::from_rgb(45, 41, 37),
+            bg_selected: Color32::from_rgb(49, 120, 186),
+            bg_toolbar: Color32::from_rgb(24, 22, 19),
+            text_primary: Color32::from_rgb(237, 233, 226),
+            text_secondary: Color32::from_rgb(185, 181, 176),
+            text_muted: Color32::from_rgb(136, 132, 127),
+            accent: Color32::from_rgb(49, 120, 186),
+            accent_red: Color32::from_rgb(202, 69, 61),
+            accent_purple: Color32::from_rgb(140, 100, 183),
+            accent_warning: Color32::from_rgb(191, 123, 31),
+            border: Color32::from_rgb(52, 48, 44),
         }
     }
 
@@ -243,6 +231,21 @@ mod tests {
             }
         };
         (bright + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn standard_themes_keep_text_legible_and_button_text_readable() {
+        for colors in [ThemeColors::light(), ThemeColors::dark()] {
+            assert!(contrast(colors.text_primary, colors.bg_panel) >= 7.0);
+            assert!(contrast(colors.text_secondary, colors.bg_panel) >= 4.5);
+            for surface in [colors.bg_panel, colors.bg_card] {
+                assert!(contrast(colors.text_muted, surface) >= 4.3);
+            }
+            for fill in [colors.accent, colors.accent_red, colors.accent_purple] {
+                assert!(contrast(Color32::WHITE, fill) >= 4.5);
+            }
+            assert!(contrast(Color32::WHITE, colors.accent_warning) >= 3.0);
+        }
     }
 
     #[test]

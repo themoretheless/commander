@@ -1,63 +1,34 @@
-//! Pure semantic colors for file kinds, derived from a perceptual OKLCH model
-//! so hues stay balanced and legible across light and dark themes. No egui
-//! types, so the conversion, the palette and its WCAG contrast are all
-//! unit-tested. Reuses the [`Kind`] classifier from `selection_summary`.
+//! Pure semantic colors for file kinds. No egui types, so the palette and its
+//! contrast and color-vision separation are unit-tested. Reuses the [`Kind`]
+//! classifier from `selection_summary`.
 
 use crate::selection_summary::Kind;
 
-/// Hue (OKLCH degrees) and chroma per kind. Lightness is chosen per theme.
-/// Folder is a faint slate, Other a true neutral.
-fn hue_chroma(kind: Kind) -> (f32, f32) {
-    match kind {
-        Kind::Folder => (255.0, 0.022),
-        Kind::Image => (150.0, 0.13),
-        Kind::Video => (300.0, 0.13),
-        Kind::Audio => (65.0, 0.12),
-        Kind::Document => (250.0, 0.13),
-        Kind::Code => (25.0, 0.14),
-        Kind::Archive => (95.0, 0.115),
-        Kind::Other => (0.0, 0.0),
-    }
-}
+/// Name and stub colors per kind, as `(dark, light)`. The six hued kinds were
+/// searched in OKLCH so each clears 4.5:1 on every row background (panel,
+/// hover, selected, cursor) and stays apart under deuteranopia, protanopia
+/// and tritanopia; Folder and Other are warm neutrals.
+type Rgb = (u8, u8, u8);
 
-/// An `(r, g, b)` accent for `kind`, themed for `dark` mode. Dark uses a high
-/// lightness (bright on a dark panel); light uses a low lightness (dark enough
-/// to stay legible on a near-white panel).
-pub fn kind_color(kind: Kind, dark: bool) -> (u8, u8, u8) {
-    let (h, c) = hue_chroma(kind);
-    let l = if dark { 0.74 } else { 0.48 };
-    oklch_to_srgb(l, c, h)
-}
+const PALETTE: [(Kind, Rgb, Rgb); 8] = [
+    (Kind::Folder, (0xb9, 0xb5, 0xb0), (0x57, 0x52, 0x4d)),
+    (Kind::Document, (0x98, 0xcf, 0xfb), (0x14, 0x64, 0xa8)),
+    (Kind::Image, (0x8d, 0xbb, 0x82), (0x00, 0x61, 0x44)),
+    (Kind::Video, (0xbe, 0xa4, 0xf6), (0x5b, 0x43, 0x7f)),
+    (Kind::Audio, (0xcc, 0x93, 0x3f), (0x71, 0x3f, 0x01)),
+    (Kind::Code, (0xef, 0xa6, 0xb2), (0x96, 0x35, 0x3a)),
+    (Kind::Archive, (0xd2, 0xc1, 0x5f), (0x7f, 0x63, 0x0d)),
+    (Kind::Other, (0xa2, 0x9e, 0x99), (0x6a, 0x68, 0x66)),
+];
 
-/// Convert OKLCH (lightness 0..1, chroma, hue in degrees) to an sRGB byte
-/// triple, clamping out-of-gamut results.
-pub fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> (u8, u8, u8) {
-    let h = h_deg.to_radians();
-    let (a, b) = (c * h.cos(), c * h.sin());
-
-    // OKLab -> LMS' -> LMS.
-    let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
-    let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
-    let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
-    let (lc, mc, sc) = (l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
-
-    // LMS -> linear sRGB.
-    let r = 4.076_741_7 * lc - 3.307_711_6 * mc + 0.230_969_94 * sc;
-    let g = -1.268_438 * lc + 2.609_757_4 * mc - 0.341_319_38 * sc;
-    let bl = -0.004_196_086_3 * lc - 0.703_418_6 * mc + 1.707_614_7 * sc;
-
-    (encode(r), encode(g), encode(bl))
-}
-
-/// Linear-light channel -> gamma sRGB byte.
-fn encode(c: f32) -> u8 {
-    let c = c.clamp(0.0, 1.0);
-    let s = if c <= 0.003_130_8 {
-        12.92 * c
-    } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
-    };
-    (s * 255.0).round().clamp(0.0, 255.0) as u8
+/// An `(r, g, b)` color for `kind`, themed for `dark` mode.
+pub fn kind_color(kind: Kind, dark: bool) -> Rgb {
+    let (_, on_dark, on_light) = PALETTE
+        .iter()
+        .find(|(entry, _, _)| *entry == kind)
+        .copied()
+        .unwrap_or(PALETTE[PALETTE.len() - 1]);
+    if dark { on_dark } else { on_light }
 }
 
 /// WCAG relative luminance of an sRGB byte triple, in `[0, 1]`. Used to verify
@@ -99,26 +70,116 @@ mod tests {
         Kind::Other,
     ];
 
-    // The two themes' panel backgrounds (see theme.rs).
-    const LIGHT_BG: (u8, u8, u8) = (252, 252, 254);
-    const DARK_BG: (u8, u8, u8) = (24, 24, 30);
+    // Row backgrounds per theme: panel, cursor, selected, hover.
+    const DARK_ROWS: [(u8, u8, u8); 4] = [
+        (0x1b, 0x18, 0x15),
+        (0x2d, 0x29, 0x25),
+        (0x27, 0x24, 0x1f),
+        (0x23, 0x20, 0x1d),
+    ];
+    const LIGHT_ROWS: [(u8, u8, u8); 4] = [
+        (0xfd, 0xfc, 0xf9),
+        (0xeb, 0xe7, 0xe2),
+        (0xf1, 0xee, 0xe9),
+        (0xf6, 0xf3, 0xef),
+    ];
+    const DARK_BG: (u8, u8, u8) = DARK_ROWS[0];
+    const LIGHT_BG: (u8, u8, u8) = LIGHT_ROWS[0];
 
-    fn close(a: (u8, u8, u8), b: (u8, u8, u8), tol: i32) -> bool {
-        (a.0 as i32 - b.0 as i32).abs() <= tol
-            && (a.1 as i32 - b.1 as i32).abs() <= tol
-            && (a.2 as i32 - b.2 as i32).abs() <= tol
+    /// Machado et al. 2009 dichromacy matrices (severity 1) on linear RGB.
+    const CVD: [[[f32; 3]; 3]; 3] = [
+        [
+            [0.367_322, 0.860_646, -0.227_968],
+            [0.280_085, 0.672_501, 0.047_413],
+            [-0.011_82, 0.042_94, 0.968_881],
+        ],
+        [
+            [0.152_286, 1.052_583, -0.204_868],
+            [0.114_503, 0.786_281, 0.099_216],
+            [-0.003_882, -0.048_116, 1.051_998],
+        ],
+        [
+            [1.255_528, -0.076_749, -0.178_779],
+            [-0.078_411, 0.930_809, 0.147_602],
+            [0.004_733, 0.691_367, 0.303_9],
+        ],
+    ];
+
+    fn linear((r, g, b): (u8, u8, u8)) -> [f32; 3] {
+        let lin = |c: u8| {
+            let c = c as f32 / 255.0;
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        [lin(r), lin(g), lin(b)]
+    }
+
+    fn oklab([r, g, b]: [f32; 3]) -> [f32; 3] {
+        let (r, g, b) = (r.max(0.0), g.max(0.0), b.max(0.0));
+        let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).cbrt();
+        let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+        let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+        [
+            0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+            1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+            0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+        ]
+    }
+
+    fn simulate(m: &[[f32; 3]; 3], c: [f32; 3]) -> [f32; 3] {
+        [0, 1, 2].map(|i| m[i][0] * c[0] + m[i][1] * c[1] + m[i][2] * c[2])
+    }
+
+    fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    const HUED: [Kind; 7] = [
+        Kind::Document,
+        Kind::Image,
+        Kind::Video,
+        Kind::Audio,
+        Kind::Code,
+        Kind::Archive,
+        Kind::Other,
+    ];
+
+    #[test]
+    fn hued_kinds_clear_text_contrast_on_every_row_background() {
+        for &k in &HUED {
+            for (dark, rows) in [(true, DARK_ROWS), (false, LIGHT_ROWS)] {
+                for row in rows {
+                    let ratio = contrast_ratio(kind_color(k, dark), row);
+                    assert!(ratio >= 4.5, "{k:?} dark={dark} on {row:?}: {ratio}");
+                }
+            }
+        }
     }
 
     #[test]
-    fn oklch_matches_known_references() {
-        assert!(close(oklch_to_srgb(1.0, 0.0, 0.0), (255, 255, 255), 1));
-        assert!(close(oklch_to_srgb(0.0, 0.0, 0.0), (0, 0, 0), 1));
-        // sRGB red per the OKLab reference (L 0.6279, C 0.2576, h 29.23 deg).
-        assert!(
-            close(oklch_to_srgb(0.627_95, 0.257_6, 29.23), (255, 0, 0), 3),
-            "got {:?}",
-            oklch_to_srgb(0.627_95, 0.257_6, 29.23)
-        );
+    fn kinds_stay_distinct_under_color_vision_deficiencies() {
+        for dark in [true, false] {
+            for matrix in [None, Some(&CVD[0]), Some(&CVD[1]), Some(&CVD[2])] {
+                let seen = HUED.map(|k| {
+                    let c = linear(kind_color(k, dark));
+                    oklab(matrix.map_or(c, |m| simulate(m, c)))
+                });
+                for i in 0..seen.len() {
+                    for j in i + 1..seen.len() {
+                        let d = distance(seen[i], seen[j]);
+                        assert!(
+                            d >= 0.05,
+                            "{:?}/{:?} dark={dark} cvd={matrix:?}: {d}",
+                            HUED[i],
+                            HUED[j]
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -167,8 +228,8 @@ mod tests {
                 spread(kind_color(Kind::Folder, dark))
             );
             assert!(
-                spread(kind_color(Kind::Other, dark)) <= 4,
-                "other should be grey"
+                spread(kind_color(Kind::Other, dark)) <= 12,
+                "other should stay a warm neutral"
             );
         }
     }
