@@ -12,6 +12,7 @@ use std::time::SystemTime;
 
 mod dir_size_cache;
 mod drag;
+mod facet;
 mod listing;
 mod listing_job;
 mod nav;
@@ -28,6 +29,7 @@ pub(crate) use dir_size_cache::reset_walk_log;
 use dir_size_cache::*;
 pub use dir_size_cache::{flush_cache, invalidate_size_cache};
 pub use drag::DragState;
+pub use facet::{FacetSet, KindFacet, facet_matches, filter_is_active};
 use listing::ListingState;
 use listing_job::{ListingJobController, PendingFocus};
 // Re-export preview/visit public API under `crate::panel::...` for stable paths.
@@ -323,125 +325,6 @@ pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) 
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
-
-/// A category facet for the quick-filter chips.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KindFacet {
-    Folders,
-    Images,
-    Docs,
-    Archives,
-    Code,
-}
-
-/// Active quick-filter facets, ANDed with the substring filter. Default is
-/// "no facets" (everything passes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FacetSet {
-    pub kind: Option<KindFacet>,
-    /// Minimum file size in bytes (folders are not filtered by size).
-    pub min_size: Option<u64>,
-    /// Maximum age in days by mtime (entries with unknown mtime fail this).
-    pub max_age_days: Option<u64>,
-    /// Minimum age in days by mtime: the entry must be at least this old
-    /// (entries with unknown mtime fail this). Drives the "Older" chip.
-    pub min_age_days: Option<u64>,
-}
-
-impl FacetSet {
-    pub fn is_empty(&self) -> bool {
-        self.kind.is_none()
-            && self.min_size.is_none()
-            && self.max_age_days.is_none()
-            && self.min_age_days.is_none()
-    }
-
-    pub fn active_count(&self) -> usize {
-        usize::from(self.kind.is_some())
-            + usize::from(self.min_size.is_some())
-            + usize::from(self.max_age_days.is_some())
-            + usize::from(self.min_age_days.is_some())
-    }
-}
-
-pub fn filter_is_active(search_query: &str, facets: &FacetSet) -> bool {
-    !search_query.trim().is_empty() || !facets.is_empty()
-}
-
-/// Whether `entry` passes all active facets, relative to `now`. Pure.
-pub fn facet_matches(entry: &FileEntry, facets: &FacetSet, now: SystemTime) -> bool {
-    if let Some(kind) = facets.kind {
-        let ok = match kind {
-            KindFacet::Folders => entry.is_dir,
-            KindFacet::Images => entry.is_image(),
-            KindFacet::Docs => matches!(
-                entry.extension.as_str(),
-                "pdf" | "txt" | "md" | "rtf" | "doc" | "docx" | "pages" | "odt" | "tex"
-            ),
-            KindFacet::Archives => matches!(
-                entry.extension.as_str(),
-                "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "xz" | "zst"
-            ),
-            KindFacet::Code => matches!(
-                entry.extension.as_str(),
-                "rs" | "py"
-                    | "js"
-                    | "ts"
-                    | "jsx"
-                    | "tsx"
-                    | "c"
-                    | "cpp"
-                    | "h"
-                    | "hpp"
-                    | "go"
-                    | "java"
-                    | "kt"
-                    | "swift"
-                    | "rb"
-                    | "php"
-                    | "sh"
-                    | "toml"
-                    | "json"
-                    | "yaml"
-                    | "yml"
-            ),
-        };
-        if !ok {
-            return false;
-        }
-    }
-    if let Some(min) = facets.min_size {
-        // Folders are not filtered by size (their byte size is 0 here).
-        if !entry.is_dir && entry.size < min {
-            return false;
-        }
-    }
-    if let Some(days) = facets.max_age_days {
-        let Some(modified) = entry.modified else {
-            return false;
-        };
-        let cutoff = std::time::Duration::from_secs(days * 24 * 60 * 60);
-        match now.duration_since(modified) {
-            Ok(age) if age <= cutoff => {}
-            Ok(_) => return false,
-            // modified in the future: treat as fresh (passes).
-            Err(_) => {}
-        }
-    }
-    if let Some(days) = facets.min_age_days {
-        let Some(modified) = entry.modified else {
-            return false;
-        };
-        let cutoff = std::time::Duration::from_secs(days * 24 * 60 * 60);
-        match now.duration_since(modified) {
-            Ok(age) if age >= cutoff => {} // old enough: passes
-            Ok(_) => return false,         // too fresh
-            // modified in the future: definitely not old enough.
-            Err(_) => return false,
-        }
-    }
-    true
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SortColumn {
