@@ -663,11 +663,6 @@ impl Workspace {
             }
             true
         });
-        let picked_entries = if active.selection_is_empty() {
-            usize::from(cursor.is_some())
-        } else {
-            selected_entries
-        };
         let listing_entries = if active.selection_is_empty() {
             visible_entries
         } else {
@@ -690,22 +685,6 @@ impl Workspace {
             })
         };
 
-        let active_transfer = self.active_transfer_view().is_some();
-        let transfer_queue_busy = self.has_unfinished_transfer_work();
-        let pending_operation = self.pending_op.is_some();
-        let safe_state = self.safe_state.is_some();
-        let active_mutation = self.deletes.is_active();
-        let (left_read_only, right_read_only) = self.pane_read_only();
-        let (active_read_only, inactive_read_only) = match self.active {
-            ActivePanel::Left => (left_read_only, right_read_only),
-            ActivePanel::Right => (right_read_only, left_read_only),
-        };
-        let can_transfer_into_cursor_folder = !transfer_queue_busy
-            && !pending_operation
-            && !self.mutations_blocked()
-            && cursor.is_some_and(|target| target.is_dir)
-            && has_transfer_source;
-
         let (marked_entries, stashed_entries) =
             active
                 .entries()
@@ -723,33 +702,14 @@ impl Workspace {
             visible_entries,
             visible_files,
             other_entries: inactive.entries().len(),
-            picked_entries,
-            selected_entries,
             listing_entries,
             marked_entries,
             stashed_entries,
             shelf_entries: self.shelf.len(),
-            cursor_entry: cursor.is_some(),
-            cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
-            cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
             cursor_has_extension: cursor
                 .is_some_and(|entry| !entry.is_dir && !entry.extension.is_empty()),
-            can_go_up: active.current_path.parent().is_some(),
-            can_go_back: active.can_go_back(),
-            can_go_forward: active.can_go_forward(),
             can_diff,
-            can_transfer_into_cursor_folder,
-            can_undo: self.can_undo(),
-            can_redo: self.can_redo(),
-            preview_open: inactive.preview.is_some(),
-            info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
-            safe_state,
-            active_mutation,
-            pending_operation,
-            active_transfer,
-            transfer_queue_busy,
-            active_read_only,
-            inactive_read_only,
+            ..self.base_command_context(selected_entries, has_transfer_source)
         }
     }
 
@@ -772,17 +732,29 @@ impl Workspace {
             });
         }
 
-        let safe_state = self.safe_state.is_some();
-        let active_mutation = self.deletes.is_active();
+        self.base_command_context(usize::from(has_selected), has_transfer_source)
+    }
+
+    /// The fields both command contexts share: cursor shape, navigation,
+    /// history, the transfer-into-folder gate, preview and blocking state.
+    /// Directory-wide counts stay at their defaults.
+    fn base_command_context(
+        &self,
+        selected_entries: usize,
+        has_transfer_source: bool,
+    ) -> crate::command::CommandContext {
+        let (active, inactive) = match self.active {
+            ActivePanel::Left => (&self.left, &self.right),
+            ActivePanel::Right => (&self.right, &self.left),
+        };
+        let cursor = active.cursor_entry();
         let pending_operation = self.pending_op.is_some();
-        let active_transfer = self.active_transfer_view().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let (left_read_only, right_read_only) = self.pane_read_only();
         let (active_read_only, inactive_read_only) = match self.active {
             ActivePanel::Left => (left_read_only, right_read_only),
             ActivePanel::Right => (right_read_only, left_read_only),
         };
-        let selected_entries = usize::from(has_selected);
         crate::command::CommandContext {
             picked_entries: if active.selection_is_empty() {
                 usize::from(cursor.is_some())
@@ -803,12 +775,12 @@ impl Workspace {
                 && has_transfer_source,
             can_undo: self.can_undo(),
             can_redo: self.can_redo(),
-            preview_open: self.inactive_panel().preview.is_some(),
-            info_open: matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))),
-            safe_state,
-            active_mutation,
+            preview_open: inactive.preview.is_some(),
+            info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
+            safe_state: self.safe_state.is_some(),
+            active_mutation: self.deletes.is_active(),
             pending_operation,
-            active_transfer,
+            active_transfer: self.active_transfer_view().is_some(),
             transfer_queue_busy,
             active_read_only,
             inactive_read_only,
