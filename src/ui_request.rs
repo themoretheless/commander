@@ -10,7 +10,6 @@ use crate::transfer::TransferKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum UiModal {
-    Recovery,
     History,
     Rename,
     BatchRename,
@@ -64,7 +63,6 @@ pub(crate) enum UiRequest {
 impl UiRequest {
     pub(crate) const fn modal(&self) -> Option<UiModal> {
         match self {
-            Self::ReviewRecovery(_) => Some(UiModal::Recovery),
             Self::Undo | Self::Redo => Some(UiModal::History),
             Self::Rename(_) => Some(UiModal::Rename),
             Self::BatchRename => Some(UiModal::BatchRename),
@@ -85,6 +83,7 @@ impl UiRequest {
             | Self::ToggleQueuePanel
             | Self::OperationHistory
             | Self::OpenRecoveryCenter
+            | Self::ReviewRecovery(_)
             | Self::OpenExternal(_)
             | Self::CopyPaths(_)
             | Self::CopyText { .. }
@@ -161,9 +160,6 @@ impl UiRequestQueue {
 pub(crate) trait UiRequestSink {
     fn any_modal_open(&self) -> bool;
     fn is_modal_open(&self, modal: UiModal) -> bool;
-    fn can_transition_from_open_modal(&self, _request: &UiRequest) -> bool {
-        false
-    }
     fn apply(&mut self, request: UiRequest);
 }
 
@@ -179,7 +175,7 @@ pub(crate) fn dispatch_snapshot(
             if sink.is_modal_open(modal) && request.coalesces_when_open() {
                 continue;
             }
-            if sink.any_modal_open() && !sink.can_transition_from_open_modal(&request) {
+            if sink.any_modal_open() {
                 deferred.push(request);
                 continue;
             }
@@ -200,31 +196,15 @@ mod tests {
         emitted: Vec<UiRequest>,
         emit_after: Option<(UiRequest, UiRequest)>,
         toggles: usize,
-        safe_state_operation: Option<crate::operation::OperationId>,
-        retained_error_transfer: Option<crate::operation::OperationId>,
     }
 
     impl UiRequestSink for FakeSink {
         fn any_modal_open(&self) -> bool {
             self.open_modal.is_some()
-                || self.safe_state_operation.is_some()
-                || self.retained_error_transfer.is_some()
         }
 
         fn is_modal_open(&self, modal: UiModal) -> bool {
             self.open_modal == Some(modal)
-        }
-
-        fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
-            let UiRequest::ReviewRecovery(requested) = request else {
-                return false;
-            };
-            self.open_modal.is_none()
-                && self.safe_state_operation.as_ref() == Some(requested)
-                && self
-                    .retained_error_transfer
-                    .as_ref()
-                    .is_none_or(|active| active == requested)
         }
 
         fn apply(&mut self, request: UiRequest) {
@@ -459,12 +439,11 @@ mod tests {
     }
 
     #[test]
-    fn recovery_center_and_safe_state_review_have_distinct_transitions() {
+    fn recovery_requests_open_a_panel_not_a_modal() {
         let operation_id = crate::operation::OperationId("safe-op".to_string());
         let mut queue = UiRequestQueue::default();
         let mut sink = FakeSink {
-            safe_state_operation: Some(operation_id.clone()),
-            retained_error_transfer: Some(operation_id.clone()),
+            open_modal: Some(UiModal::Palette),
             ..Default::default()
         };
         queue.emit(UiRequest::OpenRecoveryCenter);
@@ -472,6 +451,8 @@ mod tests {
 
         dispatch_frame(&mut queue, &mut sink);
 
+        // Neither waits behind the open palette: they target the Operations
+        // panel, which coexists with modals.
         assert_eq!(
             sink.applied,
             vec![
@@ -479,6 +460,6 @@ mod tests {
                 UiRequest::ReviewRecovery(operation_id),
             ]
         );
-        assert_eq!(sink.open_modal, Some(UiModal::Recovery));
+        assert_eq!(sink.open_modal, Some(UiModal::Palette));
     }
 }

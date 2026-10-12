@@ -107,9 +107,6 @@ macro_rules! define_modal_store {
 }
 
 define_modal_store!(
-    Recovery => Recovery {
-        recovery_open: bool, bool
-    },
     History => History {
         history_preview: Option<HistoryPreviewState>, option
     },
@@ -239,7 +236,7 @@ mod tests {
 
     #[test]
     fn registry_covers_all_ui_modals_with_unique_surfaces() {
-        assert_eq!(UI_MODAL_REGISTRY.len(), 15);
+        assert_eq!(UI_MODAL_REGISTRY.len(), 14);
         for (index, (modal, surface)) in UI_MODAL_REGISTRY.iter().enumerate() {
             assert_eq!(modal.surface(), *surface);
             assert_eq!(UiModal::from_surface(*surface), Some(*modal));

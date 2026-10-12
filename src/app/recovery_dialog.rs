@@ -2,10 +2,6 @@
 
 use super::*;
 
-fn recovery_destructive_action_allowed(close_requested: bool) -> bool {
-    !close_requested
-}
-
 impl RecoveryState {
     pub(crate) fn scan(workspace: &Workspace) -> Self {
         let mut state = Self::default();
@@ -406,20 +402,21 @@ impl App {
         );
     }
 
-    pub(crate) fn show_recovery_dialog(&mut self, ctx: &egui::Context) {
-        let escape_requested = self.take_modal_escape(crate::accessibility::ModalSurface::Recovery);
-        let mut state = std::mem::take(&mut self.recovery);
-        state.poll_scan();
-        if state.scanning {
+    /// Advance the background recovery scan; runs every frame.
+    pub(crate) fn poll_recovery(&mut self, ctx: &egui::Context) {
+        self.recovery.poll_scan();
+        if self.recovery.scanning {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        if !self.ui.modals.recovery_open {
-            self.recovery = state;
-            return;
-        }
+    }
 
+    /// The Recovery tab of the Operations panel: interrupted operations with
+    /// inspect, repair plan, resume and rollback, plus staging cleanup.
+    pub(crate) fn show_recovery_center(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let mut state = std::mem::take(&mut self.recovery);
         let t = self.colors;
-        let mut close = false;
         let mut refresh = false;
         let mut selected = None;
         let mut resume = None;
@@ -431,9 +428,7 @@ impl App {
             .and_then(|id| state.operations.iter().find(|record| &record.id == id))
             .cloned();
 
-        super::sheet_window("Recovery center", t, 14)
-            .show(ctx, |ui| {
-                ui.set_width(790.0);
+        ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
@@ -462,9 +457,6 @@ impl App {
                         }
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("\u{00d7}").on_hover_text("Close").clicked() {
-                            close = true;
-                        }
                         if ui
                             .add_enabled(!state.scanning, egui::Button::new("\u{21bb}"))
                             .on_hover_text("Refresh")
@@ -522,11 +514,10 @@ impl App {
 
                 match state.section {
                     RecoverySection::Operations => {
-                        ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
                             show_operation_list(ui, &state, t, &mut selected);
                             ui.separator();
                             ui.vertical(|ui| {
-                                ui.set_width(528.0);
                                 if let Some(record) = &selected_record {
                                     ui.horizontal(|ui| {
                                         ui.label(
@@ -652,19 +643,10 @@ impl App {
                         }
                     }
                 }
-
-                if escape_requested {
-                    close = true;
-                }
             });
 
         if let Some(operation_id) = selected {
             state.select(operation_id);
-        }
-        if !recovery_destructive_action_allowed(close) {
-            self.ui.modals.recovery_open = false;
-            self.recovery = state;
-            return;
         }
         if refresh {
             state.start_scan(&self.ws);
@@ -733,7 +715,6 @@ impl App {
                         message.clone(),
                         now_millis,
                     );
-                    self.ui.modals.recovery_open = false;
                     self.push_recovery_toast(ctx, message, false);
                 }
                 Err(error) => state.error = Some(error),
@@ -743,16 +724,5 @@ impl App {
             state.load_repair();
         }
         self.recovery = state;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::recovery_destructive_action_allowed;
-
-    #[test]
-    fn recovery_close_blocks_same_frame_destructive_actions() {
-        assert!(!recovery_destructive_action_allowed(true));
-        assert!(recovery_destructive_action_allowed(false));
     }
 }

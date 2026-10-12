@@ -85,34 +85,8 @@ impl crate::ui_request::UiRequestSink for AppUiRequestSink<'_, '_> {
         self.app.ui.modals.is_open(modal)
     }
 
-    fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
-        self.app.can_transition_ui_request(request)
-    }
-
     fn apply(&mut self, request: UiRequest) {
         self.app.dispatch_ui_request(request, self.ctx);
-    }
-}
-
-fn recovery_review_handoff_allowed(
-    safe_state: Option<&crate::operation::SafeState>,
-    active_operation_id: Option<&crate::operation::OperationId>,
-    active_progress: Option<&crate::transfer::TransferProgress>,
-    unrelated_modal_open: bool,
-    requested_operation: &crate::operation::OperationId,
-) -> bool {
-    if unrelated_modal_open
-        || safe_state.map(|state| &state.operation_id) != Some(requested_operation)
-    {
-        return false;
-    }
-
-    match (active_operation_id, active_progress) {
-        (None, None) => true,
-        (Some(operation_id), Some(progress)) => {
-            operation_id == requested_operation && progress.finished && !progress.errors.is_empty()
-        }
-        _ => false,
     }
 }
 
@@ -216,7 +190,7 @@ impl eframe::App for App {
         self.begin_frame(&ctx);
         self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
-        self.show_recovery_dialog(&ctx);
+        self.poll_recovery(&ctx);
         self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
@@ -422,10 +396,6 @@ impl App {
             || self.ws.delete_active()
     }
 
-    fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
-        self.ws.pending_op.is_some() || self.ui.modals.any_open()
-    }
-
     pub(crate) fn is_modal_surface_open(
         &self,
         surface: crate::accessibility::ModalSurface,
@@ -434,23 +404,6 @@ impl App {
             crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
             _ => self.ui.modals.is_surface_open(surface),
         }
-    }
-
-    fn can_transition_ui_request(&self, request: &UiRequest) -> bool {
-        let UiRequest::ReviewRecovery(operation_id) = request else {
-            return false;
-        };
-        let active_transfer = self.ws.active_transfer_view();
-        let active_progress = active_transfer
-            .as_ref()
-            .map(|view| crate::lock_util::recover(&view.progress));
-        recovery_review_handoff_allowed(
-            self.ws.safe_state.as_ref(),
-            active_transfer.as_ref().map(|view| &view.operation_id),
-            active_progress.as_deref(),
-            self.has_modal_surface_except_safe_state_and_transfer(),
-            operation_id,
-        )
     }
 
     /// Frame bookkeeping: repaint heuristics, notify wiring, fs polling,
@@ -1840,7 +1793,6 @@ mod tests {
     use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
-        recovery_review_handoff_allowed,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -1966,55 +1918,6 @@ mod tests {
         // modal surface.
         assert!(!any_modal_surface_open(false, false));
         assert!(frame_policy(true, false, false).background_enabled());
-    }
-
-    #[test]
-    fn safe_state_handoff_allows_its_retained_error_transfer_only() {
-        let operation_id = crate::operation::OperationId("retained-error".to_string());
-        let safe_state = crate::operation::SafeState {
-            operation_id: operation_id.clone(),
-            reason: "placement uncertain".to_string(),
-            paths: Vec::new(),
-            failures: Vec::new(),
-        };
-        let mut transfer = crate::transfer::TransferProgress::new(1, 1);
-        transfer.operation_id = Some(operation_id.clone());
-        transfer.finished = true;
-        transfer.errors.push("placement uncertain".to_string());
-
-        assert!(recovery_review_handoff_allowed(
-            Some(&safe_state),
-            Some(&operation_id),
-            Some(&transfer),
-            false,
-            &operation_id,
-        ));
-        assert!(!recovery_review_handoff_allowed(
-            Some(&safe_state),
-            Some(&operation_id),
-            Some(&transfer),
-            true,
-            &operation_id,
-        ));
-
-        transfer.operation_id = Some(crate::operation::OperationId("other".to_string()));
-        assert!(
-            recovery_review_handoff_allowed(
-                Some(&safe_state),
-                Some(&operation_id),
-                Some(&transfer),
-                false,
-                &operation_id,
-            ),
-            "handoff trusts the controller's canonical identity"
-        );
-        assert!(!recovery_review_handoff_allowed(
-            Some(&safe_state),
-            Some(&crate::operation::OperationId("other".to_string())),
-            Some(&transfer),
-            false,
-            &operation_id,
-        ));
     }
 
     #[test]

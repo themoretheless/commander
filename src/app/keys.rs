@@ -291,41 +291,6 @@ mod ui_contract;
 mod tests {
     use super::*;
 
-    struct TransitionFrameSink {
-        operation_id: crate::operation::OperationId,
-        safe_state_open: bool,
-        retained_transfer_open: bool,
-        recovery_open: bool,
-    }
-
-    impl crate::ui_request::UiRequestSink for TransitionFrameSink {
-        fn any_modal_open(&self) -> bool {
-            self.safe_state_open || self.retained_transfer_open || self.recovery_open
-        }
-
-        fn is_modal_open(&self, modal: UiModal) -> bool {
-            modal == UiModal::Recovery && self.recovery_open
-        }
-
-        fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
-            matches!(
-                request,
-                UiRequest::ReviewRecovery(operation_id)
-                    if self.safe_state_open
-                        && self.retained_transfer_open
-                        && operation_id == &self.operation_id
-            )
-        }
-
-        fn apply(&mut self, request: UiRequest) {
-            assert_eq!(
-                request,
-                UiRequest::ReviewRecovery(self.operation_id.clone())
-            );
-            self.recovery_open = true;
-        }
-    }
-
     #[test]
     fn an_open_modal_keeps_priority_over_a_deferred_request() {
         let mut queue = crate::ui_request::UiRequestQueue::default();
@@ -354,63 +319,6 @@ mod tests {
             })
             .escape,
             EscapeRoute::Modal(ModalSurface::RunCommand)
-        );
-    }
-
-    #[test]
-    fn recovery_dialog_owns_escape_over_a_pending_request() {
-        let modal = prioritized_modal(
-            |surface| surface == ModalSurface::Recovery,
-            Some(ModalSurface::Palette),
-        );
-
-        assert_eq!(modal, Some(ModalSurface::Recovery));
-        assert_eq!(
-            resolve_ui_contract(UiContractState {
-                modal,
-                ..Default::default()
-            })
-            .escape,
-            EscapeRoute::Modal(ModalSurface::Recovery)
-        );
-    }
-
-    #[test]
-    fn transition_frame_finalizes_escape_for_recovery_after_dispatch() {
-        let operation_id = crate::operation::OperationId("transition-frame".to_string());
-        let mut queue = crate::ui_request::UiRequestQueue::default();
-        queue.emit(UiRequest::ReviewRecovery(operation_id.clone()));
-        // Safe state is reported by the Activity strip, not a modal, so the
-        // review request reserves Escape for Recovery from the first frame.
-        let mut sink = TransitionFrameSink {
-            operation_id,
-            safe_state_open: false,
-            retained_transfer_open: false,
-            recovery_open: false,
-        };
-
-        let before_dispatch =
-            prioritized_modal(|_| false, queue.first_pending_modal().map(UiModal::surface));
-        assert_eq!(before_dispatch, Some(ModalSurface::Recovery));
-
-        let deferred = crate::ui_request::dispatch_snapshot(queue.drain_snapshot(), &mut sink);
-        assert!(deferred.is_empty());
-        let after_dispatch = prioritized_modal(
-            |surface| match surface {
-                ModalSurface::Recovery => sink.recovery_open,
-                _ => false,
-            },
-            queue.first_pending_modal().map(UiModal::surface),
-        );
-
-        assert_eq!(after_dispatch, Some(ModalSurface::Recovery));
-        assert_eq!(
-            resolve_ui_contract(UiContractState {
-                modal: after_dispatch,
-                ..Default::default()
-            })
-            .escape,
-            EscapeRoute::Modal(ModalSurface::Recovery)
         );
     }
 }

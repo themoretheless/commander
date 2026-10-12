@@ -141,7 +141,6 @@ modal_registry!(
     Rename,
     Confirmation,
     History,
-    Recovery,
 );
 
 /// Resolve the highest-priority open surface through the single modal
