@@ -118,14 +118,19 @@ impl App {
                         .color(t.text_primary),
                 );
                 ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [(ui.available_width() - 82.0).max(120.0), 22.0],
-                        egui::Label::new(
-                            egui::RichText::new(state.path.display().to_string())
-                                .size(11.0)
-                                .color(t.text_muted),
-                        )
-                        .truncate(),
+                    ui.allocate_ui_with_layout(
+                        egui::vec2((ui.available_width() - 82.0).max(120.0), 22.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(state.path.display().to_string())
+                                        .size(11.0)
+                                        .color(t.text_muted),
+                                )
+                                .truncate(),
+                            )
+                        },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.button("Reveal").clicked() {
@@ -172,12 +177,13 @@ impl App {
                     );
                 }
                 if let Some(error) = &state.error {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(error).size(11.0).color(t.accent_red));
-                        if ui.button("Retry").clicked() {
-                            retry = true;
-                        }
-                    });
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(error).size(11.0).color(t.accent_red))
+                            .wrap(),
+                    );
+                    if ui.button("Retry").clicked() {
+                        retry = true;
+                    }
                 }
 
                 if let Some(listing) = &state.listing {
@@ -242,8 +248,13 @@ impl App {
                     ui.add_space(4.0);
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.add_sized(
-                            [(ui.available_width() - 230.0).max(180.0), 20.0],
+                        // Rows sit in a frame with a 4 pt inset; match it so
+                        // the header columns line up with the values.
+                        ui.add_space(4.0);
+                        left_cell(
+                            ui,
+                            (ui.available_width() - 4.0 - 230.0).max(180.0),
+                            20.0,
                             egui::Label::new(
                                 egui::RichText::new("Member")
                                     .size(10.0)
@@ -287,8 +298,10 @@ impl App {
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
                                             let path = member.path.display().to_string();
-                                            ui.add_sized(
-                                                [(ui.available_width() - 230.0).max(180.0), 22.0],
+                                            left_cell(
+                                                ui,
+                                                (ui.available_width() - 230.0).max(180.0),
+                                                22.0,
                                                 egui::Label::new(
                                                     egui::RichText::new(path)
                                                         .size(11.0)
@@ -458,4 +471,18 @@ impl App {
             state.status = Some("Extracting…".to_string());
         }
     }
+}
+
+/// A fixed-width table cell whose label starts at the left edge
+/// (`add_sized` would center it).
+fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, height),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_width(width);
+            ui.add(label)
+        },
+    )
+    .inner
 }
