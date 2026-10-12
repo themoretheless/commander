@@ -9,16 +9,6 @@ use crate::accessibility::{
 };
 use crate::command::{Command, KeyCode, KeyPress, map_keys};
 
-fn keyboard_command_allowed(route: KeyboardRoute, command: Command) -> bool {
-    match route {
-        KeyboardRoute::Workspace => true,
-        KeyboardRoute::Transfer => {
-            matches!(command, Command::RequestCopy | Command::RequestMove)
-        }
-        KeyboardRoute::TextInput(_) | KeyboardRoute::Modal(_) => false,
-    }
-}
-
 fn prioritized_modal(
     open: impl Fn(ModalSurface) -> bool,
     first_pending: Option<ModalSurface>,
@@ -38,25 +28,6 @@ impl App {
             return;
         }
         let presses = ctx.input(Self::collect_presses);
-        if contract.keyboard == KeyboardRoute::Transfer {
-            // A transfer's progress window is effectively modal, but Copy/Move
-            // stay live so a second transfer can be queued behind it instead
-            // of the hotkey being dropped on the floor. Every other mapped key
-            // gets direct feedback instead of failing silently.
-            for cmd in map_keys(&presses) {
-                if keyboard_command_allowed(contract.keyboard, cmd) {
-                    self.execute_key_command(ctx, cmd);
-                    if self.ws.has_any_pending_ui_modal() {
-                        break;
-                    }
-                } else {
-                    self.push_key_feedback(ctx, "Wait for the active transfer to finish");
-                }
-            }
-            self.ui.type_ahead = None;
-            self.ui.chord = None;
-            return;
-        }
         for cmd in map_keys(&presses) {
             self.execute_key_command(ctx, cmd);
             if self.ws.has_any_pending_ui_modal() {
@@ -285,6 +256,7 @@ impl App {
             (egui::Key::U, KeyCode::U),
             (egui::Key::V, KeyCode::V),
             (egui::Key::Z, KeyCode::Z),
+            (egui::Key::J, KeyCode::J),
             (egui::Key::OpenBracket, KeyCode::BracketLeft),
             (egui::Key::CloseBracket, KeyCode::BracketRight),
             // Quick-jump slots: Cmd+1..9 jump, Cmd+Shift+1..9 assign. A bare
@@ -388,12 +360,7 @@ mod tests {
     #[test]
     fn recovery_dialog_owns_escape_with_safe_state_and_retained_transfer() {
         let modal = prioritized_modal(
-            |surface| {
-                matches!(
-                    surface,
-                    ModalSurface::Recovery | ModalSurface::SafeState | ModalSurface::Transfer
-                )
-            },
+            |surface| matches!(surface, ModalSurface::Recovery | ModalSurface::SafeState),
             Some(ModalSurface::Palette),
         );
 
@@ -421,7 +388,7 @@ mod tests {
         };
 
         let before_dispatch = prioritized_modal(
-            |surface| matches!(surface, ModalSurface::SafeState | ModalSurface::Transfer),
+            |surface| matches!(surface, ModalSurface::SafeState),
             queue.first_pending_modal().map(UiModal::surface),
         );
         assert_eq!(before_dispatch, Some(ModalSurface::SafeState));
@@ -432,7 +399,6 @@ mod tests {
             |surface| match surface {
                 ModalSurface::Recovery => sink.recovery_open,
                 ModalSurface::SafeState => sink.safe_state_open,
-                ModalSurface::Transfer => sink.retained_transfer_open,
                 _ => false,
             },
             queue.first_pending_modal().map(UiModal::surface),

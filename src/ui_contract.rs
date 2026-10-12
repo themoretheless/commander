@@ -1,6 +1,5 @@
 //! Headless contract tests for cross-cutting UI input and accessibility rules.
 
-use super::keyboard_command_allowed;
 use crate::accessibility::{
     EscapeRoute, KeyboardRoute, ModalSurface, PendingFocusEffect, TextInputMode, TextInputState,
     UiContract, UiContractState, consume_escape_route, file_row_semantics,
@@ -40,11 +39,12 @@ impl ContractHarness {
     }
 
     fn dispatched(&self, presses: &[KeyPress]) -> Vec<Command> {
-        let route = self.resolve().keyboard;
+        // Only the workspace route dispatches mapped commands; text input
+        // and modal surfaces own the keyboard.
+        if self.resolve().keyboard != KeyboardRoute::Workspace {
+            return Vec::new();
+        }
         map_keys(presses)
-            .into_iter()
-            .filter(|command| keyboard_command_allowed(route, *command))
-            .collect()
     }
 }
 
@@ -67,7 +67,7 @@ fn cmd_press(code: KeyCode) -> KeyPress {
 #[test]
 fn modal_registry_has_deterministic_product_priority() {
     let open = [
-        ModalSurface::Transfer,
+        ModalSurface::History,
         ModalSurface::Rename,
         ModalSurface::Palette,
     ];
@@ -77,7 +77,7 @@ fn modal_registry_has_deterministic_product_priority() {
     );
     assert_eq!(
         top_open_modal(|surface| {
-            matches!(surface, ModalSurface::Transfer | ModalSurface::Rename)
+            matches!(surface, ModalSurface::History | ModalSurface::Rename)
         }),
         Some(ModalSurface::Rename)
     );
@@ -229,7 +229,7 @@ fn routed_escape_is_consumed_once_by_its_exact_owner() {
     let mut request = EscapeRoute::Modal(ModalSurface::BatchRename);
     assert!(!consume_escape_route(
         &mut request,
-        EscapeRoute::Modal(ModalSurface::Transfer),
+        EscapeRoute::Modal(ModalSurface::History),
     ));
     assert!(!consume_escape_route(
         &mut request,
@@ -241,17 +241,6 @@ fn routed_escape_is_consumed_once_by_its_exact_owner() {
     ));
     assert_eq!(request, EscapeRoute::None);
     assert!(!consume_escape_route(&mut request, EscapeRoute::None));
-}
-
-#[test]
-fn transfer_route_only_keeps_queueable_copy_and_move_commands() {
-    let presses = [press(KeyCode::F5), press(KeyCode::F6), press(KeyCode::F8)];
-    assert_eq!(
-        ContractHarness::default()
-            .modal(ModalSurface::Transfer)
-            .dispatched(&presses),
-        [Command::RequestCopy, Command::RequestMove]
-    );
 }
 
 #[test]

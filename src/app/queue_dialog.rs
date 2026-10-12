@@ -238,6 +238,12 @@ impl App {
     }
 
     fn show_operations_queue(&mut self, ui: &mut egui::Ui) {
+        if self.ws.active_transfer_view().is_some() {
+            self.show_transfer_details(ui);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(5.0);
+        }
         let t = self.colors;
         let rows = self.ws.queue_snapshot();
         let running = self.ws.active_transfer_view().map(|active| {

@@ -2,6 +2,7 @@
 //! All file-manager behaviour lives in `crate::workspace`; this module
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
+mod activity;
 mod archive_dialog;
 mod batch_rename_dialog;
 mod collections_dialog;
@@ -28,7 +29,6 @@ mod saved_search_dialog;
 mod smoke;
 mod sync_dialog;
 mod toolbar;
-mod transfer_dialog;
 mod tree;
 mod treemap_dialog;
 mod ui_state;

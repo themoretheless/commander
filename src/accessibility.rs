@@ -144,7 +144,6 @@ modal_registry!(
     History,
     Recovery,
     SafeState,
-    Transfer,
 );
 
 /// Resolve the highest-priority open surface through the single modal
@@ -242,7 +241,6 @@ pub fn consume_show_context_menu(ctx: &egui::Context, id: egui::Id) -> bool {
 pub enum KeyboardRoute {
     Workspace,
     TextInput(TextInputMode),
-    Transfer,
     Modal(ModalSurface),
 }
 
@@ -287,7 +285,6 @@ pub fn resolve_ui_contract(state: UiContractState) -> UiContract {
         KeyboardRoute::TextInput(mode)
     } else {
         match state.modal {
-            Some(ModalSurface::Transfer) => KeyboardRoute::Transfer,
             Some(surface) => KeyboardRoute::Modal(surface),
             None => KeyboardRoute::Workspace,
         }
