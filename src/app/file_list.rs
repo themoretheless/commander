@@ -577,29 +577,33 @@ impl App {
                             max_name_chars.max(1),
                         );
                         let shortened = matches!(&display_name, std::borrow::Cow::Owned(_));
-                        let name_response = if query.is_empty() {
-                            ui.add_sized(
-                                [responsive.name_width, row_content],
-                                egui::Label::new(
-                                    egui::RichText::new(display_name.as_ref())
-                                        .size(metrics.name_pt)
-                                        .color(name_color),
-                                )
-                                .truncate(),
+                        let name_label = if query.is_empty() {
+                            egui::Label::new(
+                                egui::RichText::new(display_name.as_ref())
+                                    .size(metrics.name_pt)
+                                    .color(name_color),
                             )
                         } else {
-                            ui.add_sized(
-                                [responsive.name_width, row_content],
-                                egui::Label::new(highlight_name_job(
-                                    display_name.as_ref(),
-                                    &query,
-                                    name_color,
-                                    t.accent,
-                                    metrics.name_pt,
-                                ))
-                                .truncate(),
-                            )
+                            egui::Label::new(highlight_name_job(
+                                display_name.as_ref(),
+                                &query,
+                                name_color,
+                                t.accent,
+                                metrics.name_pt,
+                            ))
                         };
+                        // `add_sized` would center the label in its slot; names
+                        // read from the left edge of the column.
+                        let name_response = ui
+                            .allocate_ui_with_layout(
+                                egui::vec2(responsive.name_width, row_content),
+                                Layout::left_to_right(Align::Center),
+                                |ui| {
+                                    ui.set_min_width(responsive.name_width);
+                                    ui.add(name_label.truncate())
+                                },
+                            )
+                            .inner;
                         if shortened {
                             name_response.on_hover_text(&entry.name);
                         }
