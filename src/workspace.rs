@@ -3024,6 +3024,11 @@ impl Workspace {
     pub(crate) fn cancel_drag(&mut self) {
         fileops::cancel_drag(self)
     }
+
+    /// The drag in flight, if any: source side, entries and resolved target.
+    pub(crate) fn drag_session(&self) -> Option<fileops::DragSession<'_>> {
+        fileops::drag_session(self)
+    }
 }
 
 #[cfg(test)]

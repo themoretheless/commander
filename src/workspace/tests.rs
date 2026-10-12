@@ -3953,3 +3953,22 @@ fn skip_conflict_in_unopened_subfolder_handles_a_broken_symlink() {
         "an empty conflict resolution must retire the old plan"
     );
 }
+
+#[test]
+fn drag_session_resolves_source_side_and_prefers_its_own_target() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    assert!(ws.drag_session().is_none());
+
+    let dragged = r.path().join("b.txt");
+    ws.right.drag.set(vec![dragged.clone()]);
+    ws.left.drag.set_drop_target(l.path().to_path_buf());
+    let session = ws.drag_session().expect("right pane is dragging");
+    assert_eq!(session.source, ActivePanel::Right);
+    assert_eq!(session.entries, [dragged]);
+    assert_eq!(session.target, Some(&l.path().to_path_buf()));
+
+    let own = r.path().join("sub");
+    ws.right.drag.set_drop_target(own.clone());
+    assert_eq!(ws.drag_session().unwrap().target, Some(&own));
+}

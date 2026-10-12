@@ -1388,13 +1388,7 @@ impl App {
         };
         let left_metrics = crate::density::metrics(self.ws.left.density());
         let right_metrics = crate::density::metrics(self.ws.right.density());
-        let drag_source = if !self.ws.left.drag.is_empty() {
-            Some(ActivePanel::Left)
-        } else if !self.ws.right.drag.is_empty() {
-            Some(ActivePanel::Right)
-        } else {
-            None
-        };
+        let drag_source = self.ws.drag_session().map(|session| session.source);
         let dragging = input_policy.allows_raw_input(containing_ui_enabled, drag_source.is_some());
         // Side surfaces have already carved their space from this Ui. Base
         // pane geometry on the remaining width so panels never overlap them.
@@ -1668,18 +1662,10 @@ impl App {
     /// Floating label with the dragged file count next to the pointer.
     fn show_drag_overlay(&mut self, ctx: &egui::Context) {
         let t = self.colors;
-        let drag_entries = if !self.ws.left.drag.is_empty() {
-            self.ws.left.drag.entries()
-        } else if !self.ws.right.drag.is_empty() {
-            self.ws.right.drag.entries()
-        } else {
+        let Some(session) = self.ws.drag_session() else {
             return;
         };
-        let (source, other) = if !self.ws.left.drag.is_empty() {
-            (&self.ws.left, &self.ws.right)
-        } else {
-            (&self.ws.right, &self.ws.left)
-        };
+        let drag_entries = session.entries;
         let count = drag_entries.len();
         if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
             let label = if count == 1 {
@@ -1690,11 +1676,7 @@ impl App {
             } else {
                 format!("{} items", count)
             };
-            let explicit_target = source
-                .drag
-                .drop_target()
-                .or_else(|| other.drag.drop_target());
-            let announcement = if let Some(target) = explicit_target {
+            let announcement = if let Some(target) = session.target {
                 if !target.is_dir() {
                     crate::operation_view::DragAnnouncement::rejected("destination is not a folder")
                 } else if crate::volume_profile::profile(target).read_only {

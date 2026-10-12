@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use super::super::{
-    CopyMethod, FileEntry, OverwritePolicy, PendingOp, PendingTransfer, TransferKind,
+    ActivePanel, CopyMethod, FileEntry, OverwritePolicy, PendingOp, PendingTransfer, TransferKind,
     TransferSpaceState, Workspace, filesystem_preflight,
 };
 use crate::scan;
@@ -120,17 +120,45 @@ fn keyboard_drop_plan(workspace: &Workspace) -> Option<(Vec<PathBuf>, PathBuf)> 
     (!paths.is_empty()).then(|| (paths, target.path.clone()))
 }
 
-/// Resolve which panel is the drag source and where the drop lands, consuming
-/// the drag/drop state. A target hovered in the source panel itself (drag onto
-/// its own subdirectory) takes priority over the other panel. With no explicit
-/// target the drag is consumed as a cancellation.
-pub(crate) fn take_drop_plan(workspace: &mut Workspace) -> Option<(Vec<PathBuf>, PathBuf)> {
-    let (source, other) = if !workspace.left.drag.is_empty() {
-        (&mut workspace.left.drag, &mut workspace.right.drag)
+/// A drag in flight, read from both panels' [`crate::panel::DragState`].
+pub(crate) struct DragSession<'a> {
+    pub source: ActivePanel,
+    pub entries: &'a [PathBuf],
+    /// A target hovered in the source panel itself (drag onto its own
+    /// subdirectory) takes priority over the other panel's folder.
+    pub target: Option<&'a PathBuf>,
+}
+
+/// The panel whose drag holds entries. Left wins if both somehow do.
+pub(crate) fn drag_source(workspace: &Workspace) -> Option<ActivePanel> {
+    if !workspace.left.drag.is_empty() {
+        Some(ActivePanel::Left)
     } else if !workspace.right.drag.is_empty() {
-        (&mut workspace.right.drag, &mut workspace.left.drag)
+        Some(ActivePanel::Right)
     } else {
-        return None;
+        None
+    }
+}
+
+pub(crate) fn drag_session(workspace: &Workspace) -> Option<DragSession<'_>> {
+    let source = drag_source(workspace)?;
+    let (from, other) = match source {
+        ActivePanel::Left => (&workspace.left.drag, &workspace.right.drag),
+        ActivePanel::Right => (&workspace.right.drag, &workspace.left.drag),
+    };
+    Some(DragSession {
+        source,
+        entries: from.entries(),
+        target: from.drop_target().or_else(|| other.drop_target()),
+    })
+}
+
+/// Consume the drag session: its entries and resolved target. With no
+/// explicit target the drag is consumed as a cancellation.
+pub(crate) fn take_drop_plan(workspace: &mut Workspace) -> Option<(Vec<PathBuf>, PathBuf)> {
+    let (source, other) = match drag_source(workspace)? {
+        ActivePanel::Left => (&mut workspace.left.drag, &mut workspace.right.drag),
+        ActivePanel::Right => (&mut workspace.right.drag, &mut workspace.left.drag),
     };
     let target = source
         .take_drop_target()
