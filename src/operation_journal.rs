@@ -1110,6 +1110,26 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
     })
 }
 
+fn operation_mut<'a>(
+    operations: &'a mut [OperationRecord],
+    operation_id: &OperationId,
+) -> Result<&'a mut OperationRecord, String> {
+    operations
+        .iter_mut()
+        .find(|operation| &operation.id == operation_id)
+        .ok_or_else(|| format!("Unknown operation {}", operation_id.0))
+}
+
+fn step_mut<'a>(
+    steps: &'a mut [OperationStep],
+    key: &IdempotencyKey,
+) -> Result<&'a mut OperationStep, String> {
+    steps
+        .iter_mut()
+        .find(|step| &step.key == key)
+        .ok_or_else(|| format!("Unknown operation step {}", key.0))
+}
+
 fn update_step(
     operation_id: &OperationId,
     key: &IdempotencyKey,
@@ -1117,11 +1137,7 @@ fn update_step(
     update: impl FnOnce(&mut OperationStep) -> Result<(), String>,
 ) -> Result<(), String> {
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if !allowed_operation_statuses.contains(&operation.status) {
             return Err(format!(
                 "Operation {} cannot accept step callbacks while {}",
@@ -1129,11 +1145,7 @@ fn update_step(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         update(step)?;
         operation.updated_at_secs = now_secs();
         Ok(())
@@ -1209,11 +1221,7 @@ pub fn prepare_replacement(
         return Err("Overwrite destination changed after conflict review".to_string());
     }
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if operation.status != OperationStatus::Running {
             return Err(format!(
                 "Operation {} cannot prepare an overwrite while {}",
@@ -1221,11 +1229,7 @@ pub fn prepare_replacement(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Running
             || step.staging.as_deref() != Some(staged)
             || step.landing.as_deref() != Some(destination)
@@ -1335,11 +1339,7 @@ pub fn prepare_placement(
         return Err("Non-overwrite destination is already occupied".to_string());
     }
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if operation.status != OperationStatus::Running {
             return Err(format!(
                 "Operation {} cannot prepare placement while {}",
@@ -1347,11 +1347,7 @@ pub fn prepare_placement(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Running
             || step.staging.as_deref() != Some(staged)
             || step.landing.as_deref() != Some(destination)
@@ -1424,16 +1420,8 @@ pub fn mark_completed(
     let destination_after = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not capture completed effect: {error}"))?;
     let replacement = mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
 
         if step.status == StepStatus::Completed {
             let existing = step
@@ -1494,39 +1482,7 @@ pub fn mark_completed(
     if let Some(replacement) = replacement {
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))?;
-        if backup.exists {
-            if !replacement.original.same_version(&backup) {
-                return Err(
-                    "Overwrite backup was replaced before cleanup; foreign data was preserved"
-                        .to_string(),
-                );
-            }
-            remove_expected_path(&replacement.path, &replacement.original)?;
-        }
-        mutate(|journal| {
-            let operation = journal
-                .operations
-                .iter_mut()
-                .find(|operation| &operation.id == operation_id)
-                .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-            let step = operation
-                .steps
-                .iter_mut()
-                .find(|step| &step.key == key)
-                .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
-            if step.status != StepStatus::Completed
-                || step.replacement.as_ref() != Some(&replacement)
-            {
-                return Err(format!(
-                    "Overwrite proof for step {} changed before backup cleanup",
-                    key.0
-                ));
-            }
-            step.replacement = None;
-            step.staging = None;
-            operation.updated_at_secs = now_secs();
-            Ok(())
-        })?;
+        release_overwrite_backup(operation_id, key, &replacement, &backup)?;
     }
     Ok(())
 }
@@ -1606,11 +1562,7 @@ pub fn mark_rolled_back(operation_id: &OperationId, key: &IdempotencyKey) -> Res
 
 pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(), String> {
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         let event = match status {
             OperationStatus::Planned => {
                 return Err("cannot finish an operation as planned".to_string());
@@ -1811,11 +1763,7 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
         }
 
         mutate(|journal| {
-            let operation = journal
-                .operations
-                .iter_mut()
-                .find(|operation| &operation.id == operation_id)
-                .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+            let operation = operation_mut(&mut journal.operations, operation_id)?;
             let journal_step = operation
                 .steps
                 .iter_mut()
@@ -1881,16 +1829,8 @@ fn complete_interrupted_overwrite_placement(
     let destination_after = destination.clone();
     let landing = replacement.original.path.clone();
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.replacement.as_ref() != Some(replacement) {
             return Err(format!(
                 "Overwrite proof changed while completing step {}",
@@ -1927,6 +1867,18 @@ fn complete_interrupted_overwrite_placement(
         Ok(())
     })?;
 
+    release_overwrite_backup(operation_id, key, replacement, backup)
+}
+
+/// Remove a completed overwrite's backup of the original (only if it is still
+/// that original), then drop the step's replacement record. Foreign data at
+/// the backup path is preserved and reported.
+fn release_overwrite_backup(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    replacement: &ReplacementBackup,
+    backup: &PathIdentity,
+) -> Result<(), String> {
     if backup.exists {
         if !replacement.original.same_version(backup) {
             return Err(
@@ -1937,16 +1889,8 @@ fn complete_interrupted_overwrite_placement(
         remove_expected_path(&replacement.path, &replacement.original)?;
     }
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Completed || step.replacement.as_ref() != Some(replacement) {
             return Err(format!(
                 "Overwrite proof for step {} changed before backup cleanup",
@@ -2025,16 +1969,8 @@ fn complete_interrupted_placement(
 
     let destination_after = destination.clone();
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.placement.as_ref() != Some(placement) {
             return Err(format!(
                 "Placement proof changed while completing step {}",
@@ -2493,11 +2429,7 @@ fn prepare_rollback_receipt(
         .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
     let version = rollback_version_receipt(step, effect)?;
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if !matches!(
             operation.status,
             OperationStatus::Running
@@ -2511,11 +2443,7 @@ fn prepare_rollback_receipt(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Completed {
             return Err(format!(
                 "Only a completed step can prepare rollback: {}",
@@ -2932,11 +2860,7 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
 
 fn clear_container_quarantine(operation_id: &OperationId, quarantine: &Path) -> Result<(), String> {
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if operation.rollback_cleanup_quarantine.as_deref() != Some(quarantine) {
             return Err("Rollback container quarantine changed before cleanup".to_string());
         }
