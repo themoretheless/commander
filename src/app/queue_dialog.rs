@@ -559,6 +559,10 @@ impl App {
     }
 
     fn show_operations_recovery(&mut self, ui: &mut egui::Ui) {
+        if self.ws.safe_state.is_some() {
+            self.show_safe_state_details(ui);
+            ui.add_space(8.0);
+        }
         let t = self.colors;
         let operations = self.recovery.operations.clone();
         let mut refresh = false;

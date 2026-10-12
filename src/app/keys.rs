@@ -358,9 +358,9 @@ mod tests {
     }
 
     #[test]
-    fn recovery_dialog_owns_escape_with_safe_state_and_retained_transfer() {
+    fn recovery_dialog_owns_escape_over_a_pending_request() {
         let modal = prioritized_modal(
-            |surface| matches!(surface, ModalSurface::Recovery | ModalSurface::SafeState),
+            |surface| surface == ModalSurface::Recovery,
             Some(ModalSurface::Palette),
         );
 
@@ -380,25 +380,24 @@ mod tests {
         let operation_id = crate::operation::OperationId("transition-frame".to_string());
         let mut queue = crate::ui_request::UiRequestQueue::default();
         queue.emit(UiRequest::ReviewRecovery(operation_id.clone()));
+        // Safe state is reported by the Activity strip, not a modal, so the
+        // review request reserves Escape for Recovery from the first frame.
         let mut sink = TransitionFrameSink {
             operation_id,
-            safe_state_open: true,
-            retained_transfer_open: true,
+            safe_state_open: false,
+            retained_transfer_open: false,
             recovery_open: false,
         };
 
-        let before_dispatch = prioritized_modal(
-            |surface| matches!(surface, ModalSurface::SafeState),
-            queue.first_pending_modal().map(UiModal::surface),
-        );
-        assert_eq!(before_dispatch, Some(ModalSurface::SafeState));
+        let before_dispatch =
+            prioritized_modal(|_| false, queue.first_pending_modal().map(UiModal::surface));
+        assert_eq!(before_dispatch, Some(ModalSurface::Recovery));
 
         let deferred = crate::ui_request::dispatch_snapshot(queue.drain_snapshot(), &mut sink);
         assert!(deferred.is_empty());
         let after_dispatch = prioritized_modal(
             |surface| match surface {
                 ModalSurface::Recovery => sink.recovery_open,
-                ModalSurface::SafeState => sink.safe_state_open,
                 _ => false,
             },
             queue.first_pending_modal().map(UiModal::surface),

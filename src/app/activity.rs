@@ -6,6 +6,7 @@ use super::*;
 
 /// What the Activity strip shows this frame.
 enum ActivityLine {
+    SafeState(String),
     Transfer(TransferLine),
     Errors(usize),
 }
@@ -43,6 +44,35 @@ impl App {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| match line {
+                    ActivityLine::SafeState(reason) => {
+                        ui.label(
+                            egui::RichText::new("Paused for integrity review")
+                                .size(11.0)
+                                .strong()
+                                .color(t.accent_warning),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(reason)
+                                    .size(11.0)
+                                    .color(t.text_secondary),
+                            )
+                            .truncate(),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add(super::dialog_button(
+                                    t,
+                                    super::ButtonRole::Warning,
+                                    egui::RichText::new("Review").size(11.0),
+                                ))
+                                .clicked()
+                            {
+                                self.show_operations_center = true;
+                                self.operations_tab = OperationsTab::Recovery;
+                            }
+                        });
+                    }
                     ActivityLine::Transfer(transfer) => self.show_transfer_line(ui, transfer),
                     ActivityLine::Errors(count) => {
                         ui.label(
@@ -72,6 +102,9 @@ impl App {
     }
 
     fn activity_line(&self) -> Option<ActivityLine> {
+        if let Some(state) = &self.ws.safe_state {
+            return Some(ActivityLine::SafeState(state.reason.clone()));
+        }
         if let Some(active) = self.ws.active_transfer_view() {
             let s = crate::lock_util::recover(&active.progress);
             return Some(ActivityLine::Transfer(TransferLine {

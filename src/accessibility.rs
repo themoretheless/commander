@@ -143,7 +143,6 @@ modal_registry!(
     Confirmation,
     History,
     Recovery,
-    SafeState,
 );
 
 /// Resolve the highest-priority open surface through the single modal

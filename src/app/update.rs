@@ -179,12 +179,8 @@ impl FrameInputPolicy {
     }
 }
 
-fn any_modal_surface_open(
-    safe_state_open: bool,
-    confirmation_open: bool,
-    app_modal_open: bool,
-) -> bool {
-    safe_state_open || confirmation_open || app_modal_open
+fn any_modal_surface_open(confirmation_open: bool, app_modal_open: bool) -> bool {
+    confirmation_open || app_modal_open
 }
 
 /// Per-frame drag state shared by both panes' drop-target updates.
@@ -221,7 +217,6 @@ impl eframe::App for App {
         self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
         self.show_delete_activity(&ctx);
-        self.show_safe_state_dialog(&ctx);
         self.show_recovery_dialog(&ctx);
         self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
@@ -424,11 +419,8 @@ impl App {
     }
 
     fn has_modal_surface(&self) -> bool {
-        any_modal_surface_open(
-            self.ws.safe_state.is_some(),
-            self.ws.pending_op.is_some(),
-            self.ui.modals.any_open(),
-        ) || self.ws.delete_active()
+        any_modal_surface_open(self.ws.pending_op.is_some(), self.ui.modals.any_open())
+            || self.ws.delete_active()
     }
 
     fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
@@ -493,7 +485,6 @@ impl App {
         surface: crate::accessibility::ModalSurface,
     ) -> bool {
         match surface {
-            crate::accessibility::ModalSurface::SafeState => self.ws.safe_state.is_some(),
             crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
             crate::accessibility::ModalSurface::DeleteActivity => self.ws.delete_active(),
             _ => self.ui.modals.is_surface_open(surface),
@@ -1998,7 +1989,7 @@ mod tests {
 
     #[test]
     fn prior_modal_ownership_survives_poll_and_render_transitions() {
-        let prior_confirmation = any_modal_surface_open(false, true, false);
+        let prior_confirmation = any_modal_surface_open(true, false);
         let closed_confirmation = frame_policy(true, prior_confirmation, false);
         assert!(
             closed_confirmation.trapped(),
@@ -2013,10 +2004,10 @@ mod tests {
     }
 
     #[test]
-    fn safe_state_and_confirmation_surfaces_both_activate_the_frame_trap() {
+    fn confirmation_and_app_modals_both_activate_the_frame_trap() {
         for modal_is_open in [
-            any_modal_surface_open(true, false, false),
-            any_modal_surface_open(false, true, false),
+            any_modal_surface_open(true, false),
+            any_modal_surface_open(false, true),
         ] {
             let policy = frame_policy(true, false, modal_is_open);
             assert!(policy.trapped());
@@ -2026,19 +2017,10 @@ mod tests {
 
     #[test]
     fn a_running_transfer_alone_leaves_the_panes_interactive() {
-        // The Activity strip reports transfers; it is not a modal surface.
-        assert!(!any_modal_surface_open(false, false, false));
+        // The Activity strip reports transfers and safe state; neither is a
+        // modal surface.
+        assert!(!any_modal_surface_open(false, false));
         assert!(frame_policy(true, false, false).background_enabled());
-    }
-
-    #[test]
-    fn safe_state_to_recovery_handoff_remains_trapped() {
-        let safe_state_open = any_modal_surface_open(true, false, false);
-        let recovery_open = any_modal_surface_open(false, false, true);
-
-        let policy = frame_policy(true, safe_state_open, recovery_open);
-        assert!(policy.trapped());
-        assert!(!policy.background_enabled());
     }
 
     #[test]
