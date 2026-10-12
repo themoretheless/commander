@@ -104,23 +104,18 @@ pub(crate) fn latch_rename_execution_error(
     workspace: &mut Workspace,
     error: &RenameExecutionError,
 ) {
-    if !error.integrity_uncertain || workspace.safe_state.is_some() {
+    if !error.integrity_uncertain {
         return;
     }
-    let reason = format!(
-        "Rename rollback did not restore the original namespace: {}",
-        error.message
-    );
-    let failure = crate::operation::ClassifiedFailure::message(
-        crate::operation::FailureClass::IntegrityUncertain,
-        error.paths.first().cloned(),
-        reason.clone(),
-    );
-    workspace.safe_state = Some(crate::operation::SafeState {
-        operation_id: crate::operation::OperationId::new(),
-        reason,
-        paths: error.paths.clone(),
-        failures: vec![failure],
+    workspace.latch_safe_state(|| {
+        crate::operation::SafeState::integrity(
+            crate::operation::OperationId::new(),
+            format!(
+                "Rename rollback did not restore the original namespace: {}",
+                error.message
+            ),
+            error.paths.clone(),
+        )
     });
 }
 

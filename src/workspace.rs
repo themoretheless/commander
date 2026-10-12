@@ -2105,22 +2105,33 @@ impl Workspace {
         }
     }
 
-    fn history_invariant_error(&mut self, error: crate::undo::HistoryError) -> String {
-        let reason = format!("History settlement failed: {error}");
+    /// Latch an integrity stop; the first stop wins and later ones are
+    /// dropped. `make` runs only when the latch fires.
+    pub(crate) fn latch_safe_state(&mut self, make: impl FnOnce() -> crate::operation::SafeState) {
         if self.safe_state.is_none() {
-            let failure = crate::operation::ClassifiedFailure::message(
-                crate::operation::FailureClass::IntegrityUncertain,
-                None,
-                reason.clone(),
-            );
-            self.safe_state = Some(crate::operation::SafeState {
-                operation_id: crate::operation::OperationId::new(),
-                reason: reason.clone(),
-                paths: Vec::new(),
-                failures: vec![failure],
-            });
+            self.safe_state = Some(make());
         }
+    }
+
+    /// Latch a history-settlement failure and return its reason.
+    pub(crate) fn latch_history_failure(
+        &mut self,
+        operation_id: Option<crate::operation::OperationId>,
+        error: crate::undo::HistoryError,
+    ) -> String {
+        let reason = format!("History settlement failed: {error}");
+        self.latch_safe_state(|| {
+            crate::operation::SafeState::integrity(
+                operation_id.unwrap_or_default(),
+                reason.clone(),
+                Vec::new(),
+            )
+        });
         reason
+    }
+
+    fn history_invariant_error(&mut self, error: crate::undo::HistoryError) -> String {
+        self.latch_history_failure(None, error)
     }
 
     /// Execute `action` forward against the filesystem. Used by undo (with an
