@@ -1822,15 +1822,24 @@ mod tests {
 
     #[test]
     fn global_path_lock_registry_reclaims_unused_entries() {
-        let baseline_lock = path_lock(Path::new("baseline"));
-        let baseline = crate::lock_util::recover(path_locks()).len();
-        drop(baseline_lock);
+        // Other tests share this process-global registry, so assert on this
+        // test's own keys rather than on the total size.
+        let transient = |index: usize| format!("registry-reclaim-transient-{index}");
         for index in 0..512 {
-            drop(path_lock(Path::new(&format!("transient-{index}"))));
+            drop(path_lock(Path::new(&transient(index))));
         }
-        let survivor = path_lock(Path::new("survivor"));
-        let retained = crate::lock_util::recover(path_locks()).len();
-        assert!(retained <= baseline.saturating_add(1));
+        let survivor = path_lock(Path::new("registry-reclaim-survivor"));
+        let locks = crate::lock_util::recover(path_locks());
+        assert!(
+            (0..512)
+                .all(|index| !locks
+                    .contains_key(&normalized_lock_path(Path::new(&transient(index))))),
+            "dropped locks must be reclaimed"
+        );
+        assert!(locks.contains_key(&normalized_lock_path(Path::new(
+            "registry-reclaim-survivor"
+        ))));
+        drop(locks);
         drop(survivor);
     }
 
