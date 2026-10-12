@@ -280,15 +280,11 @@ impl App {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Cancel")
-                                        .size(13.0)
-                                        .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Secondary,
+                                egui::RichText::new("Cancel").size(13.0),
+                            ))
                             .clicked()
                         {
                             cancel = true;
@@ -302,13 +298,11 @@ impl App {
                         if ui
                             .add_enabled(
                                 pending > 0 && guard_ready,
-                                egui::Button::new(
-                                    egui::RichText::new(apply_label)
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(t.accent)
-                                .corner_radius(CornerRadius::ZERO),
+                                super::dialog_button(
+                                    t,
+                                    super::ButtonRole::Primary,
+                                    egui::RichText::new(apply_label).size(13.0),
+                                ),
                             )
                             .clicked()
                         {

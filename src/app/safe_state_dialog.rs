@@ -87,45 +87,33 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Recovery center")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
+                        .add(super::dialog_button(
+                            t,
+                            super::ButtonRole::Secondary,
+                            egui::RichText::new("Recovery center").size(13.0),
+                        ))
                         .clicked()
                     {
                         recovery = true;
                     }
                     if !state.paths.is_empty()
                         && ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Show location")
-                                        .size(13.0)
-                                        .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Secondary,
+                                egui::RichText::new("Show location").size(13.0),
+                            ))
                             .clicked()
                     {
                         inspect = true;
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Review complete")
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(t.accent)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Primary,
+                                egui::RichText::new("Review complete").size(13.0),
+                            ))
                             .clicked()
                         {
                             acknowledge = true;

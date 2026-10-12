@@ -411,18 +411,15 @@ impl App {
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(if state.searching {
-                                            "Restart"
-                                        } else {
-                                            "Search"
-                                        })
-                                        .color(Color32::WHITE),
-                                    )
-                                    .fill(t.accent)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
+                                .add(super::dialog_button(
+                                    t,
+                                    super::ButtonRole::Primary,
+                                    egui::RichText::new(if state.searching {
+                                        "Restart"
+                                    } else {
+                                        "Search"
+                                    }),
+                                ))
                                 .clicked()
                             {
                                 run_now = true;

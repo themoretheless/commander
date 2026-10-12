@@ -1183,15 +1183,12 @@ impl App {
                                 }
                                 ui.add_space(6.0);
                                 if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("Drain here \u{2318}\u{21e7}V")
-                                                .size(11.0)
-                                                .color(Color32::WHITE),
-                                        )
-                                        .fill(t.accent)
-                                        .corner_radius(CornerRadius::ZERO),
-                                    )
+                                    .add(super::dialog_button(
+                                        t,
+                                        super::ButtonRole::Primary,
+                                        egui::RichText::new("Drain here \u{2318}\u{21e7}V")
+                                            .size(11.0),
+                                    ))
                                     .clicked()
                                 {
                                     drain = true;

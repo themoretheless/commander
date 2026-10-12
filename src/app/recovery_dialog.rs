@@ -380,13 +380,11 @@ fn show_repair(
     if ui
         .add_enabled(
             !state.scanning && (record.completed_steps() > 0 || record.rollback_cleanup.is_some()),
-            egui::Button::new(
-                egui::RichText::new("Apply verified rollback")
-                    .size(12.0)
-                    .color(Color32::WHITE),
-            )
-            .fill(t.accent_red)
-            .corner_radius(CornerRadius::ZERO),
+            super::dialog_button(
+                t,
+                super::ButtonRole::Danger,
+                egui::RichText::new("Apply verified rollback").size(12.0),
+            ),
         )
         .clicked()
     {

@@ -142,15 +142,11 @@ impl App {
             ui.add_space(7.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Cancel")
-                                .size(12.0)
-                                .color(t.text_primary),
-                        )
-                        .fill(t.bg_card)
-                        .corner_radius(CornerRadius::ZERO),
-                    )
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Cancel").size(12.0),
+                    ))
                     .clicked()
                 {
                     cancel = true;
@@ -159,13 +155,11 @@ impl App {
                     if ui
                         .add_enabled(
                             can_execute,
-                            egui::Button::new(
-                                egui::RichText::new(command)
-                                    .size(12.0)
-                                    .color(Color32::WHITE),
-                            )
-                            .fill(t.accent)
-                            .corner_radius(CornerRadius::ZERO),
+                            super::dialog_button(
+                                t,
+                                super::ButtonRole::Primary,
+                                egui::RichText::new(command).size(12.0),
+                            ),
                         )
                         .clicked()
                     {

@@ -65,30 +65,22 @@ impl App {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Select")
-                                .size(13.0)
-                                .color(Color32::WHITE),
-                        )
-                        .fill(t.accent)
-                        .corner_radius(CornerRadius::ZERO),
-                    )
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Primary,
+                        egui::RichText::new("Select").size(13.0),
+                    ))
                     .clicked()
                 {
                     commit = true;
                 }
                 ui.add_space(8.0);
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Cancel")
-                                .size(13.0)
-                                .color(t.text_primary),
-                        )
-                        .fill(t.bg_card)
-                        .corner_radius(CornerRadius::ZERO),
-                    )
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Cancel").size(13.0),
+                    ))
                     .clicked()
                 {
                     cancel = true;

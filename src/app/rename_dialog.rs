@@ -77,13 +77,11 @@ impl App {
                 if ui
                     .add_enabled(
                         can_commit,
-                        egui::Button::new(
-                            egui::RichText::new("Rename")
-                                .size(13.0)
-                                .color(Color32::WHITE),
-                        )
-                        .fill(t.accent)
-                        .corner_radius(CornerRadius::ZERO),
+                        super::dialog_button(
+                            t,
+                            super::ButtonRole::Primary,
+                            egui::RichText::new("Rename").size(13.0),
+                        ),
                     )
                     .clicked()
                 {
@@ -91,15 +89,11 @@ impl App {
                 }
                 ui.add_space(8.0);
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Cancel")
-                                .size(13.0)
-                                .color(t.text_primary),
-                        )
-                        .fill(t.bg_card)
-                        .corner_radius(CornerRadius::ZERO),
-                    )
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Cancel").size(13.0),
+                    ))
                     .clicked()
                 {
                     cancel = true;

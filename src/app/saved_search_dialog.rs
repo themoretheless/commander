@@ -104,15 +104,11 @@ impl App {
 
                 ui.add_space(10.0);
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Close")
-                                .size(13.0)
-                                .color(t.text_primary),
-                        )
-                        .fill(t.bg_card)
-                        .corner_radius(CornerRadius::ZERO),
-                    )
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Close").size(13.0),
+                    ))
                     .clicked()
                     || escape_requested
                 {

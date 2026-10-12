@@ -80,15 +80,11 @@ impl App {
                     );
                     ui.add_space(12.0);
                     if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Close")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
+                        .add(super::dialog_button(
+                            t,
+                            super::ButtonRole::Secondary,
+                            egui::RichText::new("Close").size(13.0),
+                        ))
                         .clicked()
                         || escape_requested
                     {
@@ -148,15 +144,11 @@ impl App {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Cancel")
-                                        .size(13.0)
-                                        .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Secondary,
+                                egui::RichText::new("Cancel").size(13.0),
+                            ))
                             .clicked()
                         {
                             cancel = true;
@@ -165,13 +157,11 @@ impl App {
                         if ui
                             .add_enabled(
                                 delete_total > 0,
-                                egui::Button::new(
-                                    egui::RichText::new("Move others to Trash")
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(t.accent_red)
-                                .corner_radius(CornerRadius::ZERO),
+                                super::dialog_button(
+                                    t,
+                                    super::ButtonRole::Danger,
+                                    egui::RichText::new("Move others to Trash").size(13.0),
+                                ),
                             )
                             .clicked()
                         {

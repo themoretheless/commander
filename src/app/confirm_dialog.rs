@@ -484,15 +484,11 @@ impl App {
                 // Action buttons
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
+                        .add(super::dialog_button(
+                            t,
+                            super::ButtonRole::Secondary,
+                            egui::RichText::new("Cancel").size(13.0),
+                        ))
                         .clicked()
                     {
                         self.dismiss_pending_op(ctx);

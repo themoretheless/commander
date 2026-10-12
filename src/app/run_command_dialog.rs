@@ -138,13 +138,7 @@ impl App {
                         .show(ui, |ui| {
                             for (name, raw) in &matching {
                                 let row = ui.add(
-                                    egui::Button::new(
-                                        egui::RichText::new(format!("{name}    {raw}"))
-                                            .size(12.0)
-                                            .color(t.text_primary),
-                                    )
-                                    .fill(t.bg_card)
-                                    .corner_radius(CornerRadius::ZERO),
+                                    super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new(format!("{name} {raw}")) .size(12.0)),
                                 );
                                 if row.clicked() {
                                     fill = Some(raw.clone());
@@ -159,11 +153,7 @@ impl App {
                     if ui
                         .add_enabled(
                             can_run,
-                            egui::Button::new(
-                                egui::RichText::new("Run").size(13.0).color(Color32::WHITE),
-                            )
-                            .fill(t.accent)
-                            .corner_radius(CornerRadius::ZERO),
+                            super::dialog_button(t, super::ButtonRole::Primary, egui::RichText::new("Run").size(13.0)),
                         )
                         .clicked()
                     {
@@ -173,13 +163,7 @@ impl App {
                     if ui
                         .add_enabled(
                             can_run,
-                            egui::Button::new(
-                                egui::RichText::new("Save as template")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
+                            super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new("Save as template") .size(13.0)),
                         )
                         .on_hover_text("Save this command line as a reusable template")
                         .clicked()
@@ -189,11 +173,7 @@ impl App {
                     ui.add_space(8.0);
                     if ui
                         .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel").size(13.0).color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
+                            super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new("Cancel").size(13.0)),
                         )
                         .clicked()
                     {

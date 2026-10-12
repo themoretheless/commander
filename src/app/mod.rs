@@ -168,6 +168,42 @@ pub(crate) fn sheet_window(
         .frame(dialog_frame(t, margin))
 }
 
+/// Fixed fill/text pairings for dialog buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ButtonRole {
+    /// The dialog's main action (accent fill, white text).
+    Primary,
+    /// Cancel and neutral actions.
+    Secondary,
+    /// Destructive actions.
+    Danger,
+    /// Stop/interrupt actions.
+    Warning,
+}
+
+impl ButtonRole {
+    fn colors(self, t: ThemeColors) -> (Color32, Color32) {
+        match self {
+            Self::Primary => (t.accent, Color32::WHITE),
+            Self::Secondary => (t.bg_card, t.text_primary),
+            Self::Danger => (t.accent_red, Color32::WHITE),
+            Self::Warning => (t.accent_warning, Color32::WHITE),
+        }
+    }
+}
+
+/// A dialog button styled for `role`; callers keep sizing their own text.
+pub(crate) fn dialog_button<'a>(
+    t: ThemeColors,
+    role: ButtonRole,
+    text: egui::RichText,
+) -> egui::Button<'a> {
+    let (fill, foreground) = role.colors(t);
+    egui::Button::new(text.color(foreground))
+        .fill(fill)
+        .corner_radius(CornerRadius::ZERO)
+}
+
 pub(crate) struct DeveloperNotice {
     pub message: String,
     pub path: Option<PathBuf>,

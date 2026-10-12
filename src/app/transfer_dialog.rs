@@ -303,13 +303,11 @@ impl App {
                 ui.add_space(8.0);
                 if finished {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("OK").size(13.0).color(Color32::WHITE),
-                            )
-                            .fill(t.accent)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
+                        .add(super::dialog_button(
+                            t,
+                            super::ButtonRole::Primary,
+                            egui::RichText::new("OK").size(13.0),
+                        ))
                         .clicked()
                     {
                         // Retire the finished job and start the next queued one;
@@ -331,17 +329,16 @@ impl App {
                         if ui
                             .add_enabled(
                                 !stop_requested,
-                                egui::Button::new(
+                                super::dialog_button(
+                                    t,
+                                    super::ButtonRole::Warning,
                                     egui::RichText::new(if stop_requested {
                                         "Stopping after file"
                                     } else {
                                         stop.label()
                                     })
-                                    .size(13.0)
-                                    .color(Color32::WHITE),
-                                )
-                                .fill(t.accent_warning)
-                                .corner_radius(CornerRadius::ZERO),
+                                    .size(13.0),
+                                ),
                             )
                             .on_hover_text(stop.consequence())
                             .clicked()
@@ -373,15 +370,11 @@ impl App {
                         let cancel_current =
                             crate::operation_view::CancellationAction::CancelCurrent;
                         if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(cancel_current.label())
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(t.accent_red)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Danger,
+                                egui::RichText::new(cancel_current.label()).size(13.0),
+                            ))
                             .on_hover_text(cancel_current.consequence())
                             .clicked()
                         {

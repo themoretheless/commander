@@ -380,13 +380,12 @@ impl App {
                             if ui
                                 .add_enabled(
                                     n > 0 && state.extract.is_none(),
-                                    egui::Button::new(
+                                    super::dialog_button(
+                                        t,
+                                        super::ButtonRole::Primary,
                                         egui::RichText::new(format!("Extract {n} to other panel"))
-                                            .size(13.0)
-                                            .color(Color32::WHITE),
-                                    )
-                                    .fill(t.accent)
-                                    .corner_radius(CornerRadius::ZERO),
+                                            .size(13.0),
+                                    ),
                                 )
                                 .clicked()
                             {
@@ -395,13 +394,11 @@ impl App {
                             if ui
                                 .add_enabled(
                                     state.extract.is_none(),
-                                    egui::Button::new(
-                                        egui::RichText::new("Extract all")
-                                            .size(13.0)
-                                            .color(t.text_primary),
-                                    )
-                                    .fill(t.bg_card)
-                                    .corner_radius(CornerRadius::ZERO),
+                                    super::dialog_button(
+                                        t,
+                                        super::ButtonRole::Secondary,
+                                        egui::RichText::new("Extract all").size(13.0),
+                                    ),
                                 )
                                 .clicked()
                             {
