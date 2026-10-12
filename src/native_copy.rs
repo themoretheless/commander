@@ -219,23 +219,12 @@ fn copy_file_native_inner(
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
 
     if report_progress {
-        let mut s = crate::lock_util::recover(state);
-        s.current_file = src
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        s.current_file_size = file_size;
-        s.current_file_copied = 0;
+        crate::lock_util::recover(state).begin_file(src, file_size);
     }
 
     // Try the explicit clone primitive first so telemetry can distinguish a
     // metadata-only APFS clone from copyfile's transparent byte-copy fallback.
-    if crate::lock_util::recover(state).cancelled {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Interrupted,
-            "cancelled",
-        ));
-    }
+    crate::transfer::check_cancelled(state)?;
     if allow_clone {
         if unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) } == 0 {
             if report_progress {
@@ -298,10 +287,7 @@ fn copy_file_native_inner(
             if s.cancelled {
                 // Clean up partial file
                 let _ = std::fs::remove_file(dst);
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "cancelled",
-                ));
+                return Err(crate::transfer::cancelled_error());
             }
             return Err(err);
         }
@@ -388,10 +374,7 @@ fn finish_dir_copy(
         let os_error = std::io::Error::last_os_error();
         let s = crate::lock_util::recover(state);
         if s.cancelled {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
+            return Err(crate::transfer::cancelled_error());
         }
         return Err(os_error);
     }

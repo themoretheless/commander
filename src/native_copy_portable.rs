@@ -20,14 +20,6 @@ pub struct NativeCopyOutcome {
     pub cloned: bool,
 }
 
-fn cancelled() -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
-}
-
-fn is_cancelled(state: &Arc<Mutex<TransferProgress>>) -> bool {
-    crate::lock_util::recover(state).cancelled
-}
-
 /// Copy one file's bytes into a destination that must not exist yet.
 fn copy_bytes(
     src: &Path,
@@ -42,9 +34,7 @@ fn copy_bytes(
     let mut copied = 0u64;
     let result = (|| {
         loop {
-            if is_cancelled(state) {
-                return Err(cancelled());
-            }
+            crate::transfer::check_cancelled(state)?;
             let n = input.read(&mut buf)?;
             if n == 0 {
                 break;
@@ -102,17 +92,9 @@ fn copy_file_native_inner(
 ) -> std::io::Result<NativeCopyOutcome> {
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
     if report_progress {
-        let mut s = crate::lock_util::recover(state);
-        s.current_file = src
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        s.current_file_size = file_size;
-        s.current_file_copied = 0;
+        crate::lock_util::recover(state).begin_file(src, file_size);
     }
-    if is_cancelled(state) {
-        return Err(cancelled());
-    }
+    crate::transfer::check_cancelled(state)?;
     let bytes = copy_bytes(src, dst, state, base_bytes, report_progress)?;
     Ok(NativeCopyOutcome {
         bytes,
@@ -154,9 +136,7 @@ fn copy_tree(
     copied: &mut u64,
 ) -> std::io::Result<()> {
     for entry in fs::read_dir(src)? {
-        if is_cancelled(state) {
-            return Err(cancelled());
-        }
+        crate::transfer::check_cancelled(state)?;
         let entry = entry?;
         let from = entry.path();
         let to = dst.join(entry.file_name());

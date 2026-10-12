@@ -43,24 +43,13 @@ pub(super) fn copy_file_sparse(
         .open(dst)?;
     writer.set_len(file_size)?;
     {
-        let mut progress = crate::lock_util::recover(state);
-        progress.current_file = src
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
-        progress.current_file_size = file_size;
-        progress.current_file_copied = 0;
+        crate::lock_util::recover(state).begin_file(src, file_size);
     }
     let mut cursor = 0_u64;
     let mut reported = 0_u64;
     let mut buffer = vec![0_u8; COPY_BUF_SIZE];
     while cursor < file_size {
-        if crate::lock_util::recover(state).cancelled {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
-        }
+        crate::transfer::check_cancelled(state)?;
         let data = unsafe {
             libc::lseek(
                 reader.as_raw_fd(),

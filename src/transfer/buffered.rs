@@ -139,10 +139,7 @@ fn copy_file_buffered_inner(
                 &content_hasher,
                 &mut checkpoints,
             )?;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
+            return Err(crate::transfer::cancelled_error());
         }
 
         let n = reader.read(&mut buf)?;
@@ -247,12 +244,7 @@ pub(super) fn copy_dir_buffered_with_limiter(
     let mut ancestors = std::collections::HashSet::new();
     let mut copied = 0u64;
     while let Some(task) = tasks.pop() {
-        if crate::lock_util::recover(state).cancelled {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
-        }
+        crate::transfer::check_cancelled(state)?;
         match task {
             Task::ExitDirectory(canonical) => {
                 ancestors.remove(&canonical);

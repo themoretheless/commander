@@ -99,7 +99,31 @@ pub struct TransferProgress {
 
 pub type TransferState = Arc<Mutex<TransferProgress>>;
 
+/// The error every copy primitive returns when the user cancels.
+pub(crate) fn cancelled_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
+}
+
+/// `Err(cancelled)` once the user has cancelled this transfer.
+pub(crate) fn check_cancelled(state: &Mutex<TransferProgress>) -> std::io::Result<()> {
+    if crate::lock_util::recover(state).cancelled {
+        Err(cancelled_error())
+    } else {
+        Ok(())
+    }
+}
+
 impl TransferProgress {
+    /// Report `path` as the file now being copied, `size` bytes, none done.
+    pub(crate) fn begin_file(&mut self, path: &Path, size: u64) {
+        self.current_file = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.current_file_size = size;
+        self.current_file_copied = 0;
+    }
+
     pub fn new(total_bytes: u64, files_total: usize) -> Self {
         Self {
             operation_id: None,
