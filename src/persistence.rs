@@ -503,6 +503,42 @@ pub enum LoadStatus {
     Unreadable,
 }
 
+impl LoadStatus {
+    /// Statuses that must block writes instead of replacing unread data.
+    pub fn fails_closed(self) -> bool {
+        matches!(
+            self,
+            LoadStatus::Corrupt | LoadStatus::FutureVersion | LoadStatus::Unreadable
+        )
+    }
+}
+
+/// What a reported save left on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Committed {
+    Durable,
+    NotDurable,
+}
+
+/// Record a store save in the health counters and classify it; `None` when
+/// nothing was committed.
+pub fn report_save(
+    store: &'static str,
+    result: Result<AtomicWriteOutcome, JsonSaveError>,
+) -> Option<Committed> {
+    match result {
+        Ok(AtomicWriteOutcome::Durable) => Some(Committed::Durable),
+        Ok(AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            record_durability_warning(store, &error);
+            Some(Committed::NotDurable)
+        }
+        Err(error) => {
+            record_json_save_failure(store, &error);
+            None
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveIntent {
     Automatic,
@@ -532,10 +568,7 @@ impl StoreGate {
     }
 
     pub(crate) fn block(&mut self, status: LoadStatus) {
-        debug_assert!(matches!(
-            status,
-            LoadStatus::Corrupt | LoadStatus::FutureVersion | LoadStatus::Unreadable
-        ));
+        debug_assert!(status.fails_closed());
         self.status = status;
     }
 

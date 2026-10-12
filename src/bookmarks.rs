@@ -191,12 +191,7 @@ fn load_at(persist: &dyn crate::persistence::Persist, path: &Path) -> LoadedBook
             decoded.items
         }
         None => {
-            if matches!(
-                loaded.gate.status(),
-                crate::persistence::LoadStatus::Corrupt
-                    | crate::persistence::LoadStatus::FutureVersion
-                    | crate::persistence::LoadStatus::Unreadable
-            ) {
+            if loaded.gate.status().fails_closed() {
                 crate::persistence::record_unreadable("Bookmarks");
             }
             Vec::new()

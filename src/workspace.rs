@@ -541,17 +541,14 @@ impl Workspace {
     }
 
     fn save_bookmarks(&mut self) {
-        match crate::bookmarks::save_with(
-            self.persistence.as_ref(),
-            &self.bookmarks,
-            &mut self.bookmark_gate,
-        ) {
-            Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
-            Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
-                crate::persistence::record_durability_warning("Bookmarks", &error);
-            }
-            Err(error) => crate::persistence::record_json_save_failure("Bookmarks", &error),
-        }
+        crate::persistence::report_save(
+            "Bookmarks",
+            crate::bookmarks::save_with(
+                self.persistence.as_ref(),
+                &self.bookmarks,
+                &mut self.bookmark_gate,
+            ),
+        );
     }
 
     pub fn active_panel(&mut self) -> &mut PanelState {
