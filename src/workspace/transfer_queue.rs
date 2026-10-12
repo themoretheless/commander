@@ -1119,31 +1119,15 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transfer::{CopyMethod, OverwritePolicy};
 
     fn spec(operation_id: &str) -> TransferSpec {
         TransferSpec {
             operation_id: OperationId(operation_id.to_string()),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: Vec::new(),
-            expectations: Vec::new(),
-            target: PathBuf::from("/tmp/commander-transfer-controller-test"),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
-            durability: crate::operation::DurabilityProfile::default(),
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(
+                TransferKind::Move,
+                Vec::new(),
+                PathBuf::from("/tmp/commander-transfer-controller-test"),
+            )
         }
     }
 

@@ -381,6 +381,42 @@ pub struct TransferSpec {
     pub journal_enabled: bool,
 }
 
+impl TransferSpec {
+    /// A fresh, ungrouped operation with default policies, nothing captured
+    /// and no post-success or rollback work. Callers override the rest with
+    /// struct-update syntax.
+    pub fn new(kind: TransferKind, entries: Vec<FileEntry>, target: PathBuf) -> Self {
+        Self {
+            operation_id: OperationId::new(),
+            group_id: None,
+            kind,
+            entries,
+            expectations: Vec::new(),
+            target,
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            durability: DurabilityProfile::default(),
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
+            post_success: None,
+            rollback_cleanup: None,
+            rollback_cleanup_identity: None,
+            #[cfg(test)]
+            mount_wait_override: None,
+            #[cfg(test)]
+            before_commit: None,
+            #[cfg(test)]
+            before_post_success: None,
+            #[cfg(test)]
+            before_terminal_publish: None,
+            #[cfg(test)]
+            journal_enabled: false,
+        }
+    }
+}
+
 #[cfg(test)]
 pub type BeforeCommitHook = Arc<dyn Fn(&Path, &Path) + Send + Sync>;
 #[cfg(test)]
@@ -1458,27 +1494,14 @@ mod tests {
         let folder = root.dir("Gathered");
         let file = root.file("Gathered/a.txt", "a");
         let state = run(TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: vec![entry_for(&file)],
             expectations: capture_expectations(&[entry_for(&file)], root.path()),
-            target: root.path().to_path_buf(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(
+                TransferKind::Move,
+                vec![entry_for(&file)],
+                root.path().to_path_buf(),
+            )
         });
 
         assert!(state.errors.is_empty(), "{:?}", state.errors);
@@ -1491,27 +1514,9 @@ mod tests {
         let root = TempDir::new();
         let folder = root.dir("Gathered");
         let state = run(TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: Vec::new(),
-            expectations: Vec::new(),
-            target: root.path().to_path_buf(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(TransferKind::Move, Vec::new(), root.path().to_path_buf())
         });
 
         assert!(state.errors.is_empty(), "{:?}", state.errors);
@@ -1525,27 +1530,14 @@ mod tests {
         let file = root.file("Gathered/a.txt", "a");
         root.file("Gathered/foreign.txt", "foreign");
         let state = run(TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: vec![entry_for(&file)],
             expectations: capture_expectations(&[entry_for(&file)], root.path()),
-            target: root.path().to_path_buf(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(
+                TransferKind::Move,
+                vec![entry_for(&file)],
+                root.path().to_path_buf(),
+            )
         });
 
         assert!(root.path().join("a.txt").is_file());
@@ -1566,27 +1558,11 @@ mod tests {
         policy: OverwritePolicy,
     ) -> TransferSpec {
         TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind,
             expectations: capture_expectations(&entries, target),
-            entries,
-            target: target.to_path_buf(),
             policy,
             method,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(kind, entries, target.to_path_buf())
         }
     }
 

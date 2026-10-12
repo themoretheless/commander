@@ -1658,6 +1658,23 @@ impl Workspace {
         }));
     }
 
+    /// A queued transfer under the workspace's current durability, retention,
+    /// naming and symlink policies.
+    fn queued_spec(
+        &self,
+        kind: TransferKind,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+    ) -> TransferSpec {
+        TransferSpec {
+            durability: self.durability_profile,
+            version_retention: self.version_retention,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
+            ..TransferSpec::new(kind, entries, target)
+        }
+    }
+
     fn start_space_probe(
         &mut self,
         entries: Vec<FileEntry>,
@@ -1929,12 +1946,7 @@ impl Workspace {
             None
         };
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
-            group_id: None,
-            kind: t.kind,
-            entries: t.entries,
             expectations: t.expectations,
-            target: t.target,
             policy: t.policy,
             method: t.method,
             durability: t.durability,
@@ -1942,19 +1954,7 @@ impl Workspace {
             name_policy: t.name_policy,
             symlink_policy: t.symlink_policy,
             preflight_bytes,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..TransferSpec::new(t.kind, t.entries, t.target)
         };
         self.enqueue_only(spec, undo);
         self.pump_queue(notify);
@@ -2344,32 +2344,10 @@ impl Workspace {
             })
             .transpose()?;
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries,
-            expectations: Vec::new(),
-            target: dest_dir,
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
-            durability: self.durability_profile,
-            version_retention: self.version_retention,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            preflight_bytes: None,
             post_success,
             rollback_cleanup,
             rollback_cleanup_identity,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..self.queued_spec(TransferKind::Move, entries, dest_dir)
         };
         self.enqueue_bound_replay(spec, history)?;
         self.pump_queue(notify);
@@ -2457,32 +2435,9 @@ impl Workspace {
         let rollback_cleanup_identity =
             crate::path_identity::PathIdentity::observe_deep(&folder).ok();
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries,
-            expectations: Vec::new(),
-            target: folder.clone(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
-            durability: self.durability_profile,
-            version_retention: self.version_retention,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: Some(folder),
+            rollback_cleanup: Some(folder.clone()),
             rollback_cleanup_identity,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..self.queued_spec(TransferKind::Move, entries, folder)
         };
         self.enqueue_only(spec, Some(undo));
         self.pump_queue(notify);
@@ -2905,32 +2860,9 @@ impl Workspace {
             return;
         }
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
             group_id,
-            kind: TransferKind::Copy,
-            entries,
-            expectations: Vec::new(),
-            target,
             policy,
-            method: CopyMethod::Native,
-            durability: self.durability_profile,
-            version_retention: self.version_retention,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..self.queued_spec(TransferKind::Copy, entries, target)
         };
         self.enqueue_only(spec, None);
     }

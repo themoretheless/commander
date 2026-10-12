@@ -2206,10 +2206,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
     Ok(TransferSpec {
         operation_id: record.id,
         group_id: record.group_id,
-        kind: record.kind,
-        entries,
         expectations,
-        target: record.target,
         policy: record.policy,
         method: record.method,
         durability: record.durability,
@@ -2220,16 +2217,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         post_success: record.post_success,
         rollback_cleanup: record.rollback_cleanup,
         rollback_cleanup_identity: record.rollback_cleanup_identity,
-        #[cfg(test)]
-        mount_wait_override: None,
-        #[cfg(test)]
-        before_commit: None,
-        #[cfg(test)]
-        before_post_success: None,
-        #[cfg(test)]
-        before_terminal_publish: None,
-        #[cfg(test)]
-        journal_enabled: false,
+        ..TransferSpec::new(record.kind, entries, record.target)
     })
 }
 
