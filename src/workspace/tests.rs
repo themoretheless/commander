@@ -3992,3 +3992,41 @@ fn drag_session_resolves_source_side_and_prefers_its_own_target() {
     ws.right.drag.set_drop_target(own.clone());
     assert_eq!(ws.drag_session().unwrap().target, Some(&own));
 }
+
+#[test]
+fn selection_gathered_across_folders_feeds_one_transfer() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let first = l.dir("first");
+    let second = l.dir("second");
+    std::fs::write(first.join("a.txt"), "a").unwrap();
+    std::fs::write(second.join("b.txt"), "b").unwrap();
+    let mut ws = workspace(&l, &r);
+
+    ws.left.navigate_to(first.clone());
+    ws.left.refresh();
+    ws.left.toggle_select(first.join("a.txt"));
+    ws.left.navigate_to(second.clone());
+    ws.left.refresh();
+    ws.left.toggle_select(second.join("b.txt"));
+
+    assert_eq!(ws.left.selected_elsewhere_count(), 1);
+    assert_eq!(ws.left.selection_folder_count(), 2);
+    assert_eq!(ws.command_context().picked_entries, 2);
+
+    ws.request_copy();
+    let Some(PendingOp::Transfer(pending)) = &ws.pending_op else {
+        panic!("copy should stage a transfer");
+    };
+    let mut names: Vec<_> = pending
+        .entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["a.txt", "b.txt"]);
+
+    ws.pending_op = None;
+    ws.execute(Command::ClearSelection);
+    assert_eq!(ws.left.selected_elsewhere_count(), 0);
+    assert!(ws.left.selection_is_empty());
+}

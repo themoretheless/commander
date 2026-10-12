@@ -32,7 +32,7 @@ fn create_links(workspace: &mut Workspace, kind: LinkKind) -> LinkReport {
             .push("A file operation is already in progress".to_string());
         return report;
     }
-    let Ok(entries) = workspace.active_panel_ref().selected_or_cursor() else {
+    let Ok(entries) = workspace.active_panel_ref().picked_entries() else {
         return report;
     };
     if entries.is_empty() {

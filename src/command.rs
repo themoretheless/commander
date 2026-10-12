@@ -134,6 +134,8 @@ pub enum Command {
     ToggleMark,
     /// Clear all marks in the active panel.
     ClearMarks,
+    /// Clear the selection in this folder and every other folder visited.
+    ClearSelection,
     /// Replace the selection with (selection ∪ marked).
     MarkedUnion,
     /// Replace the selection with (selection ∩ marked).
@@ -656,6 +658,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Selection: symmetric difference with stash", "", "command", Command::StashSymmetricDiff),
     entry("Toggle mark", "M", "command", Command::ToggleMark),
     entry("Clear marks", "", "command", Command::ClearMarks),
+    entry("Clear selection in all folders", "", "selection clear deselect none reset all folders", Command::ClearSelection),
     entry("Selection: union with marked", "", "command", Command::MarkedUnion),
     entry("Selection: intersect with marked", "", "command", Command::MarkedIntersect),
     entry("Selection: subtract marked", "", "command", Command::MarkedSubtract),

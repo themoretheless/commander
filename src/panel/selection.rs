@@ -144,6 +144,29 @@ impl SelectionState {
         self.selected.clear();
     }
 
+    /// Selections remembered in folders other than the bound one, by folder.
+    pub(super) fn selected_elsewhere(&self) -> impl Iterator<Item = (&PathBuf, &HashSet<PathBuf>)> {
+        self.remembered
+            .iter()
+            .filter(|(binding, remembered)| {
+                *binding != &self.binding && !remembered.selected.is_empty()
+            })
+            .map(|(binding, remembered)| (binding, &remembered.selected))
+    }
+
+    /// Clear the selection here and in every remembered folder.
+    pub(super) fn clear_selected_everywhere(&mut self) {
+        self.selected.clear();
+        for remembered in self.remembered.values_mut() {
+            remembered.selected.clear();
+        }
+        self.remembered
+            .retain(|_, remembered| !remembered.marked.is_empty());
+        let remembered = &self.remembered;
+        self.remembered_order
+            .retain(|binding| remembered.contains_key(binding));
+    }
+
     pub(super) fn insert_selected(&mut self, path: PathBuf) -> bool {
         self.selected.insert(path)
     }

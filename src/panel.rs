@@ -495,6 +495,54 @@ impl PanelState {
         self.selection.clear_selected();
     }
 
+    /// Clear the selection in this folder and every other folder visited.
+    pub fn clear_selection_everywhere(&mut self) {
+        self.selection.clear_selected_everywhere();
+    }
+
+    /// How many items are selected in folders other than this one.
+    pub fn selected_elsewhere_count(&self) -> usize {
+        self.selection
+            .selected_elsewhere()
+            .map(|(_, paths)| paths.len())
+            .sum()
+    }
+
+    /// How many folders hold part of the selection, this one included.
+    pub fn selection_folder_count(&self) -> usize {
+        self.selection.selected_elsewhere().count() + usize::from(!self.selection_is_empty())
+    }
+
+    /// Items selected in other folders that still exist, folder by folder in
+    /// path order. Vanished paths are dropped rather than acted on.
+    fn selected_elsewhere_entries(&self) -> Vec<FileEntry> {
+        let mut folders: Vec<_> = self.selection.selected_elsewhere().collect();
+        folders.sort_by(|a, b| a.0.cmp(b.0));
+        folders
+            .into_iter()
+            .flat_map(|(_, paths)| {
+                let mut paths: Vec<&PathBuf> = paths.iter().collect();
+                paths.sort();
+                paths
+            })
+            .filter_map(|path| {
+                let meta = fs::symlink_metadata(path).ok()?;
+                FileEntry::from_meta(path.clone(), &meta)
+            })
+            .collect()
+    }
+
+    /// What an operation acts on: the selection across every folder this
+    /// panel visited, or the highlighted entry when nothing is selected.
+    pub fn picked_entries(&self) -> Result<Vec<FileEntry>, StaleCursor> {
+        if self.selected_elsewhere_count() == 0 {
+            return self.selected_or_cursor();
+        }
+        let mut entries = self.selected_entries();
+        entries.extend(self.selected_elsewhere_entries());
+        Ok(entries)
+    }
+
     pub fn replace_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         self.selection
             .replace_selected(paths.into_iter().collect::<HashSet<_>>());

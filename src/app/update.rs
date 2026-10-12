@@ -1100,14 +1100,25 @@ impl App {
     /// when something is selected; complements the per-panel status bar.
     fn show_selection_hud(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let selected = self.ws.active_panel_ref().selected_entries();
-        if selected.is_empty() {
+        let active = self.ws.active_panel_ref();
+        let selected = active.selected_entries();
+        let elsewhere = active.selected_elsewhere_count();
+        let other_folders = active
+            .selection_folder_count()
+            .saturating_sub(usize::from(!selected.is_empty()));
+        if selected.is_empty() && elsewhere == 0 {
             return;
         }
         let s = crate::selection_summary::summarize(&selected);
         let t = self.colors;
 
         let mut head = format!("{} item(s)", s.count);
+        if elsewhere > 0 {
+            head.push_str(&format!(
+                " + {elsewhere} in {other_folders} other folder{}",
+                if other_folders == 1 { "" } else { "s" }
+            ));
+        }
         if s.dir_count > 0 {
             head.push_str(&format!(" \u{00b7} {} folder(s)", s.dir_count));
         }

@@ -756,10 +756,9 @@ impl Workspace {
             ActivePanel::Right => (right_read_only, left_read_only),
         };
         crate::command::CommandContext {
-            picked_entries: if active.selection_is_empty() {
-                usize::from(cursor.is_some())
-            } else {
-                selected_entries
+            picked_entries: match active.selected_elsewhere_count() {
+                0 if active.selection_is_empty() => usize::from(cursor.is_some()),
+                elsewhere => selected_entries.saturating_add(elsewhere),
             },
             selected_entries,
             cursor_entry: cursor.is_some(),
@@ -1184,6 +1183,7 @@ impl Workspace {
             Command::StashSymmetricDiff => self.stash_symmetric_diff(),
             Command::ToggleMark => self.toggle_mark(),
             Command::ClearMarks => self.active_panel().clear_marks(),
+            Command::ClearSelection => self.active_panel().clear_selection_everywhere(),
             Command::MarkedUnion => self.marked_union(),
             Command::MarkedIntersect => self.marked_intersect(),
             Command::MarkedSubtract => self.marked_subtract(),
@@ -1337,7 +1337,7 @@ impl Workspace {
     }
 
     fn verify_checksum(&mut self) {
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         let paths = entries
@@ -1569,7 +1569,7 @@ impl Workspace {
             return;
         }
         let target = self.inactive_panel().current_path.clone();
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         if entries.is_empty() {
@@ -1844,7 +1844,7 @@ impl Workspace {
         if !self.can_request_delete() {
             return;
         }
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         self.request_delete_entries(entries);
@@ -2378,7 +2378,7 @@ impl Workspace {
         if self.mutation_commits_blocked() {
             return;
         }
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         if entries.is_empty() {
