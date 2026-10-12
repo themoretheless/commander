@@ -175,7 +175,7 @@ impl App {
                             .add_sized(
                                 [24.0, 24.0],
                                 egui::Button::new(
-                                    egui::RichText::new("\u{2715}").color(t.text_muted),
+                                    egui::RichText::new("\u{00d7}").color(t.text_muted),
                                 )
                                 .frame(false),
                             )
@@ -327,7 +327,7 @@ impl App {
                             if !row.state.is_terminal()
                                 && icon(
                                     ui,
-                                    "\u{2715}",
+                                    "\u{00d7}",
                                     if row.state == JobState::Running {
                                         crate::operation_view::CancellationAction::CancelCurrent
                                             .consequence()
