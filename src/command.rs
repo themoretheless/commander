@@ -585,160 +585,117 @@ pub fn contextual_shortcuts(context: &CommandContext) -> Vec<ShortcutHint> {
 }
 
 /// User-facing commands for the Cmd+K palette: (label, shortcut, command).
-pub fn command_catalog() -> Vec<(&'static str, &'static str, Command)> {
-    vec![
-        ("Copy to other panel", "F5", Command::RequestCopy),
-        ("Move to other panel", "F6", Command::RequestMove),
-        (
-            "Move selection into highlighted folder",
-            "Cmd+Enter",
-            Command::MoveIntoCursorFolder,
-        ),
-        (
-            "Copy selection into highlighted folder",
-            "Cmd+Shift+Enter",
-            Command::CopyIntoCursorFolder,
-        ),
-        ("New folder", "F7", Command::CreateDir),
-        (
-            "New folder with selection",
-            "Cmd+Shift+N",
-            Command::GatherIntoFolder,
-        ),
-        ("Delete (to Trash)", "F8", Command::RequestDelete),
-        ("Rename", "F2", Command::BeginRename),
-        ("Batch rename", "Cmd+Shift+R", Command::BeginBatchRename),
-        ("Synchronize panels", "Cmd+Shift+S", Command::BeginSync),
-        ("Find duplicates", "", Command::FindDuplicates),
-        ("Diff files", "Cmd+D", Command::DiffFiles),
-        ("Disk usage map", "Cmd+Shift+M", Command::DiskTreemap),
-        ("Find files", "Cmd+F", Command::BeginFind),
-        ("Open saved search", "", Command::OpenSavedSearch),
-        ("Project collections", "", Command::OpenProjectCollections),
-        ("Copy path", "Cmd+Shift+C", Command::CopyPath),
-        ("Copy name", "", Command::CopyName),
-        ("Copy parent path", "", Command::CopyParentPath),
-        ("Copy as file URL", "", Command::CopyFileUrl),
-        ("Copy shell-escaped path", "", Command::CopyShellPath),
-        (
-            "Copy path relative to other pane",
-            "",
-            Command::CopyRelativePath,
-        ),
-        ("Add to shelf", "Cmd+Shift+A", Command::ShelfAdd),
-        ("Drain shelf here", "Cmd+Shift+V", Command::ShelfDrain),
-        ("Get Info", "Cmd+I", Command::ToggleInfo),
-        ("Go to path", "Cmd+L", Command::BeginGoToPath),
-        ("Back", "Cmd+[", Command::JumpBack),
-        ("Forward", "Cmd+]", Command::JumpForward),
-        ("Bookmark this folder", "", Command::BookmarkCurrentDir),
-        ("Recent folders", "Cmd+P", Command::BeginRecent),
-        ("Select all", "Cmd+A", Command::SelectAll),
-        ("Invert selection", "Cmd+Shift+I", Command::InvertSelection),
-        (
-            "Select files also in other panel",
-            "",
-            Command::SelectSameNamed,
-        ),
-        (
-            "Select files only in this panel",
-            "",
-            Command::SelectOnlyHere,
-        ),
-        (
-            "Select files differing from other panel",
-            "",
-            Command::SelectDiffering,
-        ),
-        (
-            "Select files identical to other panel",
-            "",
-            Command::SelectIdentical,
-        ),
-        ("Stash selection", "", Command::StashSelection),
-        ("Selection: union with stash", "", Command::StashUnion),
-        (
-            "Selection: intersect with stash",
-            "",
-            Command::StashIntersect,
-        ),
-        ("Selection: subtract stash", "", Command::StashSubtract),
-        (
-            "Selection: symmetric difference with stash",
-            "",
-            Command::StashSymmetricDiff,
-        ),
-        ("Toggle mark", "M", Command::ToggleMark),
-        ("Clear marks", "", Command::ClearMarks),
-        ("Selection: union with marked", "", Command::MarkedUnion),
-        (
-            "Selection: intersect with marked",
-            "",
-            Command::MarkedIntersect,
-        ),
-        ("Selection: subtract marked", "", Command::MarkedSubtract),
-        (
-            "Selection: symmetric difference with marked",
-            "",
-            Command::MarkedSymmetricDiff,
-        ),
-        ("Transfer queue", "", Command::ToggleQueuePanel),
-        ("Operation history", "", Command::OpenReceipts),
-        ("Recovery center", "", Command::OpenRecoveryCenter),
-        ("Select clutter files", "", Command::SelectJunk),
-        ("Select 10 largest files", "", Command::SelectLargest),
-        (
-            "Select files like cursor (same extension)",
-            "",
-            Command::SelectLikeCursor,
-        ),
-        ("Select empty files", "", Command::SelectEmptyFiles),
-        ("Copy listing as text", "", Command::CopyListingText),
-        ("Copy listing as CSV", "", Command::CopyListingCsv),
-        ("Copy listing as Markdown", "", Command::CopyListingMarkdown),
-        ("Verify checksum", "", Command::VerifyChecksum),
-        ("Create symlink in other panel", "", Command::CreateSymlink),
-        (
-            "Create hard link in other panel",
-            "",
-            Command::CreateHardlink,
-        ),
-        ("Toggle navigation lock", "", Command::ToggleNavLock),
-        ("Repeat last command", ".", Command::RepeatLast),
-        ("Browse archive", "", Command::BrowseArchive),
-        ("Trust: mark Trusted", "", Command::SetTrustTrusted),
-        ("Trust: mark Restricted", "", Command::SetTrustRestricted),
-        ("Trust: mark Untrusted", "", Command::SetTrustUntrusted),
-        ("Save workspace profile", "", Command::SaveWorkspaceProfile),
-        (
-            "Apply workspace profile",
-            "",
-            Command::ApplyWorkspaceProfile,
-        ),
-        ("Select by mask", "Cmd+G", Command::BeginSelectMask),
-        ("Run command on selection", "", Command::BeginRunBar),
-        ("Toggle hidden files", "Cmd+H", Command::ToggleHidden),
-        (
-            "Sort: folders first (toggle)",
-            "",
-            Command::ToggleFoldersFirst,
-        ),
-        (
-            "Sort: natural order (toggle)",
-            "",
-            Command::ToggleNaturalSort,
-        ),
-        ("Sort by extension", "", Command::SortByExtension),
-        ("Sort by kind", "", Command::SortByKind),
-        ("Reverse sort order", "", Command::ReverseSort),
-        ("Cycle density", "Cmd+Shift+D", Command::CycleDensity),
-        ("Toggle preview", "F3", Command::TogglePreview),
-        ("Equalize panels", "Cmd+E", Command::EqualizePanels),
-        ("Swap panels", "Cmd+U", Command::SwapPanels),
-        ("Undo", "Cmd+Z", Command::Undo),
-        ("Redo", "Cmd+Shift+Z", Command::Redo),
-    ]
+/// One command-palette row: what it reads as, its shortcut hint, the search
+/// keywords that find it, and the command it runs. A palette command is
+/// declared once, here; availability policy lives in [`predicates`].
+#[derive(Clone, Copy, Debug)]
+pub struct CommandEntry {
+    pub label: &'static str,
+    pub shortcut: &'static str,
+    pub keywords: &'static str,
+    pub command: Command,
 }
+
+const fn entry(
+    label: &'static str,
+    shortcut: &'static str,
+    keywords: &'static str,
+    command: Command,
+) -> CommandEntry {
+    CommandEntry {
+        label,
+        shortcut,
+        keywords,
+        command,
+    }
+}
+
+/// The palette catalog in declared order.
+#[rustfmt::skip]
+pub const CATALOG: &[CommandEntry] = &[
+    entry("Copy to other panel", "F5", "file copy duplicate transfer send", Command::RequestCopy),
+    entry("Move to other panel", "F6", "file move transfer relocate send", Command::RequestMove),
+    entry("Move selection into highlighted folder", "Cmd+Enter", "file move selection drop highlighted cursor folder keyboard", Command::MoveIntoCursorFolder),
+    entry("Copy selection into highlighted folder", "Cmd+Shift+Enter", "file copy selection drop highlighted cursor folder keyboard", Command::CopyIntoCursorFolder),
+    entry("New folder", "F7", "file new folder directory mkdir create", Command::CreateDir),
+    entry("New folder with selection", "Cmd+Shift+N", "file new folder with selection gather group move into subfolder", Command::GatherIntoFolder),
+    entry("Delete (to Trash)", "F8", "file delete remove trash", Command::RequestDelete),
+    entry("Rename", "F2", "file rename edit name", Command::BeginRename),
+    entry("Batch rename", "Cmd+Shift+R", "file batch rename bulk multi rename studio", Command::BeginBatchRename),
+    entry("Synchronize panels", "Cmd+Shift+S", "panels sync synchronize mirror compare", Command::BeginSync),
+    entry("Find duplicates", "", "file duplicate duplicates dedupe identical", Command::FindDuplicates),
+    entry("Diff files", "Cmd+D", "view diff compare text", Command::DiffFiles),
+    entry("Disk usage map", "Cmd+Shift+M", "view disk usage map treemap size", Command::DiskTreemap),
+    entry("Find files", "Cmd+F", "file find recursive search", Command::BeginFind),
+    entry("Open saved search", "", "file saved search smart folder", Command::OpenSavedSearch),
+    entry("Project collections", "", "project collection workspace roots virtual view", Command::OpenProjectCollections),
+    entry("Copy path", "Cmd+Shift+C", "clipboard copy path", Command::CopyPath),
+    entry("Copy name", "", "clipboard copy name filename", Command::CopyName),
+    entry("Copy parent path", "", "clipboard copy parent folder path", Command::CopyParentPath),
+    entry("Copy as file URL", "", "clipboard copy url file url", Command::CopyFileUrl),
+    entry("Copy shell-escaped path", "", "clipboard copy shell escaped path", Command::CopyShellPath),
+    entry("Copy path relative to other pane", "", "clipboard copy relative path other pane", Command::CopyRelativePath),
+    entry("Add to shelf", "Cmd+Shift+A", "shelf stack add stage collect", Command::ShelfAdd),
+    entry("Drain shelf here", "Cmd+Shift+V", "shelf stack drain paste copy here", Command::ShelfDrain),
+    entry("Get Info", "Cmd+I", "view info get info properties metadata", Command::ToggleInfo),
+    entry("Go to path", "Cmd+L", "navigation go path location jump", Command::BeginGoToPath),
+    entry("Back", "Cmd+[", "navigation back history previous jump return", Command::JumpBack),
+    entry("Forward", "Cmd+]", "navigation forward history next jump", Command::JumpForward),
+    entry("Bookmark this folder", "", "navigation bookmark favorite add pin folder this", Command::BookmarkCurrentDir),
+    entry("Recent folders", "Cmd+P", "navigation recent folders history projects", Command::BeginRecent),
+    entry("Select all", "Cmd+A", "selection select all mark all", Command::SelectAll),
+    entry("Invert selection", "Cmd+Shift+I", "selection invert reverse flip", Command::InvertSelection),
+    entry("Select files also in other panel", "", "selection same name matching files compare", Command::SelectSameNamed),
+    entry("Select files only in this panel", "", "selection only here unique missing other panel compare diff", Command::SelectOnlyHere),
+    entry("Select files differing from other panel", "", "selection differing changed modified other panel compare diff", Command::SelectDiffering),
+    entry("Select files identical to other panel", "", "selection identical same equal other panel compare diff dedupe", Command::SelectIdentical),
+    entry("Stash selection", "", "command", Command::StashSelection),
+    entry("Selection: union with stash", "", "command", Command::StashUnion),
+    entry("Selection: intersect with stash", "", "command", Command::StashIntersect),
+    entry("Selection: subtract stash", "", "command", Command::StashSubtract),
+    entry("Selection: symmetric difference with stash", "", "command", Command::StashSymmetricDiff),
+    entry("Toggle mark", "M", "command", Command::ToggleMark),
+    entry("Clear marks", "", "command", Command::ClearMarks),
+    entry("Selection: union with marked", "", "command", Command::MarkedUnion),
+    entry("Selection: intersect with marked", "", "command", Command::MarkedIntersect),
+    entry("Selection: subtract marked", "", "command", Command::MarkedSubtract),
+    entry("Selection: symmetric difference with marked", "", "command", Command::MarkedSymmetricDiff),
+    entry("Transfer queue", "", "command", Command::ToggleQueuePanel),
+    entry("Operation history", "", "command", Command::OpenReceipts),
+    entry("Recovery center", "", "command", Command::OpenRecoveryCenter),
+    entry("Select clutter files", "", "selection junk clutter ds_store thumbs desktop.ini cleanup cruft", Command::SelectJunk),
+    entry("Select 10 largest files", "", "selection largest biggest top size files heavy", Command::SelectLargest),
+    entry("Select files like cursor (same extension)", "", "selection same extension like cursor type matching", Command::SelectLikeCursor),
+    entry("Select empty files", "", "selection empty zero byte blank files cleanup", Command::SelectEmptyFiles),
+    entry("Copy listing as text", "", "clipboard copy listing export text list folder contents", Command::CopyListingText),
+    entry("Copy listing as CSV", "", "clipboard copy listing export csv spreadsheet folder", Command::CopyListingCsv),
+    entry("Copy listing as Markdown", "", "clipboard copy listing export markdown table folder", Command::CopyListingMarkdown),
+    entry("Verify checksum", "", "file checksum hash verify blake content integrity digests", Command::VerifyChecksum),
+    entry("Create symlink in other panel", "", "file symlink soft link alias create other panel", Command::CreateSymlink),
+    entry("Create hard link in other panel", "", "file hardlink hard link create other panel", Command::CreateHardlink),
+    entry("Toggle navigation lock", "", "panels navigation lock sync mirror lockstep dual", Command::ToggleNavLock),
+    entry("Repeat last command", ".", "repeat last command again dot redo", Command::RepeatLast),
+    entry("Browse archive", "", "archive zip tar gz browse extract inspect members", Command::BrowseArchive),
+    entry("Trust: mark Trusted", "", "trust trusted root allow run command providers archive", Command::SetTrustTrusted),
+    entry("Trust: mark Restricted", "", "trust restricted root gate providers archive inspect", Command::SetTrustRestricted),
+    entry("Trust: mark Untrusted", "", "trust untrusted root block run command providers", Command::SetTrustUntrusted),
+    entry("Save workspace profile", "", "workspace profile save roots filters layout remember", Command::SaveWorkspaceProfile),
+    entry("Apply workspace profile", "", "workspace profile apply load roots filters restore", Command::ApplyWorkspaceProfile),
+    entry("Select by mask", "Cmd+G", "selection mask glob pattern wildcard", Command::BeginSelectMask),
+    entry("Run command on selection", "", "run command shell open with terminal execute tool launcher", Command::BeginRunBar),
+    entry("Toggle hidden files", "Cmd+H", "view hidden show hidden dotfiles invisible", Command::ToggleHidden),
+    entry("Sort: folders first (toggle)", "", "sort folders first dirs top order grouping directories", Command::ToggleFoldersFirst),
+    entry("Sort: natural order (toggle)", "", "sort natural numeric ascii alphabetical order names file10", Command::ToggleNaturalSort),
+    entry("Sort by extension", "", "sort extension type suffix group ext", Command::SortByExtension),
+    entry("Sort by kind", "", "sort kind category group images docs code archives", Command::SortByKind),
+    entry("Reverse sort order", "", "sort reverse flip order ascending descending invert", Command::ReverseSort),
+    entry("Cycle density", "Cmd+Shift+D", "view density rows compact comfortable spacious", Command::CycleDensity),
+    entry("Toggle preview", "F3", "view preview quick look viewer inspect", Command::TogglePreview),
+    entry("Equalize panels", "Cmd+E", "panels equalize same folder mirror", Command::EqualizePanels),
+    entry("Swap panels", "Cmd+U", "panels swap exchange switch sides", Command::SwapPanels),
+    entry("Undo", "Cmd+Z", "history undo revert rollback", Command::Undo),
+    entry("Redo", "Cmd+Shift+Z", "history redo repeat", Command::Redo),
+];
 
 /// A command-palette row: the catalog entry plus the matched character ranges
 /// over its label (half-open char indices), so the UI can highlight them.
@@ -795,21 +752,18 @@ pub fn combined_score(fuzzy: i32, usage: Option<&Usage>, now: u64) -> i32 {
 /// count, then declared order). Non-empty keeps fuzzy matches, ordered by the
 /// combined score (stable on ties via declared order).
 pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
-    let catalog = command_catalog();
-    let to_match =
-        |(label, shortcut, command): (&'static str, &'static str, Command), matched| CommandMatch {
-            label,
-            shortcut,
-            command,
-            matched,
-        };
+    let to_match = |item: &CommandEntry, matched| CommandMatch {
+        label: item.label,
+        shortcut: item.shortcut,
+        command: item.command,
+        matched,
+    };
 
     if query.trim().is_empty() {
-        let mut indexed: Vec<(usize, (&'static str, &'static str, Command))> =
-            catalog.into_iter().enumerate().collect();
+        let mut indexed: Vec<(usize, &CommandEntry)> = CATALOG.iter().enumerate().collect();
         indexed.sort_by(|(ia, a), (ib, b)| {
-            let ua = usage.uses.get(a.0);
-            let ub = usage.uses.get(b.0);
+            let ua = usage.uses.get(a.label);
+            let ub = usage.uses.get(b.label);
             let (la, ca) = ua.map_or((0, 0), |u| (u.last, u.count));
             let (lb, cb) = ub.map_or((0, 0), |u| (u.last, u.count));
             lb.cmp(&la).then(cb.cmp(&ca)).then(ia.cmp(ib))
@@ -821,18 +775,18 @@ pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
     }
 
     let mut scored: Vec<(i32, usize, CommandMatch)> = Vec::new();
-    for (i, item) in catalog.into_iter().enumerate() {
+    for (i, item) in CATALOG.iter().enumerate() {
         let mut best: Option<(i32, Vec<(usize, usize)>)> = None;
-        if let Some(ms) = crate::fuzzy::score(query, item.0) {
+        if let Some(ms) = crate::fuzzy::score(query, item.label) {
             best = Some((ms.score, ms.matched_ranges));
         }
-        if let Some(score) = metadata_score(query, item.1, item.2)
+        if let Some(score) = metadata_score(query, item)
             && best.as_ref().is_none_or(|(current, _)| score > *current)
         {
             best = Some((score, Vec::new()));
         }
         if let Some((score, matched)) = best {
-            let total = combined_score(score, usage.uses.get(item.0), now);
+            let total = combined_score(score, usage.uses.get(item.label), now);
             scored.push((total, i, to_match(item, matched)));
         }
     }
@@ -840,7 +794,8 @@ pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
     scored.into_iter().map(|(_, _, m)| m).collect()
 }
 
-fn metadata_score(query: &str, shortcut: &str, command: Command) -> Option<i32> {
+fn metadata_score(query: &str, item: &CommandEntry) -> Option<i32> {
+    let shortcut = item.shortcut;
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return None;
@@ -857,14 +812,11 @@ fn metadata_score(query: &str, shortcut: &str, command: Command) -> Option<i32> 
         }
     }
 
-    let aliases = command_aliases(command);
     let tokens: Vec<&str> = q.split_whitespace().collect();
     if tokens.is_empty() {
         return None;
     }
-    let all_tokens_match = tokens
-        .iter()
-        .all(|token| aliases.iter().any(|alias| alias.contains(token)));
+    let all_tokens_match = tokens.iter().all(|token| item.keywords.contains(token));
     all_tokens_match.then_some(42 + tokens.len() as i32)
 }
 
@@ -874,96 +826,6 @@ fn shortcut_search_text(input: &str) -> String {
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
-}
-
-fn command_aliases(command: Command) -> &'static [&'static str] {
-    match command {
-        Command::RequestCopy => &["file copy duplicate transfer send"],
-        Command::RequestMove => &["file move transfer relocate send"],
-        Command::MoveIntoCursorFolder => {
-            &["file move selection drop highlighted cursor folder keyboard"]
-        }
-        Command::CopyIntoCursorFolder => {
-            &["file copy selection drop highlighted cursor folder keyboard"]
-        }
-        Command::CreateDir => &["file new folder directory mkdir create"],
-        Command::GatherIntoFolder => {
-            &["file new folder with selection gather group move into subfolder"]
-        }
-        Command::RequestDelete => &["file delete remove trash"],
-        Command::BeginRename => &["file rename edit name"],
-        Command::BeginBatchRename => &["file batch rename bulk multi rename studio"],
-        Command::BeginSync => &["panels sync synchronize mirror compare"],
-        Command::FindDuplicates => &["file duplicate duplicates dedupe identical"],
-        Command::DiffFiles => &["view diff compare text"],
-        Command::DiskTreemap => &["view disk usage map treemap size"],
-        Command::BeginFind => &["file find recursive search"],
-        Command::OpenSavedSearch => &["file saved search smart folder"],
-        Command::OpenProjectCollections => &["project collection workspace roots virtual view"],
-        Command::CopyPath => &["clipboard copy path"],
-        Command::CopyName => &["clipboard copy name filename"],
-        Command::CopyParentPath => &["clipboard copy parent folder path"],
-        Command::CopyFileUrl => &["clipboard copy url file url"],
-        Command::CopyShellPath => &["clipboard copy shell escaped path"],
-        Command::CopyRelativePath => &["clipboard copy relative path other pane"],
-        Command::ShelfAdd => &["shelf stack add stage collect"],
-        Command::ShelfDrain => &["shelf stack drain paste copy here"],
-        Command::ToggleInfo => &["view info get info properties metadata"],
-        Command::BeginGoToPath => &["navigation go path location jump"],
-        Command::JumpBack => &["navigation back history previous jump return"],
-        Command::JumpForward => &["navigation forward history next jump"],
-        Command::JumpSlot(_) => &["navigation bookmark favorite slot jump go"],
-        Command::AssignSlot(_) => &["navigation bookmark favorite slot assign set"],
-        Command::BookmarkCurrentDir => &["navigation bookmark favorite add pin folder this"],
-        Command::BeginRecent => &["navigation recent folders history projects"],
-        Command::SelectAll => &["selection select all mark all"],
-        Command::InvertSelection => &["selection invert reverse flip"],
-        Command::SelectSameNamed => &["selection same name matching files compare"],
-        Command::SelectOnlyHere => &["selection only here unique missing other panel compare diff"],
-        Command::SelectDiffering => {
-            &["selection differing changed modified other panel compare diff"]
-        }
-        Command::SelectIdentical => {
-            &["selection identical same equal other panel compare diff dedupe"]
-        }
-        Command::BeginSelectMask => &["selection mask glob pattern wildcard"],
-        Command::BeginRunBar => &["run command shell open with terminal execute tool launcher"],
-        Command::ToggleHidden => &["view hidden show hidden dotfiles invisible"],
-        Command::ToggleFoldersFirst => &["sort folders first dirs top order grouping directories"],
-        Command::ToggleNaturalSort => {
-            &["sort natural numeric ascii alphabetical order names file10"]
-        }
-        Command::SortByExtension => &["sort extension type suffix group ext"],
-        Command::SortByKind => &["sort kind category group images docs code archives"],
-        Command::SelectJunk => {
-            &["selection junk clutter ds_store thumbs desktop.ini cleanup cruft"]
-        }
-        Command::ReverseSort => &["sort reverse flip order ascending descending invert"],
-        Command::SelectLargest => &["selection largest biggest top size files heavy"],
-        Command::SelectLikeCursor => &["selection same extension like cursor type matching"],
-        Command::SelectEmptyFiles => &["selection empty zero byte blank files cleanup"],
-        Command::CopyListingText => &["clipboard copy listing export text list folder contents"],
-        Command::CopyListingCsv => &["clipboard copy listing export csv spreadsheet folder"],
-        Command::CopyListingMarkdown => &["clipboard copy listing export markdown table folder"],
-        Command::VerifyChecksum => &["file checksum hash verify blake content integrity digests"],
-        Command::CreateSymlink => &["file symlink soft link alias create other panel"],
-        Command::CreateHardlink => &["file hardlink hard link create other panel"],
-        Command::ToggleNavLock => &["panels navigation lock sync mirror lockstep dual"],
-        Command::RepeatLast => &["repeat last command again dot redo"],
-        Command::BrowseArchive => &["archive zip tar gz browse extract inspect members"],
-        Command::SetTrustTrusted => &["trust trusted root allow run command providers archive"],
-        Command::SetTrustRestricted => &["trust restricted root gate providers archive inspect"],
-        Command::SetTrustUntrusted => &["trust untrusted root block run command providers"],
-        Command::SaveWorkspaceProfile => &["workspace profile save roots filters layout remember"],
-        Command::ApplyWorkspaceProfile => &["workspace profile apply load roots filters restore"],
-        Command::CycleDensity => &["view density rows compact comfortable spacious"],
-        Command::TogglePreview => &["view preview quick look viewer inspect"],
-        Command::EqualizePanels => &["panels equalize same folder mirror"],
-        Command::SwapPanels => &["panels swap exchange switch sides"],
-        Command::Undo => &["history undo revert rollback"],
-        Command::Redo => &["history redo repeat"],
-        _ => &["command"],
-    }
 }
 
 /// Rank without usage (pure fuzzy order); the empty-history baseline used in
@@ -1306,7 +1168,7 @@ mod tests {
     #[test]
     fn every_catalog_availability_has_a_consistent_reason() {
         let context = CommandContext::default();
-        for (label, _, command) in command_catalog() {
+        for &CommandEntry { label, command, .. } in CATALOG {
             let availability = availability(command, &context);
             assert_eq!(
                 availability.enabled,
@@ -1454,7 +1316,7 @@ mod tests {
     fn filter_commands_ranks_by_fuzzy_relevance() {
         // Empty query (no usage) returns the whole catalog in declared order.
         let all = filter_commands("");
-        assert_eq!(all.len(), command_catalog().len());
+        assert_eq!(all.len(), CATALOG.len());
         assert_eq!(all[0].command, Command::RequestCopy);
 
         // The best fuzzy match leads the list.
