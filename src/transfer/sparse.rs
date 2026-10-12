@@ -26,6 +26,16 @@ pub(super) fn is_sparse_file(_path: &Path) -> bool {
     false
 }
 
+/// Granularity of hole preservation: an all-zero block of this size is
+/// skipped instead of written, leaving a hole in the destination.
+#[cfg(unix)]
+const HOLE_BLOCK: usize = 4 * 1024;
+
+/// Copy `src` to `dst`, leaving all-zero blocks as holes.
+///
+/// Every byte of the source is read, so correctness never depends on
+/// `SEEK_DATA`/`SEEK_HOLE`, which APFS can report inaccurately for recently
+/// written files; reading a real hole costs no disk I/O.
 #[cfg(unix)]
 pub(super) fn copy_file_sparse(
     src: &Path,
@@ -33,8 +43,6 @@ pub(super) fn copy_file_sparse(
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
 ) -> std::io::Result<u64> {
-    use std::os::fd::AsRawFd;
-
     let mut reader = std::fs::File::open(src)?;
     let file_size = reader.metadata()?.len();
     let mut writer = std::fs::OpenOptions::new()
@@ -45,66 +53,36 @@ pub(super) fn copy_file_sparse(
     {
         crate::lock_util::recover(state).begin_file(src, file_size);
     }
-    let mut cursor = 0_u64;
-    let mut reported = 0_u64;
+    let mut offset = 0_u64;
     let mut buffer = vec![0_u8; COPY_BUF_SIZE];
-    while cursor < file_size {
+    while offset < file_size {
         crate::transfer::check_cancelled(state)?;
-        let data = unsafe {
-            libc::lseek(
-                reader.as_raw_fd(),
-                cursor.try_into().map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "file offset overflow")
-                })?,
-                libc::SEEK_DATA,
-            )
-        };
-        if data < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ENXIO) {
-                break;
+        let wanted = (file_size - offset).min(buffer.len() as u64) as usize;
+        let read = reader.read(&mut buffer[..wanted])?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "sparse source ended early",
+            ));
+        }
+        for (index, block) in buffer[..read].chunks(HOLE_BLOCK).enumerate() {
+            if block.iter().all(|&byte| byte == 0) {
+                continue;
             }
-            return Err(error);
+            writer.seek(SeekFrom::Start(offset + (index * HOLE_BLOCK) as u64))?;
+            writer.write_all(block)?;
         }
-        let hole = unsafe { libc::lseek(reader.as_raw_fd(), data, libc::SEEK_HOLE) };
-        if hole < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let data = data as u64;
-        let hole = (hole as u64).min(file_size);
-        reader.seek(SeekFrom::Start(data))?;
-        writer.seek(SeekFrom::Start(data))?;
-        let mut extent_offset = data;
-        while extent_offset < hole {
-            let wanted = (hole - extent_offset).min(buffer.len() as u64) as usize;
-            let read = reader.read(&mut buffer[..wanted])?;
-            if read == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "sparse extent ended early",
-                ));
-            }
-            writer.write_all(&buffer[..read])?;
-            limiter.consume(read, || crate::lock_util::recover(state).cancelled)?;
-            extent_offset = extent_offset.saturating_add(read as u64);
-            let advanced = extent_offset.saturating_sub(reported);
-            reported = extent_offset;
-            let mut progress = crate::lock_util::recover(state);
-            progress.current_file_copied = extent_offset;
-            progress.copied_bytes = progress.copied_bytes.saturating_add(advanced);
-            progress.maybe_sample();
-        }
-        cursor = hole;
+        limiter.consume(read, || crate::lock_util::recover(state).cancelled)?;
+        offset = offset.saturating_add(read as u64);
+        let mut progress = crate::lock_util::recover(state);
+        progress.current_file_copied = offset;
+        progress.copied_bytes = progress.copied_bytes.saturating_add(read as u64);
+        progress.maybe_sample();
     }
     writer.sync_data()?;
     if let Ok(metadata) = src.metadata() {
         std::fs::set_permissions(dst, metadata.permissions())?;
     }
-    let mut progress = crate::lock_util::recover(state);
-    progress.copied_bytes = progress
-        .copied_bytes
-        .saturating_add(file_size.saturating_sub(reported));
-    progress.current_file_copied = file_size;
     Ok(file_size)
 }
 
