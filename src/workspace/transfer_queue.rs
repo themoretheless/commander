@@ -887,18 +887,7 @@ impl Workspace {
     }
 
     fn latch_history_error(&mut self, operation_id: OperationId, error: crate::undo::HistoryError) {
-        if self.safe_state.is_some() {
-            return;
-        }
-        let reason = format!("History settlement failed: {error}");
-        let failure =
-            ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, reason.clone());
-        self.safe_state = Some(SafeState {
-            operation_id,
-            reason,
-            paths: Vec::new(),
-            failures: vec![failure],
-        });
+        self.latch_history_failure(Some(operation_id), error);
     }
 
     fn apply_history_outcome(
@@ -954,19 +943,14 @@ impl Workspace {
     }
 
     pub(super) fn latch_interrupted_replay(&mut self, operation_id: OperationId) {
-        if self.safe_state.is_some() {
-            return;
-        }
-        let reason = "History replay stopped after filesystem effects; resume or roll back the \
-                      matching recovery operation before other mutations"
-            .to_string();
-        let failure =
-            ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, reason.clone());
-        self.safe_state = Some(SafeState {
-            operation_id,
-            reason,
-            paths: Vec::new(),
-            failures: vec![failure],
+        self.latch_safe_state(|| {
+            SafeState::integrity(
+                operation_id,
+                "History replay stopped after filesystem effects; resume or roll back the \
+                 matching recovery operation before other mutations"
+                    .to_string(),
+                Vec::new(),
+            )
         });
     }
 
@@ -982,10 +966,8 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) -> super::TransferPollOutcome {
         let outcome = self.transfers.poll();
-        if self.safe_state.is_none()
-            && let Some(safe_state) = outcome.safe_state
-        {
-            self.safe_state = Some(safe_state);
+        if let Some(safe_state) = outcome.safe_state {
+            self.latch_safe_state(|| safe_state);
         }
         let Some(retirement) = outcome.retirement else {
             return super::TransferPollOutcome::default();
@@ -1024,9 +1006,7 @@ impl Workspace {
         let retirement = match self.transfers.dismiss(job_id) {
             Ok(retirement) => retirement,
             Err(DismissRejection::ReviewRequired(safe_state)) => {
-                if self.safe_state.is_none() {
-                    self.safe_state = Some(safe_state.clone());
-                }
+                self.latch_safe_state(|| safe_state.clone());
                 return Err(DismissRejection::ReviewRequired(safe_state));
             }
             Err(rejection) => return Err(rejection),
@@ -1139,31 +1119,15 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transfer::{CopyMethod, OverwritePolicy};
 
     fn spec(operation_id: &str) -> TransferSpec {
         TransferSpec {
             operation_id: OperationId(operation_id.to_string()),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: Vec::new(),
-            expectations: Vec::new(),
-            target: PathBuf::from("/tmp/commander-transfer-controller-test"),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
-            durability: crate::operation::DurabilityProfile::default(),
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(
+                TransferKind::Move,
+                Vec::new(),
+                PathBuf::from("/tmp/commander-transfer-controller-test"),
+            )
         }
     }
 

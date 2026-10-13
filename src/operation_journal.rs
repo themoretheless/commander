@@ -836,41 +836,28 @@ struct LoadedJournal {
 
 fn load_journal_at(path: &Path) -> Result<LoadedJournal, String> {
     let persist = crate::persistence::FsPersist::default();
-    let loaded = crate::persistence::load_enveloped::<Journal>(&persist, path, STORE);
-    let status = loaded.gate.status();
-    match status {
-        crate::persistence::LoadStatus::Missing => Ok(LoadedJournal {
+    let (journal, gate) =
+        crate::persistence::load_strict::<Journal>(&persist, path, STORE, JOURNAL_NOUN)?;
+    let Some(journal) = journal else {
+        return Ok(LoadedJournal {
             journal: Journal::default(),
-            gate: loaded.gate,
-        }),
-        crate::persistence::LoadStatus::Legacy
-        | crate::persistence::LoadStatus::Current
-        | crate::persistence::LoadStatus::Recovered => {
-            let Some(journal) = loaded.value else {
-                return Err("Operation journal is corrupt: payload did not decode".to_string());
-            };
-            if !(1..=JOURNAL_SCHEMA).contains(&journal.schema) {
-                return Err(format!(
-                    "Unsupported operation journal schema {}; expected {JOURNAL_SCHEMA}",
-                    journal.schema
-                ));
-            }
-            Ok(LoadedJournal {
-                journal: migrate_and_validate(journal)?,
-                gate: loaded.gate,
-            })
-        }
-        crate::persistence::LoadStatus::Corrupt => {
-            Err("Operation journal is corrupt: envelope or payload rejected".to_string())
-        }
-        crate::persistence::LoadStatus::FutureVersion => Err(
-            "Operation journal uses a newer persist envelope than this build supports".to_string(),
-        ),
-        crate::persistence::LoadStatus::Unreadable => {
-            Err("Could not open operation journal: unreadable".to_string())
-        }
+            gate,
+        });
+    };
+    if !(1..=JOURNAL_SCHEMA).contains(&journal.schema) {
+        return Err(format!(
+            "Unsupported operation journal schema {}; expected {JOURNAL_SCHEMA}",
+            journal.schema
+        ));
     }
+    Ok(LoadedJournal {
+        journal: migrate_and_validate(journal)?,
+        gate,
+    })
 }
+
+/// Sentence-case name used in this store's error messages.
+const JOURNAL_NOUN: &str = "Operation journal";
 
 fn load_at(path: &Path) -> Result<Journal, String> {
     Ok(load_journal_at(path)?.journal)
@@ -912,10 +899,7 @@ fn save_journal_at(
         gate,
         crate::persistence::SaveIntent::Automatic,
     ) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => Ok(()),
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => Err(format!(
-            "Operation journal commit is ambiguous across a crash: target was replaced but its directory could not be synced: {error}"
-        )),
+        Ok(outcome) => crate::persistence::require_durable(JOURNAL_NOUN, outcome),
         Err(error) => Err(map_journal_save_error(error)),
     }
 }
@@ -1126,6 +1110,26 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
     })
 }
 
+fn operation_mut<'a>(
+    operations: &'a mut [OperationRecord],
+    operation_id: &OperationId,
+) -> Result<&'a mut OperationRecord, String> {
+    operations
+        .iter_mut()
+        .find(|operation| &operation.id == operation_id)
+        .ok_or_else(|| format!("Unknown operation {}", operation_id.0))
+}
+
+fn step_mut<'a>(
+    steps: &'a mut [OperationStep],
+    key: &IdempotencyKey,
+) -> Result<&'a mut OperationStep, String> {
+    steps
+        .iter_mut()
+        .find(|step| &step.key == key)
+        .ok_or_else(|| format!("Unknown operation step {}", key.0))
+}
+
 fn update_step(
     operation_id: &OperationId,
     key: &IdempotencyKey,
@@ -1133,11 +1137,7 @@ fn update_step(
     update: impl FnOnce(&mut OperationStep) -> Result<(), String>,
 ) -> Result<(), String> {
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if !allowed_operation_statuses.contains(&operation.status) {
             return Err(format!(
                 "Operation {} cannot accept step callbacks while {}",
@@ -1145,11 +1145,7 @@ fn update_step(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         update(step)?;
         operation.updated_at_secs = now_secs();
         Ok(())
@@ -1225,11 +1221,7 @@ pub fn prepare_replacement(
         return Err("Overwrite destination changed after conflict review".to_string());
     }
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if operation.status != OperationStatus::Running {
             return Err(format!(
                 "Operation {} cannot prepare an overwrite while {}",
@@ -1237,11 +1229,7 @@ pub fn prepare_replacement(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Running
             || step.staging.as_deref() != Some(staged)
             || step.landing.as_deref() != Some(destination)
@@ -1351,11 +1339,7 @@ pub fn prepare_placement(
         return Err("Non-overwrite destination is already occupied".to_string());
     }
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if operation.status != OperationStatus::Running {
             return Err(format!(
                 "Operation {} cannot prepare placement while {}",
@@ -1363,11 +1347,7 @@ pub fn prepare_placement(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Running
             || step.staging.as_deref() != Some(staged)
             || step.landing.as_deref() != Some(destination)
@@ -1440,16 +1420,8 @@ pub fn mark_completed(
     let destination_after = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not capture completed effect: {error}"))?;
     let replacement = mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
 
         if step.status == StepStatus::Completed {
             let existing = step
@@ -1510,39 +1482,7 @@ pub fn mark_completed(
     if let Some(replacement) = replacement {
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))?;
-        if backup.exists {
-            if !replacement.original.same_version(&backup) {
-                return Err(
-                    "Overwrite backup was replaced before cleanup; foreign data was preserved"
-                        .to_string(),
-                );
-            }
-            remove_expected_path(&replacement.path, &replacement.original)?;
-        }
-        mutate(|journal| {
-            let operation = journal
-                .operations
-                .iter_mut()
-                .find(|operation| &operation.id == operation_id)
-                .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-            let step = operation
-                .steps
-                .iter_mut()
-                .find(|step| &step.key == key)
-                .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
-            if step.status != StepStatus::Completed
-                || step.replacement.as_ref() != Some(&replacement)
-            {
-                return Err(format!(
-                    "Overwrite proof for step {} changed before backup cleanup",
-                    key.0
-                ));
-            }
-            step.replacement = None;
-            step.staging = None;
-            operation.updated_at_secs = now_secs();
-            Ok(())
-        })?;
+        release_overwrite_backup(operation_id, key, &replacement, &backup)?;
     }
     Ok(())
 }
@@ -1622,11 +1562,7 @@ pub fn mark_rolled_back(operation_id: &OperationId, key: &IdempotencyKey) -> Res
 
 pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(), String> {
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         let event = match status {
             OperationStatus::Planned => {
                 return Err("cannot finish an operation as planned".to_string());
@@ -1809,13 +1745,14 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
                     replacement.path.display()
                 ));
             }
-            crate::native_copy::rename_noreplace(&replacement.path, &replacement.original.path)
-                .map_err(|error| {
+            crate::fs_at::rename_noreplace(&replacement.path, &replacement.original.path).map_err(
+                |error| {
                     format!(
                         "Could not restore interrupted overwrite from {}: {error}",
                         replacement.path.display()
                     )
-                })?;
+                },
+            )?;
             crate::fs_util::sync_parent_namespace(&replacement.original.path)
                 .map_err(|error| format!("Could not sync restored overwrite: {error}"))?;
         } else if !replacement.original.same_binding(&destination) {
@@ -1826,11 +1763,7 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
         }
 
         mutate(|journal| {
-            let operation = journal
-                .operations
-                .iter_mut()
-                .find(|operation| &operation.id == operation_id)
-                .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+            let operation = operation_mut(&mut journal.operations, operation_id)?;
             let journal_step = operation
                 .steps
                 .iter_mut()
@@ -1896,16 +1829,8 @@ fn complete_interrupted_overwrite_placement(
     let destination_after = destination.clone();
     let landing = replacement.original.path.clone();
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.replacement.as_ref() != Some(replacement) {
             return Err(format!(
                 "Overwrite proof changed while completing step {}",
@@ -1942,6 +1867,18 @@ fn complete_interrupted_overwrite_placement(
         Ok(())
     })?;
 
+    release_overwrite_backup(operation_id, key, replacement, backup)
+}
+
+/// Remove a completed overwrite's backup of the original (only if it is still
+/// that original), then drop the step's replacement record. Foreign data at
+/// the backup path is preserved and reported.
+fn release_overwrite_backup(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    replacement: &ReplacementBackup,
+    backup: &PathIdentity,
+) -> Result<(), String> {
     if backup.exists {
         if !replacement.original.same_version(backup) {
             return Err(
@@ -1952,16 +1889,8 @@ fn complete_interrupted_overwrite_placement(
         remove_expected_path(&replacement.path, &replacement.original)?;
     }
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Completed || step.replacement.as_ref() != Some(replacement) {
             return Err(format!(
                 "Overwrite proof for step {} changed before backup cleanup",
@@ -2040,16 +1969,8 @@ fn complete_interrupted_placement(
 
     let destination_after = destination.clone();
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.placement.as_ref() != Some(placement) {
             return Err(format!(
                 "Placement proof changed while completing step {}",
@@ -2221,10 +2142,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
     Ok(TransferSpec {
         operation_id: record.id,
         group_id: record.group_id,
-        kind: record.kind,
-        entries,
         expectations,
-        target: record.target,
         policy: record.policy,
         method: record.method,
         durability: record.durability,
@@ -2235,16 +2153,7 @@ fn build_resume_spec_from(record: OperationRecord) -> Result<TransferSpec, Strin
         post_success: record.post_success,
         rollback_cleanup: record.rollback_cleanup,
         rollback_cleanup_identity: record.rollback_cleanup_identity,
-        #[cfg(test)]
-        mount_wait_override: None,
-        #[cfg(test)]
-        before_commit: None,
-        #[cfg(test)]
-        before_post_success: None,
-        #[cfg(test)]
-        before_terminal_publish: None,
-        #[cfg(test)]
-        journal_enabled: false,
+        ..TransferSpec::new(record.kind, entries, record.target)
     })
 }
 
@@ -2300,14 +2209,9 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
         }
         _ => checkpoint.partial.same_version(&partial),
     };
-    let layout_matches = match checkpoint.layout {
-        crate::transfer::CheckpointLayout::Prefix => partial.size >= checkpoint.offset,
-        crate::transfer::CheckpointLayout::DeltaFixed
-        | crate::transfer::CheckpointLayout::DeltaCdc => {
-            partial.size == checkpoint.partial.size && partial.size >= checkpoint.offset
-        }
-    };
-    if !same_object || partial.kind != Some(crate::path_identity::PathKind::File) || !layout_matches
+    if !same_object
+        || partial.kind != Some(crate::path_identity::PathKind::File)
+        || !checkpoint.size_fits(&partial)
     {
         return Err(format!(
             "Recovery staging changed after checkpoint: {}",
@@ -2451,7 +2355,7 @@ fn detach_expected_path(
     expected: &PathIdentity,
     quarantine: &Path,
 ) -> Result<PathBuf, String> {
-    crate::native_copy::rename_noreplace(path, quarantine)
+    crate::fs_at::rename_noreplace(path, quarantine)
         .map_err(|error| format!("Could not quarantine {}: {error}", path.display()))?;
     crate::fs_util::sync_parent_namespace(path)
         .map_err(|error| format!("Could not sync quarantine rename: {error}"))?;
@@ -2461,7 +2365,7 @@ fn detach_expected_path(
         return Ok(quarantine.to_path_buf());
     }
 
-    let restored = crate::native_copy::rename_noreplace(quarantine, path);
+    let restored = crate::fs_at::rename_noreplace(quarantine, path);
     if restored.is_ok() {
         let _ = crate::fs_util::sync_parent_namespace(path);
     }
@@ -2525,11 +2429,7 @@ fn prepare_rollback_receipt(
         .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
     let version = rollback_version_receipt(step, effect)?;
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if !matches!(
             operation.status,
             OperationStatus::Running
@@ -2543,11 +2443,7 @@ fn prepare_rollback_receipt(
                 operation.status.label()
             ));
         }
-        let step = operation
-            .steps
-            .iter_mut()
-            .find(|step| &step.key == key)
-            .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
+        let step = step_mut(&mut operation.steps, key)?;
         if step.status != StepStatus::Completed {
             return Err(format!(
                 "Only a completed step can prepare rollback: {}",
@@ -2796,7 +2692,7 @@ fn rollback_step(
                     "Rollback quarantine no longer contains the completed effect".to_string(),
                 );
             }
-            crate::native_copy::rename_noreplace(&receipt.quarantine, &step.source)
+            crate::fs_at::rename_noreplace(&receipt.quarantine, &step.source)
                 .map_err(|error| error.to_string())?;
             crate::fs_util::sync_parent_namespace(&step.source)
                 .map_err(|error| format!("Could not sync restored source: {error}"))?;
@@ -2941,7 +2837,7 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
             });
         }
         Err(error) => {
-            let restored = crate::native_copy::rename_noreplace(&quarantine, cleanup);
+            let restored = crate::fs_at::rename_noreplace(&quarantine, cleanup);
             if restored.is_ok() {
                 let _ = crate::fs_util::sync_parent_namespace(cleanup);
                 let _ = clear_container_quarantine(&record.id, &quarantine);
@@ -2964,11 +2860,7 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
 
 fn clear_container_quarantine(operation_id: &OperationId, quarantine: &Path) -> Result<(), String> {
     mutate(|journal| {
-        let operation = journal
-            .operations
-            .iter_mut()
-            .find(|operation| &operation.id == operation_id)
-            .ok_or_else(|| format!("Unknown operation {}", operation_id.0))?;
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
         if operation.rollback_cleanup_quarantine.as_deref() != Some(quarantine) {
             return Err("Rollback container quarantine changed before cleanup".to_string());
         }

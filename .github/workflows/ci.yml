@@ -90,6 +90,7 @@ jobs:
           - minimum_window
           - zoom_200_accessible
           - confirmation_owner
+          - pane_tool
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

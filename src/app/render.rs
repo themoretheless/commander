@@ -220,7 +220,7 @@ impl App {
                                 .color(t.text_muted),
                         );
                     }
-                    if !f.is_empty() && chip(ui, "\u{2715} Clear", false) {
+                    if !f.is_empty() && chip(ui, "\u{00d7} Clear", false) {
                         *f = FacetSet::default();
                     }
                 });
@@ -629,7 +629,7 @@ impl App {
                                 });
                             } else {
                                 let close_button = |ui: &mut egui::Ui| {
-                                    ui.small_button("\u{2715}")
+                                    ui.small_button("\u{00d7}")
                                         .on_hover_text("Close preview")
                                         .clicked()
                                 };

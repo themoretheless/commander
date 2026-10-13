@@ -68,6 +68,10 @@ fn reveal(path: &std::path::Path) -> std::io::Result<()> {
 pub struct PortableContextMenu;
 
 impl ContextMenuPort for PortableContextMenu {
+    fn presents_native_menu(&self) -> bool {
+        false
+    }
+
     fn show_context_menu(&self, _invocation: &ContextMenuInvocation) -> ContextMenuResult {
         ContextMenuResult::Unsupported {
             reason: "native context menus are macOS-only".to_string(),

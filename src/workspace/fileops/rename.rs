@@ -75,7 +75,7 @@ pub(crate) fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), Renam
         return Err(RenameExecutionError::unchanged("Name already in use"));
     }
     if !same_file {
-        return crate::native_copy::rename_noreplace(from, to)
+        return crate::fs_at::rename_noreplace(from, to)
             .map_err(|error| RenameExecutionError::unchanged(error.to_string()));
     }
 
@@ -83,11 +83,11 @@ pub(crate) fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), Renam
         .parent()
         .ok_or_else(|| RenameExecutionError::unchanged("Path has no parent"))?;
     let tmp = crate::fs_util::first_available(|i| parent.join(format!(".cmdr-rename.{i}")));
-    crate::native_copy::rename_noreplace(from, &tmp)
+    crate::fs_at::rename_noreplace(from, &tmp)
         .map_err(|error| RenameExecutionError::unchanged(error.to_string()))?;
-    match crate::native_copy::rename_noreplace(&tmp, to) {
+    match crate::fs_at::rename_noreplace(&tmp, to) {
         Ok(()) => Ok(()),
-        Err(rename_error) => match crate::native_copy::rename_noreplace(&tmp, from) {
+        Err(rename_error) => match crate::fs_at::rename_noreplace(&tmp, from) {
             Ok(()) => Err(RenameExecutionError::unchanged(rename_error.to_string())),
             Err(rollback_error) => Err(RenameExecutionError::uncertain(
                 format!(
@@ -104,23 +104,18 @@ pub(crate) fn latch_rename_execution_error(
     workspace: &mut Workspace,
     error: &RenameExecutionError,
 ) {
-    if !error.integrity_uncertain || workspace.safe_state.is_some() {
+    if !error.integrity_uncertain {
         return;
     }
-    let reason = format!(
-        "Rename rollback did not restore the original namespace: {}",
-        error.message
-    );
-    let failure = crate::operation::ClassifiedFailure::message(
-        crate::operation::FailureClass::IntegrityUncertain,
-        error.paths.first().cloned(),
-        reason.clone(),
-    );
-    workspace.safe_state = Some(crate::operation::SafeState {
-        operation_id: crate::operation::OperationId::new(),
-        reason,
-        paths: error.paths.clone(),
-        failures: vec![failure],
+    workspace.latch_safe_state(|| {
+        crate::operation::SafeState::integrity(
+            crate::operation::OperationId::new(),
+            format!(
+                "Rename rollback did not restore the original namespace: {}",
+                error.message
+            ),
+            error.paths.clone(),
+        )
     });
 }
 

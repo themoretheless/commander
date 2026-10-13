@@ -121,12 +121,7 @@ impl App {
             .resizable(false)
             .fixed_size(Vec2::new(win_w, win_h))
             .title_bar(false)
-            .frame(
-                Frame::NONE
-                    .fill(t.bg_panel)
-                    .inner_margin(Margin::same(6))
-                    .stroke(Stroke::new(1.0_f32, t.border)),
-            )
+            .frame(super::dialog_frame(t, 6))
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 // Title + tabs on one line
@@ -159,7 +154,15 @@ impl App {
                 } else if is_delete {
                     // ── Delete: single list (virtualized) ──
                     let list_h = (ui.available_height() - 80.0).max(60.0);
-                    Self::render_flat_list_virtual(ui, &flat, &[], &t, list_h, "pending_op_files");
+                    Self::render_flat_list(
+                        ui,
+                        &flat,
+                        &[],
+                        &t,
+                        list_h,
+                        "pending_op_files",
+                        FlatListMode::Preview,
+                    );
                 } else {
                     // ── Copy/Move: two columns (source → destination) ──
                     let target_path = target.as_ref().unwrap();
@@ -197,28 +200,26 @@ impl App {
                         let list_h = (cols[0].available_height() - 80.0).max(60.0);
 
                         // Left: source tree — transferred files dimmed+strikethrough, rest normal
-                        Self::render_flat_list_animated(
+                        Self::render_flat_list(
                             &mut cols[0],
                             &flat,
                             &conflicts,
                             &t,
                             list_h,
                             "pending_src",
-                            transferred,
-                            true,
+                            FlatListMode::Source { transferred },
                         );
 
                         // Right: only transferred files shown, highlighted
                         let list_h = (cols[1].available_height() - 80.0).max(60.0);
-                        Self::render_flat_list_animated(
+                        Self::render_flat_list(
                             &mut cols[1],
                             &flat,
                             &conflicts,
                             &t,
                             list_h,
                             "pending_dst",
-                            transferred,
-                            false,
+                            FlatListMode::Destination { transferred },
                         );
                     });
                 }
@@ -313,7 +314,7 @@ impl App {
                                     let dst = if c.dst_newer { "dst newer" } else { "" };
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "{}    src {} {}    \u{2192} dst {} {}",
+                                            "{}    src {} {}    \u{00bb} dst {} {}",
                                             c.name,
                                             format_size(c.src_size),
                                             src,
@@ -489,15 +490,11 @@ impl App {
                 // Action buttons
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
+                        .add(super::dialog_button(
+                            t,
+                            super::ButtonRole::Secondary,
+                            egui::RichText::new("Cancel").size(13.0),
+                        ))
                         .clicked()
                     {
                         self.dismiss_pending_op(ctx);
@@ -561,18 +558,17 @@ impl App {
         count: usize,
         total_bytes: u64,
     ) {
-        let now = ctx.input(|i| i.time);
         let size = if total_bytes > 0 {
             format!(" ({})", format_size(total_bytes))
         } else {
             String::new()
         };
-        self.toasts.push(crate::toasts::Toast::new(
-            format!("Dry run: {title} {count} item(s){size} — nothing changed"),
+        self.toast(
+            ctx,
             crate::toasts::ToastKind::Info,
+            format!("Dry run: {title} {count} item(s){size} — nothing changed"),
             false,
-            now,
-        ));
+        );
         self.dismiss_pending_op(ctx);
     }
 
@@ -895,289 +891,149 @@ impl App {
         if selected != current
             && let Err(error) = crate::transfer_tuning::set_rule(&profile, selected)
         {
-            self.toasts.push(crate::toasts::Toast::new(
-                error,
-                crate::toasts::ToastKind::Error,
-                false,
-                ui.ctx().input(|input| input.time),
-            ));
+            let ctx = ui.ctx().clone();
+            self.toast(&ctx, crate::toasts::ToastKind::Error, error, false);
         }
     }
 
-    /// Draw a virtualized flat file list (only visible rows rendered).
-    fn render_flat_list_virtual(
+    /// Draw a virtualized flat file list: only visible rows are laid out.
+    fn render_flat_list(
         ui: &mut egui::Ui,
         flat: &[FlatFileEntry],
         conflicts: &[String],
         t: &ThemeColors,
         max_height: f32,
         id_salt: &str,
+        mode: FlatListMode,
     ) {
-        let row_h = 20.0;
-
+        const ROW_H: f32 = 20.0;
+        let rows = match mode {
+            FlatListMode::Destination { transferred } => &flat[..transferred.min(flat.len())],
+            _ => flat,
+        };
+        let header = match mode {
+            FlatListMode::Preview => format!("{} items", flat.len()),
+            FlatListMode::Source { .. } => format!("Source ({} items)", flat.len()),
+            FlatListMode::Destination { .. } => {
+                format!("Destination ({}/{})", rows.len(), flat.len())
+            }
+        };
         Frame::NONE
             .fill(t.bg_card.linear_multiply(0.3))
             .corner_radius(CornerRadius::same(4))
             .inner_margin(Margin::same(4))
             .show(ui, |ui| {
+                ui.label(egui::RichText::new(header).size(10.0).color(t.text_muted));
                 egui::ScrollArea::vertical()
                     .max_height(max_height)
                     .id_salt(id_salt)
-                    .show(ui, |ui| {
-                        // Total count label
-                        ui.label(
-                            egui::RichText::new(format!("{} items", flat.len()))
-                                .size(10.0)
-                                .color(t.text_muted),
-                        );
-
-                        let scroll_offset = ui.clip_rect().top() - ui.min_rect().top();
-                        let viewport_h = max_height;
-                        let first = ((scroll_offset / row_h).floor() as usize).min(flat.len());
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2)
-                            .min(flat.len().saturating_sub(first));
-
-                        // Spacer before visible rows
-                        if first > 0 {
-                            ui.allocate_space(Vec2::new(
-                                ui.available_width(),
-                                first as f32 * row_h,
-                            ));
-                        }
-
-                        // Render only visible rows
-                        for (vi, fe) in flat[first..first + visible_count].iter().enumerate() {
-                            let row_idx = first + vi;
-                            let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
+                    .show_rows(ui, ROW_H, rows.len(), |ui, range| {
+                        for row_idx in range {
                             let (rect, _) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width(), row_h),
+                                Vec2::new(ui.available_width(), ROW_H),
                                 Sense::hover(),
                             );
-                            let p = ui.painter();
-
-                            // Zebra stripe
-                            if row_idx % 2 == 1 {
-                                p.rect_filled(
-                                    rect,
-                                    CornerRadius::ZERO,
-                                    t.bg_card.linear_multiply(0.15),
-                                );
-                            }
-
-                            let indent = fe.depth as f32 * 14.0;
-                            let icon = if fe.is_dir { "📁" } else { "📄" };
-                            let color = if is_conflict {
-                                t.accent_warning
-                            } else if fe.depth > 0 {
-                                t.text_secondary
-                            } else {
-                                t.text_primary
-                            };
-
-                            // Icon
-                            p.text(
-                                egui::pos2(rect.left() + indent, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                icon,
-                                egui::FontId::proportional(11.0),
-                                color,
+                            paint_flat_row(
+                                ui.painter(),
+                                rect,
+                                &rows[row_idx],
+                                row_idx,
+                                conflicts,
+                                t,
+                                mode,
                             );
-                            // Name
-                            p.text(
-                                egui::pos2(rect.left() + indent + 18.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &fe.name,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            // Size
-                            if !fe.is_dir && fe.size > 0 {
-                                p.text(
-                                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    format_size(fe.size),
-                                    egui::FontId::proportional(10.0),
-                                    t.text_muted,
-                                );
-                            }
-                        }
-
-                        // Spacer after visible rows
-                        let after = flat.len().saturating_sub(first + visible_count);
-                        if after > 0 {
-                            ui.allocate_space(Vec2::new(
-                                ui.available_width(),
-                                after as f32 * row_h,
-                            ));
                         }
                     });
             });
     }
+}
 
-    /// Animated file list for copy/move dialog.
-    /// `transferred`: how many files have "moved" so far
-    /// `is_source`: true = left side (files leaving), false = right side (files arriving)
-    // Pure drawing helper: every argument is an independent rendering
-    // input, so a parameter struct would only add a layer of indirection.
-    #[allow(clippy::too_many_arguments)]
-    fn render_flat_list_animated(
-        ui: &mut egui::Ui,
-        flat: &[FlatFileEntry],
-        conflicts: &[String],
-        t: &ThemeColors,
-        max_height: f32,
-        id_salt: &str,
-        transferred: usize,
-        is_source: bool,
-    ) {
-        let row_h = 20.0;
+/// How a flat list row reads: a plain preview, or one side of the
+/// copy/move flow where the first `transferred` rows have "moved".
+#[derive(Clone, Copy)]
+enum FlatListMode {
+    Preview,
+    Source { transferred: usize },
+    Destination { transferred: usize },
+}
 
-        // On destination side, only show transferred files
-        let visible_flat: &[FlatFileEntry] = if is_source {
-            flat
+fn paint_flat_row(
+    p: &egui::Painter,
+    rect: egui::Rect,
+    fe: &FlatFileEntry,
+    row_idx: usize,
+    conflicts: &[String],
+    t: &ThemeColors,
+    mode: FlatListMode,
+) {
+    let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
+    let moved_away = matches!(mode, FlatListMode::Source { transferred } if row_idx < transferred);
+    match mode {
+        FlatListMode::Destination { transferred } => {
+            let alpha = if row_idx + 1 == transferred { 0.2 } else { 0.1 };
+            p.rect_filled(rect, CornerRadius::ZERO, t.accent.linear_multiply(alpha));
+        }
+        _ if moved_away => {
+            p.rect_filled(rect, CornerRadius::ZERO, t.accent_red.linear_multiply(0.08));
+        }
+        _ if row_idx % 2 == 1 => {
+            p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.15));
+        }
+        _ => {}
+    }
+    let color = if is_conflict {
+        t.accent_warning
+    } else if moved_away {
+        t.text_muted.linear_multiply(0.4)
+    } else {
+        match mode {
+            FlatListMode::Destination { .. } => t.accent,
+            FlatListMode::Preview if fe.depth > 0 => t.text_secondary,
+            _ => t.text_primary,
+        }
+    };
+    let indent = fe.depth as f32 * 14.0;
+    let icon = if fe.is_dir { "📁" } else { "📄" };
+    let font = egui::FontId::proportional(11.0);
+    let mid = rect.center().y;
+    p.text(
+        egui::pos2(rect.left() + indent, mid),
+        egui::Align2::LEFT_CENTER,
+        icon,
+        font.clone(),
+        color,
+    );
+    let text_start = rect.left() + indent + 18.0;
+    p.text(
+        egui::pos2(text_start, mid),
+        egui::Align2::LEFT_CENTER,
+        &fe.name,
+        font,
+        color,
+    );
+    if moved_away {
+        let text_end = text_start + fe.name.len() as f32 * 6.5;
+        p.line_segment(
+            [
+                egui::pos2(text_start, mid),
+                egui::pos2(text_end.min(rect.right() - 4.0), mid),
+            ],
+            Stroke::new(1.0_f32, t.text_muted.linear_multiply(0.3)),
+        );
+    }
+    if !fe.is_dir && fe.size > 0 {
+        let size_color = if moved_away {
+            t.text_muted.linear_multiply(0.3)
         } else {
-            &flat[..transferred]
+            t.text_muted
         };
-
-        Frame::NONE
-            .fill(t.bg_card.linear_multiply(0.3))
-            .corner_radius(CornerRadius::same(4))
-            .inner_margin(Margin::same(4))
-            .show(ui, |ui| {
-                let header = if is_source {
-                    format!("Source ({} items)", flat.len())
-                } else {
-                    format!("Destination ({}/{})", transferred, flat.len())
-                };
-                ui.label(egui::RichText::new(header).size(10.0).color(t.text_muted));
-
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .id_salt(id_salt)
-                    .show(ui, |ui| {
-                        let scroll_offset = ui.clip_rect().top() - ui.min_rect().top();
-                        let viewport_h = max_height;
-                        let total = visible_flat.len();
-                        let first = ((scroll_offset / row_h).floor() as usize).min(total);
-                        let visible_count = ((viewport_h / row_h).ceil() as usize + 2)
-                            .min(total.saturating_sub(first));
-
-                        if first > 0 {
-                            ui.allocate_space(Vec2::new(
-                                ui.available_width(),
-                                first as f32 * row_h,
-                            ));
-                        }
-
-                        for (vi, fe) in visible_flat[first..first + visible_count]
-                            .iter()
-                            .enumerate()
-                        {
-                            let row_idx = first + vi;
-                            let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
-                            let is_transferred = row_idx < transferred;
-                            let (rect, _) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width(), row_h),
-                                Sense::hover(),
-                            );
-                            let p = ui.painter();
-
-                            // Background
-                            if is_source && is_transferred {
-                                // Transferred on source side — faded red tint
-                                p.rect_filled(
-                                    rect,
-                                    CornerRadius::ZERO,
-                                    t.accent_red.linear_multiply(0.08),
-                                );
-                            } else if !is_source {
-                                // Destination side — green/accent tint
-                                let alpha = if row_idx + 1 == transferred { 0.2 } else { 0.1 };
-                                p.rect_filled(
-                                    rect,
-                                    CornerRadius::ZERO,
-                                    t.accent.linear_multiply(alpha),
-                                );
-                            } else if row_idx % 2 == 1 {
-                                p.rect_filled(
-                                    rect,
-                                    CornerRadius::ZERO,
-                                    t.bg_card.linear_multiply(0.15),
-                                );
-                            }
-
-                            let indent = fe.depth as f32 * 14.0;
-                            let icon = if fe.is_dir { "📁" } else { "📄" };
-
-                            let color = if is_conflict {
-                                t.accent_warning
-                            } else if is_source && is_transferred {
-                                t.text_muted.linear_multiply(0.4) // very dim
-                            } else if !is_source {
-                                t.accent
-                            } else {
-                                t.text_primary
-                            };
-
-                            // Icon
-                            p.text(
-                                egui::pos2(rect.left() + indent, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                icon,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-                            // Name
-                            p.text(
-                                egui::pos2(rect.left() + indent + 18.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                &fe.name,
-                                egui::FontId::proportional(11.0),
-                                color,
-                            );
-
-                            // Strikethrough on transferred source items
-                            if is_source && is_transferred {
-                                let text_start = rect.left() + indent + 18.0;
-                                let text_end = text_start + fe.name.len() as f32 * 6.5;
-                                p.line_segment(
-                                    [
-                                        egui::pos2(text_start, rect.center().y),
-                                        egui::pos2(
-                                            text_end.min(rect.right() - 4.0),
-                                            rect.center().y,
-                                        ),
-                                    ],
-                                    Stroke::new(1.0_f32, t.text_muted.linear_multiply(0.3)),
-                                );
-                            }
-
-                            // Size
-                            if !fe.is_dir && fe.size > 0 {
-                                let size_color = if is_source && is_transferred {
-                                    t.text_muted.linear_multiply(0.3)
-                                } else {
-                                    t.text_muted
-                                };
-                                p.text(
-                                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    format_size(fe.size),
-                                    egui::FontId::proportional(10.0),
-                                    size_color,
-                                );
-                            }
-                        }
-
-                        let after = total.saturating_sub(first + visible_count);
-                        if after > 0 {
-                            ui.allocate_space(Vec2::new(
-                                ui.available_width(),
-                                after as f32 * row_h,
-                            ));
-                        }
-                    });
-            });
+        p.text(
+            egui::pos2(rect.right() - 4.0, mid),
+            egui::Align2::RIGHT_CENTER,
+            format_size(fe.size),
+            egui::FontId::proportional(10.0),
+            size_color,
+        );
     }
 }
 

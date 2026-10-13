@@ -10,6 +10,24 @@ struct ScriptedTrashPort {
     calls: Mutex<Vec<PathBuf>>,
 }
 
+/// Trashes one item at a time, each only after the test releases it, so the
+/// worker's progress is deterministic while the test inspects it.
+struct GatedTrashPort {
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl crate::ports::TrashPort for GatedTrashPort {
+    fn move_to_trash(&self, target: &crate::ports::TrashTarget) -> crate::ports::TrashItemOutcome {
+        self.release
+            .lock()
+            .unwrap()
+            .recv()
+            .expect("test releases the Trash call");
+        let _ = std::fs::remove_file(&target.path);
+        crate::ports::TrashItemOutcome::Trashed
+    }
+}
+
 struct FixedFreeSpacePort {
     outcome: crate::ports::SpaceProbeOutcome,
     relation: crate::ports::VolumeRelation,
@@ -93,7 +111,7 @@ fn ready_trash_item(path: &Path) -> crate::ports::TrashBatchItem {
 fn workspace_with_trash(
     left: &TempDir,
     right: &TempDir,
-    trash: Arc<ScriptedTrashPort>,
+    trash: Arc<impl crate::ports::TrashPort + 'static>,
 ) -> Workspace {
     let mut workspace = Workspace::with_ports(
         left.path().to_path_buf(),
@@ -959,12 +977,8 @@ fn toggle_hidden_command_reports_rejection_without_changing_the_view() {
 #[test]
 fn conditional_and_listing_commands_emit_payload_requests() {
     let (left, right) = (TempDir::new(), TempDir::new());
-    let shelf_item = left.file("shelf.txt", "x");
+    left.file("listed.txt", "x");
     let mut ws = workspace(&left, &right);
-    ws.shelf.add(shelf_item);
-
-    ws.execute(Command::ShelfDrain);
-    assert_eq!(ws.drain_ui_requests(), vec![UiRequest::DrainShelf]);
 
     for (command, format_label) in [
         (Command::CopyListingText, "text"),
@@ -976,7 +990,7 @@ fn conditional_and_listing_commands_emit_payload_requests() {
         let [UiRequest::CopyText { text, label }] = requests.as_slice() else {
             panic!("{command:?} did not emit one CopyText request: {requests:?}");
         };
-        assert!(text.contains("shelf.txt"));
+        assert!(text.contains("listed.txt"));
         assert!(label.contains(format_label));
     }
 }
@@ -1340,9 +1354,10 @@ fn failed_delete_batch_does_not_request_panel_refresh() {
 fn active_delete_blocks_other_mutation_commits_until_retirement() {
     let (left, right) = (TempDir::new(), TempDir::new());
     let path = left.file("a.txt", "x");
-    let trash = Arc::new(ScriptedTrashPort::new([
-        crate::ports::TrashItemOutcome::Trashed,
-    ]));
+    let (release, gate) = mpsc::channel();
+    let trash = Arc::new(GatedTrashPort {
+        release: Mutex::new(gate),
+    });
     let mut workspace = workspace_with_trash(&left, &right, trash);
     workspace.left.set_cursor(1);
     workspace.request_delete();
@@ -1366,6 +1381,7 @@ fn active_delete_blocks_other_mutation_commits_until_retirement() {
     let rename = workspace.commit_rename(&path, "renamed.txt");
     assert!(rename.unwrap_err().contains("Trash operation"));
 
+    release.send(()).unwrap();
     workspace.finish_delete().expect("delete retirement");
     assert!(!workspace.delete_active());
 }
@@ -1435,87 +1451,6 @@ fn select_same_named_adds_common_names_keeping_prior_picks() {
     assert!(ws.left.is_selected(&shared), "common name selected");
     assert!(ws.left.is_selected(&only_here), "prior pick kept");
     assert_eq!(ws.left.selected_count(), 2, "no spurious selections");
-}
-
-#[test]
-fn stash_union_and_subtract_combine_with_current_selection() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let a = l.file("a.txt", "1");
-    let b = l.file("b.txt", "2");
-    let c = l.file("c.txt", "3");
-    let mut ws = workspace(&l, &r);
-
-    // Stash {a, b}, then change the selection to {c}.
-    ws.left.replace_selection([a.clone(), b.clone()]);
-    ws.stash_selection();
-    ws.left.replace_selection([c.clone()]);
-
-    // Union with the stash -> {a, b, c}.
-    ws.stash_union();
-    assert_eq!(ws.left.selected_count(), 3);
-    assert!(ws.left.is_selected(&a) && ws.left.is_selected(&c));
-
-    // Subtract the stash {a, b} from {a, b, c} -> {c}.
-    ws.stash_subtract();
-    assert_eq!(
-        ws.left.selected_paths().clone(),
-        [c.clone()]
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>()
-    );
-}
-
-#[test]
-fn marked_union_and_subtract_combine_with_current_selection() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let a = l.file("a.txt", "1");
-    let b = l.file("b.txt", "2");
-    let c = l.file("c.txt", "3");
-    let mut ws = workspace(&l, &r);
-
-    // Mark {a, b}, then set the selection to {c}.
-    ws.left.replace_marks_for_test([a.clone(), b.clone()]);
-    ws.left.replace_selection([c.clone()]);
-
-    // Union with the marked set -> {a, b, c}.
-    ws.marked_union();
-    assert_eq!(ws.left.selected_count(), 3);
-    assert!(ws.left.is_selected(&a) && ws.left.is_selected(&c));
-
-    // Subtract the marked {a, b} from {a, b, c} -> {c}.
-    ws.marked_subtract();
-    assert_eq!(
-        ws.left.selected_paths().clone(),
-        [c.clone()]
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>()
-    );
-}
-
-#[test]
-fn toggle_mark_flips_the_cursor_entry_and_survives_a_same_dir_refresh() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let a = l.file("a.txt", "1");
-    let mut ws = workspace(&l, &r);
-    let cursor = ws
-        .left
-        .filtered_entries()
-        .iter()
-        .position(|e| e.path == a)
-        .unwrap()
-        + 1;
-    ws.left.set_cursor(cursor);
-
-    ws.toggle_mark();
-    assert!(ws.left.is_marked(&a));
-
-    // Like `selected`, marks are keyed by path: an unrelated refresh of
-    // the same directory (e.g. an external file appearing) keeps them,
-    // same as `reload_preserves_cursor_by_path_and_prunes_selection`
-    // proves for `selected` at the panel level.
-    l.file("b.txt", "2");
-    ws.left.refresh();
-    assert!(ws.left.is_marked(&a));
 }
 
 #[test]
@@ -2464,43 +2399,6 @@ fn find_duplicates_groups_identical_files_in_active_dir() {
         .collect();
     assert!(names.contains(&"a.txt".to_string()));
     assert!(names.contains(&"b.txt".to_string()));
-}
-
-#[test]
-fn drain_shelf_copies_staged_files_into_active_dir() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let src = r.file("gathered.txt", "data"); // lives in the right folder
-    let mut ws = workspace(&l, &r); // active panel is the left
-
-    ws.shelf.add(src);
-    assert_eq!(ws.shelf.len(), 1);
-    ws.drain_shelf(|| {});
-    wait_transfer(&mut ws);
-
-    assert!(
-        l.path().join("gathered.txt").is_file(),
-        "drained into the active (left) folder"
-    );
-    assert!(ws.shelf.is_empty(), "shelf cleared after drain");
-}
-
-#[test]
-fn drain_shelf_keeps_unreadable_items_instead_of_dropping_them() {
-    let (l, r) = (TempDir::new(), TempDir::new());
-    let src = r.file("ghost.txt", "x"); // staged from the right folder
-    let mut ws = workspace(&l, &r); // active panel is the left
-
-    ws.shelf.add(src.clone());
-    std::fs::remove_file(&src).unwrap(); // source vanishes before the drain
-
-    let outcome = ws.drain_shelf(|| {});
-    assert_eq!(outcome.started, 0);
-    assert_eq!(outcome.unavailable, 1);
-    assert_eq!(ws.shelf.len(), 1, "unreadable item kept for retry");
-    assert!(
-        ws.active_transfer().is_none(),
-        "nothing readable, no transfer"
-    );
 }
 
 #[test]
@@ -3499,7 +3397,7 @@ fn journal_rollback_aborts_interrupted_replay_without_advancing_the_cursor() {
         crate::path_identity::PathIdentity::missing(&destination),
     )
     .unwrap();
-    crate::native_copy::rename_noreplace(&source, &destination).unwrap();
+    crate::fs_at::rename_noreplace(&source, &destination).unwrap();
     crate::operation_journal::mark_completed(
         &operation_id,
         &key,
@@ -3952,4 +3850,61 @@ fn skip_conflict_in_unopened_subfolder_handles_a_broken_symlink() {
         ws.pending_op.is_none(),
         "an empty conflict resolution must retire the old plan"
     );
+}
+
+#[test]
+fn drag_session_resolves_source_side_and_prefers_its_own_target() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    assert!(ws.drag_session().is_none());
+
+    let dragged = r.path().join("b.txt");
+    ws.right.drag.set(vec![dragged.clone()]);
+    ws.left.drag.set_drop_target(l.path().to_path_buf());
+    let session = ws.drag_session().expect("right pane is dragging");
+    assert_eq!(session.source, ActivePanel::Right);
+    assert_eq!(session.entries, [dragged]);
+    assert_eq!(session.target, Some(&l.path().to_path_buf()));
+
+    let own = r.path().join("sub");
+    ws.right.drag.set_drop_target(own.clone());
+    assert_eq!(ws.drag_session().unwrap().target, Some(&own));
+}
+
+#[test]
+fn selection_gathered_across_folders_feeds_one_transfer() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let first = l.dir("first");
+    let second = l.dir("second");
+    std::fs::write(first.join("a.txt"), "a").unwrap();
+    std::fs::write(second.join("b.txt"), "b").unwrap();
+    let mut ws = workspace(&l, &r);
+
+    ws.left.navigate_to(first.clone());
+    ws.left.refresh();
+    ws.left.toggle_select(first.join("a.txt"));
+    ws.left.navigate_to(second.clone());
+    ws.left.refresh();
+    ws.left.toggle_select(second.join("b.txt"));
+
+    assert_eq!(ws.left.selected_elsewhere_count(), 1);
+    assert_eq!(ws.left.selection_folder_count(), 2);
+    assert_eq!(ws.command_context().picked_entries, 2);
+
+    ws.request_copy();
+    let Some(PendingOp::Transfer(pending)) = &ws.pending_op else {
+        panic!("copy should stage a transfer");
+    };
+    let mut names: Vec<_> = pending
+        .entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["a.txt", "b.txt"]);
+
+    ws.pending_op = None;
+    ws.execute(Command::ClearSelection);
+    assert_eq!(ws.left.selected_elsewhere_count(), 0);
+    assert!(ws.left.selection_is_empty());
 }

@@ -131,20 +131,11 @@ modal_registry!(
     Mask,
     Collections,
     SavedSearch,
-    Archive,
     Find,
-    Treemap,
-    Diff,
-    Duplicates,
-    Sync,
     BatchRename,
     Rename,
-    DeleteActivity,
     Confirmation,
     History,
-    Recovery,
-    SafeState,
-    Transfer,
 );
 
 /// Resolve the highest-priority open surface through the single modal
@@ -242,7 +233,6 @@ pub fn consume_show_context_menu(ctx: &egui::Context, id: egui::Id) -> bool {
 pub enum KeyboardRoute {
     Workspace,
     TextInput(TextInputMode),
-    Transfer,
     Modal(ModalSurface),
 }
 
@@ -250,6 +240,8 @@ pub enum KeyboardRoute {
 pub enum EscapeRoute {
     Modal(ModalSurface),
     TextInput(TextInputMode),
+    /// Close the tool occupying a pane (disk usage, diff, sync, ...).
+    PaneTool,
     ActivePreview,
     FocusMode,
     None,
@@ -267,6 +259,7 @@ pub enum PendingFocusEffect {
 pub struct UiContractState {
     pub text_input: TextInputState,
     pub modal: Option<ModalSurface>,
+    pub pane_tool_open: bool,
     pub active_preview_open: bool,
     pub focus_mode: bool,
 }
@@ -287,7 +280,6 @@ pub fn resolve_ui_contract(state: UiContractState) -> UiContract {
         KeyboardRoute::TextInput(mode)
     } else {
         match state.modal {
-            Some(ModalSurface::Transfer) => KeyboardRoute::Transfer,
             Some(surface) => KeyboardRoute::Modal(surface),
             None => KeyboardRoute::Workspace,
         }
@@ -298,6 +290,8 @@ pub fn resolve_ui_contract(state: UiContractState) -> UiContract {
         EscapeRoute::Modal(surface)
     } else if text_input == Some(TextInputMode::TextEdit) {
         EscapeRoute::TextInput(TextInputMode::TextEdit)
+    } else if state.pane_tool_open {
+        EscapeRoute::PaneTool
     } else if state.active_preview_open {
         EscapeRoute::ActivePreview
     } else if state.focus_mode {
@@ -453,16 +447,12 @@ pub fn file_row_semantics(
     size: &str,
     modified: &str,
     selected: bool,
-    marked: bool,
     cursor: bool,
     _is_directory: bool,
 ) -> FileRowSemantics {
     let mut states = Vec::new();
     if selected {
         states.push("selected");
-    }
-    if marked {
-        states.push("marked");
     }
     if cursor {
         states.push("cursor");
@@ -710,12 +700,10 @@ mod tests {
 
     #[test]
     fn file_rows_name_columns_and_publish_selection_and_expansion() {
-        let row = file_row_semantics(
-            "Projects", "Folder", "12 items", "Today", true, true, false, true,
-        );
+        let row = file_row_semantics("Projects", "Folder", "12 items", "Today", true, true, true);
         assert_eq!(
             row.label,
-            "Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected, marked"
+            "Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected, cursor"
         );
         assert!(row.selected);
         assert_eq!(row.expanded, None);

@@ -85,34 +85,8 @@ impl crate::ui_request::UiRequestSink for AppUiRequestSink<'_, '_> {
         self.app.ui.modals.is_open(modal)
     }
 
-    fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
-        self.app.can_transition_ui_request(request)
-    }
-
     fn apply(&mut self, request: UiRequest) {
         self.app.dispatch_ui_request(request, self.ctx);
-    }
-}
-
-fn recovery_review_handoff_allowed(
-    safe_state: Option<&crate::operation::SafeState>,
-    active_operation_id: Option<&crate::operation::OperationId>,
-    active_progress: Option<&crate::transfer::TransferProgress>,
-    unrelated_modal_open: bool,
-    requested_operation: &crate::operation::OperationId,
-) -> bool {
-    if unrelated_modal_open
-        || safe_state.map(|state| &state.operation_id) != Some(requested_operation)
-    {
-        return false;
-    }
-
-    match (active_operation_id, active_progress) {
-        (None, None) => true,
-        (Some(operation_id), Some(progress)) => {
-            operation_id == requested_operation && progress.finished && !progress.errors.is_empty()
-        }
-        _ => false,
     }
 }
 
@@ -179,13 +153,17 @@ impl FrameInputPolicy {
     }
 }
 
-fn any_modal_surface_open(
-    safe_state_open: bool,
-    transfer_open: bool,
-    confirmation_open: bool,
-    app_modal_open: bool,
-) -> bool {
-    safe_state_open || transfer_open || confirmation_open || app_modal_open
+fn any_modal_surface_open(confirmation_open: bool, app_modal_open: bool) -> bool {
+    confirmation_open || app_modal_open
+}
+
+/// Per-frame drag state shared by both panes' drop-target updates.
+struct PaneDropContext {
+    input_policy: FrameInputPolicy,
+    containing_ui_enabled: bool,
+    dragging: bool,
+    drag_source: Option<ActivePanel>,
+    hover_pos: Option<egui::Pos2>,
 }
 
 /// Seconds a modifier must be held before the key bar floats in.
@@ -212,20 +190,12 @@ impl eframe::App for App {
         self.begin_frame(&ctx);
         self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
-        self.show_transfer_dialog(&ctx);
-        self.show_delete_activity(&ctx);
-        self.show_safe_state_dialog(&ctx);
-        self.show_recovery_dialog(&ctx);
+        self.poll_recovery(&ctx);
         self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
         self.show_batch_rename_dialog(&ctx);
-        self.show_sync_dialog(&ctx);
-        self.show_duplicates_dialog(&ctx);
-        self.show_diff_dialog(&ctx);
-        self.show_treemap_dialog(&ctx);
         self.show_find_dialog(&ctx);
-        self.show_archive_dialog(&ctx);
         self.show_saved_search_dialog(&ctx);
         self.show_collections_dialog(&ctx);
         self.show_mask_dialog(&ctx);
@@ -271,7 +241,9 @@ impl eframe::App for App {
                     crate::accessibility::FocusRegion::LeftPanel => {
                         if !self.ui.focus_mode {
                             self.show_shortcut_bar(ui);
-                            self.show_shelf_tray(ui);
+                        }
+                        self.show_activity_strip(ui);
+                        if !self.ui.focus_mode {
                             self.show_selection_hud(ui);
                         }
                         self.show_main_area(ui, input_policy);
@@ -293,14 +265,10 @@ impl eframe::App for App {
     /// own session snapshot (panel paths, layout, view toggles).
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         let session = self.to_session();
-        match crate::session::save_with(self.persistence.as_ref(), &session, &mut self.session_gate)
-        {
-            Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
-            Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(failure)) => {
-                crate::persistence::record_durability_warning("Session", &failure);
-            }
-            Err(error) => crate::persistence::record_json_save_failure("Session", &error),
-        }
+        crate::persistence::report_save(
+            "Session",
+            crate::session::save_with(self.persistence.as_ref(), &session, &mut self.session_gate),
+        );
     }
 }
 
@@ -323,7 +291,7 @@ impl App {
         if self.ws.active != request.panel {
             return;
         }
-        if !cfg!(target_os = "macos") {
+        if !self.context_menu.presents_native_menu() {
             let pos = ctx
                 .pointer_latest_pos()
                 .unwrap_or_else(|| ctx.content_rect().center());
@@ -418,69 +386,8 @@ impl App {
     }
 
     fn has_modal_surface(&self) -> bool {
-        any_modal_surface_open(
-            self.ws.safe_state.is_some(),
-            self.ws.active_transfer_view().is_some(),
-            self.ws.pending_op.is_some(),
-            self.ui.modals.any_open(),
-        ) || self.ws.delete_active()
-    }
-
-    fn has_modal_surface_except_safe_state_and_transfer(&self) -> bool {
-        self.ws.pending_op.is_some() || self.ws.delete_active() || self.ui.modals.any_open()
-    }
-
-    fn show_delete_activity(&mut self, ctx: &egui::Context) {
-        let escape_requested =
-            self.take_modal_escape(crate::accessibility::ModalSurface::DeleteActivity);
-        let Some(activity) = self.ws.delete_activity() else {
-            return;
-        };
-        let mut cancel_requested = escape_requested;
-        ctx.request_repaint_after(std::time::Duration::from_millis(125));
-        egui::Window::new("Moving to Trash")
-            .id(egui::Id::new("delete_activity"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
-            .show(ctx, |ui| {
-                ui.set_min_width(320.0);
-                ui.label(format!(
-                    "{} of {} {} processed",
-                    activity.completed,
-                    activity.total,
-                    if activity.total == 1 { "item" } else { "items" }
-                ));
-                let fraction = if activity.total == 0 {
-                    0.0
-                } else {
-                    activity.completed as f32 / activity.total as f32
-                };
-                ui.add(
-                    egui::ProgressBar::new(fraction)
-                        .desired_width(ui.available_width())
-                        .show_percentage(),
-                );
-                ui.add_space(6.0);
-                if ui
-                    .add_enabled(
-                        !activity.cancel_requested,
-                        egui::Button::new(if activity.cancel_requested {
-                            "Cancelling..."
-                        } else {
-                            "Cancel"
-                        })
-                        .corner_radius(egui::CornerRadius::ZERO),
-                    )
-                    .clicked()
-                {
-                    cancel_requested = true;
-                }
-            });
-        if cancel_requested {
-            self.ws.cancel_delete();
-        }
+        any_modal_surface_open(self.ws.pending_op.is_some(), self.ui.modals.any_open())
+            || self.ws.delete_active()
     }
 
     pub(crate) fn is_modal_surface_open(
@@ -488,31 +395,9 @@ impl App {
         surface: crate::accessibility::ModalSurface,
     ) -> bool {
         match surface {
-            crate::accessibility::ModalSurface::Transfer => {
-                self.ws.active_transfer_view().is_some()
-            }
-            crate::accessibility::ModalSurface::SafeState => self.ws.safe_state.is_some(),
             crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
-            crate::accessibility::ModalSurface::DeleteActivity => self.ws.delete_active(),
             _ => self.ui.modals.is_surface_open(surface),
         }
-    }
-
-    fn can_transition_ui_request(&self, request: &UiRequest) -> bool {
-        let UiRequest::ReviewRecovery(operation_id) = request else {
-            return false;
-        };
-        let active_transfer = self.ws.active_transfer_view();
-        let active_progress = active_transfer
-            .as_ref()
-            .map(|view| crate::lock_util::recover(&view.progress));
-        recovery_review_handoff_allowed(
-            self.ws.safe_state.as_ref(),
-            active_transfer.as_ref().map(|view| &view.operation_id),
-            active_progress.as_deref(),
-            self.has_modal_surface_except_safe_state_and_transfer(),
-            operation_id,
-        )
     }
 
     /// Frame bookkeeping: repaint heuristics, notify wiring, fs polling,
@@ -527,12 +412,7 @@ impl App {
             let persistence = crate::persistence::health_snapshot();
             self.persistence_issue_seen = persistence.issue_generation;
             if let Some(message) = persistence.last_issue {
-                self.toasts.push(crate::toasts::Toast::new(
-                    message,
-                    crate::toasts::ToastKind::Error,
-                    false,
-                    ctx.input(|input| input.time),
-                ));
+                self.toast(ctx, crate::toasts::ToastKind::Error, message, false);
             }
         }
         // Static previews do not need a frame loop. Preview workers repaint on
@@ -622,20 +502,20 @@ impl App {
             if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
                 // log a receipt (jump-back + the same live undo affordance).
-                if let Some(a) = self.ws.top_undo_action() {
-                    self.toasts.push(crate::toasts::Toast::new(
-                        format!("{} {} item(s)", a.verb(), a.item_count()),
+                if let Some(a) = self.ws.top_undo_action().cloned() {
+                    self.toast(
+                        ctx,
                         crate::toasts::ToastKind::Success,
+                        format!("{} {} item(s)", a.verb(), a.item_count()),
                         true,
-                        now,
-                    ));
+                    );
                     if let Some(jump_to) = a.jump_to() {
                         self.receipts.push(crate::receipts::Receipt {
                             verb: a.verb(),
                             item_count: a.item_count(),
                             timestamp: now,
                             jump_to,
-                            undo_action: Some(a.clone()),
+                            undo_action: Some(a),
                         });
                     }
                 }
@@ -716,12 +596,7 @@ impl App {
             .filter(|action| matches!(action, crate::undo::Action::Trash { .. }))
             .filter(|_| outcome.trashed > 0 && !outcome.indeterminate)
             .cloned();
-        self.toasts.push(crate::toasts::Toast::new(
-            message,
-            kind,
-            undo_action.is_some(),
-            now,
-        ));
+        self.toast(ctx, kind, message, undo_action.is_some());
 
         if outcome.trashed > 0 {
             let jump_to = outcome
@@ -757,7 +632,7 @@ impl App {
 
     fn dispatch_ui_request(&mut self, request: UiRequest, ctx: &egui::Context) {
         match request {
-            UiRequest::Rename(path) => self.open_rename(path),
+            UiRequest::Rename(path) => self.open_rename(path, ctx),
             UiRequest::SelectMask => self.open_mask(ctx),
             UiRequest::RunCommand => self.open_run_command(ctx),
             UiRequest::GatherIntoFolder => {
@@ -773,12 +648,12 @@ impl App {
             UiRequest::Recent => self.open_recent(ctx),
             UiRequest::Undo => self.open_history_preview(HistoryReplayMode::Undo, ctx),
             UiRequest::Palette => self.open_palette(ctx),
-            UiRequest::BatchRename => self.open_batch_rename(),
+            UiRequest::BatchRename => self.open_batch_rename(ctx),
             UiRequest::Sync => self.open_sync(),
             UiRequest::FindDuplicates => self.open_duplicates(),
             UiRequest::DiffFiles => self.open_diff(ctx),
             UiRequest::DiskTreemap => self.open_treemap(ctx),
-            UiRequest::Find => self.open_find(),
+            UiRequest::Find => self.open_find(ctx),
             UiRequest::Archive(path) => self.open_archive(path, ctx),
             UiRequest::SavedSearch => self.open_saved_search(),
             UiRequest::ProjectCollections => self.open_collections(ctx),
@@ -794,32 +669,31 @@ impl App {
                 self.write_clipboard(&text, &label, ctx);
             }
             UiRequest::Notice { message, error } => {
-                self.toasts.push(crate::toasts::Toast::new(
-                    message,
+                self.toast(
+                    ctx,
                     if error {
                         crate::toasts::ToastKind::Error
                     } else {
                         crate::toasts::ToastKind::Info
                     },
+                    message,
                     false,
-                    ctx.input(|input| input.time),
-                ));
+                );
             }
             UiRequest::ChecksumReport(report) => {
-                let now = ctx.input(|input| input.time);
                 let summary = report.summary_line();
                 let detail = report.detailed_text();
                 let failed = report.rows.iter().any(|row| row.error.is_some());
-                self.toasts.push(crate::toasts::Toast::new(
-                    summary,
+                self.toast(
+                    ctx,
                     if failed {
                         crate::toasts::ToastKind::Error
                     } else {
                         crate::toasts::ToastKind::Info
                     },
+                    summary,
                     false,
-                    now,
-                ));
+                );
                 if !detail.is_empty() {
                     self.write_clipboard(&detail, "checksum report", ctx);
                 }
@@ -828,7 +702,6 @@ impl App {
                 self.apply_hidden_files_outcome(outcome, ctx);
             }
             UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
-            UiRequest::DrainShelf => self.drain_shelf(ctx),
         }
     }
 
@@ -842,15 +715,15 @@ impl App {
                 self.tree_children_cache.clear();
             }
             crate::panel::ViewApplyOutcome::ReadRejected(status) => {
-                self.toasts.push(crate::toasts::Toast::new(
+                self.toast(
+                    ctx,
+                    crate::toasts::ToastKind::Error,
                     format!(
                         "Hidden files unchanged: {}",
                         hidden_files_rejection_message(status)
                     ),
-                    crate::toasts::ToastKind::Error,
                     false,
-                    ctx.input(|input| input.time),
-                ));
+                );
             }
         }
     }
@@ -906,12 +779,7 @@ impl App {
             NativeEffectStatus::Submitted => crate::toasts::ToastKind::Info,
             NativeEffectStatus::Failure => crate::toasts::ToastKind::Error,
         };
-        self.toasts.push(crate::toasts::Toast::new(
-            feedback.message,
-            kind,
-            false,
-            ctx.input(|input| input.time),
-        ));
+        self.toast(ctx, kind, feedback.message, false);
     }
 
     pub(crate) fn open_external(
@@ -929,32 +797,12 @@ impl App {
         let Some(feedback) = perform_open(self.opener.as_ref(), &request) else {
             return;
         };
-        self.toasts.push(crate::toasts::Toast::new(
+        self.toast(
+            ctx,
+            crate::toasts::ToastKind::Error,
             feedback.message,
-            crate::toasts::ToastKind::Error,
             false,
-            ctx.input(|input| input.time),
-        ));
-    }
-
-    fn drain_shelf(&mut self, ctx: &egui::Context) {
-        let c = ctx.clone();
-        let outcome = self.ws.drain_shelf(move || c.request_repaint());
-        if outcome.unavailable == 0 {
-            return;
-        }
-        let now = ctx.input(|input| input.time);
-        let item = |count: usize| if count == 1 { "item" } else { "items" };
-        self.toasts.push(crate::toasts::Toast::new(
-            format!(
-                "{} shelf {} unavailable, kept on the shelf",
-                outcome.unavailable,
-                item(outcome.unavailable)
-            ),
-            crate::toasts::ToastKind::Error,
-            false,
-            now,
-        ));
+        );
     }
 
     fn show_toolbar_panel(&mut self, ui: &mut egui::Ui) {
@@ -1107,7 +955,6 @@ impl App {
                 query,
             });
         let ok = crate::smart_folder::save(self.smart_folders_mut());
-        let now = ctx.input(|i| i.time);
         let (msg, kind) = if ok {
             (
                 format!("Saved smart folder \"{name}\""),
@@ -1119,111 +966,7 @@ impl App {
                 crate::toasts::ToastKind::Error,
             )
         };
-        self.toasts
-            .push(crate::toasts::Toast::new(msg, kind, false, now));
-    }
-
-    /// Bottom shelf (drop stack) tray, shown only when something is staged:
-    /// count + total size, removable chips, Drain-here and Clear.
-    fn show_shelf_tray(&mut self, ui: &mut egui::Ui) {
-        if self.ws.shelf.is_empty() {
-            return;
-        }
-        let t = self.colors;
-        let count = self.ws.shelf.len();
-        let total = self
-            .ws
-            .shelf
-            .total_size(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
-        let items: Vec<std::path::PathBuf> = self.ws.shelf.items().to_vec();
-
-        let mut remove: Option<std::path::PathBuf> = None;
-        let mut clear = false;
-        let mut drain = false;
-
-        egui::Panel::bottom("shelf_tray")
-            .frame(Frame::NONE.fill(t.bg_card))
-            .show(ui, |ui| {
-                Frame::NONE
-                    .inner_margin(Margin::symmetric(12, 6))
-                    .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "\u{1f4cb} Shelf {count} \u{00b7} {}",
-                                    crate::panel::format_size(total)
-                                ))
-                                .size(11.0)
-                                .strong()
-                                .color(t.accent),
-                            );
-                            ui.add_space(8.0);
-                            for p in &items {
-                                let name = p
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                let chip = Frame::NONE
-                                    .fill(t.bg_panel)
-                                    .stroke(Stroke::new(1.0_f32, t.border))
-                                    .inner_margin(Margin::symmetric(6, 2))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(format!("{name}  \u{00d7}"))
-                                                .size(11.0)
-                                                .color(t.text_secondary),
-                                        );
-                                    })
-                                    .response
-                                    .interact(Sense::click());
-                                if chip.clicked() {
-                                    remove = Some(p.clone());
-                                }
-                            }
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("Clear")
-                                                .size(11.0)
-                                                .color(t.text_primary),
-                                        )
-                                        .fill(t.bg_panel)
-                                        .corner_radius(CornerRadius::ZERO),
-                                    )
-                                    .clicked()
-                                {
-                                    clear = true;
-                                }
-                                ui.add_space(6.0);
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("Drain here \u{2318}\u{21e7}V")
-                                                .size(11.0)
-                                                .color(Color32::WHITE),
-                                        )
-                                        .fill(t.accent)
-                                        .corner_radius(CornerRadius::ZERO),
-                                    )
-                                    .clicked()
-                                {
-                                    drain = true;
-                                }
-                            });
-                        });
-                    });
-            });
-
-        if let Some(p) = remove {
-            self.ws.shelf.remove(&p);
-        }
-        if clear {
-            self.ws.shelf.clear();
-        }
-        if drain {
-            self.ws.execute(crate::command::Command::ShelfDrain);
-        }
+        self.toast(ctx, kind, msg, false);
     }
 
     /// A quiet pill near the bottom of the central area summarizing the active
@@ -1231,14 +974,25 @@ impl App {
     /// when something is selected; complements the per-panel status bar.
     fn show_selection_hud(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let selected = self.ws.active_panel_ref().selected_entries();
-        if selected.is_empty() {
+        let active = self.ws.active_panel_ref();
+        let selected = active.selected_entries();
+        let elsewhere = active.selected_elsewhere_count();
+        let other_folders = active
+            .selection_folder_count()
+            .saturating_sub(usize::from(!selected.is_empty()));
+        if selected.is_empty() && elsewhere == 0 {
             return;
         }
         let s = crate::selection_summary::summarize(&selected);
         let t = self.colors;
 
         let mut head = format!("{} item(s)", s.count);
+        if elsewhere > 0 {
+            head.push_str(&format!(
+                " + {elsewhere} in {other_folders} other folder{}",
+                if other_folders == 1 { "" } else { "s" }
+            ));
+        }
         if s.dir_count > 0 {
             head.push_str(&format!(" \u{00b7} {} folder(s)", s.dir_count));
         }
@@ -1366,16 +1120,15 @@ impl App {
                 self.ws.request_context_delete(panel, &path);
             }
             crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
-                let now = ctx.input(|input| input.time);
-                self.toasts.push(crate::toasts::Toast::new(
+                self.toast(
+                    ctx,
+                    crate::toasts::ToastKind::Error,
                     format!(
                         "Could not {:?}: nested context-menu actions are not allowed",
                         action.command()
                     ),
-                    crate::toasts::ToastKind::Error,
                     false,
-                    now,
-                ));
+                );
             }
             crate::provider_runtime::ContextMenuUiEffect::Notice { level, message } => {
                 let kind = match level {
@@ -1386,9 +1139,7 @@ impl App {
                         crate::toasts::ToastKind::Error
                     }
                 };
-                let now = ctx.input(|input| input.time);
-                self.toasts
-                    .push(crate::toasts::Toast::new(message, kind, false, now));
+                self.toast(ctx, kind, message, false);
             }
         }
     }
@@ -1408,13 +1159,7 @@ impl App {
         };
         let left_metrics = crate::density::metrics(self.ws.left.density());
         let right_metrics = crate::density::metrics(self.ws.right.density());
-        let drag_source = if !self.ws.left.drag.is_empty() {
-            Some(ActivePanel::Left)
-        } else if !self.ws.right.drag.is_empty() {
-            Some(ActivePanel::Right)
-        } else {
-            None
-        };
+        let drag_source = self.ws.drag_session().map(|session| session.source);
         let dragging = input_policy.allows_raw_input(containing_ui_enabled, drag_source.is_some());
         // Side surfaces have already carved their space from this Ui. Base
         // pane geometry on the remaining width so panels never overlap them.
@@ -1500,28 +1245,15 @@ impl App {
             .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
-                if input_policy.allows_raw_input(
-                    ui.is_enabled(),
-                    ui.rect_contains_pointer(ui.max_rect())
-                        && ctx.input(|i| i.pointer.any_pressed()),
-                ) {
-                    self.ws.active = ActivePanel::Left;
-                }
-                Self::render_panel(
-                    &mut self.ws.left,
+                self.render_pane_contents(
+                    ActivePanel::Left,
                     ui,
-                    self.ws.active == ActivePanel::Left,
+                    input_policy,
                     close_left_preview,
-                    &t,
-                    &mut self.image_cache,
-                    "left",
-                    self.show_tree,
-                    self.show_size_bars,
                     left_compare.as_ref(),
                     &opener,
                     dragging,
                     left_metrics,
-                    self.accessibility_preferences.reduced_motion,
                 )
             });
         let left_outcome = left_resp.inner;
@@ -1533,27 +1265,14 @@ impl App {
         );
         tree_toggle |= left_outcome.tree_toggle;
 
-        let hover_pos = ctx.input(|i| i.pointer.hover_pos());
-        if input_policy.allows_drop_target(
+        let pane_drop = PaneDropContext {
+            input_policy,
             containing_ui_enabled,
-            dragging
-                && drag_source != Some(ActivePanel::Left)
-                && hover_pos.is_some_and(|pos| left_resp.response.rect.contains(pos))
-                && !self.ws.left.drag.has_drop_target(),
-        ) {
-            self.ws
-                .left
-                .drag
-                .set_drop_target(self.ws.left.current_path.clone());
-        }
-        if self.ws.left.drag.has_drop_target() {
-            ctx.layer_painter(left_resp.response.layer_id).rect_stroke(
-                left_resp.response.rect.shrink(1.0),
-                CornerRadius::ZERO,
-                Stroke::new(1.0, t.accent),
-                egui::StrokeKind::Inside,
-            );
-        }
+            dragging,
+            drag_source,
+            hover_pos: ctx.input(|i| i.pointer.hover_pos()),
+        };
+        self.update_pane_drop_target(ActivePanel::Left, &left_resp.response, &pane_drop);
 
         // Double-click on panel divider → reset to 50/50
         {
@@ -1583,28 +1302,15 @@ impl App {
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
                 ui.push_id(crate::accessibility::FocusRegion::RightPanel.id(), |ui| {
-                    if input_policy.allows_raw_input(
-                        ui.is_enabled(),
-                        ui.rect_contains_pointer(ui.max_rect())
-                            && ctx.input(|i| i.pointer.any_pressed()),
-                    ) {
-                        self.ws.active = ActivePanel::Right;
-                    }
-                    Self::render_panel(
-                        &mut self.ws.right,
+                    self.render_pane_contents(
+                        ActivePanel::Right,
                         ui,
-                        self.ws.active == ActivePanel::Right,
+                        input_policy,
                         close_right_preview,
-                        &t,
-                        &mut self.image_cache,
-                        "right",
-                        self.show_tree,
-                        self.show_size_bars,
                         right_compare.as_ref(),
                         &opener,
                         dragging,
                         right_metrics,
-                        self.accessibility_preferences.reduced_motion,
                     )
                 })
                 .inner
@@ -1629,26 +1335,7 @@ impl App {
             self.open_external(request, &ctx);
         }
 
-        if input_policy.allows_drop_target(
-            containing_ui_enabled,
-            dragging
-                && drag_source != Some(ActivePanel::Right)
-                && hover_pos.is_some_and(|pos| right_resp.response.rect.contains(pos))
-                && !self.ws.right.drag.has_drop_target(),
-        ) {
-            self.ws
-                .right
-                .drag
-                .set_drop_target(self.ws.right.current_path.clone());
-        }
-        if self.ws.right.drag.has_drop_target() {
-            ctx.layer_painter(right_resp.response.layer_id).rect_stroke(
-                right_resp.response.rect.shrink(1.0),
-                CornerRadius::ZERO,
-                Stroke::new(1.0, t.accent),
-                egui::StrokeKind::Inside,
-            );
-        }
+        self.update_pane_drop_target(ActivePanel::Right, &right_resp.response, &pane_drop);
 
         if tree_toggle {
             self.show_tree = !self.show_tree;
@@ -1666,21 +1353,139 @@ impl App {
         }
     }
 
+    /// One pane's body: pointer activation, then the panel renderer.
+    #[allow(clippy::too_many_arguments)]
+    fn render_pane_contents(
+        &mut self,
+        side: ActivePanel,
+        ui: &mut egui::Ui,
+        input_policy: FrameInputPolicy,
+        close_preview: bool,
+        compare: Option<&crate::compare::CompareMap>,
+        opener: &dyn Fn(crate::ports::OpenRequest),
+        dragging: bool,
+        metrics: crate::density::DensityMetrics,
+    ) -> super::render::PanelRenderOutcome {
+        if input_policy.allows_raw_input(
+            ui.is_enabled(),
+            ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()),
+        ) {
+            self.ws.active = side;
+        }
+        if self.ui.tools.side == Some(side) && self.ui.tools.any_open() {
+            self.show_pane_tool(ui);
+            return super::render::PanelRenderOutcome::default();
+        }
+        let t = self.colors;
+        let is_active = self.ws.active == side;
+        let (panel, label) = match side {
+            ActivePanel::Left => (&mut self.ws.left, "left"),
+            ActivePanel::Right => (&mut self.ws.right, "right"),
+        };
+        Self::render_panel(
+            panel,
+            ui,
+            is_active,
+            close_preview,
+            &t,
+            &mut self.image_cache,
+            label,
+            self.show_tree,
+            self.show_size_bars,
+            compare,
+            opener,
+            dragging,
+            metrics,
+            self.accessibility_preferences.reduced_motion,
+        )
+    }
+
+    /// Draw the open pane tool (disk usage, diff, sync, duplicates or archive)
+    /// in place of a file list, with a title bar whose close button and
+    /// Escape both return the pane to its listing.
+    fn show_pane_tool(&mut self, ui: &mut egui::Ui) {
+        let t = self.colors;
+        let mut close = false;
+        Frame::NONE
+            .fill(t.bg_panel)
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                // Each tool draws its own heading; the host only adds Close.
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("\u{00d7}").color(t.text_muted),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Close (Esc)")
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+                if self.ui.tools.treemap.is_some() {
+                    self.show_treemap_tool(ui);
+                } else if self.ui.tools.diff.is_some() {
+                    self.show_diff_tool(ui);
+                } else if self.ui.tools.sync.is_some() {
+                    self.show_sync_tool(ui);
+                } else if self.ui.tools.duplicates.is_some() {
+                    self.show_duplicates_tool(ui);
+                } else {
+                    self.show_archive_tool(ui);
+                }
+            });
+        if close {
+            self.ui.tools = super::ui_state::PaneTools::default();
+        }
+    }
+
+    /// Make a pane's own folder the drop target while a drag from the other
+    /// pane hovers it, and outline the pane that holds the target.
+    fn update_pane_drop_target(
+        &mut self,
+        side: ActivePanel,
+        response: &egui::Response,
+        drop: &PaneDropContext,
+    ) {
+        let accent = self.colors.accent;
+        let panel = match side {
+            ActivePanel::Left => &mut self.ws.left,
+            ActivePanel::Right => &mut self.ws.right,
+        };
+        if drop.input_policy.allows_drop_target(
+            drop.containing_ui_enabled,
+            drop.dragging
+                && drop.drag_source != Some(side)
+                && drop
+                    .hover_pos
+                    .is_some_and(|pos| response.rect.contains(pos))
+                && !panel.drag.has_drop_target(),
+        ) {
+            panel.drag.set_drop_target(panel.current_path.clone());
+        }
+        if panel.drag.has_drop_target() {
+            response.ctx.layer_painter(response.layer_id).rect_stroke(
+                response.rect.shrink(1.0),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
     /// Floating label with the dragged file count next to the pointer.
     fn show_drag_overlay(&mut self, ctx: &egui::Context) {
         let t = self.colors;
-        let drag_entries = if !self.ws.left.drag.is_empty() {
-            self.ws.left.drag.entries()
-        } else if !self.ws.right.drag.is_empty() {
-            self.ws.right.drag.entries()
-        } else {
+        let Some(session) = self.ws.drag_session() else {
             return;
         };
-        let (source, other) = if !self.ws.left.drag.is_empty() {
-            (&self.ws.left, &self.ws.right)
-        } else {
-            (&self.ws.right, &self.ws.left)
-        };
+        let drag_entries = session.entries;
         let count = drag_entries.len();
         if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
             let label = if count == 1 {
@@ -1691,11 +1496,7 @@ impl App {
             } else {
                 format!("{} items", count)
             };
-            let explicit_target = source
-                .drag
-                .drop_target()
-                .or_else(|| other.drag.drop_target());
-            let announcement = if let Some(target) = explicit_target {
+            let announcement = if let Some(target) = session.target {
                 if !target.is_dir() {
                     crate::operation_view::DragAnnouncement::rejected("destination is not a folder")
                 } else if crate::volume_profile::profile(target).read_only {
@@ -1766,7 +1567,7 @@ impl App {
             return;
         }
         let t = self.colors;
-        let label = format!("\u{2192} {buffer}");
+        let label = format!("\u{00bb} {buffer}");
         let screen = ctx.input(|i| i.viewport_rect());
         egui::Area::new(egui::Id::new("type_ahead_overlay"))
             .fixed_pos(egui::pos2(screen.center().x - 60.0, screen.bottom() - 80.0))
@@ -1926,7 +1727,6 @@ mod tests {
     use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
-        recovery_review_handoff_allowed,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2020,11 +1820,11 @@ mod tests {
 
     #[test]
     fn prior_modal_ownership_survives_poll_and_render_transitions() {
-        let prior_transfer = any_modal_surface_open(false, true, false, false);
-        let retired_transfer = frame_policy(true, prior_transfer, false);
+        let prior_confirmation = any_modal_surface_open(true, false);
+        let closed_confirmation = frame_policy(true, prior_confirmation, false);
         assert!(
-            retired_transfer.trapped(),
-            "a transfer retired by begin_frame still owns its close frame"
+            closed_confirmation.trapped(),
+            "a confirmation closed by begin_frame still owns its close frame"
         );
 
         let idle = frame_policy(true, false, false);
@@ -2035,10 +1835,10 @@ mod tests {
     }
 
     #[test]
-    fn safe_state_and_transfer_surfaces_both_activate_the_frame_trap() {
+    fn confirmation_and_app_modals_both_activate_the_frame_trap() {
         for modal_is_open in [
-            any_modal_surface_open(true, false, false, false),
-            any_modal_surface_open(false, true, false, false),
+            any_modal_surface_open(true, false),
+            any_modal_surface_open(false, true),
         ] {
             let policy = frame_policy(true, false, modal_is_open);
             assert!(policy.trapped());
@@ -2047,62 +1847,11 @@ mod tests {
     }
 
     #[test]
-    fn safe_state_to_recovery_handoff_remains_trapped() {
-        let safe_state_with_retained_transfer = any_modal_surface_open(true, true, false, false);
-        let recovery_open = any_modal_surface_open(false, false, false, true);
-
-        let policy = frame_policy(true, safe_state_with_retained_transfer, recovery_open);
-        assert!(policy.trapped());
-        assert!(!policy.background_enabled());
-    }
-
-    #[test]
-    fn safe_state_handoff_allows_its_retained_error_transfer_only() {
-        let operation_id = crate::operation::OperationId("retained-error".to_string());
-        let safe_state = crate::operation::SafeState {
-            operation_id: operation_id.clone(),
-            reason: "placement uncertain".to_string(),
-            paths: Vec::new(),
-            failures: Vec::new(),
-        };
-        let mut transfer = crate::transfer::TransferProgress::new(1, 1);
-        transfer.operation_id = Some(operation_id.clone());
-        transfer.finished = true;
-        transfer.errors.push("placement uncertain".to_string());
-
-        assert!(recovery_review_handoff_allowed(
-            Some(&safe_state),
-            Some(&operation_id),
-            Some(&transfer),
-            false,
-            &operation_id,
-        ));
-        assert!(!recovery_review_handoff_allowed(
-            Some(&safe_state),
-            Some(&operation_id),
-            Some(&transfer),
-            true,
-            &operation_id,
-        ));
-
-        transfer.operation_id = Some(crate::operation::OperationId("other".to_string()));
-        assert!(
-            recovery_review_handoff_allowed(
-                Some(&safe_state),
-                Some(&operation_id),
-                Some(&transfer),
-                false,
-                &operation_id,
-            ),
-            "handoff trusts the controller's canonical identity"
-        );
-        assert!(!recovery_review_handoff_allowed(
-            Some(&safe_state),
-            Some(&crate::operation::OperationId("other".to_string())),
-            Some(&transfer),
-            false,
-            &operation_id,
-        ));
+    fn a_running_transfer_alone_leaves_the_panes_interactive() {
+        // The Activity strip reports transfers and safe state; neither is a
+        // modal surface.
+        assert!(!any_modal_surface_open(false, false));
+        assert!(frame_policy(true, false, false).background_enabled());
     }
 
     #[test]

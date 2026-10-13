@@ -798,31 +798,18 @@ const INDEX_STORE: crate::persistence::StoreSpec =
 
 fn load_index_from(path: &Path, expected_root: &Path) -> Result<Option<RootIndex>, String> {
     let persist = crate::persistence::FsPersist::default();
-    let loaded = crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE);
-    match loaded.gate.status() {
-        crate::persistence::LoadStatus::Missing => Ok(None),
-        crate::persistence::LoadStatus::Corrupt => {
-            Err("Content index is corrupt: envelope or payload rejected".to_string())
+    let (index, _) =
+        crate::persistence::load_strict::<RootIndex>(&persist, path, INDEX_STORE, INDEX_NOUN)?;
+    match index {
+        Some(index) if index.schema != SCHEMA_VERSION || index.root != expected_root => {
+            Err("Content index schema or root does not match".to_string())
         }
-        crate::persistence::LoadStatus::FutureVersion => {
-            Err("Content index uses a newer persist envelope than this build supports".to_string())
-        }
-        crate::persistence::LoadStatus::Unreadable => {
-            Err("Could not open content index: unreadable".to_string())
-        }
-        crate::persistence::LoadStatus::Legacy
-        | crate::persistence::LoadStatus::Current
-        | crate::persistence::LoadStatus::Recovered => {
-            let Some(index) = loaded.value else {
-                return Err("Content index is corrupt: payload did not decode".to_string());
-            };
-            if index.schema != SCHEMA_VERSION || index.root != expected_root {
-                return Err("Content index schema or root does not match".to_string());
-            }
-            Ok(Some(index))
-        }
+        index => Ok(index),
     }
 }
+
+/// Sentence-case name used in this store's error messages.
+const INDEX_NOUN: &str = "Content index";
 
 fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
     let persist = crate::persistence::FsPersist::default();
@@ -836,10 +823,7 @@ fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
         &mut gate,
         crate::persistence::SaveIntent::Automatic,
     ) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => Ok(()),
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => Err(format!(
-            "Content index commit is ambiguous across a crash: target was replaced but its directory could not be synced: {error}"
-        )),
+        Ok(outcome) => crate::persistence::require_durable(INDEX_NOUN, outcome),
         Err(error) => Err(format!("Could not save content index: {error:?}")),
     }
 }

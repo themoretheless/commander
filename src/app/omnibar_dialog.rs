@@ -485,7 +485,7 @@ impl App {
                 self.ws.execute(cmd);
             }
             Some(OmniAction::Search(query)) => {
-                self.open_find();
+                self.open_find(ctx);
                 if let Some(find) = self.ui.modals.find.as_mut() {
                     find.expression = query;
                     find.pending_rerun = true;
@@ -574,8 +574,6 @@ impl App {
             | Command::CopyFileUrl
             | Command::CopyShellPath
             | Command::CopyRelativePath => format!("{picked} item(s)"),
-            Command::ShelfAdd => format!("{picked} item(s)"),
-            Command::ShelfDrain => format!("{} staged -> {active_path}", self.ws.shelf.len()),
             Command::ToggleInfo => "opposite panel inspector".to_string(),
             Command::BeginGoToPath => "jump to folder".to_string(),
             Command::BeginRecent => "recent folders".to_string(),

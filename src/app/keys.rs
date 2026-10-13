@@ -9,16 +9,6 @@ use crate::accessibility::{
 };
 use crate::command::{Command, KeyCode, KeyPress, map_keys};
 
-fn keyboard_command_allowed(route: KeyboardRoute, command: Command) -> bool {
-    match route {
-        KeyboardRoute::Workspace => true,
-        KeyboardRoute::Transfer => {
-            matches!(command, Command::RequestCopy | Command::RequestMove)
-        }
-        KeyboardRoute::TextInput(_) | KeyboardRoute::Modal(_) => false,
-    }
-}
-
 fn prioritized_modal(
     open: impl Fn(ModalSurface) -> bool,
     first_pending: Option<ModalSurface>,
@@ -38,25 +28,6 @@ impl App {
             return;
         }
         let presses = ctx.input(Self::collect_presses);
-        if contract.keyboard == KeyboardRoute::Transfer {
-            // A transfer's progress window is effectively modal, but Copy/Move
-            // stay live so a second transfer can be queued behind it instead
-            // of the hotkey being dropped on the floor. Every other mapped key
-            // gets direct feedback instead of failing silently.
-            for cmd in map_keys(&presses) {
-                if keyboard_command_allowed(contract.keyboard, cmd) {
-                    self.execute_key_command(ctx, cmd);
-                    if self.ws.has_any_pending_ui_modal() {
-                        break;
-                    }
-                } else {
-                    self.push_key_feedback(ctx, "Wait for the active transfer to finish");
-                }
-            }
-            self.ui.type_ahead = None;
-            self.ui.chord = None;
-            return;
-        }
         for cmd in map_keys(&presses) {
             self.execute_key_command(ctx, cmd);
             if self.ws.has_any_pending_ui_modal() {
@@ -84,6 +55,7 @@ impl App {
         resolve_ui_contract(UiContractState {
             text_input: text_input_state(ctx),
             modal,
+            pane_tool_open: self.ui.tools.any_open(),
             active_preview_open,
             focus_mode: self.ui.focus_mode,
         })
@@ -121,12 +93,7 @@ impl App {
     }
 
     fn push_key_feedback(&mut self, ctx: &egui::Context, message: &'static str) {
-        self.toasts.push(crate::toasts::Toast::new(
-            message,
-            crate::toasts::ToastKind::Info,
-            false,
-            ctx.input(|input| input.time),
-        ));
+        self.toast(ctx, crate::toasts::ToastKind::Info, message, false);
     }
 
     /// Vim-style chords, modifier-free: `g g` jumps to the top, `s s`
@@ -290,6 +257,7 @@ impl App {
             (egui::Key::U, KeyCode::U),
             (egui::Key::V, KeyCode::V),
             (egui::Key::Z, KeyCode::Z),
+            (egui::Key::J, KeyCode::J),
             (egui::Key::OpenBracket, KeyCode::BracketLeft),
             (egui::Key::CloseBracket, KeyCode::BracketRight),
             // Quick-jump slots: Cmd+1..9 jump, Cmd+Shift+1..9 assign. A bare
@@ -324,41 +292,6 @@ mod ui_contract;
 mod tests {
     use super::*;
 
-    struct TransitionFrameSink {
-        operation_id: crate::operation::OperationId,
-        safe_state_open: bool,
-        retained_transfer_open: bool,
-        recovery_open: bool,
-    }
-
-    impl crate::ui_request::UiRequestSink for TransitionFrameSink {
-        fn any_modal_open(&self) -> bool {
-            self.safe_state_open || self.retained_transfer_open || self.recovery_open
-        }
-
-        fn is_modal_open(&self, modal: UiModal) -> bool {
-            modal == UiModal::Recovery && self.recovery_open
-        }
-
-        fn can_transition_from_open_modal(&self, request: &UiRequest) -> bool {
-            matches!(
-                request,
-                UiRequest::ReviewRecovery(operation_id)
-                    if self.safe_state_open
-                        && self.retained_transfer_open
-                        && operation_id == &self.operation_id
-            )
-        }
-
-        fn apply(&mut self, request: UiRequest) {
-            assert_eq!(
-                request,
-                UiRequest::ReviewRecovery(self.operation_id.clone())
-            );
-            self.recovery_open = true;
-        }
-    }
-
     #[test]
     fn an_open_modal_keeps_priority_over_a_deferred_request() {
         let mut queue = crate::ui_request::UiRequestQueue::default();
@@ -387,70 +320,6 @@ mod tests {
             })
             .escape,
             EscapeRoute::Modal(ModalSurface::RunCommand)
-        );
-    }
-
-    #[test]
-    fn recovery_dialog_owns_escape_with_safe_state_and_retained_transfer() {
-        let modal = prioritized_modal(
-            |surface| {
-                matches!(
-                    surface,
-                    ModalSurface::Recovery | ModalSurface::SafeState | ModalSurface::Transfer
-                )
-            },
-            Some(ModalSurface::Palette),
-        );
-
-        assert_eq!(modal, Some(ModalSurface::Recovery));
-        assert_eq!(
-            resolve_ui_contract(UiContractState {
-                modal,
-                ..Default::default()
-            })
-            .escape,
-            EscapeRoute::Modal(ModalSurface::Recovery)
-        );
-    }
-
-    #[test]
-    fn transition_frame_finalizes_escape_for_recovery_after_dispatch() {
-        let operation_id = crate::operation::OperationId("transition-frame".to_string());
-        let mut queue = crate::ui_request::UiRequestQueue::default();
-        queue.emit(UiRequest::ReviewRecovery(operation_id.clone()));
-        let mut sink = TransitionFrameSink {
-            operation_id,
-            safe_state_open: true,
-            retained_transfer_open: true,
-            recovery_open: false,
-        };
-
-        let before_dispatch = prioritized_modal(
-            |surface| matches!(surface, ModalSurface::SafeState | ModalSurface::Transfer),
-            queue.first_pending_modal().map(UiModal::surface),
-        );
-        assert_eq!(before_dispatch, Some(ModalSurface::SafeState));
-
-        let deferred = crate::ui_request::dispatch_snapshot(queue.drain_snapshot(), &mut sink);
-        assert!(deferred.is_empty());
-        let after_dispatch = prioritized_modal(
-            |surface| match surface {
-                ModalSurface::Recovery => sink.recovery_open,
-                ModalSurface::SafeState => sink.safe_state_open,
-                ModalSurface::Transfer => sink.retained_transfer_open,
-                _ => false,
-            },
-            queue.first_pending_modal().map(UiModal::surface),
-        );
-
-        assert_eq!(after_dispatch, Some(ModalSurface::Recovery));
-        assert_eq!(
-            resolve_ui_contract(UiContractState {
-                modal: after_dispatch,
-                ..Default::default()
-            })
-            .escape,
-            EscapeRoute::Modal(ModalSurface::Recovery)
         );
     }
 }

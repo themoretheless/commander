@@ -178,6 +178,23 @@ pub struct SafeState {
     pub failures: Vec<ClassifiedFailure>,
 }
 
+impl SafeState {
+    /// An integrity stop with one `IntegrityUncertain` failure echoing `reason`.
+    pub fn integrity(operation_id: OperationId, reason: String, paths: Vec<PathBuf>) -> Self {
+        let failure = ClassifiedFailure::message(
+            FailureClass::IntegrityUncertain,
+            paths.first().cloned(),
+            reason.clone(),
+        );
+        Self {
+            operation_id,
+            reason,
+            paths,
+            failures: vec![failure],
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationId(pub String);
 

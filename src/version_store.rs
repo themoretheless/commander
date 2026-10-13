@@ -9,6 +9,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+/// Health-report label for the version manifest store.
+const MANIFEST_LABEL: &str = "Version manifest";
+
 const MANIFEST_STORE: crate::persistence::StoreSpec =
     crate::persistence::StoreSpec::new("commander.version_manifest", 1, 16 * 1024 * 1024);
 
@@ -316,8 +319,11 @@ fn preserve_at_inner(
         .manifest
         .identities
         .insert(record.key.0.clone(), created_identity.clone());
-    match save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
+    match crate::persistence::report_save(
+        MANIFEST_LABEL,
+        save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate),
+    ) {
+        Some(crate::persistence::Committed::Durable) => {
             prune_manifest(
                 persist,
                 root,
@@ -327,17 +333,14 @@ fn preserve_at_inner(
                 record.created_at_secs,
             );
         }
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
-            crate::persistence::record_durability_warning("Version manifest", &error);
-        }
-        Err(error) => {
+        Some(crate::persistence::Committed::NotDurable) => {}
+        None => {
             crate::version_dedup::release_payload_refs(
                 &mut loaded.manifest.blobs,
                 &mut loaded.manifest.payload_files,
                 &record.key.0,
             );
             remove_path_if_identity_matches(&stored, &created_identity);
-            crate::persistence::record_json_save_failure("Version manifest", &error);
             return Err(version_failure("Could not save version manifest"));
         }
     }
@@ -396,8 +399,11 @@ pub(crate) fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(
         &mut loaded.manifest.payload_files,
         &record.key.0,
     );
-    match save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
+    match crate::persistence::report_save(
+        MANIFEST_LABEL,
+        save_manifest_with(persist, root, &loaded.manifest, &mut loaded.gate),
+    ) {
+        Some(crate::persistence::Committed::Durable) => {
             validate_stored_path(root, &authoritative.stored)?;
             let current = PathIdentity::observe_deep(&authoritative.stored)
                 .map_err(|error| format!("Could not revalidate rejected version: {error}"))?;
@@ -414,14 +420,8 @@ pub(crate) fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(
                 )
             })
         }
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
-            crate::persistence::record_durability_warning("Version manifest", &error);
-            Ok(())
-        }
-        Err(error) => {
-            crate::persistence::record_json_save_failure("Version manifest", &error);
-            Err("Could not remove rejected version from the manifest".to_string())
-        }
+        Some(crate::persistence::Committed::NotDurable) => Ok(()),
+        None => Err("Could not remove rejected version from the manifest".to_string()),
     }
 }
 
@@ -543,16 +543,12 @@ fn prune_manifest(
     // Publish the manifest before deleting data. A failed policy update keeps
     // extra recovery data; it never leaves a manifest pointing at a deleted
     // version.
-    match save_manifest_with(persist, root, &pruned, gate) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
-            crate::persistence::record_durability_warning("Version manifest", &error);
-            return;
-        }
-        Err(error) => {
-            crate::persistence::record_json_save_failure("Version manifest", &error);
-            return;
-        }
+    if crate::persistence::report_save(
+        MANIFEST_LABEL,
+        save_manifest_with(persist, root, &pruned, gate),
+    ) != Some(crate::persistence::Committed::Durable)
+    {
+        return;
     }
     for (record, expected) in expired.into_iter().zip(expired_identities) {
         if validate_stored_path(root, &record.stored).is_err() {
@@ -925,12 +921,7 @@ fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) ->
     );
     let status = loaded.gate.status();
     let mut gate = loaded.gate;
-    let mut blocked = matches!(
-        status,
-        crate::persistence::LoadStatus::Corrupt
-            | crate::persistence::LoadStatus::FutureVersion
-            | crate::persistence::LoadStatus::Unreadable
-    );
+    let mut blocked = status.fails_closed();
     let mut manifest = loaded.value.unwrap_or_default();
     if !blocked && status != crate::persistence::LoadStatus::Missing {
         match validate_manifest(root, &mut manifest) {
@@ -943,7 +934,7 @@ fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) ->
         }
     }
     if blocked {
-        crate::persistence::record_unreadable("Version manifest");
+        crate::persistence::record_unreadable(MANIFEST_LABEL);
     }
     LoadedManifest {
         manifest,
@@ -1004,7 +995,7 @@ fn copy_path_tracked(
                     let metadata = fs::symlink_metadata(&source)?;
                     if metadata.file_type().is_symlink() {
                         let target = fs::read_link(&source)?;
-                        create_symlink(&target, &destination, source.is_dir())?;
+                        crate::fs_util::create_symlink(&target, &destination, source.is_dir())?;
                         if destination == root_destination {
                             destination_identity = PathIdentity::observe(&destination).ok();
                         }
@@ -1125,28 +1116,6 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
-}
-
-#[cfg(unix)]
-fn create_symlink(target: &Path, destination: &Path, _directory: bool) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, destination)
-}
-
-#[cfg(windows)]
-fn create_symlink(target: &Path, destination: &Path, directory: bool) -> std::io::Result<()> {
-    if directory {
-        std::os::windows::fs::symlink_dir(target, destination)
-    } else {
-        std::os::windows::fs::symlink_file(target, destination)
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_symlink(_target: &Path, _destination: &Path, _directory: bool) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "symlink versions are unsupported on this platform",
-    ))
 }
 
 #[cfg(test)]

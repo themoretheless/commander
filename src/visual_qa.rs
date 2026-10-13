@@ -26,14 +26,18 @@ enum Scenario {
     MinimumWindow,
     Zoom200Accessible,
     ConfirmationOwner,
+    /// Disk usage open as a pane tool: it replaces the right pane while the
+    /// left pane stays live and nothing traps input.
+    PaneTool,
 }
 
 impl Scenario {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::DesktopBase,
         Self::MinimumWindow,
         Self::Zoom200Accessible,
         Self::ConfirmationOwner,
+        Self::PaneTool,
     ];
 
     fn parse(value: &str) -> Option<Self> {
@@ -48,13 +52,14 @@ impl Scenario {
             Self::MinimumWindow => "minimum_window",
             Self::Zoom200Accessible => "zoom_200_accessible",
             Self::ConfirmationOwner => "confirmation_owner",
+            Self::PaneTool => "pane_tool",
         }
     }
 
     const fn viewport(self) -> [f32; 2] {
         match self {
             Self::MinimumWindow | Self::Zoom200Accessible => [900.0, 500.0],
-            Self::DesktopBase | Self::ConfirmationOwner => [1280.0, 760.0],
+            Self::DesktopBase | Self::ConfirmationOwner | Self::PaneTool => [1280.0, 760.0],
         }
     }
 
@@ -73,7 +78,7 @@ impl Scenario {
     const fn theme(self) -> ThemeMode {
         match self {
             Self::MinimumWindow | Self::Zoom200Accessible => ThemeMode::Light,
-            Self::DesktopBase | Self::ConfirmationOwner => ThemeMode::Dark,
+            Self::DesktopBase | Self::ConfirmationOwner | Self::PaneTool => ThemeMode::Dark,
         }
     }
 
@@ -90,6 +95,10 @@ impl Scenario {
 
     const fn needs_confirmation(self) -> bool {
         matches!(self, Self::ConfirmationOwner)
+    }
+
+    const fn opens_pane_tool(self) -> bool {
+        matches!(self, Self::PaneTool)
     }
 }
 
@@ -680,6 +689,7 @@ struct VisualQaApp {
     last_request_at: Option<Instant>,
     capture_probes: HashMap<u64, ProbeSnapshot>,
     confirmation_requested: bool,
+    pane_tool_opened: bool,
     last_probe_summary: String,
     pending_screenshot: Option<(u64, Arc<ColorImage>)>,
     pending_event_error: Option<String>,
@@ -750,6 +760,7 @@ impl VisualQaApp {
             last_request_at: None,
             capture_probes: HashMap::new(),
             confirmation_requested: false,
+            pane_tool_opened: false,
             last_probe_summary: "no rendered frame yet".to_string(),
             pending_screenshot: None,
             pending_event_error: None,
@@ -928,6 +939,16 @@ impl eframe::App for VisualQaApp {
                 ctx.request_repaint();
                 return;
             }
+        }
+
+        if self.scenario.opens_pane_tool() && !self.pane_tool_opened {
+            if !self.inner.ws.left.entries().is_empty() {
+                self.inner.open_treemap(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
         }
 
         let probes = ProbeSnapshot::read(&ctx);
@@ -1310,6 +1331,16 @@ fn write_capture(
             format!("modal_above_background={:?}", probes.modal_above_background),
         ));
     } else {
+        if scenario.opens_pane_tool() {
+            checks.push(check(
+                "pane_tool_leaves_input_live",
+                probes.background_enabled == Some(true) && probes.modal_owner.is_none(),
+                format!(
+                    "background_enabled={:?}, owner={:?}",
+                    probes.background_enabled, probes.modal_owner
+                ),
+            ));
+        }
         checks.push(check(
             "row_runtime_hover",
             probes
@@ -1434,6 +1465,7 @@ mod tests {
                 "minimum_window",
                 "zoom_200_accessible",
                 "confirmation_owner",
+                "pane_tool",
             ]
         );
         assert_eq!(Scenario::MinimumWindow.viewport(), [900.0, 500.0]);
@@ -1444,6 +1476,7 @@ mod tests {
         );
         assert!(Scenario::Zoom200Accessible.preferences().high_contrast);
         assert!(Scenario::ConfirmationOwner.needs_confirmation());
+        assert!(Scenario::PaneTool.opens_pane_tool());
     }
 
     #[test]

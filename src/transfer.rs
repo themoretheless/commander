@@ -99,7 +99,31 @@ pub struct TransferProgress {
 
 pub type TransferState = Arc<Mutex<TransferProgress>>;
 
+/// The error every copy primitive returns when the user cancels.
+pub(crate) fn cancelled_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
+}
+
+/// `Err(cancelled)` once the user has cancelled this transfer.
+pub(crate) fn check_cancelled(state: &Mutex<TransferProgress>) -> std::io::Result<()> {
+    if crate::lock_util::recover(state).cancelled {
+        Err(cancelled_error())
+    } else {
+        Ok(())
+    }
+}
+
 impl TransferProgress {
+    /// Report `path` as the file now being copied, `size` bytes, none done.
+    pub(crate) fn begin_file(&mut self, path: &Path, size: u64) {
+        self.current_file = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.current_file_size = size;
+        self.current_file_copied = 0;
+    }
+
     pub fn new(total_bytes: u64, files_total: usize) -> Self {
         Self {
             operation_id: None,
@@ -357,6 +381,42 @@ pub struct TransferSpec {
     pub journal_enabled: bool,
 }
 
+impl TransferSpec {
+    /// A fresh, ungrouped operation with default policies, nothing captured
+    /// and no post-success or rollback work. Callers override the rest with
+    /// struct-update syntax.
+    pub fn new(kind: TransferKind, entries: Vec<FileEntry>, target: PathBuf) -> Self {
+        Self {
+            operation_id: OperationId::new(),
+            group_id: None,
+            kind,
+            entries,
+            expectations: Vec::new(),
+            target,
+            policy: OverwritePolicy::Ask,
+            method: CopyMethod::Native,
+            durability: DurabilityProfile::default(),
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            preflight_bytes: None,
+            post_success: None,
+            rollback_cleanup: None,
+            rollback_cleanup_identity: None,
+            #[cfg(test)]
+            mount_wait_override: None,
+            #[cfg(test)]
+            before_commit: None,
+            #[cfg(test)]
+            before_post_success: None,
+            #[cfg(test)]
+            before_terminal_publish: None,
+            #[cfg(test)]
+            journal_enabled: false,
+        }
+    }
+}
+
 #[cfg(test)]
 pub type BeforeCommitHook = Arc<dyn Fn(&Path, &Path) + Send + Sync>;
 #[cfg(test)]
@@ -385,6 +445,50 @@ pub struct ResumeCheckpoint {
     /// BLAKE3 of the first `offset` bytes for every resumable layout.
     #[serde(default)]
     pub content_digest: Option<[u8; 32]>,
+}
+
+impl ResumeCheckpoint {
+    /// Record a checkpoint for `staging` at `offset`, observing the source and
+    /// partial identities now. `content_digest` is BLAKE3 of the first
+    /// `offset` bytes.
+    pub fn observe(
+        source: &Path,
+        staging: &Path,
+        offset: u64,
+        layout: CheckpointLayout,
+        content_digest: [u8; 32],
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            staging: staging.to_path_buf(),
+            offset,
+            source: PathIdentity::observe_deep(source)?,
+            partial: PathIdentity::observe_deep(staging)?,
+            layout,
+            content_digest: Some(content_digest),
+        })
+    }
+
+    /// Whether the partial file as observed now can still hold this
+    /// checkpoint: a prefix may have grown past the offset, while delta
+    /// layouts preallocate and must keep their recorded size.
+    pub fn size_fits(&self, partial_now: &PathIdentity) -> bool {
+        match self.layout {
+            CheckpointLayout::Prefix => partial_now.size >= self.offset,
+            CheckpointLayout::DeltaFixed | CheckpointLayout::DeltaCdc => {
+                partial_now.size == self.partial.size && partial_now.size >= self.offset
+            }
+        }
+    }
+
+    /// Whether the first `offset` bytes of `source` and `staging` both still
+    /// hash to the recorded proof. A checkpoint without a proof never matches.
+    pub fn proof_matches(&self, source: &Path, staging: &Path) -> std::io::Result<bool> {
+        let Some(expected) = self.content_digest else {
+            return Ok(false);
+        };
+        Ok(prefix_digest(source, self.offset)? == expected
+            && prefix_digest(staging, self.offset)? == expected)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -653,18 +757,8 @@ fn valid_runtime_checkpoint(
     {
         return None;
     }
-    let layout_matches = match checkpoint.layout {
-        CheckpointLayout::Prefix => partial_now.size >= checkpoint.offset,
-        CheckpointLayout::DeltaFixed | CheckpointLayout::DeltaCdc => {
-            partial_now.size == checkpoint.partial.size && partial_now.size >= checkpoint.offset
-        }
-    };
-    if !layout_matches {
-        return None;
-    }
-    let expected = checkpoint.content_digest?;
-    if prefix_digest(&checkpoint_source, checkpoint.offset).ok()? != expected
-        || prefix_digest(staging, checkpoint.offset).ok()? != expected
+    if !checkpoint.size_fits(&partial_now)
+        || !checkpoint.proof_matches(&checkpoint_source, staging).ok()?
     {
         return None;
     }
@@ -974,7 +1068,9 @@ use executor::{FailureRollback, TransferExecutor, finish_progress, run_failure_r
 use executor::{cleanup_moved_source, quarantine_expected_path, undo_placement};
 
 #[cfg(test)]
-use buffered::{copy_file_buffered_with_limiter, copy_symlink};
+use crate::fs_util::copy_symlink;
+#[cfg(test)]
+use buffered::copy_file_buffered_with_limiter;
 #[cfg(test)]
 use parallel_tree::copy_dir_buffered_parallel;
 #[cfg(test)]
@@ -1432,27 +1528,14 @@ mod tests {
         let folder = root.dir("Gathered");
         let file = root.file("Gathered/a.txt", "a");
         let state = run(TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: vec![entry_for(&file)],
             expectations: capture_expectations(&[entry_for(&file)], root.path()),
-            target: root.path().to_path_buf(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(
+                TransferKind::Move,
+                vec![entry_for(&file)],
+                root.path().to_path_buf(),
+            )
         });
 
         assert!(state.errors.is_empty(), "{:?}", state.errors);
@@ -1465,27 +1548,9 @@ mod tests {
         let root = TempDir::new();
         let folder = root.dir("Gathered");
         let state = run(TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: Vec::new(),
-            expectations: Vec::new(),
-            target: root.path().to_path_buf(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(TransferKind::Move, Vec::new(), root.path().to_path_buf())
         });
 
         assert!(state.errors.is_empty(), "{:?}", state.errors);
@@ -1499,27 +1564,14 @@ mod tests {
         let file = root.file("Gathered/a.txt", "a");
         root.file("Gathered/foreign.txt", "foreign");
         let state = run(TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries: vec![entry_for(&file)],
             expectations: capture_expectations(&[entry_for(&file)], root.path()),
-            target: root.path().to_path_buf(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
             post_success: Some(PostTransferAction::RemoveEmptyDir(folder.clone())),
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(
+                TransferKind::Move,
+                vec![entry_for(&file)],
+                root.path().to_path_buf(),
+            )
         });
 
         assert!(root.path().join("a.txt").is_file());
@@ -1540,27 +1592,11 @@ mod tests {
         policy: OverwritePolicy,
     ) -> TransferSpec {
         TransferSpec {
-            operation_id: OperationId::new(),
-            group_id: None,
-            kind,
             expectations: capture_expectations(&entries, target),
-            entries,
-            target: target.to_path_buf(),
             policy,
             method,
             durability: DurabilityProfile::Fast,
-            version_retention: crate::operation::VersionRetentionPolicy::default(),
-            name_policy: crate::filesystem_policy::NamePolicy::default(),
-            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            mount_wait_override: None,
-            before_commit: None,
-            before_post_success: None,
-            before_terminal_publish: None,
-            journal_enabled: false,
+            ..TransferSpec::new(kind, entries, target.to_path_buf())
         }
     }
 
@@ -1794,14 +1830,14 @@ mod tests {
         std::fs::write(&source, &bytes).unwrap();
         let offset = 1024 * 1024 + 7;
         std::fs::write(&staging, &bytes[..offset]).unwrap();
-        let checkpoint = ResumeCheckpoint {
-            staging: staging.clone(),
-            offset: offset as u64,
-            source: PathIdentity::observe_deep(&source).unwrap(),
-            partial: PathIdentity::observe_deep(&staging).unwrap(),
-            layout: CheckpointLayout::Prefix,
-            content_digest: Some(prefix_digest(&staging, offset as u64).unwrap()),
-        };
+        let checkpoint = ResumeCheckpoint::observe(
+            &source,
+            &staging,
+            offset as u64,
+            CheckpointLayout::Prefix,
+            prefix_digest(&staging, offset as u64).unwrap(),
+        )
+        .unwrap();
         std::fs::OpenOptions::new()
             .append(true)
             .open(&staging)

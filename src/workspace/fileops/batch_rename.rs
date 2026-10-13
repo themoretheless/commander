@@ -27,7 +27,7 @@ pub(crate) fn apply_rename_order(
     existing: &std::collections::HashSet<String>,
 ) -> Result<usize, RenameExecutionError> {
     apply_rename_order_using(dir, map, existing, |from, to| {
-        crate::native_copy::rename_noreplace(&dir.join(from), &dir.join(to))
+        crate::fs_at::rename_noreplace(&dir.join(from), &dir.join(to))
     })
 }
 

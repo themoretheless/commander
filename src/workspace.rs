@@ -28,6 +28,15 @@ pub enum ActivePanel {
     Right,
 }
 
+impl ActivePanel {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
 /// Immutable target captured when the batch-rename sheet opens. Keeping the
 /// panel side, directory, names, and collision set together prevents a later
 /// click in the other panel from silently retargeting the operation.
@@ -253,14 +262,6 @@ pub struct DeleteActivity {
     pub cancel_requested: bool,
 }
 
-/// How a shelf drain turned out: how many copies started, and how many items
-/// could not be read and so were kept on the shelf rather than discarded.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct ShelfDrainOutcome {
-    pub started: usize,
-    pub unavailable: usize,
-}
-
 #[derive(Clone)]
 pub struct ActiveTransferView {
     pub attempt_id: crate::operation::TransferAttemptId,
@@ -321,14 +322,10 @@ pub struct Workspace {
     /// Typed intents waiting for the app shell. This replaces the former
     /// collection of one-shot booleans and optional payload slots.
     ui_requests: crate::ui_request::UiRequestQueue,
-    /// The drop stack: paths gathered across folders to copy in one go.
-    pub shelf: crate::shelf::Shelf,
     /// Persisted directory bookmarks (favorites + quick-jump slots 1..9).
     pub bookmarks: crate::bookmarks::Bookmarks,
     persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     bookmark_gate: crate::persistence::StoreGate,
-    /// A stashed selection for set-algebra combinations (union/intersect/...).
-    pub selection_stash: std::collections::HashSet<PathBuf>,
     /// Atomic owner of the transfer queue, active worker, and per-job history
     /// intent. Workspace applies only the controller's typed outcomes.
     transfers: transfer_queue::TransferQueueController,
@@ -524,11 +521,9 @@ impl Workspace {
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             ui_requests: crate::ui_request::UiRequestQueue::default(),
-            shelf: crate::shelf::Shelf::default(),
             bookmarks: bookmarks.store,
             persistence,
             bookmark_gate: bookmarks.gate,
-            selection_stash: std::collections::HashSet::new(),
             transfers: transfer_queue::TransferQueueController::default(),
             space_probes: space_probe::SpaceProbeController::default(),
             free_space_port: free_space,
@@ -541,17 +536,14 @@ impl Workspace {
     }
 
     fn save_bookmarks(&mut self) {
-        match crate::bookmarks::save_with(
-            self.persistence.as_ref(),
-            &self.bookmarks,
-            &mut self.bookmark_gate,
-        ) {
-            Ok(crate::persistence::AtomicWriteOutcome::Durable) => {}
-            Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
-                crate::persistence::record_durability_warning("Bookmarks", &error);
-            }
-            Err(error) => crate::persistence::record_json_save_failure("Bookmarks", &error),
-        }
+        crate::persistence::report_save(
+            "Bookmarks",
+            crate::bookmarks::save_with(
+                self.persistence.as_ref(),
+                &self.bookmarks,
+                &mut self.bookmark_gate,
+            ),
+        );
     }
 
     pub fn active_panel(&mut self) -> &mut PanelState {
@@ -666,11 +658,6 @@ impl Workspace {
             }
             true
         });
-        let picked_entries = if active.selection_is_empty() {
-            usize::from(cursor.is_some())
-        } else {
-            selected_entries
-        };
         let listing_entries = if active.selection_is_empty() {
             visible_entries
         } else {
@@ -693,66 +680,15 @@ impl Workspace {
             })
         };
 
-        let active_transfer = self.active_transfer_view().is_some();
-        let transfer_queue_busy = self.has_unfinished_transfer_work();
-        let pending_operation = self.pending_op.is_some();
-        let safe_state = self.safe_state.is_some();
-        let active_mutation = self.deletes.is_active();
-        let (left_read_only, right_read_only) = self.pane_read_only();
-        let (active_read_only, inactive_read_only) = match self.active {
-            ActivePanel::Left => (left_read_only, right_read_only),
-            ActivePanel::Right => (right_read_only, left_read_only),
-        };
-        let can_transfer_into_cursor_folder = !transfer_queue_busy
-            && !pending_operation
-            && !self.mutations_blocked()
-            && cursor.is_some_and(|target| target.is_dir)
-            && has_transfer_source;
-
-        let (marked_entries, stashed_entries) =
-            active
-                .entries()
-                .iter()
-                .fold((0usize, 0usize), |(marked, stashed), entry| {
-                    (
-                        marked.saturating_add(usize::from(active.is_marked(&entry.path))),
-                        stashed.saturating_add(usize::from(
-                            self.selection_stash.contains(&entry.path),
-                        )),
-                    )
-                });
-
         crate::command::CommandContext {
             visible_entries,
             visible_files,
             other_entries: inactive.entries().len(),
-            picked_entries,
-            selected_entries,
             listing_entries,
-            marked_entries,
-            stashed_entries,
-            shelf_entries: self.shelf.len(),
-            cursor_entry: cursor.is_some(),
-            cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
-            cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
             cursor_has_extension: cursor
                 .is_some_and(|entry| !entry.is_dir && !entry.extension.is_empty()),
-            can_go_up: active.current_path.parent().is_some(),
-            can_go_back: active.can_go_back(),
-            can_go_forward: active.can_go_forward(),
             can_diff,
-            can_transfer_into_cursor_folder,
-            can_undo: self.can_undo(),
-            can_redo: self.can_redo(),
-            preview_open: inactive.preview.is_some(),
-            info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
-            safe_state,
-            active_mutation,
-            pending_operation,
-            active_transfer,
-            transfer_queue_busy,
-            active_read_only,
-            inactive_read_only,
+            ..self.base_command_context(selected_entries, has_transfer_source)
         }
     }
 
@@ -775,22 +711,33 @@ impl Workspace {
             });
         }
 
-        let safe_state = self.safe_state.is_some();
-        let active_mutation = self.deletes.is_active();
+        self.base_command_context(usize::from(has_selected), has_transfer_source)
+    }
+
+    /// The fields both command contexts share: cursor shape, navigation,
+    /// history, the transfer-into-folder gate, preview and blocking state.
+    /// Directory-wide counts stay at their defaults.
+    fn base_command_context(
+        &self,
+        selected_entries: usize,
+        has_transfer_source: bool,
+    ) -> crate::command::CommandContext {
+        let (active, inactive) = match self.active {
+            ActivePanel::Left => (&self.left, &self.right),
+            ActivePanel::Right => (&self.right, &self.left),
+        };
+        let cursor = active.cursor_entry();
         let pending_operation = self.pending_op.is_some();
-        let active_transfer = self.active_transfer_view().is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let (left_read_only, right_read_only) = self.pane_read_only();
         let (active_read_only, inactive_read_only) = match self.active {
             ActivePanel::Left => (left_read_only, right_read_only),
             ActivePanel::Right => (right_read_only, left_read_only),
         };
-        let selected_entries = usize::from(has_selected);
         crate::command::CommandContext {
-            picked_entries: if active.selection_is_empty() {
-                usize::from(cursor.is_some())
-            } else {
-                selected_entries
+            picked_entries: match active.selected_elsewhere_count() {
+                0 if active.selection_is_empty() => usize::from(cursor.is_some()),
+                elsewhere => selected_entries.saturating_add(elsewhere),
             },
             selected_entries,
             cursor_entry: cursor.is_some(),
@@ -806,12 +753,12 @@ impl Workspace {
                 && has_transfer_source,
             can_undo: self.can_undo(),
             can_redo: self.can_redo(),
-            preview_open: self.inactive_panel().preview.is_some(),
-            info_open: matches!(self.inactive_panel().preview, Some(PreviewContent::Info(_))),
-            safe_state,
-            active_mutation,
+            preview_open: inactive.preview.is_some(),
+            info_open: matches!(inactive.preview, Some(PreviewContent::Info(_))),
+            safe_state: self.safe_state.is_some(),
+            active_mutation: self.deletes.is_active(),
             pending_operation,
-            active_transfer,
+            active_transfer: self.active_transfer_view().is_some(),
             transfer_queue_busy,
             active_read_only,
             inactive_read_only,
@@ -857,84 +804,6 @@ impl Workspace {
             .filter_map(|&i| active.get(i).map(|e| e.path.clone()))
             .collect();
         self.active_panel().replace_selection(paths);
-    }
-
-    /// Copy the active panel's current selection into the stash.
-    pub fn stash_selection(&mut self) {
-        self.selection_stash = self.active_panel_ref().selected_paths().clone();
-    }
-
-    /// Replace the active panel's selection with `op(current, stash)`, dropping
-    /// any paths no longer present in the panel so the result stays valid.
-    fn combine_with_stash(
-        &mut self,
-        op: fn(
-            &std::collections::HashSet<PathBuf>,
-            &std::collections::HashSet<PathBuf>,
-        ) -> std::collections::HashSet<PathBuf>,
-    ) {
-        let stash = self.selection_stash.clone();
-        let panel = self.active_panel();
-        let present: std::collections::HashSet<PathBuf> =
-            panel.entries().iter().map(|e| e.path.clone()).collect();
-        let combined = op(panel.selected_paths(), &stash);
-        panel.replace_selection(combined.intersection(&present).cloned());
-    }
-
-    pub fn stash_union(&mut self) {
-        self.combine_with_stash(crate::selset::union);
-    }
-    pub fn stash_intersect(&mut self) {
-        self.combine_with_stash(crate::selset::intersect);
-    }
-    pub fn stash_subtract(&mut self) {
-        self.combine_with_stash(crate::selset::difference);
-    }
-    pub fn stash_symmetric_diff(&mut self) {
-        self.combine_with_stash(crate::selset::symmetric_difference);
-    }
-
-    /// Toggle the mark on the cursor entry and advance the cursor,
-    /// mirroring `Command::ToggleSelect`.
-    pub fn toggle_mark(&mut self) {
-        let panel = self.active_panel();
-        if let Some(path) = panel.cursor_entry().map(|entry| entry.path.clone()) {
-            panel.toggle_mark(path);
-        }
-        let max = panel.filtered_count();
-        if panel.cursor() < max {
-            panel.set_cursor(panel.cursor() + 1);
-        }
-    }
-
-    /// Replace the active panel's selection with `op(current, marked)`,
-    /// dropping any paths no longer present in the panel.
-    fn combine_with_marked(
-        &mut self,
-        op: fn(
-            &std::collections::HashSet<PathBuf>,
-            &std::collections::HashSet<PathBuf>,
-        ) -> std::collections::HashSet<PathBuf>,
-    ) {
-        let panel = self.active_panel();
-        let marked = panel.marked_paths().clone();
-        let present: std::collections::HashSet<PathBuf> =
-            panel.entries().iter().map(|e| e.path.clone()).collect();
-        let combined = op(panel.selected_paths(), &marked);
-        panel.replace_selection(combined.intersection(&present).cloned());
-    }
-
-    pub fn marked_union(&mut self) {
-        self.combine_with_marked(crate::selset::union);
-    }
-    pub fn marked_intersect(&mut self) {
-        self.combine_with_marked(crate::selset::intersect);
-    }
-    pub fn marked_subtract(&mut self) {
-        self.combine_with_marked(crate::selset::difference);
-    }
-    pub fn marked_symmetric_diff(&mut self) {
-        self.combine_with_marked(crate::selset::symmetric_difference);
     }
 
     // ── Command dispatch ────────────────────────────────────────────────
@@ -1178,21 +1047,6 @@ impl Workspace {
                 let panel = self.active_panel();
                 panel.set_density(crate::density::cycle(panel.density()));
             }
-            Command::ShelfAdd => {
-                let paths: Vec<PathBuf> = self
-                    .active_panel_ref()
-                    .selected_or_cursor()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|e| e.path)
-                    .collect();
-                self.shelf.add_all(paths);
-            }
-            Command::ShelfDrain => {
-                if !self.shelf.is_empty() {
-                    self.emit_ui_request(UiRequest::DrainShelf);
-                }
-            }
             Command::BeginSelectMask => self.emit_ui_request(UiRequest::SelectMask),
             Command::BeginRunBar => self.emit_ui_request(UiRequest::RunCommand),
             Command::GatherIntoFolder => self.emit_ui_request(UiRequest::GatherIntoFolder),
@@ -1208,17 +1062,7 @@ impl Workspace {
             Command::SelectOnlyHere => self.select_by_relation(|r| &r.only_here),
             Command::SelectDiffering => self.select_by_relation(|r| &r.differing),
             Command::SelectIdentical => self.select_by_relation(|r| &r.identical),
-            Command::StashSelection => self.stash_selection(),
-            Command::StashUnion => self.stash_union(),
-            Command::StashIntersect => self.stash_intersect(),
-            Command::StashSubtract => self.stash_subtract(),
-            Command::StashSymmetricDiff => self.stash_symmetric_diff(),
-            Command::ToggleMark => self.toggle_mark(),
-            Command::ClearMarks => self.active_panel().clear_marks(),
-            Command::MarkedUnion => self.marked_union(),
-            Command::MarkedIntersect => self.marked_intersect(),
-            Command::MarkedSubtract => self.marked_subtract(),
-            Command::MarkedSymmetricDiff => self.marked_symmetric_diff(),
+            Command::ClearSelection => self.active_panel().clear_selection_everywhere(),
             Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
             Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
@@ -1368,7 +1212,7 @@ impl Workspace {
     }
 
     fn verify_checksum(&mut self) {
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         let paths = entries
@@ -1600,32 +1444,48 @@ impl Workspace {
             return;
         }
         let target = self.inactive_panel().current_path.clone();
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         if entries.is_empty() {
             return;
         }
-        let flat = scan::pending_flat_list();
-        let conflicts = scan::find_conflicts(&entries, &target);
         let wake = self.active_panel_ref().notify_callback();
-        let generation = self.start_space_probe(
-            entries.clone(),
-            target.clone(),
-            flat.clone(),
-            self.symlink_policy,
-            move || {
-                if let Some(wake) = &wake {
-                    wake();
-                }
-            },
-        );
-        let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
+        self.stage_transfer(kind, entries, target, false, move || {
+            if let Some(wake) = &wake {
+                wake();
+            }
+        });
+    }
+
+    /// Stage a transfer for confirmation: find conflicts, start the space
+    /// probe and run the filesystem preflight under the current policies.
+    /// With `auto_start`, a transfer with no conflict to ask about starts as
+    /// soon as its space probe settles.
+    pub(crate) fn stage_transfer(
+        &mut self,
+        kind: TransferKind,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        auto_start: bool,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        let conflicts = scan::find_conflicts(&entries, &target);
+        let flat = scan::pending_flat_list();
         let policy = match self.name_policy.collision {
             crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
             crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
             crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
         };
+        let asks = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
+        let generation = self.start_space_probe(
+            entries.clone(),
+            target.clone(),
+            flat.clone(),
+            self.symlink_policy,
+            notify,
+        );
+        let filesystem = filesystem_preflight(&entries, &target, self.name_policy);
         self.pending_op = Some(PendingOp::Transfer(PendingTransfer {
             kind,
             entries,
@@ -1641,8 +1501,25 @@ impl Workspace {
             filesystem,
             flat,
             space: TransferSpaceState::Pending { generation },
-            start_when_ready: false,
+            start_when_ready: auto_start && !asks,
         }));
+    }
+
+    /// A queued transfer under the workspace's current durability, retention,
+    /// naming and symlink policies.
+    fn queued_spec(
+        &self,
+        kind: TransferKind,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+    ) -> TransferSpec {
+        TransferSpec {
+            durability: self.durability_profile,
+            version_retention: self.version_retention,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
+            ..TransferSpec::new(kind, entries, target)
+        }
     }
 
     fn start_space_probe(
@@ -1842,7 +1719,7 @@ impl Workspace {
         if !self.can_request_delete() {
             return;
         }
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         self.request_delete_entries(entries);
@@ -1916,12 +1793,7 @@ impl Workspace {
             None
         };
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
-            group_id: None,
-            kind: t.kind,
-            entries: t.entries,
             expectations: t.expectations,
-            target: t.target,
             policy: t.policy,
             method: t.method,
             durability: t.durability,
@@ -1929,19 +1801,7 @@ impl Workspace {
             name_policy: t.name_policy,
             symlink_policy: t.symlink_policy,
             preflight_bytes,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..TransferSpec::new(t.kind, t.entries, t.target)
         };
         self.enqueue_only(spec, undo);
         self.pump_queue(notify);
@@ -2108,22 +1968,33 @@ impl Workspace {
         }
     }
 
-    fn history_invariant_error(&mut self, error: crate::undo::HistoryError) -> String {
-        let reason = format!("History settlement failed: {error}");
+    /// Latch an integrity stop; the first stop wins and later ones are
+    /// dropped. `make` runs only when the latch fires.
+    pub(crate) fn latch_safe_state(&mut self, make: impl FnOnce() -> crate::operation::SafeState) {
         if self.safe_state.is_none() {
-            let failure = crate::operation::ClassifiedFailure::message(
-                crate::operation::FailureClass::IntegrityUncertain,
-                None,
-                reason.clone(),
-            );
-            self.safe_state = Some(crate::operation::SafeState {
-                operation_id: crate::operation::OperationId::new(),
-                reason: reason.clone(),
-                paths: Vec::new(),
-                failures: vec![failure],
-            });
+            self.safe_state = Some(make());
         }
+    }
+
+    /// Latch a history-settlement failure and return its reason.
+    pub(crate) fn latch_history_failure(
+        &mut self,
+        operation_id: Option<crate::operation::OperationId>,
+        error: crate::undo::HistoryError,
+    ) -> String {
+        let reason = format!("History settlement failed: {error}");
+        self.latch_safe_state(|| {
+            crate::operation::SafeState::integrity(
+                operation_id.unwrap_or_default(),
+                reason.clone(),
+                Vec::new(),
+            )
+        });
         reason
+    }
+
+    fn history_invariant_error(&mut self, error: crate::undo::HistoryError) -> String {
+        self.latch_history_failure(None, error)
     }
 
     /// Execute `action` forward against the filesystem. Used by undo (with an
@@ -2320,32 +2191,10 @@ impl Workspace {
             })
             .transpose()?;
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries,
-            expectations: Vec::new(),
-            target: dest_dir,
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
-            durability: self.durability_profile,
-            version_retention: self.version_retention,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            preflight_bytes: None,
             post_success,
             rollback_cleanup,
             rollback_cleanup_identity,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..self.queued_spec(TransferKind::Move, entries, dest_dir)
         };
         self.enqueue_bound_replay(spec, history)?;
         self.pump_queue(notify);
@@ -2404,7 +2253,7 @@ impl Workspace {
         if self.mutation_commits_blocked() {
             return;
         }
-        let Ok(entries) = self.active_panel_ref().selected_or_cursor() else {
+        let Ok(entries) = self.active_panel_ref().picked_entries() else {
             return;
         };
         if entries.is_empty() {
@@ -2433,32 +2282,9 @@ impl Workspace {
         let rollback_cleanup_identity =
             crate::path_identity::PathIdentity::observe_deep(&folder).ok();
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
-            group_id: None,
-            kind: TransferKind::Move,
-            entries,
-            expectations: Vec::new(),
-            target: folder.clone(),
-            policy: OverwritePolicy::Ask,
-            method: CopyMethod::Native,
-            durability: self.durability_profile,
-            version_retention: self.version_retention,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: Some(folder),
+            rollback_cleanup: Some(folder.clone()),
             rollback_cleanup_identity,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..self.queued_spec(TransferKind::Move, entries, folder)
         };
         self.enqueue_only(spec, Some(undo));
         self.pump_queue(notify);
@@ -2690,59 +2516,6 @@ impl Workspace {
         Some((other.path.clone(), one))
     }
 
-    // ── Shelf (drop stack) ──────────────────────────────────────────────
-
-    /// Copy every shelved item into the active panel's directory in one pass,
-    /// dropping self-copies and keeping both on name collisions, then clear the
-    /// shelf. Routes through the transfer engine. Items whose source can no
-    /// longer be read are kept on the shelf (not silently discarded), and the
-    /// outcome reports both how many copies started and how many were left.
-    pub fn drain_shelf(&mut self, notify: impl Fn() + Send + 'static) -> ShelfDrainOutcome {
-        if self.shelf.is_empty()
-            || self.has_unfinished_transfer_work()
-            || self.mutation_commits_blocked()
-        {
-            return ShelfDrainOutcome::default();
-        }
-        let dest = self.active_panel_ref().current_path.clone();
-        let existing: std::collections::HashSet<String> = self
-            .active_panel_ref()
-            .entries()
-            .iter()
-            .map(|e| e.name.clone())
-            .collect();
-        let plan = crate::shelf::drain_plan(self.shelf.items(), &dest, &existing);
-
-        // Build sources for the planned copies, keeping any whose source could
-        // not be read so they stay on the shelf rather than vanishing.
-        let mut entries: Vec<FileEntry> = Vec::new();
-        let mut unavailable: Vec<PathBuf> = Vec::new();
-        for (src, _) in &plan {
-            match std::fs::metadata(src)
-                .ok()
-                .and_then(|m| FileEntry::from_meta(src.clone(), &m))
-            {
-                Some(fe) => entries.push(fe),
-                None => unavailable.push(src.clone()),
-            }
-        }
-
-        // Self-copies (excluded by the plan) and started copies leave the
-        // shelf; only the unreadable items remain for the user to retry.
-        self.shelf.clear();
-        self.shelf.add_all(unavailable.iter().cloned());
-
-        let outcome = ShelfDrainOutcome {
-            started: entries.len(),
-            unavailable: unavailable.len(),
-        };
-        if !entries.is_empty() {
-            // KeepBoth so a drained file never clobbers an existing one.
-            self.start_copy(entries, dest, OverwritePolicy::KeepBoth, notify);
-        }
-        outcome
-    }
-
     // ── Directory sync ──────────────────────────────────────────────────
 
     /// Compute the synchronisation plan between the two panels for `policy`.
@@ -2862,12 +2635,23 @@ impl Workspace {
         self.pump_queue(notify);
     }
 
-    /// Queue a background Copy of `entries` into `target` under `policy` without
-    /// starting it. Used by the sync sheet and shelf drain, which already
-    /// served as the review step (no confirmation dialog). Copies record no
-    /// undo history.
+    /// Queue a copy without starting it.
+    #[cfg(test)]
     fn enqueue_copy(&mut self, entries: Vec<FileEntry>, target: PathBuf, policy: OverwritePolicy) {
         self.enqueue_copy_grouped(entries, target, policy, None);
+    }
+
+    /// Queue a copy and start it if idle.
+    #[cfg(test)]
+    fn start_copy(
+        &mut self,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        policy: OverwritePolicy,
+        notify: impl Fn() + Send + 'static,
+    ) {
+        self.enqueue_copy_grouped(entries, target, policy, None);
+        self.pump_queue(notify);
     }
 
     fn enqueue_copy_grouped(
@@ -2881,46 +2665,11 @@ impl Workspace {
             return;
         }
         let spec = TransferSpec {
-            operation_id: crate::operation::OperationId::new(),
             group_id,
-            kind: TransferKind::Copy,
-            entries,
-            expectations: Vec::new(),
-            target,
             policy,
-            method: CopyMethod::Native,
-            durability: self.durability_profile,
-            version_retention: self.version_retention,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            preflight_bytes: None,
-            post_success: None,
-            rollback_cleanup: None,
-            rollback_cleanup_identity: None,
-            #[cfg(test)]
-            mount_wait_override: None,
-            #[cfg(test)]
-            before_commit: None,
-            #[cfg(test)]
-            before_post_success: None,
-            #[cfg(test)]
-            before_terminal_publish: None,
-            #[cfg(test)]
-            journal_enabled: false,
+            ..self.queued_spec(TransferKind::Copy, entries, target)
         };
         self.enqueue_only(spec, None);
-    }
-
-    /// Queue a copy and start it if idle (single-copy callers, e.g. shelf drain).
-    fn start_copy(
-        &mut self,
-        entries: Vec<FileEntry>,
-        target: PathBuf,
-        policy: OverwritePolicy,
-        notify: impl Fn() + Send + 'static,
-    ) {
-        self.enqueue_copy(entries, target, policy);
-        self.pump_queue(notify);
     }
 
     // ── Preview ─────────────────────────────────────────────────────────
@@ -3015,6 +2764,11 @@ impl Workspace {
 
     pub(crate) fn cancel_drag(&mut self) {
         fileops::cancel_drag(self)
+    }
+
+    /// The drag in flight, if any: source side, entries and resolved target.
+    pub(crate) fn drag_session(&self) -> Option<fileops::DragSession<'_>> {
+        fileops::drag_session(self)
     }
 }
 

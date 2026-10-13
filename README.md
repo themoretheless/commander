@@ -414,7 +414,7 @@ cargo deny --all-features --locked check advisories bans licenses sources
 
 The `visual-qa` feature runs the real native eframe/Glow framebuffer path
 against a temporary deterministic workspace. It does not load user session or
-storage data, and every native effect is a recording fake. CI runs all four
+storage data, and every native effect is a recording fake. CI runs all five
 scenarios as independent strict matrix jobs:
 
 ```sh
@@ -422,12 +422,13 @@ cargo run --features visual-qa -- --visual-qa desktop_base --output target/visua
 cargo run --features visual-qa -- --visual-qa minimum_window --output target/visual-qa
 cargo run --features visual-qa -- --visual-qa zoom_200_accessible --output target/visual-qa
 cargo run --features visual-qa -- --visual-qa confirmation_owner --output target/visual-qa
+cargo run --features visual-qa -- --visual-qa pane_tool --output target/visual-qa
 ```
 
 Each scenario writes `manifest.json` and `capabilities.json`; a successful
 capture also writes `frame.png`. Checks cover framebuffer content, exact
 logical viewport size, in-viewport pane/row/dialog geometry, pane separation,
-modal ownership, disabled modal background, painted glyph pixels, and zero
+modal ownership, disabled modal background, a pane tool that leaves input live, painted glyph pixels, and zero
 native-effect calls. The 200% scenario opens an `1800x1000` native window so
 the application receives the intended `900x500` logical workspace at 2x text
 zoom. `--allow-skip` is diagnostic only; CI omits it, so unsupported capture,

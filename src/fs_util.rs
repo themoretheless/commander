@@ -147,16 +147,46 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(std::fs::read_link(src)?, dst)
+/// Recreate the symlink `src` at `dst` without following it.
+pub(crate) fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    // Windows needs to know whether the link points at a directory.
+    let directory = std::fs::metadata(src).is_ok_and(|metadata| metadata.is_dir());
+    create_symlink(&target, dst, directory)
 }
 
-#[cfg(not(unix))]
-fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+/// Create a symlink at `destination` pointing to `target`.
+#[cfg(unix)]
+pub(crate) fn create_symlink(
+    target: &Path,
+    destination: &Path,
+    _directory: bool,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, destination)
+}
+
+#[cfg(windows)]
+pub(crate) fn create_symlink(
+    target: &Path,
+    destination: &Path,
+    directory: bool,
+) -> std::io::Result<()> {
+    if directory {
+        std::os::windows::fs::symlink_dir(target, destination)
+    } else {
+        std::os::windows::fs::symlink_file(target, destination)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_symlink(
+    _target: &Path,
+    _destination: &Path,
+    _directory: bool,
+) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "preserving symlinks is not supported on this platform",
+        "symlinks are unsupported on this platform",
     ))
 }
 
@@ -240,37 +270,6 @@ pub fn available_copy_name(path: &Path) -> PathBuf {
             parent.join(format!("{stem} copy {}{ext}", i + 1))
         }
     })
-}
-
-/// The first free Finder-style name for `name` against a provided set of taken
-/// names (rather than the live filesystem): the name itself if free, else
-/// "stem copy.ext", "stem copy 2.ext", ... Pure, so a drain/paste plan can be
-/// built and tested before anything touches disk.
-pub fn free_name_against(name: &str, taken: &std::collections::HashSet<String>) -> String {
-    if !taken.contains(name) {
-        return name.to_string();
-    }
-    let p = Path::new(name);
-    let stem = p
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| name.to_string());
-    let ext = p
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
-    let mut i = 0;
-    loop {
-        let cand = if i == 0 {
-            format!("{stem} copy{ext}")
-        } else {
-            format!("{stem} copy {}{ext}", i + 1)
-        };
-        if !taken.contains(&cand) {
-            return cand;
-        }
-        i += 1;
-    }
 }
 
 /// Duplicate a file or directory next to itself, Finder-style. Returns the
@@ -412,20 +411,6 @@ mod tests {
         tmp.file("a.bin", "12345");
         tmp.file("sub/b.bin", "123");
         assert_eq!(dir_size_recursive(tmp.path()), 8);
-    }
-
-    #[test]
-    fn free_name_against_suffixes_on_collision() {
-        let taken: std::collections::HashSet<String> =
-            ["a.txt".to_string(), "a copy.txt".to_string()]
-                .into_iter()
-                .collect();
-        assert_eq!(free_name_against("b.txt", &taken), "b.txt"); // free -> unchanged
-        assert_eq!(free_name_against("a.txt", &taken), "a copy 2.txt"); // first two taken
-        // No extension and dotfiles still get a "copy" suffix.
-        let taken2: std::collections::HashSet<String> =
-            ["README".to_string()].into_iter().collect();
-        assert_eq!(free_name_against("README", &taken2), "README copy");
     }
 
     #[test]

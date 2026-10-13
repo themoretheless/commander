@@ -46,91 +46,75 @@ impl App {
                 .map(|s| s.items.as_slice())
                 .unwrap_or(empty);
 
-            egui::Window::new("Saved searches")
-                .collapsible(false)
-                .resizable(false)
-                .title_bar(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .frame(
-                    Frame::NONE
-                        .fill(t.bg_panel)
-                        .inner_margin(Margin::same(14))
-                        .stroke(Stroke::new(1.0_f32, t.border)),
-                )
-                .show(ctx, |ui| {
-                    ui.set_width(460.0);
+            super::sheet_window("Saved searches", t, 14).show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.label(
+                    egui::RichText::new("Saved searches")
+                        .size(13.0)
+                        .strong()
+                        .color(t.text_primary),
+                );
+                ui.add_space(8.0);
+
+                if items.is_empty() {
                     ui.label(
-                        egui::RichText::new("Saved searches")
-                            .size(13.0)
-                            .strong()
-                            .color(t.text_primary),
+                        egui::RichText::new("None yet. Save one from the Find sheet.")
+                            .size(12.0)
+                            .color(t.text_muted),
                     );
-                    ui.add_space(8.0);
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for def in items {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .small_button(
+                                            egui::RichText::new("\u{00d7}").color(t.accent_red),
+                                        )
+                                        .on_hover_text("Delete")
+                                        .clicked()
+                                    {
+                                        delete = Some(def.name.clone());
+                                    }
+                                    ui.add_space(4.0);
+                                    let resp = ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "{}   \u{00b7}   {}",
+                                                def.name,
+                                                def.root.display()
+                                            ))
+                                            .size(12.0)
+                                            .color(t.text_secondary),
+                                        )
+                                        .sense(Sense::click()),
+                                    );
+                                    if resp.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    if resp.clicked() {
+                                        open_def = Some(def.clone());
+                                    }
+                                });
+                            }
+                        });
+                }
 
-                    if items.is_empty() {
-                        ui.label(
-                            egui::RichText::new("None yet. Save one from the Find sheet.")
-                                .size(12.0)
-                                .color(t.text_muted),
-                        );
-                    } else {
-                        egui::ScrollArea::vertical()
-                            .max_height(300.0)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                for def in items {
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .small_button(
-                                                egui::RichText::new("\u{00d7}").color(t.accent_red),
-                                            )
-                                            .on_hover_text("Delete")
-                                            .clicked()
-                                        {
-                                            delete = Some(def.name.clone());
-                                        }
-                                        ui.add_space(4.0);
-                                        let resp = ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(format!(
-                                                    "{}   \u{00b7}   {}",
-                                                    def.name,
-                                                    def.root.display()
-                                                ))
-                                                .size(12.0)
-                                                .color(t.text_secondary),
-                                            )
-                                            .sense(Sense::click()),
-                                        );
-                                        if resp.hovered() {
-                                            ui.ctx()
-                                                .set_cursor_icon(egui::CursorIcon::PointingHand);
-                                        }
-                                        if resp.clicked() {
-                                            open_def = Some(def.clone());
-                                        }
-                                    });
-                                }
-                            });
-                    }
-
-                    ui.add_space(10.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Close")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
-                        .clicked()
-                        || escape_requested
-                    {
-                        close = true;
-                    }
-                });
+                ui.add_space(10.0);
+                if ui
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Close").size(13.0),
+                    ))
+                    .clicked()
+                    || escape_requested
+                {
+                    close = true;
+                }
+            });
         }
 
         let transition = saved_search_transition(close, open_def);
@@ -141,13 +125,12 @@ impl App {
         if let Some(name) = delete {
             self.smart_folders_mut().remove(&name);
             if !crate::smart_folder::save(self.smart_folders_mut()) {
-                let now = ctx.input(|i| i.time);
-                self.toasts.push(crate::toasts::Toast::new(
-                    "Could not save saved searches to disk",
+                self.toast(
+                    ctx,
                     crate::toasts::ToastKind::Error,
+                    "Could not save saved searches to disk",
                     false,
-                    now,
-                ));
+                );
             }
         }
         if let SavedSearchTransition::Open(def) = transition {

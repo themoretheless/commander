@@ -20,9 +20,6 @@ fn path_cstring(p: &Path) -> std::io::Result<CString> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
 }
 
-// renamex_np flag: fail with EEXIST rather than clobber an existing dst.
-const RENAME_EXCL: c_uint = 0x0000_0004;
-
 // copyfile flags
 const COPYFILE_ALL: u32 = 0x000F; // DATA + STAT + ACL + XATTR
 const COPYFILE_EXCL: u32 = 1 << 17; // fail if the destination already exists
@@ -72,7 +69,6 @@ unsafe extern "C" {
         state: copyfile_state_t,
         flags: c_uint,
     ) -> c_int;
-    fn renamex_np(from: *const c_char, to: *const c_char, flags: c_uint) -> c_int;
     fn clonefile(from: *const c_char, to: *const c_char, flags: c_int) -> c_int;
 }
 
@@ -80,74 +76,6 @@ unsafe extern "C" {
 pub struct NativeCopyOutcome {
     pub bytes: u64,
     pub cloned: bool,
-}
-
-/// Move `src` to `dst` with a single atomic rename that fails with `EEXIST`
-/// rather than clobbering an existing `dst` (macOS `renamex_np(RENAME_EXCL)`).
-///
-/// This backs the same-volume move fast path, preserving the no-clobber
-/// guarantee the copy path gets from `COPYFILE_EXCL`/`O_EXCL` without a
-/// check-then-rename TOCTOU window.
-///
-/// When the filesystem rejects `RENAME_EXCL` with `ENOTSUP`/`EOPNOTSUPP`,
-/// falls back to a check-then-rename path that still refuses to clobber an
-/// occupied destination (best-effort on volumes that lack an exclusive rename).
-pub fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let src_c = path_cstring(src)?;
-    let dst_c = path_cstring(dst)?;
-    let excl = rename_excl_result(src_c.as_ptr(), dst_c.as_ptr());
-    match excl {
-        Ok(()) => Ok(()),
-        Err(error) if is_rename_excl_unsupported(&error) => rename_noreplace_fallback(src, dst),
-        Err(error) => Err(error),
-    }
-}
-
-fn rename_excl_result(src: *const c_char, dst: *const c_char) -> std::io::Result<()> {
-    #[cfg(test)]
-    if let Some(errno) = rename_excl_hook::take() {
-        return Err(std::io::Error::from_raw_os_error(errno));
-    }
-    let rc = unsafe { renamex_np(src, dst, RENAME_EXCL) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-fn is_rename_excl_unsupported(error: &std::io::Error) -> bool {
-    error
-        .raw_os_error()
-        .is_some_and(|code| code == libc::ENOTSUP || code == libc::EOPNOTSUPP)
-}
-
-/// Best-effort no-clobber rename for volumes that cannot honor `RENAME_EXCL`.
-fn rename_noreplace_fallback(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if crate::fs_util::path_is_taken(dst) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "destination already exists",
-        ));
-    }
-    std::fs::rename(src, dst)
-}
-
-#[cfg(test)]
-mod rename_excl_hook {
-    use std::cell::Cell;
-
-    thread_local! {
-        static FORCE_ERRNO: Cell<Option<i32>> = const { Cell::new(None) };
-    }
-
-    pub fn force(errno: i32) {
-        FORCE_ERRNO.with(|cell| cell.set(Some(errno)));
-    }
-
-    pub fn take() -> Option<i32> {
-        FORCE_ERRNO.with(Cell::take)
-    }
 }
 
 struct CallbackCtx {
@@ -291,23 +219,12 @@ fn copy_file_native_inner(
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
 
     if report_progress {
-        let mut s = crate::lock_util::recover(state);
-        s.current_file = src
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        s.current_file_size = file_size;
-        s.current_file_copied = 0;
+        crate::lock_util::recover(state).begin_file(src, file_size);
     }
 
     // Try the explicit clone primitive first so telemetry can distinguish a
     // metadata-only APFS clone from copyfile's transparent byte-copy fallback.
-    if crate::lock_util::recover(state).cancelled {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Interrupted,
-            "cancelled",
-        ));
-    }
+    crate::transfer::check_cancelled(state)?;
     if allow_clone {
         if unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) } == 0 {
             if report_progress {
@@ -370,10 +287,7 @@ fn copy_file_native_inner(
             if s.cancelled {
                 // Clean up partial file
                 let _ = std::fs::remove_file(dst);
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "cancelled",
-                ));
+                return Err(crate::transfer::cancelled_error());
             }
             return Err(err);
         }
@@ -460,10 +374,7 @@ fn finish_dir_copy(
         let os_error = std::io::Error::last_os_error();
         let s = crate::lock_util::recover(state);
         if s.cancelled {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
+            return Err(crate::transfer::cancelled_error());
         }
         return Err(os_error);
     }
@@ -480,52 +391,6 @@ fn finish_dir_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::TempDir;
-
-    #[test]
-    fn rename_noreplace_moves_into_a_free_name() {
-        let tmp = TempDir::new();
-        let src = tmp.file("a.txt", "hi");
-        let dst = tmp.path().join("b.txt");
-        rename_noreplace(&src, &dst).unwrap();
-        assert!(!src.exists());
-        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hi");
-    }
-
-    #[test]
-    fn rename_noreplace_refuses_to_clobber_an_existing_destination() {
-        let tmp = TempDir::new();
-        let src = tmp.file("a.txt", "new");
-        let dst = tmp.file("b.txt", "old");
-        let err = rename_noreplace(&src, &dst).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        // Nothing was moved or clobbered.
-        assert!(src.exists());
-        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "old");
-    }
-
-    #[test]
-    fn rename_noreplace_falls_back_when_excl_is_unsupported() {
-        let tmp = TempDir::new();
-        let src = tmp.file("a.txt", "hi");
-        let dst = tmp.path().join("b.txt");
-        rename_excl_hook::force(libc::ENOTSUP);
-        rename_noreplace(&src, &dst).unwrap();
-        assert!(!src.exists());
-        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hi");
-    }
-
-    #[test]
-    fn rename_noreplace_fallback_still_refuses_to_clobber() {
-        let tmp = TempDir::new();
-        let src = tmp.file("a.txt", "new");
-        let dst = tmp.file("b.txt", "old");
-        rename_excl_hook::force(libc::EOPNOTSUPP);
-        let err = rename_noreplace(&src, &dst).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert!(src.exists());
-        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "old");
-    }
 
     #[test]
     fn finish_dir_copy_returns_err_when_callback_recorded_child_failures() {

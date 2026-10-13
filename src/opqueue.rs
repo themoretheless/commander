@@ -279,34 +279,34 @@ impl<S> Queue<S> {
         if from == to {
             return true;
         }
-        
+
         // Remove old index entry and rebuild for affected indices
         self.index.remove(&id);
-        
+
         let job = self.jobs.remove(from);
-        
+
         // Update indices for all jobs that shifted
         if from < to {
             // Shifting forward: [from+1, to] indices decrease by 1
-            for (_, idx) in self.index.iter_mut() {
+            for idx in self.index.values_mut() {
                 if *idx > from && *idx <= to {
                     *idx -= 1;
                 }
             }
         } else {
             // Shifting backward: [to, from) indices increase by 1
-            for (_, idx) in self.index.iter_mut() {
+            for idx in self.index.values_mut() {
                 if *idx >= to && *idx < from {
                     *idx += 1;
                 }
             }
         }
-        
+
         // Insert new position after the insert shifted things
         let new_pos = to;
         self.jobs.insert(to, job);
         self.index.insert(id, new_pos);
-        
+
         true
     }
 
@@ -320,7 +320,7 @@ impl<S> Queue<S> {
     /// user clears finished entries. Returns how many were removed.
     pub fn clear_finished(&mut self) -> usize {
         let before = self.jobs.len();
-        
+
         // Filter out terminal jobs and rebuild index for correctness
         let mut new_index = std::collections::HashMap::with_capacity(self.index.len());
         self.jobs.retain(|job| {
@@ -331,7 +331,7 @@ impl<S> Queue<S> {
             }
             keep
         });
-        
+
         self.index = new_index;
         before - self.jobs.len()
     }

@@ -2,6 +2,7 @@
 //! All file-manager behaviour lives in `crate::workspace`; this module
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
+mod activity;
 mod archive_dialog;
 mod batch_rename_dialog;
 mod collections_dialog;
@@ -28,7 +29,6 @@ mod saved_search_dialog;
 mod smoke;
 mod sync_dialog;
 mod toolbar;
-mod transfer_dialog;
 mod tree;
 mod treemap_dialog;
 mod ui_state;
@@ -142,6 +142,66 @@ pub(crate) struct VisualQaSeed {
     pub theme_mode: ThemeMode,
     pub accessibility_preferences: crate::accessibility::Preferences,
     pub show_tree: bool,
+}
+
+/// The frame every dialog and sheet draws: panel fill, `margin` points of
+/// padding and a one-point border.
+pub(crate) fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
+    Frame::NONE
+        .fill(t.bg_panel)
+        .inner_margin(Margin::same(margin))
+        .stroke(Stroke::new(1.0_f32, t.border))
+}
+
+/// A fixed-size, untitled sheet centered on the window. `id` names the
+/// window for egui and assistive technology; it is not drawn.
+pub(crate) fn sheet_window(
+    id: impl Into<egui::WidgetText>,
+    t: ThemeColors,
+    margin: i8,
+) -> egui::Window<'static> {
+    egui::Window::new(id)
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(dialog_frame(t, margin))
+}
+
+/// Fixed fill/text pairings for dialog buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ButtonRole {
+    /// The dialog's main action (accent fill, white text).
+    Primary,
+    /// Cancel and neutral actions.
+    Secondary,
+    /// Destructive actions.
+    Danger,
+    /// Stop/interrupt actions.
+    Warning,
+}
+
+impl ButtonRole {
+    fn colors(self, t: ThemeColors) -> (Color32, Color32) {
+        match self {
+            Self::Primary => (t.accent, Color32::WHITE),
+            Self::Secondary => (t.bg_card, t.text_primary),
+            Self::Danger => (t.accent_red, Color32::WHITE),
+            Self::Warning => (t.accent_warning, Color32::WHITE),
+        }
+    }
+}
+
+/// A dialog button styled for `role`; callers keep sizing their own text.
+pub(crate) fn dialog_button<'a>(
+    t: ThemeColors,
+    role: ButtonRole,
+    text: egui::RichText,
+) -> egui::Button<'a> {
+    let (fill, foreground) = role.colors(t);
+    egui::Button::new(text.color(foreground))
+        .fill(fill)
+        .corner_radius(CornerRadius::ZERO)
 }
 
 pub(crate) struct DeveloperNotice {
@@ -266,7 +326,6 @@ pub(crate) struct ArchiveState {
     pub selected: std::collections::BTreeSet<usize>,
     pub status: Option<String>,
     pub error: Option<String>,
-    pub focused: bool,
 }
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
@@ -280,7 +339,6 @@ pub(crate) struct FindState {
     pub generation: u64,
     pub ran: bool,
     pub searching: bool,
-    pub focused: bool,
     pub scanned: usize,
     pub matched: usize,
     pub elapsed: std::time::Duration,
@@ -343,7 +401,6 @@ impl Default for FindState {
             generation: 0,
             ran: false,
             searching: false,
-            focused: false,
             scanned: 0,
             matched: 0,
             elapsed: std::time::Duration::ZERO,
@@ -442,8 +499,6 @@ pub(crate) struct BatchRenameState {
     pub num_start: u32,
     pub num_step: u32,
     pub num_pad: u32,
-    /// Set once so the first text field grabs focus on the opening frame.
-    pub focused: bool,
     pub error: Option<String>,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
@@ -474,8 +529,6 @@ pub(crate) struct RenameState {
     pub siblings: Vec<String>,
     pub buffer: String,
     pub error: Option<String>,
-    /// Set once so the text field grabs focus on the first frame.
-    pub focused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -796,6 +849,29 @@ impl App {
         }
     }
 
+    /// Show a transient notice. `undoable` toasts carry the Undo affordance.
+    pub(crate) fn toast(
+        &mut self,
+        ctx: &egui::Context,
+        kind: crate::toasts::ToastKind,
+        message: impl Into<String>,
+        undoable: bool,
+    ) {
+        self.toast_at(ctx.input(|input| input.time), kind, message, undoable);
+    }
+
+    /// [`Self::toast`] for callers that only hold the frame time.
+    pub(crate) fn toast_at(
+        &mut self,
+        now: f64,
+        kind: crate::toasts::ToastKind,
+        message: impl Into<String>,
+        undoable: bool,
+    ) {
+        self.toasts
+            .push(crate::toasts::Toast::new(message, kind, undoable, now));
+    }
+
     pub(crate) fn issue_transient_nonce(&mut self) -> u64 {
         self.ui.transient_nonce = self
             .ui
@@ -809,6 +885,22 @@ impl App {
         ctx.data_mut(|data| {
             data.insert_temp(egui::Id::new(("ui_request_opened", modal)), true);
         });
+    }
+
+    /// Note that pane tool `tool` just opened, so its first field takes focus.
+    pub(crate) fn mark_tool_opened(ctx: &egui::Context, tool: &'static str) {
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new(("tool_opened", tool)), true);
+        });
+    }
+
+    pub(crate) fn take_tool_opened(ctx: &egui::Context, tool: &'static str) -> bool {
+        ctx.data_mut(|data| {
+            let id = egui::Id::new(("tool_opened", tool));
+            let opened = data.get_temp::<bool>(id).unwrap_or(false);
+            data.remove::<bool>(id);
+            opened
+        })
     }
 
     pub(crate) fn take_modal_opened(ctx: &egui::Context, modal: UiModal) -> bool {

@@ -283,15 +283,29 @@ fn process_lock_io(error: io::Error) -> PreCommitError {
     }
 }
 
+/// Hold both store locks (cross-process flock, then in-process path lock)
+/// for the duration of `body`.
+fn with_store_locks<T, E>(
+    path: &Path,
+    lock_error: impl FnOnce(io::Error) -> E,
+    body: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let _process_lock = acquire_process_store_lock(path).map_err(lock_error)?;
+    let path_lock = path_lock(path);
+    let _guard = crate::lock_util::recover(&path_lock);
+    body()
+}
+
 impl Persist for FsPersist {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure> {
-        let _process_lock = acquire_process_store_lock(path).map_err(|error| ReadFailure {
-            kind: ReadFailureKind::Io,
-            source: error,
-        })?;
-        let path_lock = path_lock(path);
-        let _guard = crate::lock_util::recover(&path_lock);
-        read_file_bounded(path, max_bytes)
+        with_store_locks(
+            path,
+            |error| ReadFailure {
+                kind: ReadFailureKind::Io,
+                source: error,
+            },
+            || read_file_bounded(path, max_bytes),
+        )
     }
 
     fn commit(
@@ -300,11 +314,10 @@ impl Persist for FsPersist {
         bytes: &[u8],
         expected: ExpectedRevision,
     ) -> Result<AtomicWriteOutcome, PreCommitError> {
-        let _process_lock = acquire_process_store_lock(path).map_err(process_lock_io)?;
-        let path_lock = path_lock(path);
-        let _guard = crate::lock_util::recover(&path_lock);
-        verify_expected_revision(path, &expected)?;
-        write_bytes_atomic_with(path, bytes, &StdFsOps)
+        with_store_locks(path, process_lock_io, || {
+            verify_expected_revision(path, &expected)?;
+            write_bytes_atomic_with(path, bytes, &StdFsOps)
+        })
     }
 }
 
@@ -320,11 +333,10 @@ impl FsPersist {
     where
         F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
     {
-        let _process_lock = acquire_process_store_lock(path).map_err(process_lock_io)?;
-        let path_lock = path_lock(path);
-        let _guard = crate::lock_util::recover(&path_lock);
-        verify_expected_revision(path, &expected)?;
-        write_stream_atomic_with(path, write, &StdFsOps)
+        with_store_locks(path, process_lock_io, || {
+            verify_expected_revision(path, &expected)?;
+            write_stream_atomic_with(path, write, &StdFsOps)
+        })
     }
 }
 
@@ -491,6 +503,42 @@ pub enum LoadStatus {
     Unreadable,
 }
 
+impl LoadStatus {
+    /// Statuses that must block writes instead of replacing unread data.
+    pub fn fails_closed(self) -> bool {
+        matches!(
+            self,
+            LoadStatus::Corrupt | LoadStatus::FutureVersion | LoadStatus::Unreadable
+        )
+    }
+}
+
+/// What a reported save left on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Committed {
+    Durable,
+    NotDurable,
+}
+
+/// Record a store save in the health counters and classify it; `None` when
+/// nothing was committed.
+pub fn report_save(
+    store: &'static str,
+    result: Result<AtomicWriteOutcome, JsonSaveError>,
+) -> Option<Committed> {
+    match result {
+        Ok(AtomicWriteOutcome::Durable) => Some(Committed::Durable),
+        Ok(AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            record_durability_warning(store, &error);
+            Some(Committed::NotDurable)
+        }
+        Err(error) => {
+            record_json_save_failure(store, &error);
+            None
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveIntent {
     Automatic,
@@ -520,10 +568,7 @@ impl StoreGate {
     }
 
     pub(crate) fn block(&mut self, status: LoadStatus) {
-        debug_assert!(matches!(
-            status,
-            LoadStatus::Corrupt | LoadStatus::FutureVersion | LoadStatus::Unreadable
-        ));
+        debug_assert!(status.fails_closed());
         self.status = status;
     }
 
@@ -711,6 +756,45 @@ pub fn load_enveloped<T: DeserializeOwned>(
                 ..raw.gate
             },
         },
+    }
+}
+
+/// Load a store that must never fall back to defaults (operation journal,
+/// content index). `Ok(None)` only when the store is missing; every
+/// fail-closed status becomes an error naming the store. `noun` is the
+/// store's sentence-case name, e.g. "Operation journal".
+pub fn load_strict<T: DeserializeOwned>(
+    persist: &dyn Persist,
+    path: &Path,
+    spec: StoreSpec,
+    noun: &str,
+) -> Result<(Option<T>, StoreGate), String> {
+    let loaded = load_enveloped::<T>(persist, path, spec);
+    match loaded.gate.status() {
+        LoadStatus::Missing => Ok((None, loaded.gate)),
+        LoadStatus::Legacy | LoadStatus::Current | LoadStatus::Recovered => match loaded.value {
+            Some(value) => Ok((Some(value), loaded.gate)),
+            None => Err(format!("{noun} is corrupt: payload did not decode")),
+        },
+        LoadStatus::Corrupt => Err(format!("{noun} is corrupt: envelope or payload rejected")),
+        LoadStatus::FutureVersion => Err(format!(
+            "{noun} uses a newer persist envelope than this build supports"
+        )),
+        LoadStatus::Unreadable => Err(format!(
+            "Could not open {}: unreadable",
+            noun.to_lowercase()
+        )),
+    }
+}
+
+/// A strict store's commit must be durable: a replaced target whose
+/// directory was not synced is ambiguous across a crash.
+pub fn require_durable(noun: &str, outcome: AtomicWriteOutcome) -> Result<(), String> {
+    match outcome {
+        AtomicWriteOutcome::Durable => Ok(()),
+        AtomicWriteOutcome::CommittedButNotDurable(error) => Err(format!(
+            "{noun} commit is ambiguous across a crash: target was replaced but its directory could not be synced: {error}"
+        )),
     }
 }
 
@@ -1002,40 +1086,10 @@ fn write_bytes_atomic_with(
     bytes: &[u8],
     fs: &impl FsOps,
 ) -> Result<AtomicWriteOutcome, PreCommitError> {
-    let (parent, prefix) = store_location(path)?;
-    fs.create_dir_all(parent)
-        .map_err(|source| precommit_io(SaveStage::CreateDirectory, source, None))?;
-    let (temp_path, mut temp) = create_unique_temp(fs, parent, &prefix)?;
-
-    let prepare = fs
-        .write_all(&mut temp, bytes)
-        .map_err(|source| (SaveStage::Write, source))
-        .and_then(|()| {
-            fs.flush(&mut temp)
-                .map_err(|source| (SaveStage::Flush, source))
-        })
-        .and_then(|()| {
-            fs.sync_file(&temp)
-                .map_err(|source| (SaveStage::SyncFile, source))
-        });
-    if let Err((stage, source)) = prepare {
-        drop(temp);
-        return Err(precommit_with_cleanup(fs, &temp_path, stage, source));
-    }
-    drop(temp);
-
-    if let Err(source) = fs.rename(&temp_path, path) {
-        return Err(precommit_with_cleanup(
-            fs,
-            &temp_path,
-            SaveStage::Rename,
-            source,
-        ));
-    }
-    match fs.sync_directory(parent) {
-        Ok(()) => Ok(AtomicWriteOutcome::Durable),
-        Err(source) => Ok(AtomicWriteOutcome::CommittedButNotDurable(source)),
-    }
+    commit_temp_with(path, fs, |temp| {
+        fs.write_all(temp, bytes)
+            .map_err(|source| FillError::Stage(SaveStage::Write, source))
+    })
 }
 
 fn write_stream_atomic_with<F>(
@@ -1046,27 +1100,49 @@ fn write_stream_atomic_with<F>(
 where
     F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
 {
+    commit_temp_with(path, fs, |temp| write(temp).map_err(FillError::Caller))
+}
+
+/// How filling the temp file failed: an I/O stage of ours (cleanup is
+/// recorded on the error) or the caller's own error (temp removed quietly).
+enum FillError {
+    Stage(SaveStage, io::Error),
+    Caller(PreCommitError),
+}
+
+/// The one atomic commit pipeline: unique temp beside `path`, fill, flush,
+/// fsync, rename over `path`, then fsync the directory.
+fn commit_temp_with(
+    path: &Path,
+    fs: &impl FsOps,
+    fill: impl FnOnce(&mut File) -> Result<(), FillError>,
+) -> Result<AtomicWriteOutcome, PreCommitError> {
     let (parent, prefix) = store_location(path)?;
     fs.create_dir_all(parent)
         .map_err(|source| precommit_io(SaveStage::CreateDirectory, source, None))?;
     let (temp_path, mut temp) = create_unique_temp(fs, parent, &prefix)?;
-    if let Err(error) = write(&mut temp) {
-        drop(temp);
-        let _ = fs.remove_file(&temp_path);
-        return Err(error);
-    }
-    let prepare = fs
-        .flush(&mut temp)
-        .map_err(|source| (SaveStage::Flush, source))
+
+    let prepare = fill(&mut temp)
+        .and_then(|()| {
+            fs.flush(&mut temp)
+                .map_err(|source| FillError::Stage(SaveStage::Flush, source))
+        })
         .and_then(|()| {
             fs.sync_file(&temp)
-                .map_err(|source| (SaveStage::SyncFile, source))
+                .map_err(|source| FillError::Stage(SaveStage::SyncFile, source))
         });
-    if let Err((stage, source)) = prepare {
-        drop(temp);
-        return Err(precommit_with_cleanup(fs, &temp_path, stage, source));
-    }
     drop(temp);
+    match prepare {
+        Ok(()) => {}
+        Err(FillError::Stage(stage, source)) => {
+            return Err(precommit_with_cleanup(fs, &temp_path, stage, source));
+        }
+        Err(FillError::Caller(error)) => {
+            let _ = fs.remove_file(&temp_path);
+            return Err(error);
+        }
+    }
+
     if let Err(source) = fs.rename(&temp_path, path) {
         return Err(precommit_with_cleanup(
             fs,
@@ -1746,15 +1822,24 @@ mod tests {
 
     #[test]
     fn global_path_lock_registry_reclaims_unused_entries() {
-        let baseline_lock = path_lock(Path::new("baseline"));
-        let baseline = crate::lock_util::recover(path_locks()).len();
-        drop(baseline_lock);
+        // Other tests share this process-global registry, so assert on this
+        // test's own keys rather than on the total size.
+        let transient = |index: usize| format!("registry-reclaim-transient-{index}");
         for index in 0..512 {
-            drop(path_lock(Path::new(&format!("transient-{index}"))));
+            drop(path_lock(Path::new(&transient(index))));
         }
-        let survivor = path_lock(Path::new("survivor"));
-        let retained = crate::lock_util::recover(path_locks()).len();
-        assert!(retained <= baseline.saturating_add(1));
+        let survivor = path_lock(Path::new("registry-reclaim-survivor"));
+        let locks = crate::lock_util::recover(path_locks());
+        assert!(
+            (0..512)
+                .all(|index| !locks
+                    .contains_key(&normalized_lock_path(Path::new(&transient(index))))),
+            "dropped locks must be reclaimed"
+        );
+        assert!(locks.contains_key(&normalized_lock_path(Path::new(
+            "registry-reclaim-survivor"
+        ))));
+        drop(locks);
         drop(survivor);
     }
 

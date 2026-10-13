@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+/// Health-report label for this store.
+const STORE_LABEL: &str = "Feature flags";
+
 const SCHEMA: u32 = 1;
 const STORE: crate::persistence::StoreSpec =
     crate::persistence::StoreSpec::new("commander.feature_flags", 1, 1024 * 1024)
@@ -168,12 +171,7 @@ fn load_at_with(persist: &dyn crate::persistence::Persist, path: &Path) -> Loade
     let loaded = crate::persistence::load_enveloped::<FeatureStore>(persist, path, STORE);
     let status = loaded.gate.status();
     let mut gate = loaded.gate;
-    let blocked_status = matches!(
-        status,
-        crate::persistence::LoadStatus::Corrupt
-            | crate::persistence::LoadStatus::FutureVersion
-            | crate::persistence::LoadStatus::Unreadable
-    );
+    let blocked_status = status.fails_closed();
     if let Some(mut store) = loaded.value {
         if store.schema == SCHEMA && !blocked_status {
             store.normalize();
@@ -192,7 +190,7 @@ fn load_at_with(persist: &dyn crate::persistence::Persist, path: &Path) -> Loade
         }
     }
     if blocked_status || status != crate::persistence::LoadStatus::Missing {
-        crate::persistence::record_unreadable("Feature flags");
+        crate::persistence::record_unreadable(STORE_LABEL);
     }
     let blocked = status != crate::persistence::LoadStatus::Missing;
     LoadedFeatureStore {
@@ -231,17 +229,8 @@ fn load_at(path: &Path) -> FeatureStore {
 fn save_at(path: &Path, store: &FeatureStore) -> bool {
     let persist = crate::persistence::FsPersist::default();
     let mut gate = crate::persistence::StoreGate::missing();
-    match save_at_with(&persist, path, store, &mut gate) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => true,
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
-            crate::persistence::record_durability_warning("Feature flags", &error);
-            true
-        }
-        Err(error) => {
-            crate::persistence::record_json_save_failure("Feature flags", &error);
-            false
-        }
-    }
+    crate::persistence::report_save(STORE_LABEL, save_at_with(&persist, path, store, &mut gate))
+        .is_some()
 }
 
 struct RuntimeControls {
@@ -356,33 +345,21 @@ pub fn enabled(feature: RiskyFeature) -> bool {
 fn update(feature: RiskyFeature, change: impl FnOnce(&mut FeaturePolicy)) -> bool {
     let controls = runtime_controls();
     let mut state = crate::lock_util::recover(&controls.state);
-    match apply_update(
+    let saved = apply_update(
         &mut state,
         controls.persistence.as_ref(),
         &feature_path(),
         change,
         feature,
-    ) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => {
-            controls.enabled_mask.store(
-                effective_mask(&state.store, controls.environment_killed_mask),
-                Ordering::Release,
-            );
-            true
-        }
-        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
-            crate::persistence::record_durability_warning("Feature flags", &error);
-            controls.enabled_mask.store(
-                effective_mask(&state.store, controls.environment_killed_mask),
-                Ordering::Release,
-            );
-            true
-        }
-        Err(error) => {
-            crate::persistence::record_json_save_failure("Feature flags", &error);
-            false
-        }
+    );
+    if crate::persistence::report_save(STORE_LABEL, saved).is_none() {
+        return false;
     }
+    controls.enabled_mask.store(
+        effective_mask(&state.store, controls.environment_killed_mask),
+        Ordering::Release,
+    );
+    true
 }
 
 pub fn set_killed(feature: RiskyFeature, killed: bool) -> bool {

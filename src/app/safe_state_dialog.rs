@@ -1,4 +1,6 @@
-//! Blocking review surface for integrity-uncertain operation failures.
+//! Review panel for integrity-uncertain operation failures. It sits at the
+//! top of the Operations panel's Recovery tab; the Activity strip announces
+//! it. Mutations stay blocked by the workspace until the review completes.
 
 use super::*;
 
@@ -7,10 +9,7 @@ fn review_recovery_request(operation_id: &crate::operation::OperationId) -> UiRe
 }
 
 impl App {
-    pub(crate) fn show_safe_state_dialog(&mut self, ctx: &egui::Context) {
-        if self.ui.modals.recovery_open {
-            return;
-        }
+    pub(crate) fn show_safe_state_details(&mut self, ui: &mut egui::Ui) {
         let Some(state) = self.ws.safe_state.clone() else {
             return;
         };
@@ -19,19 +18,11 @@ impl App {
         let mut inspect = false;
         let mut recovery = false;
 
-        egui::Window::new("Safe state")
-            .collapsible(false)
-            .resizable(false)
-            .title_bar(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(
-                Frame::NONE
-                    .fill(t.bg_panel)
-                    .inner_margin(Margin::same(16))
-                    .stroke(Stroke::new(1.0, t.accent_warning)),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(560.0);
+        Frame::NONE
+            .fill(t.bg_card)
+            .inner_margin(Margin::same(10))
+            .stroke(Stroke::new(1.0, t.accent_warning))
+            .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new("Operation paused for integrity review")
                         .size(13.0)
@@ -87,45 +78,33 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Recovery center")
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                            )
-                            .fill(t.bg_card)
-                            .corner_radius(CornerRadius::ZERO),
-                        )
+                        .add(super::dialog_button(
+                            t,
+                            super::ButtonRole::Secondary,
+                            egui::RichText::new("Recovery center").size(13.0),
+                        ))
                         .clicked()
                     {
                         recovery = true;
                     }
                     if !state.paths.is_empty()
                         && ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Show location")
-                                        .size(13.0)
-                                        .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Secondary,
+                                egui::RichText::new("Show location").size(13.0),
+                            ))
                             .clicked()
                     {
                         inspect = true;
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Review complete")
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(t.accent)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Primary,
+                                egui::RichText::new("Review complete").size(13.0),
+                            ))
                             .clicked()
                         {
                             acknowledge = true;

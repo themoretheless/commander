@@ -8,152 +8,159 @@ use crate::ports::{
     OpenRequest, OpenerPort, SpacePrecision, SpaceProbeOutcome, TrashItemOutcome, TrashPort,
     TrashTarget, VolumeRelation,
 };
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
-use std::ffi::CString;
-use std::marker::PhantomData;
 use std::path::Path;
-use std::rc::Rc;
 
-fn is_main_thread() -> bool {
-    unsafe { msg_send![class!(NSThread), isMainThread] }
-}
+#[cfg(target_os = "macos")]
+mod appkit {
+    use super::*;
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::CString;
+    use std::marker::PhantomData;
+    use std::rc::Rc;
 
-#[derive(Debug)]
-pub struct MacOsClipboard {
-    _main_thread_only: PhantomData<Rc<()>>,
-}
-
-impl MacOsClipboard {
-    pub fn new() -> Result<Self, NativeFailure> {
-        if !is_main_thread() {
-            return Err(NativeFailure {
-                kind: NativeFailureKind::Busy,
-                message: "clipboard adapter must be created on the main thread".to_string(),
-            });
-        }
-        Ok(Self {
-            _main_thread_only: PhantomData,
-        })
+    fn is_main_thread() -> bool {
+        unsafe { msg_send![class!(NSThread), isMainThread] }
     }
-}
 
-impl ClipboardPort for MacOsClipboard {
-    fn write_text(&self, text: &str) -> ClipboardOutcome {
-        if !is_main_thread() {
-            return ClipboardOutcome::Failed(NativeFailure {
-                kind: NativeFailureKind::Busy,
-                message: "clipboard write must run on the main thread".to_string(),
-            });
-        }
-        let Ok(c_text) = CString::new(text) else {
-            return ClipboardOutcome::Failed(NativeFailure {
-                kind: NativeFailureKind::InvalidInput,
-                message: "clipboard text contains a NUL byte".to_string(),
-            });
-        };
-        unsafe {
-            let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-            let pasteboard: *mut Object = msg_send![class!(NSPasteboard), generalPasteboard];
-            if pasteboard.is_null() {
-                let _: () = msg_send![pool, drain];
-                return ClipboardOutcome::Unsupported(NativeFailure::unsupported(
-                    "the system pasteboard is unavailable",
-                ));
-            }
-            let value: *mut Object =
-                msg_send![class!(NSString), stringWithUTF8String: c_text.as_ptr()];
-            if value.is_null() {
-                let _: () = msg_send![pool, drain];
-                return ClipboardOutcome::Failed(NativeFailure {
-                    kind: NativeFailureKind::InvalidInput,
-                    message: "clipboard text could not be represented by NSString".to_string(),
+    #[derive(Debug)]
+    pub struct MacOsClipboard {
+        _main_thread_only: PhantomData<Rc<()>>,
+    }
+
+    impl MacOsClipboard {
+        pub fn new() -> Result<Self, NativeFailure> {
+            if !is_main_thread() {
+                return Err(NativeFailure {
+                    kind: NativeFailureKind::Busy,
+                    message: "clipboard adapter must be created on the main thread".to_string(),
                 });
             }
-            let values: *mut Object = msg_send![class!(NSArray), arrayWithObject: value];
-            let _: () = msg_send![pasteboard, clearContents];
-            let committed: bool = msg_send![pasteboard, writeObjects: values];
-            let _: () = msg_send![pool, drain];
-            if committed {
-                ClipboardOutcome::Committed
-            } else {
-                ClipboardOutcome::Failed(NativeFailure {
-                    kind: NativeFailureKind::Unknown,
-                    message: "the system pasteboard rejected the write".to_string(),
-                })
+            Ok(Self {
+                _main_thread_only: PhantomData,
+            })
+        }
+    }
+
+    impl ClipboardPort for MacOsClipboard {
+        fn write_text(&self, text: &str) -> ClipboardOutcome {
+            if !is_main_thread() {
+                return ClipboardOutcome::Failed(NativeFailure {
+                    kind: NativeFailureKind::Busy,
+                    message: "clipboard write must run on the main thread".to_string(),
+                });
+            }
+            let Ok(c_text) = CString::new(text) else {
+                return ClipboardOutcome::Failed(NativeFailure {
+                    kind: NativeFailureKind::InvalidInput,
+                    message: "clipboard text contains a NUL byte".to_string(),
+                });
+            };
+            unsafe {
+                let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+                let pasteboard: *mut Object = msg_send![class!(NSPasteboard), generalPasteboard];
+                if pasteboard.is_null() {
+                    let _: () = msg_send![pool, drain];
+                    return ClipboardOutcome::Unsupported(NativeFailure::unsupported(
+                        "the system pasteboard is unavailable",
+                    ));
+                }
+                let value: *mut Object =
+                    msg_send![class!(NSString), stringWithUTF8String: c_text.as_ptr()];
+                if value.is_null() {
+                    let _: () = msg_send![pool, drain];
+                    return ClipboardOutcome::Failed(NativeFailure {
+                        kind: NativeFailureKind::InvalidInput,
+                        message: "clipboard text could not be represented by NSString".to_string(),
+                    });
+                }
+                let values: *mut Object = msg_send![class!(NSArray), arrayWithObject: value];
+                let _: () = msg_send![pasteboard, clearContents];
+                let committed: bool = msg_send![pasteboard, writeObjects: values];
+                let _: () = msg_send![pool, drain];
+                if committed {
+                    ClipboardOutcome::Committed
+                } else {
+                    ClipboardOutcome::Failed(NativeFailure {
+                        kind: NativeFailureKind::Unknown,
+                        message: "the system pasteboard rejected the write".to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct MacOsOpener {
+        _main_thread_only: PhantomData<Rc<()>>,
+    }
+
+    impl MacOsOpener {
+        pub fn new() -> Result<Self, NativeFailure> {
+            if !is_main_thread() {
+                return Err(NativeFailure {
+                    kind: NativeFailureKind::Busy,
+                    message: "opener adapter must be created on the main thread".to_string(),
+                });
+            }
+            Ok(Self {
+                _main_thread_only: PhantomData,
+            })
+        }
+    }
+
+    impl OpenerPort for MacOsOpener {
+        fn open(&self, request: &OpenRequest) -> OpenOutcome {
+            if !is_main_thread() {
+                return OpenOutcome::Failed(NativeFailure {
+                    kind: NativeFailureKind::Busy,
+                    message: "opening an application must run on the main thread".to_string(),
+                });
+            }
+            let result = match request {
+                OpenRequest::OpenPath(path) => open::that(path),
+                OpenRequest::Reveal(path) => std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(path)
+                    .spawn()
+                    .map(|_| ()),
+                OpenRequest::OpenWith { path, application } => std::process::Command::new("open")
+                    .arg("-a")
+                    .arg(application)
+                    .arg(path)
+                    .spawn()
+                    .map(|_| ()),
+                OpenRequest::QuickLook(path) => std::process::Command::new("qlmanage")
+                    .arg("-p")
+                    .arg(path)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map(|_| ()),
+                OpenRequest::GetInfo(path) => std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg("on run argv")
+                    .arg("-e")
+                    .arg(
+                        "tell application \"Finder\" to open information window of \
+                         (POSIX file (item 1 of argv) as alias)",
+                    )
+                    .arg("-e")
+                    .arg("end run")
+                    .arg("--")
+                    .arg(path)
+                    .spawn()
+                    .map(|_| ()),
+            };
+            match result {
+                Ok(()) => OpenOutcome::Accepted,
+                Err(error) => OpenOutcome::Failed(NativeFailure::from_io(&error)),
             }
         }
     }
 }
-
-#[derive(Debug)]
-pub struct MacOsOpener {
-    _main_thread_only: PhantomData<Rc<()>>,
-}
-
-impl MacOsOpener {
-    pub fn new() -> Result<Self, NativeFailure> {
-        if !is_main_thread() {
-            return Err(NativeFailure {
-                kind: NativeFailureKind::Busy,
-                message: "opener adapter must be created on the main thread".to_string(),
-            });
-        }
-        Ok(Self {
-            _main_thread_only: PhantomData,
-        })
-    }
-}
-
-impl OpenerPort for MacOsOpener {
-    fn open(&self, request: &OpenRequest) -> OpenOutcome {
-        if !is_main_thread() {
-            return OpenOutcome::Failed(NativeFailure {
-                kind: NativeFailureKind::Busy,
-                message: "opening an application must run on the main thread".to_string(),
-            });
-        }
-        let result = match request {
-            OpenRequest::OpenPath(path) => open::that(path),
-            OpenRequest::Reveal(path) => std::process::Command::new("open")
-                .arg("-R")
-                .arg(path)
-                .spawn()
-                .map(|_| ()),
-            OpenRequest::OpenWith { path, application } => std::process::Command::new("open")
-                .arg("-a")
-                .arg(application)
-                .arg(path)
-                .spawn()
-                .map(|_| ()),
-            OpenRequest::QuickLook(path) => std::process::Command::new("qlmanage")
-                .arg("-p")
-                .arg(path)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map(|_| ()),
-            OpenRequest::GetInfo(path) => std::process::Command::new("osascript")
-                .arg("-e")
-                .arg("on run argv")
-                .arg("-e")
-                .arg(
-                    "tell application \"Finder\" to open information window of \
-                     (POSIX file (item 1 of argv) as alias)",
-                )
-                .arg("-e")
-                .arg("end run")
-                .arg("--")
-                .arg(path)
-                .spawn()
-                .map(|_| ()),
-        };
-        match result {
-            Ok(()) => OpenOutcome::Accepted,
-            Err(error) => OpenOutcome::Failed(NativeFailure::from_io(&error)),
-        }
-    }
-}
+#[cfg(target_os = "macos")]
+pub use appkit::{MacOsClipboard, MacOsOpener};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeTrash;
@@ -281,7 +288,7 @@ fn probe_free_space(path: &Path) -> SpaceProbeOutcome {
 fn probe_free_space_blocking(path: &Path) -> SpaceProbeOutcome {
     use std::os::unix::ffi::OsStrExt;
 
-    let path = match CString::new(path.as_os_str().as_bytes()) {
+    let path = match std::ffi::CString::new(path.as_os_str().as_bytes()) {
         Ok(path) => path,
         Err(_) => {
             return SpaceProbeOutcome::Unknown(NativeFailure {

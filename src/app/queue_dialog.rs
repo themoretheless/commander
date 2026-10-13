@@ -175,7 +175,7 @@ impl App {
                             .add_sized(
                                 [24.0, 24.0],
                                 egui::Button::new(
-                                    egui::RichText::new("\u{2715}").color(t.text_muted),
+                                    egui::RichText::new("\u{00d7}").color(t.text_muted),
                                 )
                                 .frame(false),
                             )
@@ -238,6 +238,12 @@ impl App {
     }
 
     fn show_operations_queue(&mut self, ui: &mut egui::Ui) {
+        if self.ws.active_transfer_view().is_some() {
+            self.show_transfer_details(ui);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(5.0);
+        }
         let t = self.colors;
         let rows = self.ws.queue_snapshot();
         let running = self.ws.active_transfer_view().map(|active| {
@@ -321,7 +327,7 @@ impl App {
                             if !row.state.is_terminal()
                                 && icon(
                                     ui,
-                                    "\u{2715}",
+                                    "\u{00d7}",
                                     if row.state == JobState::Running {
                                         crate::operation_view::CancellationAction::CancelCurrent
                                             .consequence()
@@ -336,10 +342,10 @@ impl App {
                             match row.state {
                                 JobState::Pending => {
                                     if pending_count > 1 {
-                                        if icon(ui, "\u{2193}", "Move later") {
+                                        if icon(ui, "\u{25bc}", "Move later") {
                                             move_down = Some(row.id);
                                         }
-                                        if icon(ui, "\u{2191}", "Move earlier") {
+                                        if icon(ui, "\u{25b2}", "Move earlier") {
                                             move_up = Some(row.id);
                                         }
                                         if icon(ui, "\u{23eb}", "Run next") {
@@ -553,102 +559,11 @@ impl App {
     }
 
     fn show_operations_recovery(&mut self, ui: &mut egui::Ui) {
-        let t = self.colors;
-        let operations = self.recovery.operations.clone();
-        let mut refresh = false;
-        let mut inspect = None;
-        let mut rollback = None;
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} interrupted  \u{00b7}  {} staging",
-                    operations.len(),
-                    self.recovery.orphans.len()
-                ))
-                .size(10.0)
-                .color(t.text_muted),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add_sized([24.0, 24.0], egui::Button::new("\u{21bb}"))
-                    .on_hover_text("Refresh recovery inventory")
-                    .clicked()
-                {
-                    refresh = true;
-                }
-            });
-        });
-        if self.recovery.scanning {
-            ui.label(
-                egui::RichText::new("Scanning operation journals...")
-                    .size(10.0)
-                    .color(t.accent),
-            );
+        if self.ws.safe_state.is_some() {
+            self.show_safe_state_details(ui);
+            ui.add_space(8.0);
         }
-        if let Some(error) = &self.recovery.error {
-            ui.label(egui::RichText::new(error).size(10.0).color(t.accent_red));
-        }
-        ui.add_space(5.0);
-        if operations.is_empty() && !self.recovery.scanning {
-            ui.label(
-                egui::RichText::new("No interrupted operations")
-                    .size(11.0)
-                    .color(t.text_muted),
-            );
-        } else {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for record in &operations {
-                    let kind = match record.kind {
-                        TransferKind::Copy => "Copy",
-                        TransferKind::Move => "Move",
-                    };
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{}  \u{00b7}  {}",
-                                    record.status.label(),
-                                    kind
-                                ))
-                                .size(11.0)
-                                .strong()
-                                .color(t.text_primary),
-                            );
-                            ui.label(
-                                egui::RichText::new(record.target.display().to_string())
-                                    .size(9.0)
-                                    .color(t.text_muted),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let roll_back = crate::operation_view::CancellationAction::RollBack;
-                            if ui
-                                .small_button(roll_back.label())
-                                .on_hover_text(roll_back.consequence())
-                                .clicked()
-                            {
-                                rollback = Some(record.id.clone());
-                            }
-                            if ui.small_button("Inspect").clicked() {
-                                inspect = Some(record.id.clone());
-                            }
-                        });
-                    });
-                    ui.add_space(5.0);
-                    ui.separator();
-                    ui.add_space(5.0);
-                }
-            });
-        }
-        if refresh {
-            self.recovery.start_scan(&self.ws);
-        }
-        if let Some(operation_id) = inspect {
-            self.open_recovery_operation(operation_id, RecoveryDetail::Inspect);
-        }
-        if let Some(operation_id) = rollback {
-            self.open_recovery_operation(operation_id, RecoveryDetail::Repair);
-        }
+        self.show_recovery_center(ui);
     }
 
     pub(crate) fn open_recovery_operation(
@@ -667,7 +582,8 @@ impl App {
         }
         self.recovery.select(operation_id);
         self.recovery.detail = detail;
-        self.ui.modals.recovery_open = true;
+        self.show_operations_center = true;
+        self.operations_tab = OperationsTab::Recovery;
     }
 }
 

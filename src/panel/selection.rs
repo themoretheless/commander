@@ -9,18 +9,12 @@ pub(super) enum Focus {
     Entry(PathBuf),
 }
 
-#[derive(Default)]
-struct RememberedSelection {
-    selected: HashSet<PathBuf>,
-    marked: HashSet<PathBuf>,
-}
-
 pub(super) struct SelectionState {
     binding: PathBuf,
     has_complete_snapshot: bool,
     selected: HashSet<PathBuf>,
-    marked: HashSet<PathBuf>,
-    remembered: HashMap<PathBuf, RememberedSelection>,
+    /// Selections left behind in other folders, by folder.
+    remembered: HashMap<PathBuf, HashSet<PathBuf>>,
     remembered_order: VecDeque<PathBuf>,
     focus: Focus,
     cursor_row: usize,
@@ -41,7 +35,6 @@ impl SelectionState {
             binding,
             has_complete_snapshot: false,
             selected: HashSet::new(),
-            marked: HashSet::new(),
             remembered: HashMap::new(),
             remembered_order: VecDeque::new(),
             focus: Focus::Parent,
@@ -65,7 +58,6 @@ impl SelectionState {
         self.binding = binding.to_path_buf();
         self.has_complete_snapshot = false;
         self.selected.clear();
-        self.marked.clear();
         self.reset_position();
         true
     }
@@ -77,9 +69,7 @@ impl SelectionState {
         }
 
         self.remembered_order.retain(|path| path != binding);
-        let restored = self.remembered.remove(binding).unwrap_or_default();
-        self.selected = restored.selected;
-        self.marked = restored.marked;
+        self.selected = self.remembered.remove(binding).unwrap_or_default();
         self.has_complete_snapshot = true;
     }
 
@@ -90,18 +80,13 @@ impl SelectionState {
 
         let binding = self.binding.clone();
         self.remembered_order.retain(|path| path != &binding);
-        if self.selected.is_empty() && self.marked.is_empty() {
+        if self.selected.is_empty() {
             self.remembered.remove(&binding);
             return;
         }
 
-        self.remembered.insert(
-            binding.clone(),
-            RememberedSelection {
-                selected: std::mem::take(&mut self.selected),
-                marked: std::mem::take(&mut self.marked),
-            },
-        );
+        self.remembered
+            .insert(binding.clone(), std::mem::take(&mut self.selected));
         self.remembered_order.push_back(binding);
         while self.remembered.len() > REMEMBERED_BINDINGS_LIMIT {
             if let Some(oldest) = self.remembered_order.pop_front() {
@@ -121,27 +106,31 @@ impl SelectionState {
         &self.selected
     }
 
-    pub(super) fn marked(&self) -> &HashSet<PathBuf> {
-        &self.marked
-    }
-
     pub(super) fn replace_selected(&mut self, selected: HashSet<PathBuf>) {
         self.selected = selected;
-    }
-
-    #[cfg(test)]
-    pub(super) fn replace_marked(&mut self, marked: HashSet<PathBuf>) {
-        self.marked = marked;
     }
 
     pub(super) fn retain_present<'a>(&mut self, present: impl IntoIterator<Item = &'a PathBuf>) {
         let present: HashSet<&PathBuf> = present.into_iter().collect();
         self.selected.retain(|path| present.contains(path));
-        self.marked.retain(|path| present.contains(path));
     }
 
     pub(super) fn clear_selected(&mut self) {
         self.selected.clear();
+    }
+
+    /// Selections remembered in folders other than the bound one, by folder.
+    pub(super) fn selected_elsewhere(&self) -> impl Iterator<Item = (&PathBuf, &HashSet<PathBuf>)> {
+        self.remembered
+            .iter()
+            .filter(|(binding, selected)| *binding != &self.binding && !selected.is_empty())
+    }
+
+    /// Clear the selection here and in every remembered folder.
+    pub(super) fn clear_selected_everywhere(&mut self) {
+        self.selected.clear();
+        self.remembered.clear();
+        self.remembered_order.clear();
     }
 
     pub(super) fn insert_selected(&mut self, path: PathBuf) -> bool {
@@ -160,16 +149,6 @@ impl SelectionState {
         if !self.selected.remove(&path) {
             self.selected.insert(path);
         }
-    }
-
-    pub(super) fn toggle_marked(&mut self, path: PathBuf) {
-        if !self.marked.remove(&path) {
-            self.marked.insert(path);
-        }
-    }
-
-    pub(super) fn clear_marked(&mut self) {
-        self.marked.clear();
     }
 
     pub(super) fn cursor(&self) -> usize {
@@ -245,30 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn selection_and_marks_are_independent_path_sets() {
-        let mut selection = SelectionState::default();
-        let path = PathBuf::from("/a");
-        selection.insert_selected(path.clone());
-        selection.toggle_marked(path.clone());
-        selection.clear_selected();
-
-        assert!(selection.selected().is_empty());
-        assert!(selection.marked().contains(&path));
-    }
-
-    #[test]
     fn binding_switch_hides_state_until_a_complete_snapshot_restores_it() {
         let old_binding = PathBuf::from("/old");
         let old_entry = old_binding.join("selected.txt");
         let mut selection = SelectionState::new(old_binding.clone());
         selection.publish_complete(&old_binding);
         selection.insert_selected(old_entry.clone());
-        selection.toggle_marked(old_entry.clone());
         selection.set_cursor(1, Some(old_entry.clone()));
 
         assert!(selection.bind(Path::new("/unavailable")));
         assert!(selection.selected().is_empty());
-        assert!(selection.marked().is_empty());
         assert_eq!(selection.focus(), &Focus::Parent);
         assert_eq!(selection.cursor(), 0);
 
@@ -279,7 +244,6 @@ mod tests {
         );
         selection.publish_complete(&old_binding);
         assert!(selection.selected().contains(&old_entry));
-        assert!(selection.marked().contains(&old_entry));
         assert_eq!(selection.focus(), &Focus::Parent);
     }
 }

@@ -54,6 +54,7 @@ mod mount_guard;
 #[cfg_attr(not(target_os = "macos"), path = "native_copy_portable.rs")]
 mod native_copy;
 mod native_effect;
+#[cfg(target_os = "macos")]
 mod native_menu;
 mod native_release_qa;
 mod omnibar;
@@ -76,9 +77,7 @@ mod rename_order;
 mod scan;
 mod search;
 mod selection_summary;
-mod selset;
 mod session;
-mod shelf;
 mod smart_folder;
 pub mod support_bundle;
 mod support_encrypt;

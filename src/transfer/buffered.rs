@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use super::backend::CheckpointSink;
 use super::{CheckpointLayout, ResumeCheckpoint, TransferState, prefix_digest};
-use crate::path_identity::PathIdentity;
 
 pub(super) const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
 const CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
@@ -121,7 +120,7 @@ fn copy_file_buffered_inner(
     let mut next_checkpoint = offset.saturating_add(CHECKPOINT_INTERVAL);
 
     loop {
-        // Single mutex acquisition per iteration — O(1) instead of O(2) 
+        // Single mutex acquisition per iteration — O(1) instead of O(2)
         // Acquire once and use for both cancellation check and progress tracking
         let cancelled = {
             let s = crate::lock_util::recover(state);
@@ -139,10 +138,7 @@ fn copy_file_buffered_inner(
                 &content_hasher,
                 &mut checkpoints,
             )?;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
+            return Err(crate::transfer::cancelled_error());
         }
 
         let n = reader.read(&mut buf)?;
@@ -152,7 +148,7 @@ fn copy_file_buffered_inner(
         writer.write_all(&buf[..n])?;
         content_hasher.update(&buf[..n]);
         copied = copied.saturating_add(n as u64);
-        
+
         if limiter.consume(n, || false).is_err() {
             persist_checkpoint(
                 src,
@@ -213,17 +209,13 @@ fn persist_checkpoint(
     let Some(checkpoints) = checkpoints.as_deref_mut() else {
         return Ok(());
     };
-    let source = PathIdentity::observe_deep(src)?;
-    let partial = PathIdentity::observe_deep(dst)?;
-    let checkpoint = ResumeCheckpoint {
-        staging: dst.to_path_buf(),
+    checkpoints.publish(ResumeCheckpoint::observe(
+        src,
+        dst,
         offset,
-        source,
-        partial,
-        layout: CheckpointLayout::Prefix,
-        content_digest: Some(*content_hasher.clone().finalize().as_bytes()),
-    };
-    checkpoints.publish(checkpoint)
+        CheckpointLayout::Prefix,
+        *content_hasher.clone().finalize().as_bytes(),
+    )?)
 }
 
 /// Recursively copy a directory with progress (buffered strategy).
@@ -247,12 +239,7 @@ pub(super) fn copy_dir_buffered_with_limiter(
     let mut ancestors = std::collections::HashSet::new();
     let mut copied = 0u64;
     while let Some(task) = tasks.pop() {
-        if crate::lock_util::recover(state).cancelled {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
-        }
+        crate::transfer::check_cancelled(state)?;
         match task {
             Task::ExitDirectory(canonical) => {
                 ancestors.remove(&canonical);
@@ -262,7 +249,7 @@ pub(super) fn copy_dir_buffered_with_limiter(
                 if metadata.file_type().is_symlink() {
                     match symlink_policy {
                         crate::filesystem_policy::SymlinkPolicy::Preserve => {
-                            copy_symlink(&source, &destination)?;
+                            crate::fs_util::copy_symlink(&source, &destination)?;
                         }
                         crate::filesystem_policy::SymlinkPolicy::Skip => {}
                         crate::filesystem_policy::SymlinkPolicy::Follow => {
@@ -304,19 +291,4 @@ pub(super) fn copy_dir_buffered_with_limiter(
         }
     }
     Ok(copied)
-}
-
-/// Recreate a symlink at `dst` pointing at the same target as `src`.
-#[cfg(unix)]
-pub(super) fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let target = std::fs::read_link(src)?;
-    std::os::unix::fs::symlink(target, dst)
-}
-
-#[cfg(not(unix))]
-pub(super) fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "preserving symlinks is not supported on this platform",
-    ))
 }

@@ -194,14 +194,7 @@ pub(crate) fn load_with(persist: &dyn crate::persistence::Persist) -> LoadedSess
 
 fn load_at(persist: &dyn crate::persistence::Persist, path: &Path) -> LoadedSession {
     let loaded = crate::persistence::load_enveloped::<Session>(persist, path, STORE);
-    if loaded.value.is_none()
-        && matches!(
-            loaded.gate.status(),
-            crate::persistence::LoadStatus::Corrupt
-                | crate::persistence::LoadStatus::FutureVersion
-                | crate::persistence::LoadStatus::Unreadable
-        )
-    {
+    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
         crate::persistence::record_unreadable("Session");
     }
     LoadedSession {

@@ -869,7 +869,7 @@ fn restart_restores_a_journaled_overwrite_backup_before_resuming() {
         &destination_before,
     )
     .unwrap();
-    crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
+    crate::fs_at::rename_noreplace(&destination, &backup).unwrap();
     crate::fs_util::sync_parent_namespace(&destination).unwrap();
     mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
     finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
@@ -930,10 +930,10 @@ fn restart_completes_overwrite_after_placement_before_mark_completed() {
         &destination_before,
     )
     .unwrap();
-    crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
+    crate::fs_at::rename_noreplace(&destination, &backup).unwrap();
     crate::fs_util::sync_parent_namespace(&destination).unwrap();
     mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
-    crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
     crate::fs_util::sync_parent_namespace(&destination).unwrap();
     mark_replacement_placed(&spec.operation_id, &key).unwrap();
     finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
@@ -991,11 +991,11 @@ fn restart_completes_overwrite_when_placement_landed_before_placed_phase() {
         &destination_before,
     )
     .unwrap();
-    crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
+    crate::fs_at::rename_noreplace(&destination, &backup).unwrap();
     crate::fs_util::sync_parent_namespace(&destination).unwrap();
     mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
     // Crash between rename-into-place and `mark_replacement_placed`.
-    crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
     crate::fs_util::sync_parent_namespace(&destination).unwrap();
     finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
     assert_eq!(
@@ -1045,7 +1045,7 @@ fn restart_completes_non_overwrite_after_placement_before_mark_completed() {
     )
     .unwrap();
     prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
-    crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
     crate::fs_util::sync_parent_namespace(&destination).unwrap();
     mark_placement_placed(&spec.operation_id, &key).unwrap();
     finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
@@ -1093,7 +1093,7 @@ fn restart_completes_non_overwrite_when_placement_landed_before_placed_phase() {
     .unwrap();
     prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
     // Crash between rename-into-place and `mark_placement_placed`.
-    crate::native_copy::rename_noreplace(&staging, &destination).unwrap();
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
     crate::fs_util::sync_parent_namespace(&destination).unwrap();
     finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
     assert_eq!(
@@ -1152,7 +1152,7 @@ fn overwrite_backup_proof_rejects_same_inode_content_tampering() {
         &destination_before,
     )
     .unwrap();
-    crate::native_copy::rename_noreplace(&destination, &backup).unwrap();
+    crate::fs_at::rename_noreplace(&destination, &backup).unwrap();
     std::fs::write(&backup, "tampered").unwrap();
 
     let error = mark_replacement_backed_up(&spec.operation_id, &key).unwrap_err();
@@ -1318,7 +1318,7 @@ fn move_overwrite_restart_restores_destination_after_source_was_moved_back() {
     let receipt = prepare_rollback_receipt(&operation_id, &key, &destination).unwrap();
     detach_expected_path(&destination, &completed, &receipt.quarantine).unwrap();
     record_rollback_phase(&operation_id, &key, RollbackPhase::EffectDetached, None).unwrap();
-    crate::native_copy::rename_noreplace(&receipt.quarantine, &source).unwrap();
+    crate::fs_at::rename_noreplace(&receipt.quarantine, &source).unwrap();
     crate::fs_util::sync_parent_namespace(&source).unwrap();
     crate::fs_util::sync_parent_namespace(&receipt.quarantine).unwrap();
     assert!(!destination.exists());

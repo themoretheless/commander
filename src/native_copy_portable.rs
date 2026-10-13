@@ -20,58 +20,6 @@ pub struct NativeCopyOutcome {
     pub cloned: bool,
 }
 
-/// Rename `src` to `dst`, failing with `AlreadyExists` instead of replacing
-/// an occupied destination.
-pub fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        let src_c = CString::new(src.as_os_str().as_bytes())?;
-        let dst_c = CString::new(dst.as_os_str().as_bytes())?;
-        // SAFETY: both pointers are valid NUL-terminated paths for the call.
-        let rc = unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                src_c.as_ptr(),
-                libc::AT_FDCWD,
-                dst_c.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        if rc == 0 {
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
-        let unsupported = error
-            .raw_os_error()
-            .is_some_and(|code| code == libc::EINVAL || code == libc::ENOSYS);
-        if !unsupported {
-            return Err(error);
-        }
-    }
-    rename_noreplace_fallback(src, dst)
-}
-
-/// Best-effort no-clobber rename where the OS has no exclusive rename.
-fn rename_noreplace_fallback(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if crate::fs_util::path_is_taken(dst) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "destination already exists",
-        ));
-    }
-    fs::rename(src, dst)
-}
-
-fn cancelled() -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
-}
-
-fn is_cancelled(state: &Arc<Mutex<TransferProgress>>) -> bool {
-    crate::lock_util::recover(state).cancelled
-}
-
 /// Copy one file's bytes into a destination that must not exist yet.
 fn copy_bytes(
     src: &Path,
@@ -86,9 +34,7 @@ fn copy_bytes(
     let mut copied = 0u64;
     let result = (|| {
         loop {
-            if is_cancelled(state) {
-                return Err(cancelled());
-            }
+            crate::transfer::check_cancelled(state)?;
             let n = input.read(&mut buf)?;
             if n == 0 {
                 break;
@@ -146,17 +92,9 @@ fn copy_file_native_inner(
 ) -> std::io::Result<NativeCopyOutcome> {
     let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
     if report_progress {
-        let mut s = crate::lock_util::recover(state);
-        s.current_file = src
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        s.current_file_size = file_size;
-        s.current_file_copied = 0;
+        crate::lock_util::recover(state).begin_file(src, file_size);
     }
-    if is_cancelled(state) {
-        return Err(cancelled());
-    }
+    crate::transfer::check_cancelled(state)?;
     let bytes = copy_bytes(src, dst, state, base_bytes, report_progress)?;
     Ok(NativeCopyOutcome {
         bytes,
@@ -198,15 +136,13 @@ fn copy_tree(
     copied: &mut u64,
 ) -> std::io::Result<()> {
     for entry in fs::read_dir(src)? {
-        if is_cancelled(state) {
-            return Err(cancelled());
-        }
+        crate::transfer::check_cancelled(state)?;
         let entry = entry?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
         let file_type = entry.file_type()?;
         let outcome = if file_type.is_symlink() {
-            copy_symlink(&from, &to)
+            crate::fs_util::copy_symlink(&from, &to)
         } else if file_type.is_dir() {
             fs::create_dir(&to).and_then(|()| copy_tree(&from, &to, state, base_bytes, copied))
         } else {
@@ -232,21 +168,6 @@ fn copy_tree(
     Ok(())
 }
 
-#[cfg(unix)]
-fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(fs::read_link(from)?, to)
-}
-
-#[cfg(windows)]
-fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
-    let target = fs::read_link(from)?;
-    if fs::metadata(from).is_ok_and(|m| m.is_dir()) {
-        std::os::windows::fs::symlink_dir(target, to)
-    } else {
-        std::os::windows::fs::symlink_file(target, to)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,16 +175,6 @@ mod tests {
 
     fn progress() -> Arc<Mutex<TransferProgress>> {
         Arc::new(Mutex::new(TransferProgress::new(0, 1)))
-    }
-
-    #[test]
-    fn rename_noreplace_refuses_to_clobber() {
-        let tmp = TempDir::new();
-        let src = tmp.file("a.txt", "new");
-        let dst = tmp.file("b.txt", "old");
-        let err = rename_noreplace(&src, &dst).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
     }
 
     #[test]

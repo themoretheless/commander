@@ -235,7 +235,7 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 
-    pub(crate) fn open_find(&mut self) {
+    pub(crate) fn open_find(&mut self, ctx: &egui::Context) {
         self.search_engine.cancel();
         let root = self.ws.active_panel_ref().current_path.clone();
         let index_exclusions =
@@ -245,6 +245,7 @@ impl App {
             index_exclusions,
             ..Default::default()
         });
+        Self::mark_modal_opened(ctx, UiModal::Find);
     }
 
     pub(crate) fn show_find_dialog(&mut self, ctx: &egui::Context) {
@@ -319,12 +320,7 @@ impl App {
                 .default_size([720.0, 620.0])
                 .min_width(560.0)
                 .min_height(420.0)
-                .frame(
-                    Frame::NONE
-                        .fill(t.bg_panel)
-                        .inner_margin(Margin::same(14))
-                        .stroke(Stroke::new(1.0_f32, t.border)),
-                )
+                .frame(super::dialog_frame(t, 14))
                 .show(ctx, |ui| {
                     let crumbs = crate::crumbs::crumbs(&state.root);
                     let layout = crate::crumbs::elide_crumbs(&crumbs, 6);
@@ -373,9 +369,8 @@ impl App {
                             .hint_text("Search files...")
                             .margin(egui::vec2(8.0, 7.0)),
                     );
-                    if !state.focused {
+                    if Self::take_modal_opened(ui.ctx(), UiModal::Find) {
                         response.request_focus();
-                        state.focused = true;
                     }
                     edited |= response.changed();
                     if response.lost_focus()
@@ -416,18 +411,15 @@ impl App {
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(if state.searching {
-                                            "Restart"
-                                        } else {
-                                            "Search"
-                                        })
-                                        .color(Color32::WHITE),
-                                    )
-                                    .fill(t.accent)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
+                                .add(super::dialog_button(
+                                    t,
+                                    super::ButtonRole::Primary,
+                                    egui::RichText::new(if state.searching {
+                                        "Restart"
+                                    } else {
+                                        "Search"
+                                    }),
+                                ))
                                 .clicked()
                             {
                                 run_now = true;
@@ -922,7 +914,6 @@ impl App {
                 let name = definition.name.clone();
                 self.smart_folders_mut().add(definition);
                 let saved = crate::smart_folder::save(self.smart_folders_mut());
-                let now = ctx.input(|input| input.time);
                 let (message, kind) = if saved {
                     (
                         format!("Saved search \"{name}\""),
@@ -934,8 +925,7 @@ impl App {
                         crate::toasts::ToastKind::Error,
                     )
                 };
-                self.toasts
-                    .push(crate::toasts::Toast::new(message, kind, false, now));
+                self.toast(ctx, kind, message, false);
             }
         }
     }

@@ -1,8 +1,9 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
+use super::facet::next_age_transition;
 use super::{DirStatus, FacetSet, FileEntry, facet_matches};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,44 +219,11 @@ impl ListingState {
     }
 }
 
-fn next_age_transition(
-    entries: &[FileEntry],
-    facets: FacetSet,
-    now: SystemTime,
-) -> Option<SystemTime> {
-    if facets.max_age_days.is_none() && facets.min_age_days.is_none() {
-        return None;
-    }
-
-    entries
-        .iter()
-        .filter_map(|entry| entry.modified)
-        .filter_map(|modified| {
-            let max_transition = facets.max_age_days.and_then(|days| {
-                modified
-                    .checked_add(Duration::from_secs(days.saturating_mul(24 * 60 * 60)))
-                    .and_then(|deadline| deadline.checked_add(Duration::from_nanos(1)))
-                    .filter(|deadline| *deadline > now)
-            });
-            let min_transition = facets.min_age_days.and_then(|days| {
-                modified
-                    .checked_add(Duration::from_secs(days.saturating_mul(24 * 60 * 60)))
-                    .filter(|deadline| *deadline > now)
-            });
-            match (max_transition, min_transition) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-                (None, None) => None,
-            }
-        })
-        .min()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::UNIX_EPOCH;
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn entry(name: &str, modified: SystemTime) -> FileEntry {
         FileEntry {
