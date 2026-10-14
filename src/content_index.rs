@@ -16,6 +16,10 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 pub const MAX_DOCUMENTS: usize = 200_000;
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_CONTENT_BYTES: usize = 32 * 1024 * 1024;
+/// Loaded indexes kept in memory at once. Enough for every root the UI
+/// asks about in one frame (Find dialog, developer panel), so they never
+/// evict each other and reload from disk.
+const MAX_CACHED_SNAPSHOTS: usize = 4;
 /// Largest index file the loader accepts.
 const MAX_INDEX_FILE_BYTES: usize = 64 * 1024 * 1024;
 /// Serialized-size budget for documents; the rest of the file cap covers the
@@ -182,6 +186,11 @@ impl Drop for BuildRun {
 pub struct ContentIndex {
     settings: SettingsStore,
     snapshots: HashMap<PathBuf, Arc<RootIndex>>,
+    /// Cached roots, least recently used first.
+    snapshot_order: Vec<PathBuf>,
+    /// Roots whose index file failed to load; not retried until a build or
+    /// settings change, since `status()` asks for the snapshot every frame.
+    unloadable: HashSet<PathBuf>,
     load_errors: HashMap<PathBuf, String>,
     active: Option<BuildRun>,
     workload: crate::workload::WorkloadHandle,
@@ -203,6 +212,8 @@ impl ContentIndex {
         Self {
             settings,
             snapshots: HashMap::new(),
+            snapshot_order: Vec::new(),
+            unloadable: HashSet::new(),
             load_errors: HashMap::new(),
             active: None,
             workload,
@@ -234,6 +245,10 @@ impl ContentIndex {
         if !enabled && self.active.as_ref().is_some_and(|run| run.root == root) {
             self.active = None;
         }
+        if !enabled {
+            self.evict_snapshot(&root);
+        }
+        self.unloadable.remove(&root);
         true
     }
 
@@ -298,6 +313,7 @@ impl ContentIndex {
             return false;
         }
         self.load_errors.remove(&root);
+        self.unloadable.remove(&root);
         if let Some(settings) = self
             .settings
             .roots
@@ -407,7 +423,8 @@ impl ContentIndex {
         if let (Some(root), Some(result)) = (root, complete) {
             match result {
                 Ok(index) => {
-                    self.snapshots.insert(root.clone(), Arc::new(index));
+                    self.cache_snapshot(root.clone(), Arc::new(index));
+                    self.unloadable.remove(&root);
                     self.load_errors.remove(&root);
                     self.set_last_error(&root, None);
                 }
@@ -421,23 +438,59 @@ impl ContentIndex {
     }
 
     pub fn snapshot(&mut self, root: &Path) -> Option<Arc<RootIndex>> {
-        if let Some(snapshot) = self.snapshots.get(root) {
-            return Some(Arc::clone(snapshot));
+        self.snapshot_from(&index_path(root), root)
+    }
+
+    fn snapshot_from(&mut self, path: &Path, root: &Path) -> Option<Arc<RootIndex>> {
+        if let Some(snapshot) = self.snapshots.get(root).map(Arc::clone) {
+            self.touch_snapshot(root);
+            return Some(snapshot);
         }
-        match load_index_from(&index_path(root), root) {
+        if self.unloadable.contains(root) {
+            return None;
+        }
+        match load_index_from(path, root) {
             Ok(Some(index)) => {
                 let index = Arc::new(index);
-                self.snapshots
-                    .insert(root.to_path_buf(), Arc::clone(&index));
+                self.cache_snapshot(root.to_path_buf(), Arc::clone(&index));
                 self.load_errors.remove(root);
                 Some(index)
             }
             Ok(None) => None,
             Err(error) => {
+                self.unloadable.insert(root.to_path_buf());
                 self.load_errors.insert(root.to_path_buf(), error);
                 None
             }
         }
+    }
+
+    /// Keep at most `MAX_CACHED_SNAPSHOTS` indexes (each up to
+    /// `MAX_CONTENT_BYTES` of text) alive, dropping the least recently used.
+    fn cache_snapshot(&mut self, root: PathBuf, index: Arc<RootIndex>) {
+        self.touch_snapshot(&root);
+        if self.snapshots.insert(root.clone(), index).is_none() {
+            self.snapshot_order.push(root);
+        }
+        while self.snapshot_order.len() > MAX_CACHED_SNAPSHOTS {
+            let evicted = self.snapshot_order.remove(0);
+            self.snapshots.remove(&evicted);
+        }
+    }
+
+    fn touch_snapshot(&mut self, root: &Path) {
+        if self.snapshot_order.last().is_some_and(|last| last == root) {
+            return;
+        }
+        if let Some(position) = self.snapshot_order.iter().position(|cached| cached == root) {
+            let cached = self.snapshot_order.remove(position);
+            self.snapshot_order.push(cached);
+        }
+    }
+
+    fn evict_snapshot(&mut self, root: &Path) {
+        self.snapshots.remove(root);
+        self.snapshot_order.retain(|cached| cached != root);
     }
 
     pub fn status(&mut self, root: &Path) -> IndexStatus {
@@ -837,13 +890,30 @@ fn wait_for_idle(
     }
 }
 
+/// Leading bytes checked for NULs to tell binary files from text.
+const BINARY_SNIFF_BYTES: u64 = 8_192;
+
 fn read_indexable_text(path: &Path, size: u64) -> std::io::Result<Option<String>> {
-    let file = fs::File::open(path)?;
-    let mut bytes = Vec::with_capacity(size as usize);
-    file.take(MAX_FILE_BYTES).read_to_end(&mut bytes)?;
-    if bytes.iter().take(8_192).any(|byte| *byte == 0) {
+    read_indexable_from(fs::File::open(path)?, size)
+}
+
+/// Sniff the head before reading the rest, so a binary file costs one
+/// small read instead of up to `MAX_FILE_BYTES`.
+fn read_indexable_from(reader: impl Read, size: u64) -> std::io::Result<Option<String>> {
+    let mut reader = reader.take(MAX_FILE_BYTES);
+    let mut bytes = Vec::with_capacity(usize::try_from(size.min(BINARY_SNIFF_BYTES)).unwrap_or(0));
+    Read::by_ref(&mut reader)
+        .take(BINARY_SNIFF_BYTES)
+        .read_to_end(&mut bytes)?;
+    if bytes.contains(&0) {
         return Ok(None);
     }
+    bytes.reserve(
+        usize::try_from(size.min(MAX_FILE_BYTES))
+            .unwrap_or(0)
+            .saturating_sub(bytes.len()),
+    );
+    reader.read_to_end(&mut bytes)?;
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
@@ -1012,8 +1082,11 @@ const INDEX_NOUN: &str = "Content index";
 
 fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
     let persist = crate::persistence::FsPersist::default();
+    // Only the gate (revision and status) is needed: skip decoding the old
+    // payload into a `RootIndex`, which can be tens of MB of documents.
     let mut gate =
-        crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+        crate::persistence::load_enveloped::<serde::de::IgnoredAny>(&persist, path, INDEX_STORE)
+            .gate;
     if !matches!(
         gate.status(),
         crate::persistence::LoadStatus::Missing
@@ -1032,7 +1105,12 @@ fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
                 ));
             }
         }
-        gate = crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+        gate = crate::persistence::load_enveloped::<serde::de::IgnoredAny>(
+            &persist,
+            path,
+            INDEX_STORE,
+        )
+        .gate;
     }
     match crate::persistence::save_enveloped_streaming(
         &persist,
@@ -1330,6 +1408,108 @@ mod tests {
             normal.accessed(),
             Some(std::time::UNIX_EPOCH + Duration::from_secs(60))
         );
+    }
+
+    fn test_content_index() -> ContentIndex {
+        let runtime = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        ContentIndex::from_settings(SettingsStore::default(), runtime.handle())
+    }
+
+    #[test]
+    fn failed_index_load_is_not_retried_every_frame() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let path = temp.path().join("index.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        let mut index = test_content_index();
+
+        assert!(index.snapshot_from(&path, temp.path()).is_none());
+        assert!(index.load_errors.contains_key(temp.path()));
+        // A now-valid file is not re-read until a build or settings change.
+        save_index_to(&path, &scan(temp.path(), Vec::new())).unwrap();
+        assert!(index.snapshot_from(&path, temp.path()).is_none());
+
+        index.unloadable.clear();
+        assert!(index.snapshot_from(&path, temp.path()).is_some());
+    }
+
+    #[test]
+    fn snapshot_cache_evicts_the_least_recently_used_root() {
+        let temp = TempDir::new();
+        let built = Arc::new(scan(temp.path(), Vec::new()));
+        let mut index = test_content_index();
+        let roots: Vec<PathBuf> = (0..=MAX_CACHED_SNAPSHOTS)
+            .map(|number| PathBuf::from(format!("/root-{number}")))
+            .collect();
+        for root in &roots[..MAX_CACHED_SNAPSHOTS] {
+            index.cache_snapshot(root.clone(), Arc::clone(&built));
+        }
+        // Reading the oldest root makes the second-oldest the eviction pick.
+        let missing = temp.path().join("missing.json");
+        assert!(index.snapshot_from(&missing, &roots[0]).is_some());
+
+        index.cache_snapshot(roots[MAX_CACHED_SNAPSHOTS].clone(), built);
+
+        assert_eq!(index.snapshots.len(), MAX_CACHED_SNAPSHOTS);
+        assert!(index.snapshots.contains_key(&roots[0]));
+        assert!(!index.snapshots.contains_key(&roots[1]));
+        index.evict_snapshot(&roots[0]);
+        assert!(!index.snapshots.contains_key(&roots[0]));
+        assert_eq!(index.snapshot_order.len(), MAX_CACHED_SNAPSHOTS - 1);
+    }
+
+    #[test]
+    fn binary_files_are_rejected_after_reading_only_the_head() {
+        struct Counting<'a>(&'a [u8], &'a std::cell::Cell<usize>);
+        impl Read for Counting<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.0.read(buf)?;
+                self.1.set(self.1.get() + read);
+                Ok(read)
+            }
+        }
+        let read = std::cell::Cell::new(0);
+        let mut binary = vec![b'a'; MAX_FILE_BYTES as usize];
+        binary[10] = 0;
+        let size = binary.len() as u64;
+        assert!(
+            read_indexable_from(Counting(&binary, &read), size)
+                .unwrap()
+                .is_none()
+        );
+        assert!(read.get() as u64 <= BINARY_SNIFF_BYTES);
+
+        // A NUL past the sniffed head is still text, read in full.
+        let mut late_nul = vec![b'a'; 20_000];
+        late_nul[10_000] = 0;
+        let text = read_indexable_from(&late_nul[..], 20_000).unwrap().unwrap();
+        assert_eq!(text.len(), 20_000);
+        let capped = vec![b'b'; MAX_FILE_BYTES as usize + 10];
+        let text = read_indexable_from(&capped[..], capped.len() as u64)
+            .unwrap()
+            .unwrap();
+        assert_eq!(text.len() as u64, MAX_FILE_BYTES);
+    }
+
+    #[test]
+    fn save_replaces_an_index_whose_payload_no_longer_decodes() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let index = scan(temp.path(), Vec::new());
+        let path = temp.path().join("index.json");
+        save_index_to(&path, &index).unwrap();
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        envelope["payload"] = serde_json::json!({ "unexpected": true });
+        std::fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        assert!(load_index_from(&path, temp.path()).is_err());
+
+        save_index_to(&path, &index).unwrap();
+
+        let loaded = load_index_from(&path, temp.path()).unwrap().unwrap();
+        assert_eq!(loaded.documents.len(), index.documents.len());
     }
 
     #[test]
