@@ -105,21 +105,44 @@ fn drop_target_writable(
 }
 
 /// Selected rows in the filtered view and their total display size, in one
-/// pass. Skipped entirely (no hash lookups) when nothing is selected.
-fn visible_selection_summary(panel: &PanelState) -> (usize, u64) {
+/// pass, plus whether any selected folder is still being measured (it
+/// counts as 0 B until then). Skipped entirely (no hash lookups) when
+/// nothing is selected.
+fn visible_selection_summary(panel: &PanelState) -> (usize, u64, bool) {
     if panel.selected_count() == 0 {
-        return (0, 0);
+        return (0, 0, false);
     }
-    let sizes = panel.size_snapshot();
+    selection_summary_with(panel, &panel.size_snapshot())
+}
+
+fn selection_summary_with(
+    panel: &PanelState,
+    sizes: &crate::panel::SizeSnapshot,
+) -> (usize, u64, bool) {
     let entries = panel.entries();
     panel
         .filtered_indices()
         .iter()
         .filter_map(|&index| entries.get(index))
         .filter(|entry| panel.is_selected(&entry.path))
-        .fold((0, 0), |(count, size), entry| {
-            (count + 1, size.saturating_add(sizes.display_size(entry)))
+        .fold((0, 0, false), |(count, size, pending), entry| {
+            (
+                count + 1,
+                size.saturating_add(sizes.display_size(entry)),
+                pending || (entry.is_dir && sizes.size_of(&entry.path).is_none()),
+            )
         })
+}
+
+/// The selection's size for the footer. While a selected folder is still
+/// being measured the total is a lower bound, shown as "≥ X…" (or "…"
+/// before anything is known), like the folder total's "…".
+fn selection_size_label(bytes: u64, pending: bool) -> String {
+    match (pending, bytes) {
+        (false, _) => format_size(bytes),
+        (true, 0) => "\u{2026}".to_string(),
+        (true, _) => format!("\u{2265} {}\u{2026}", format_size(bytes)),
+    }
 }
 
 /// Filtered row the list must bring into view, if any. Cursor 0 is the ".."
@@ -925,7 +948,7 @@ impl App {
                             let shown = panel.filtered_count();
                             let total = panel.entries().len();
                             let selected_total = panel.selected_count();
-                            let (selected_visible, selected_bytes) =
+                            let (selected_visible, selected_bytes, selected_pending) =
                                 visible_selection_summary(panel);
                             // One pass for the folder total plus its largest/oldest entry.
                             let overview = panel.folder_overview();
@@ -955,7 +978,8 @@ impl App {
                                 );
                             }
                             if selected_total > 0 {
-                                let selected_size = format_size(selected_bytes);
+                                let selected_size =
+                                    selection_size_label(selected_bytes, selected_pending);
                                 let selection_text = if selected_visible == selected_total {
                                     format!("{selected_total} selected ({selected_size})")
                                 } else {
@@ -1135,7 +1159,8 @@ fn highlight_name_job(
 mod tests {
     use super::{
         cursor_row_to_reveal, drop_target_writable, folder_changed, map_ranges_to_display,
-        name_char_budget, visible_rows, visible_selection_summary,
+        name_char_budget, selection_size_label, selection_summary_with, visible_rows,
+        visible_selection_summary,
     };
 
     #[test]
@@ -1174,15 +1199,32 @@ mod tests {
         std::fs::write(temp.path().join("c.txt"), "c").expect("write c");
         let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
         panel.refresh();
-        assert_eq!(visible_selection_summary(&panel), (0, 0));
+        assert_eq!(visible_selection_summary(&panel), (0, 0, false));
         panel.toggle_select(temp.path().join("a.txt"));
         panel.toggle_select(temp.path().join("b.log"));
-        assert_eq!(visible_selection_summary(&panel), (2, 8));
+        assert_eq!(visible_selection_summary(&panel), (2, 8, false));
         assert_eq!(panel.visible_selected_count(), 2);
         assert_eq!(panel.visible_selected_size(), 8);
         panel.set_search_query("txt");
-        assert_eq!(visible_selection_summary(&panel), (1, 3));
+        assert_eq!(visible_selection_summary(&panel), (1, 3, false));
         assert_eq!(panel.visible_selected_count(), 1);
+    }
+
+    #[test]
+    fn unmeasured_selected_folder_marks_the_size_as_a_lower_bound() {
+        let temp = crate::testutil::TempDir::new();
+        std::fs::write(temp.path().join("a.txt"), "aaa").expect("write a");
+        std::fs::create_dir(temp.path().join("sub")).expect("mkdir");
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.toggle_select(temp.path().join("a.txt"));
+        panel.toggle_select(temp.path().join("sub"));
+        // No folder measured yet.
+        let unmeasured = crate::panel::SizeSnapshot::default();
+        assert_eq!(selection_summary_with(&panel, &unmeasured), (2, 3, true));
+        assert_eq!(selection_size_label(3, true), "\u{2265} 3 B\u{2026}");
+        assert_eq!(selection_size_label(0, true), "\u{2026}");
+        assert_eq!(selection_size_label(3, false), "3 B");
     }
 
     #[test]
