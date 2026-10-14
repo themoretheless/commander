@@ -160,18 +160,22 @@ impl Template {
     /// Whether this template should be offered for `entries`: true when its
     /// extension filter is empty (applies to everything) or any selected entry
     /// has a matching extension. Matching is case-insensitive; a leading dot in
-    /// the filter is ignored.
+    /// the filter is ignored, and a multi-part filter such as `tar.gz` matches
+    /// the whole suffix rather than only the last extension.
     pub fn matches(&self, entries: &[FileEntry]) -> bool {
         if self.exts.is_empty() {
             return true;
         }
-        let wanted: Vec<String> = self
+        let suffixes: Vec<String> = self
             .exts
             .iter()
-            .map(|e| e.trim_start_matches('.').to_lowercase())
+            .map(|e| format!(".{}", e.trim_start_matches('.').to_lowercase()))
             .collect();
-        // `FileEntry.extension` is already lowercased at construction.
-        entries.iter().any(|e| wanted.contains(&e.extension))
+        entries.iter().any(|e| {
+            suffixes.iter().any(|suffix| {
+                e.name_lower.len() > suffix.len() && e.name_lower.ends_with(suffix.as_str())
+            })
+        })
     }
 }
 
@@ -353,6 +357,19 @@ mod tests {
         let img = entry(&tmp, "Photo.JPG");
         assert_eq!(img.extension, "jpg");
         assert!(t.matches(&[img]));
+    }
+
+    #[test]
+    fn matches_multi_part_extension_filters() {
+        let tmp = TempDir::new();
+        let t = Template {
+            name: "Untar".into(),
+            raw: "tar xzf {paths}".into(),
+            exts: vec!["tar.gz".into()],
+        };
+        assert!(t.matches(&[entry(&tmp, "backup.TAR.GZ")]));
+        assert!(!t.matches(&[entry(&tmp, "notes.gz")]));
+        assert!(!t.matches(&[entry(&tmp, "tar.gz.txt")]));
     }
 
     fn tmpl(name: &str, raw: &str, exts: &[&str]) -> Template {
