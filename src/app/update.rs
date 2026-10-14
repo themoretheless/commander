@@ -179,6 +179,100 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Whether an open pane tool replaces `side`'s file list.
+fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bool {
+    tools.side == Some(side) && tools.any_open()
+}
+
+/// Whether `command` would make a tool-covered pane active, where file
+/// commands (F5/F6/F8/Enter) would act on its hidden listing.
+pub(super) fn switch_into_covered_pane(
+    tools: &super::ui_state::PaneTools,
+    active: ActivePanel,
+    command: crate::command::Command,
+) -> bool {
+    command == crate::command::Command::SwitchPanel && pane_tool_covers(tools, active.other())
+}
+
+/// Feedback when a panel switch is refused because a tool covers the pane.
+pub(super) const SWITCH_INTO_COVERED_PANE: &str = "Close the pane tool to switch to that pane";
+
+/// Whether `action` is the Trash undo recorded for exactly these delete
+/// results: every trashed item, with the version preserved for it.
+fn trash_undo_matches(
+    items: &[crate::workspace::DeleteItemResult],
+    action: &crate::undo::Action,
+) -> bool {
+    let crate::undo::Action::Trash { items: recorded } = action else {
+        return false;
+    };
+    let trashed = items
+        .iter()
+        .filter(|item| item.outcome == crate::ports::TrashItemOutcome::Trashed);
+    trashed.clone().count() == recorded.len()
+        && trashed.zip(recorded).all(|(item, recorded)| {
+            item.path == recorded.path && item.version.as_ref() == Some(&recorded.version)
+        })
+}
+
+/// The id of the newest toast that offers Undo.
+fn newest_undoable_toast(toasts: &[crate::toasts::Toast]) -> Option<u64> {
+    toasts
+        .iter()
+        .rev()
+        .find(|toast| toast.undoable)
+        .map(crate::toasts::Toast::id)
+}
+
+/// The auto-generated smart folder name, suffixed ` (2)`, ` (3)`, ... when
+/// another search (a same-named folder elsewhere, or a clipped label)
+/// already holds it, since adding under a taken name replaces that search.
+/// Re-saving the identical search keeps its name and updates it in place.
+fn unique_smart_folder_name(
+    existing: &[crate::smart_folder::Definition],
+    base: String,
+    root: &std::path::Path,
+    query: &crate::query::Query,
+) -> String {
+    let free = |name: &str| {
+        existing
+            .iter()
+            .find(|def| def.name == name)
+            .is_none_or(|def| def.root == root && &def.query == query)
+    };
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base} ({n})"))
+        .find(|name| free(name))
+        .expect("an unused suffix exists")
+}
+
+/// Average file size once more than one file is picked. Folders report no
+/// size, so they are left out of the divisor.
+fn average_file_size(s: &crate::selection_summary::SelectionSummary) -> Option<u64> {
+    let files = s.count.saturating_sub(s.dir_count);
+    (files >= 2 && s.total_bytes > 0).then(|| s.total_bytes / files as u64)
+}
+
+/// The folder-tree width to persist after this frame: the rendered width
+/// once the user resized the sidebar, or the stored preference while the
+/// rendered width only reflects the window's cap.
+fn resized_tree_width(stored: f32, max: f32, actual: f32) -> f32 {
+    if (actual - stored.min(max)).abs() > 0.5 {
+        actual
+    } else {
+        stored
+    }
+}
+
+/// Open routes an archive file to the built-in viewer; a folder that merely
+/// has an archive-like name (`x.zip/`) opens as a folder.
+fn opens_in_archive_viewer(path: &std::path::Path) -> bool {
+    crate::archive::is_supported(path) && !path.is_dir()
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _frame_latency =
@@ -312,6 +406,11 @@ impl App {
     /// Context menu drawn by egui where no native menu exists (Linux, Windows).
     fn show_fallback_context_menu(&mut self, ctx: &egui::Context) {
         use crate::provider_runtime::ContextMenuUiEffect as Effect;
+        // A modal opened from the keyboard (F8, F2...) dismisses the menu,
+        // which would otherwise float above it with live items.
+        if self.has_modal_surface() {
+            self.fallback_menu = None;
+        }
         let Some((panel, path, pos)) = self.fallback_menu.clone() else {
             return;
         };
@@ -403,6 +502,7 @@ impl App {
     /// Frame bookkeeping: repaint heuristics, notify wiring, fs polling,
     /// input handling and background-task polling.
     fn begin_frame(&mut self, ctx: &egui::Context) {
+        self.sync_ui_scale_with_zoom(ctx);
         ctx.data_mut(|data| {
             data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
@@ -590,10 +690,12 @@ impl App {
                 crate::toasts::ToastKind::Error,
             )
         };
+        // Only this delete's own history record may back the Undo: when it
+        // recorded none, the top entry is an older Trash.
         let undo_action = self
             .ws
             .top_undo_action()
-            .filter(|action| matches!(action, crate::undo::Action::Trash { .. }))
+            .filter(|action| trash_undo_matches(&outcome.items, action))
             .filter(|_| outcome.trashed > 0 && !outcome.indeterminate)
             .cloned();
         self.toast(ctx, kind, message, undo_action.is_some());
@@ -788,7 +890,7 @@ impl App {
         ctx: &egui::Context,
     ) {
         if let crate::ports::OpenRequest::OpenPath(path) = &request
-            && crate::archive::is_supported(path)
+            && opens_in_archive_viewer(path)
         {
             self.ws.emit_ui_request(UiRequest::Archive(path.clone()));
             ctx.request_repaint();
@@ -874,7 +976,10 @@ impl App {
                         .inner_margin(Margin::symmetric(8, 3)),
                 )
                 .show(ui, |ui| draw(ui, &mut run));
-        } else {
+        } else if ui.is_enabled() {
+            // The overlay is a root Area that would not inherit this disabled
+            // Ui; skip it while a dialog owns input, so holding a modifier
+            // in a dialog cannot reveal clickable commands above it.
             egui::Area::new(egui::Id::new("shortcuts_overlay"))
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
                 .order(egui::Order::Foreground)
@@ -891,7 +996,10 @@ impl App {
                         });
                 });
         }
-        if let Some(command) = run {
+        if let Some(command) = run
+            && ui.is_enabled()
+            && !switch_into_covered_pane(&self.ui.tools, self.ws.active, command)
+        {
             self.ws.execute(command);
         }
     }
@@ -948,6 +1056,7 @@ impl App {
                 query,
             )
         };
+        let name = unique_smart_folder_name(&self.smart_folders_mut().items, name, &root, &query);
         self.smart_folders_mut()
             .add(crate::smart_folder::Definition {
                 name: name.clone(),
@@ -1002,12 +1111,8 @@ impl App {
                 crate::panel::format_size(s.total_bytes)
             ));
         }
-        // Average file size, once more than one item is picked.
-        if s.count >= 2 && s.total_bytes > 0 {
-            head.push_str(&format!(
-                " \u{00b7} avg {}",
-                crate::panel::format_size(s.total_bytes / s.count as u64)
-            ));
+        if let Some(avg) = average_file_size(&s) {
+            head.push_str(&format!(" \u{00b7} avg {}", crate::panel::format_size(avg)));
         }
         // Largest/oldest are only meaningful once more than one item is picked.
         if s.count >= 2 {
@@ -1205,12 +1310,20 @@ impl App {
                             ui.style_mut().interaction.selectable_labels = false;
                             let tree_nav = self.render_global_tree(ui, &t);
                             if let Some(path) = tree_nav {
+                                // A pane tool over the active side would hide
+                                // the navigation; return that pane to its list.
+                                if pane_tool_covers(&self.ui.tools, self.ws.active) {
+                                    self.ui.tools = super::ui_state::PaneTools::default();
+                                }
                                 self.tree_expand_to_path(&path);
                                 self.ws.active_panel().navigate_to(path);
                             }
                         });
                 });
             tree_actual_width = tree_resp.response.rect.width();
+            // Persist a user resize; a width only clamped by a narrow window
+            // keeps the stored preference.
+            self.tree_width = resized_tree_width(self.tree_width, tree_max, tree_actual_width);
         }
 
         // Compute half from remaining space (after tree)
@@ -1366,15 +1479,17 @@ impl App {
         dragging: bool,
         metrics: crate::density::DensityMetrics,
     ) -> super::render::PanelRenderOutcome {
+        // A pane showing a tool never becomes active: keys would otherwise
+        // act on its hidden listing.
+        if pane_tool_covers(&self.ui.tools, side) {
+            self.show_pane_tool(ui);
+            return super::render::PanelRenderOutcome::default();
+        }
         if input_policy.allows_raw_input(
             ui.is_enabled(),
             ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()),
         ) {
             self.ws.active = side;
-        }
-        if self.ui.tools.side == Some(side) && self.ui.tools.any_open() {
-            self.show_pane_tool(ui);
-            return super::render::PanelRenderOutcome::default();
         }
         let t = self.colors;
         let is_active = self.ws.active == side;
@@ -1453,6 +1568,10 @@ impl App {
         response: &egui::Response,
         drop: &PaneDropContext,
     ) {
+        // A pane showing a tool has no visible folder to drop into.
+        if pane_tool_covers(&self.ui.tools, side) {
+            return;
+        }
         let accent = self.colors.accent;
         let panel = match side {
             ActivePanel::Left => &mut self.ws.left,
@@ -1626,6 +1745,9 @@ impl App {
             return;
         };
 
+        // Undo reverses the newest action, so only the newest undoable toast
+        // offers it; an older toast's button would undo something else.
+        let undo_toast = newest_undoable_toast(active);
         // Newest on top, in the nearest corner that preserves focus and errors.
         for (row, toast) in active.iter().rev().enumerate() {
             let y = stack.y + row as f32 * 44.0;
@@ -1656,7 +1778,7 @@ impl App {
                                         .size(12.0)
                                         .color(t.text_primary),
                                 );
-                                if toast.undoable {
+                                if undo_toast == Some(toast.id()) {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui
                                             .add(
@@ -1724,10 +1846,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::pane_tool_covers;
     use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
+    use super::{
+        average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
+    };
+    use super::{newest_undoable_toast, trash_undo_matches};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -1778,6 +1905,56 @@ mod tests {
             ModalOwnershipSnapshot::capture(prior_modal_open),
             current_modal_open,
         )
+    }
+
+    #[test]
+    fn only_the_pane_holding_an_open_tool_is_covered() {
+        use crate::workspace::ActivePanel;
+        let mut tools = crate::app::ui_state::PaneTools::default();
+        tools.replace_on(ActivePanel::Right);
+        assert!(
+            !pane_tool_covers(&tools, ActivePanel::Right),
+            "nothing open yet"
+        );
+        tools.diff = Some(crate::app::DiffState {
+            name_a: "a".into(),
+            name_b: "b".into(),
+            lines: Vec::new(),
+            message: None,
+        });
+        assert!(pane_tool_covers(&tools, ActivePanel::Right));
+        assert!(!pane_tool_covers(&tools, ActivePanel::Left));
+    }
+
+    #[test]
+    fn switching_into_a_tool_covered_pane_is_refused() {
+        use super::switch_into_covered_pane;
+        use crate::command::Command;
+        use crate::workspace::ActivePanel;
+        let mut tools = crate::app::ui_state::PaneTools::default();
+        tools.replace_on(ActivePanel::Right);
+        tools.diff = Some(crate::app::DiffState {
+            name_a: "a".into(),
+            name_b: "b".into(),
+            lines: Vec::new(),
+            message: None,
+        });
+        assert!(switch_into_covered_pane(
+            &tools,
+            ActivePanel::Left,
+            Command::SwitchPanel
+        ));
+        // Leaving the covered pane, or any other command, is fine.
+        assert!(!switch_into_covered_pane(
+            &tools,
+            ActivePanel::Right,
+            Command::SwitchPanel
+        ));
+        assert!(!switch_into_covered_pane(
+            &tools,
+            ActivePanel::Left,
+            Command::CursorDown
+        ));
     }
 
     #[test]
@@ -1854,6 +2031,71 @@ mod tests {
         assert!(frame_policy(true, false, false).background_enabled());
     }
 
+    fn version(path: &str, n: u64) -> crate::version_store::VersionRecord {
+        crate::version_store::VersionRecord {
+            operation_id: crate::operation::OperationId(format!("op-{n}")),
+            key: crate::operation::IdempotencyKey(format!("key-{n}")),
+            original: std::path::PathBuf::from(path),
+            stored: std::path::PathBuf::from(format!("stored-{n}")),
+            created_at_secs: n,
+        }
+    }
+
+    fn trashed(
+        path: &str,
+        version: Option<crate::version_store::VersionRecord>,
+    ) -> crate::workspace::DeleteItemResult {
+        crate::workspace::DeleteItemResult {
+            path: std::path::PathBuf::from(path),
+            outcome: crate::ports::TrashItemOutcome::Trashed,
+            version,
+        }
+    }
+
+    #[test]
+    fn delete_undo_attaches_only_its_own_trash_record() {
+        let older = crate::undo::Action::Trash {
+            items: vec![crate::undo::TrashedItem {
+                path: "/old".into(),
+                version: version("/old", 1),
+            }],
+        };
+        // This delete preserved no version, so it recorded no undo.
+        assert!(!trash_undo_matches(&[trashed("/new", None)], &older));
+        // A versioned delete matches the record it produced.
+        let own = crate::undo::Action::Trash {
+            items: vec![crate::undo::TrashedItem {
+                path: "/new".into(),
+                version: version("/new", 2),
+            }],
+        };
+        assert!(trash_undo_matches(
+            &[trashed("/new", Some(version("/new", 2)))],
+            &own
+        ));
+        assert!(!trash_undo_matches(
+            &[trashed("/new", Some(version("/new", 2)))],
+            &older
+        ));
+    }
+
+    #[test]
+    fn only_the_newest_undoable_toast_offers_undo() {
+        use crate::toasts::{Toast, ToastKind, ToastQueue};
+        let mut queue = ToastQueue::default();
+        queue.push(Toast::new(
+            "Moved 1 to Trash",
+            ToastKind::Success,
+            true,
+            0.0,
+        ));
+        queue.push(Toast::new("Renamed a", ToastKind::Success, true, 1.0));
+        queue.push(Toast::new("Copied path", ToastKind::Info, false, 2.0));
+        let newest = queue.active()[1].id();
+        assert_eq!(newest_undoable_toast(queue.active()), Some(newest));
+        assert_eq!(newest_undoable_toast(&[]), None);
+    }
+
     #[test]
     fn clipboard_feedback_reports_success_only_after_committed_outcome() {
         let port = ScriptedClipboard {
@@ -1917,5 +2159,75 @@ mod tests {
             hidden_files_rejection_message(crate::panel::DirStatus::Partial),
             "the folder could not be read completely"
         );
+    }
+
+    #[test]
+    fn a_folder_named_like_an_archive_opens_as_a_folder() {
+        let dir = crate::testutil::TempDir::new();
+        let folder = dir.dir("photos.zip");
+        let file = dir.file("bundle.zip", "");
+        assert!(!opens_in_archive_viewer(&folder));
+        assert!(opens_in_archive_viewer(&file));
+    }
+
+    #[test]
+    fn a_clashing_smart_folder_name_gets_a_suffix_instead_of_replacing() {
+        let query = |text: &str| crate::query::Query {
+            predicates: vec![crate::query::Predicate::NameContains(text.into())],
+            ..Default::default()
+        };
+        let def = |name: &str, root: &str, text: &str| crate::smart_folder::Definition {
+            name: name.into(),
+            root: root.into(),
+            query: query(text),
+        };
+        let existing = vec![
+            def("Filter: src - rs", "/a/src", "rs"),
+            def("Filter: src - rs (2)", "/b/src", "rs"),
+        ];
+        let base = || "Filter: src - rs".to_string();
+        // Same search re-saved: keeps its name.
+        assert_eq!(
+            unique_smart_folder_name(&existing, base(), "/a/src".as_ref(), &query("rs")),
+            "Filter: src - rs"
+        );
+        // Same name, another root: the first free suffix.
+        assert_eq!(
+            unique_smart_folder_name(&existing, base(), "/c/src".as_ref(), &query("rs")),
+            "Filter: src - rs (3)"
+        );
+        assert_eq!(
+            unique_smart_folder_name(&existing, base(), "/b/src".as_ref(), &query("rs")),
+            "Filter: src - rs (2)"
+        );
+    }
+
+    #[test]
+    fn selection_average_leaves_folders_out() {
+        let one_file_one_folder = crate::selection_summary::SelectionSummary {
+            count: 2,
+            dir_count: 1,
+            total_bytes: 1_000,
+            ..Default::default()
+        };
+        assert_eq!(average_file_size(&one_file_one_folder), None);
+        let two_files_one_folder = crate::selection_summary::SelectionSummary {
+            count: 3,
+            dir_count: 1,
+            total_bytes: 1_000,
+            ..Default::default()
+        };
+        assert_eq!(average_file_size(&two_files_one_folder), Some(500));
+    }
+
+    #[test]
+    fn tree_width_persists_resizes_but_not_window_caps() {
+        // Window cap narrower than the preference: keep the preference.
+        assert_eq!(resized_tree_width(300.0, 200.0, 200.0), 300.0);
+        // Unchanged width: nothing to persist.
+        assert_eq!(resized_tree_width(220.0, 400.0, 220.0), 220.0);
+        // User dragged the sidebar.
+        assert_eq!(resized_tree_width(220.0, 400.0, 260.0), 260.0);
+        assert_eq!(resized_tree_width(300.0, 200.0, 150.0), 150.0);
     }
 }

@@ -715,18 +715,7 @@ impl App {
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), graph_h), Sense::hover());
 
-        // Compute per-sample speed
-        let mut speeds: Vec<f64> = Vec::new();
-        for i in 1..samples.len() {
-            let dt = samples[i].0 - samples[i - 1].0;
-            let db = samples[i].1 - samples[i - 1].1;
-            if dt > 0.01 {
-                speeds.push(db / dt);
-            } else {
-                speeds.push(0.0);
-            }
-        }
-
+        let speeds = graph_speeds(samples);
         let max_speed = speeds.iter().cloned().fold(1.0f64, f64::max);
         let p = ui.painter();
 
@@ -792,5 +781,49 @@ impl App {
             egui::FontId::proportional(10.0),
             t.text_primary,
         );
+    }
+}
+
+/// Per-interval speeds (bytes/s) for the speed graph. Samples closer than
+/// 10 ms apart (per-file samples on small-file copies) are merged into the
+/// next interval rather than plotted as false 0 B/s drops, and a rewound byte
+/// counter (a mount retry restarts the attempt) plots as 0, never below the
+/// graph box.
+fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
+    let mut speeds = Vec::new();
+    let Some(&first) = samples.first() else {
+        return speeds;
+    };
+    let mut anchor = first;
+    for &(time, bytes) in &samples[1..] {
+        let dt = time - anchor.0;
+        if dt <= 0.01 {
+            continue;
+        }
+        speeds.push(((bytes - anchor.1) / dt).max(0.0));
+        anchor = (time, bytes);
+    }
+    speeds
+}
+
+#[cfg(test)]
+mod tests {
+    use super::graph_speeds;
+
+    #[test]
+    fn graph_speeds_merge_close_samples_instead_of_dropping_to_zero() {
+        // Two per-file samples 1 ms apart, then a regular one.
+        let samples = [(0.0, 0.0), (1.0, 100.0), (1.001, 110.0), (2.0, 200.0)];
+        let speeds = graph_speeds(&samples);
+        assert_eq!(speeds.len(), 2);
+        assert!((speeds[0] - 100.0).abs() < 1e-9);
+        assert!((speeds[1] - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn graph_speeds_clamp_rewound_counter_to_zero() {
+        let samples = [(0.0, 0.0), (1.0, 500.0), (2.0, 100.0), (3.0, 300.0)];
+        let speeds = graph_speeds(&samples);
+        assert_eq!(speeds, vec![500.0, 0.0, 200.0]);
     }
 }

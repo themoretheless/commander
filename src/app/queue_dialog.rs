@@ -580,7 +580,11 @@ impl App {
         {
             self.recovery.start_scan(&self.ws);
         }
-        self.recovery.select(operation_id);
+        self.recovery.request(operation_id);
+        if !self.recovery.scanning {
+            // Already listed: no scan is waiting to honour the request.
+            self.recovery.requested = None;
+        }
         self.recovery.detail = detail;
         self.show_operations_center = true;
         self.operations_tab = OperationsTab::Recovery;
