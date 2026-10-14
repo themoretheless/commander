@@ -1,6 +1,6 @@
 use crate::ports::{ContextMenuAction, ContextMenuFailure, ContextMenuResult, ContextMenuTarget};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(windows)]
@@ -8,7 +8,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TagColor {
     Red,
@@ -206,6 +206,10 @@ pub struct DynamicMenuEntries {
     pub open_with: Vec<(String, PathBuf)>,
     pub applied_tags: BTreeSet<String>,
     pub tags_available: bool,
+    /// Finder's localized names for the standard color tags. Tag names are
+    /// stored localized (e.g. "Blau"), so state and toggles must use these
+    /// rather than the English labels; missing colors fall back to `label()`.
+    pub color_tag_names: BTreeMap<TagColor, String>,
     /// Localized title plus the stable `AppKit` service name.
     pub share_services: Vec<(String, String)>,
 }
@@ -284,7 +288,11 @@ pub fn build_invocation(
     let tags = TagColor::ALL
         .into_iter()
         .map(|color| {
-            let tag = color.label().to_string();
+            let tag = dynamic
+                .color_tag_names
+                .get(&color)
+                .cloned()
+                .unwrap_or_else(|| color.label().to_string());
             let state = if dynamic.applied_tags.contains(&tag) {
                 MenuItemState::On
             } else {
@@ -517,6 +525,7 @@ mod tests {
                 ],
                 applied_tags: BTreeSet::from(["Blue".to_string()]),
                 tags_available: true,
+                color_tag_names: BTreeMap::new(),
                 share_services: vec![
                     ("Mail".to_string(), "com.apple.share.Mail".to_string()),
                     ("AirDrop".to_string(), "com.apple.share.AirDrop".to_string()),
@@ -654,6 +663,40 @@ mod tests {
         assert!(matches!(
             &share[0],
             MenuNode::Item(MenuItem { title, .. }) if title == "AirDrop"
+        ));
+    }
+
+    #[test]
+    fn color_tags_use_localized_finder_names() {
+        let original = fixture();
+        let entries = DynamicMenuEntries {
+            applied_tags: BTreeSet::from(["Blau".to_string()]),
+            tags_available: true,
+            color_tag_names: BTreeMap::from([(TagColor::Blue, "Blau".to_string())]),
+            ..DynamicMenuEntries::default()
+        };
+        let invocation = build_invocation(
+            original.id,
+            original.bound_target.clone(),
+            "file.txt",
+            entries,
+        );
+        let tags = invocation
+            .tree
+            .iter()
+            .find_map(|node| match node {
+                MenuNode::Item(item) if item.id == MenuItemId::Tags => Some(&item.children),
+                _ => None,
+            })
+            .expect("Tags submenu");
+        assert!(matches!(
+            &tags[4],
+            MenuNode::Item(MenuItem {
+                id: MenuItemId::Tag(TagColor::Blue),
+                state: MenuItemState::On,
+                intent: Some(MenuIntent::ToggleTag { tag }),
+                ..
+            }) if tag == "Blau"
         ));
     }
 
