@@ -100,7 +100,15 @@ pub fn init() {
         file: std::sync::Mutex::new(DualLogger::open_log_file()),
     };
     match install(logger) {
-        Ok(()) => log::info!(target: "commander::logging", "logging initialized"),
+        Ok(()) => {
+            log::info!(target: "commander::logging", "logging initialized");
+            // Opening the log file resolved the config directory before this
+            // logger existed, so a fallback warning raised there only reached
+            // stderr. Log it now so it lands in commander.log.
+            if let Some(warning) = crate::fs_util::config_dir_warning() {
+                log::warn!(target: "commander::fs_util", "{warning}");
+            }
+        }
         Err(error) => {
             let _ = INIT_ERROR.set(error.to_string());
             eprintln!("commander: failed to install logger: {error}");

@@ -53,24 +53,51 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+/// The config-directory fallback warning, kept for the life of the process.
+/// `config_dir` runs before the file logger exists (the logger opens its file
+/// under that directory), so `logging::init` re-emits this once installed.
+static CONFIG_DIR_WARNING: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The config-directory fallback warning, if one was raised. `logging::init`
+/// logs it after installing the logger so it reaches `commander.log`.
+pub fn config_dir_warning() -> Option<&'static str> {
+    CONFIG_DIR_WARNING.get().map(String::as_str)
+}
+
 /// Warn once per process that state is not going to the preferred config
 /// directory: settings saved in the temp fallback look reset and vanish on
-/// reboot. `config_dir` runs constantly, so only the first call warns; the
-/// file logger is opened under this directory and may not be installed yet,
-/// so the warning also goes to stderr.
+/// reboot. `config_dir` runs constantly, so only the first call warns. The
+/// message is always stored for `logging::init`; it is logged here only when
+/// a logger is already installed, so it is never spent on the no-op logger.
 fn warn_config_dir_fallback(
     preferred: &Path,
     preferred_error: &std::io::Error,
     fallback: &Path,
     fallback_result: &std::io::Result<()>,
 ) {
-    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if CONFIG_DIR_WARNING.get().is_some() {
         return;
     }
     let message = config_fallback_message(preferred, preferred_error, fallback, fallback_result);
+    if !record_warning_once(&CONFIG_DIR_WARNING, message) {
+        return;
+    }
+    let message = CONFIG_DIR_WARNING.get().map_or("", String::as_str);
     eprintln!("commander: {message}");
-    log::warn!(target: "commander::fs_util", "{message}");
+    if log::max_level() != log::LevelFilter::Off {
+        log::warn!(target: "commander::fs_util", "{message}");
+    }
+}
+
+/// Store `message` in `cell` unless a warning is already there; true when
+/// this call stored it.
+fn record_warning_once(cell: &std::sync::OnceLock<String>, message: String) -> bool {
+    let mut stored = false;
+    cell.get_or_init(|| {
+        stored = true;
+        message
+    });
+    stored
 }
 
 fn config_fallback_message(
@@ -867,6 +894,15 @@ mod tests {
         );
         assert!(message.contains("owned by uid 4242"), "{message}");
         assert!(message.contains("/tmp/commander-0"), "{message}");
+    }
+
+    #[test]
+    fn config_dir_warning_is_kept_for_the_logger() {
+        let cell = std::sync::OnceLock::new();
+        assert!(record_warning_once(&cell, "first".to_owned()));
+        assert!(!record_warning_once(&cell, "second".to_owned()));
+        // The first warning stays retrievable for `logging::init` to log.
+        assert_eq!(cell.get().map(String::as_str), Some("first"));
     }
 
     #[test]
