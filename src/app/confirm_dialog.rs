@@ -316,6 +316,13 @@ fn delete_not_started_message(block_reason: Option<String>) -> String {
     })
 }
 
+/// After a confirm: the toast explaining why a Delete is still pending
+/// (the workspace refused to start it), or `None` when nothing is left.
+fn unstarted_delete_explanation(ws: &crate::workspace::Workspace) -> Option<String> {
+    matches!(ws.pending_op, Some(PendingOp::Delete { .. }))
+        .then(|| delete_not_started_message(ws.mutation_block_reason("moving items to Trash")))
+}
+
 fn unavailable_size_message(failure: &crate::ports::NativeFailure) -> String {
     format!(
         "Transfer size could not be verified: {}. Confirmation is unavailable; check that \
@@ -1005,9 +1012,7 @@ impl App {
     /// instead of leaving the button doing nothing.
     fn confirm_or_explain(&mut self, ctx: &egui::Context) {
         self.confirm_pending_op(ctx);
-        if matches!(self.ws.pending_op, Some(PendingOp::Delete { .. })) {
-            let message =
-                delete_not_started_message(self.ws.mutation_block_reason("moving items to Trash"));
+        if let Some(message) = unstarted_delete_explanation(&self.ws) {
             self.toast(ctx, crate::toasts::ToastKind::Info, message, false);
         }
     }
@@ -1652,14 +1657,14 @@ const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) ->
 mod tests {
     use super::{
         CONFIRM_DRY_RUN, CONFIRM_FOCUSED, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache,
-        FLOW_MAX_SECS, FlatListMode, OverwritePolicy, PENDING_FLOW_START,
+        FLOW_MAX_SECS, FlatListMode, OverwritePolicy, PENDING_FLOW_START, PendingOp,
         clear_pending_dialog_state, collision_for_policy, conflict_banner, conflict_policy_enabled,
         conflict_row_text, delete_not_started_message, dialog_enter_suppressed, dialog_heading,
         dropped_items_note, dry_run_supported, durability_controls, elided_name, flat_list_header,
         flat_row_accessible_label, flat_total, flow_rows, flow_transferred, focus_within_layer,
         honours_click, is_conflict_row, normalization_note, not_enough_space_message,
         nothing_left_message, primary_blocker, should_focus_primary, source_header,
-        unavailable_size_message, unavailable_space_message,
+        unavailable_size_message, unavailable_space_message, unstarted_delete_explanation,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -2063,6 +2068,36 @@ mod tests {
             durability_controls(false, DurabilityProfile::Versioned),
             (true, true)
         );
+    }
+
+    #[test]
+    fn delete_blocked_after_confirm_stays_pending_and_is_explained() {
+        let (left, right) = (
+            crate::testutil::TempDir::new(),
+            crate::testutil::TempDir::new(),
+        );
+        let path = left.file("a.txt", "x");
+        let mut ws =
+            crate::workspace::Workspace::new(left.path().to_path_buf(), right.path().to_path_buf());
+        ws.left.refresh();
+        ws.request_context_delete(crate::workspace::ActivePanel::Left, &path);
+        assert!(matches!(ws.pending_op, Some(PendingOp::Delete { .. })));
+
+        // A mutation block raised while the sheet was open refuses the run.
+        ws.latch_safe_state(|| {
+            crate::operation::SafeState::integrity(
+                crate::operation::OperationId::default(),
+                "test".to_string(),
+                Vec::new(),
+            )
+        });
+        assert!(!ws.confirm_pending_op(|| {}));
+        assert!(matches!(ws.pending_op, Some(PendingOp::Delete { .. })));
+        let message = unstarted_delete_explanation(&ws).expect("explained");
+        assert!(message.contains("Safe-state review"), "{message}");
+
+        ws.dismiss_pending_op();
+        assert_eq!(unstarted_delete_explanation(&ws), None);
     }
 
     #[test]
