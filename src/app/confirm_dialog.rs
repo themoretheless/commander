@@ -16,6 +16,54 @@ fn unavailable_space_message(failure: Option<&crate::ports::NativeFailure>) -> S
     }
 }
 
+/// Per-dialog egui temp state; it must not outlive the pending operation it
+/// was created for, however that operation ends (confirm, auto-start,
+/// dismiss), or the next dialog inherits a stale animation start / dry run.
+const PENDING_FLOW_START: &str = "pending_flow_start";
+const CONFIRM_DRY_RUN: &str = "confirm_dry_run";
+
+fn clear_pending_dialog_state(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.remove::<f64>(egui::Id::new(PENDING_FLOW_START));
+        d.remove::<bool>(egui::Id::new(CONFIRM_DRY_RUN));
+    });
+}
+
+/// True when keyboard focus sits on a widget drawn in `layer`. egui turns
+/// Enter on a focused widget into a click (toggling a checkbox, opening a
+/// combo), so the dialog-wide Enter shortcut must not fire on top of it.
+fn focus_within_layer(ctx: &egui::Context, layer: egui::LayerId) -> bool {
+    ctx.memory(|m| m.focused())
+        .and_then(|id| ctx.read_response(id))
+        .is_some_and(|response| response.layer_id == layer)
+}
+
+/// Dry run is offered for Delete/Move, but never while conflict-policy
+/// buttons are shown: those buttons start the real transfer.
+fn dry_run_supported(is_delete: bool, title: &str, has_conflicts: bool) -> bool {
+    (is_delete || title == "Move") && !has_conflicts
+}
+
+/// Conflict-policy buttons confirm the transfer, so they share the primary
+/// button's mutation gates (destination Write capability, read-only mode).
+fn conflict_policy_enabled(preflight_blocked: bool, mutations_blocked: bool) -> bool {
+    !preflight_blocked && !mutations_blocked
+}
+
+/// Collision choice that matches the transfer's effective overwrite policy.
+/// `None` means the policy (Overwrite All) has no collision-combo entry.
+fn collision_for_policy(
+    policy: OverwritePolicy,
+) -> Option<crate::filesystem_policy::CollisionPolicy> {
+    use crate::filesystem_policy::CollisionPolicy;
+    match policy {
+        OverwritePolicy::Ask => Some(CollisionPolicy::Ask),
+        OverwritePolicy::KeepBoth => Some(CollisionPolicy::KeepBoth),
+        OverwritePolicy::SkipAll => Some(CollisionPolicy::Skip),
+        OverwritePolicy::OverwriteAll => None,
+    }
+}
+
 fn unavailable_size_message(failure: &crate::ports::NativeFailure) -> String {
     format!(
         "Transfer size could not be verified: {}. Confirmation is unavailable.",
@@ -30,6 +78,7 @@ impl App {
             self.take_modal_escape(crate::accessibility::ModalSurface::Confirmation);
         let mutations_blocked = self.ws.mutations_blocked();
         let Some(op) = &self.ws.pending_op else {
+            clear_pending_dialog_state(ctx);
             return;
         };
         let _latency =
@@ -183,7 +232,7 @@ impl App {
                     ui.add_space(4.0);
 
                     // Animated flow: files gradually transfer from left to right
-                    let anim_id = egui::Id::new("pending_flow_start");
+                    let anim_id = egui::Id::new(PENDING_FLOW_START);
                     let start_time: f64 = ctx.data_mut(|d| {
                         *d.get_temp_mut_or_insert_with(anim_id, || ctx.input(|i| i.time))
                     });
@@ -366,10 +415,13 @@ impl App {
 
                     use crate::conflict::RelationPolicy;
                     let mut chosen: Option<RelationPolicy> = None;
+                    let policy_enabled =
+                        conflict_policy_enabled(preflight_blocked, mutations_blocked);
                     ui.horizontal_wrapped(|ui| {
                         let mut btn = |ui: &mut egui::Ui, label: &str, fill, fg, policy| {
                             if ui
-                                .add(
+                                .add_enabled(
+                                    policy_enabled,
                                     egui::Button::new(
                                         egui::RichText::new(label).size(12.0).color(fg),
                                     )
@@ -460,8 +512,8 @@ impl App {
                 ui.add_space(12.0);
 
                 // Dry-run preview for Delete/Move: toast summary without mutating.
-                let supports_dry_run = is_delete || title == "Move";
-                let dry_run_id = egui::Id::new("confirm_dry_run");
+                let supports_dry_run = dry_run_supported(is_delete, title, has_conflicts);
+                let dry_run_id = egui::Id::new(CONFIRM_DRY_RUN);
                 let mut dry_run = if supports_dry_run {
                     ui.ctx()
                         .data_mut(|d| *d.get_temp_mut_or_insert_with(dry_run_id, || false))
@@ -526,9 +578,12 @@ impl App {
                 if escape_requested {
                     self.dismiss_pending_op(ctx);
                 }
+                // Enter on a focused dialog widget already acted on that widget
+                // (e.g. toggled Dry run); it must not also confirm.
                 if !has_conflicts
                     && primary_enabled
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && !focus_within_layer(ctx, ui.layer_id())
                 {
                     // Enter must honor dry-run: preview toast only, never mutate.
                     if dry_run && supports_dry_run {
@@ -575,10 +630,7 @@ impl App {
     /// Close the dialog and reset its per-dialog egui state.
     fn dismiss_pending_op(&mut self, ctx: &egui::Context) {
         self.ws.dismiss_pending_op();
-        ctx.data_mut(|d| {
-            d.remove::<f64>(egui::Id::new("pending_flow_start"));
-            d.remove::<bool>(egui::Id::new("confirm_dry_run"));
-        });
+        clear_pending_dialog_state(ctx);
     }
 
     /// Title on the left, Native/Buffered method tabs on the right.
@@ -668,7 +720,11 @@ impl App {
         };
         let previous_form = transfer.name_policy.normalization;
         let previous_symlinks = transfer.symlink_policy;
-        let mut collision = transfer.name_policy.collision;
+        // Show the effective policy: a conflict button (Keep Newer, Overwrite
+        // All, ...) changes `transfer.policy` without touching the combo's
+        // stored value, and Ask must stay selectable to return to the choices.
+        let effective_collision = collision_for_policy(transfer.policy);
+        let mut picked_collision = None;
         let mut symlinks = transfer.symlink_policy;
 
         ui.horizontal_wrapped(|ui| {
@@ -692,15 +748,24 @@ impl App {
                         );
                     }
                 });
+            let collision_text = match effective_collision {
+                Some(policy) => policy.label(),
+                None => "Overwrite on collision",
+            };
             egui::ComboBox::from_id_salt("collision_policy")
-                .selected_text(collision.label())
+                .selected_text(collision_text)
                 .show_ui(ui, |ui| {
                     for policy in [
                         crate::filesystem_policy::CollisionPolicy::Ask,
                         crate::filesystem_policy::CollisionPolicy::KeepBoth,
                         crate::filesystem_policy::CollisionPolicy::Skip,
                     ] {
-                        ui.selectable_value(&mut collision, policy, policy.label());
+                        if ui
+                            .selectable_label(effective_collision == Some(policy), policy.label())
+                            .clicked()
+                        {
+                            picked_collision = Some(policy);
+                        }
                     }
                 });
             egui::ComboBox::from_id_salt("symlink_policy")
@@ -786,8 +851,15 @@ impl App {
                     .unwrap_or(false),
             );
         }
-        if collision != transfer.name_policy.collision {
+        if let Some(collision) = picked_collision
+            && Some(collision) != effective_collision
+        {
             transfer.name_policy.collision = collision;
+            // Returning to Ask hands the decision back to the conflict
+            // buttons; a choice made earlier must not auto-start the transfer.
+            if collision == crate::filesystem_policy::CollisionPolicy::Ask {
+                transfer.start_when_ready = false;
+            }
             transfer.policy = match collision {
                 crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
                 crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
@@ -1061,7 +1133,81 @@ const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{unavailable_size_message, unavailable_space_message};
+    use super::{
+        CONFIRM_DRY_RUN, OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state,
+        collision_for_policy, conflict_policy_enabled, dry_run_supported, focus_within_layer,
+        unavailable_size_message, unavailable_space_message,
+    };
+    use crate::filesystem_policy::CollisionPolicy;
+
+    #[test]
+    fn resolved_conflict_policy_is_reflected_in_the_collision_combo() {
+        assert_eq!(
+            collision_for_policy(OverwritePolicy::Ask),
+            Some(CollisionPolicy::Ask)
+        );
+        assert_eq!(
+            collision_for_policy(OverwritePolicy::KeepBoth),
+            Some(CollisionPolicy::KeepBoth)
+        );
+        assert_eq!(
+            collision_for_policy(OverwritePolicy::SkipAll),
+            Some(CollisionPolicy::Skip)
+        );
+        // Overwrite All / Keep Newer must not read as "Ask", or picking Ask
+        // would look like no change and the conflict buttons never return.
+        assert_eq!(collision_for_policy(OverwritePolicy::OverwriteAll), None);
+    }
+
+    #[test]
+    fn dry_run_is_hidden_while_conflict_buttons_would_run_the_transfer() {
+        assert!(dry_run_supported(false, "Move", false));
+        assert!(dry_run_supported(true, "Delete", false));
+        assert!(!dry_run_supported(false, "Move", true));
+        assert!(!dry_run_supported(false, "Copy", false));
+    }
+
+    #[test]
+    fn conflict_policy_buttons_respect_mutation_gates() {
+        assert!(conflict_policy_enabled(false, false));
+        assert!(!conflict_policy_enabled(true, false));
+        assert!(!conflict_policy_enabled(false, true));
+    }
+
+    #[test]
+    fn clearing_dialog_state_drops_flow_start_and_dry_run() {
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new(PENDING_FLOW_START), 1.0f64);
+            d.insert_temp(egui::Id::new(CONFIRM_DRY_RUN), true);
+        });
+        clear_pending_dialog_state(&ctx);
+        ctx.data(|d| {
+            assert_eq!(d.get_temp::<f64>(egui::Id::new(PENDING_FLOW_START)), None);
+            assert_eq!(d.get_temp::<bool>(egui::Id::new(CONFIRM_DRY_RUN)), None);
+        });
+    }
+
+    #[test]
+    fn focused_dialog_checkbox_suppresses_dialog_enter() {
+        let ctx = egui::Context::default();
+        let mut layer = None;
+        let mut flag = false;
+        for _ in 0..3 {
+            crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                let response = ui.checkbox(&mut flag, "Dry run");
+                response.request_focus();
+                layer = Some(ui.layer_id());
+            }));
+        }
+        let layer = layer.expect("frame ran");
+        assert!(focus_within_layer(&ctx, layer));
+        let other = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("elsewhere"));
+        assert!(!focus_within_layer(&ctx, other));
+        let focused = ctx.memory(|m| m.focused()).expect("checkbox focused");
+        ctx.memory_mut(|m| m.surrender_focus(focused));
+        assert!(!focus_within_layer(&ctx, layer));
+    }
 
     #[test]
     fn unknown_space_is_presented_as_a_non_blocking_warning_not_fits() {
