@@ -67,7 +67,7 @@ fn publish_scan(entries: Vec<FileEntry>, flat: FlatList, fallback: Vec<FlatFileE
     *crate::lock_util::recover(&flat) = Some(result);
 }
 
-pub(crate) fn shallow_preview(entries: &[FileEntry]) -> Vec<FlatFileEntry> {
+pub fn shallow_preview(entries: &[FileEntry]) -> Vec<FlatFileEntry> {
     let mut result = entries
         .iter()
         .take(MAX_FLAT_ENTRIES)
@@ -99,7 +99,7 @@ pub fn transfer_preflight(
     transfer_preflight_cancellable(entries, symlink_policy, &|| false)
 }
 
-pub(crate) fn transfer_preflight_cancellable(
+pub fn transfer_preflight_cancellable(
     entries: &[FileEntry],
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
     cancelled: &dyn Fn() -> bool,
@@ -150,7 +150,7 @@ pub(crate) fn transfer_preflight_cancellable(
 /// Capture the exact source proof the transfer worker will later revalidate.
 /// This uses the same traversal as resource preflight, including followed
 /// symlink targets, but does not require a UI listing observation.
-pub(crate) fn capture_transfer_source(
+pub fn capture_transfer_source(
     path: &Path,
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 ) -> Result<crate::path_identity::TransferSourceIdentity, crate::ports::NativeFailure> {
@@ -544,7 +544,7 @@ fn push_transfer_preview(
 }
 
 /// Recursively collect all files/dirs into a flat list with depth.
-/// Limited to MAX_FLAT_DEPTH levels and MAX_FLAT_ENTRIES total.
+/// Limited to `MAX_FLAT_DEPTH` levels and `MAX_FLAT_ENTRIES` total.
 pub fn flatten_entries(entries: &[FileEntry]) -> Vec<FlatFileEntry> {
     let mut result = Vec::new();
     let mut truncated = false;

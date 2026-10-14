@@ -163,7 +163,7 @@ impl PopupSize {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PopupPlacement {
     pub display_id: String,
-    /// AppKit global-screen top-left anchor. The menu grows toward lower y.
+    /// `AppKit` global-screen top-left anchor. The menu grows toward lower y.
     pub top_left: ScreenPoint,
     pub content_rect: ScreenRect,
 }

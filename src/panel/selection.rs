@@ -102,7 +102,7 @@ impl SelectionState {
         self.scroll_anchor = 0;
     }
 
-    pub(super) fn selected(&self) -> &HashSet<PathBuf> {
+    pub(super) const fn selected(&self) -> &HashSet<PathBuf> {
         &self.selected
     }
 
@@ -151,11 +151,11 @@ impl SelectionState {
         }
     }
 
-    pub(super) fn cursor(&self) -> usize {
+    pub(super) const fn cursor(&self) -> usize {
         self.cursor_row
     }
 
-    pub(super) fn focus(&self) -> &Focus {
+    pub(super) const fn focus(&self) -> &Focus {
         &self.focus
     }
 
@@ -183,27 +183,27 @@ impl SelectionState {
         }
     }
 
-    pub(super) fn scroll_to_cursor(&self) -> bool {
+    pub(super) const fn scroll_to_cursor(&self) -> bool {
         self.scroll_to_cursor
     }
 
-    pub(super) fn set_scroll_to_cursor(&mut self, value: bool) {
+    pub(super) const fn set_scroll_to_cursor(&mut self, value: bool) {
         self.scroll_to_cursor = value;
     }
 
-    pub(super) fn scroll_anchor(&self) -> usize {
+    pub(super) const fn scroll_anchor(&self) -> usize {
         self.scroll_anchor
     }
 
-    pub(super) fn set_scroll_anchor(&mut self, anchor: usize) {
+    pub(super) const fn set_scroll_anchor(&mut self, anchor: usize) {
         self.scroll_anchor = anchor;
     }
 
-    pub(super) fn page_rows(&self) -> usize {
+    pub(super) const fn page_rows(&self) -> usize {
         self.page_rows
     }
 
-    pub(super) fn set_page_rows(&mut self, rows: usize) {
+    pub(super) const fn set_page_rows(&mut self, rows: usize) {
         self.page_rows = rows;
     }
 }

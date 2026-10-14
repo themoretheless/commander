@@ -23,7 +23,7 @@ pub enum MatchMode {
 impl MatchMode {
     pub const ALL: [Self; 3] = [Self::Exact, Self::Fuzzy, Self::Regex];
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Exact => "Exact",
             Self::Fuzzy => "Fuzzy",
@@ -49,40 +49,40 @@ pub enum Predicate {
 impl Predicate {
     pub(crate) fn matches_metadata(&self, e: &FileEntry, now: SystemTime, mode: MatchMode) -> bool {
         match self {
-            Predicate::NameContains(value) => text_matches(mode, value, &e.name),
-            Predicate::PathContains(value) => text_matches(mode, value, &e.path.to_string_lossy()),
-            Predicate::ContentContains(_) => true,
-            Predicate::Kind(kind) => kind_of(e) == *kind,
-            Predicate::MinSize(min) => e.size >= *min,
-            Predicate::MaxSize(max) => e.size <= *max,
-            Predicate::MaxAgeDays(days) => age_days(e.modified, now).is_some_and(|d| d <= *days),
-            Predicate::MinAgeDays(days) => age_days(e.modified, now).is_some_and(|d| d >= *days),
+            Self::NameContains(value) => text_matches(mode, value, &e.name),
+            Self::PathContains(value) => text_matches(mode, value, &e.path.to_string_lossy()),
+            Self::ContentContains(_) => true,
+            Self::Kind(kind) => kind_of(e) == *kind,
+            Self::MinSize(min) => e.size >= *min,
+            Self::MaxSize(max) => e.size <= *max,
+            Self::MaxAgeDays(days) => age_days(e.modified, now).is_some_and(|d| d <= *days),
+            Self::MinAgeDays(days) => age_days(e.modified, now).is_some_and(|d| d >= *days),
         }
     }
 
     pub fn chip(&self) -> String {
         match self {
-            Predicate::NameContains(value) => format!("name:{value}"),
-            Predicate::PathContains(value) => format!("path:{value}"),
-            Predicate::ContentContains(value) => format!("content:{value}"),
-            Predicate::Kind(kind) => format!("type:{}", kind.label()),
-            Predicate::MinSize(bytes) => format!("size:>={}", format_bytes(*bytes)),
-            Predicate::MaxSize(bytes) => format!("size:<={}", format_bytes(*bytes)),
-            Predicate::MaxAgeDays(days) => format!("date:<={days}d"),
-            Predicate::MinAgeDays(days) => format!("date:>={days}d"),
+            Self::NameContains(value) => format!("name:{value}"),
+            Self::PathContains(value) => format!("path:{value}"),
+            Self::ContentContains(value) => format!("content:{value}"),
+            Self::Kind(kind) => format!("type:{}", kind.label()),
+            Self::MinSize(bytes) => format!("size:>={}", format_bytes(*bytes)),
+            Self::MaxSize(bytes) => format!("size:<={}", format_bytes(*bytes)),
+            Self::MaxAgeDays(days) => format!("date:<={days}d"),
+            Self::MinAgeDays(days) => format!("date:>={days}d"),
         }
     }
 
     fn expression(&self) -> String {
         match self {
-            Predicate::NameContains(value) => quote_if_needed(value),
-            Predicate::PathContains(value) => format!("path:{}", quote_if_needed(value)),
-            Predicate::ContentContains(value) => format!("content:{}", quote_if_needed(value)),
-            Predicate::Kind(kind) => format!("type:{}", kind.label()),
-            Predicate::MinSize(bytes) => format!("size:>={}", format_bytes(*bytes)),
-            Predicate::MaxSize(bytes) => format!("size:<={}", format_bytes(*bytes)),
-            Predicate::MaxAgeDays(days) => format!("date:<={days}d"),
-            Predicate::MinAgeDays(days) => format!("date:>={days}d"),
+            Self::NameContains(value) => quote_if_needed(value),
+            Self::PathContains(value) => format!("path:{}", quote_if_needed(value)),
+            Self::ContentContains(value) => format!("content:{}", quote_if_needed(value)),
+            Self::Kind(kind) => format!("type:{}", kind.label()),
+            Self::MinSize(bytes) => format!("size:>={}", format_bytes(*bytes)),
+            Self::MaxSize(bytes) => format!("size:<={}", format_bytes(*bytes)),
+            Self::MaxAgeDays(days) => format!("date:<={days}d"),
+            Self::MinAgeDays(days) => format!("date:>={days}d"),
         }
     }
 }
@@ -140,7 +140,7 @@ impl Query {
                 _ => return Err(QueryError::new(token, "unknown query field")),
             }
         }
-        let query = Query { predicates, mode };
+        let query = Self { predicates, mode };
         query.validate()?;
         Ok(query)
     }
@@ -405,7 +405,7 @@ pub fn from_panel_filter(search: &str, facets: &crate::panel::FacetSet) -> Query
     }
 }
 
-fn kind_from_facet(facet: crate::panel::KindFacet) -> Kind {
+const fn kind_from_facet(facet: crate::panel::KindFacet) -> Kind {
     match facet {
         crate::panel::KindFacet::Folders => Kind::Folder,
         crate::panel::KindFacet::Images => Kind::Image,

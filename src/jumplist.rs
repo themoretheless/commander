@@ -32,7 +32,7 @@ impl JumpList {
 
     /// A jump list keeping at most `cap` entries (clamped to >= 1).
     pub fn with_cap(cap: usize) -> Self {
-        JumpList {
+        Self {
             trail: Vec::new(),
             cursor: None,
             cap: cap.max(1),
@@ -134,11 +134,11 @@ impl JumpList {
         self.cursor.map(|c| self.trail[c].as_path())
     }
 
-    pub fn can_back(&self) -> bool {
+    pub const fn can_back(&self) -> bool {
         matches!(self.cursor, Some(c) if c > 0)
     }
 
-    pub fn can_forward(&self) -> bool {
+    pub const fn can_forward(&self) -> bool {
         matches!(self.cursor, Some(c) if c + 1 < self.trail.len())
     }
 }

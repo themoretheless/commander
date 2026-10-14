@@ -31,7 +31,7 @@ pub struct VersionStoreUsage {
 }
 
 impl VersionStoreUsage {
-    pub fn over_quota(self) -> bool {
+    pub const fn over_quota(self) -> bool {
         self.bytes_used > self.bytes_quota
     }
     pub fn label(self) -> String {

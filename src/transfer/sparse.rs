@@ -22,7 +22,7 @@ pub(super) fn is_sparse_file(path: &Path) -> bool {
 }
 
 #[cfg(not(unix))]
-pub(super) fn is_sparse_file(_path: &Path) -> bool {
+pub(super) const fn is_sparse_file(_path: &Path) -> bool {
     false
 }
 

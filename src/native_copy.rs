@@ -13,7 +13,7 @@ use crate::transfer::TransferProgress;
 
 /// Build a C string from a path's exact kernel-visible bytes. macOS file names
 /// are arbitrary byte sequences; going through `to_string_lossy` would replace
-/// invalid UTF-8 with U+FFFD and make copyfile() operate on the wrong path,
+/// invalid UTF-8 with U+FFFD and make `copyfile()` operate on the wrong path,
 /// which for a Move would then delete the real source. Use the raw OS bytes.
 fn path_cstring(p: &Path) -> std::io::Result<CString> {
     CString::new(p.as_os_str().as_bytes())
@@ -80,7 +80,7 @@ pub struct NativeCopyOutcome {
 
 struct CallbackCtx {
     state: Arc<Mutex<TransferProgress>>,
-    /// Bytes copied before this copyfile() call started.
+    /// Bytes copied before this `copyfile()` call started.
     base_bytes: u64,
     /// Bytes of files fully completed within this call (recursive copies).
     done_in_call: u64,
@@ -185,7 +185,7 @@ extern "C" fn progress_callback(
     }
 }
 
-/// Copy a single file using native copyfile() with progress.
+/// Copy a single file using native `copyfile()` with progress.
 pub fn copy_file_native(
     src: &Path,
     dst: &Path,
@@ -306,7 +306,7 @@ fn copy_file_native_inner(
     })
 }
 
-/// Copy a directory recursively using native copyfile() with COPYFILE_RECURSIVE.
+/// Copy a directory recursively using native `copyfile()` with `COPYFILE_RECURSIVE`.
 pub fn copy_dir_native(
     src: &Path,
     dst: &Path,

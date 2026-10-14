@@ -18,7 +18,7 @@ const CONSECUTIVE_BONUS: i32 = 5;
 const GAP_PENALTY: i32 = 1;
 const LEADING_PENALTY: i32 = 1;
 
-fn is_separator(c: char) -> bool {
+const fn is_separator(c: char) -> bool {
     matches!(c, '/' | '\\' | '_' | '-' | ' ' | '.')
 }
 

@@ -28,7 +28,7 @@ pub struct DensityMetrics {
 
 /// The row metrics for `density`. Comfortable matches the sizes the list used
 /// before density modes, so the default look is unchanged.
-pub fn metrics(density: Density) -> DensityMetrics {
+pub const fn metrics(density: Density) -> DensityMetrics {
     match density {
         Density::Spacious => DensityMetrics {
             row_pad_y: 7.0,
@@ -51,7 +51,7 @@ pub fn metrics(density: Density) -> DensityMetrics {
     }
 }
 
-pub fn label(density: Density) -> &'static str {
+pub const fn label(density: Density) -> &'static str {
     match density {
         Density::Compact => "Compact",
         Density::Comfortable => "Comfortable",

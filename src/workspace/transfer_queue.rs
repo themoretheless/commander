@@ -27,14 +27,14 @@ pub(super) enum HistoryIntent {
 }
 
 impl HistoryIntent {
-    pub(super) fn replay(reservation: crate::undo::ReplayReservation) -> Self {
+    pub(super) const fn replay(reservation: crate::undo::ReplayReservation) -> Self {
         Self::Replay {
             reservation,
             continuation: false,
         }
     }
 
-    pub(super) fn recovery(reservation: crate::undo::ReplayReservation) -> Self {
+    pub(super) const fn recovery(reservation: crate::undo::ReplayReservation) -> Self {
         Self::Replay {
             reservation,
             continuation: true,
@@ -51,7 +51,7 @@ impl HistoryIntent {
         )
     }
 
-    fn replay_reservation(&self) -> Option<crate::undo::ReplayReservation> {
+    const fn replay_reservation(&self) -> Option<crate::undo::ReplayReservation> {
         match self {
             Self::Replay { reservation, .. } => Some(*reservation),
             Self::None | Self::Record(_) => None,
@@ -136,7 +136,7 @@ pub(super) struct PollOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DismissRejection {
+pub enum DismissRejection {
     NoActive,
     JobMismatch,
     NotFinished,
@@ -162,11 +162,11 @@ struct ProgressSnapshot {
 }
 
 impl ProgressSnapshot {
-    fn clean(&self) -> bool {
+    const fn clean(&self) -> bool {
         self.finished && self.errors.is_empty() && !self.cancelled && !self.stopped
     }
 
-    fn closes_automatically(&self) -> bool {
+    const fn closes_automatically(&self) -> bool {
         self.finished && (self.cancelled || self.stopped || self.errors.is_empty())
     }
 }

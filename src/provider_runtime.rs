@@ -30,6 +30,7 @@ pub enum ContextMenuUiEffect {
     },
 }
 
+#[must_use]
 pub fn reduce_context_menu_result(
     result: ContextMenuResult,
     path: &Path,
@@ -111,6 +112,7 @@ pub fn reduce_context_menu_result(
     }
 }
 
+#[must_use]
 pub fn reduce_deferred_context_menu_result(
     result: ContextMenuResult,
     path: &Path,
@@ -243,6 +245,7 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    #[must_use]
     pub fn new(budget: ActivationBudget) -> Self {
         Self {
             descriptors: Vec::new(),
@@ -320,7 +323,8 @@ impl ProviderRegistry {
         })
     }
 
-    pub fn startup_spent_ms(&self) -> u64 {
+    #[must_use]
+    pub const fn startup_spent_ms(&self) -> u64 {
         self.startup_spent_ms
     }
 }
@@ -365,6 +369,7 @@ fn builtin_registry() -> &'static Mutex<ProviderRegistry> {
     })
 }
 
+#[must_use]
 pub fn activate_builtin(id: &str, request: &ActivationRequest<'_>) -> bool {
     let enabled = match request.capability {
         ProviderCapability::PreviewImage | ProviderCapability::PreviewText => {
@@ -406,7 +411,8 @@ pub struct ExternalProviderClient {
 }
 
 impl ExternalProviderClient {
-    pub fn new(executable: PathBuf, args: Vec<String>) -> Self {
+    #[must_use]
+    pub const fn new(executable: PathBuf, args: Vec<String>) -> Self {
         Self { executable, args }
     }
 

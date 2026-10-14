@@ -11,7 +11,7 @@ use super::{
 use crate::accessibility::{EscapeRoute, ModalSurface};
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ContextMenuCandidate {
+pub struct ContextMenuCandidate {
     pub(crate) target: crate::ports::ContextMenuTarget,
     pub(crate) trigger: crate::ports::ContextMenuTrigger,
     pub(crate) anchor: crate::ports::ContextMenuAnchor,
@@ -19,7 +19,7 @@ pub(crate) struct ContextMenuCandidate {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ContextMenuRequest {
+pub struct ContextMenuRequest {
     pub(crate) panel: crate::workspace::ActivePanel,
     pub(crate) invocation: crate::ports::ContextMenuInvocation,
     pub(crate) focus_id: egui::Id,
@@ -32,13 +32,13 @@ struct PendingContextMenu {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ContextMenuPoll {
+pub enum ContextMenuPoll {
     Idle,
     AwaitingPaint,
     Ready(Box<ContextMenuRequest>),
 }
 
-pub(crate) const fn context_menu_owner(
+pub const fn context_menu_owner(
     _current: crate::workspace::ActivePanel,
     requested: crate::workspace::ActivePanel,
 ) -> crate::workspace::ActivePanel {
@@ -63,11 +63,11 @@ macro_rules! define_modal_store {
         ),+ $(,)?
     ) => {
         #[derive(Default)]
-        pub(crate) struct ModalStore {
+        pub struct ModalStore {
             $(pub(crate) $field: $ty),+
         }
 
-        pub(crate) const UI_MODAL_REGISTRY: &[(UiModal, ModalSurface)] = &[
+        pub const UI_MODAL_REGISTRY: &[(UiModal, ModalSurface)] = &[
             $((UiModal::$modal, ModalSurface::$surface)),+
         ];
 
@@ -87,7 +87,7 @@ macro_rules! define_modal_store {
         }
 
         impl ModalStore {
-            pub(crate) fn is_open(&self, modal: UiModal) -> bool {
+            pub(crate) const fn is_open(&self, modal: UiModal) -> bool {
                 match modal {
                     $(UiModal::$modal => slot_is_open!(&self.$field, $kind)),+
                 }
@@ -140,7 +140,7 @@ define_modal_store!(
 /// workspace: disk usage, diff, synchronize, duplicates and archive. At most
 /// one is open; the panes stay interactive while it is.
 #[derive(Default)]
-pub(crate) struct PaneTools {
+pub struct PaneTools {
     /// The pane the open tool replaces, fixed when it opens.
     pub(crate) side: Option<crate::workspace::ActivePanel>,
     pub(crate) treemap: Option<DiskUsageState>,
@@ -151,7 +151,7 @@ pub(crate) struct PaneTools {
 }
 
 impl PaneTools {
-    pub(crate) fn any_open(&self) -> bool {
+    pub(crate) const fn any_open(&self) -> bool {
         self.treemap.is_some()
             || self.diff.is_some()
             || self.sync.is_some()
@@ -168,7 +168,7 @@ impl PaneTools {
     }
 }
 
-pub(crate) struct UiState {
+pub struct UiState {
     pub(crate) modals: ModalStore,
     pub(crate) tools: PaneTools,
     /// Type-ahead buffer and the input time of its last keystroke.
@@ -185,7 +185,7 @@ pub(crate) struct UiState {
     pub(crate) escape_request: EscapeRoute,
     /// Identity source for transient widget state across reopenings.
     pub(crate) transient_nonce: u64,
-    /// A render barrier between row focus mutation and synchronous AppKit
+    /// A render barrier between row focus mutation and synchronous `AppKit`
     /// tracking. Frame B publishes paint/AccessKit; frame C may show the menu.
     pending_context_menu: Option<PendingContextMenu>,
 }
@@ -245,7 +245,7 @@ impl UiState {
     }
 }
 
-pub(crate) fn modal_close_requested(window_open: bool, escape_requested: bool) -> bool {
+pub const fn modal_close_requested(window_open: bool, escape_requested: bool) -> bool {
     !window_open || escape_requested
 }
 

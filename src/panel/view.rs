@@ -29,52 +29,52 @@ impl Default for ViewConfig {
 }
 
 impl ViewConfig {
-    pub(crate) fn sort_column(self) -> SortColumn {
+    pub(crate) const fn sort_column(self) -> SortColumn {
         self.sort_col
     }
 
-    pub(crate) fn sort_order(self) -> SortOrder {
+    pub(crate) const fn sort_order(self) -> SortOrder {
         self.sort_order
     }
 
-    pub(crate) fn show_hidden(self) -> bool {
+    pub(crate) const fn show_hidden(self) -> bool {
         self.show_hidden
     }
 
-    pub(crate) fn folders_first(self) -> bool {
+    pub(crate) const fn folders_first(self) -> bool {
         self.folders_first
     }
 
-    pub(crate) fn natural_name_sort(self) -> bool {
+    pub(crate) const fn natural_name_sort(self) -> bool {
         self.natural_name_sort
     }
 
-    pub(crate) fn density(self) -> crate::density::Density {
+    pub(crate) const fn density(self) -> crate::density::Density {
         self.density
     }
 
-    pub(crate) fn with_sort(mut self, column: SortColumn, order: SortOrder) -> Self {
+    pub(crate) const fn with_sort(mut self, column: SortColumn, order: SortOrder) -> Self {
         self.sort_col = column;
         self.sort_order = order;
         self
     }
 
-    pub(crate) fn with_show_hidden(mut self, show_hidden: bool) -> Self {
+    pub(crate) const fn with_show_hidden(mut self, show_hidden: bool) -> Self {
         self.show_hidden = show_hidden;
         self
     }
 
-    pub(crate) fn with_folders_first(mut self, folders_first: bool) -> Self {
+    pub(crate) const fn with_folders_first(mut self, folders_first: bool) -> Self {
         self.folders_first = folders_first;
         self
     }
 
-    pub(crate) fn with_natural_name_sort(mut self, natural_name_sort: bool) -> Self {
+    pub(crate) const fn with_natural_name_sort(mut self, natural_name_sort: bool) -> Self {
         self.natural_name_sort = natural_name_sort;
         self
     }
 
-    pub(crate) fn with_density(mut self, density: crate::density::Density) -> Self {
+    pub(crate) const fn with_density(mut self, density: crate::density::Density) -> Self {
         self.density = density;
         self
     }
@@ -126,19 +126,19 @@ impl ViewState {
         }
     }
 
-    pub(super) fn config(&self) -> ViewConfig {
+    pub(super) const fn config(&self) -> ViewConfig {
         self.config
     }
 
-    pub(super) fn commit_config(&mut self, config: ViewConfig) {
+    pub(super) const fn commit_config(&mut self, config: ViewConfig) {
         self.config = config;
     }
 
-    pub(super) fn sort_col(&self) -> SortColumn {
+    pub(super) const fn sort_col(&self) -> SortColumn {
         self.config.sort_col
     }
 
-    pub(super) fn sort_order(&self) -> SortOrder {
+    pub(super) const fn sort_order(&self) -> SortOrder {
         self.config.sort_order
     }
 
@@ -154,30 +154,30 @@ impl ViewState {
         }
     }
 
-    pub(super) fn reverse_sort(&mut self) {
+    pub(super) const fn reverse_sort(&mut self) {
         self.config.sort_order = match self.config.sort_order {
             SortOrder::Asc => SortOrder::Desc,
             SortOrder::Desc => SortOrder::Asc,
         };
     }
 
-    pub(super) fn show_hidden(&self) -> bool {
+    pub(super) const fn show_hidden(&self) -> bool {
         self.config.show_hidden
     }
 
-    pub(super) fn toggle_folders_first(&mut self) {
+    pub(super) const fn toggle_folders_first(&mut self) {
         self.config.folders_first = !self.config.folders_first;
     }
 
-    pub(super) fn toggle_natural_sort(&mut self) {
+    pub(super) const fn toggle_natural_sort(&mut self) {
         self.config.natural_name_sort = !self.config.natural_name_sort;
     }
 
-    pub(super) fn density(&self) -> crate::density::Density {
+    pub(super) const fn density(&self) -> crate::density::Density {
         self.config.density
     }
 
-    pub(super) fn set_density(&mut self, density: crate::density::Density) {
+    pub(super) const fn set_density(&mut self, density: crate::density::Density) {
         self.config.density = density;
     }
 
@@ -189,11 +189,11 @@ impl ViewState {
         self.search_query = query.into();
     }
 
-    pub(super) fn facets(&self) -> FacetSet {
+    pub(super) const fn facets(&self) -> FacetSet {
         self.facets
     }
 
-    pub(super) fn facets_mut(&mut self) -> &mut FacetSet {
+    pub(super) const fn facets_mut(&mut self) -> &mut FacetSet {
         &mut self.facets
     }
 

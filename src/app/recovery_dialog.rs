@@ -93,7 +93,7 @@ fn short_id(id: &str) -> String {
     id.chars().take(18).collect()
 }
 
-fn operation_kind(kind: TransferKind) -> &'static str {
+const fn operation_kind(kind: TransferKind) -> &'static str {
     match kind {
         TransferKind::Copy => "Copy",
         TransferKind::Move => "Move",
@@ -110,7 +110,10 @@ fn operation_time(seconds: u64) -> String {
         .unwrap_or_else(|| "Unknown time".to_string())
 }
 
-fn status_color(status: crate::operation_journal::OperationStatus, t: ThemeColors) -> Color32 {
+const fn status_color(
+    status: crate::operation_journal::OperationStatus,
+    t: ThemeColors,
+) -> Color32 {
     use crate::operation_journal::OperationStatus;
     match status {
         OperationStatus::NeedsReview | OperationStatus::Running => t.accent_warning,

@@ -29,7 +29,7 @@ pub enum ActivePanel {
 }
 
 impl ActivePanel {
-    pub fn other(self) -> Self {
+    pub const fn other(self) -> Self {
         match self {
             Self::Left => Self::Right,
             Self::Right => Self::Left,
@@ -139,11 +139,11 @@ impl PendingTransfer {
         )
     }
 
-    pub fn space_ready(&self) -> bool {
+    pub const fn space_ready(&self) -> bool {
         matches!(self.space, TransferSpaceState::Ready { .. })
     }
 
-    pub fn need_bytes(&self) -> Option<u64> {
+    pub const fn need_bytes(&self) -> Option<u64> {
         match self.space {
             TransferSpaceState::Pending { .. } => None,
             TransferSpaceState::Ready { need_bytes, .. } => Some(need_bytes),
@@ -151,7 +151,7 @@ impl PendingTransfer {
         }
     }
 
-    pub fn free_space(&self) -> Option<&crate::ports::SpaceProbeOutcome> {
+    pub const fn free_space(&self) -> Option<&crate::ports::SpaceProbeOutcome> {
         match &self.space {
             TransferSpaceState::Pending { .. } => None,
             TransferSpaceState::Ready { free, .. } | TransferSpaceState::Failed { free, .. } => {
@@ -160,7 +160,7 @@ impl PendingTransfer {
         }
     }
 
-    pub fn space_failure(&self) -> Option<&crate::ports::NativeFailure> {
+    pub const fn space_failure(&self) -> Option<&crate::ports::NativeFailure> {
         match &self.space {
             TransferSpaceState::Failed { failure, .. } => Some(failure),
             TransferSpaceState::Pending { .. } | TransferSpaceState::Ready { .. } => None,
@@ -227,7 +227,7 @@ pub struct DeleteOutcome {
 }
 
 impl DeleteOutcome {
-    pub fn refresh_required(&self) -> bool {
+    pub const fn refresh_required(&self) -> bool {
         self.trashed > 0
     }
 }
@@ -350,7 +350,7 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
 }
 
 /// Keep only the move placements that landed under their original name, so undo
-/// reverses them faithfully. A KeepBoth conflict lands at "name copy.ext"; a
+/// reverses them faithfully. A `KeepBoth` conflict lands at "name copy.ext"; a
 /// move there cannot be undone by relocating the file under the original name
 /// (that would be a different operation), so it is dropped. Pure/testable.
 fn faithfully_undoable(placements: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
@@ -384,7 +384,7 @@ fn filesystem_preflight(
     })
 }
 
-pub(crate) fn trash_batch_item_from_listing(
+pub fn trash_batch_item_from_listing(
     path: PathBuf,
     identity: &crate::panel::ListingIdentity,
 ) -> crate::ports::TrashBatchItem {
@@ -509,7 +509,7 @@ impl Workspace {
         persistence: std::sync::Arc<dyn crate::persistence::Persist>,
     ) -> Self {
         let [left_view, right_view] = views;
-        Workspace {
+        Self {
             left: PanelState::new_with_view(left, left_view),
             right: PanelState::new_with_view(right, right_view),
             active: ActivePanel::Left,
@@ -546,28 +546,28 @@ impl Workspace {
         );
     }
 
-    pub fn active_panel(&mut self) -> &mut PanelState {
+    pub const fn active_panel(&mut self) -> &mut PanelState {
         match self.active {
             ActivePanel::Left => &mut self.left,
             ActivePanel::Right => &mut self.right,
         }
     }
 
-    pub fn active_panel_ref(&self) -> &PanelState {
+    pub const fn active_panel_ref(&self) -> &PanelState {
         match self.active {
             ActivePanel::Left => &self.left,
             ActivePanel::Right => &self.right,
         }
     }
 
-    pub fn inactive_panel(&self) -> &PanelState {
+    pub const fn inactive_panel(&self) -> &PanelState {
         match self.active {
             ActivePanel::Left => &self.right,
             ActivePanel::Right => &self.left,
         }
     }
 
-    pub fn inactive_panel_mut(&mut self) -> &mut PanelState {
+    pub const fn inactive_panel_mut(&mut self) -> &mut PanelState {
         match self.active {
             ActivePanel::Left => &mut self.right,
             ActivePanel::Right => &mut self.left,
@@ -1280,7 +1280,7 @@ impl Workspace {
 
     /// Copy/Move may queue behind an active transfer, but must never replace an
     /// operation that is already waiting for confirmation.
-    pub fn can_request_transfer(&self) -> bool {
+    pub const fn can_request_transfer(&self) -> bool {
         self.pending_op.is_none() && !self.mutation_commits_blocked()
     }
 
@@ -1295,11 +1295,11 @@ impl Workspace {
     /// One fail-closed gate for every filesystem mutation entry point.
     /// Callers that present a reason should use [`Self::mutation_block_reason`]
     /// so recovery review and ordinary background activity remain distinct.
-    pub fn mutations_blocked(&self) -> bool {
+    pub const fn mutations_blocked(&self) -> bool {
         self.safe_state.is_some() || self.deletes.is_active() || self.undo.has_pending_replay()
     }
 
-    pub fn delete_active(&self) -> bool {
+    pub const fn delete_active(&self) -> bool {
         self.deletes.is_active()
     }
 
@@ -1317,7 +1317,7 @@ impl Workspace {
         self.deletes.cancel()
     }
 
-    fn mutation_commits_blocked(&self) -> bool {
+    const fn mutation_commits_blocked(&self) -> bool {
         self.mutations_blocked()
     }
 
@@ -1821,11 +1821,11 @@ impl Workspace {
             .map(|action| crate::undo::preview(&action))
     }
 
-    pub fn can_undo(&self) -> bool {
+    pub const fn can_undo(&self) -> bool {
         self.undo.can_undo()
     }
 
-    pub fn can_redo(&self) -> bool {
+    pub const fn can_redo(&self) -> bool {
         self.undo.can_redo()
     }
 

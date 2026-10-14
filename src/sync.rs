@@ -93,7 +93,7 @@ impl SyncAction {
 }
 
 #[cfg(test)]
-pub(crate) fn test_action(name: &str, status: SyncStatus, direction: SyncDirection) -> SyncAction {
+pub fn test_action(name: &str, status: SyncStatus, direction: SyncDirection) -> SyncAction {
     SyncAction {
         name: name.to_string(),
         status,
@@ -104,7 +104,7 @@ pub(crate) fn test_action(name: &str, status: SyncStatus, direction: SyncDirecti
 }
 
 /// Compare two same-named entries by size and mtime.
-pub(crate) fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
+pub fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
     if left.is_dir != right.is_dir {
         return SyncStatus::TypeConflict;
     }
@@ -126,7 +126,7 @@ pub(crate) fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
 /// side to match the source (even overwriting a newer target); two-way moves
 /// each newer/unique file toward the side that lacks it and skips ambiguous
 /// same-time conflicts.
-fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirection {
+const fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirection {
     use SyncDirection::{Skip, ToLeft, ToRight};
     use SyncStatus::*;
     match policy {

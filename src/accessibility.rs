@@ -58,7 +58,7 @@ fn macos_universal_access(key: &str) -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn macos_universal_access(_key: &str) -> bool {
+const fn macos_universal_access(_key: &str) -> bool {
     false
 }
 
@@ -72,7 +72,7 @@ pub enum FocusRegion {
 }
 
 impl FocusRegion {
-    pub fn id(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::Toolbar => "focus_toolbar",
             Self::LeftPanel => "focus_left_panel",
@@ -107,7 +107,7 @@ pub fn focus_order(layout: FocusLayout) -> Vec<FocusRegion> {
     order
 }
 
-pub fn modal_trap_active(was_open: bool, is_open: bool) -> bool {
+pub const fn modal_trap_active(was_open: bool, is_open: bool) -> bool {
     was_open || is_open
 }
 
@@ -195,7 +195,7 @@ pub const fn next_ime_composition(
     }
 }
 
-/// Read only TextEdit focus, not generic egui keyboard focus. IME composition
+/// Read only `TextEdit` focus, not generic egui keyboard focus. IME composition
 /// is retained across frames until commit, empty preedit, or focus loss.
 pub fn text_input_state(ctx: &egui::Context) -> TextInputState {
     let text_edit_focused = ctx.text_edit_focused();
@@ -273,7 +273,7 @@ pub struct UiContract {
 
 /// Resolve input ownership without an egui frame. IME composition owns Escape
 /// before any Commander surface so cancelling a candidate cannot close a
-/// dialog. A regular TextEdit inside a modal still leaves Escape to the modal.
+/// dialog. A regular `TextEdit` inside a modal still leaves Escape to the modal.
 pub fn resolve_ui_contract(state: UiContractState) -> UiContract {
     let text_input = state.text_input.mode();
     let keyboard = if let Some(mode) = text_input {
@@ -411,7 +411,7 @@ impl VisualChannel {
         Self::Disabled,
     ];
 
-    pub fn non_color_cue(self) -> &'static str {
+    pub const fn non_color_cue(self) -> &'static str {
         match self {
             Self::ActivePane => "ACTIVE text and top rule",
             Self::KeyboardFocus => "double outline",
@@ -471,7 +471,7 @@ pub fn file_row_semantics(
     }
 }
 
-pub fn sanitize_text_scale(scale: f32) -> f32 {
+pub const fn sanitize_text_scale(scale: f32) -> f32 {
     if scale.is_finite() {
         scale.clamp(0.8, 2.0)
     } else {

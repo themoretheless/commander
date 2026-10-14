@@ -2,7 +2,7 @@
 //!
 //! Diagnostic collection never asks macOS for TCC permissions. Strict release
 //! policy is intentionally impossible to pass with blocked capabilities,
-//! mismatched evidence, or an incomplete human VoiceOver attestation.
+//! mismatched evidence, or an incomplete human `VoiceOver` attestation.
 
 #[cfg(feature = "visual-qa")]
 mod artifact;

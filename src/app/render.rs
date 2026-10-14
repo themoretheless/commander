@@ -2,7 +2,7 @@ use super::*;
 use crate::panel::{FacetSet, KindFacet};
 
 #[derive(Default)]
-pub(crate) struct PanelRenderOutcome {
+pub struct PanelRenderOutcome {
     pub tree_toggle: bool,
     pub context_menu_request: Option<ui_state::ContextMenuCandidate>,
 }

@@ -40,6 +40,7 @@ pub struct WorkflowFixture {
 }
 
 impl WorkflowFixture {
+    #[must_use]
     pub fn user_operators(&self) -> u32 {
         self.steps
             .iter()
@@ -48,6 +49,7 @@ impl WorkflowFixture {
             .sum()
     }
 
+    #[must_use]
     pub fn estimated_duration_ms(&self, model: &OperatorDurations) -> u64 {
         self.steps
             .iter()
@@ -113,6 +115,7 @@ pub fn ci_suite() -> Result<KlmSuite, serde_json::Error> {
     serde_json::from_str(include_str!("../ci/klm-workflows.json"))
 }
 
+#[must_use]
 pub fn evaluate(suite: &KlmSuite) -> Vec<KlmViolation> {
     let mut violations = Vec::new();
     if suite.schema != 1 {

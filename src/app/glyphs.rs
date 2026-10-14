@@ -4,7 +4,7 @@ use egui::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum PaintedGlyph {
+pub enum PaintedGlyph {
     BreadcrumbChevron,
     SortTriangle,
     ParentUp,
@@ -36,6 +36,8 @@ impl PaintedGlyph {
     }
 }
 
+// Const only without the visual-qa feature; keep one signature for both.
+#[allow(clippy::missing_const_for_fn)]
 fn record(ui: &Ui, glyph: PaintedGlyph, rect: Rect) {
     #[cfg(feature = "visual-qa")]
     crate::visual_qa::record_painted_glyph(ui.ctx(), glyph, rect);
@@ -43,7 +45,7 @@ fn record(ui: &Ui, glyph: PaintedGlyph, rect: Rect) {
     let _ = (ui, glyph, rect);
 }
 
-pub(crate) fn navigation_triangle(ui: &Ui, rect: Rect, points_right: bool, color: Color32) {
+pub fn navigation_triangle(ui: &Ui, rect: Rect, points_right: bool, color: Color32) {
     let icon = Rect::from_center_size(rect.center(), Vec2::new(9.0, 11.0));
     let points = if points_right {
         vec![icon.left_top(), icon.right_center(), icon.left_bottom()]
@@ -55,7 +57,7 @@ pub(crate) fn navigation_triangle(ui: &Ui, rect: Rect, points_right: bool, color
     record(ui, PaintedGlyph::NavigationTriangle, icon);
 }
 
-pub(crate) fn breadcrumb_chevron(ui: &mut Ui, color: Color32) -> Response {
+pub fn breadcrumb_chevron(ui: &mut Ui, color: Color32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(12.0, 18.0), Sense::hover());
     let center = rect.center();
     let stroke = Stroke::new(1.4, color);
@@ -81,7 +83,7 @@ pub(crate) fn breadcrumb_chevron(ui: &mut Ui, color: Color32) -> Response {
     response
 }
 
-pub(crate) fn sort_accessible_label(label: &str, order: Option<SortOrder>) -> String {
+pub fn sort_accessible_label(label: &str, order: Option<SortOrder>) -> String {
     match order {
         Some(SortOrder::Asc) => {
             format!("{label}, sorted ascending; activate to sort descending")
@@ -93,12 +95,7 @@ pub(crate) fn sort_accessible_label(label: &str, order: Option<SortOrder>) -> St
     }
 }
 
-pub(crate) fn sort_header(
-    ui: &mut Ui,
-    label: &str,
-    order: Option<SortOrder>,
-    color: Color32,
-) -> Response {
+pub fn sort_header(ui: &mut Ui, label: &str, order: Option<SortOrder>, color: Color32) -> Response {
     let response = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
@@ -126,7 +123,7 @@ pub(crate) fn sort_header(
     response
 }
 
-pub(crate) fn parent_up(ui: &mut Ui, color: Color32) -> Response {
+pub fn parent_up(ui: &mut Ui, color: Color32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
     let center = rect.center();
     let stroke = Stroke::new(1.5, color);
@@ -169,7 +166,7 @@ fn file_badge(extension: &str) -> String {
     }
 }
 
-pub(crate) fn file_document(
+pub fn file_document(
     ui: &mut Ui,
     extension: &str,
     color: Color32,
@@ -220,7 +217,7 @@ pub(crate) fn file_document(
     response
 }
 
-pub(crate) fn toolbar_compare_button(ui: &mut Ui, fill: Color32, color: Color32) -> Response {
+pub fn toolbar_compare_button(ui: &mut Ui, fill: Color32, color: Color32) -> Response {
     let response = ui.add_sized(
         Vec2::new(34.0, 24.0),
         egui::Button::new("")

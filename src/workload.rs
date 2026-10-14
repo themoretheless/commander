@@ -25,7 +25,7 @@ pub enum TaskKind {
 impl TaskKind {
     const COUNT: usize = 7;
 
-    fn index(self) -> usize {
+    const fn index(self) -> usize {
         match self {
             Self::Listing => 0,
             Self::PathProbe => 1,
@@ -37,7 +37,7 @@ impl TaskKind {
         }
     }
 
-    fn thread_label(self) -> &'static str {
+    const fn thread_label(self) -> &'static str {
         match self {
             Self::Listing => "listing",
             Self::PathProbe => "path-probe",
@@ -92,17 +92,20 @@ impl TaskSpec {
         }
     }
 
-    pub fn priority(mut self, priority: Priority) -> Self {
+    #[must_use]
+    pub const fn priority(mut self, priority: Priority) -> Self {
         self.priority = priority;
         self
     }
 
-    pub fn estimated_bytes(mut self, bytes: u64) -> Self {
+    #[must_use]
+    pub const fn estimated_bytes(mut self, bytes: u64) -> Self {
         self.estimated_bytes = bytes;
         self
     }
 
-    pub fn replace_older_generation(mut self) -> Self {
+    #[must_use]
+    pub const fn replace_older_generation(mut self) -> Self {
         self.replace_older_generation = true;
         self
     }
@@ -120,6 +123,7 @@ struct CancellationState {
 }
 
 impl CancellationToken {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: Arc::new(CancellationState {
@@ -129,6 +133,7 @@ impl CancellationToken {
         }
     }
 
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.state.cancelled.load(Ordering::Acquire)
     }
@@ -287,6 +292,7 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    #[must_use]
     pub fn new(limits: SchedulerLimits) -> Self {
         Self {
             limits,
@@ -500,6 +506,7 @@ impl Scheduler {
         self.disconnected_roots.remove(root);
     }
 
+    #[must_use]
     pub fn stats(&self) -> SchedulerStats {
         let (tick_p50, tick_p95, tick_p99) =
             crate::measurement::percentiles_u64(&self.cancellation_latencies);
@@ -605,7 +612,7 @@ impl PendingWork {
         }
     }
 
-    fn with_fallback_reason(mut self, reason: AbandonReason) -> Self {
+    const fn with_fallback_reason(mut self, reason: AbandonReason) -> Self {
         self.fallback_reason = reason;
         self
     }
@@ -699,6 +706,7 @@ impl WorkloadHandle {
         })
     }
 
+    #[must_use]
     pub fn stats(&self) -> SchedulerStats {
         self.backend.stats()
     }
@@ -711,6 +719,7 @@ pub struct WorkloadRuntime {
 }
 
 impl WorkloadRuntime {
+    #[must_use]
     pub fn new(limits: SchedulerLimits) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(RuntimeState {
@@ -878,15 +887,15 @@ impl WorkloadBackend for WorkloadRuntime {
         work: WorkloadJob,
         on_abandoned: Option<AbandonmentCallback>,
     ) -> Result<TaskSnapshot, AdmissionError> {
-        WorkloadRuntime::submit_boxed(&self, spec, work, on_abandoned)
+        Self::submit_boxed(&self, spec, work, on_abandoned)
     }
 
     fn cancel_task(self: Arc<Self>, id: TaskId) -> bool {
-        WorkloadRuntime::cancel(&self, id)
+        Self::cancel(&self, id)
     }
 
     fn stats(&self) -> SchedulerStats {
-        WorkloadRuntime::stats(self)
+        Self::stats(self)
     }
 }
 
@@ -897,7 +906,8 @@ pub struct TaskHandle {
 }
 
 impl TaskHandle {
-    pub fn snapshot(&self) -> &TaskSnapshot {
+    #[must_use]
+    pub const fn snapshot(&self) -> &TaskSnapshot {
         &self.snapshot
     }
 
@@ -913,6 +923,7 @@ fn global_runtime() -> &'static Arc<WorkloadRuntime> {
     RUNTIME.get_or_init(|| WorkloadRuntime::new(SchedulerLimits::default()))
 }
 
+#[must_use]
 pub fn global_handle() -> WorkloadHandle {
     WorkloadHandle::from_runtime(Arc::clone(global_runtime()))
 }
@@ -924,6 +935,7 @@ pub fn submit(
     global_handle().submit(spec, work)
 }
 
+#[must_use]
 pub fn stats() -> SchedulerStats {
     global_handle().stats()
 }

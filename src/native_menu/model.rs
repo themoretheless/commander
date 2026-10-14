@@ -206,7 +206,7 @@ pub struct DynamicMenuEntries {
     pub open_with: Vec<(String, PathBuf)>,
     pub applied_tags: BTreeSet<String>,
     pub tags_available: bool,
-    /// Localized title plus the stable AppKit service name.
+    /// Localized title plus the stable `AppKit` service name.
     pub share_services: Vec<(String, String)>,
 }
 

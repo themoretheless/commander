@@ -1,4 +1,4 @@
-//! Quick-filter facets: kind, size and age chips ANDed with the text filter.
+//! Quick-filter facets: kind, size and age chips `ANDed` with the text filter.
 //!
 //! The age rule lives in one place, [`age_deadline`], which both the
 //! predicate and the listing's filter-cache expiry use.
@@ -25,7 +25,7 @@ pub enum KindFacet {
     Code,
 }
 
-/// Active quick-filter facets, ANDed with the substring filter. Default is
+/// Active quick-filter facets, `ANDed` with the substring filter. Default is
 /// "no facets" (everything passes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FacetSet {
@@ -69,7 +69,7 @@ impl FacetSet {
             .min()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.kind.is_none()
             && self.min_size.is_none()
             && self.max_age_days.is_none()

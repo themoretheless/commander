@@ -22,16 +22,16 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
-            Kind::Folder => "folders",
-            Kind::Image => "images",
-            Kind::Video => "video",
-            Kind::Audio => "audio",
-            Kind::Document => "docs",
-            Kind::Code => "code",
-            Kind::Archive => "archives",
-            Kind::Other => "other",
+            Self::Folder => "folders",
+            Self::Image => "images",
+            Self::Video => "video",
+            Self::Audio => "audio",
+            Self::Document => "docs",
+            Self::Code => "code",
+            Self::Archive => "archives",
+            Self::Other => "other",
         }
     }
 }
@@ -95,7 +95,7 @@ fn common_stem_prefix(entries: &[FileEntry]) -> Option<String> {
 
 /// A folder-friendly label for a dominant kind, or `None` for kinds that make
 /// no useful folder name (folders themselves, or the catch-all "other").
-fn kind_folder_label(kind: Kind) -> Option<&'static str> {
+const fn kind_folder_label(kind: Kind) -> Option<&'static str> {
     Some(match kind {
         Kind::Image => "Images",
         Kind::Video => "Videos",

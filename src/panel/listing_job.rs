@@ -124,11 +124,11 @@ impl ListingJobController {
         self.focus = focus;
     }
 
-    pub(super) fn is_awaiting(&self) -> bool {
+    pub(super) const fn is_awaiting(&self) -> bool {
         self.awaiting
     }
 
-    pub(super) fn desired_binding(&self) -> Option<&ListingBinding> {
+    pub(super) const fn desired_binding(&self) -> Option<&ListingBinding> {
         self.desired.as_ref()
     }
 

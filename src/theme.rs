@@ -29,7 +29,7 @@ pub struct ThemeColors {
 }
 
 impl ThemeColors {
-    pub fn for_preferences(
+    pub const fn for_preferences(
         mode: ThemeMode,
         preferences: crate::accessibility::Preferences,
     ) -> Self {
@@ -43,8 +43,8 @@ impl ThemeColors {
 
     /// Warm paper: neutral surfaces with a slight warm cast; accents dark enough
     /// for white button text.
-    pub fn light() -> Self {
-        ThemeColors {
+    pub const fn light() -> Self {
+        Self {
             bg_deep: Color32::from_rgb(241, 238, 233),
             bg_panel: Color32::from_rgb(253, 252, 249),
             bg_card: Color32::from_rgb(241, 238, 233),
@@ -64,8 +64,8 @@ impl ThemeColors {
 
     /// Warm graphite: brown-tinted near-black surfaces with warm off-white text;
     /// accents stay dark enough for white button text.
-    pub fn dark() -> Self {
-        ThemeColors {
+    pub const fn dark() -> Self {
+        Self {
             bg_deep: Color32::from_rgb(19, 17, 15),
             bg_panel: Color32::from_rgb(27, 24, 21),
             bg_card: Color32::from_rgb(36, 33, 30),
@@ -83,8 +83,8 @@ impl ThemeColors {
         }
     }
 
-    pub fn high_contrast_light() -> Self {
-        ThemeColors {
+    pub const fn high_contrast_light() -> Self {
+        Self {
             bg_deep: Color32::from_rgb(255, 255, 255),
             bg_panel: Color32::from_rgb(255, 255, 255),
             bg_card: Color32::from_rgb(230, 230, 230),
@@ -102,8 +102,8 @@ impl ThemeColors {
         }
     }
 
-    pub fn high_contrast_dark() -> Self {
-        ThemeColors {
+    pub const fn high_contrast_dark() -> Self {
+        Self {
             bg_deep: Color32::from_rgb(0, 0, 0),
             bg_panel: Color32::from_rgb(5, 5, 5),
             bg_card: Color32::from_rgb(30, 30, 30),

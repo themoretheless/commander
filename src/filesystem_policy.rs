@@ -16,7 +16,7 @@ pub enum NormalizationForm {
 }
 
 impl NormalizationForm {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Preserve => "Preserve spelling",
             Self::Nfc => "Unicode NFC",
@@ -42,7 +42,7 @@ pub enum CollisionPolicy {
 }
 
 impl CollisionPolicy {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Ask => "Ask on collision",
             Self::KeepBoth => "Keep both",
@@ -107,7 +107,7 @@ pub enum PortabilityTarget {
 }
 
 impl PortabilityTarget {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Posix => "POSIX",
             Self::MacOs => "macOS",
@@ -194,7 +194,7 @@ pub enum SymlinkPolicy {
 }
 
 impl SymlinkPolicy {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Preserve => "Preserve links",
             Self::Follow => "Copy link targets",
@@ -202,7 +202,7 @@ impl SymlinkPolicy {
         }
     }
 
-    pub fn consequence(self) -> &'static str {
+    pub const fn consequence(self) -> &'static str {
         match self {
             Self::Preserve => "links remain links and targets are not traversed",
             Self::Follow => "target data is copied with cycle detection",
@@ -222,7 +222,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Read => "Read",
             Self::Write => "Write",

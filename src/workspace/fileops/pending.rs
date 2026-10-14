@@ -4,10 +4,7 @@ use super::super::{DeleteOrigin, PendingOp, Workspace};
 
 /// Confirm the pending op. Both transfers and deletes report completion
 /// asynchronously through their controller poll methods.
-pub(crate) fn confirm_pending_op(
-    workspace: &mut Workspace,
-    notify: impl Fn() + Send + 'static,
-) -> bool {
+pub fn confirm_pending_op(workspace: &mut Workspace, notify: impl Fn() + Send + 'static) -> bool {
     if workspace.mutation_commits_blocked() {
         return false;
     }

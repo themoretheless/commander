@@ -32,7 +32,8 @@ impl MetricName {
         Self::FrameTime,
     ];
 
-    pub fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::StartupTotal => "Startup",
             Self::FirstListing => "First listing",
@@ -74,6 +75,7 @@ fn percentile_f64(sorted: &[f64], quantile: f64) -> f64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
+#[must_use]
 pub fn percentiles_u64(samples: &VecDeque<u64>) -> (u64, u64, u64) {
     let mut sorted = samples.iter().copied().collect::<Vec<_>>();
     sorted.sort_unstable();
@@ -113,6 +115,7 @@ pub fn record_ms(metric: MetricName, elapsed_ms: f64) {
     }
 }
 
+#[must_use]
 pub fn snapshot(metric: MetricName) -> LatencyPercentiles {
     let telemetry = crate::lock_util::recover(telemetry());
     let Some(samples) = telemetry.get(&metric) else {
@@ -122,6 +125,7 @@ pub fn snapshot(metric: MetricName) -> LatencyPercentiles {
     latency_percentiles(&samples)
 }
 
+#[must_use]
 pub fn snapshots() -> Vec<(MetricName, LatencyPercentiles)> {
     let telemetry = crate::lock_util::recover(telemetry());
     MetricName::ALL
@@ -145,6 +149,7 @@ pub struct LatencyGuard {
 }
 
 impl LatencyGuard {
+    #[must_use]
     pub fn new(metric: MetricName) -> Self {
         Self {
             metric,
@@ -172,7 +177,8 @@ pub enum StartupPhase {
 }
 
 impl StartupPhase {
-    pub fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::SessionRestore => "Session restore",
             Self::Appearance => "Appearance",
@@ -198,6 +204,7 @@ pub struct StartupSnapshot {
 }
 
 impl StartupSnapshot {
+    #[must_use]
     pub fn phase(&self, phase: StartupPhase) -> Option<f64> {
         self.phases
             .iter()
@@ -213,6 +220,7 @@ pub struct StartupTrace {
 }
 
 impl StartupTrace {
+    #[must_use]
     pub fn start() -> Self {
         let now = Instant::now();
         Self {
@@ -247,6 +255,7 @@ fn latest_startup_slot() -> &'static Mutex<Option<StartupSnapshot>> {
     STARTUP.get_or_init(|| Mutex::new(None))
 }
 
+#[must_use]
 pub fn latest_startup() -> Option<StartupSnapshot> {
     crate::lock_util::recover(latest_startup_slot()).clone()
 }
@@ -332,6 +341,7 @@ impl std::fmt::Display for GateViolation {
     }
 }
 
+#[must_use]
 pub fn evaluate_performance_gate(
     budgets: &PerformanceBudgets,
     report: &BenchmarkReport,

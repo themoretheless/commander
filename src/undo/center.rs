@@ -19,19 +19,19 @@ use crate::operation::OperationId;
 static NEXT_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReplayDirection {
+pub enum ReplayDirection {
     Undo,
     Redo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReplayToken(u64);
+pub struct ReplayToken(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct UndoOwnerId(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReplayReservation {
+pub struct ReplayReservation {
     owner: UndoOwnerId,
     token: ReplayToken,
     direction: ReplayDirection,
@@ -40,13 +40,13 @@ pub(crate) struct ReplayReservation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReplayPlan {
+pub struct ReplayPlan {
     pub(crate) action: Action,
     pub(crate) reservation: ReplayReservation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HistoryError {
+pub enum HistoryError {
     ReplayAlreadyPending,
     RecordWhileReplayPending,
     NoPendingReplay,
@@ -93,7 +93,7 @@ struct PendingReplay {
     state: PendingReplayState,
 }
 
-pub(crate) struct UndoCenter {
+pub struct UndoCenter {
     owner: UndoOwnerId,
     stack: UndoStack,
     revision: u64,
@@ -121,11 +121,11 @@ impl Default for UndoCenter {
 }
 
 impl UndoCenter {
-    pub(crate) fn can_undo(&self) -> bool {
+    pub(crate) const fn can_undo(&self) -> bool {
         self.stack.can_undo()
     }
 
-    pub(crate) fn can_redo(&self) -> bool {
+    pub(crate) const fn can_redo(&self) -> bool {
         self.stack.can_redo()
     }
 
@@ -141,11 +141,11 @@ impl UndoCenter {
         self.stack.peek_redo_action()
     }
 
-    pub(crate) fn redo_invalidation(&self) -> Option<&RedoInvalidation> {
+    pub(crate) const fn redo_invalidation(&self) -> Option<&RedoInvalidation> {
         self.stack.redo_invalidation()
     }
 
-    pub(crate) fn has_pending_replay(&self) -> bool {
+    pub(crate) const fn has_pending_replay(&self) -> bool {
         self.pending.is_some()
     }
 
@@ -398,7 +398,7 @@ impl UndoCenter {
         Ok(())
     }
 
-    fn bump_revision(&mut self) {
+    const fn bump_revision(&mut self) {
         self.revision = self
             .revision
             .checked_add(1)

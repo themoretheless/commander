@@ -80,11 +80,7 @@ pub fn prefix(path: &Path, offset: u64) -> std::io::Result<VerifiedHash> {
     Ok(*hasher.finalize().as_bytes())
 }
 
-pub(crate) fn prefix_into(
-    path: &Path,
-    offset: u64,
-    hasher: &mut blake3::Hasher,
-) -> std::io::Result<()> {
+pub fn prefix_into(path: &Path, offset: u64, hasher: &mut blake3::Hasher) -> std::io::Result<()> {
     let mut file = std::io::BufReader::with_capacity(HASH_BUFFER_SIZE, std::fs::File::open(path)?);
     let mut remaining = offset;
     let mut buffer = vec![0_u8; HASH_BUFFER_SIZE];

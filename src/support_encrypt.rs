@@ -86,7 +86,7 @@ pub fn write_sealed_bundle(dir: &Path, sealed: &SealedBundle) -> Result<PathBuf,
     }
 }
 
-pub fn default_ttl_secs() -> u64 {
+pub const fn default_ttl_secs() -> u64 {
     DEFAULT_TTL_SECS
 }
 

@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-pub(crate) const PATH_PROBE_DEBOUNCE: Duration = Duration::from_millis(200);
+pub const PATH_PROBE_DEBOUNCE: Duration = Duration::from_millis(200);
 const PATH_PROBE_POLL: Duration = Duration::from_millis(250);
 const MAX_IN_FLIGHT_PROBES: usize = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProbeStatus {
+pub enum ProbeStatus {
     Waiting,
     Checking,
     Valid,
@@ -57,7 +57,7 @@ enum WorkerEvent {
 }
 
 impl WorkerEvent {
-    fn binding(&self) -> &ProbeBinding {
+    const fn binding(&self) -> &ProbeBinding {
         match self {
             Self::Completed { binding, .. }
             | Self::Cancelled { binding }
@@ -87,7 +87,7 @@ enum ProbeTerminal {
     Disconnected,
 }
 
-pub(crate) struct PathProbeController {
+pub struct PathProbeController {
     dialog_id: u64,
     generation: u64,
     home: PathBuf,
@@ -118,7 +118,7 @@ impl PathProbeController {
     }
 
     #[cfg(test)]
-    fn dialog_id(&self) -> u64 {
+    const fn dialog_id(&self) -> u64 {
         self.dialog_id
     }
 
@@ -126,7 +126,7 @@ impl PathProbeController {
         &self.raw_input
     }
 
-    pub(crate) fn status(&self) -> &ProbeStatus {
+    pub(crate) const fn status(&self) -> &ProbeStatus {
         &self.status
     }
 

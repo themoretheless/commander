@@ -237,12 +237,12 @@ impl PathIdentity {
     }
 }
 
-pub(crate) struct TreeFingerprint {
+pub struct TreeFingerprint {
     hash: u64,
 }
 
 impl TreeFingerprint {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             hash: 0xcbf29ce484222325_u64,
         }
@@ -275,7 +275,7 @@ impl TreeFingerprint {
         hash_bytes(&mut self.hash, &file_id.unwrap_or_default().to_le_bytes());
     }
 
-    pub(crate) fn finish(self) -> u64 {
+    pub(crate) const fn finish(self) -> u64 {
         self.hash
     }
 }
@@ -309,6 +309,8 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
     *hash = hash.wrapping_mul(0x100000001b3);
 }
 
+// The body is cfg-dependent: const on non-unix, but `MetadataExt` is not const.
+#[allow(clippy::missing_const_for_fn)]
 fn native_identity(metadata: &std::fs::Metadata) -> (Option<u64>, Option<u64>) {
     #[cfg(unix)]
     {

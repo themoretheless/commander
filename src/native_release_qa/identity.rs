@@ -161,7 +161,7 @@ fn loaded_executable_matches(executable: &Path, opened: &File) -> Result<bool, S
 }
 
 #[cfg(not(target_os = "macos"))]
-fn loaded_executable_matches(_executable: &Path, _opened: &File) -> Result<bool, String> {
+const fn loaded_executable_matches(_executable: &Path, _opened: &File) -> Result<bool, String> {
     Ok(false)
 }
 
@@ -223,7 +223,7 @@ fn parse_codesign_cdhash(output: &[u8]) -> Option<[u8; 20]> {
 
 #[cfg(target_os = "macos")]
 fn decode_cdhash(value: &str) -> Option<[u8; 20]> {
-    fn nibble(value: u8) -> Option<u8> {
+    const fn nibble(value: u8) -> Option<u8> {
         match value {
             b'0'..=b'9' => Some(value - b'0'),
             b'a'..=b'f' => Some(value - b'a' + 10),

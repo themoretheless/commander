@@ -152,7 +152,7 @@ impl Request {
     }
 }
 
-pub(crate) fn maybe_run() -> Option<eframe::Result<()>> {
+pub fn maybe_run() -> Option<eframe::Result<()>> {
     if std::env::args().nth(1).as_deref() == Some("--native-release-qa") {
         let request = crate::native_release_qa::NativeQaRequest::parse(std::env::args().skip(2));
         return Some(match request.and_then(crate::native_release_qa::run) {
@@ -288,7 +288,7 @@ enum VisualQaCreationError {
 }
 
 impl VisualQaCreationError {
-    fn unsupported(&self) -> bool {
+    const fn unsupported(&self) -> bool {
         matches!(self, Self::UnsupportedBackend(_))
     }
 }
@@ -452,7 +452,7 @@ impl FreeSpacePort for FakeFreeSpace {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum ProbeId {
+pub enum ProbeId {
     LeftPane,
     RightPane,
     Confirmation,
@@ -505,7 +505,7 @@ fn required_painted_glyphs(
         })
 }
 
-pub(crate) fn begin_probe_frame(ctx: &egui::Context) {
+pub fn begin_probe_frame(ctx: &egui::Context) {
     ctx.data_mut(|data| {
         for id in [
             ProbeId::LeftPane,
@@ -523,7 +523,7 @@ pub(crate) fn begin_probe_frame(ctx: &egui::Context) {
     });
 }
 
-pub(crate) fn record_response(ctx: &egui::Context, id: ProbeId, response: &egui::Response) {
+pub fn record_response(ctx: &egui::Context, id: ProbeId, response: &egui::Response) {
     ctx.data_mut(|data| {
         data.insert_temp(
             egui::Id::new(id.key()),
@@ -537,7 +537,7 @@ pub(crate) fn record_response(ctx: &egui::Context, id: ProbeId, response: &egui:
     });
 }
 
-pub(crate) fn record_painted_glyph(
+pub fn record_painted_glyph(
     ctx: &egui::Context,
     glyph: crate::app::glyphs::PaintedGlyph,
     rect: Rect,
@@ -545,7 +545,7 @@ pub(crate) fn record_painted_glyph(
     ctx.data_mut(|data| data.insert_temp(painted_glyph_key(glyph), rect));
 }
 
-pub(crate) fn record_input_policy(
+pub fn record_input_policy(
     ctx: &egui::Context,
     background_enabled: bool,
     modal_owner: Option<String>,
@@ -1090,7 +1090,7 @@ struct NativeEffectCalls {
 }
 
 impl NativeEffectCalls {
-    fn total(self) -> usize {
+    const fn total(self) -> usize {
         self.context_menu
             + self.deferred_menu
             + self.clipboard
@@ -1437,7 +1437,7 @@ fn rect_is_valid(rect: Rect, viewport: Rect) -> bool {
         && rect.max.y <= viewport.max.y + 0.51
 }
 
-fn check(name: &'static str, passed: bool, detail: String) -> Check {
+const fn check(name: &'static str, passed: bool, detail: String) -> Check {
     Check {
         name,
         passed,

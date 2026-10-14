@@ -29,7 +29,8 @@ impl RiskyFeature {
         Self::ExternalProviders,
     ];
 
-    pub fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::ContentIndex => "Content index",
             Self::ImagePreview => "Image preview",
@@ -37,7 +38,7 @@ impl RiskyFeature {
         }
     }
 
-    fn key(self) -> &'static str {
+    const fn key(self) -> &'static str {
         match self {
             Self::ContentIndex => "content_index",
             Self::ImagePreview => "image_preview",
@@ -45,7 +46,7 @@ impl RiskyFeature {
         }
     }
 
-    fn kill_environment(self) -> &'static str {
+    const fn kill_environment(self) -> &'static str {
         match self {
             Self::ContentIndex => "COMMANDER_DISABLE_CONTENT_INDEX",
             Self::ImagePreview => "COMMANDER_DISABLE_IMAGE_PREVIEW",
@@ -53,7 +54,7 @@ impl RiskyFeature {
         }
     }
 
-    fn bit(self) -> u8 {
+    const fn bit(self) -> u8 {
         match self {
             Self::ContentIndex => 1 << 0,
             Self::ImagePreview => 1 << 1,
@@ -316,6 +317,7 @@ fn apply_update(
     }
 }
 
+#[must_use]
 pub fn snapshot(feature: RiskyFeature) -> FeatureSnapshot {
     let controls = runtime_controls();
     crate::lock_util::recover(&controls.state).store.snapshot(
@@ -324,6 +326,7 @@ pub fn snapshot(feature: RiskyFeature) -> FeatureSnapshot {
     )
 }
 
+#[must_use]
 pub fn snapshots() -> Vec<FeatureSnapshot> {
     let controls = runtime_controls();
     let state = crate::lock_util::recover(&controls.state);
@@ -338,6 +341,7 @@ pub fn snapshots() -> Vec<FeatureSnapshot> {
         .collect()
 }
 
+#[must_use]
 pub fn enabled(feature: RiskyFeature) -> bool {
     runtime_controls().enabled_mask.load(Ordering::Acquire) & feature.bit() != 0
 }
@@ -362,10 +366,12 @@ fn update(feature: RiskyFeature, change: impl FnOnce(&mut FeaturePolicy)) -> boo
     true
 }
 
+#[must_use]
 pub fn set_killed(feature: RiskyFeature, killed: bool) -> bool {
     update(feature, |policy| policy.killed = killed)
 }
 
+#[must_use]
 pub fn set_rollout_percent(feature: RiskyFeature, percent: u8) -> bool {
     update(feature, |policy| policy.rollout_percent = percent.min(100))
 }

@@ -9,7 +9,7 @@ use crate::clipboard::PathStyle;
 use crate::transfer::TransferKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum UiModal {
+pub enum UiModal {
     History,
     Rename,
     BatchRename,
@@ -22,7 +22,7 @@ pub(crate) enum UiModal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum UiRequest {
+pub enum UiRequest {
     Rename(PathBuf),
     SelectMask,
     RunCommand,
@@ -104,7 +104,7 @@ impl UiRequest {
 }
 
 #[derive(Default)]
-pub(crate) struct UiRequestQueue {
+pub struct UiRequestQueue {
     pending: VecDeque<UiRequest>,
 }
 
@@ -146,7 +146,7 @@ impl UiRequestQueue {
     }
 }
 
-pub(crate) trait UiRequestSink {
+pub trait UiRequestSink {
     fn any_modal_open(&self) -> bool;
     fn is_modal_open(&self, modal: UiModal) -> bool;
     fn apply(&mut self, request: UiRequest);
@@ -154,7 +154,7 @@ pub(crate) trait UiRequestSink {
 
 /// Apply one drained frame snapshot and return requests that must retain FIFO
 /// ownership until the currently open modal closes.
-pub(crate) fn dispatch_snapshot(
+pub fn dispatch_snapshot(
     requests: Vec<UiRequest>,
     sink: &mut impl UiRequestSink,
 ) -> Vec<UiRequest> {

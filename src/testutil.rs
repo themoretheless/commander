@@ -30,7 +30,7 @@ impl TempDir {
         // then fail loudly if the directory still unexpectedly exists.
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir(&path).unwrap();
-        TempDir(path)
+        Self(path)
     }
 
     pub fn path(&self) -> &Path {

@@ -18,6 +18,12 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(feature, values("cargo-clippy"))',
 ] }
 
+[lints.clippy]
+# Ratchet: style lints that were cleared in bulk stay cleared.
+use_self = "warn"
+redundant_pub_crate = "warn"
+doc_markdown = "warn"
+
 [dependencies]
 eframe = "0.36"
 egui = "0.36"

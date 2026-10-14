@@ -6,11 +6,11 @@ use std::sync::OnceLock;
 static STORAGE_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(feature = "visual-qa")]
-pub(crate) fn install_storage_root_override(path: PathBuf) -> Result<(), PathBuf> {
+pub fn install_storage_root_override(path: PathBuf) -> Result<(), PathBuf> {
     STORAGE_ROOT_OVERRIDE.set(path)
 }
 
-pub(crate) fn storage_root_override() -> Option<&'static Path> {
+pub fn storage_root_override() -> Option<&'static Path> {
     STORAGE_ROOT_OVERRIDE.get().map(PathBuf::as_path)
 }
 
@@ -148,7 +148,7 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Recreate the symlink `src` at `dst` without following it.
-pub(crate) fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     let target = std::fs::read_link(src)?;
     // Windows needs to know whether the link points at a directory.
     let directory = std::fs::metadata(src).is_ok_and(|metadata| metadata.is_dir());
@@ -157,20 +157,12 @@ pub(crate) fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Create a symlink at `destination` pointing to `target`.
 #[cfg(unix)]
-pub(crate) fn create_symlink(
-    target: &Path,
-    destination: &Path,
-    _directory: bool,
-) -> std::io::Result<()> {
+pub fn create_symlink(target: &Path, destination: &Path, _directory: bool) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, destination)
 }
 
 #[cfg(windows)]
-pub(crate) fn create_symlink(
-    target: &Path,
-    destination: &Path,
-    directory: bool,
-) -> std::io::Result<()> {
+pub fn create_symlink(target: &Path, destination: &Path, directory: bool) -> std::io::Result<()> {
     if directory {
         std::os::windows::fs::symlink_dir(target, destination)
     } else {

@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 const AUTO_RUN_DELAY: f64 = 0.25;
 
-fn index_phase_label(phase: crate::content_index::IndexPhase) -> &'static str {
+const fn index_phase_label(phase: crate::content_index::IndexPhase) -> &'static str {
     match phase {
         crate::content_index::IndexPhase::Disabled => "Off",
         crate::content_index::IndexPhase::Missing => "Not built",

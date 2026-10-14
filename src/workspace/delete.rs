@@ -151,7 +151,7 @@ impl DeleteController {
         self.port.move_to_trash(target)
     }
 
-    pub(super) fn is_active(&self) -> bool {
+    pub(super) const fn is_active(&self) -> bool {
         self.active.is_some()
     }
 

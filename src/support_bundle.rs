@@ -126,6 +126,7 @@ impl Redactor {
     }
 }
 
+#[must_use]
 pub fn collect(paths: &[PathBuf]) -> SupportBundle {
     let mut warnings = Vec::new();
     let operations = match crate::operation_journal::load() {
@@ -327,6 +328,7 @@ pub fn export_encrypted(
     Ok((path, manifest))
 }
 
+#[must_use]
 pub fn plaintext_preview(bundle: &SupportBundle) -> String {
     format!(
         "schema={} ops={} versions={} volumes={} warnings={}",

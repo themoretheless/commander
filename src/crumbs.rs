@@ -48,7 +48,7 @@ pub struct CrumbLayout {
 
 impl CrumbLayout {
     /// Whether any segment is hidden behind the "..." chip.
-    pub fn is_elided(&self) -> bool {
+    pub const fn is_elided(&self) -> bool {
         !self.collapsed.is_empty()
     }
 }

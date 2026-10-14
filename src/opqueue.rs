@@ -49,20 +49,17 @@ pub enum JobState {
 
 impl JobState {
     /// Not started yet, whether runnable now or explicitly held by the user.
-    pub fn is_waiting(self) -> bool {
-        matches!(self, JobState::Pending | JobState::Paused)
+    pub const fn is_waiting(self) -> bool {
+        matches!(self, Self::Pending | Self::Paused)
     }
 
     /// Terminal states accept no further transitions.
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            JobState::Done | JobState::Failed | JobState::Cancelled
-        )
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
     }
 
     /// Work that can still run or is currently running.
-    pub fn is_unfinished(self) -> bool {
+    pub const fn is_unfinished(self) -> bool {
         !self.is_terminal()
     }
 }
@@ -88,7 +85,7 @@ pub struct Job<S> {
 pub struct Queue<S> {
     jobs: Vec<Job<S>>,
     /// Parallel index for O(1) job lookup by id while preserving order.
-    /// Used by state_of() and get() to avoid O(n) scanning.
+    /// Used by `state_of()` and `get()` to avoid O(n) scanning.
     index: std::collections::HashMap<JobId, usize>,
     /// Maximum number of jobs allowed in `Running` at once (at least 1).
     concurrency: usize,
@@ -110,7 +107,7 @@ impl<S> Queue<S> {
     /// A queue running up to `concurrency` jobs at once (clamped to >= 1, so a
     /// zero can never wedge the queue into never starting anything).
     pub fn with_concurrency(concurrency: usize) -> Self {
-        Queue {
+        Self {
             jobs: Vec::new(),
             index: std::collections::HashMap::new(),
             concurrency: concurrency.max(1),
@@ -121,7 +118,7 @@ impl<S> Queue<S> {
     /// Current concurrency cap.
     // Concurrency-cap API: used once parallel transfers / the queue panel land.
     #[allow(dead_code)]
-    pub fn concurrency(&self) -> usize {
+    pub const fn concurrency(&self) -> usize {
         self.concurrency
     }
 
@@ -139,12 +136,12 @@ impl<S> Queue<S> {
     }
 
     #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.jobs.is_empty()
     }
 
     #[allow(dead_code)]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.jobs.len()
     }
 

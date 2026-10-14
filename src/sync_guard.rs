@@ -87,7 +87,7 @@ pub struct PlanStamp {
 }
 
 impl PlanStamp {
-    pub fn filter_key(&self) -> &'static str {
+    pub const fn filter_key(&self) -> &'static str {
         match (self.left_show_hidden, self.right_show_hidden) {
             (false, false) => "hidden:0:0",
             (false, true) => "hidden:0:1",
@@ -349,7 +349,7 @@ fn source_fingerprint(
 struct Fnv(u64);
 
 impl Fnv {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self(0xcbf29ce484222325)
     }
 
@@ -376,7 +376,7 @@ impl Fnv {
         self.bytes(&modified.to_le_bytes());
     }
 
-    fn finish(self) -> u64 {
+    const fn finish(self) -> u64 {
         self.0
     }
 }

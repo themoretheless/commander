@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(crate) fn show(
+pub fn show(
     ui: &mut egui::Ui,
     colors: &ThemeColors,
     title: &str,
