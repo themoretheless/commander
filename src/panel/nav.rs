@@ -12,7 +12,11 @@ impl PanelState {
         // The jump trail truncates any forward tail and collapses a repeat of
         // the current directory, so every navigation entry point records here.
         self.history.push(path.clone());
-        record_visit(&path);
+        // A stale bookmark/omnibar path that no longer exists is not a visit
+        // worth offering again in Recent; Back prunes it from the trail.
+        if !is_missing_directory(&path) {
+            record_visit(&path);
+        }
         self.load_remembered_path(path);
     }
 
@@ -49,9 +53,12 @@ impl PanelState {
         // Walk the existing trail without recording a new jump. Directories
         // can disappear after being visited, so prune dead entries on sight.
         self.stash_view_settings();
+        // Pruning can leave a repeat of the current directory adjacent to it
+        // (`[A, B, A]` with `B` deleted); skip it so Back/Forward moves.
+        let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .back_pruning(Path::is_dir)
+            .back_pruning(|p| p != current && p.is_dir())
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);
@@ -61,13 +68,25 @@ impl PanelState {
 
     pub fn go_forward(&mut self) {
         self.stash_view_settings();
+        // Pruning can leave a repeat of the current directory adjacent to it
+        // (`[A, B, A]` with `B` deleted); skip it so Back/Forward moves.
+        let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .forward_pruning(Path::is_dir)
+            .forward_pruning(|p| p != current && p.is_dir())
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);
             self.load_remembered_path(path);
         }
+    }
+}
+
+/// Whether `path` is known not to be a directory: it is gone or names a
+/// non-directory. Unreadable (denied) locations still count as visits.
+fn is_missing_directory(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => !meta.is_dir(),
+        Err(err) => err.kind() == std::io::ErrorKind::NotFound,
     }
 }

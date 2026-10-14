@@ -68,13 +68,31 @@ pub fn push_visit(list: &mut Vec<PathBuf>, path: &Path, cap: usize) {
     list.truncate(cap);
 }
 
+/// Record a visit to `path` in `list` and `stats`, dropping usage for paths
+/// that fell off the capped list so the persisted stats stay bounded. Pure,
+/// so the pruning is unit-testable without the globals.
+pub(super) fn record_visit_into(
+    list: &mut Vec<PathBuf>,
+    stats: &mut VisitStats,
+    path: &Path,
+    cap: usize,
+) {
+    push_visit(list, path, cap);
+    stats.record(path);
+    if stats.uses.len() > list.len() {
+        stats.uses.retain(|used, _| list.contains(used));
+    }
+}
+
 /// Record a visit to `path` in the global recent list.
 pub fn record_visit(path: &Path) {
-    if let Ok(mut v) = visited_log().lock() {
-        push_visit(&mut v, path, VISITED_CAP);
-    }
+    let Ok(mut log) = visited_log().lock() else {
+        return;
+    };
     if let Ok(mut stats) = visit_stats().lock() {
-        stats.record(path);
+        record_visit_into(&mut log, &mut stats, path, VISITED_CAP);
+    } else {
+        push_visit(&mut log, path, VISITED_CAP);
     }
 }
 

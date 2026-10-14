@@ -2266,6 +2266,38 @@ mod tests {
     }
 
     #[test]
+    fn history_back_skips_a_repeat_of_the_current_directory() {
+        let temp = TempDir::new();
+        let a = temp.dir("a");
+        let removed = temp.dir("removed");
+
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.navigate_to(a.clone()); // [root, a]
+        panel.navigate_to(removed.clone()); // [root, a, removed]
+        panel.navigate_to(a.clone()); // [root, a, removed, a]
+        std::fs::remove_dir(&removed).unwrap();
+
+        // Pruning `removed` leaves `a` next to itself; Back moves on to root
+        // instead of "reloading" the directory already shown.
+        panel.go_back();
+        assert_eq!(panel.current_path, temp.path());
+        panel.go_forward();
+        assert_eq!(panel.current_path, a);
+        assert!(!panel.can_go_forward());
+    }
+
+    #[test]
+    fn navigating_to_a_missing_directory_is_not_a_recent_visit() {
+        let temp = TempDir::new();
+        let missing = temp.path().join("never-created");
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.navigate_to(missing.clone());
+        assert!(!visited_paths().contains(&missing));
+    }
+
+    #[test]
     fn history_jump_back_twice_then_forward_and_truncate() {
         let tmp = TempDir::new();
         let a = tmp.dir("a");
@@ -2472,6 +2504,19 @@ mod tests {
                 PathBuf::from("/a"),
             ]
         );
+    }
+
+    #[test]
+    fn recording_visits_prunes_stats_for_paths_off_the_list() {
+        let mut v: Vec<PathBuf> = Vec::new();
+        let mut stats = VisitStats::default();
+        for name in ["/a", "/b", "/c", "/d"] {
+            visit::record_visit_into(&mut v, &mut stats, Path::new(name), 3);
+        }
+        assert_eq!(v.len(), 3);
+        assert_eq!(stats.uses.len(), 3);
+        assert!(!stats.uses.contains_key(Path::new("/a")));
+        assert_eq!(stats.uses[Path::new("/d")].count, 1);
     }
 
     #[test]
