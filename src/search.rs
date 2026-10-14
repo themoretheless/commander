@@ -800,12 +800,6 @@ impl CompiledQuery {
     }
 }
 
-/// Open `path` for a content read only if it is a regular file, returning the
-/// handle and its size. FIFOs, sockets and devices are refused: opening a
-/// FIFO for reading blocks until a writer appears, which would hang the
-/// search worker. The path is stat-ed first so devices are never opened;
-/// unix then opens non-blocking (and without acquiring a controlling tty) and
-/// re-checks the type on the handle itself.
 /// Leading bytes checked for NULs to tell binary files from text.
 const BINARY_SNIFF_BYTES: u64 = 8_192;
 
@@ -831,6 +825,12 @@ fn read_text_bytes(reader: impl Read, size: u64) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Open `path` for a content read only if it is a regular file, returning the
+/// handle and its size. FIFOs, sockets and devices are refused: opening a
+/// FIFO for reading blocks until a writer appears, which would hang the
+/// search worker. The path is stat-ed first so devices are never opened;
+/// unix then opens non-blocking (and without acquiring a controlling tty) and
+/// re-checks the type on the handle itself.
 fn open_regular_file(path: &Path) -> Option<(std::fs::File, u64)> {
     // Refuse devices, FIFOs and sockets before opening: opening a tty, serial
     // or tape device can have side effects. The fstat below covers the race
