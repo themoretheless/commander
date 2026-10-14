@@ -134,6 +134,7 @@ pub struct App {
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
     pub(crate) show_developer_panel: bool,
     pub(crate) developer_notice: Option<DeveloperNotice>,
+    pub(crate) developer_store_usage: developer_panel::StoreUsageCache,
     pub(crate) persistence_issue_seen: u64,
 }
 
@@ -803,6 +804,7 @@ impl App {
             startup_trace: Some(startup),
             show_developer_panel: false,
             developer_notice: None,
+            developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: 0,
         };
         if let Some(trace) = &mut app.startup_trace {
@@ -885,6 +887,7 @@ impl App {
             startup_trace: None,
             show_developer_panel: false,
             developer_notice: None,
+            developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: crate::persistence::issue_generation(),
         }
     }
