@@ -2,7 +2,7 @@
 
 use crate::panel::FileEntry;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::fs::{self, ReadDir};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -250,6 +250,8 @@ fn run_worker(
         return;
     };
 
+    let root_device = device_of(&root);
+    let mut seen_links = HashSet::new();
     let mut stack = vec![Frame {
         path: root.clone(),
         depth: 0,
@@ -292,6 +294,40 @@ fn run_worker(
                                 .and_then(|meta| FileEntry::from_meta(path.clone(), meta))
                         })
                         .flatten();
+                    if crosses_device(root_device, metadata.as_ref()) {
+                        // Another mount (e.g. /proc or a network share under
+                        // the scanned root): list it, but do not walk into it.
+                        let node = RawNode {
+                            path,
+                            bytes: 0,
+                            files: 0,
+                            direct_files: 0,
+                            children: Vec::new(),
+                            children_truncated: true,
+                            unreadable: false,
+                        };
+                        let child_index = push_raw_node(
+                            &mut raw_nodes,
+                            node,
+                            node_cap,
+                            false,
+                            &mut state.truncated,
+                        );
+                        if let Some(parent) = stack.last_mut() {
+                            if let Some(index) = child_index {
+                                parent.child_nodes.push(index);
+                            } else {
+                                parent.children_truncated = true;
+                            }
+                        }
+                        if let Some(entry) = top_entry {
+                            top_level.push(entry, 0);
+                        }
+                        if !state.send_progress(&sender, &notify) {
+                            return;
+                        }
+                        continue;
+                    }
                     match fs::read_dir(&path) {
                         Ok(entries) => stack.push(Frame {
                             path,
@@ -339,7 +375,13 @@ fn run_worker(
                         state.inaccessible(path);
                         continue;
                     };
-                    let bytes = metadata.len();
+                    // Every hard link to a file is listed, but its bytes
+                    // count once so hard-linked trees are not overstated.
+                    let bytes = if first_link(&mut seen_links, &metadata) {
+                        metadata.len()
+                    } else {
+                        0
+                    };
                     state.progress.files = state.progress.files.saturating_add(1);
                     state.progress.bytes = state.progress.bytes.saturating_add(bytes);
                     if let Some(parent) = stack.last_mut() {
@@ -403,6 +445,9 @@ fn run_worker(
         }
     }
 
+    if was_cancelled {
+        fold_open_frames(&mut stack, &mut top_level);
+    }
     if was_cancelled && let Some(root_frame) = stack.first() {
         let partial_root = RawNode {
             path: root.clone(),
@@ -433,6 +478,57 @@ fn run_worker(
         &sender,
         &notify,
     );
+}
+
+/// Rolls the totals of directories still being walked at cancellation into
+/// their parents (deepest first) so the partial root reflects everything
+/// counted so far. Their subtrees are incomplete, so no nodes are emitted.
+fn fold_open_frames(stack: &mut Vec<Frame>, top_level: &mut TopLevelSet) {
+    while stack.len() > 1 {
+        let frame = stack.pop().expect("stack has a non-root frame");
+        if let Some(entry) = frame.top_entry {
+            top_level.push(entry, frame.bytes);
+        }
+        let parent = stack.last_mut().expect("root frame remains");
+        parent.bytes = parent.bytes.saturating_add(frame.bytes);
+        parent.files = parent.files.saturating_add(frame.files);
+        parent.children_truncated = true;
+    }
+}
+
+#[cfg(unix)]
+fn device_of(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).ok().map(|metadata| metadata.dev())
+}
+
+#[cfg(not(unix))]
+fn device_of(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// Whether a directory lives on a different device than the scanned root.
+#[cfg(unix)]
+fn crosses_device(root_device: Option<u64>, metadata: Option<&fs::Metadata>) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    root_device.is_some_and(|root| metadata.is_some_and(|metadata| metadata.dev() != root))
+}
+
+#[cfg(not(unix))]
+fn crosses_device(_root_device: Option<u64>, _metadata: Option<&fs::Metadata>) -> bool {
+    false
+}
+
+/// False for a second or later path to an already counted hard-linked file.
+#[cfg(unix)]
+fn first_link(seen: &mut HashSet<(u64, u64)>, metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink() <= 1 || seen.insert((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn first_link(_seen: &mut HashSet<(u64, u64)>, _metadata: &fs::Metadata) -> bool {
+    true
 }
 
 fn push_raw_node(
@@ -631,5 +727,67 @@ mod tests {
 
         assert!(snapshot.cancelled);
         assert!(snapshot.progress.entries < 2_001);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_links_count_their_bytes_once() {
+        let temp = TempDir::new();
+        temp.file("a/data.bin", "12345");
+        std::fs::create_dir(temp.path().join("b")).unwrap();
+        std::fs::hard_link(
+            temp.path().join("a/data.bin"),
+            temp.path().join("b/data.bin"),
+        )
+        .unwrap();
+
+        let run = spawn(temp.path().to_path_buf(), Arc::new(|| {}));
+        let snapshot = completed(&run);
+
+        assert_eq!(snapshot.progress.files, 2);
+        assert_eq!(snapshot.progress.bytes, 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directories_on_other_devices_are_not_descended() {
+        let temp = TempDir::new();
+        let metadata = std::fs::metadata(temp.path()).unwrap();
+        assert!(!crosses_device(device_of(temp.path()), Some(&metadata)));
+        assert!(crosses_device(
+            device_of(temp.path()).map(|device| device.wrapping_add(1)),
+            Some(&metadata)
+        ));
+        assert!(!crosses_device(None, Some(&metadata)));
+    }
+
+    #[test]
+    fn cancelled_snapshot_rolls_open_directories_into_the_root() {
+        let temp = TempDir::new();
+        temp.file("deep/inner/x.bin", "123");
+        let frame = |path: PathBuf, depth: usize, bytes: u64, files: usize| Frame {
+            entries: std::fs::read_dir(temp.path()).unwrap(),
+            path,
+            depth,
+            top_entry: None,
+            bytes,
+            files,
+            direct_files: 0,
+            child_nodes: Vec::new(),
+            children_truncated: false,
+        };
+        let mut stack = vec![
+            frame(temp.path().to_path_buf(), 0, 1, 1),
+            frame(temp.path().join("deep"), 1, 10, 2),
+            frame(temp.path().join("deep/inner"), 2, 100, 3),
+        ];
+        let mut top_level = TopLevelSet::default();
+
+        fold_open_frames(&mut stack, &mut top_level);
+
+        assert_eq!(stack.len(), 1);
+        assert_eq!(stack[0].bytes, 111);
+        assert_eq!(stack[0].files, 6);
+        assert!(stack[0].children_truncated);
     }
 }
