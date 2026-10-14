@@ -32,6 +32,11 @@ fn initial_selection_chars(name: &str, is_dir: bool) -> usize {
 /// validation, so they are kept here until the user edits the name.
 const COMMIT_ERROR: &str = "rename_commit_error";
 
+/// Temp-memory slot for whether the renamed item lists as a folder, taken
+/// from the pane listing when the editor opens (a folder symlink counts as a
+/// folder), so the first frame needs no stat on the UI thread.
+const RENAME_IS_DIR: &str = "rename_is_dir";
+
 /// The error line under the field: live validation first, else the failed
 /// commit's error while the buffer is still the one that was committed.
 fn shown_error(
@@ -52,13 +57,21 @@ impl App {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
+        let is_dir = [self.ws.active_panel_ref(), self.ws.inactive_panel()]
+            .into_iter()
+            .flat_map(|panel| panel.entries())
+            .find(|entry| entry.path == path)
+            .is_some_and(|entry| entry.is_dir);
         self.ui.modals.renaming = Some(RenameState {
             siblings: crate::workspace::Workspace::rename_siblings(&path),
             path,
             buffer: name,
             error: None,
         });
-        ctx.data_mut(|data| data.remove::<(String, String)>(egui::Id::new(COMMIT_ERROR)));
+        ctx.data_mut(|data| {
+            data.remove::<(String, String)>(egui::Id::new(COMMIT_ERROR));
+            data.insert_temp(egui::Id::new(RENAME_IS_DIR), is_dir);
+        });
         Self::mark_modal_opened(ctx, UiModal::Rename);
     }
 
@@ -90,7 +103,10 @@ impl App {
             // Grab focus and select the basename on the first frame.
             if Self::take_modal_opened(ui.ctx(), UiModal::Rename) {
                 resp.request_focus();
-                let is_dir = std::fs::symlink_metadata(&state.path).is_ok_and(|meta| meta.is_dir());
+                let is_dir = ui
+                    .ctx()
+                    .data(|data| data.get_temp::<bool>(egui::Id::new(RENAME_IS_DIR)))
+                    .unwrap_or(false);
                 let stem = initial_selection_chars(&state.buffer, is_dir);
                 let mut text_state =
                     egui::TextEdit::load_state(ui.ctx(), resp.id).unwrap_or_default();
