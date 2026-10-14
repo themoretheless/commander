@@ -217,30 +217,23 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     let mut emitted = vec![false; n];
     let mut steps: Vec<RenameStep> = Vec::new();
 
-    // Drain every path: emit a pair as soon as its target is free (no blocker)
-    // or its blocker has already vacated. Self-cycles (case-only) never qualify.
-    loop {
-        let mut progress = false;
-        for i in 0..n {
-            if emitted[i] {
-                continue;
-            }
-            let ready = match blocker[i] {
-                None => true,
-                Some(j) if j != i => emitted[j],
-                Some(_) => false,
-            };
-            if ready {
-                emitted[i] = true;
-                steps.push(RenameStep::Direct {
-                    from: pairs[i].0.clone(),
-                    to: pairs[i].1.clone(),
-                });
-                progress = true;
-            }
+    // Drain every path from its head (a pair whose target is free), walking
+    // `succ_of` forward: each successor's blocker has just vacated. One walk per
+    // path keeps this linear; rescanning for ready pairs was quadratic on a long
+    // chain such as renumbering `f1..fN` up by one. Cycles (including
+    // case-only self-cycles) have no head and are left for the temp pass below.
+    for head in 0..n {
+        if blocker[head].is_some() {
+            continue;
         }
-        if !progress {
-            break;
+        let mut node = Some(head);
+        while let Some(cur) = node {
+            emitted[cur] = true;
+            steps.push(RenameStep::Direct {
+                from: pairs[cur].0.clone(),
+                to: pairs[cur].1.clone(),
+            });
+            node = succ_of.get(&cur).copied();
         }
     }
 
@@ -400,6 +393,34 @@ mod tests {
             simulate(&order, &["a", "b"]),
             expected_final(&["a", "b"], &pairs)
         );
+    }
+
+    #[test]
+    fn long_renumbering_chain_drains_in_one_walk() {
+        // f0->f1, f1->f2, ... in both listing orders: every pair waits on the
+        // next, so the plan is all Directs from the far end of the chain back.
+        let n = 5_000;
+        let names: Vec<String> = (0..=n).map(|k| format!("f{k}")).collect();
+        let forward: Vec<(&str, &str)> = (0..n)
+            .map(|k| (names[k].as_str(), names[k + 1].as_str()))
+            .collect();
+        let mut backward = forward.clone();
+        backward.reverse();
+        let present: Vec<&str> = names[..n].iter().map(String::as_str).collect();
+        for pairs in [forward, backward] {
+            let order = safe_rename_order(&map(&pairs), &existing(&present));
+            let s = steps(&order);
+            assert_eq!(s.len(), n);
+            assert!(s.iter().all(|st| matches!(st, RenameStep::Direct { .. })));
+            assert_eq!(
+                s[0],
+                RenameStep::Direct {
+                    from: format!("f{}", n - 1),
+                    to: format!("f{n}"),
+                }
+            );
+            assert_eq!(simulate(&order, &present), expected_final(&present, &pairs));
+        }
     }
 
     #[test]
