@@ -64,6 +64,39 @@ fn read_error_message(path: &Path, error: &ReadError) -> String {
     }
 }
 
+/// Header labels for the two sides. Same-named files (the cross-pane pair)
+/// carry their folder too, so the user can tell which side is `-` and `+`.
+fn side_labels(a: &Path, b: &Path) -> (String, String) {
+    let name = |path: &Path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+    let (name_a, name_b) = (name(a), name(b));
+    if !name_a.eq_ignore_ascii_case(&name_b) {
+        return (name_a, name_b);
+    }
+    let parent = |path: &Path| path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let (parent_a, parent_b) = (parent(a), parent(b));
+    // The folder name alone, unless both folders share it too.
+    let folder = |path: &Path| match path.file_name() {
+        Some(folder) if parent_a.file_name() != parent_b.file_name() => {
+            folder.to_string_lossy().to_string()
+        }
+        _ => path.display().to_string(),
+    };
+    (
+        format!("{name_a} ({})", folder(&parent_a)),
+        format!("{name_b} ({})", folder(&parent_b)),
+    )
+}
+
+/// Both sides hold the same text. `diff_lines` emits `Equal` rows, so an
+/// identical non-empty pair has lines but no insertions or deletions.
+fn files_identical(lines: &[crate::textdiff::DiffLine]) -> bool {
+    change_counts(lines) == (0, 0)
+}
+
 /// One unwrapped monospace row per line, so only the visible rows are laid
 /// out: an empty-vs-large diff can hold about two million lines. Returns how
 /// many lines were laid out.
@@ -109,16 +142,11 @@ impl App {
                 self.toast(
                     ctx,
                     crate::toasts::ToastKind::Info,
-                    "Select a file pair to diff",
+                    "Select two files, or put the cursor on a file with the same name in both panes",
                     false,
                 );
             }
             Some((a, b)) => {
-                let name = |path: &Path| {
-                    path.file_name()
-                        .map(|name| name.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                };
                 let (lines, message) = match (read_text(&a), read_text(&b)) {
                     (Ok(ta), Ok(tb)) => match diff_lines(&ta, &tb) {
                         Ok(lines) => (lines, None),
@@ -134,9 +162,10 @@ impl App {
                     (_, Err(error)) => (Vec::new(), Some(read_error_message(&b, &error))),
                 };
                 self.ui.tools.replace_on(self.ws.active.other());
+                let (name_a, name_b) = side_labels(&a, &b);
                 self.ui.tools.diff = Some(DiffState {
-                    name_a: name(&a),
-                    name_b: name(&b),
+                    name_a,
+                    name_b,
                     lines,
                     message,
                 });
@@ -181,7 +210,7 @@ impl App {
 
             if let Some(msg) = &state.message {
                 ui.label(egui::RichText::new(msg).size(12.0).color(t.text_muted));
-            } else if state.lines.is_empty() {
+            } else if files_identical(&state.lines) {
                 ui.label(
                     egui::RichText::new("The files are identical.")
                         .size(12.0)
@@ -215,7 +244,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReadError, read_error_message, read_text, render_diff_lines};
+    use super::{
+        ReadError, files_identical, read_error_message, read_text, render_diff_lines, side_labels,
+    };
+    use std::path::Path;
 
     #[test]
     fn large_diff_lays_out_only_visible_lines() {
@@ -278,5 +310,31 @@ mod tests {
             message.contains("big.txt") && message.contains("too large"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn identical_non_empty_files_are_reported_identical() {
+        let same = crate::textdiff::diff_lines("one\ntwo\n", "one\ntwo\n").unwrap();
+        assert!(!same.is_empty(), "equal rows are still emitted");
+        assert!(files_identical(&same));
+        assert!(files_identical(&[]));
+        let changed = crate::textdiff::diff_lines("one\n", "two\n").unwrap();
+        assert!(!files_identical(&changed));
+    }
+
+    #[test]
+    fn same_named_sides_show_their_folder() {
+        assert_eq!(
+            side_labels(Path::new("/x/a.txt"), Path::new("/x/b.txt")),
+            ("a.txt".to_string(), "b.txt".to_string())
+        );
+        assert_eq!(
+            side_labels(Path::new("/left/a.txt"), Path::new("/right/A.txt")),
+            ("a.txt (left)".to_string(), "A.txt (right)".to_string())
+        );
+        // Folders with the same name fall back to their full path.
+        let (a, b) = side_labels(Path::new("/one/src/a.txt"), Path::new("/two/src/a.txt"));
+        assert_eq!(a, format!("a.txt ({})", Path::new("/one/src").display()));
+        assert_eq!(b, format!("a.txt ({})", Path::new("/two/src").display()));
     }
 }
