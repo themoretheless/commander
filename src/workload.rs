@@ -623,7 +623,21 @@ impl std::fmt::Display for AbandonReason {
 pub type AbandonmentCallback = Box<dyn FnOnce(AbandonReason) + Send + 'static>;
 
 fn invoke_abandonment(callback: AbandonmentCallback, reason: AbandonReason) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(reason)));
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(reason))).is_err() {
+        log::warn!(
+            target: "commander::workload",
+            "{}",
+            caught_panic_message(&format!("abandonment callback ({reason})"))
+        );
+    }
+}
+
+/// App-log line for a panic the runtime caught, naming what panicked.
+/// The panic hook (`logging::install_panic_hook`) has already logged the
+/// thread, location and message, so this line only adds the runtime context
+/// and does not repeat the payload.
+fn caught_panic_message(what: &str) -> String {
+    format!("{what} panicked (see the preceding panic entry); it was retired as failed")
 }
 
 struct PendingWork {
@@ -837,6 +851,7 @@ impl WorkloadRuntime {
                 next.0.snapshot.kind.thread_label(),
                 next.0.snapshot.id.0
             );
+            let task_label = thread_name.clone();
             #[cfg(test)]
             let injected_failure = {
                 let left = self.failing_spawns.load(Ordering::Acquire);
@@ -847,17 +862,35 @@ impl WorkloadRuntime {
             #[cfg(not(test))]
             let injected_failure = false;
             let spawned = !injected_failure
-                && std::thread::Builder::new()
-                    .name(thread_name)
-                    .spawn(move || {
-                        let succeeded =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                next.1.run(next.0.token);
-                            }))
-                            .is_ok();
-                        runtime.finish(next.0.snapshot.id, succeeded);
-                    })
-                    .is_ok();
+                && {
+                    let worker_name = thread_name.clone();
+                    match std::thread::Builder::new()
+                        .name(thread_name)
+                        .spawn(move || {
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    next.1.run(next.0.token);
+                                }));
+                            if outcome.is_err() {
+                                log::warn!(
+                                    target: "commander::workload",
+                                    "{}",
+                                    caught_panic_message(&format!("task {worker_name}"))
+                                );
+                            }
+                            runtime.finish(next.0.snapshot.id, outcome.is_ok());
+                        }) {
+                        Ok(_) => true,
+                        Err(error) => {
+                            log::warn!(
+                                target: "commander::workload",
+                                "could not start worker thread for task {}: {error}; the task was abandoned",
+                                task_label
+                            );
+                            false
+                        }
+                    }
+                };
             if !spawned {
                 // The unspawned job was dropped above and abandoned as
                 // SpawnFailed. Retire it, but do not burn through the rest of
@@ -1138,6 +1171,14 @@ impl DeterministicWorkload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caught_panic_message_names_task_without_repeating_payload() {
+        assert_eq!(
+            caught_panic_message("task work-list-7"),
+            "task work-list-7 panicked (see the preceding panic entry); it was retired as failed"
+        );
+    }
 
     fn spec(kind: TaskKind, generation: u64, priority: Priority) -> TaskSpec {
         TaskSpec::new(kind, "/project", generation)

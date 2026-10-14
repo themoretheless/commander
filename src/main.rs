@@ -115,6 +115,7 @@ use egui::ViewportBuilder;
 
 fn main() -> eframe::Result<()> {
     logging::init();
+    logging::install_panic_hook();
 
     let launch = launch::sanitize_launch_paths(launch::parse_launch_args(std::env::args_os()));
 
