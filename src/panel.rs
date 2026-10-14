@@ -838,7 +838,7 @@ impl PanelState {
             let listing_binding = self.listing.binding().to_path_buf();
             self.watcher
                 .acknowledge_snapshot(ready.ticket, &listing_binding);
-            self.refresh_sizes(true);
+            self.refresh_sizes(ready.forced_sizes);
             self.apply_pending_focus(ready.focus);
         } else if let Some(ticket) = ready.ticket.as_ref() {
             self.watcher.defer_snapshot(Some(ticket));
@@ -979,7 +979,8 @@ impl PanelState {
                 let listing_binding = self.listing.binding().to_path_buf();
                 self.watcher
                     .acknowledge_snapshot(Some(ticket), &listing_binding);
-                self.refresh_sizes(true);
+                // Watcher-driven: expensive folders are not re-walked.
+                self.refresh_sizes(false);
                 self.change_provenance.record(source);
                 crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 return true;
