@@ -453,12 +453,18 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
+        // Removes the relative tree even if an assertion below panics, so a
+        // failing run does not leave debris in the crate checkout.
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
         let _ = std::fs::remove_dir_all(&base);
+        let _cleanup = Cleanup(base.clone());
         let root = base.join("run1");
-        let prepared = ArtifactDirectory::prepare(&root);
-        let created = root.is_dir();
-        let _ = std::fs::remove_dir_all(&base);
-        prepared.unwrap();
-        assert!(created);
+        ArtifactDirectory::prepare(&root).unwrap();
+        assert!(root.is_dir());
     }
 }
