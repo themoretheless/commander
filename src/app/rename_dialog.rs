@@ -17,17 +17,60 @@ fn name_is_lossy(path: &std::path::Path) -> bool {
     path.file_name().is_some_and(|name| name.to_str().is_none())
 }
 
+/// Characters to preselect when the editor opens: the stem, so typing
+/// replaces the name but keeps the extension. Folders, dotfiles (".bashrc")
+/// and names without an extension select the whole name.
+fn initial_selection_chars(name: &str, is_dir: bool) -> usize {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 && !is_dir => name[..dot].chars().count(),
+        _ => name.chars().count(),
+    }
+}
+
+/// Temp-memory slot for the last failed commit: the buffer it was made with
+/// and the error. Commit errors arrive after the frame drew its live
+/// validation, so they are kept here until the user edits the name.
+const COMMIT_ERROR: &str = "rename_commit_error";
+
+/// Temp-memory slot for whether the renamed item lists as a folder, taken
+/// from the pane listing when the editor opens (a folder symlink counts as a
+/// folder), so the first frame needs no stat on the UI thread.
+const RENAME_IS_DIR: &str = "rename_is_dir";
+
+/// The error line under the field: live validation first, else the failed
+/// commit's error while the buffer is still the one that was committed.
+fn shown_error(
+    live: Option<String>,
+    commit: Option<&(String, String)>,
+    buffer: &str,
+) -> Option<String> {
+    live.or_else(|| {
+        commit
+            .filter(|(committed, _)| committed == buffer)
+            .map(|(_, error)| error.clone())
+    })
+}
+
 impl App {
     pub(crate) fn open_rename(&mut self, path: std::path::PathBuf, ctx: &egui::Context) {
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
+        let is_dir = [self.ws.active_panel_ref(), self.ws.inactive_panel()]
+            .into_iter()
+            .flat_map(|panel| panel.entries())
+            .find(|entry| entry.path == path)
+            .is_some_and(|entry| entry.is_dir);
         self.ui.modals.renaming = Some(RenameState {
             siblings: crate::workspace::Workspace::rename_siblings(&path),
             path,
             buffer: name,
             error: None,
+        });
+        ctx.data_mut(|data| {
+            data.remove::<(String, String)>(egui::Id::new(COMMIT_ERROR));
+            data.insert_temp(egui::Id::new(RENAME_IS_DIR), is_dir);
         });
         Self::mark_modal_opened(ctx, UiModal::Rename);
     }
@@ -45,7 +88,7 @@ impl App {
 
         super::sheet_window("Rename", t, 14).show(ctx, |ui| {
             ui.set_width(360.0);
-            ui.label(
+            let label = ui.label(
                 egui::RichText::new("Rename to:")
                     .size(12.0)
                     .color(t.text_muted),
@@ -55,11 +98,23 @@ impl App {
             let edit = egui::TextEdit::singleline(&mut state.buffer)
                 .desired_width(f32::INFINITY)
                 .margin(egui::vec2(8.0, 6.0));
-            let resp = ui.add(edit);
+            let resp = ui.add(edit).labelled_by(label.id);
 
             // Grab focus and select the basename on the first frame.
             if Self::take_modal_opened(ui.ctx(), UiModal::Rename) {
                 resp.request_focus();
+                let is_dir = ui
+                    .ctx()
+                    .data(|data| data.get_temp::<bool>(egui::Id::new(RENAME_IS_DIR)))
+                    .unwrap_or(false);
+                let stem = initial_selection_chars(&state.buffer, is_dir);
+                let mut text_state =
+                    egui::TextEdit::load_state(ui.ctx(), resp.id).unwrap_or_default();
+                text_state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(stem),
+                )));
+                text_state.store(ui.ctx(), resp.id);
             }
 
             // Validate against the directory snapshot captured when the
@@ -69,14 +124,18 @@ impl App {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            state.error = if rename_is_noop(&state.buffer, &old_name) {
+            let live_error = if rename_is_noop(&state.buffer, &old_name) {
                 None
             } else {
                 crate::pathname::validate_new_name(&state.buffer, &state.siblings)
                     .err()
                     .map(|error| error.to_string())
             };
-            let valid = state.error.is_none();
+            let valid = live_error.is_none();
+            let commit_error = ui
+                .ctx()
+                .data(|data| data.get_temp::<(String, String)>(egui::Id::new(COMMIT_ERROR)));
+            state.error = shown_error(live_error, commit_error.as_ref(), &state.buffer);
 
             if name_is_lossy(&state.path) {
                 ui.add_space(4.0);
@@ -91,7 +150,11 @@ impl App {
 
             if let Some(err) = &state.error {
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
+                let r = ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
+                ui.ctx().accesskit_node_builder(r.id, |node| {
+                    node.set_role(egui::accesskit::Role::Status);
+                    node.set_live(egui::accesskit::Live::Polite);
+                });
             }
 
             ui.add_space(12.0);
@@ -157,6 +220,9 @@ impl App {
             match self.ws.commit_rename(&path, &buffer) {
                 Ok(()) => {
                     self.ui.modals.renaming = None;
+                    ctx.data_mut(|data| {
+                        data.remove::<(String, String)>(egui::Id::new(COMMIT_ERROR))
+                    });
                     if changed {
                         let now = ctx.input(|i| i.time);
                         self.toast(
@@ -179,6 +245,10 @@ impl App {
                     }
                 }
                 Err(msg) => {
+                    // Shown from the next frame on, until the name is edited.
+                    ctx.data_mut(|data| {
+                        data.insert_temp(egui::Id::new(COMMIT_ERROR), (buffer, msg.clone()));
+                    });
                     if let Some(s) = &mut self.ui.modals.renaming {
                         s.error = Some(msg);
                     }
@@ -190,7 +260,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{name_is_lossy, rename_is_noop};
+    use super::{initial_selection_chars, name_is_lossy, rename_is_noop, shown_error};
 
     #[test]
     fn unedited_name_with_edge_spaces_is_a_noop() {
@@ -211,5 +281,31 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let name = std::ffi::OsStr::from_bytes(b"bad\xffname");
         assert!(name_is_lossy(&std::path::Path::new("/tmp").join(name)));
+    }
+
+    #[test]
+    fn commit_error_stays_until_the_name_is_edited() {
+        let commit = ("b.txt".to_string(), "b.txt already exists".to_string());
+        // Live validation passed (the commit button was enabled): the commit
+        // error is what the user sees.
+        assert_eq!(
+            shown_error(None, Some(&commit), "b.txt").as_deref(),
+            Some("b.txt already exists")
+        );
+        assert_eq!(shown_error(None, Some(&commit), "c.txt"), None);
+        assert_eq!(
+            shown_error(Some("Invalid".to_string()), Some(&commit), "b.txt").as_deref(),
+            Some("Invalid")
+        );
+        assert_eq!(shown_error(None, None, "b.txt"), None);
+    }
+
+    #[test]
+    fn opening_selects_the_stem_of_files_only() {
+        assert_eq!(initial_selection_chars("report.final.pdf", false), 12);
+        assert_eq!(initial_selection_chars("caf\u{e9}.txt", false), 4);
+        assert_eq!(initial_selection_chars(".bashrc", false), 7);
+        assert_eq!(initial_selection_chars("Makefile", false), 8);
+        assert_eq!(initial_selection_chars("photos.2024", true), 11);
     }
 }

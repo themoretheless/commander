@@ -41,10 +41,23 @@ fn cached_mask_count(
     value
 }
 
+/// Select all of the field's text (the prefilled last mask), so typing
+/// replaces it while Enter reuses it.
+fn select_all(ctx: &egui::Context, id: egui::Id, text: &str) {
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(text.chars().count()),
+        )));
+    state.store(ctx, id);
+}
+
 impl App {
     pub(crate) fn open_mask(&mut self, ctx: &egui::Context) {
         ctx.data_mut(|d| d.remove::<(MaskCountKey, usize)>(egui::Id::new(MASK_COUNT_CACHE)));
-        self.ui.modals.mask_input = Some(String::new());
+        self.ui.modals.mask_input = Some(self.ui.last_mask.clone());
         Self::mark_modal_opened(ctx, UiModal::Mask);
     }
 
@@ -64,7 +77,7 @@ impl App {
 
         super::sheet_window("Select by mask", t, 14).show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.label(
+            let label = ui.label(
                 egui::RichText::new("Select by mask  (e.g.  *.rs, !*test*)")
                     .size(12.0)
                     .color(t.text_muted),
@@ -75,11 +88,12 @@ impl App {
                 .desired_width(f32::INFINITY)
                 .hint_text("*.jpg, !*raw*")
                 .margin(egui::vec2(8.0, 6.0));
-            let resp = ui.add(edit);
+            let resp = ui.add(edit).labelled_by(label.id);
             // Grab focus on the opening frame only; yanking it every frame
             // would trap the caret and stop the user clicking the buttons.
             if just_opened {
                 resp.request_focus();
+                select_all(ui.ctx(), resp.id, buffer);
             }
 
             // Count after TextEdit so the label and Enter action observe
@@ -138,6 +152,7 @@ impl App {
         }
         if commit && let Some(buf) = self.ui.modals.mask_input.take() {
             self.ws.active_panel().select_by_mask(&buf);
+            self.ui.last_mask = buf;
         }
     }
 }
@@ -174,5 +189,17 @@ mod tests {
         assert_eq!(change_count_label(0), "0 changes");
         assert_eq!(change_count_label(1), "1 change");
         assert_eq!(change_count_label(7), "7 changes");
+    }
+
+    #[test]
+    fn prefilled_mask_is_fully_selected() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("mask_field");
+        select_all(&ctx, id, "*.r\u{e9}s");
+        let range = egui::TextEdit::load_state(&ctx, id)
+            .and_then(|state| state.cursor.char_range())
+            .expect("selection stored");
+        assert_eq!(range.primary, egui::text::CCursor::new(5), "{range:?}");
+        assert_eq!(range.secondary, egui::text::CCursor::new(0), "{range:?}");
     }
 }
