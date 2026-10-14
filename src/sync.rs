@@ -34,7 +34,8 @@ pub enum SyncStatus {
     RightNewer,
     /// Present both sides, different size but equal/unknown mtime.
     Differing,
-    /// Present both sides with identical size and mtime.
+    /// Present both sides with identical size and known, equal mtime (within
+    /// [`crate::compare::MTIME_TOLERANCE`]).
     Identical,
     /// Same-named directories exist on both sides, but this shallow plan has
     /// not compared their recursive contents.
@@ -103,22 +104,28 @@ pub fn test_action(name: &str, status: SyncStatus, direction: SyncDirection) -> 
     }
 }
 
-/// Compare two same-named entries by size and mtime.
+/// Compare two same-named entries by size and mtime. Mtimes within
+/// [`crate::compare::MTIME_TOLERANCE`] count as equal so copies on coarse-time
+/// filesystems (FAT, exFAT, SMB) are not recopied on every run, and an unknown
+/// mtime never proves two same-size files identical.
 pub fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
+    use crate::compare::{mtime_newer, mtimes_match};
     if left.is_dir != right.is_dir {
         return SyncStatus::TypeConflict;
     }
     if left.is_dir {
         return SyncStatus::DirectoryPair;
     }
-    if left.size == right.size && left.modified == right.modified {
+    if left.size == right.size && mtimes_match(left.modified, right.modified) {
         return SyncStatus::Identical;
     }
-    match (left.modified, right.modified) {
-        (Some(a), Some(b)) if a > b => SyncStatus::LeftNewer,
-        (Some(a), Some(b)) if b > a => SyncStatus::RightNewer,
-        // Equal or unknown mtime but the sizes differ: a real conflict.
-        _ => SyncStatus::Differing,
+    if mtime_newer(left.modified, right.modified) {
+        SyncStatus::LeftNewer
+    } else if mtime_newer(right.modified, left.modified) {
+        SyncStatus::RightNewer
+    } else {
+        // Equal or unknown mtime but the sizes (or contents) may differ.
+        SyncStatus::Differing
     }
 }
 
@@ -245,15 +252,27 @@ pub struct PaneRelation {
     pub directories: Vec<usize>,
 }
 
-/// Classify each `active` entry against `other` (matched case-insensitively by
-/// name), reusing [`compare`] for the size/mtime test so the relation stays
-/// consistent with the sync diff. Pure; indices point into `active`.
+/// Classify each `active` entry against `other`, reusing [`compare`] for the
+/// size/mtime test so the relation stays consistent with the sync diff. Names
+/// pair exactly first and case-insensitively only when the folded name is
+/// unique in `other`, so `Readme` and `README` are never compared against an
+/// arbitrary one of the pair. Pure; indices point into `active`.
 pub fn pane_relation(active: &[FileEntry], other: &[FileEntry]) -> PaneRelation {
-    let omap: HashMap<&str, &FileEntry> =
-        other.iter().map(|e| (e.name_lower.as_str(), e)).collect();
+    let exact: HashMap<&str, &FileEntry> = other.iter().map(|e| (e.name.as_str(), e)).collect();
+    let mut folded: HashMap<&str, Option<&FileEntry>> = HashMap::new();
+    for e in other {
+        folded
+            .entry(e.name_lower.as_str())
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(e));
+    }
     let mut rel = PaneRelation::default();
     for (i, a) in active.iter().enumerate() {
-        match omap.get(a.name_lower.as_str()) {
+        let paired = exact
+            .get(a.name.as_str())
+            .copied()
+            .or_else(|| folded.get(a.name_lower.as_str()).copied().flatten());
+        match paired {
             None => rel.only_here.push(i),
             Some(o) => match compare(a, o) {
                 SyncStatus::Identical => rel.identical.push(i),
@@ -319,6 +338,50 @@ mod tests {
         assert_eq!(rel.only_here, vec![0]); // a.txt
         assert_eq!(rel.identical, vec![1, 3]); // b.txt, D.txt
         assert_eq!(rel.differing, vec![2]); // c.txt
+    }
+
+    #[test]
+    fn pane_relation_pairs_case_variants_exactly() {
+        let active = vec![entry("Readme", 1, Some(10)), entry("README", 2, Some(20))];
+        let other = vec![entry("Readme", 1, Some(10)), entry("README", 2, Some(20))];
+        let rel = pane_relation(&active, &other);
+        assert_eq!(rel.identical, vec![0, 1]);
+        assert!(rel.differing.is_empty());
+        // An ambiguous fold is not paired with an arbitrary variant.
+        let rel = pane_relation(&[entry("readme", 1, Some(10))], &other);
+        assert_eq!(rel.only_here, vec![0]);
+    }
+
+    #[test]
+    fn coarse_mtimes_within_tolerance_are_identical() {
+        let source = entry("a", 10, Some(1_000));
+        let mut fat_copy = entry("a", 10, Some(1_000));
+        fat_copy.modified = fat_copy.modified.map(|t| t + Duration::from_millis(1_500));
+        assert_eq!(compare(&source, &fat_copy), SyncStatus::Identical);
+        assert_eq!(compare(&fat_copy, &source), SyncStatus::Identical);
+        let actions = sync_diff(&[source], &[fat_copy], SyncPolicy::TwoWay);
+        assert_eq!(actions[0].direction, SyncDirection::Skip);
+        // Different sizes within the tolerance are a conflict, not "newer".
+        assert_eq!(
+            compare(&entry("a", 10, Some(1_001)), &entry("a", 20, Some(1_000))),
+            SyncStatus::Differing
+        );
+        assert_eq!(
+            compare(&entry("a", 10, Some(1_003)), &entry("a", 10, Some(1_000))),
+            SyncStatus::LeftNewer
+        );
+    }
+
+    #[test]
+    fn unknown_mtimes_are_never_identical() {
+        assert_eq!(
+            compare(&entry("a", 10, None), &entry("a", 10, None)),
+            SyncStatus::Differing
+        );
+        assert_eq!(
+            compare(&entry("a", 10, Some(100)), &entry("a", 10, None)),
+            SyncStatus::Differing
+        );
     }
 
     #[test]

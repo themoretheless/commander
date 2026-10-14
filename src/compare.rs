@@ -6,7 +6,31 @@
 use crate::panel::FileEntry;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
+
+/// Filesystems keep mtimes at different precision (FAT/exFAT 2 s, SMB and
+/// other network shares 1-2 s), so a faithful copy can differ from its source
+/// by up to this much without either side having changed.
+pub const MTIME_TOLERANCE: Duration = Duration::from_secs(2);
+
+/// Whether both mtimes are known and equal within [`MTIME_TOLERANCE`]. An
+/// unknown mtime never matches: it cannot vouch for an unchanged file.
+pub fn mtimes_match(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            a.duration_since(b).unwrap_or_else(|e| e.duration()) <= MTIME_TOLERANCE
+        }
+        _ => false,
+    }
+}
+
+/// Whether `a` is known to be newer than `b` by more than [`MTIME_TOLERANCE`].
+pub fn mtime_newer(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.duration_since(b).is_ok_and(|d| d > MTIME_TOLERANCE),
+        _ => false,
+    }
+}
 
 /// How an entry relates to the same-named entry in the other panel.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -33,24 +57,69 @@ pub struct CompareFingerprint {
     pub is_dir: bool,
 }
 
-/// Other-panel entries indexed by lowercase name, built once per frame.
-pub type CompareMap = HashMap<String, CompareFingerprint>;
+/// Other-panel entries, built once per frame. An entry pairs with the exact
+/// same name first and falls back to a case-insensitive match only when that
+/// folded name is unique, so `Readme` and `README` side by side on a
+/// case-sensitive volume each compare against the right file.
+#[derive(Clone, Default, Debug)]
+pub struct CompareMap {
+    exact: HashMap<String, CompareFingerprint>,
+    /// Lowercase name -> fingerprint, or `None` when several names fold to it.
+    folded: HashMap<String, Option<CompareFingerprint>>,
+}
+
+impl CompareMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, name: String, fingerprint: CompareFingerprint) {
+        self.folded
+            .entry(name.to_lowercase())
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(fingerprint));
+        self.exact.insert(name, fingerprint);
+    }
+
+    /// Whether some entry folds to the lowercase `name`.
+    #[cfg(test)]
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.folded.contains_key(name)
+    }
+
+    /// The other-panel fingerprint `entry` pairs with, if any.
+    fn get(&self, entry: &FileEntry) -> Option<&CompareFingerprint> {
+        self.exact
+            .get(&entry.name)
+            .or_else(|| self.folded.get(&entry.name_lower)?.as_ref())
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Index<&str> for CompareMap {
+    type Output = CompareFingerprint;
+
+    fn index(&self, name: &str) -> &CompareFingerprint {
+        self.folded[name]
+            .as_ref()
+            .expect("folded name is ambiguous")
+    }
+}
 
 /// Index a panel's entries for comparison against the other panel.
 pub fn build_compare_map(entries: &[FileEntry]) -> CompareMap {
-    entries
-        .iter()
-        .map(|e| {
-            (
-                e.name_lower.clone(),
-                CompareFingerprint {
-                    size: e.size,
-                    modified: e.modified,
-                    is_dir: e.is_dir,
-                },
-            )
-        })
-        .collect()
+    let mut map = CompareMap::new();
+    for e in entries {
+        map.insert(
+            e.name.clone(),
+            CompareFingerprint {
+                size: e.size,
+                modified: e.modified,
+                is_dir: e.is_dir,
+            },
+        );
+    }
+    map
 }
 
 /// Which entries to select when turning a folder comparison into a selection.
@@ -72,20 +141,18 @@ pub fn select_by_compare<'a>(
     criterion: CompareCriterion,
 ) -> HashSet<PathBuf> {
     entries
-        .filter(|e| match other.get(&e.name_lower) {
+        .filter(|e| match other.get(e) {
             None => criterion == CompareCriterion::Unique,
             Some(fingerprint) => match criterion {
                 CompareCriterion::Unique => false,
                 CompareCriterion::Differing => {
                     fingerprint.is_dir != e.is_dir
                         || (!e.is_dir
-                            && (fingerprint.size != e.size || fingerprint.modified != e.modified))
+                            && (fingerprint.size != e.size
+                                || !mtimes_match(fingerprint.modified, e.modified)))
                 }
                 CompareCriterion::Newer if fingerprint.is_dir == e.is_dir && !e.is_dir => {
-                    match (e.modified, fingerprint.modified) {
-                        (Some(a), Some(b)) => a > b,
-                        _ => false,
-                    }
+                    mtime_newer(e.modified, fingerprint.modified)
                 }
                 CompareCriterion::Newer => false,
             },
@@ -110,12 +177,13 @@ pub fn matching_name_paths<'a>(
 
 /// Classify `entry` against the other panel's [`CompareMap`].
 pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
-    match other.get(&entry.name_lower) {
+    match other.get(entry) {
         None => CompareStatus::Unique,
         Some(fingerprint) if fingerprint.is_dir != entry.is_dir => CompareStatus::TypeConflict,
         Some(_) if entry.is_dir => CompareStatus::DirectoryPair,
         Some(fingerprint) => {
-            if fingerprint.size == entry.size && fingerprint.modified == entry.modified {
+            if fingerprint.size == entry.size && mtimes_match(fingerprint.modified, entry.modified)
+            {
                 CompareStatus::Identical
             } else {
                 CompareStatus::Differs
@@ -127,7 +195,7 @@ pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
 /// Human explanation for compare-mode row tinting. Identical rows intentionally
 /// return `None` so quiet rows stay quiet.
 pub fn compare_hint(entry: &FileEntry, other: &CompareMap) -> Option<String> {
-    match other.get(&entry.name_lower) {
+    match other.get(entry) {
         None => Some("Only in this panel".to_string()),
         Some(fingerprint) if fingerprint.is_dir != entry.is_dir => {
             let here = if entry.is_dir { "folder" } else { "file" };
@@ -141,9 +209,13 @@ pub fn compare_hint(entry: &FileEntry, other: &CompareMap) -> Option<String> {
         }
         Some(fingerprint) => {
             let size_differs = fingerprint.size != entry.size;
-            let time_differs = fingerprint.modified != entry.modified;
+            let time_differs = !mtimes_match(fingerprint.modified, entry.modified);
+            let time_unknown = fingerprint.modified.is_none() || entry.modified.is_none();
             match (size_differs, time_differs) {
                 (false, false) => None,
+                (false, true) if time_unknown => {
+                    Some("Same name and size, modified time unknown".to_string())
+                }
                 (true, true) => Some("Same name, different size and modified time".to_string()),
                 (true, false) => Some("Same name, different size".to_string()),
                 (false, true) => Some("Same name, different modified time".to_string()),
@@ -156,6 +228,7 @@ pub fn compare_hint(entry: &FileEntry, other: &CompareMap) -> Option<String> {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use std::time::Duration;
 
     #[test]
     fn classify_entry_against_other_panel() {
@@ -297,6 +370,75 @@ mod tests {
         let map = build_compare_map(std::slice::from_ref(&e));
         assert!(map.contains_key("photo.jpg"));
         assert_eq!(map["photo.jpg"].size, 2);
+    }
+
+    fn fake(name: &str, size: u64, modified: Option<SystemTime>) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            name_lower: name.to_lowercase(),
+            path: PathBuf::from(format!("/x/{name}")),
+            identity: crate::panel::ListingIdentity::Unavailable,
+            is_dir: false,
+            size,
+            extension: String::new(),
+            modified,
+            modified_str: "-".to_string(),
+            size_str: crate::panel::format_size(size),
+        }
+    }
+
+    #[test]
+    fn coarse_mtime_copies_still_compare_identical() {
+        use std::time::UNIX_EPOCH;
+        let source = UNIX_EPOCH + Duration::new(1_000_000_123, 456_789_000);
+        // FAT rounds to an even second.
+        let fat_copy = UNIX_EPOCH + Duration::from_secs(1_000_000_124);
+        let here = fake("a.txt", 10, Some(source));
+        let other = build_compare_map(&[fake("a.txt", 10, Some(fat_copy))]);
+        assert_eq!(classify_entry(&here, &other), CompareStatus::Identical);
+        assert_eq!(compare_hint(&here, &other), None);
+        for criterion in [CompareCriterion::Differing, CompareCriterion::Newer] {
+            assert!(select_by_compare([&here].into_iter(), &other, criterion).is_empty());
+        }
+
+        let later = fake("a.txt", 10, Some(fat_copy + Duration::from_secs(3)));
+        assert_eq!(classify_entry(&later, &other), CompareStatus::Differs);
+        let newer = select_by_compare([&later].into_iter(), &other, CompareCriterion::Newer);
+        assert_eq!(newer.len(), 1);
+    }
+
+    #[test]
+    fn unknown_mtimes_never_compare_identical() {
+        let here = fake("a.txt", 10, None);
+        let other = build_compare_map(&[fake("a.txt", 10, None)]);
+        assert_eq!(classify_entry(&here, &other), CompareStatus::Differs);
+        assert!(compare_hint(&here, &other).unwrap().contains("unknown"));
+    }
+
+    #[test]
+    fn case_variant_names_pair_exactly_before_folding() {
+        use std::time::UNIX_EPOCH;
+        let t = Some(UNIX_EPOCH + Duration::from_secs(100));
+        let other = build_compare_map(&[fake("Readme", 1, t), fake("README", 2, t)]);
+        assert_eq!(
+            classify_entry(&fake("Readme", 1, t), &other),
+            CompareStatus::Identical
+        );
+        assert_eq!(
+            classify_entry(&fake("README", 2, t), &other),
+            CompareStatus::Identical
+        );
+        // An ambiguous fold pairs with neither.
+        assert_eq!(
+            classify_entry(&fake("readme", 1, t), &other),
+            CompareStatus::Unique
+        );
+        // A unique fold still pairs case-insensitively.
+        let other = build_compare_map(&[fake("Photo.JPG", 1, t)]);
+        assert_eq!(
+            classify_entry(&fake("photo.jpg", 1, t), &other),
+            CompareStatus::Identical
+        );
     }
 
     #[test]
