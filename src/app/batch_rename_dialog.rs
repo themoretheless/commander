@@ -59,8 +59,10 @@ impl ValidatedBatchRename {
             .map(|plan| (plan.from.clone(), plan.to.clone()))
             .collect();
         let will_change = changes.len();
-        let (applicable, block_reason) = if let Some(error) = &regex_err {
-            (false, Some(format!("Invalid regex: {error}")))
+        // The regex error itself is shown under the Find field; the summary
+        // only points there instead of repeating it.
+        let (applicable, block_reason) = if regex_err.is_some() {
+            (false, Some("Fix the Find pattern to continue".to_string()))
         } else if plan_is_applicable(&plans) {
             (true, None)
         } else if plans.iter().any(|plan| plan.status == PlanStatus::Invalid) {
@@ -551,11 +553,15 @@ mod tests {
         let current = ValidatedBatchRename::build(&context, edited_rule);
 
         assert!(!current.applicable);
+        assert_eq!(
+            current.block_reason.as_deref(),
+            Some("Fix the Find pattern to continue")
+        );
         assert!(
             current
-                .block_reason
+                .regex_error
                 .as_deref()
-                .is_some_and(|reason| reason.starts_with("Invalid regex:"))
+                .is_some_and(|error| error.starts_with("Invalid regex:"))
         );
         assert_eq!(current.rule_for_submit(true), None);
     }
