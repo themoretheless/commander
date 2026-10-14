@@ -40,6 +40,10 @@ pub struct ArchiveMember {
     pub is_dir: bool,
     pub size: u64,
     pub compressed_size: u64,
+    /// The member name exactly as `tar` listed it (for example with a `./`
+    /// prefix). GNU tar matches extract names literally, so extraction must
+    /// pass this rather than the cleaned-up `path`. `None` for zip members.
+    pub tar_name: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +211,7 @@ pub fn visit_members(
                 is_dir: raw.is_dir(),
                 size: raw.size(),
                 compressed_size: raw.compressed_size(),
+                tar_name: None,
             }
         };
 
@@ -295,6 +300,7 @@ fn visit_tar_gz_list(
             is_dir,
             size: if is_dir { 0 } else { size },
             compressed_size: 0,
+            tar_name: Some(name.to_string()),
         };
         if !emit(member) {
             break;
@@ -539,7 +545,12 @@ fn extract_tar_gz_members(
             report.skipped_existing += 1;
             continue;
         }
-        wanted.push(member.path.to_string_lossy().into_owned());
+        wanted.push(
+            member
+                .tar_name
+                .clone()
+                .unwrap_or_else(|| member.path.to_string_lossy().into_owned()),
+        );
     }
     if wanted.is_empty() {
         return Ok(report);
@@ -882,6 +893,36 @@ mod tests {
         let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(fs::read(dest.join(" padded ")).unwrap(), b"pad");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_extract_handles_dot_slash_prefixed_members() {
+        // `tar -czf x.tgz -C src .` stores every member as `./name`.
+        let temp = TempDir::new();
+        let source = temp.path().join("src");
+        fs::create_dir_all(source.join("sub")).unwrap();
+        fs::write(source.join("top.txt"), b"top").unwrap();
+        fs::write(source.join("sub/inner.txt"), b"inner").unwrap();
+        let archive = temp.path().join("dot.tgz");
+        write_tar_gz(&source, &archive, &["."]);
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(archive.clone(), &cancelled).unwrap();
+        assert!(
+            listing
+                .members
+                .iter()
+                .any(|member| member.path == Path::new("sub/inner.txt"))
+        );
+        let indexes: Vec<usize> = listing.members.iter().map(|member| member.index).collect();
+        let dest = temp.path().join("out");
+
+        let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.extracted, 2);
+        assert_eq!(fs::read(dest.join("top.txt")).unwrap(), b"top");
+        assert_eq!(fs::read(dest.join("sub/inner.txt")).unwrap(), b"inner");
     }
 
     #[cfg(unix)]
