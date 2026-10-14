@@ -175,14 +175,9 @@ pub fn export_to(
     })?;
     let json = serde_json::to_string_pretty(&manifest)
         .map_err(|error| format!("Could not encode encrypted support bundle: {error}"))?;
-    if crate::fs_util::write_atomic(path, &json) {
-        Ok(manifest)
-    } else {
-        Err(format!(
-            "Could not write encrypted support bundle to {}",
-            path.display()
-        ))
-    }
+    crate::fs_util::try_write_atomic(path, &json)
+        .map_err(|error| format!("Encrypted support bundle not saved. {error}"))?;
+    Ok(manifest)
 }
 
 pub fn load_manifest(path: &Path) -> Result<EncryptedBundleManifest, String> {
@@ -346,5 +341,19 @@ mod tests {
         let loaded = load_manifest(&path).unwrap();
         assert_eq!(loaded.recipient_id, written.recipient_id);
         assert_eq!(decrypt(&loaded, "secret", 10).unwrap(), b"payload-bytes");
+    }
+
+    #[test]
+    fn failed_export_explains_why_the_write_failed() {
+        let temp = TempDir::new();
+        let blocker = temp.file("blocker", "a file, not a directory");
+        let path = blocker.join("bundle.cmeb.json");
+
+        let error = export_to(&path, b"payload", "ops", "secret", "preview", 10, 60).unwrap_err();
+
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        // The OS reason follows the failed step, so disk-full and
+        // permission-denied read differently.
+        assert!(error.contains("could not "), "{error}");
     }
 }
