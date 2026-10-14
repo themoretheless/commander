@@ -811,15 +811,22 @@ impl CompiledQuery {
 /// Open `path` for a content read only if it is a regular file, returning the
 /// handle and its size. FIFOs, sockets and devices are refused: opening a
 /// FIFO for reading blocks until a writer appears, which would hang the
-/// search worker. Unix opens non-blocking so the type check happens on the
-/// handle itself rather than racing a separate stat.
+/// search worker. The path is stat-ed first so devices are never opened;
+/// unix then opens non-blocking (and without acquiring a controlling tty) and
+/// re-checks the type on the handle itself.
 fn open_regular_file(path: &Path) -> Option<(std::fs::File, u64)> {
+    // Refuse devices, FIFOs and sockets before opening: opening a tty, serial
+    // or tape device can have side effects. The fstat below covers the race
+    // where the path is swapped after this check.
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
     }
     let file = options.open(path).ok()?;
     let metadata = file.metadata().ok()?;
@@ -1681,6 +1688,13 @@ mod tests {
         assert_eq!(bucket(at(2026, 6, 10, 1)), TimeBucket::Today);
         assert_eq!(bucket(at(2026, 6, 9, 23)), TimeBucket::Yesterday);
         assert_eq!(bucket(at(2026, 6, 8, 9)), TimeBucket::ThisWeek);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_refuses_devices_and_directories() {
+        assert!(open_regular_file(Path::new("/dev/null")).is_none());
+        assert!(open_regular_file(Path::new("/")).is_none());
     }
 
     #[test]
