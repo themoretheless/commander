@@ -672,12 +672,22 @@ pub fn records_for(operation_id: &OperationId) -> Vec<VersionRecord> {
 }
 
 pub fn records() -> Vec<VersionRecord> {
+    records_or_blocked().unwrap_or_default()
+}
+
+/// [`records`], but a manifest that is unreadable or incompatible is an
+/// error rather than an empty list, for callers (the support bundle) that
+/// must not report "no versions" when the store could not be read.
+pub fn records_or_blocked() -> Result<Vec<VersionRecord>, String> {
     let root = versions_dir();
     let loaded = load_manifest_with(manifest_persist(), &root);
     if loaded.blocked {
-        Vec::new()
+        Err(format!(
+            "version manifest is {}",
+            format!("{:?}", loaded.gate.status()).to_lowercase()
+        ))
     } else {
-        loaded.manifest.records
+        Ok(loaded.manifest.records)
     }
 }
 
@@ -1136,6 +1146,22 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn blocked_manifest_is_reported_not_listed_as_empty() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let _guard = use_test_versions_dir(versions.clone());
+        assert_eq!(records_or_blocked(), Ok(Vec::new()));
+
+        std::fs::write(manifest_path(&versions), b"{ not json").unwrap();
+
+        assert_eq!(
+            records_or_blocked(),
+            Err("version manifest is corrupt".to_string())
+        );
+        assert!(records().is_empty());
+    }
 
     #[test]
     fn test_versions_dir_override_is_visible_to_worker_threads() {
