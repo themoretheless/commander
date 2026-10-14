@@ -731,10 +731,10 @@ impl CompiledQuery {
         }
         match source {
             CandidateContent::OnDisk => {
-                let Ok(file) = std::fs::File::open(&entry.path) else {
+                let Some((file, size)) = open_regular_file(&entry.path) else {
                     return ContentVerdict::Skipped;
                 };
-                let mut bytes = Vec::with_capacity(entry.size.min(MAX_CONTENT_BYTES) as usize);
+                let mut bytes = Vec::with_capacity(size.min(MAX_CONTENT_BYTES) as usize);
                 if file
                     .take(MAX_CONTENT_BYTES)
                     .read_to_end(&mut bytes)
@@ -746,7 +746,9 @@ impl CompiledQuery {
                     return ContentVerdict::Skipped;
                 }
                 let content = String::from_utf8_lossy(&bytes);
-                self.evaluate_content_text(&content, entry.size > MAX_CONTENT_BYTES, explanation)
+                // The opened file's size, not the listing's: for a symlink
+                // the listing holds the link's own (lstat) length.
+                self.evaluate_content_text(&content, size > MAX_CONTENT_BYTES, explanation)
             }
             CandidateContent::Indexed { index, document } => {
                 let Some(content) = index
@@ -793,6 +795,24 @@ impl CompiledQuery {
         }
         ContentVerdict::Matched
     }
+}
+
+/// Open `path` for a content read only if it is a regular file, returning the
+/// handle and its size. FIFOs, sockets and devices are refused: opening a
+/// FIFO for reading blocks until a writer appears, which would hang the
+/// search worker. Unix opens non-blocking so the type check happens on the
+/// handle itself rather than racing a separate stat.
+fn open_regular_file(path: &Path) -> Option<(std::fs::File, u64)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    metadata.is_file().then(|| (file, metadata.len()))
 }
 
 enum ContentVerdict {
@@ -1493,5 +1513,55 @@ mod tests {
                 started.elapsed()
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_search_skips_fifos_without_blocking() {
+        let tmp = TempDir::new();
+        tmp.file("notes.txt", "needle");
+        let status = std::process::Command::new("mkfifo")
+            .arg(tmp.path().join("pipe"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let engine = SearchEngine::default();
+        let run = engine
+            .start(
+                tmp.path().to_path_buf(),
+                Query::parse("content:needle", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.name, "notes.txt");
+        assert_eq!(summary.content_skipped, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_partial_note_uses_the_symlink_target_size() {
+        let tmp = TempDir::new();
+        let target = tmp.path().join("big.txt");
+        let mut text = vec![b'a'; MAX_CONTENT_BYTES as usize + 1];
+        text[..6].copy_from_slice(b"needle");
+        std::fs::write(&target, text).unwrap();
+        let link = tmp.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let lexical = std::fs::symlink_metadata(&link).unwrap();
+        let entry = FileEntry::from_meta(link, &lexical).unwrap();
+        assert!(entry.size < MAX_CONTENT_BYTES);
+
+        let query =
+            CompiledQuery::new(Query::parse("content:needle", MatchMode::Exact).unwrap()).unwrap();
+        let mut explanation = MatchExplanation::default();
+        assert!(matches!(
+            query.evaluate_content(&entry, &CandidateContent::OnDisk, &mut explanation),
+            ContentVerdict::Matched
+        ));
+        assert!(explanation.summary().contains("first 16MB"));
     }
 }
