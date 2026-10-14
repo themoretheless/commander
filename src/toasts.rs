@@ -90,6 +90,15 @@ impl ToastQueue {
         self.toasts.retain(|t| t.born + t.ttl >= now);
     }
 
+    /// Restart every toast's lifetime at `now`. Called while the stack cannot
+    /// be placed without covering focus or an error, so toasts wait to be
+    /// seen instead of expiring hidden.
+    pub fn hold(&mut self, now: f64) {
+        for toast in &mut self.toasts {
+            toast.born = now;
+        }
+    }
+
     /// Drop every toast that offered an Undo (called once that Undo is spent).
     pub fn dismiss_undoable(&mut self) {
         self.toasts.retain(|t| !t.undoable);
@@ -153,6 +162,19 @@ mod tests {
         q.prune(5.0);
         assert_eq!(q.active().len(), 1);
         q.prune(6.5);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn held_toasts_do_not_expire_while_hidden() {
+        let mut q = ToastQueue::default();
+        q.push(toast("error", 0.0)); // ttl 6 -> would expire at 6
+        q.hold(5.0);
+        q.hold(10.0);
+        q.prune(15.0);
+        assert_eq!(q.active().len(), 1);
+        assert_eq!(remaining_fraction(&q.active()[0], 10.0), 1.0);
+        q.prune(16.5);
         assert!(q.is_empty());
     }
 
