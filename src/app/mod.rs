@@ -631,9 +631,11 @@ pub struct RecoveryState {
     pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
     /// Pending background load of the selected operation's repair plan.
     pub repair_rx: Option<std::sync::mpsc::Receiver<RepairLoadResult>>,
-    /// Version-store usage line, read from the on-disk manifest once and
-    /// dropped when a scan completes (scans follow rollback and cleanup).
-    pub version_usage_label: Option<String>,
+    /// Version-store usage line and when it was read from the on-disk
+    /// manifest. Dropped when a scan completes (scans follow rollback and
+    /// cleanup) and re-read after `VERSION_USAGE_REFRESH` so versions saved
+    /// by a running transfer show up.
+    pub version_usage_label: Option<(std::time::Instant, String)>,
 }
 
 pub struct RecoveryScanResult {

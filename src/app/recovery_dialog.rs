@@ -151,6 +151,32 @@ impl RecoveryState {
     }
 }
 
+/// How long the version-store usage line is reused before the manifest is
+/// read again, so a running transfer's saved versions appear within seconds
+/// without reading the manifest every frame.
+const VERSION_USAGE_REFRESH: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Return the cached usage line, re-reading it via `read` when it is missing
+/// or older than `VERSION_USAGE_REFRESH`.
+fn cached_version_usage(
+    slot: &mut Option<(std::time::Instant, String)>,
+    now: std::time::Instant,
+    read: impl FnOnce() -> String,
+) -> String {
+    match slot {
+        Some((read_at, label))
+            if now.saturating_duration_since(*read_at) < VERSION_USAGE_REFRESH =>
+        {
+            label.clone()
+        }
+        _ => {
+            let label = read();
+            *slot = Some((now, label.clone()));
+            label
+        }
+    }
+}
+
 fn short_id(id: &str) -> String {
     id.chars().take(18).collect()
 }
@@ -573,17 +599,18 @@ impl App {
         // (and the selected record with all its steps) instead of cloning.
         let mut section = state.section;
         let mut detail = state.detail;
-        let usage_label = state
-            .version_usage_label
-            .get_or_insert_with(|| {
+        let usage_label = cached_version_usage(
+            &mut state.version_usage_label,
+            std::time::Instant::now(),
+            || {
                 let usage = crate::version_store::store_usage();
                 if usage.over_quota() {
                     format!("Version store {} · over quota", usage.label())
                 } else {
                     format!("Version store {}", usage.label())
                 }
-            })
-            .clone();
+            },
+        );
         let selected_record = state
             .selected
             .as_ref()
@@ -936,9 +963,31 @@ mod tests {
     }
 
     #[test]
+    fn version_usage_is_reread_only_after_the_refresh_interval() {
+        let start = std::time::Instant::now();
+        let mut slot = None;
+        let mut reads = 0;
+        let mut read = |slot: &mut Option<(std::time::Instant, String)>, now| {
+            cached_version_usage(slot, now, || {
+                reads += 1;
+                format!("read {reads}")
+            })
+        };
+        assert_eq!(read(&mut slot, start), "read 1");
+        assert_eq!(
+            read(&mut slot, start + std::time::Duration::from_secs(1)),
+            "read 1"
+        );
+        assert_eq!(read(&mut slot, start + VERSION_USAGE_REFRESH), "read 2");
+    }
+
+    #[test]
     fn a_completed_scan_drops_the_cached_version_usage() {
         let mut state = RecoveryState {
-            version_usage_label: Some("Version store 1 KB".to_string()),
+            version_usage_label: Some((
+                std::time::Instant::now(),
+                "Version store 1 KB".to_string(),
+            )),
             ..RecoveryState::default()
         };
         deliver(&mut state, Vec::new());
