@@ -9,6 +9,27 @@ use crate::workspace::BatchRenameContext;
 
 const PREVIEW_SCROLL_ID: &str = "batch_rename_preview";
 
+/// Tooltip for a flagged preview row, so the glyph says why it is flagged.
+fn status_hint(status: PlanStatus) -> Option<&'static str> {
+    match status {
+        PlanStatus::Ok | PlanStatus::Unchanged => None,
+        PlanStatus::Invalid => Some("Name is not valid"),
+        PlanStatus::Collision => Some("Name already exists or repeats another row"),
+    }
+}
+
+fn renamed_toast(n: usize) -> String {
+    format!("Renamed {n} item{}", if n == 1 { "" } else { "s" })
+}
+
+/// Whether a global Enter should submit: only when the caret is in one of
+/// the rule's text fields (or nothing is focused). A focused checkbox or
+/// case toggle consumes Enter itself, and applying in the same frame would
+/// skip the preview of the rule it just changed.
+fn enter_submits(focused: Option<egui::Id>, text_fields: &[egui::Id]) -> bool {
+    focused.is_none_or(|id| text_fields.contains(&id))
+}
+
 fn clear_error_after_rule_change(
     error: &mut Option<String>,
     previous: &RenameRule,
@@ -25,6 +46,7 @@ pub struct ValidatedBatchRename {
     will_change: usize,
     applicable: bool,
     block_reason: Option<String>,
+    regex_error: Option<String>,
 }
 
 impl ValidatedBatchRename {
@@ -37,7 +59,7 @@ impl ValidatedBatchRename {
             .map(|plan| (plan.from.clone(), plan.to.clone()))
             .collect();
         let will_change = changes.len();
-        let (applicable, block_reason) = if let Some(error) = regex_err {
+        let (applicable, block_reason) = if let Some(error) = &regex_err {
             (false, Some(format!("Invalid regex: {error}")))
         } else if plan_is_applicable(&plans) {
             (true, None)
@@ -58,6 +80,7 @@ impl ValidatedBatchRename {
             will_change,
             applicable,
             block_reason,
+            regex_error: regex_err.map(|error| format!("Invalid regex: {error}")),
         }
     }
 
@@ -123,10 +146,13 @@ impl App {
         super::sheet_window("Batch rename", t, 16).show(ctx, |ui| {
             ui.set_width(560.0);
             ui.label(
-                egui::RichText::new(format!("Batch rename {target_count} item(s)"))
-                    .size(13.0)
-                    .strong()
-                    .color(t.text_primary),
+                egui::RichText::new(format!(
+                    "Batch rename {target_count} item{}",
+                    if target_count == 1 { "" } else { "s" }
+                ))
+                .size(13.0)
+                .strong()
+                .color(t.text_primary),
             );
             ui.label(
                 egui::RichText::new(state.context.dir.display().to_string())
@@ -137,15 +163,15 @@ impl App {
 
             // ── Rule fields ─────────────────────────────────────────
             let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, hint: &str| {
-                ui.label(egui::RichText::new(label).size(11.0).color(t.text_muted));
+                let label = ui.label(egui::RichText::new(label).size(11.0).color(t.text_muted));
                 let edit = egui::TextEdit::singleline(buf)
                     .desired_width(180.0)
                     .hint_text(hint)
                     .margin(egui::vec2(6.0, 4.0));
-                ui.add(edit)
+                ui.add(edit).labelled_by(label.id)
             };
 
-            egui::Grid::new("batch_rename_fields")
+            let text_fields = egui::Grid::new("batch_rename_fields")
                 .num_columns(4)
                 .spacing([10.0, 8.0])
                 .show(ui, |ui| {
@@ -159,16 +185,29 @@ impl App {
                         first.request_focus();
                     }
                     let replace_hint = if state.regex_mode { "$1 groups ok" } else { "" };
-                    field(ui, "Replace", &mut state.replace, replace_hint);
+                    let replace = field(ui, "Replace", &mut state.replace, replace_hint);
                     ui.end_row();
 
-                    field(ui, "Prefix", &mut state.prefix, "before name");
-                    field(ui, "Suffix", &mut state.suffix, "after name");
+                    let prefix = field(ui, "Prefix", &mut state.prefix, "before name");
+                    let suffix = field(ui, "Suffix", &mut state.suffix, "after name");
                     ui.end_row();
-                });
+                    [first.id, replace.id, prefix.id, suffix.id]
+                })
+                .inner;
 
             ui.add_space(4.0);
             ui.checkbox(&mut state.regex_mode, "Find is a regex");
+            // Report a bad pattern next to the field it came from. The regex
+            // does not depend on the case/numbering controls below, so this
+            // validation already holds this frame's error.
+            let rule = state.rule();
+            let regex_error =
+                ValidatedBatchRename::cached(&mut state.validation, &state.context, rule)
+                    .regex_error
+                    .clone();
+            if let Some(error) = regex_error {
+                ui.label(egui::RichText::new(error).size(11.0).color(t.accent_red));
+            }
 
             ui.add_space(8.0);
 
@@ -192,12 +231,17 @@ impl App {
                 ui.add_space(16.0);
                 ui.checkbox(&mut state.numbering_on, "Number");
                 ui.add_enabled_ui(state.numbering_on, |ui| {
-                    ui.label(egui::RichText::new("start").size(10.0).color(t.text_muted));
-                    ui.add(egui::DragValue::new(&mut state.num_start).range(0..=100_000));
-                    ui.label(egui::RichText::new("step").size(10.0).color(t.text_muted));
-                    ui.add(egui::DragValue::new(&mut state.num_step).range(1..=1000));
-                    ui.label(egui::RichText::new("pad").size(10.0).color(t.text_muted));
-                    ui.add(egui::DragValue::new(&mut state.num_pad).range(0..=6));
+                    let label =
+                        ui.label(egui::RichText::new("start").size(10.0).color(t.text_muted));
+                    ui.add(egui::DragValue::new(&mut state.num_start).range(0..=100_000))
+                        .labelled_by(label.id);
+                    let label =
+                        ui.label(egui::RichText::new("step").size(10.0).color(t.text_muted));
+                    ui.add(egui::DragValue::new(&mut state.num_step).range(1..=1000))
+                        .labelled_by(label.id);
+                    let label = ui.label(egui::RichText::new("pad").size(10.0).color(t.text_muted));
+                    ui.add(egui::DragValue::new(&mut state.num_pad).range(0..=6))
+                        .labelled_by(label.id);
                 });
             });
 
@@ -231,20 +275,36 @@ impl App {
                         };
                         ui.horizontal(|ui| {
                             ui.set_height(ROW_H);
-                            ui.label(
-                                egui::RichText::new(&p.from)
-                                    .size(12.0)
-                                    .color(t.text_secondary),
-                            );
-                            ui.label(egui::RichText::new(mark).size(12.0).color(color));
-                            ui.label(egui::RichText::new(&p.to).size(12.0).color(color));
+                            // Split the row so a long name truncates (full
+                            // name on hover) instead of widening the sheet.
+                            let name_w = ((ui.available_width() - 24.0) / 2.0).max(60.0);
+                            let name_cell = |ui: &mut egui::Ui, text: &str, color| {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(name_w, ROW_H),
+                                    Layout::left_to_right(Align::Center),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(text).size(12.0).color(color),
+                                            )
+                                            .truncate(),
+                                        )
+                                    },
+                                );
+                            };
+                            name_cell(ui, &p.from, t.text_secondary);
+                            let mark = ui.label(egui::RichText::new(mark).size(12.0).color(color));
+                            if let Some(hint) = status_hint(p.status) {
+                                mark.on_hover_text(hint);
+                            }
+                            name_cell(ui, &p.to, color);
                         });
                     }
                 });
 
             ui.add_space(10.0);
             let mut submit_requested = false;
-            ui.horizontal(|ui| {
+            {
                 let summary = if validation.applicable {
                     format!(
                         "{} of {} will change",
@@ -264,33 +324,36 @@ impl App {
                     t.text_muted
                 };
                 ui.label(egui::RichText::new(summary).size(11.0).color(summary_color));
+            }
 
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(super::dialog_button(
+            // Primary first, left to right, so Tab order matches the visual
+            // order and the mask/rename sheets.
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        validation.applicable,
+                        super::dialog_button(
                             t,
-                            super::ButtonRole::Secondary,
-                            egui::RichText::new("Cancel").size(13.0),
-                        ))
-                        .clicked()
-                    {
-                        cancel = true;
-                    }
-                    ui.add_space(8.0);
-                    if ui
-                        .add_enabled(
-                            validation.applicable,
-                            super::dialog_button(
-                                t,
-                                super::ButtonRole::Primary,
-                                egui::RichText::new("Rename").size(13.0),
-                            ),
-                        )
-                        .clicked()
-                    {
-                        submit_requested = true;
-                    }
-                });
+                            super::ButtonRole::Primary,
+                            egui::RichText::new("Rename").size(13.0),
+                        ),
+                    )
+                    .clicked()
+                {
+                    submit_requested = true;
+                }
+                ui.add_space(8.0);
+                if ui
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Cancel").size(13.0),
+                    ))
+                    .clicked()
+                {
+                    cancel = true;
+                }
             });
 
             if let Some(err) = &state.error {
@@ -298,7 +361,9 @@ impl App {
                 ui.label(egui::RichText::new(err).size(11.0).color(t.accent_red));
             }
 
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                && enter_submits(ui.memory(|m| m.focused()), &text_fields)
+            {
                 submit_requested = true;
             }
             if let Some(rule) = validation.rule_for_submit(submit_requested) {
@@ -322,7 +387,7 @@ impl App {
                         self.toast(
                             ctx,
                             crate::toasts::ToastKind::Success,
-                            format!("Renamed {n} item(s)"),
+                            renamed_toast(n),
                             true,
                         );
                         // apply_batch_rename just pushed this run onto the
@@ -361,6 +426,53 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flagged_rows_explain_their_glyph() {
+        assert_eq!(status_hint(PlanStatus::Ok), None);
+        assert_eq!(status_hint(PlanStatus::Unchanged), None);
+        assert_eq!(status_hint(PlanStatus::Invalid), Some("Name is not valid"));
+        assert!(status_hint(PlanStatus::Collision).is_some_and(|hint| hint.contains("exists")));
+    }
+
+    #[test]
+    fn renamed_toast_pluralizes() {
+        assert_eq!(renamed_toast(1), "Renamed 1 item");
+        assert_eq!(renamed_toast(3), "Renamed 3 items");
+    }
+
+    #[test]
+    fn enter_submits_only_from_text_fields_or_no_focus() {
+        let find = egui::Id::new("find");
+        let checkbox = egui::Id::new("regex checkbox");
+        assert!(enter_submits(None, &[find]));
+        assert!(enter_submits(Some(find), &[find]));
+        assert!(!enter_submits(Some(checkbox), &[find]));
+    }
+
+    #[test]
+    fn regex_error_is_reported_separately_from_the_summary() {
+        let context = BatchRenameContext {
+            panel: ActivePanel::Left,
+            dir: PathBuf::from("/fixture"),
+            targets: vec!["a.txt".to_string()],
+            existing: std::collections::HashSet::from(["a.txt".to_string()]),
+        };
+        let bad = RenameRule {
+            find: "(".to_string(),
+            regex: true,
+            ..RenameRule::default()
+        };
+        let validation = ValidatedBatchRename::build(&context, bad);
+        assert!(
+            validation
+                .regex_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("Invalid regex:"))
+        );
+        let good = ValidatedBatchRename::build(&context, RenameRule::default());
+        assert_eq!(good.regex_error, None);
+    }
 
     #[test]
     fn changing_rule_clears_previous_apply_error() {
