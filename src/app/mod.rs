@@ -76,7 +76,7 @@ pub struct App {
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
-    pub(crate) tree_children_cache: std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    pub(crate) tree_children_cache: tree::ChildCache,
     pub(crate) tree_width: f32,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
