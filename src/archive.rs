@@ -278,6 +278,9 @@ fn visit_tar_gz_list(
         .as_ref()
         .map_or(true, |lines| lines.cancelled || lines.limited);
     if stopped_early {
+        // Stopped at the member budget or on cancel: tar is killed, so its
+        // exit status and stderr are deliberately ignored. A gzip or tar
+        // error past the cut-off is not reported for a truncated listing.
         let _ = child.kill();
     }
     let status = child.wait();
