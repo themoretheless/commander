@@ -13,6 +13,9 @@ const MAX_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_PRELOAD_WORKERS: usize = 4;
 const MAX_PREVIEW_TARGET_DIMENSION: u32 = 4_096;
 const DECODE_TIMEOUT: Duration = Duration::from_secs(12);
+/// How long a capacity refusal (busy decoders, power pressure) is shown
+/// before the next preload pass tries the image again.
+const TRANSIENT_FAILURE_RETRY: Duration = Duration::from_secs(2);
 const MAX_TEXT_PREVIEW_CACHE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_CACHE_ENTRIES: usize = 16;
 const TEXT_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(75);
@@ -80,7 +83,28 @@ struct CacheEntry {
 type PendingLoad = Option<DecodedPreview>;
 /// Background-load slots shared with the worker threads, keyed by path.
 type PendingMap = Arc<Mutex<HashMap<PathBuf, PendingLoad>>>;
-type FailedMap = Arc<Mutex<HashMap<PathBuf, PreviewFailure>>>;
+type FailedMap = Arc<Mutex<HashMap<PathBuf, FailedLoad>>>;
+
+/// A negative-cache entry. Capacity refusals expire on their own; real
+/// decode failures stay until the user retries or the folder changes.
+#[derive(Clone, Copy, Debug)]
+struct FailedLoad {
+    failure: PreviewFailure,
+    retry_at: Option<Instant>,
+}
+
+impl FailedLoad {
+    fn new(failure: PreviewFailure, now: Instant) -> Self {
+        Self {
+            failure,
+            retry_at: (failure == PreviewFailure::Busy).then(|| now + TRANSIENT_FAILURE_RETRY),
+        }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        self.retry_at.is_some_and(|retry_at| now >= retry_at)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewError {
@@ -1196,6 +1220,7 @@ impl ImageCache {
         }
 
         let target = self.preview_target;
+        self.purge_expired_failures(Instant::now());
         let failed = crate::lock_util::recover(&self.failed).clone();
         let mut available_slots =
             MAX_PRELOAD_WORKERS.saturating_sub(crate::lock_util::recover(&self.pending).len());
@@ -1264,8 +1289,13 @@ impl ImageCache {
                             if !cancelled() {
                                 pending.remove(&path_clone);
                                 drop(pending);
+                                let failure =
+                                    FailedLoad::new(classify_failure(&error), Instant::now());
                                 crate::lock_util::recover(&failed_clone)
-                                    .insert(path_clone, classify_failure(&error));
+                                    .insert(path_clone, failure);
+                                if failure.retry_at.is_some() {
+                                    ctx_clone.request_repaint_after(TRANSIENT_FAILURE_RETRY);
+                                }
                                 ctx_clone.request_repaint();
                             }
                         }
@@ -1319,14 +1349,19 @@ impl ImageCache {
         if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview) {
             return PreviewLoadState::Disabled;
         }
-        if let Some(failure) = crate::lock_util::recover(&self.failed).get(path).copied() {
-            return PreviewLoadState::Failed(failure);
+        if let Some(failed) = crate::lock_util::recover(&self.failed).get(path).copied() {
+            return PreviewLoadState::Failed(failed.failure);
         }
         if crate::lock_util::recover(&self.pending).contains_key(path) {
             PreviewLoadState::Loading
         } else {
             PreviewLoadState::Idle
         }
+    }
+
+    /// Drop capacity refusals whose retry delay has passed.
+    fn purge_expired_failures(&self, now: Instant) {
+        crate::lock_util::recover(&self.failed).retain(|_, failed| !failed.expired(now));
     }
 
     /// Clear a negative cache entry so the next preload pass can try again.
@@ -1353,10 +1388,17 @@ impl ImageCache {
 
 fn classify_failure(error: &str) -> PreviewFailure {
     let normalized = error.to_ascii_lowercase();
-    if normalized.contains("still busy") || normalized.contains("decoder capacity") {
+    if normalized.contains("still busy")
+        || normalized.contains("decoder capacity")
+        || normalized.contains("could not start")
+        || normalized.contains("deferred")
+    {
         PreviewFailure::Busy
     } else if normalized.contains("timed out") || normalized.contains("time budget") {
         PreviewFailure::TimedOut
+    } else if normalized.contains("zero dimensions") {
+        // An empty image is damaged, not over the dimension limit.
+        PreviewFailure::Decode
     } else if normalized.contains("too large")
         || normalized.contains("allocation")
         || normalized.contains("memory")
@@ -1381,62 +1423,28 @@ fn classify_failure(error: &str) -> PreviewFailure {
     }
 }
 
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv"];
+
+/// Case-insensitive extension check without allocating during scans.
+fn has_extension_in(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            extensions
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+}
+
 #[cfg(target_os = "macos")]
 fn is_video_ext(path: &Path) -> bool {
-    // Byte-level case-insensitive check avoids string allocation during scans
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.as_bytes()),
-        Some(
-            b"mp4"
-                | b"mov"
-                | b"avi"
-                | b"mkv"
-                | b"webm"
-                | b"m4v"
-                | b"wmv"
-                | b"flv"
-                | b"MP4"
-                | b"MOV"
-                | b"AVI"
-                | b"MKV"
-                | b"WEBM"
-                | b"M4V"
-                | b"WMV"
-                | b"FLV"
-        )
-    )
+    has_extension_in(path, VIDEO_EXTENSIONS)
 }
 
 /// Extensions the standard `image` crate path cannot decode. Early-reject so
 /// callers classify as Unsupported even when platform error strings differ.
 fn is_undecodable_standard_ext(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.as_bytes()),
-        Some(
-            b"svg"
-                | b"mkv"
-                | b"webm"
-                | b"mp4"
-                | b"mov"
-                | b"avi"
-                | b"m4v"
-                | b"wmv"
-                | b"flv"
-                | b"SVG"
-                | b"MKV"
-                | b"WEBM"
-                | b"MP4"
-                | b"MOV"
-                | b"AVI"
-                | b"M4V"
-                | b"WMV"
-                | b"FLV"
-        )
-    )
+    has_extension_in(path, &["svg"]) || has_extension_in(path, VIDEO_EXTENSIONS)
 }
 
 /// Allocate a zeroed RGBA buffer without integer wrap or an aborting reserve.
@@ -1586,9 +1594,17 @@ fn load_image_with_timeout(path: &Path, target: PreviewTarget) -> Result<Decoded
     });
     match &result {
         Ok(_) => crate::decoder_breaker::record_success(&path_buf),
+        Err(error) if !counts_against_decoder(error) => {}
         Err(_) => crate::decoder_breaker::record_failure(&path_buf),
     }
     result
+}
+
+/// Capacity refusals say nothing about the format, so they must not trip the
+/// per-format breaker. Timeouts still count: a decoder that hangs keeps its
+/// permit, and the breaker is what stops one format from pinning them all.
+fn counts_against_decoder(error: &str) -> bool {
+    classify_failure(error) != PreviewFailure::Busy
 }
 
 fn load_image_from_disk(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
@@ -2522,7 +2538,10 @@ mod tests {
     fn retry_clears_negative_and_pending_cache_entries() {
         let mut cache = ImageCache::new();
         let path = std::path::PathBuf::from("broken.png");
-        crate::lock_util::recover(&cache.failed).insert(path.clone(), PreviewFailure::Decode);
+        crate::lock_util::recover(&cache.failed).insert(
+            path.clone(),
+            super::FailedLoad::new(PreviewFailure::Decode, Instant::now()),
+        );
         crate::lock_util::recover(&cache.pending).insert(path.clone(), None);
         assert_eq!(cache.stats().failed, 1);
         assert_eq!(cache.stats().pending, 1);
@@ -2948,5 +2967,81 @@ mod tests {
             super::read_preview_bytes(&mut reader, 5, &|| false, None).unwrap(),
             b"hello"
         );
+    }
+
+    #[test]
+    fn empty_and_capacity_errors_get_accurate_failure_kinds() {
+        assert_eq!(
+            classify_failure("image has zero dimensions"),
+            PreviewFailure::Decode
+        );
+        assert_eq!(
+            classify_failure("ImageIO: video frame has zero dimensions; standard decoder: x"),
+            PreviewFailure::Decode
+        );
+        assert_eq!(
+            classify_failure("image dimensions exceed the preview limit"),
+            PreviewFailure::TooLarge
+        );
+        assert_eq!(
+            classify_failure("preview deferred under battery/thermal pressure"),
+            PreviewFailure::Busy
+        );
+        assert_eq!(
+            classify_failure("preview provider thread could not start: EAGAIN"),
+            PreviewFailure::Busy
+        );
+    }
+
+    #[test]
+    fn capacity_refusals_do_not_trip_the_decoder_breaker() {
+        assert!(!super::counts_against_decoder(
+            "preview providers are still busy after an earlier timeout"
+        ));
+        assert!(!super::counts_against_decoder(
+            "preview deferred under battery/thermal pressure"
+        ));
+        assert!(super::counts_against_decoder("preview provider timed out"));
+        assert!(super::counts_against_decoder("invalid checksum"));
+    }
+
+    #[test]
+    fn busy_failures_expire_but_decode_failures_stay() {
+        let cache = ImageCache::new();
+        let now = Instant::now();
+        let busy = PathBuf::from("busy.png");
+        let broken = PathBuf::from("broken.png");
+        {
+            let mut failed = crate::lock_util::recover(&cache.failed);
+            failed.insert(
+                busy.clone(),
+                super::FailedLoad::new(PreviewFailure::Busy, now),
+            );
+            failed.insert(
+                broken.clone(),
+                super::FailedLoad::new(PreviewFailure::Decode, now),
+            );
+        }
+
+        cache.purge_expired_failures(now);
+        assert_eq!(cache.stats().failed, 2);
+
+        cache.purge_expired_failures(now + super::TRANSIENT_FAILURE_RETRY);
+        let failed = crate::lock_util::recover(&cache.failed);
+        assert!(!failed.contains_key(&busy));
+        assert!(failed.contains_key(&broken));
+    }
+
+    #[test]
+    fn mixed_case_video_extensions_are_recognized() {
+        assert!(super::is_undecodable_standard_ext(std::path::Path::new(
+            "clip.Mov"
+        )));
+        assert!(super::is_undecodable_standard_ext(std::path::Path::new(
+            "logo.Svg"
+        )));
+        assert!(!super::is_undecodable_standard_ext(std::path::Path::new(
+            "photo.Png"
+        )));
     }
 }
