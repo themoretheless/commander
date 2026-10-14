@@ -635,7 +635,10 @@ pub struct RecoveryState {
     pub repair_plan: Option<crate::operation_journal::RepairPlan>,
     pub versions: Vec<crate::version_store::VersionRecord>,
     pub error: Option<String>,
-    pub outcome: Option<String>,
+    pub outcome: Option<RecoveryOutcome>,
+    /// Set after Resume queues a transfer; the list is rescanned once the
+    /// transfer queue drains so the resumed operation's status is current.
+    pub rescan_after_resume: bool,
     pub scanning: bool,
     pub repair_loaded: bool,
     pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
@@ -648,6 +651,14 @@ pub struct RecoveryState {
     pub version_usage_label: Option<(std::time::Instant, String)>,
 }
 
+/// The result line of the last cleanup or rollback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryOutcome {
+    pub message: String,
+    /// Items still need the user's attention, so the line is a warning.
+    pub needs_review: bool,
+}
+
 pub struct RecoveryScanResult {
     pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
 }
@@ -655,7 +666,7 @@ pub struct RecoveryScanResult {
 pub struct RepairLoadResult {
     pub operation_id: crate::operation::OperationId,
     pub plan: Result<crate::operation_journal::RepairPlan, String>,
-    pub versions: Vec<crate::version_store::VersionRecord>,
+    pub versions: Result<Vec<crate::version_store::VersionRecord>, String>,
 }
 
 impl App {

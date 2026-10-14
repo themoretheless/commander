@@ -945,19 +945,17 @@ impl App {
             if let Some(definition) = definition {
                 let name = definition.name.clone();
                 self.smart_folders_mut().add(definition);
-                let saved = crate::smart_folder::save(self.smart_folders_mut());
-                let (message, kind) = if saved {
-                    (
-                        format!("Saved search \"{name}\""),
+                // A failed save gets no toast here: the persistence layer
+                // records the failure with its cause and `begin_frame`
+                // toasts that, so a second, vaguer error would repeat it.
+                if crate::smart_folder::save(self.smart_folders_mut()) {
+                    self.toast(
+                        ctx,
                         crate::toasts::ToastKind::Success,
-                    )
-                } else {
-                    (
-                        format!("Could not save search \"{name}\""),
-                        crate::toasts::ToastKind::Error,
-                    )
-                };
-                self.toast(ctx, kind, message, false);
+                        format!("Saved search \"{name}\""),
+                        false,
+                    );
+                }
             }
         }
     }
