@@ -204,6 +204,61 @@ fn show_operation_list(
         });
 }
 
+/// Most journal steps or repair items laid out at once. `ScrollArea::show`
+/// lays out every row each frame, so operations with tens of thousands of
+/// steps would otherwise stall the panel.
+const RECOVERY_ROW_LIMIT: usize = 500;
+
+/// Up to `limit` items in their original order. When there are more, settled
+/// items give way first so the ones needing attention are never hidden.
+fn capped_rows<T>(items: &[T], limit: usize, settled: impl Fn(&T) -> bool) -> Vec<&T> {
+    if items.len() <= limit {
+        return items.iter().collect();
+    }
+    let unsettled = items.iter().filter(|item| !settled(item)).count();
+    let mut settled_budget = limit.saturating_sub(unsettled);
+    let mut unsettled_budget = limit;
+    items
+        .iter()
+        .filter(|item| {
+            let budget = if settled(item) {
+                &mut settled_budget
+            } else {
+                &mut unsettled_budget
+            };
+            let shown = *budget > 0;
+            *budget = budget.saturating_sub(1);
+            shown
+        })
+        .collect()
+}
+
+/// Repair plan rows as (item, done): completed items first, then remaining
+/// ones, capped at `limit`. Remaining items are kept over the oldest completed
+/// ones, which are dropped first.
+fn repair_rows(
+    plan: &crate::operation_journal::RepairPlan,
+    limit: usize,
+) -> Vec<(&crate::operation_journal::RepairItem, bool)> {
+    let remaining = plan.remaining.len().min(limit);
+    let completed = plan.completed.len().min(limit - remaining);
+    plan.completed[plan.completed.len() - completed..]
+        .iter()
+        .map(|item| (item, true))
+        .chain(plan.remaining[..remaining].iter().map(|item| (item, false)))
+        .collect()
+}
+
+fn hidden_rows_label(ui: &mut egui::Ui, hidden: usize, noun: &str, t: ThemeColors) {
+    if hidden > 0 {
+        ui.label(
+            egui::RichText::new(format!("{hidden} more {noun} not shown"))
+                .size(10.0)
+                .color(t.text_muted),
+        );
+    }
+}
+
 fn show_inspect(
     ui: &mut egui::Ui,
     record: &crate::operation_journal::OperationRecord,
@@ -245,7 +300,14 @@ fn show_inspect(
         .max_height(295.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            for step in &record.steps {
+            use crate::operation_journal::StepStatus;
+            let steps = capped_rows(&record.steps, RECOVERY_ROW_LIMIT, |step| {
+                matches!(
+                    step.status,
+                    StepStatus::Completed | StepStatus::Skipped | StepStatus::RolledBack
+                )
+            });
+            for step in &steps {
                 Frame::NONE
                     .fill(t.bg_card)
                     .inner_margin(Margin::symmetric(8, 6))
@@ -312,6 +374,7 @@ fn show_inspect(
                     });
                 ui.add_space(4.0);
             }
+            hidden_rows_label(ui, record.steps.len() - steps.len(), "step(s)", t);
         });
 }
 
@@ -345,8 +408,14 @@ fn show_repair(
         .max_height(285.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            for item in plan.completed.iter().chain(plan.remaining.iter()) {
-                let done = plan.completed.iter().any(|completed| completed == item);
+            let rows = repair_rows(plan, RECOVERY_ROW_LIMIT);
+            hidden_rows_label(
+                ui,
+                plan.completed.len() + plan.remaining.len() - rows.len(),
+                "item(s)",
+                t,
+            );
+            for (item, done) in rows {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(if done {
@@ -822,6 +891,62 @@ mod tests {
         };
         deliver(&mut state, Vec::new());
         assert_eq!(state.version_usage_label, None);
+    }
+
+    #[test]
+    fn capped_rows_keep_order_and_never_hide_unsettled_items() {
+        let items: Vec<u32> = (0..10).collect();
+        // Odd numbers are settled.
+        let settled = |item: &u32| item % 2 == 1;
+        assert_eq!(capped_rows(&items, 10, settled).len(), 10);
+        let shown: Vec<u32> = capped_rows(&items, 7, settled)
+            .into_iter()
+            .copied()
+            .collect();
+        assert_eq!(shown, vec![0, 1, 2, 3, 4, 6, 8]);
+        let shown: Vec<u32> = capped_rows(&items, 3, settled)
+            .into_iter()
+            .copied()
+            .collect();
+        assert_eq!(shown, vec![0, 2, 4]);
+        assert!(capped_rows(&items, 0, settled).is_empty());
+    }
+
+    #[test]
+    fn repair_rows_mark_done_by_list_and_cap_oldest_completed_first() {
+        let item = |name: &str, automatic| crate::operation_journal::RepairItem {
+            path: std::path::PathBuf::from(name),
+            action: format!("restore {name}"),
+            automatic,
+        };
+        let plan = crate::operation_journal::RepairPlan {
+            operation_id: None,
+            completed: vec![item("a", true), item("b", true)],
+            remaining: vec![item("c", true), item("d", false)],
+        };
+        let names = |rows: Vec<(&crate::operation_journal::RepairItem, bool)>| {
+            rows.into_iter()
+                .map(|(item, done)| (item.path.display().to_string(), done))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(repair_rows(&plan, 10)),
+            vec![
+                ("a".to_string(), true),
+                ("b".to_string(), true),
+                ("c".to_string(), false),
+                ("d".to_string(), false),
+            ]
+        );
+        assert_eq!(
+            names(repair_rows(&plan, 3)),
+            vec![
+                ("b".to_string(), true),
+                ("c".to_string(), false),
+                ("d".to_string(), false),
+            ]
+        );
+        assert_eq!(names(repair_rows(&plan, 1)), vec![("c".to_string(), false)]);
     }
 
     #[test]
