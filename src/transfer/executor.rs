@@ -943,7 +943,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                         if is_disconnect_error(e) && work_item.mount_retries < MAX_MOUNT_RETRIES {
                             let (reconnect_guard, reconnect_label) = if mount_wait_override
                                 .is_none()
-                                && source_mount.check()
+                                && source_mount.check_bounded()
                                     != crate::mount_guard::MountAvailability::Available
                             {
                                 (&source_mount, "Source volume")
