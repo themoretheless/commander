@@ -317,6 +317,11 @@ impl App {
     /// Context menu drawn by egui where no native menu exists (Linux, Windows).
     fn show_fallback_context_menu(&mut self, ctx: &egui::Context) {
         use crate::provider_runtime::ContextMenuUiEffect as Effect;
+        // A modal opened from the keyboard (F8, F2...) dismisses the menu,
+        // which would otherwise float above it with live items.
+        if self.has_modal_surface() {
+            self.fallback_menu = None;
+        }
         let Some((panel, path, pos)) = self.fallback_menu.clone() else {
             return;
         };
@@ -880,7 +885,10 @@ impl App {
                         .inner_margin(Margin::symmetric(8, 3)),
                 )
                 .show(ui, |ui| draw(ui, &mut run));
-        } else {
+        } else if ui.is_enabled() {
+            // The overlay is a root Area that would not inherit this disabled
+            // Ui; skip it while a dialog owns input, so holding a modifier
+            // in a dialog cannot reveal clickable commands above it.
             egui::Area::new(egui::Id::new("shortcuts_overlay"))
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
                 .order(egui::Order::Foreground)
@@ -897,7 +905,9 @@ impl App {
                         });
                 });
         }
-        if let Some(command) = run {
+        if let Some(command) = run
+            && ui.is_enabled()
+        {
             self.ws.execute(command);
         }
     }

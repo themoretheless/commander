@@ -112,6 +112,20 @@ fn binding_modifiers(m: egui::Modifiers) -> bool {
     !m.alt && (m.command || !m.ctrl)
 }
 
+/// The egui-drawn fallback context menu closes on Escape itself, so that
+/// press must not also close a pane tool or preview, or leave focus mode,
+/// underneath it. Modals and text fields keep their own Escape.
+const fn escape_route_under_menu(route: EscapeRoute, menu_open: bool) -> EscapeRoute {
+    match route {
+        EscapeRoute::PaneTool | EscapeRoute::ActivePreview | EscapeRoute::FocusMode
+            if menu_open =>
+        {
+            EscapeRoute::None
+        }
+        route => route,
+    }
+}
+
 fn prioritized_modal(
     open: impl Fn(ModalSurface) -> bool,
     first_pending: Option<ModalSurface>,
@@ -180,7 +194,7 @@ impl App {
 
     pub(crate) fn capture_escape_request(&mut self, ctx: &egui::Context) {
         self.ui.escape_request = if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.ui_contract(ctx).escape
+            escape_route_under_menu(self.ui_contract(ctx).escape, self.fallback_menu.is_some())
         } else {
             EscapeRoute::None
         };
@@ -523,5 +537,19 @@ mod tests {
         let command = presses_for(egui::Key::A, egui::Modifiers::COMMAND);
         assert_eq!(command.len(), 1);
         assert!(command[0].command);
+    }
+
+    #[test]
+    fn escape_on_the_fallback_menu_only_closes_the_menu() {
+        for route in [
+            EscapeRoute::PaneTool,
+            EscapeRoute::ActivePreview,
+            EscapeRoute::FocusMode,
+        ] {
+            assert_eq!(escape_route_under_menu(route, true), EscapeRoute::None);
+            assert_eq!(escape_route_under_menu(route, false), route);
+        }
+        let modal = EscapeRoute::Modal(ModalSurface::Palette);
+        assert_eq!(escape_route_under_menu(modal, true), modal);
     }
 }
