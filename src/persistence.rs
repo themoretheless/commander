@@ -1080,10 +1080,27 @@ pub fn save_item_store<T: Serialize + DeserializeOwned>(
     }
 }
 
+fn lossy_loads() -> &'static Mutex<std::collections::HashSet<PathBuf>> {
+    static LOSSY: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+    LOSSY.get_or_init(Mutex::default)
+}
+
+/// Remember that the item store at `path` loaded lossily (unreadable, or with
+/// items dropped while decoding or normalizing), so the next
+/// [`save_item_store`] keeps the original file aside even if it would decode
+/// cleanly by then, e.g. after a transient read error.
+pub fn mark_lossy_load(path: &Path) {
+    crate::lock_util::recover(lossy_loads()).insert(path.to_path_buf());
+}
+
 fn set_aside_undecodable<T: DeserializeOwned>(path: &Path) -> io::Result<()> {
+    let lossy = crate::lock_util::recover(lossy_loads()).contains(path);
     let intact = match read_target(path) {
-        Ok(None) => return Ok(()),
-        Ok(Some(json)) => serde_json::from_str::<T>(&json).is_ok(),
+        Ok(None) => {
+            crate::lock_util::recover(lossy_loads()).remove(path);
+            return Ok(());
+        }
+        Ok(Some(json)) => !lossy && serde_json::from_str::<T>(&json).is_ok(),
         Err(_) => false,
     };
     if intact {
@@ -1098,7 +1115,9 @@ fn set_aside_undecodable<T: DeserializeOwned>(path: &Path) -> io::Result<()> {
     let mut backup = OsString::from(".");
     backup.push(file_name);
     backup.push(format!(".unreadable-{millis}.json"));
-    std::fs::rename(path, path.with_file_name(backup))
+    std::fs::rename(path, path.with_file_name(backup))?;
+    crate::lock_util::recover(lossy_loads()).remove(path);
+    Ok(())
 }
 
 pub fn commit_bytes_atomic(
@@ -1425,6 +1444,7 @@ pub fn load_item_store<T: DeserializeOwned>(path: &Path, store: &'static str) ->
         Ok(None) => return Vec::new(),
         Err(_) => {
             record_unreadable(store);
+            mark_lossy_load(path);
             return Vec::new();
         }
     };
@@ -1432,11 +1452,13 @@ pub fn load_item_store<T: DeserializeOwned>(path: &Path, store: &'static str) ->
         Ok(decoded) => {
             if decoded.rejected > 0 {
                 record_recovery(store, decoded.items.len(), decoded.rejected);
+                mark_lossy_load(path);
             }
             decoded.items
         }
         Err(_) => {
             record_unreadable(store);
+            mark_lossy_load(path);
             Vec::new()
         }
     }

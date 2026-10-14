@@ -81,11 +81,36 @@ pub fn load() -> ProjectCollections {
 
 fn load_from(path: &Path) -> ProjectCollections {
     let loaded: Vec<ProjectCollection> = crate::persistence::load_item_store(path, STORE_NAME);
-    // Re-admit each item through `new`/`add` so a hand-edited file cannot
-    // smuggle in untrimmed or duplicate names, duplicate roots or empty sets.
+    // Re-admit each item through `new` so a hand-edited file cannot smuggle in
+    // untrimmed names, duplicate roots or empty sets. Same-name entries are
+    // merged into the first one (its name and root order win, the later
+    // entries' extra roots are appended) so no root is silently dropped.
+    // Entries that cannot be kept at all are reported as a recovery.
     let mut collections = ProjectCollections::default();
+    let mut rejected = 0usize;
     for item in loaded {
-        collections.add(ProjectCollection::new(item.name, item.roots));
+        let item = ProjectCollection::new(item.name, item.roots);
+        if !item.is_valid() {
+            rejected = rejected.saturating_add(1);
+            continue;
+        }
+        if let Some(existing) = collections
+            .items
+            .iter_mut()
+            .find(|existing| existing.name.eq_ignore_ascii_case(&item.name))
+        {
+            let roots = std::mem::take(&mut existing.roots);
+            *existing = ProjectCollection::new(
+                std::mem::take(&mut existing.name),
+                roots.into_iter().chain(item.roots),
+            );
+        } else {
+            collections.items.push(item);
+        }
+    }
+    if rejected > 0 {
+        crate::persistence::record_recovery(STORE_NAME, collections.items.len(), rejected);
+        crate::persistence::mark_lossy_load(path);
     }
     collections
 }
@@ -262,10 +287,54 @@ mod tests {
         assert_eq!(
             loaded.items,
             vec![ProjectCollection {
-                name: "work".into(),
-                roots: vec![PathBuf::from("/c")],
+                name: "Work".into(),
+                roots: vec![
+                    PathBuf::from("/a"),
+                    PathBuf::from("/b"),
+                    PathBuf::from("/c")
+                ],
             }]
         );
+    }
+
+    fn unreadable_backups(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains(".unreadable-"))
+            .collect()
+    }
+
+    #[test]
+    fn save_keeps_a_store_that_lost_entries_while_normalizing() {
+        let temp = TempDir::new();
+        let original = r#"{"items":[{"name":"   ","roots":["/d"]},{"name":"A","roots":["/a"]}]}"#;
+        let path = temp.file("collections.json", original);
+        let collections = load_from(&path);
+        assert_eq!(collections.items.len(), 1);
+        assert!(save_to(&path, &collections));
+
+        let backups = unreadable_backups(temp.path());
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), original);
+        // Only the first save after the lossy load sets the file aside.
+        assert!(save_to(&path, &collections));
+        assert_eq!(unreadable_backups(temp.path()).len(), 1);
+    }
+
+    #[test]
+    fn save_keeps_a_store_that_was_unreadable_at_load_even_if_readable_now() {
+        let temp = TempDir::new();
+        let path = temp.path().join("collections.json");
+        // Simulate a transient read failure at load time.
+        crate::persistence::mark_lossy_load(&path);
+        let original = r#"{"items":[{"name":"A","roots":["/a"]}]}"#;
+        std::fs::write(&path, original).unwrap();
+        assert!(save_to(&path, &ProjectCollections::default()));
+
+        let backups = unreadable_backups(temp.path());
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), original);
     }
 
     #[test]
