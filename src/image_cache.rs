@@ -1755,6 +1755,20 @@ fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     })
 }
 
+/// Bitmap color space for CoreGraphics draws. egui treats texture bytes as
+/// sRGB, so drawing into an explicit sRGB space makes CoreGraphics convert
+/// wide-gamut (Display P3) sources instead of passing device values through.
+#[cfg(target_os = "macos")]
+unsafe fn create_srgb_color_space() -> *mut objc::runtime::Object {
+    unsafe extern "C" {
+        static kCGColorSpaceSRGB: *const std::ffi::c_void;
+        fn CGColorSpaceCreateWithName(name: *const std::ffi::c_void) -> *mut objc::runtime::Object;
+    }
+    // SAFETY: kCGColorSpaceSRGB is an immutable CoreGraphics constant and the
+    // caller releases the returned color space with CGColorSpaceRelease.
+    unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) }
+}
+
 /// Load image via macOS CoreGraphics/ImageIO.
 /// Supports: DNG, CR2, NEF, ARW, ORF, RAF, RW2, HEIC, TIFF, and all standard formats.
 #[cfg(target_os = "macos")]
@@ -1788,6 +1802,7 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
                 url: *mut Object,
                 options: *mut Object,
             ) -> CGImageSourceRef;
+            fn CGImageSourceGetPrimaryImageIndex(source: CGImageSourceRef) -> usize;
             fn CGImageSourceCreateThumbnailAtIndex(
                 source: CGImageSourceRef,
                 index: usize,
@@ -1795,7 +1810,6 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
             ) -> *mut Object;
             fn CGImageGetWidth(image: *mut Object) -> usize;
             fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGColorSpaceCreateDeviceRGB() -> *mut Object;
             fn CGBitmapContextCreate(
                 data: *mut u8,
                 width: usize,
@@ -1856,7 +1870,9 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
         let _: () = msg_send![options, setObject: yes forKey: transform_key];
         let _: () = msg_send![options, setObject: max_size forKey: size_key];
 
-        let cg_image = CGImageSourceCreateThumbnailAtIndex(source, 0, options);
+        // HEIF containers may store the primary image at a non-zero index.
+        let primary_index = CGImageSourceGetPrimaryImageIndex(source);
+        let cg_image = CGImageSourceCreateThumbnailAtIndex(source, primary_index, options);
         if cg_image.is_null() {
             CFRelease(source);
             let _: () = msg_send![pool, drain];
@@ -1882,12 +1898,12 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
                 return Err(error);
             }
         };
-        let color_space = CGColorSpaceCreateDeviceRGB();
+        let color_space = create_srgb_color_space();
         if color_space.is_null() {
             CGImageRelease(cg_image);
             CFRelease(source);
             let _: () = msg_send![pool, drain];
-            return Err("CGColorSpaceCreateDeviceRGB failed".into());
+            return Err("sRGB color space could not be created".into());
         }
         // kCGImageAlphaPremultipliedLast = 1
         let bitmap_info: u32 = 1;
@@ -2043,7 +2059,6 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         unsafe extern "C" {
             fn CGImageGetWidth(image: *mut Object) -> usize;
             fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGColorSpaceCreateDeviceRGB() -> *mut Object;
             fn CGBitmapContextCreate(
                 data: *mut u8,
                 width: usize,
@@ -2083,11 +2098,11 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
                 return Err(error);
             }
         };
-        let color_space = CGColorSpaceCreateDeviceRGB();
+        let color_space = create_srgb_color_space();
         if color_space.is_null() {
             CGImageRelease(cg_image);
             let _: () = msg_send![pool, drain];
-            return Err("CGColorSpaceCreateDeviceRGB failed for video".into());
+            return Err("sRGB color space could not be created for video".into());
         }
         let bitmap_info: u32 = 1; // kCGImageAlphaPremultipliedLast
         let cg_ctx = CGBitmapContextCreate(
