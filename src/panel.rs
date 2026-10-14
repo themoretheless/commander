@@ -284,32 +284,39 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Glob match supporting `*` (any run) and `?` (one char). Inputs are
-/// expected lowercased; matching is greedy with backtracking.
+/// expected lowercased; matching is greedy with backtracking. Positions are
+/// byte offsets into the inputs, so the mask preview (re-run per entry every
+/// frame) does not allocate.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
+    let next = |s: &str, at: usize| s[at..].chars().next();
     let (mut pi, mut ti) = (0usize, 0usize);
     let (mut star, mut mark) = (None, 0usize);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
+    while let Some(tc) = next(text, ti) {
+        match next(pattern, pi) {
+            Some(pc) if pc == '?' || pc == tc => {
+                pi += pc.len_utf8();
+                ti += tc.len_utf8();
+            }
+            Some('*') => {
+                star = Some(pi);
+                mark = ti;
+                pi += 1;
+            }
+            _ => {
+                let Some(s) = star else {
+                    return false;
+                };
+                pi = s + 1;
+                // Re-anchor one character further along the text.
+                mark += next(text, mark).map_or(1, char::len_utf8);
+                ti = mark;
+            }
         }
     }
-    while pi < p.len() && p[pi] == '*' {
+    while next(pattern, pi) == Some('*') {
         pi += 1;
     }
-    pi == p.len()
+    pi == pattern.len()
 }
 
 /// Parse a select-by-mask line into `(term, is_subtract)` pairs. Terms are
@@ -3055,6 +3062,15 @@ mod tests {
         assert!(!glob_match("a?c", "ac"));
         assert!(!glob_match("*.rs", "main.txt"));
         assert!(glob_match("*", "anything"));
+        // Multi-byte names: `?` is one character, and a failed match after a
+        // star re-anchors on a character boundary.
+        assert!(glob_match("caf?.txt", "café.txt"));
+        assert!(glob_match("*é*", "résumé.pdf"));
+        assert!(glob_match("*ü.txt", "üüü.txt"));
+        assert!(!glob_match("?", "éé"));
+        assert!(glob_match("**a", "a"));
+        assert!(glob_match("", ""));
+        assert!(!glob_match("", "a"));
     }
 
     #[test]
