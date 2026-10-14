@@ -188,12 +188,18 @@ impl ListingJobController {
         if !pending_same {
             self.request_with(path, show_hidden, Some(ticket), PendingFocus::None, false);
             self.watcher_gap = Some(recovered_gap);
-        } else if let Some(gap) = self.watcher_gap.as_mut() {
-            *gap |= recovered_gap;
-        } else if let Some(ready) = self.ready.as_mut()
-            && let Some(gap) = ready.watcher_gap.as_mut()
-        {
-            *gap |= recovered_gap;
+        } else {
+            // A user-requested listing (no watcher attribution yet) still
+            // answers a gap recovery: claim it so the recovery is counted.
+            let slot = match self.ready.as_mut() {
+                Some(ready) => &mut ready.watcher_gap,
+                None => &mut self.watcher_gap,
+            };
+            match slot {
+                Some(gap) => *gap |= recovered_gap,
+                None if recovered_gap => *slot = Some(true),
+                None => {}
+            }
         }
     }
 
@@ -539,10 +545,17 @@ mod tests {
         // A user-requested listing is not attributed to the watcher, even
         // when a watcher ticket arrives while it runs.
         job.request(PathBuf::from("/parent"), false, None, PendingFocus::None);
-        job.reconcile(PathBuf::from("/parent"), false, ticket, false);
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone(), false);
         let binding = job.desired_binding().unwrap().clone();
         let ready = job.settle(binding, DirectoryRead::Incomplete(DirStatus::Gone));
         assert_eq!(ready.watcher_gap, None);
+
+        // ...but a gap recovery it answers is still counted.
+        job.request(PathBuf::from("/parent"), false, None, PendingFocus::None);
+        job.reconcile(PathBuf::from("/parent"), false, ticket, true);
+        let binding = job.desired_binding().unwrap().clone();
+        let ready = job.settle(binding, DirectoryRead::Incomplete(DirStatus::Gone));
+        assert_eq!(ready.watcher_gap, Some(true));
     }
 
     #[test]
