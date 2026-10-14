@@ -953,6 +953,7 @@ impl App {
     }
 
     fn durability_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors) {
+        let is_delete = matches!(&self.ws.pending_op, Some(PendingOp::Delete { .. }));
         let current = match &self.ws.pending_op {
             Some(PendingOp::Transfer(transfer)) => transfer.durability,
             _ => self.ws.durability_profile,
@@ -969,7 +970,19 @@ impl App {
                     .size(10.0)
                     .color(t.text_muted),
             );
-            for profile in crate::operation::DurabilityProfile::ALL {
+            let (show_profiles, show_retention) = durability_controls(is_delete, selected);
+            if !show_profiles {
+                ui.label(
+                    egui::RichText::new("Versioned (always)")
+                        .size(10.0)
+                        .color(t.text_secondary),
+                )
+                .on_hover_text("Moving to Trash always keeps a restorable version");
+            }
+            for profile in crate::operation::DurabilityProfile::ALL
+                .into_iter()
+                .filter(|_| show_profiles)
+            {
                 let tooltip = match profile {
                     crate::operation::DurabilityProfile::Fast => {
                         "Copy without content verification"
@@ -984,9 +997,9 @@ impl App {
                 ui.selectable_value(&mut selected, profile, profile.label())
                     .on_hover_text(tooltip);
             }
-            if selected == crate::operation::DurabilityProfile::Versioned {
+            if show_retention {
                 ui.add_space(8.0);
-                ui.label(
+                let label = ui.label(
                     egui::RichText::new("Retention")
                         .size(10.0)
                         .color(t.text_muted),
@@ -998,7 +1011,9 @@ impl App {
                             ui.selectable_value(&mut retention, policy, policy.label())
                                 .on_hover_text(policy.consequence());
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(label.id);
                 ui.label(
                     egui::RichText::new(retention.consequence())
                         .size(10.0)
@@ -1039,6 +1054,25 @@ impl App {
                 .data(|d| d.get_temp::<usize>(egui::Id::new(CONFLICT_DROPPED)))
                 .unwrap_or(0),
         );
+
+        let portability_details = (!transfer.filesystem.portability.is_empty()).then(|| {
+            transfer
+                .filesystem
+                .portability
+                .iter()
+                .take(8)
+                .map(|issue| {
+                    let targets = issue
+                        .targets
+                        .iter()
+                        .map(|target| target.label())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{} ({targets}): {}", issue.name, issue.reason)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
 
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -1115,23 +1149,7 @@ impl App {
             ) {
                 ui.label(egui::RichText::new(note).size(10.0).color(t.accent_warning));
             }
-            if !transfer.filesystem.portability.is_empty() {
-                let details = transfer
-                    .filesystem
-                    .portability
-                    .iter()
-                    .take(8)
-                    .map(|issue| {
-                        let targets = issue
-                            .targets
-                            .iter()
-                            .map(|target| target.label())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!("{} ({targets}): {}", issue.name, issue.reason)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            if let Some(details) = &portability_details {
                 ui.label(
                     egui::RichText::new(format!(
                         "{} portability warning{}",
@@ -1156,6 +1174,23 @@ impl App {
                 );
             }
         });
+        // Hover text is unreachable by keyboard and screen readers; the same
+        // details are also available in a collapsible section.
+        if let Some(details) = portability_details {
+            egui::CollapsingHeader::new(
+                egui::RichText::new("Portability details")
+                    .size(10.0)
+                    .color(t.text_muted),
+            )
+            .id_salt("portability_details")
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(details)
+                        .size(10.0)
+                        .color(t.text_secondary),
+                );
+            });
+        }
 
         if transfer.name_policy.normalization != previous_form {
             let names = transfer
@@ -1229,6 +1264,10 @@ impl App {
                 ))
                 .size(10.0)
                 .color(t.text_secondary),
+            )
+            .on_hover_text(
+                "Measured latency of this volume (95th percentile) and how many files \
+                 are copied in parallel",
             );
             if profile.capabilities.delta {
                 let delta_enabled = current.max_bytes_per_second.is_none();
@@ -1246,6 +1285,11 @@ impl App {
                 );
             }
 
+            let bandwidth = ui.label(
+                egui::RichText::new("Bandwidth")
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
             egui::ComboBox::from_id_salt(("volume_bandwidth", profile.volume_id))
                 .selected_text(bandwidth_label(selected.max_bytes_per_second))
                 .show_ui(ui, |ui| {
@@ -1256,8 +1300,15 @@ impl App {
                             bandwidth_label(limit),
                         );
                     }
-                });
+                })
+                .response
+                .labelled_by(bandwidth.id);
 
+            let quiet = ui.label(
+                egui::RichText::new("Quiet hours")
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
             egui::ComboBox::from_id_salt(("volume_quiet_hours", profile.volume_id))
                 .selected_text(quiet_hours_label(selected.quiet_hours))
                 .show_ui(ui, |ui| {
@@ -1280,7 +1331,9 @@ impl App {
                     ] {
                         ui.selectable_value(&mut selected.quiet_hours, hours, label);
                     }
-                });
+                })
+                .response
+                .labelled_by(quiet.id);
         });
 
         if selected != current
@@ -1477,6 +1530,18 @@ fn flat_list_header(mode: FlatListMode, len: usize) -> String {
     }
 }
 
+/// Which durability controls the sheet offers: `(profile buttons,
+/// retention combo)`. Moving to Trash always runs Versioned, so a Delete
+/// shows no profile choice (it would be ignored and silently change the
+/// transfer default) but always offers retention, which it does honour.
+fn durability_controls(
+    is_delete: bool,
+    selected: crate::operation::DurabilityProfile,
+) -> (bool, bool) {
+    let versioned = selected == crate::operation::DurabilityProfile::Versioned;
+    (!is_delete, is_delete || versioned)
+}
+
 /// Only top-level rows can collide with a destination name.
 fn is_conflict_row(fe: &FlatFileEntry, conflicts: &HashSet<&str>) -> bool {
     fe.depth == 0 && conflicts.contains(fe.name.as_str())
@@ -1511,10 +1576,10 @@ mod tests {
         FlatListMode, OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state,
         collision_for_policy, conflict_banner, conflict_policy_enabled, conflict_row_text,
         delete_not_started_message, dialog_enter_suppressed, dialog_heading, dropped_items_note,
-        dry_run_supported, elided_name, flat_list_header, flat_row_accessible_label, flat_total,
-        flow_rows, flow_transferred, focus_within_layer, is_conflict_row, normalization_note,
-        not_enough_space_message, nothing_left_message, source_header, unavailable_size_message,
-        unavailable_space_message,
+        dry_run_supported, durability_controls, elided_name, flat_list_header,
+        flat_row_accessible_label, flat_total, flow_rows, flow_transferred, focus_within_layer,
+        is_conflict_row, normalization_note, not_enough_space_message, nothing_left_message,
+        source_header, unavailable_size_message, unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1898,6 +1963,23 @@ mod tests {
         assert!(
             label.ends_with("already exists at the destination"),
             "{label}"
+        );
+    }
+
+    #[test]
+    fn delete_offers_retention_but_no_ignored_durability_choice() {
+        use crate::operation::DurabilityProfile;
+        assert_eq!(
+            durability_controls(true, DurabilityProfile::Fast),
+            (false, true)
+        );
+        assert_eq!(
+            durability_controls(false, DurabilityProfile::Fast),
+            (true, false)
+        );
+        assert_eq!(
+            durability_controls(false, DurabilityProfile::Versioned),
+            (true, true)
         );
     }
 }
