@@ -59,9 +59,20 @@ pub fn kind_of(entry: &FileEntry) -> Kind {
     }
 }
 
-/// The stem of a file name (everything before the last interior dot), so a
-/// common-prefix guess ignores the extension. A leading dot (dotfile) stays.
+/// Compressed-tarball suffixes stripped whole, so `backup.tar.gz` stems to
+/// `backup` rather than `backup.tar`.
+const COMPOUND_SUFFIXES: [&str; 4] = [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"];
+
+/// The stem of a file name (everything before the last interior dot, or
+/// before a compound tarball suffix), so a common-prefix guess ignores the
+/// extension. A leading dot (dotfile) stays.
 fn stem(name: &str) -> &str {
+    for suffix in COMPOUND_SUFFIXES {
+        let cut = name.len().saturating_sub(suffix.len());
+        if cut > 0 && name.is_char_boundary(cut) && name[cut..].eq_ignore_ascii_case(suffix) {
+            return &name[..cut];
+        }
+    }
     match name.rfind('.') {
         Some(i) if i > 0 => &name[..i],
         _ => name,
@@ -294,6 +305,19 @@ mod tests {
             suggest_folder_name(&[entry("Vacation2024.jpg", false, 1)]),
             "Vacation"
         );
+    }
+
+    #[test]
+    fn suggest_folder_name_strips_compound_tarball_suffixes() {
+        assert_eq!(
+            suggest_folder_name(&[entry("backup.tar.gz", false, 1)]),
+            "backup"
+        );
+        assert_eq!(
+            suggest_folder_name(&[entry("site.TAR.ZST", false, 1)]),
+            "site"
+        );
+        assert_eq!(stem(".tar.gz"), ".tar");
     }
 
     #[test]
