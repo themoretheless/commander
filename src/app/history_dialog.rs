@@ -124,6 +124,21 @@ fn render_replay_paths(
     laid_out
 }
 
+/// Pass on which the history sheet was last drawn; a gap means it just
+/// opened (the preview is staged elsewhere, without an open marker).
+const HISTORY_SHOWN_PASS: &str = "history_dialog_shown_pass";
+
+/// True when the sheet was not drawn on the previous pass.
+fn sheet_just_opened(previous_pass: Option<u64>, pass: u64) -> bool {
+    previous_pass.is_none_or(|previous| previous.saturating_add(1) < pass)
+}
+
+/// Toast after a confirmed replay, naming what it applied.
+fn replay_message(is_undo: bool, description: &str) -> String {
+    let command = if is_undo { "Undo" } else { "Redo" };
+    format!("{command}: {description}")
+}
+
 impl App {
     pub(crate) fn push_history_notice(&mut self, ctx: &egui::Context, message: &str, error: bool) {
         self.toast(
@@ -157,6 +172,13 @@ impl App {
         let ready = state.preview.paths.len() - state.preview.blocked_count();
         let mut cancel = false;
         let mut confirm = false;
+        let pass = ctx.cumulative_pass_nr();
+        let just_opened = ctx.data_mut(|d| {
+            let id = egui::Id::new(HISTORY_SHOWN_PASS);
+            let previous = d.get_temp::<u64>(id);
+            d.insert_temp(id, pass);
+            sheet_just_opened(previous, pass)
+        });
 
         super::sheet_window(title, t, 14).show(ctx, |ui| {
             ui.set_width(620.0);
@@ -213,28 +235,33 @@ impl App {
             ui.separator();
             ui.add_space(7.0);
             ui.horizontal(|ui| {
-                if ui
-                    .add(super::dialog_button(
-                        t,
-                        super::ButtonRole::Secondary,
-                        egui::RichText::new("Cancel").size(12.0),
-                    ))
-                    .clicked()
-                {
+                let cancel_button = ui.add(super::dialog_button(
+                    t,
+                    super::ButtonRole::Secondary,
+                    egui::RichText::new("Cancel").size(12.0),
+                ));
+                if cancel_button.clicked() {
                     cancel = true;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add_enabled(
-                            can_execute,
-                            super::dialog_button(
-                                t,
-                                super::ButtonRole::Primary,
-                                egui::RichText::new(command).size(12.0),
-                            ),
-                        )
-                        .clicked()
-                    {
+                    let primary = ui.add_enabled(
+                        can_execute,
+                        super::dialog_button(
+                            t,
+                            super::ButtonRole::Primary,
+                            egui::RichText::new(command).size(12.0),
+                        ),
+                    );
+                    // Take focus on open so the sheet is announced: the
+                    // command when it can run, else Cancel.
+                    if just_opened {
+                        if can_execute {
+                            primary.request_focus();
+                        } else {
+                            cancel_button.request_focus();
+                        }
+                    }
+                    if primary.clicked() {
                         confirm = true;
                     }
                 });
@@ -263,6 +290,8 @@ impl App {
                     if is_undo {
                         self.toasts.dismiss_undoable();
                     }
+                    let message = replay_message(is_undo, &state.preview.action.description());
+                    self.toast(ctx, crate::toasts::ToastKind::Info, message, false);
                     return;
                 }
                 Err(error) => {
@@ -284,7 +313,26 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{blocked_reason_width, render_replay_paths};
+    use super::{blocked_reason_width, render_replay_paths, replay_message, sheet_just_opened};
+
+    #[test]
+    fn sheet_counts_as_opened_after_a_gap_in_passes() {
+        assert!(sheet_just_opened(None, 5));
+        assert!(!sheet_just_opened(Some(4), 5));
+        assert!(sheet_just_opened(Some(2), 5));
+    }
+
+    #[test]
+    fn confirmed_replay_names_what_it_applied() {
+        assert_eq!(
+            replay_message(true, "Moved (3 items)"),
+            "Undo: Moved (3 items)"
+        );
+        assert_eq!(
+            replay_message(false, "Renamed (1 item)"),
+            "Redo: Renamed (1 item)"
+        );
+    }
 
     #[test]
     fn large_undo_preview_lays_out_only_visible_paths() {
