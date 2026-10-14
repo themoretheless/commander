@@ -300,11 +300,134 @@ fn unique_smart_folder_name(
         .expect("an unused suffix exists")
 }
 
-/// The toast after saving a smart folder. A failed save gets none here:
-/// the persistence layer already records the failure with its cause, and
-/// `begin_frame` toasts that, so a second, vaguer error toast would repeat it.
+/// The toast after saving a smart folder, worded as the "Save filter as
+/// search" menu item and the Saved searches sheet name it. A failed save
+/// gets none here: the persistence layer already records the failure with
+/// its cause, and `begin_frame` toasts that, so a second, vaguer error toast
+/// would repeat it.
 fn smart_folder_saved_toast(name: &str, saved: bool) -> Option<String> {
-    saved.then(|| format!("Saved smart folder \"{name}\""))
+    saved.then(|| format!("Saved search \"{name}\""))
+}
+
+/// `n` with the singular or plural noun: "1 item", "3 items".
+fn count_noun(n: usize, singular: &str, plural: &str) -> String {
+    format!("{n} {}", if n == 1 { singular } else { plural })
+}
+
+fn item_count(n: usize) -> String {
+    count_noun(n, "item", "items")
+}
+
+/// A command shortcut as this platform's key bar and menus spell it:
+/// the Command glyph on macOS, `Ctrl+Z` elsewhere (egui's `command` is Ctrl there).
+fn command_shortcut(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("\u{2318}{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
+}
+
+/// The toast after a clean, undoable transfer, naming where the items went:
+/// `Moved 3 items to "Photos"`, or the folder a gather created.
+fn undo_recorded_toast(action: &crate::undo::Action) -> String {
+    let head = format!("{} {}", action.verb(), item_count(action.item_count()));
+    let name = |path: &std::path::Path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    };
+    match action {
+        crate::undo::Action::Gather { folder, .. } => match name(folder) {
+            Some(name) => format!("{head} into \"{name}\""),
+            None => head,
+        },
+        crate::undo::Action::Move { .. } => match action.jump_to().as_deref().and_then(name) {
+            Some(name) => format!("{head} to \"{name}\""),
+            None => head,
+        },
+        _ => head,
+    }
+}
+
+/// The toast text and kind for a finished Move to Trash.
+fn delete_outcome_toast(
+    submitted: usize,
+    trashed: usize,
+    failed: usize,
+    cancelled: bool,
+    indeterminate: bool,
+) -> (String, crate::toasts::ToastKind) {
+    use crate::toasts::ToastKind;
+    if indeterminate {
+        (
+            format!(
+                "Trash of {} may be incomplete; review the errors in the Operations panel ({})",
+                item_count(submitted),
+                command_shortcut("J")
+            ),
+            ToastKind::Error,
+        )
+    } else if cancelled {
+        (
+            if trashed == 0 {
+                "Moving to Trash was cancelled".to_string()
+            } else {
+                format!("Moved {} to Trash before cancellation", item_count(trashed))
+            },
+            ToastKind::Info,
+        )
+    } else if failed == 0 {
+        (
+            format!("Moved {} to Trash", item_count(trashed)),
+            ToastKind::Success,
+        )
+    } else if trashed == 0 {
+        (
+            format!("Could not move {} to Trash", item_count(failed)),
+            ToastKind::Error,
+        )
+    } else {
+        (
+            format!("Moved {} to Trash, {failed} failed", item_count(trashed)),
+            ToastKind::Error,
+        )
+    }
+}
+
+/// The clipboard label after copying `n` paths in `style`: "path" for one,
+/// "3 paths" for several.
+fn copied_paths_label(style: crate::clipboard::PathStyle, n: usize) -> String {
+    let label = crate::clipboard::style_label(style);
+    if n == 1 {
+        label.to_string()
+    } else {
+        format!("{n} {label}s")
+    }
+}
+
+/// The selection HUD's lead text. With nothing picked in this folder it
+/// names only the selection kept in other folders.
+fn selection_hud_head(
+    count: usize,
+    dir_count: usize,
+    elsewhere: usize,
+    other_folders: usize,
+) -> String {
+    let other = count_noun(other_folders, "other folder", "other folders");
+    let mut head = if count == 0 {
+        format!("{elsewhere} selected in {other}")
+    } else if elsewhere > 0 {
+        format!("{} + {elsewhere} in {other}", item_count(count))
+    } else {
+        item_count(count)
+    };
+    if dir_count > 0 {
+        head.push_str(&format!(
+            " \u{00b7} {}",
+            count_noun(dir_count, "folder", "folders")
+        ));
+    }
+    head
 }
 
 /// Why a drop would be cancelled right now, worded to follow "Cannot drop: ".
@@ -697,7 +820,7 @@ impl App {
                     self.toast(
                         ctx,
                         crate::toasts::ToastKind::Success,
-                        format!("{} {} item(s)", a.verb(), a.item_count()),
+                        undo_recorded_toast(&a),
                         true,
                     );
                     if let Some(jump_to) = a.jump_to() {
@@ -739,48 +862,13 @@ impl App {
         ctx: &egui::Context,
     ) {
         let now = ctx.input(|input| input.time);
-        let item = |count: usize| if count == 1 { "item" } else { "items" };
-        let (message, kind) = if outcome.indeterminate {
-            (
-                "Trash result is uncertain; review operation errors".to_string(),
-                crate::toasts::ToastKind::Error,
-            )
-        } else if outcome.cancelled {
-            (
-                if outcome.trashed == 0 {
-                    "Moving to Trash was cancelled".to_string()
-                } else {
-                    format!("Moved {} to Trash before cancellation", outcome.trashed)
-                },
-                crate::toasts::ToastKind::Info,
-            )
-        } else if outcome.failed == 0 {
-            (
-                format!(
-                    "Moved {} {} to Trash",
-                    outcome.trashed,
-                    item(outcome.trashed)
-                ),
-                crate::toasts::ToastKind::Success,
-            )
-        } else if outcome.trashed == 0 {
-            (
-                format!(
-                    "Could not move {} {} to Trash",
-                    outcome.failed,
-                    item(outcome.failed)
-                ),
-                crate::toasts::ToastKind::Error,
-            )
-        } else {
-            (
-                format!(
-                    "Moved {} to Trash, {} failed",
-                    outcome.trashed, outcome.failed
-                ),
-                crate::toasts::ToastKind::Error,
-            )
-        };
+        let (message, kind) = delete_outcome_toast(
+            outcome.submitted.item_count,
+            outcome.trashed,
+            outcome.failed,
+            outcome.cancelled,
+            outcome.indeterminate,
+        );
         // Only this delete's own history record may back the Undo: when it
         // recorded none, the top entry is an older Trash.
         let undo_action = self
@@ -957,11 +1045,7 @@ impl App {
         if !paths.is_empty() {
             let other_root = self.ws.inactive_panel().current_path.clone();
             let text = crate::clipboard::format(&paths, style, Some(&other_root));
-            self.write_clipboard(
-                &text,
-                format!("{} ({})", crate::clipboard::style_label(style), paths.len()).as_str(),
-                ctx,
-            );
+            self.write_clipboard(&text, &copied_paths_label(style, paths.len()), ctx);
         }
     }
 
@@ -1133,7 +1217,7 @@ impl App {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| active.current_path.display().to_string());
             let descriptor = if active.search_query().trim().is_empty() {
-                format!("{} facet(s)", active.facets().active_count())
+                count_noun(active.facets().active_count(), "facet", "facets")
             } else {
                 active.search_query().trim().to_string()
             };
@@ -1177,16 +1261,7 @@ impl App {
         let s = crate::selection_summary::summarize(&selected);
         let t = self.colors;
 
-        let mut head = format!("{} item(s)", s.count);
-        if elsewhere > 0 {
-            head.push_str(&format!(
-                " + {elsewhere} in {other_folders} other folder{}",
-                if other_folders == 1 { "" } else { "s" }
-            ));
-        }
-        if s.dir_count > 0 {
-            head.push_str(&format!(" \u{00b7} {} folder(s)", s.dir_count));
-        }
+        let mut head = selection_hud_head(s.count, s.dir_count, elsewhere, other_folders);
         if s.total_bytes > 0 {
             head.push_str(&format!(
                 " \u{00b7} {}",
@@ -1962,6 +2037,10 @@ mod tests {
     use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
+    use super::{
+        command_shortcut, copied_paths_label, delete_outcome_toast, selection_hud_head,
+        undo_recorded_toast,
+    };
     use super::{drop_busy_reason, smart_folder_saved_toast};
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2410,7 +2489,7 @@ mod tests {
     fn a_failed_smart_folder_save_leaves_the_error_to_persistence_health() {
         assert_eq!(
             smart_folder_saved_toast("Filter: a - b", true).as_deref(),
-            Some("Saved smart folder \"Filter: a - b\"")
+            Some("Saved search \"Filter: a - b\"")
         );
         assert_eq!(smart_folder_saved_toast("Filter: a - b", false), None);
     }
@@ -2434,6 +2513,105 @@ mod tests {
             )
             .as_deref(),
             Some("wait for the current Trash operation before dropping")
+        );
+    }
+
+    #[test]
+    fn delete_toasts_always_name_the_items() {
+        use crate::toasts::ToastKind;
+        assert_eq!(
+            delete_outcome_toast(5, 3, 0, true, false),
+            (
+                "Moved 3 items to Trash before cancellation".to_string(),
+                ToastKind::Info
+            )
+        );
+        assert_eq!(
+            delete_outcome_toast(5, 3, 2, false, false),
+            (
+                "Moved 3 items to Trash, 2 failed".to_string(),
+                ToastKind::Error
+            )
+        );
+        assert_eq!(
+            delete_outcome_toast(1, 1, 0, false, false).0,
+            "Moved 1 item to Trash"
+        );
+        assert_eq!(
+            delete_outcome_toast(2, 0, 2, false, false).0,
+            "Could not move 2 items to Trash"
+        );
+    }
+
+    #[test]
+    fn an_uncertain_trash_names_its_size_and_where_to_review() {
+        let (message, kind) = delete_outcome_toast(12, 0, 0, false, true);
+        assert_eq!(kind, crate::toasts::ToastKind::Error);
+        assert_eq!(
+            message,
+            format!(
+                "Trash of 12 items may be incomplete; review the errors in the Operations panel ({})",
+                command_shortcut("J")
+            )
+        );
+    }
+
+    #[test]
+    fn command_shortcuts_follow_the_platform_modifier() {
+        let expected = if cfg!(target_os = "macos") {
+            "\u{2318}Z"
+        } else {
+            "Ctrl+Z"
+        };
+        assert_eq!(command_shortcut("Z"), expected);
+    }
+
+    #[test]
+    fn undo_toasts_pluralize_and_name_the_destination() {
+        use crate::undo::Action;
+        use std::path::PathBuf;
+        let one_move = Action::Move {
+            pairs: vec![(PathBuf::from("/a/x"), PathBuf::from("/b/Photos/x"))],
+        };
+        assert_eq!(undo_recorded_toast(&one_move), "Moved 1 item to \"Photos\"");
+        let gather = Action::Gather {
+            folder: PathBuf::from("/a/Photos 2"),
+            pairs: vec![
+                (PathBuf::from("/a/x"), PathBuf::from("/a/Photos 2/x")),
+                (PathBuf::from("/a/y"), PathBuf::from("/a/Photos 2/y")),
+            ],
+        };
+        assert_eq!(
+            undo_recorded_toast(&gather),
+            "Gathered 2 items into \"Photos 2\""
+        );
+        let rename = Action::Rename {
+            from: PathBuf::from("/a/x"),
+            to: PathBuf::from("/a/y"),
+        };
+        assert_eq!(undo_recorded_toast(&rename), "Renamed 1 item");
+    }
+
+    #[test]
+    fn copied_path_labels_agree_with_their_count() {
+        use crate::clipboard::PathStyle;
+        assert_eq!(copied_paths_label(PathStyle::FullPath, 1), "path");
+        assert_eq!(copied_paths_label(PathStyle::FullPath, 3), "3 paths");
+        assert_eq!(copied_paths_label(PathStyle::NameOnly, 2), "2 names");
+        assert_eq!(copied_paths_label(PathStyle::FileUrl, 2), "2 file URLs");
+    }
+
+    #[test]
+    fn selection_hud_pluralizes_and_skips_an_empty_local_count() {
+        assert_eq!(selection_hud_head(1, 0, 0, 0), "1 item");
+        assert_eq!(selection_hud_head(3, 1, 0, 0), "3 items \u{00b7} 1 folder");
+        assert_eq!(
+            selection_hud_head(2, 2, 5, 1),
+            "2 items + 5 in 1 other folder \u{00b7} 2 folders"
+        );
+        assert_eq!(
+            selection_hud_head(0, 0, 5, 2),
+            "5 selected in 2 other folders"
         );
     }
 }
