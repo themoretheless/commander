@@ -6,11 +6,17 @@ use super::*;
 /// up to 100k members and the sheet repaints on pointer moves and spinners,
 /// so the lowercased paths are built once per listing and the matches only
 /// when the filter text changes.
+///
+/// It also holds the member list's cursor: the member last clicked or reached
+/// with the arrow keys, so it resets with the listing too.
 #[derive(Default)]
 pub struct MemberFilter {
     lower_paths: Option<Vec<String>>,
     needle: Option<String>,
     visible: Vec<usize>,
+    focused: Option<usize>,
+    /// The cursor moved by key and its row should scroll into view.
+    scroll_to_focused: bool,
 }
 
 impl MemberFilter {
@@ -40,14 +46,90 @@ impl MemberFilter {
     }
 }
 
+/// Inline extract errors shown at most; the rest are summarized as a count.
+const MAX_INLINE_ERRORS: usize = 5;
+
+/// Toast and inline text for a partly failed extraction. A read-only
+/// destination fails every member, so the toast names only the count and
+/// the first error and the inline list stays capped.
+fn extract_error_summary(errors: &[String]) -> (String, String) {
+    let toast = match errors {
+        [only] => only.clone(),
+        [first, ..] => format!("{} members failed: {first}", errors.len()),
+        [] => String::new(),
+    };
+    let mut inline = errors
+        .iter()
+        .take(MAX_INLINE_ERRORS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if errors.len() > MAX_INLINE_ERRORS {
+        inline.push_str(&format!(
+            "\n… and {} more",
+            errors.len() - MAX_INLINE_ERRORS
+        ));
+    }
+    (toast, inline)
+}
+
+/// Label of the extract-selection button. Selected members the filter hides
+/// are still extracted, so their count is named.
+fn extract_selected_label(selected: usize, hidden: usize) -> String {
+    match (selected, hidden) {
+        (0, _) => "Extract selected to other panel".to_string(),
+        (n, 0) => format!("Extract {n} to other panel"),
+        (n, hidden) => format!("Extract {n} ({hidden} hidden) to other panel"),
+    }
+}
+
+/// Label of the extract-everything button: a capped listing only holds the
+/// first members, and only those are extracted.
+fn extract_all_label(listing: &crate::archive::ArchiveListing) -> String {
+    if listing.truncated {
+        format!("Extract {} listed", listing.members.len())
+    } else {
+        "Extract all".to_string()
+    }
+}
+
+/// Move the member cursor one row through `visible` (member indexes in list
+/// order). A cursor the filter hides restarts at the first visible row.
+fn step_member_cursor(
+    visible: &[usize],
+    focused: Option<usize>,
+    up: bool,
+    down: bool,
+) -> Option<usize> {
+    if !(up || down) || visible.is_empty() {
+        return focused;
+    }
+    let Some(row) = focused.and_then(|index| visible.iter().position(|&v| v == index)) else {
+        return visible.first().copied();
+    };
+    let row = if down {
+        (row + 1).min(visible.len() - 1)
+    } else {
+        row.saturating_sub(1)
+    };
+    Some(visible[row])
+}
+
 impl App {
     pub(crate) fn open_archive(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.open_archive_on(path, self.ws.active.other(), ctx);
+    }
+
+    /// Open the archive tool over pane `side`. Retry passes the tool's own
+    /// side: clicking in the tool makes its pane active, so recomputing it
+    /// from focus would flip the tool to the other pane.
+    fn open_archive_on(&mut self, path: PathBuf, side: ActivePanel, ctx: &egui::Context) {
         let repaint = ctx.clone();
         let run = crate::archive::start_listing(
             path.clone(),
             std::sync::Arc::new(move || repaint.request_repaint()),
         );
-        self.ui.tools.replace_on(self.ws.active.other());
+        self.ui.tools.replace_on(side);
         self.ui.tools.archive = Some(ArchiveState {
             path,
             filter: String::new(),
@@ -60,6 +142,15 @@ impl App {
             error: None,
         });
         Self::mark_tool_opened(ctx, "archive");
+    }
+
+    /// The visible pane beside the tool, which extraction writes into.
+    fn archive_extract_dest(&self) -> PathBuf {
+        let side = self.ui.tools.side.unwrap_or(self.ws.active).other();
+        match side {
+            ActivePanel::Left => self.ws.left.current_path.clone(),
+            ActivePanel::Right => self.ws.right.current_path.clone(),
+        }
     }
 
     fn poll_archive(&mut self, now: f64) {
@@ -112,9 +203,9 @@ impl App {
                         state.error = None;
                         self.toast_at(now, crate::toasts::ToastKind::Info, status, false);
                     } else {
-                        let detail = report.errors.join("; ");
-                        state.error = Some(detail.clone());
-                        self.toast_at(now, crate::toasts::ToastKind::Error, detail, false);
+                        let (toast, inline) = extract_error_summary(&report.errors);
+                        state.error = Some(inline);
+                        self.toast_at(now, crate::toasts::ToastKind::Error, toast, false);
                     }
                     self.ws.left.refresh();
                     self.ws.right.refresh();
@@ -146,6 +237,8 @@ impl App {
         let mut retry = false;
         let mut extract_selected = false;
         let mut extract_all = false;
+        let mut stop_extract = false;
+        let dest = self.archive_extract_dest();
         {
             let state = self.ui.tools.archive.as_mut().unwrap();
             let title = state.path.file_name().map_or_else(
@@ -181,13 +274,29 @@ impl App {
                     });
                 });
                 ui.add_space(6.0);
+                // Up/Down in the filter move the member cursor and Enter
+                // toggles its selection, so the list works without a mouse.
+                let filter_id = egui::Id::new("archive-filter");
+                let (cursor_up, cursor_down) = if ui.memory(|m| m.has_focus(filter_id)) {
+                    ui.input_mut(|input| {
+                        (
+                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        )
+                    })
+                } else {
+                    (false, false)
+                };
                 let filter = ui.add(
                     egui::TextEdit::singleline(&mut state.filter)
+                        .id(filter_id)
                         .desired_width(f32::INFINITY)
-                        .hint_text("Filter archive members...")
+                        .hint_text("Filter archive members (Up/Down to move, Enter to select)")
                         .margin(egui::vec2(8.0, 6.0)),
                 );
-                if Self::take_tool_opened(ui.ctx(), "archive") {
+                let toggle_cursor =
+                    filter.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if Self::take_tool_opened(ui.ctx(), "archive") || toggle_cursor {
                     filter.request_focus();
                 }
 
@@ -196,40 +305,77 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(
-                            egui::RichText::new("Reading central directory")
+                            egui::RichText::new("Reading archive contents…")
                                 .size(11.0)
                                 .color(t.text_muted),
                         );
                     });
                 }
-                if state.extract.is_some() {
+                let status = if state.extract.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(
+                        let status = ui.label(
                             egui::RichText::new(state.status.as_deref().unwrap_or("Extracting…"))
                                 .size(11.0)
                                 .color(t.text_muted),
                         );
+                        if ui
+                            .small_button("Stop")
+                            .on_hover_text("Stop extracting; members already written stay")
+                            .clicked()
+                        {
+                            stop_extract = true;
+                        }
+                        Some(status)
+                    })
+                    .inner
+                } else {
+                    state.status.as_ref().map(|status| {
+                        ui.label(
+                            egui::RichText::new(status)
+                                .size(11.0)
+                                .color(t.text_secondary),
+                        )
+                    })
+                };
+                // Announce progress and the result to assistive technology.
+                if let Some(status) = status {
+                    ui.ctx().accesskit_node_builder(status.id, |node| {
+                        node.set_role(egui::accesskit::Role::Status);
+                        node.set_live(egui::accesskit::Live::Polite);
                     });
-                } else if let Some(status) = &state.status {
-                    ui.label(
-                        egui::RichText::new(status)
-                            .size(11.0)
-                            .color(t.text_secondary),
-                    );
                 }
                 if let Some(error) = &state.error {
                     ui.add(
                         egui::Label::new(egui::RichText::new(error).size(11.0).color(t.accent_red))
                             .wrap(),
                     );
-                    if ui.button("Retry").clicked() {
+                    // Once listed, errors come from extraction: re-listing
+                    // would drop the selection, and Extract retries it.
+                    if state.listing.is_none() && ui.button("Retry").clicked() {
                         retry = true;
                     }
                 }
 
                 if let Some(listing) = &state.listing {
-                    let visible = state.member_filter.visible(listing, &state.filter);
+                    state.member_filter.visible(listing, &state.filter);
+                    let MemberFilter {
+                        visible,
+                        focused,
+                        scroll_to_focused,
+                        ..
+                    } = &mut state.member_filter;
+                    let visible: &[usize] = visible;
+                    if cursor_up || cursor_down {
+                        *focused = step_member_cursor(visible, *focused, cursor_up, cursor_down);
+                        *scroll_to_focused = true;
+                    }
+                    if toggle_cursor
+                        && let Some(index) = *focused
+                        && !state.selected.remove(&index)
+                    {
+                        state.selected.insert(index);
+                    }
                     let declared_bytes = listing
                         .declared_uncompressed_bytes
                         .min(u128::from(u64::MAX)) as u64;
@@ -248,11 +394,15 @@ impl App {
                         if listing.unsafe_members > 0 {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "{} unsafe hidden",
+                                    "{} with unsafe paths hidden",
                                     listing.unsafe_members
                                 ))
                                 .size(11.0)
                                 .color(t.accent_warning),
+                            )
+                            .on_hover_text(
+                                "These entries have absolute paths or ../ parts that would \
+                                 write outside the destination, so they are left out",
                             );
                         }
                         if listing.unreadable_members > 0 {
@@ -310,6 +460,23 @@ impl App {
                         .auto_shrink([false, false])
                         .max_height(rows_height)
                         .show_rows(ui, 30.0, visible.len(), |ui, rows| {
+                            // The cursor row may lie outside the rows drawn,
+                            // so scroll to where it would be.
+                            if std::mem::take(scroll_to_focused)
+                                && let Some(row) = focused
+                                    .and_then(|index| visible.iter().position(|&v| v == index))
+                            {
+                                let pitch = 30.0 + ui.spacing().item_spacing.y;
+                                let top =
+                                    ui.max_rect().top() + (row as f32 - rows.start as f32) * pitch;
+                                ui.scroll_to_rect(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(ui.max_rect().left(), top),
+                                        egui::vec2(1.0, pitch),
+                                    ),
+                                    None,
+                                );
+                            }
                             for row in rows {
                                 let index = visible[row];
                                 let member = &listing.members[index];
@@ -321,6 +488,11 @@ impl App {
                                         t.bg_card.linear_multiply(0.18)
                                     } else {
                                         Color32::TRANSPARENT
+                                    })
+                                    .stroke(if *focused == Some(index) {
+                                        Stroke::new(1.0_f32, t.accent)
+                                    } else {
+                                        Stroke::NONE
                                     })
                                     .inner_margin(Margin::symmetric(4, 3))
                                     .show(ui, |ui| {
@@ -373,10 +545,17 @@ impl App {
                                     })
                                     .response
                                     .interact(Sense::click());
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::selected(
+                                        egui::WidgetType::SelectableLabel,
+                                        true,
+                                        selected,
+                                        member.path.display().to_string(),
+                                    )
+                                });
                                 if response.clicked() {
-                                    if state.selected.contains(&index) {
-                                        state.selected.remove(&index);
-                                    } else {
+                                    *focused = Some(index);
+                                    if !state.selected.remove(&index) {
                                         state.selected.insert(index);
                                     }
                                 }
@@ -389,18 +568,18 @@ impl App {
                                 .color(t.text_muted),
                         );
                     }
-                    if let Some(selected) = state
-                        .selected
-                        .iter()
-                        .next()
-                        .and_then(|index| listing.members.get(*index))
+                    // The member last clicked or moved to, not the lowest
+                    // selected index.
+                    if let Some(member) = focused
+                        .or_else(|| state.selected.iter().next().copied())
+                        .and_then(|index| listing.members.get(index))
                     {
                         ui.separator();
                         ui.label(
                             egui::RichText::new(format!(
                                 "#{}  |  {}",
-                                selected.index,
-                                selected.path.display()
+                                member.index,
+                                member.path.display()
                             ))
                             .size(10.0)
                             .color(t.text_muted),
@@ -409,30 +588,74 @@ impl App {
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!visible.is_empty(), egui::Button::new("Select all"))
+                            .on_hover_text("Select every member the filter shows")
+                            .clicked()
+                        {
+                            state.selected.extend(visible.iter().copied());
+                        }
+                        if ui
+                            .add_enabled(!state.selected.is_empty(), egui::Button::new("Clear"))
+                            .on_hover_text("Clear the selection")
+                            .clicked()
+                        {
+                            state.selected.clear();
+                        }
+                    });
+                    ui.add_space(4.0);
+                    let dest_hint = format!("Extract into {}", dest.display());
+                    ui.horizontal(|ui| {
                         let n = state.selected.len();
+                        let hidden = if state.filter.trim().is_empty() {
+                            0
+                        } else {
+                            state
+                                .selected
+                                .iter()
+                                .filter(|index| visible.binary_search(index).is_err())
+                                .count()
+                        };
                         if ui
                             .add_enabled(
                                 n > 0 && state.extract.is_none(),
                                 super::dialog_button(
                                     t,
                                     super::ButtonRole::Primary,
-                                    egui::RichText::new(format!("Extract {n} to other panel"))
+                                    egui::RichText::new(extract_selected_label(n, hidden))
                                         .size(13.0),
                                 ),
                             )
+                            .on_hover_text(&dest_hint)
+                            .on_disabled_hover_text(if n == 0 {
+                                "Click members, or move with Up/Down and press Enter, to \
+                                 select them"
+                            } else {
+                                "An extraction is running"
+                            })
                             .clicked()
                         {
                             extract_selected = true;
                         }
+                        let all_hint = if listing.truncated {
+                            format!(
+                                "{dest_hint}. Member cap reached: only the {} listed members \
+                                 are extracted",
+                                listing.members.len()
+                            )
+                        } else {
+                            dest_hint.clone()
+                        };
                         if ui
                             .add_enabled(
-                                state.extract.is_none(),
+                                !listing.members.is_empty() && state.extract.is_none(),
                                 super::dialog_button(
                                     t,
                                     super::ButtonRole::Secondary,
-                                    egui::RichText::new("Extract all").size(13.0),
+                                    egui::RichText::new(extract_all_label(listing)).size(13.0),
                                 ),
                             )
+                            .on_hover_text(all_hint)
                             .clicked()
                         {
                             extract_all = true;
@@ -443,8 +666,31 @@ impl App {
         }
 
         if !window_open || escape_requested {
+            // Dropping the run cancels it after the member in progress.
+            if self
+                .ui
+                .tools
+                .archive
+                .as_ref()
+                .is_some_and(|state| state.extract.is_some())
+            {
+                self.toast_at(
+                    now,
+                    crate::toasts::ToastKind::Info,
+                    "Extraction cancelled; some members may already be extracted".to_string(),
+                    false,
+                );
+            }
             self.ui.tools.archive = None;
             return;
+        }
+        if stop_extract && let Some(state) = self.ui.tools.archive.as_mut() {
+            // Dropping the run cancels it after the member in progress.
+            state.extract = None;
+            state.status =
+                Some("Extraction stopped; members already written stay in place".to_string());
+            self.ws.left.refresh();
+            self.ws.right.refresh();
         }
         if reveal && let Some(state) = &self.ui.tools.archive {
             self.ws.reveal(&state.path);
@@ -457,7 +703,8 @@ impl App {
                 .as_ref()
                 .map(|state| state.path.clone())
         {
-            self.open_archive(path, ctx);
+            let side = self.ui.tools.side.unwrap_or_else(|| self.ws.active.other());
+            self.open_archive_on(path, side, ctx);
             return;
         }
         if extract_selected || extract_all {
@@ -485,7 +732,7 @@ impl App {
             return;
         }
         let archive = state.path.clone();
-        let dest = self.ws.inactive_panel().current_path.clone();
+        let dest = self.archive_extract_dest();
         let repaint = ctx.clone();
         let run = crate::archive::start_extract(
             archive,
@@ -517,7 +764,10 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::MemberFilter;
+    use super::{
+        MemberFilter, extract_all_label, extract_error_summary, extract_selected_label,
+        step_member_cursor,
+    };
 
     fn listing(paths: &[&str]) -> crate::archive::ArchiveListing {
         crate::archive::ArchiveListing {
@@ -562,5 +812,54 @@ mod tests {
         let other = self::listing(&["b.txt", "a.txt"]);
         assert_eq!(filter.visible(&other, "a").as_ptr(), first);
         assert_eq!(filter.visible(&other, "a"), [0]);
+    }
+
+    #[test]
+    fn many_extract_errors_toast_a_count_and_cap_the_inline_list() {
+        let one = vec!["Could not create /ro/a: denied".to_string()];
+        assert_eq!(
+            extract_error_summary(&one),
+            (one[0].clone(), one[0].clone())
+        );
+
+        let errors: Vec<String> = (0..8)
+            .map(|i| format!("Could not create /ro/{i}"))
+            .collect();
+        let (toast, inline) = extract_error_summary(&errors);
+        assert_eq!(toast, "8 members failed: Could not create /ro/0");
+        assert_eq!(inline.lines().count(), 6);
+        assert!(inline.ends_with("… and 3 more"));
+    }
+
+    #[test]
+    fn extract_labels_name_hidden_selection_and_capped_listings() {
+        assert_eq!(
+            extract_selected_label(0, 0),
+            "Extract selected to other panel"
+        );
+        assert_eq!(extract_selected_label(3, 0), "Extract 3 to other panel");
+        assert_eq!(
+            extract_selected_label(3, 2),
+            "Extract 3 (2 hidden) to other panel"
+        );
+
+        let mut capped = listing(&["a", "b"]);
+        assert_eq!(extract_all_label(&capped), "Extract all");
+        capped.truncated = true;
+        assert_eq!(extract_all_label(&capped), "Extract 2 listed");
+    }
+
+    #[test]
+    fn member_cursor_steps_through_visible_rows_only() {
+        let visible = [2, 5, 9];
+        assert_eq!(step_member_cursor(&visible, None, false, false), None);
+        assert_eq!(step_member_cursor(&visible, None, false, true), Some(2));
+        assert_eq!(step_member_cursor(&visible, Some(2), false, true), Some(5));
+        assert_eq!(step_member_cursor(&visible, Some(9), false, true), Some(9));
+        assert_eq!(step_member_cursor(&visible, Some(5), true, false), Some(2));
+        assert_eq!(step_member_cursor(&visible, Some(2), true, false), Some(2));
+        // A cursor the filter now hides restarts at the top.
+        assert_eq!(step_member_cursor(&visible, Some(4), true, false), Some(2));
+        assert_eq!(step_member_cursor(&[], Some(4), false, true), Some(4));
     }
 }
