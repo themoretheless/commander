@@ -7,11 +7,12 @@ use crate::dedup::{KeepPolicy, bytes_reclaimed, default_keep, delete_count};
 use crate::panel::format_size;
 
 /// Toast for a Trash request the workspace refused: the block reason when
-/// there is one, else a generic busy message with the next step.
+/// there is one, else a neutral message with the next step (the request can
+/// also fail because the Trash worker could not start, not only when busy).
 fn trash_refused_message(reason: Option<String>) -> String {
     reason.unwrap_or_else(|| {
-        "Could not move duplicates to Trash while another operation is running. \
-         Wait for it to finish, then try again."
+        "Could not start moving duplicates to Trash. \
+         Wait for any running operation to finish, then try again."
             .to_string()
     })
 }
