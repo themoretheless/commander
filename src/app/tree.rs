@@ -48,6 +48,16 @@ pub(super) fn expand_ancestors(
     }
 }
 
+/// Reveal `path` and open it too: used when the tree is shown, so the
+/// current folder's subfolders are visible as before.
+pub(super) fn expand_through(
+    expanded: &mut std::collections::HashSet<PathBuf>,
+    path: &std::path::Path,
+) {
+    expand_ancestors(expanded, path);
+    expanded.insert(path.to_path_buf());
+}
+
 impl App {
     /// Render the global tree sidebar. Returns Some(path) if user clicked a folder.
     pub(crate) fn render_global_tree(
@@ -339,6 +349,16 @@ mod tests {
         toggle_tree_node(&mut expanded, &mut cache, &path, false, true);
         expand_ancestors(&mut expanded, &path);
         assert!(expanded.contains(&path));
+    }
+
+    #[test]
+    fn showing_the_tree_opens_the_current_folder() {
+        let path = PathBuf::from("/a/b");
+        let mut expanded = std::collections::HashSet::new();
+        expand_through(&mut expanded, &path);
+        assert!(expanded.contains(&path));
+        assert!(expanded.contains(&PathBuf::from("/a")));
+        assert!(expanded.contains(&PathBuf::from("/")));
     }
 
     #[test]

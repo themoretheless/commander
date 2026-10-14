@@ -1000,4 +1000,10 @@ impl App {
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {
         tree::expand_ancestors(&mut self.tree_expanded, path);
     }
+
+    /// Reveal `path` and expand it as well, for showing the tree on the
+    /// current folder (a click must not do this; see `tree_expand_to_path`).
+    pub(crate) fn tree_reveal_path(&mut self, path: &std::path::Path) {
+        tree::expand_through(&mut self.tree_expanded, path);
+    }
 }
