@@ -67,11 +67,6 @@ pub fn diff_lines(a: &str, b: &str) -> Result<Vec<DiffLine>, DiffTooLarge> {
     let mark_cr = (has(&a, Ending::CrLf), has(&a, Ending::Lf))
         != (has(&b, Ending::CrLf), has(&b, Ending::Lf));
     let mark_eof = !a.is_empty() && !b.is_empty() && has(&a, Ending::Eof) != has(&b, Ending::Eof);
-    let text = |(content, ending): (&str, Ending)| match ending {
-        Ending::CrLf if mark_cr => format!("{content}{CR_MARKER}"),
-        Ending::Eof if mark_eof => format!("{content}{NO_EOL_MARKER}"),
-        _ => content.to_string(),
-    };
 
     let rows = n.checked_add(1).ok_or(DiffTooLarge)?;
     let cols = m.checked_add(1).ok_or(DiffTooLarge)?;
@@ -93,45 +88,69 @@ pub fn diff_lines(a: &str, b: &str) -> Result<Vec<DiffLine>, DiffTooLarge> {
         }
     }
 
-    let mut out = Vec::new();
+    let mut ops: Vec<(DiffKind, (&str, Ending))> = Vec::with_capacity(n.max(m));
     let (mut i, mut j) = (0usize, 0usize);
     while i < n && j < m {
         if a[i] == b[j] {
-            out.push(DiffLine {
-                kind: DiffKind::Equal,
-                text: a[i].0.to_string(),
-            });
+            ops.push((DiffKind::Equal, a[i]));
             i += 1;
             j += 1;
         } else if dp[at(i + 1, j)] >= dp[at(i, j + 1)] {
-            out.push(DiffLine {
-                kind: DiffKind::Delete,
-                text: text(a[i]),
-            });
+            ops.push((DiffKind::Delete, a[i]));
             i += 1;
         } else {
-            out.push(DiffLine {
-                kind: DiffKind::Insert,
-                text: text(b[j]),
-            });
+            ops.push((DiffKind::Insert, b[j]));
             j += 1;
         }
     }
     while i < n {
-        out.push(DiffLine {
-            kind: DiffKind::Delete,
-            text: text(a[i]),
-        });
+        ops.push((DiffKind::Delete, a[i]));
         i += 1;
     }
     while j < m {
-        out.push(DiffLine {
-            kind: DiffKind::Insert,
-            text: text(b[j]),
-        });
+        ops.push((DiffKind::Insert, b[j]));
         j += 1;
     }
-    Ok(out)
+    Ok(render(&ops, mark_cr, mark_eof))
+}
+
+/// Turn the edit script into display lines, adding ending markers.
+///
+/// A changed CRLF line is marked when the files' conventions differ overall,
+/// or when the same hunk holds the same text on the other side with another
+/// ending: with mixed endings in both files, that is the only visible clue.
+fn render(ops: &[(DiffKind, (&str, Ending))], mark_cr: bool, mark_eof: bool) -> Vec<DiffLine> {
+    let mut out = Vec::with_capacity(ops.len());
+    let mut start = 0;
+    while start < ops.len() {
+        if ops[start].0 == DiffKind::Equal {
+            out.push(DiffLine {
+                kind: DiffKind::Equal,
+                text: ops[start].1.0.to_string(),
+            });
+            start += 1;
+            continue;
+        }
+        let end = ops[start..]
+            .iter()
+            .position(|op| op.0 == DiffKind::Equal)
+            .map_or(ops.len(), |k| start + k);
+        let hunk = &ops[start..end];
+        for &(kind, (content, ending)) in hunk {
+            let crlf_vs_other = || {
+                hunk.iter()
+                    .any(|&(k, (c, e))| k != kind && c == content && e != Ending::CrLf)
+            };
+            let text = match ending {
+                Ending::CrLf if mark_cr || crlf_vs_other() => format!("{content}{CR_MARKER}"),
+                Ending::Eof if mark_eof => format!("{content}{NO_EOL_MARKER}"),
+                _ => content.to_string(),
+            };
+            out.push(DiffLine { kind, text });
+        }
+        start = end;
+    }
+    out
 }
 
 /// Count of inserted and deleted lines, for a header summary.
@@ -227,6 +246,23 @@ mod tests {
         let d = diff_lines("x\r\n", "y\r\n").unwrap();
         assert_eq!(d[0].text, "x");
         assert_eq!(d[1].text, "y");
+    }
+
+    #[test]
+    fn mixed_endings_on_both_sides_are_marked_per_line() {
+        // Both files mix CRLF and LF, so the per-file conventions match.
+        let d = diff_lines("x\r\ny\n", "x\ny\r\n").unwrap();
+        assert_eq!(change_counts(&d), (2, 2));
+        let deleted: Vec<_> = d.iter().filter(|l| l.kind == DiffKind::Delete).collect();
+        let inserted: Vec<_> = d.iter().filter(|l| l.kind == DiffKind::Insert).collect();
+        assert_eq!(deleted[0].text, format!("x{CR_MARKER}"));
+        assert_eq!(deleted[1].text, "y");
+        assert_eq!(inserted[0].text, "x");
+        assert_eq!(inserted[1].text, format!("y{CR_MARKER}"));
+
+        // A real text change in a mixed file stays unmarked.
+        let d = diff_lines("x\r\ny\n", "x\r\nz\n").unwrap();
+        assert!(d.iter().all(|l| !l.text.contains(CR_MARKER)));
     }
 
     #[test]
