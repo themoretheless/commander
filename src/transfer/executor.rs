@@ -2065,3 +2065,116 @@ fn restore_overwrite_quarantine(path: &Path, quarantine: &Path, reason: &str) ->
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+
+    fn progress_with_failed_tail(placements: Vec<(PathBuf, PathBuf)>) -> TransferState {
+        let progress = Arc::new(Mutex::new(TransferProgress::new(2, 2)));
+        {
+            let mut state = crate::lock_util::recover(&progress);
+            state.files_done = 1;
+            state.errors.push("second entry failed".to_string());
+            state.placements = placements;
+        }
+        progress
+    }
+
+    #[test]
+    fn rollback_refuses_a_placement_outside_its_container() {
+        let root = TempDir::new();
+        let container = root.dir("Gathered");
+        let landing = root.file("elsewhere.txt", "moved");
+        let source = root.path().join("a.txt");
+        let progress = progress_with_failed_tail(vec![(source.clone(), landing.clone())]);
+
+        let outcome = run_failure_rollback(Some(&container), &OperationId::new(), false, &progress);
+
+        assert_eq!(outcome, FailureRollback::Incomplete);
+        assert!(
+            !source.exists(),
+            "an out-of-container landing is never moved"
+        );
+        assert_eq!(std::fs::read_to_string(&landing).unwrap(), "moved");
+        assert!(
+            container.exists(),
+            "the container is kept while data is out"
+        );
+        let state = crate::lock_util::recover(&progress);
+        assert_eq!(state.placements, [(source, landing.clone())]);
+        assert!(state.failures.iter().any(|failure| {
+            failure.class == FailureClass::IntegrityUncertain
+                && failure.path.as_deref() == Some(landing.as_path())
+                && failure.message.contains("outside its operation container")
+        }));
+    }
+
+    #[test]
+    fn non_journal_swap_restores_the_original_when_placement_fails() {
+        let root = TempDir::new();
+        let dest = root.file("report.txt", "original");
+        // Not `.0`: that is the name the swap picks for its own backup.
+        let staged = root.path().join(".report.txt.cmdr-tmp.staged");
+        let expected = PathIdentity::observe(&dest).unwrap();
+        let operation_id = OperationId::new();
+        let key = operation_id.step_key(0, &dest);
+
+        let error = swap_into_place(
+            &staged,
+            &dest,
+            &expected,
+            JournalStep {
+                operation_id: &operation_id,
+                key: &key,
+                enabled: false,
+            },
+        )
+        .expect_err("a missing staged artifact cannot be placed");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+        assert!(!error.to_string().contains("preserved at"), "{error}");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "original");
+        let leftovers: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(leftovers, [std::ffi::OsString::from("report.txt")]);
+    }
+
+    #[test]
+    fn undo_of_a_copy_removes_the_staged_duplicate() {
+        let root = TempDir::new();
+        let source = root.file("a.txt", "source");
+        let staged = root.file(".a.txt.cmdr-tmp.0", "copy");
+
+        assert_eq!(undo_placement(&staged, &source, false), None);
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "source");
+    }
+
+    #[test]
+    fn undo_of_a_rename_moves_the_only_copy_back() {
+        let root = TempDir::new();
+        let source = root.path().join("a.txt");
+        let staged = root.file(".a.txt.cmdr-tmp.0", "only copy");
+
+        assert_eq!(undo_placement(&staged, &source, true), None);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "only copy");
+        assert!(!staged.exists());
+    }
+
+    #[test]
+    fn undo_of_a_rename_keeps_data_when_the_source_name_is_taken() {
+        let root = TempDir::new();
+        let source = root.file("a.txt", "recreated");
+        let staged = root.file(".a.txt.cmdr-tmp.0", "only copy");
+
+        let message = undo_placement(&staged, &source, true).expect("restore must fail");
+
+        assert!(message.contains(&staged.display().to_string()), "{message}");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "only copy");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "recreated");
+    }
+}
