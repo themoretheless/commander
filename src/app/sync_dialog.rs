@@ -11,8 +11,14 @@ type PlanResult = Result<(Vec<crate::sync::SyncAction>, crate::sync_guard::PlanS
 /// folders (and every entry's metadata) can stall on slow or network
 /// volumes, so the sheet shows "Scanning" instead of freezing the UI.
 /// Dropping it abandons the result; the worker ends after its one scan.
+///
+/// At most one worker runs per sheet: a refresh requested while a scan is
+/// still running only marks `rerun`, and the sheet starts one fresh scan (with
+/// the then-current settings) when the running one finishes. Repeated Refresh
+/// clicks or policy changes therefore never pile up concurrent full scans.
 pub struct PlanScan {
     receiver: std::sync::mpsc::Receiver<PlanResult>,
+    rerun: bool,
 }
 
 impl PlanScan {
@@ -33,7 +39,10 @@ impl PlanScan {
         if let Err(error) = spawned {
             let _ = sender.send(Err(format!("Could not start the folder scan: {error}")));
         }
-        Self { receiver }
+        Self {
+            receiver,
+            rerun: false,
+        }
     }
 
     /// The finished plan, if the worker has delivered it.
@@ -70,11 +79,29 @@ fn apply_plan_result(state: &mut SyncState, result: PlanResult) {
     }
 }
 
-/// Take the worker's plan once it is ready.
+/// Take the worker's plan once it is ready. A result whose settings were
+/// superseded while it ran is dropped and one fresh scan starts instead.
 fn poll_plan(state: &mut SyncState) {
-    if let Some(result) = state.scan.as_ref().and_then(PlanScan::poll) {
-        state.scan = None;
-        apply_plan_result(state, result);
+    let Some(scan) = state.scan.as_ref() else {
+        return;
+    };
+    let Some(result) = scan.poll() else {
+        return;
+    };
+    if scan.rerun {
+        state.scan = Some(PlanScan::start(state));
+        return;
+    }
+    state.scan = None;
+    apply_plan_result(state, result);
+}
+
+/// Ask for a new plan: start a scan now, or, when one is already running,
+/// queue a single rerun for when it finishes.
+fn request_plan(state: &mut SyncState) {
+    match state.scan.as_mut() {
+        Some(scan) => scan.rerun = true,
+        None => state.scan = Some(PlanScan::start(state)),
     }
 }
 
@@ -422,8 +449,9 @@ impl App {
         }
         if refresh_plan && let Some(state) = self.ui.tools.sync.as_mut() {
             // The previous rows stay visible (Apply disabled) until the new
-            // plan arrives; a newer request supersedes one still running.
-            state.scan = Some(PlanScan::start(state));
+            // plan arrives; a request made while a scan runs is coalesced
+            // into one rerun after it.
+            request_plan(state);
         }
         if commit {
             let Some(mut state) = self.ui.tools.sync.take() else {
@@ -549,7 +577,7 @@ const fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanScan, plan_shows_panels_match, poll_plan};
+    use super::{PlanScan, plan_shows_panels_match, poll_plan, request_plan};
     use crate::sync::SyncPolicy;
 
     fn sync_state(left: &std::path::Path, right: &std::path::Path) -> super::SyncState {
@@ -610,6 +638,42 @@ mod tests {
         assert!(state.error.is_some());
         assert!(state.stamp.is_none());
         assert!(state.actions.is_empty());
+    }
+
+    #[test]
+    fn refresh_during_a_scan_coalesces_into_one_rerun_with_new_settings() {
+        let temp = crate::testutil::TempDir::new();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        std::fs::create_dir_all(&left).expect("left");
+        std::fs::create_dir_all(&right).expect("right");
+        std::fs::write(left.join("only-left.txt"), "x").expect("file");
+        let mut state = sync_state(&left, &right);
+        request_plan(&mut state);
+        assert!(state.scan.as_ref().is_some_and(|scan| !scan.rerun));
+        // Further requests while the scan runs only mark one rerun; no
+        // second worker is started.
+        state.policy = SyncPolicy::MirrorRightToLeft;
+        request_plan(&mut state);
+        request_plan(&mut state);
+        assert!(state.scan.as_ref().is_some_and(|scan| scan.rerun));
+        wait_for_plan(&mut state);
+        assert!(state.error.is_none(), "{:?}", state.error);
+        // The installed plan comes from the rerun, built with the newer
+        // policy: a right-to-left mirror skips the left-only file instead of
+        // copying it right.
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(state.actions[0].name, "only-left.txt");
+        assert_eq!(state.actions[0].direction, crate::sync::SyncDirection::Skip);
+        let stamp = state.stamp.as_ref().expect("stamp");
+        assert_eq!(
+            state.settings_fingerprint,
+            crate::sync_guard::settings_fingerprint(
+                SyncPolicy::MirrorRightToLeft,
+                &state.guard,
+                stamp.filter_key(),
+            )
+        );
     }
 
     #[test]
