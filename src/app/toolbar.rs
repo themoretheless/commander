@@ -104,6 +104,7 @@ impl App {
                             ui,
                             compare_fill,
                             compare_color,
+                            self.show_compare,
                         )
                         .on_hover_text("Compare panels: highlight differences");
                         if compare.clicked() {
