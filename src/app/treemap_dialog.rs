@@ -2,9 +2,37 @@
 
 use super::*;
 use crate::panel::{FileEntry, format_size};
-use crate::selection_summary::kind_of;
+use crate::selection_summary::{Kind, kind_of};
 
 const ROW_HEIGHT: f32 = 28.0;
+/// Height reserved under the map for the kind legend.
+const LEGEND_HEIGHT: f32 = 20.0;
+/// Below this the tiles are too small to read or click.
+const MIN_MAP_SIZE: Vec2 = Vec2::new(120.0, 80.0);
+
+/// The map's size in the space left by the pane, or `None` when the pane is
+/// too small to draw a usable map (rather than overflowing it).
+fn map_size(available: Vec2) -> Option<Vec2> {
+    (available.x >= MIN_MAP_SIZE.x && available.y >= MIN_MAP_SIZE.y).then_some(available)
+}
+
+/// Placeholder when the map has nothing to draw. A finished scan has no more
+/// items coming, so say why it is empty instead of "yet".
+const fn map_empty_message(scan_finished: bool, any_items: bool) -> &'static str {
+    match (scan_finished, any_items) {
+        (false, _) => "No measured items yet",
+        (true, false) => "Folder is empty",
+        (true, true) => "Folder holds only empty items",
+    }
+}
+
+/// Kinds present on the map, in kind order, for the colour legend.
+fn legend_kinds<'a>(entries: impl IntoIterator<Item = &'a FileEntry>) -> Vec<Kind> {
+    let mut kinds: Vec<Kind> = entries.into_iter().map(kind_of).collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
 
 impl App {
     fn start_disk_usage_scan(&mut self, ctx: &egui::Context) {
@@ -126,7 +154,9 @@ impl App {
                             .map_or(state.initial.items.as_slice(), |snapshot| {
                                 snapshot.top_level.as_slice()
                             });
-                        show_map(ui, items, t, dark, &mut open_path);
+                        let scan_finished = state.run.is_none()
+                            && state.overview.as_ref().is_some_and(|s| !s.cancelled);
+                        show_map(ui, items, scan_finished, t, dark, &mut open_path);
                     }
                     DiskUsageMode::Tree => {
                         show_tree(ui, state, t, &mut open_path);
@@ -231,7 +261,18 @@ fn show_disk_usage_header(
     } else {
         "Waiting to scan".to_string()
     };
-    ui.label(egui::RichText::new(status).size(10.0).color(t.text_muted));
+    let status_label = ui.label(egui::RichText::new(status).size(10.0).color(t.text_muted));
+    // Announce when the scan finishes or stops; while it runs the counts
+    // change every frame, so the region stays quiet.
+    let scanning = state.run.is_some();
+    ui.ctx().accesskit_node_builder(status_label.id, |node| {
+        node.set_role(egui::accesskit::Role::Status);
+        node.set_live(if scanning {
+            egui::accesskit::Live::Off
+        } else {
+            egui::accesskit::Live::Polite
+        });
+    });
 
     if state.run.is_some() && !state.progress.current.as_os_str().is_empty() {
         ui.add(
@@ -246,13 +287,8 @@ fn show_disk_usage_header(
     }
     if let Some(snapshot) = &state.overview {
         if snapshot.inaccessible_count > 0 {
-            let details = snapshot
-                .inaccessible_paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            ui.label(
+            // A focusable header, so keyboard and AT users can open the list.
+            egui::CollapsingHeader::new(
                 egui::RichText::new(format!(
                     "{} paths could not be read",
                     snapshot.inaccessible_count
@@ -260,7 +296,23 @@ fn show_disk_usage_header(
                 .size(10.0)
                 .color(t.accent_warning),
             )
-            .on_hover_text(details);
+            .id_salt(("disk-usage-inaccessible", &snapshot.root))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for path in &snapshot.inaccessible_paths {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(path.display().to_string())
+                                        .size(10.0)
+                                        .color(t.text_muted),
+                                )
+                                .truncate(),
+                            );
+                        }
+                    });
+            });
         }
         if snapshot.truncated {
             ui.label(
@@ -291,6 +343,7 @@ fn show_disk_usage_header(
 fn show_map(
     ui: &mut egui::Ui,
     items: &[(FileEntry, u64)],
+    scan_finished: bool,
     t: crate::theme::ThemeColors,
     dark: bool,
     open_path: &mut Option<(PathBuf, bool)>,
@@ -298,15 +351,22 @@ fn show_map(
     let visible: Vec<_> = items.iter().filter(|(_, bytes)| *bytes > 0).collect();
     if visible.is_empty() {
         ui.label(
-            egui::RichText::new("No measured items yet")
+            egui::RichText::new(map_empty_message(scan_finished, !items.is_empty()))
                 .size(12.0)
                 .color(t.text_muted),
         );
         return;
     }
 
-    let width = ui.available_width().max(320.0);
-    let height = ui.available_height().max(240.0);
+    let Some(size) = map_size(ui.available_size() - Vec2::new(0.0, LEGEND_HEIGHT)) else {
+        ui.label(
+            egui::RichText::new("Pane too small for the map; widen it or use Tree")
+                .size(12.0)
+                .color(t.text_muted),
+        );
+        return;
+    };
+    let (width, height) = (size.x, size.y);
     let weights: Vec<f64> = visible.iter().map(|(_, bytes)| *bytes as f64).collect();
     let tiles = crate::treemap::squarify(
         &weights,
@@ -344,7 +404,8 @@ fn show_map(
             } else {
                 Color32::from_rgb(244, 244, 248)
             };
-            painter.text(
+            // Clip to the tile so long names never spill into neighbours.
+            painter.with_clip_rect(rect.shrink(2.0)).text(
                 rect.min + Vec2::new(5.0, 3.0),
                 egui::Align2::LEFT_TOP,
                 &entry.name,
@@ -355,14 +416,34 @@ fn show_map(
         let interaction = ui
             .interact(rect, ui.id().with(("disk-map", index)), Sense::click())
             .on_hover_text(format!(
-                "{} | {}",
+                "{} | {} | {}",
                 entry.path.display(),
+                kind_of(entry).label(),
                 format_size(*bytes)
             ));
         if interaction.clicked() {
             *open_path = Some((entry.path.clone(), entry.is_dir));
         }
     }
+
+    // Colour legend, so kinds are not told apart by fill alone.
+    ui.horizontal_wrapped(|ui| {
+        for kind in legend_kinds(visible.iter().map(|(entry, _)| entry)) {
+            let (red, green, blue) = crate::file_color::kind_color(kind, dark);
+            let (swatch, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+            ui.painter().rect_filled(
+                swatch,
+                CornerRadius::same(2),
+                Color32::from_rgb(red, green, blue),
+            );
+            ui.label(
+                egui::RichText::new(kind.label())
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
+            ui.add_space(6.0);
+        }
+    });
 }
 
 fn show_tree(
@@ -439,4 +520,59 @@ fn show_tree(
                 });
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, is_dir: bool) -> FileEntry {
+        let path = PathBuf::from("/fixture").join(name);
+        let extension = path
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        FileEntry {
+            name_lower: name.to_lowercase(),
+            name: name.to_string(),
+            path,
+            identity: crate::panel::ListingIdentity::Unavailable,
+            is_dir,
+            size: 1,
+            extension,
+            modified: None,
+            modified_str: String::new(),
+            size_str: "1 B".to_string(),
+        }
+    }
+
+    #[test]
+    fn map_fits_the_pane_and_refuses_a_tiny_one() {
+        assert_eq!(
+            map_size(Vec2::new(200.0, 100.0)),
+            Some(Vec2::new(200.0, 100.0))
+        );
+        assert_eq!(map_size(Vec2::new(100.0, 300.0)), None);
+        assert_eq!(map_size(Vec2::new(300.0, 60.0)), None);
+    }
+
+    #[test]
+    fn finished_empty_scan_does_not_promise_more_items() {
+        assert_eq!(map_empty_message(false, false), "No measured items yet");
+        assert_eq!(map_empty_message(true, false), "Folder is empty");
+        assert_eq!(
+            map_empty_message(true, true),
+            "Folder holds only empty items"
+        );
+    }
+
+    #[test]
+    fn legend_lists_each_kind_once_in_kind_order() {
+        let entries = [
+            entry("b.rs", false),
+            entry("sub", true),
+            entry("a.rs", false),
+        ];
+        assert_eq!(legend_kinds(&entries), vec![Kind::Folder, Kind::Code]);
+    }
 }
