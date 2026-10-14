@@ -124,7 +124,22 @@ fn rename_one(
 }
 
 fn is_valid_name(name: &str) -> bool {
-    !name.is_empty() && !name.contains('/') && name != "." && name != ".."
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\0')
+        && name != "."
+        && name != ".."
+        && !exceeds_component_limit(name)
+}
+
+/// The OS rejects a longer path component (`ENAMETOOLONG`): 255 bytes on
+/// Linux/BSD filesystems, 255 UTF-16 units on APFS/HFS+ and NTFS.
+fn exceeds_component_limit(name: &str) -> bool {
+    if cfg!(any(target_os = "macos", windows)) {
+        name.encode_utf16().count() > 255
+    } else {
+        name.len() > 255
+    }
 }
 
 /// Plan a batch rename. `names` are the entries to rename (their order drives
@@ -401,6 +416,32 @@ mod tests {
         let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &rule);
         assert_eq!(plans[0].status, PlanStatus::Invalid);
         assert!(!plan_is_applicable(&plans));
+    }
+
+    #[test]
+    fn nul_and_overlong_target_names_are_flagged() {
+        let nul = RenameRule {
+            find: "a".into(),
+            replace: "\0".into(),
+            ..Default::default()
+        };
+        let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &nul);
+        assert_eq!(plans[0].status, PlanStatus::Invalid);
+
+        let overlong = RenameRule {
+            prefix: "x".repeat(255),
+            ..Default::default()
+        };
+        let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &overlong);
+        assert_eq!(plans[0].status, PlanStatus::Invalid);
+        assert!(!plan_is_applicable(&plans));
+
+        let at_limit = RenameRule {
+            prefix: "x".repeat(254),
+            ..Default::default()
+        };
+        let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &at_limit);
+        assert_eq!(plans[0].status, PlanStatus::Ok);
     }
 
     #[test]
