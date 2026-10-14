@@ -35,7 +35,8 @@ use listing_job::{ListingJobController, PendingFocus};
 // Re-export preview/visit public API under `crate::panel::...` for stable paths.
 #[allow(unused_imports)]
 pub use preview::{
-    InfoCard, PreviewContent, PreviewIdentity, format_mode, make_info, make_preview,
+    InfoCard, PreviewContent, PreviewIdentity, format_mode, image_preview_unavailable_message,
+    make_info, make_preview,
 };
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
@@ -2966,6 +2967,31 @@ mod tests {
         assert_eq!(card.kind, "Folder");
         assert_eq!(card.size, "4.0 KB");
         assert_eq!(card.children, Some(3));
+    }
+
+    #[test]
+    fn make_info_says_when_permissions_cannot_be_read() {
+        let tmp = TempDir::new();
+        let f = tmp.file("gone.txt", "hello");
+        let meta = std::fs::metadata(&f).unwrap();
+        let fe = FileEntry::from_meta(f.clone(), &meta).unwrap();
+        std::fs::remove_file(&f).unwrap();
+        let card = make_info(&fe, None, None);
+        // Not a fake mode string indistinguishable from a real `000` file.
+        assert!(
+            card.permissions.starts_with("unavailable ("),
+            "{}",
+            card.permissions
+        );
+    }
+
+    #[test]
+    fn declined_image_preview_message_names_the_file_and_the_switch() {
+        let mut img = entry("photo.jpg", false, 5_000);
+        img.extension = "jpg".into();
+        let message = image_preview_unavailable_message(&img);
+        assert!(message.contains("photo.jpg"), "{message}");
+        assert!(message.contains("Runtime controls"), "{message}");
     }
 
     #[test]

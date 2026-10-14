@@ -1020,10 +1020,23 @@ impl Workspace {
                 if self.inactive_panel().preview.is_some() {
                     self.inactive_panel_mut().preview = None;
                 } else {
-                    let preview = {
+                    let (preview, declined) = {
                         let panel = self.active_panel_ref();
-                        panel.cursor_entry().and_then(panel::make_preview)
+                        let entry = panel.cursor_entry();
+                        let preview = entry.and_then(panel::make_preview);
+                        // Only an image can be declined; a folder has
+                        // nothing to preview by design.
+                        let declined = entry
+                            .filter(|entry| preview.is_none() && !entry.is_dir)
+                            .map(panel::image_preview_unavailable_message);
+                        (preview, declined)
                     };
+                    if let Some(message) = declined {
+                        self.emit_ui_request(UiRequest::Notice {
+                            message,
+                            error: true,
+                        });
+                    }
                     if preview.is_some() {
                         // Opened from the pane that was showing one (after
                         // Tab): only one side previews at a time.
