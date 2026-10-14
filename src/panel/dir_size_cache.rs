@@ -39,20 +39,22 @@ pub(super) struct PersistedCache {
     pub(super) entries: Vec<PersistedCacheEntry>,
 }
 
-fn cache_path() -> PathBuf {
+/// Where the size cache persists, or `None` to keep it in memory only. With
+/// no per-user cache dir (HOME/XDG unset) there is no private place for it: a
+/// shared `/tmp/commander` could be pre-created by another user and feed this
+/// one wrong sizes.
+fn cache_path() -> Option<PathBuf> {
     #[cfg(test)]
-    let dir = std::env::temp_dir().join(format!("commander-test-cache-{}", std::process::id()));
+    let dir =
+        Some(std::env::temp_dir().join(format!("commander-test-cache-{}", std::process::id())));
     #[cfg(not(test))]
     let dir = crate::fs_util::storage_root_override().map_or_else(
-        || {
-            dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("commander")
-        },
-        |root| root.join("cache"),
+        || dirs::cache_dir().map(|dir| dir.join("commander")),
+        |root| Some(root.join("cache")),
     );
+    let dir = dir?;
     let _ = fs::create_dir_all(&dir);
-    dir.join("dir_sizes.json")
+    Some(dir.join("dir_sizes.json"))
 }
 
 /// Global cache: volume generation + path -> (mtime, size).
@@ -66,7 +68,9 @@ pub(super) fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemT
 }
 
 fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
-    let path = cache_path();
+    let Some(path) = cache_path() else {
+        return HashMap::new();
+    };
     let Ok(file) = fs::File::open(path) else {
         return HashMap::new();
     };
@@ -90,6 +94,12 @@ impl BoundedCacheAccumulator {
     }
 
     pub(super) fn push(&mut self, entry: PersistedCacheEntry) {
+        // The writer never stores whole seconds in the nanos field, and
+        // `Duration::new` panics when carrying them overflows the seconds:
+        // a corrupt entry is dropped instead.
+        if entry.mtime_nanos >= 1_000_000_000 {
+            return;
+        }
         let Some(mtime) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(
             entry.mtime_secs,
             entry.mtime_nanos,
@@ -937,6 +947,9 @@ pub fn invalidate_size_cache(path: &Path) {
 /// Stale paths are harmless because reuse always verifies mtime; probing them
 /// here could block every panel behind the mutex when a remote volume is down.
 pub fn flush_cache() {
+    let Some(path) = cache_path() else {
+        return;
+    };
     // Serialize snapshot + commit so an older panel worker cannot publish
     // after a newer one. The persistence layer supplies a unique private temp
     // file and durable atomic replacement.
@@ -961,5 +974,5 @@ pub fn flush_cache() {
     };
     entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
     let persisted = PersistedCache { schema: 1, entries };
-    let _ = crate::persistence::save_json_atomic(&cache_path(), &persisted);
+    let _ = crate::persistence::save_json_atomic(&path, &persisted);
 }

@@ -148,13 +148,9 @@ impl FileEntry {
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let modified = meta.modified().ok();
-        let modified_str = match modified {
-            Some(time) => {
-                let datetime: chrono::DateTime<chrono::Local> = time.into();
-                datetime.format("%d %b %y  %H:%M").to_string()
-            }
-            None => "–".to_string(),
-        };
+        let modified_str = modified
+            .and_then(format_modified)
+            .unwrap_or_else(|| "–".to_string());
         let size_str = if is_dir {
             "…".to_string()
         } else {
@@ -234,6 +230,40 @@ impl FileEntry {
     pub fn modified_display(&self) -> &str {
         &self.modified_str
     }
+}
+
+/// Listing date for a modification time, or `None` when chrono cannot
+/// represent it. `From<SystemTime>` panics past chrono's ~262,000-year range,
+/// which tmpfs/btrfs/NFS can store (e.g. from a crafted archive); such a row
+/// shows an unknown date instead of aborting the listing.
+fn format_modified(time: SystemTime) -> Option<String> {
+    let utc = match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(after.as_secs()).ok()?,
+            after.subsec_nanos(),
+        )?,
+        Err(before) => {
+            let before = before.duration();
+            let secs = i64::try_from(before.as_secs()).ok()?.checked_neg()?;
+            match before.subsec_nanos() {
+                0 => chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)?,
+                nanos => chrono::DateTime::<chrono::Utc>::from_timestamp(
+                    secs.checked_sub(1)?,
+                    1_000_000_000 - nanos,
+                )?,
+            }
+        }
+    };
+    // Converting to local time adds the zone offset, which panics at the
+    // very edge of the range: keep a day of headroom on both sides.
+    let day = chrono::TimeDelta::days(1);
+    utc.checked_add_signed(day)?;
+    utc.checked_sub_signed(day)?;
+    Some(
+        utc.with_timezone(&chrono::Local)
+            .format("%d %b %y  %H:%M")
+            .to_string(),
+    )
 }
 
 pub fn format_size(bytes: u64) -> String {
@@ -1740,6 +1770,27 @@ mod tests {
             panel.drag.entries(),
             [PathBuf::from("/test/a.txt"), PathBuf::from("/test/b.txt")]
         );
+    }
+
+    #[test]
+    fn modified_dates_outside_chronos_range_show_as_unknown() {
+        use std::time::Duration;
+        let epoch = SystemTime::UNIX_EPOCH;
+        assert!(format_modified(epoch + Duration::from_secs(86_400 * 365)).is_some());
+        // Before the epoch, including a fractional second.
+        assert!(format_modified(epoch - Duration::from_millis(1_500)).is_some());
+        // A million years out: storable on Unix filesystems, beyond chrono.
+        // (Windows' `SystemTime` cannot hold it, so there is nothing to test.)
+        for far in [
+            epoch.checked_add(Duration::from_secs(1 << 45)),
+            epoch.checked_sub(Duration::from_secs(1 << 45)),
+            epoch.checked_add(Duration::from_secs(i64::MAX as u64)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert_eq!(format_modified(far), None);
+        }
     }
 
     #[test]
@@ -3530,6 +3581,37 @@ mod tests {
                 .map(|key| key.path.clone())
                 .collect::<std::collections::BTreeSet<_>>(),
             (94..100).map(|index| key("incoming", index).path).collect()
+        );
+    }
+
+    #[test]
+    fn corrupt_persisted_mtime_is_dropped_without_panicking() {
+        let entry = |path: &str, mtime_secs: u64, mtime_nanos: u32| PersistedCacheEntry {
+            key: VolumePathKey {
+                path: PathBuf::from(path),
+                volume_id: 1,
+                generation: 1,
+            },
+            mtime_secs,
+            mtime_nanos,
+            size: 7,
+        };
+        let persisted = PersistedCache {
+            schema: 1,
+            entries: vec![
+                // Carrying the nanos into the seconds would overflow them.
+                entry("/corrupt/carry", u64::MAX, 1_000_000_000),
+                entry("/corrupt/nanos", 5, u32::MAX),
+                entry("/valid", 5, 999_999_999),
+            ],
+        };
+        let json = serde_json::to_vec(&persisted).unwrap();
+
+        let cache = load_cache_from_reader_with_bounds(json.as_slice(), 8, 6).unwrap();
+
+        assert_eq!(
+            cache.keys().map(|key| key.path.clone()).collect::<Vec<_>>(),
+            vec![PathBuf::from("/valid")]
         );
     }
 
