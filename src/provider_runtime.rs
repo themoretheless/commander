@@ -425,6 +425,12 @@ impl ExternalProviderClient {
         if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ExternalProviders) {
             return Err("external providers disabled by runtime control".to_string());
         }
+        let mut payload = serde_json::to_vec(request)
+            .map_err(|error| format!("could not encode provider request: {error}"))?;
+        payload.push(b'\n');
+        // The deadline covers the whole exchange, including sending the
+        // request: a provider that never reads stdin must not block us.
+        let deadline = Instant::now() + timeout;
         let mut child = Command::new(&self.executable)
             .args(&self.args)
             .stdin(Stdio::piped())
@@ -436,27 +442,28 @@ impl ExternalProviderClient {
             .stdin
             .take()
             .ok_or_else(|| "provider process has no stdin".to_string())?;
-        serde_json::to_writer(&mut stdin, request)
-            .map_err(|error| format!("could not encode provider request: {error}"))?;
-        stdin
-            .write_all(b"\n")
-            .map_err(|error| format!("could not send provider request: {error}"))?;
-        drop(stdin);
+        let (written_sender, written) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = written_sender.send(stdin.write_all(&payload));
+        });
 
         let mut stdout = child
             .stdout
             .take()
             .ok_or_else(|| "provider process has no stdout".to_string())?;
-        let reader = std::thread::spawn(move || {
+        // Results arrive over a channel so we never join a reader that a
+        // lingering grandchild keeps blocked by holding stdout open.
+        let (read_sender, read) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            stdout
+            let result = stdout
                 .by_ref()
                 .take(max_response_bytes.saturating_add(1) as u64)
                 .read_to_end(&mut bytes)
-                .map(|_| bytes)
+                .map(|_| bytes);
+            let _ = read_sender.send(result);
         });
 
-        let deadline = Instant::now() + timeout;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -466,19 +473,23 @@ impl ExternalProviderClient {
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    let _ = reader.join();
                     return Err("provider process timed out".to_string());
                 }
                 Err(error) => {
                     let _ = child.kill();
-                    let _ = reader.join();
+                    let _ = child.wait();
                     return Err(format!("provider process wait failed: {error}"));
                 }
             }
         };
-        let bytes = reader
-            .join()
-            .map_err(|_| "provider response reader panicked".to_string())?
+        if let Ok(Err(error)) = written.try_recv()
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(format!("could not send provider request: {error}"));
+        }
+        let bytes = read
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| "provider output stayed open past the timeout".to_string())?
             .map_err(|error| format!("provider response read failed: {error}"))?;
         if !status.success() {
             return Err(format!("provider process exited with {status}"));
@@ -771,5 +782,50 @@ mod tests {
             .unwrap();
         assert!(response.ok);
         assert_eq!(response.payload.as_deref(), Some("ready"));
+    }
+
+    #[cfg(unix)]
+    fn slow_request(
+        client: &ExternalProviderClient,
+        root: PathBuf,
+    ) -> (Result<ProviderRpcResponse, String>, Duration) {
+        let started = Instant::now();
+        let result = client.request(
+            &ProviderRpcRequest {
+                capability: ProviderCapability::PreviewText,
+                root,
+                path: None,
+                expression: None,
+                max_bytes: 1_024,
+            },
+            Duration::from_millis(200),
+            1_024,
+        );
+        (result, started.elapsed())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_provider_timeout_covers_a_request_the_child_never_reads() {
+        let client = ExternalProviderClient::new(
+            PathBuf::from("/bin/sh"),
+            vec!["-c".to_string(), "sleep 5".to_string()],
+        );
+        // Far larger than a pipe buffer, so writing it blocks.
+        let (result, elapsed) = slow_request(&client, PathBuf::from("x".repeat(1 << 20)));
+        assert_eq!(result.unwrap_err(), "provider process timed out");
+        assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_provider_timeout_ignores_a_grandchild_holding_stdout() {
+        let client = ExternalProviderClient::new(
+            PathBuf::from("/bin/sh"),
+            vec!["-c".to_string(), "sleep 5 & sleep 5".to_string()],
+        );
+        let (result, elapsed) = slow_request(&client, PathBuf::from("/tmp"));
+        assert!(result.is_err());
+        assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
     }
 }
