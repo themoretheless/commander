@@ -165,7 +165,11 @@ pub fn dispatch_snapshot(
                 continue;
             }
             if sink.any_modal_open() {
-                deferred.push(request);
+                // Repeated emits while a dialog is open (menu or mouse) would
+                // otherwise replay one identical dialog after another.
+                if !deferred.contains(&request) {
+                    deferred.push(request);
+                }
                 continue;
             }
         }
@@ -460,5 +464,24 @@ mod tests {
             ]
         );
         assert_eq!(sink.open_modal, Some(UiModal::Palette));
+    }
+
+    #[test]
+    fn identical_requests_deferred_behind_a_modal_replay_once() {
+        let rename = UiRequest::Rename(PathBuf::from("/tmp/rename-twice"));
+        let mut queue = UiRequestQueue::default();
+        let mut sink = FakeSink {
+            open_modal: Some(UiModal::Palette),
+            ..Default::default()
+        };
+        queue.emit(UiRequest::Undo);
+        queue.emit(rename.clone());
+        dispatch_frame(&mut queue, &mut sink);
+        queue.emit(UiRequest::Undo);
+        queue.emit(rename.clone());
+        dispatch_frame(&mut queue, &mut sink);
+
+        assert!(sink.applied.is_empty());
+        assert_eq!(queue.snapshot(), vec![UiRequest::Undo, rename]);
     }
 }
