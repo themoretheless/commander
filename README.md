@@ -141,7 +141,7 @@ module is a thin egui layer over it.
   shape/text cues. File rows expose named columns and state to assistive
   technology. System high-contrast and reduced-motion preferences are
   honored; text scales from 80% to 200%, with compact toolbars and a bottom
-  Operations Center on constrained widths. The bottom key bar is generated
+  Operations panel on constrained widths. The bottom key bar is generated
   from the focused pane's available actions, and compact file names preserve
   regular/compound extensions while exposing the full name on hover.
 - **Developer diagnostics**: the gear panel shows workers, queued I/O, cache
