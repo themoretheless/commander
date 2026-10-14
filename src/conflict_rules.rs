@@ -110,37 +110,60 @@ fn persist() -> &'static crate::persistence::FsPersist {
 }
 
 fn load_store() -> ConflictRuleBook {
-    crate::persistence::load_enveloped::<ConflictRuleBook>(persist(), &store_path(), STORE)
-        .value
-        .unwrap_or_default()
+    load_store_at(persist(), &store_path())
 }
 
-fn save_store(store: &ConflictRuleBook) {
-    let mut loaded =
-        crate::persistence::load_enveloped::<ConflictRuleBook>(persist(), &store_path(), STORE);
-    let _ = crate::persistence::save_enveloped(
-        persist(),
-        &store_path(),
-        STORE,
-        store,
-        &mut loaded.gate,
-        crate::persistence::SaveIntent::Explicit,
-    );
+/// A store that exists but cannot be read loads empty and blocks saves, so
+/// it is reported through persistence health instead of vanishing silently.
+fn load_store_at(persist: &dyn crate::persistence::Persist, path: &Path) -> ConflictRuleBook {
+    let loaded = crate::persistence::load_enveloped::<ConflictRuleBook>(persist, path, STORE);
+    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
+        crate::persistence::record_unreadable("Conflict rules");
+    }
+    loaded.value.unwrap_or_default()
+}
+
+fn save_store(store: &ConflictRuleBook) -> bool {
+    save_store_at(persist(), &store_path(), store)
+}
+
+/// Failed or blocked saves reach persistence health (and its error toast);
+/// `false` when nothing was committed.
+fn save_store_at(
+    persist: &dyn crate::persistence::Persist,
+    path: &Path,
+    store: &ConflictRuleBook,
+) -> bool {
+    let mut loaded = crate::persistence::load_enveloped::<ConflictRuleBook>(persist, path, STORE);
+    crate::persistence::report_save(
+        "Conflict rules",
+        crate::persistence::save_enveloped(
+            persist,
+            path,
+            STORE,
+            store,
+            &mut loaded.gate,
+            crate::persistence::SaveIntent::Explicit,
+        ),
+    )
+    .is_some()
 }
 
 pub fn load() -> ConflictRuleBook {
     crate::lock_util::recover(cache()).clone()
 }
 
-pub fn save(book: &ConflictRuleBook) {
+/// Updates the in-memory book and persists it; `false` when the write
+/// failed (already reported through persistence health).
+pub fn save(book: &ConflictRuleBook) -> bool {
     *crate::lock_util::recover(cache()) = book.clone();
-    save_store(book);
+    save_store(book)
 }
 
 pub fn upsert(rule: ConflictRule) {
     let mut book = load();
     book.upsert(rule);
-    save(&book);
+    let _ = save(&book);
 }
 
 pub fn preview_for(
@@ -194,5 +217,31 @@ mod tests {
             .unwrap()
             .contains("KeepBoth")
         );
+    }
+
+    #[test]
+    fn unreadable_store_is_reported_and_blocks_saves_visibly() {
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.file("store.json", "{ not json");
+        let persist = crate::persistence::FsPersist::default();
+        let before = crate::persistence::health_snapshot();
+        assert_eq!(load_store_at(&persist, &path), ConflictRuleBook::default());
+        let after_load = crate::persistence::health_snapshot();
+        assert!(after_load.unreadable_stores > before.unreadable_stores);
+        assert!(!save_store_at(
+            &persist,
+            &path,
+            &ConflictRuleBook::default()
+        ));
+        assert!(crate::persistence::health_snapshot().save_failures > after_load.save_failures);
+    }
+
+    #[test]
+    fn missing_store_is_not_reported_as_unreadable() {
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.path().join("store.json");
+        let persist = crate::persistence::FsPersist::default();
+        assert_eq!(load_store_at(&persist, &path), ConflictRuleBook::default());
+        assert!(save_store_at(&persist, &path, &ConflictRuleBook::default()));
     }
 }
