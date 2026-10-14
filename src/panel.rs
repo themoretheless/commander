@@ -3349,6 +3349,71 @@ mod tests {
     }
 
     #[test]
+    fn partial_sizes_are_reused_in_memory_but_never_cached_as_exact() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("partial");
+        let cache_key = VolumePathKey::observe(&directory);
+        let path_epoch = capture_path_epoch(&cache_key);
+        let current = Arc::new(Mutex::new(Arc::new(ScanEpoch::new())));
+        let sizes = Arc::new(Mutex::new(HashMap::new()));
+        let counts = Arc::new(Mutex::new(HashMap::new()));
+        let revision = Arc::new(AtomicU64::new(0));
+        let scan_epoch = begin_panel_scan(
+            &current,
+            &sizes,
+            &counts,
+            &HashSet::from([directory.clone()]),
+            &revision,
+        );
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let measurement = DirMeasurement {
+            path: directory.clone(),
+            modified: Some(mtime),
+            complete: false,
+            cache_key: cache_key.clone(),
+            path_epoch,
+            size: 7,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+        let outcome = publish_dir_measurements_if_current(
+            &current,
+            &scan_epoch,
+            &sizes,
+            &[measurement],
+            &revision,
+        );
+        assert_eq!(outcome.published, 1);
+        assert!(!outcome.cache_changed, "a partial size is not persisted");
+        assert!(!lock_recover(dir_size_cache()).contains_key(&cache_key));
+
+        // A later recompute with the same folder mtime reuses it: no re-walk.
+        lock_recover(&sizes).clear();
+        assert!(publish_cached_size_if_current(
+            &current,
+            &scan_epoch,
+            &sizes,
+            &directory,
+            &cache_key,
+            Some(mtime),
+            &revision,
+        ));
+        assert_eq!(lock_recover(&sizes).get(&directory), Some(&7));
+
+        // A change inside the folder drops it like the exact cache.
+        invalidate_size_cache(&directory.join("file.bin"));
+        assert!(!publish_cached_size_if_current(
+            &current,
+            &scan_epoch,
+            &sizes,
+            &directory,
+            &cache_key,
+            Some(mtime),
+            &revision,
+        ));
+    }
+
+    #[test]
     fn watcher_invalidation_wins_against_worker_paused_before_commit() {
         let tmp = TempDir::new();
         let directory = tmp.dir("subject");
@@ -3386,6 +3451,7 @@ mod tests {
             let measurement = DirMeasurement {
                 path: worker_path,
                 modified: Some(SystemTime::now()),
+                complete: true,
                 cache_key: worker_key,
                 path_epoch: worker_path_epoch,
                 size: 42,

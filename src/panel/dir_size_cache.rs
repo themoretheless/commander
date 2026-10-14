@@ -117,6 +117,18 @@ pub(super) fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemT
     })
 }
 
+/// Lower-bound sizes of folders whose last walk skipped unreadable parts:
+/// volume generation + path -> (mtime, size). Kept in memory only (never
+/// persisted as an exact size), so an unrelated recompute reuses the last
+/// partial measurement instead of re-walking the folder; watcher events in
+/// the folder drop it like the exact cache.
+pub(super) fn partial_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemTime, u64)>> {
+    static PARTIAL: OnceLock<Mutex<HashMap<VolumePathKey, (SystemTime, u64)>>> = OnceLock::new();
+    PARTIAL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const PARTIAL_SIZE_LIMIT: usize = 4_096;
+
 fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
     let Some(path) = cache_path() else {
         return HashMap::new();
@@ -616,8 +628,9 @@ pub(super) fn publish_cached_size_if_current(
     if !scan_is_current(current, epoch) {
         return false;
     }
-    let cache = lock_recover(dir_size_cache());
-    let Some(&(cached_mtime, cached_size)) = cache.get(key) else {
+    let cached = lock_recover(dir_size_cache()).get(key).copied();
+    let cached = cached.or_else(|| lock_recover(partial_size_cache()).get(key).copied());
+    let Some((cached_mtime, cached_size)) = cached else {
         return false;
     };
     if expected_mtime.is_some_and(|expected| cached_mtime != expected) {
@@ -855,6 +868,9 @@ pub(super) fn dir_size_walk_until(
 pub(super) struct DirMeasurement {
     pub(super) path: PathBuf,
     pub(super) modified: Option<SystemTime>,
+    /// Whether the walk read every subfolder; a partial size is only a
+    /// lower bound and is never stored in the persistent cache.
+    pub(super) complete: bool,
     pub(super) cache_key: VolumePathKey,
     pub(super) path_epoch: Arc<ScanEpoch>,
     pub(super) size: u64,
@@ -953,16 +969,34 @@ pub(super) fn publish_dir_measurements_if_current(
         );
     }
 
-    let cache_changed = valid.iter().any(|result| result.modified.is_some());
+    {
+        let mut partial = lock_recover(partial_size_cache());
+        for result in &valid {
+            match result.modified {
+                Some(modified) if !result.complete => {
+                    if partial.len() >= PARTIAL_SIZE_LIMIT {
+                        partial.clear();
+                    }
+                    partial.insert(result.cache_key.clone(), (modified, result.size));
+                }
+                _ => {
+                    partial.remove(&result.cache_key);
+                }
+            }
+        }
+    }
+
+    let cacheable = |result: &&&DirMeasurement| result.complete && result.modified.is_some();
+    let cache_changed = valid.iter().any(|result| cacheable(&result));
     if cache_changed {
         let cache_paths: HashSet<&Path> = valid
             .iter()
-            .filter(|result| result.modified.is_some())
+            .filter(cacheable)
             .map(|result| result.path.as_path())
             .collect();
         let cache_keys: HashSet<&VolumePathKey> = valid
             .iter()
-            .filter(|result| result.modified.is_some())
+            .filter(cacheable)
             .map(|result| &result.cache_key)
             .collect();
         let mut cache = lock_recover(dir_size_cache());
@@ -977,7 +1011,7 @@ pub(super) fn publish_dir_measurements_if_current(
                 },
             ))
         });
-        let incoming = valid.iter().filter_map(|result| {
+        let incoming = valid.iter().filter(cacheable).filter_map(|result| {
             result.modified.map(|modified| {
                 (
                     result.cache_key.clone(),
@@ -1077,6 +1111,7 @@ pub(super) fn invalidate_size_cache_many<'a>(paths: impl IntoIterator<Item = &'a
         epochs.retain(|key, epoch| !is_stale(key) && epoch.strong_count() > 0);
     }
     lock_recover(dir_size_cache()).retain(|key, _| !is_stale(key));
+    lock_recover(partial_size_cache()).retain(|key, _| !is_stale(key));
     lock_recover(walk_log()).retain(|key, _| !is_stale(key));
 }
 

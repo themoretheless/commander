@@ -517,7 +517,8 @@ impl SizeIndex {
                         path: path.clone(),
                         // A walk that skipped unreadable parts undercounts:
                         // show it, but do not cache it as the exact size.
-                        modified: modified.filter(|_| walk.complete),
+                        modified: *modified,
+                        complete: walk.complete,
                         cache_key: cache_key.clone(),
                         path_epoch,
                         size: walk.size,
