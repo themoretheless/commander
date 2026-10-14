@@ -252,9 +252,51 @@ pub const fn modal_close_requested(window_open: bool, escape_requested: bool) ->
     !window_open || escape_requested
 }
 
+/// Two-click confirmation for a destructive row action (delete a saved
+/// search, remove a project). The first click on `key` arms it; a second
+/// click on the same key confirms and disarms. Clicking another row arms that
+/// row instead. Returns true when the action should run.
+pub fn confirm_on_second_click(armed: &mut Option<String>, key: &str) -> bool {
+    if armed.as_deref() == Some(key) {
+        *armed = None;
+        true
+    } else {
+        *armed = Some(key.to_string());
+        false
+    }
+}
+
+/// The row armed by [`confirm_on_second_click`] in the dialog keyed `id`.
+/// Kept in egui temp memory: it is per-interaction and never persisted.
+pub fn armed_row(ctx: &egui::Context, id: egui::Id) -> Option<String> {
+    ctx.data(|data| data.get_temp::<String>(id))
+}
+
+pub fn set_armed_row(ctx: &egui::Context, id: egui::Id, armed: Option<String>) {
+    ctx.data_mut(|data| {
+        if let Some(key) = armed {
+            data.insert_temp(id, key);
+        } else {
+            data.remove::<String>(id);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destructive_row_actions_need_a_second_click_on_the_same_row() {
+        let mut armed = None;
+        assert!(!confirm_on_second_click(&mut armed, "a"));
+        assert_eq!(armed.as_deref(), Some("a"));
+        // Another row re-arms instead of confirming.
+        assert!(!confirm_on_second_click(&mut armed, "b"));
+        assert_eq!(armed.as_deref(), Some("b"));
+        assert!(confirm_on_second_click(&mut armed, "b"));
+        assert_eq!(armed, None);
+    }
 
     #[test]
     fn registry_covers_all_ui_modals_with_unique_surfaces() {
