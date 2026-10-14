@@ -100,11 +100,6 @@ impl MountGuard {
         probe_bounded(move || guard.check(), self.policy.poll_interval())
     }
 
-    pub fn wait_until_available(&self, on_wait: impl FnMut() -> bool) -> std::io::Result<()> {
-        let guard = self.clone();
-        self.wait_bounded(move || guard.check(), on_wait)
-    }
-
     /// Run each availability probe on a helper thread and give it one poll
     /// interval: on a hung hard-mounted share `exists()`/`statfs` can block
     /// indefinitely, which would otherwise stall the timeout and cancel
