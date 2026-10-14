@@ -30,14 +30,20 @@ impl PanelState {
         if let Some(parent) = self.current_path.parent().map(|p| p.to_path_buf()) {
             self.navigate_to(parent);
             if let Some(name) = child {
-                // Prefer the child-name landing over any remembered parent focus.
-                if self.can_async_list() && self.listing_job.is_awaiting() {
-                    self.listing_job.set_focus(PendingFocus::NamedChild(name));
-                } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
-                    self.set_cursor(idx + 1);
-                    self.set_scroll_to_cursor(true);
-                }
+                self.focus_child(name);
             }
+        }
+    }
+
+    /// Put the cursor on the entry called `name` right after a navigation,
+    /// preferring it over any remembered focus. While the listing is still
+    /// loading in the background, the landing is deferred until it publishes.
+    pub fn focus_child(&mut self, name: String) {
+        if self.can_async_list() && self.listing_job.is_awaiting() {
+            self.listing_job.set_focus(PendingFocus::NamedChild(name));
+        } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
+            self.set_cursor(idx + 1);
+            self.set_scroll_to_cursor(true);
         }
     }
 

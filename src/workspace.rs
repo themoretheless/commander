@@ -813,10 +813,20 @@ impl Workspace {
             return;
         }
         let cmd = if matches!(cmd, Command::RepeatLast) {
-            match self.last_command {
-                Some(previous) => previous,
-                None => return,
+            let Some(previous) = self.last_command else {
+                return;
+            };
+            // Key paths gate the command they name, and `RepeatLast` itself
+            // has no predicates: re-apply both gates to what it replays.
+            if self.mutation_commits_blocked() && previous.mutates_filesystem() {
+                return;
             }
+            if crate::command::requires_context(previous)
+                && !crate::command::availability(previous, &self.command_context()).enabled
+            {
+                return;
+            }
+            previous
         } else {
             if !matches!(
                 cmd,
@@ -993,6 +1003,11 @@ impl Workspace {
                         let panel = self.active_panel_ref();
                         panel.cursor_entry().and_then(panel::make_preview)
                     };
+                    if preview.is_some() {
+                        // Opened from the pane that was showing one (after
+                        // Tab): only one side previews at a time.
+                        self.active_panel().preview = None;
+                    }
                     self.inactive_panel_mut().preview = preview;
                 }
             }
@@ -2474,11 +2489,9 @@ impl Workspace {
         let name = path.file_name().map(|n| n.to_string_lossy().to_string());
         let panel = self.active_panel();
         panel.navigate_to(parent);
-        if let Some(name) = name
-            && let Some(idx) = panel.filtered_entries().iter().position(|e| e.name == name)
-        {
-            panel.set_cursor(idx + 1);
-            panel.set_scroll_to_cursor(true);
+        if let Some(name) = name {
+            // Lands once a background listing publishes, like Go Up.
+            panel.focus_child(name);
         }
     }
 
@@ -2705,7 +2718,13 @@ impl Workspace {
         if shown_matches {
             return;
         }
-        target.preview = panel::make_preview(entry);
+        // A folder (or an image the preview provider declines) has nothing to
+        // show: keep the pane open on the last preview rather than assigning
+        // `None`, which would end preview mode as soon as the cursor passed
+        // over a folder.
+        if let Some(preview) = panel::make_preview(entry) {
+            target.preview = Some(preview);
+        }
     }
 
     /// Toggle the Get-Info inspector for the cursor entry, shown in the
@@ -2731,6 +2750,8 @@ impl Workspace {
             None
         };
         let card = panel::make_info(&entry, dir_size, children);
+        // Only one side shows a preview/info pane at a time.
+        self.active_panel().preview = None;
         self.inactive_panel_mut().preview = Some(PreviewContent::Info(card));
     }
 

@@ -3908,3 +3908,126 @@ fn selection_gathered_across_folders_feeds_one_transfer() {
     assert_eq!(ws.left.selected_elsewhere_count(), 0);
     assert!(ws.left.selection_is_empty());
 }
+
+#[test]
+fn repeat_last_is_gated_like_the_command_it_replays() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("a.txt", "x");
+    let mut ws = workspace(&left, &right);
+    ws.execute(Command::BeginSync);
+    assert!(matches!(
+        ws.drain_ui_requests().as_slice(),
+        [UiRequest::Sync]
+    ));
+
+    // Blocked mutations stay blocked when replayed with `.`.
+    ws.safe_state = Some(crate::operation::SafeState {
+        operation_id: crate::operation::OperationId("review".to_string()),
+        reason: "review required".to_string(),
+        paths: Vec::new(),
+        failures: Vec::new(),
+    });
+    ws.execute(Command::RepeatLast);
+    assert!(ws.drain_ui_requests().is_empty());
+    ws.safe_state = None;
+
+    // So do commands whose context no longer applies.
+    ws.left.set_cursor(1);
+    ws.execute(Command::CopyPath);
+    assert_eq!(ws.drain_ui_requests().len(), 1);
+    ws.left.set_cursor(0);
+    let context = ws.command_context();
+    assert!(!crate::command::availability(Command::CopyPath, &context).enabled);
+    ws.execute(Command::RepeatLast);
+    assert!(ws.drain_ui_requests().is_empty());
+}
+
+#[test]
+fn preview_stays_open_while_the_cursor_passes_over_a_folder() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "alpha");
+    l.dir("folder");
+    l.file("z.txt", "zulu");
+    let mut ws = workspace(&l, &r);
+    let row = |ws: &Workspace, name: &str| {
+        ws.left
+            .filtered_entries()
+            .iter()
+            .position(|entry| entry.name == name)
+            .unwrap()
+            + 1
+    };
+
+    ws.left.set_cursor(row(&ws, "a.txt"));
+    ws.execute(Command::TogglePreview);
+    assert!(ws.right.preview.is_some());
+
+    ws.left.set_cursor(row(&ws, "folder"));
+    ws.sync_preview();
+    assert!(
+        ws.right.preview.is_some(),
+        "preview mode survives a folder row"
+    );
+
+    ws.left.set_cursor(row(&ws, "z.txt"));
+    ws.sync_preview();
+    match &ws.right.preview {
+        Some(PreviewContent::Pending(identity)) => {
+            assert_eq!(identity.path, l.path().join("z.txt"));
+        }
+        other => panic!("expected the preview to follow again, got {other:?}"),
+    }
+}
+
+#[test]
+fn opening_a_preview_from_the_preview_side_moves_it_instead_of_doubling() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "alpha");
+    r.file("b.txt", "beta");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+    ws.execute(Command::TogglePreview);
+    assert!(ws.right.preview.is_some());
+
+    // Tab into the pane showing the preview, then preview from there.
+    ws.execute(Command::SwitchPanel);
+    ws.right.set_cursor(1);
+    ws.execute(Command::TogglePreview);
+    assert!(ws.left.preview.is_some());
+    assert!(ws.right.preview.is_none(), "only one side previews");
+
+    // Same for the Get-Info card.
+    ws.execute(Command::SwitchPanel);
+    ws.left.set_cursor(1);
+    ws.execute(Command::ToggleInfo);
+    assert!(matches!(ws.right.preview, Some(PreviewContent::Info(_))));
+    assert!(ws.left.preview.is_none(), "only one side shows info");
+}
+
+#[test]
+fn reveal_lands_on_the_file_when_the_listing_is_asynchronous() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("deep");
+    for n in 0..50 {
+        l.file(&format!("deep/f{n:02}.txt"), "x");
+    }
+    let target = l.path().join("deep/f42.txt");
+    let mut ws = workspace(&l, &r);
+    let runtime =
+        crate::workload::WorkloadRuntime::new(crate::workload::SchedulerLimits::default());
+    ws.left
+        .set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
+    ws.left.set_notify(Arc::new(|| {}));
+
+    ws.reveal(&target);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.filtered_count() == 0 {
+        assert!(std::time::Instant::now() < deadline, "listing never landed");
+        ws.left.poll_listing();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(target)
+    );
+}
