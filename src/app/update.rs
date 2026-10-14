@@ -221,10 +221,7 @@ impl DragAnnouncementMemo {
 /// operation dropped onto a subfolder row (or a refresh after one) changes
 /// that subfolder without either pane showing it. Scanning the cache keys is
 /// far cheaper than the `read_dir` calls a full clear would trigger.
-fn invalidate_tree_children(
-    cache: &mut super::tree::ChildCache,
-    dir: &std::path::Path,
-) {
+fn invalidate_tree_children(cache: &mut super::tree::ChildCache, dir: &std::path::Path) {
     cache.retain(|(path, _), _| !path.starts_with(dir));
     if let Some(parent) = dir.parent() {
         for show_hidden in [false, true] {

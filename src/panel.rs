@@ -1545,6 +1545,7 @@ impl PanelState {
         self.visible_selected().count()
     }
 
+    #[cfg(test)]
     pub fn visible_selected_size(&self) -> u64 {
         let sizes = self.sizes.snapshot();
         self.visible_selected()

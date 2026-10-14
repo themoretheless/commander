@@ -2627,6 +2627,7 @@ impl Workspace {
     }
 
     /// Build a sync plan and baseline from the same fresh directory reads.
+    #[cfg(test)]
     pub fn build_guarded_sync_plan(
         &self,
         policy: crate::sync::SyncPolicy,

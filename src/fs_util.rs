@@ -498,6 +498,7 @@ pub fn files_equal(a: &Path, b: &Path) -> bool {
 /// The first 8 bytes of BLAKE3, so the value printed in checksum reports is
 /// stable across Rust releases (`DefaultHasher` is not); `io::copy` retries
 /// reads interrupted by a signal instead of dropping the file.
+#[cfg(test)]
 pub fn content_hash(path: &Path) -> Option<u64> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = blake3::Hasher::new();
