@@ -359,6 +359,8 @@ pub struct ArchiveState {
     pub run: Option<crate::archive::ListingRun>,
     pub extract: Option<crate::archive::ExtractRun>,
     pub listing: Option<crate::archive::ArchiveListing>,
+    /// Filter matches for `listing`; reset whenever the listing is replaced.
+    pub member_filter: archive_dialog::MemberFilter,
     pub selected: std::collections::BTreeSet<usize>,
     pub status: Option<String>,
     pub error: Option<String>,
