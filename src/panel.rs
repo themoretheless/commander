@@ -2662,7 +2662,8 @@ mod tests {
 
         std::thread::sleep(window + std::time::Duration::from_millis(100));
         assert_eq!(p.filtered_count(), 2);
-        p.ensure_cursor_valid();
+        // The per-frame hook re-resolves the cursor with no fs event at all.
+        let _ = p.poll_fs_changes();
         assert_eq!(p.cursor(), 1);
         assert_eq!(p.cursor_entry().unwrap().name, "b.txt");
     }
