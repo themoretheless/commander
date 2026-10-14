@@ -584,10 +584,15 @@ impl TextMatcher {
     fn new(mode: MatchMode, value: String) -> Result<Self, QueryError> {
         match mode {
             MatchMode::Exact => {
+                // An escaped literal always parses, but a huge pasted token
+                // can still exceed the compiled-size limit.
                 let regex = regex::RegexBuilder::new(&regex::escape(&value))
                     .case_insensitive(true)
                     .build()
-                    .expect("an escaped literal is always a valid regex");
+                    .map_err(|error| QueryError {
+                        token: value.clone(),
+                        message: error.to_string(),
+                    })?;
                 Ok(Self::Exact {
                     original: value,
                     regex,
@@ -740,17 +745,9 @@ impl CompiledQuery {
                 let Some((file, size)) = open_regular_file(&entry.path) else {
                     return ContentVerdict::Skipped;
                 };
-                let mut bytes = Vec::with_capacity(size.min(MAX_CONTENT_BYTES) as usize);
-                if file
-                    .take(MAX_CONTENT_BYTES)
-                    .read_to_end(&mut bytes)
-                    .is_err()
-                {
+                let Some(bytes) = read_text_bytes(file, size) else {
                     return ContentVerdict::Skipped;
-                }
-                if bytes.iter().take(8192).any(|byte| *byte == 0) {
-                    return ContentVerdict::Skipped;
-                }
+                };
                 let content = String::from_utf8_lossy(&bytes);
                 // The opened file's size, not the listing's: for a symlink
                 // the listing holds the link's own (lstat) length.
@@ -809,6 +806,31 @@ impl CompiledQuery {
 /// search worker. The path is stat-ed first so devices are never opened;
 /// unix then opens non-blocking (and without acquiring a controlling tty) and
 /// re-checks the type on the handle itself.
+/// Leading bytes checked for NULs to tell binary files from text.
+const BINARY_SNIFF_BYTES: u64 = 8_192;
+
+/// Up to `MAX_CONTENT_BYTES` of a text file, or `None` for a binary file or
+/// a read error. The head is sniffed before the rest is read, so a binary
+/// file costs one small read instead of up to 16 MB.
+fn read_text_bytes(reader: impl Read, size: u64) -> Option<Vec<u8>> {
+    let mut reader = reader.take(MAX_CONTENT_BYTES);
+    let mut bytes = Vec::with_capacity(usize::try_from(size.min(BINARY_SNIFF_BYTES)).ok()?);
+    Read::by_ref(&mut reader)
+        .take(BINARY_SNIFF_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    bytes.reserve(
+        usize::try_from(size.min(MAX_CONTENT_BYTES))
+            .unwrap_or(0)
+            .saturating_sub(bytes.len()),
+    );
+    reader.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
 fn open_regular_file(path: &Path) -> Option<(std::fs::File, u64)> {
     // Refuse devices, FIFOs and sockets before opening: opening a tty, serial
     // or tape device can have side effects. The fstat below covers the race
@@ -1233,6 +1255,37 @@ mod tests {
             modified_str: "-".into(),
             size_str: crate::panel::format_size(size),
         }
+    }
+
+    #[test]
+    fn content_read_stops_after_the_head_of_a_binary_file() {
+        struct Counting<'a>(&'a [u8], &'a std::cell::Cell<usize>);
+        impl Read for Counting<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.0.read(buf)?;
+                self.1.set(self.1.get() + read);
+                Ok(read)
+            }
+        }
+        let read = std::cell::Cell::new(0);
+        let mut binary = vec![b'a'; 1 << 20];
+        binary[100] = 0;
+        assert!(read_text_bytes(Counting(&binary, &read), binary.len() as u64).is_none());
+        assert!(read.get() as u64 <= BINARY_SNIFF_BYTES);
+
+        let mut late_nul = vec![b'a'; 20_000];
+        late_nul[9_000] = 0;
+        assert_eq!(read_text_bytes(&late_nul[..], 20_000).unwrap(), late_nul);
+    }
+
+    #[test]
+    fn oversized_literal_query_is_an_error_not_a_panic() {
+        let huge = "ab".repeat(1 << 17);
+        let error = TextMatcher::new(MatchMode::Exact, huge.clone())
+            .err()
+            .expect("compiled-size limit");
+        assert_eq!(error.token, huge);
+        assert!(TextMatcher::new(MatchMode::Exact, "a.b".to_string()).is_ok());
     }
 
     #[test]
