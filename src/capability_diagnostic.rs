@@ -64,26 +64,32 @@ pub fn collect(paths: &[PathBuf]) -> CapabilityDiagnostic {
             .iter()
             .map(|path| {
                 let profile = crate::volume_profile::profile(path);
-                let readable = path_is_readable(path);
-                for_profile(path.clone(), profile, readable)
+                let read_error = read_probe(path).err();
+                for_profile(path.clone(), profile, read_error)
             })
             .collect(),
     }
 }
 
-fn path_is_readable(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => std::fs::read_dir(path).is_ok(),
-        Ok(_) => std::fs::File::open(path).is_ok(),
-        Err(_) => false,
-    }
+/// Probe whether the requested root can be read, keeping the OS error so the
+/// report can tell a missing root from a denied or failing one.
+fn read_probe(path: &Path) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    let opened = if metadata.is_dir() {
+        std::fs::read_dir(path).map(drop)
+    } else {
+        std::fs::File::open(path).map(drop)
+    };
+    opened.map_err(|error| error.to_string())
 }
 
+/// `read_error` is `None` when the root could be inspected, otherwise the OS
+/// error that prevented it.
 #[must_use]
 pub fn for_profile(
     requested_path: PathBuf,
     profile: crate::volume_profile::VolumeProfile,
-    readable: bool,
+    read_error: Option<String>,
 ) -> VolumeDiagnostic {
     use CapabilityOutcome::{Fallback, FastPath, Unavailable};
     let writable = !profile.read_only;
@@ -117,7 +123,12 @@ pub fn for_profile(
             }
         };
 
-    let read = if readable {
+    let read = if let Some(error) = read_error {
+        unavailable(
+            "read",
+            &format!("requested root could not be inspected: {error}"),
+        )
+    } else {
         CapabilityDecision {
             capability: "read".to_string(),
             outcome: FastPath,
@@ -125,8 +136,6 @@ pub fn for_profile(
             fallback: None,
             reason: "requested root can be inspected".to_string(),
         }
-    } else {
-        unavailable("read", "requested root could not be inspected")
     };
     let write = if writable {
         CapabilityDecision {
@@ -205,13 +214,27 @@ pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
 fn export_to(path: &Path, diagnostic: &CapabilityDiagnostic) -> Result<(), String> {
     let json = serde_json::to_string_pretty(diagnostic)
         .map_err(|error| format!("Could not encode capability diagnostic: {error}"))?;
-    if crate::fs_util::write_atomic(path, &json) {
-        Ok(())
-    } else {
-        Err(format!(
-            "Could not write capability diagnostic to {}",
-            path.display()
-        ))
+    match crate::persistence::commit_bytes_atomic(path, json.as_bytes()) {
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => Ok(()),
+        Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
+            crate::persistence::record_durability_warning("Capability diagnostic", &error);
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "Could not write capability diagnostic to {}: {}",
+            path.display(),
+            describe_commit_error(&error)
+        )),
+    }
+}
+
+/// Name the failed save stage and the OS error (e.g. disk full, access denied).
+fn describe_commit_error(error: &crate::persistence::PreCommitError) -> String {
+    use crate::persistence::PreCommitError;
+    match error {
+        PreCommitError::Serialize(source) => format!("could not encode: {source}"),
+        PreCommitError::Conflict => "the file changed while it was being written".to_string(),
+        PreCommitError::Io { stage, source, .. } => format!("could not {stage}: {source}"),
     }
 }
 
@@ -259,7 +282,7 @@ mod tests {
         let local = for_profile(
             PathBuf::from("/volume/project"),
             profile(false, BackendKind::LocalFast),
-            true,
+            None,
         );
         assert_eq!(
             local.decision("same_volume_move").unwrap().outcome,
@@ -273,7 +296,7 @@ mod tests {
         let read_only = for_profile(
             PathBuf::from("/volume/readonly"),
             profile(true, BackendKind::Remote),
-            true,
+            None,
         );
         assert_eq!(
             read_only.decision("copy").unwrap().outcome,
@@ -293,12 +316,50 @@ mod tests {
             volumes: vec![for_profile(
                 PathBuf::from("/volume/project"),
                 profile(false, BackendKind::Remote),
-                true,
+                None,
             )],
         };
         export_to(&path, &report).unwrap();
         let decoded: CapabilityDiagnostic =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn export_failure_names_the_os_error() {
+        let temp = TempDir::new();
+        let blocker = temp.path().join("blocker");
+        std::fs::write(&blocker, b"file").unwrap();
+        let path = blocker.join("capabilities.json");
+        let report = CapabilityDiagnostic {
+            schema: 1,
+            generated_at_secs: 7,
+            app_version: "test".to_string(),
+            volumes: Vec::new(),
+        };
+        let message = export_to(&path, &report).unwrap_err();
+        let prefix = format!(
+            "Could not write capability diagnostic to {}",
+            path.display()
+        );
+        let cause = message.strip_prefix(&prefix).unwrap();
+        assert!(cause.starts_with(": could not "), "{message}");
+    }
+
+    #[test]
+    fn unreadable_root_reports_the_os_error() {
+        let temp = TempDir::new();
+        let missing = temp.path().join("missing");
+        let error = read_probe(&missing).unwrap_err();
+        let expected = std::fs::metadata(&missing).unwrap_err().to_string();
+        assert_eq!(error, expected);
+        let diagnostic = for_profile(
+            missing,
+            profile(false, BackendKind::LocalFast),
+            Some(error.clone()),
+        );
+        let read = diagnostic.decision("read").unwrap();
+        assert_eq!(read.outcome, CapabilityOutcome::Unavailable);
+        assert!(read.reason.ends_with(&error), "{}", read.reason);
     }
 }

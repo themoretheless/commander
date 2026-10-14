@@ -630,7 +630,7 @@ mod tests {
         let profile = crate::volume_profile::profile(&root);
         let operation_dialog = probe(31, || {
             let diagnostic =
-                crate::capability_diagnostic::for_profile(root.clone(), profile.clone(), true);
+                crate::capability_diagnostic::for_profile(root.clone(), profile.clone(), None);
             std::hint::black_box(serde_json::to_vec(&diagnostic).unwrap());
         });
         let workload = crate::workload::stats();
