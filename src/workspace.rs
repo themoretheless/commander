@@ -362,6 +362,32 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
         .collect()
 }
 
+/// Toast for a link command: the count, plus the first failure's own text
+/// (path and OS error) so the user can see why, not just how many failed.
+fn link_report_message(noun: &str, created: usize, errors: &[String]) -> String {
+    match errors {
+        [] => format!("Created {created} {noun}"),
+        [only] => format!("Created {created} {noun}; {only}"),
+        [first, rest @ ..] => format!("Created {created} {noun}; {first} (+{} more)", rest.len()),
+    }
+}
+
+/// Toast for applying a workspace profile, naming saved folders that no
+/// longer exist (those sides were left where they were).
+fn profile_applied_message(name: &str, missing: &[&PathBuf]) -> String {
+    if missing.is_empty() {
+        return format!("Applied workspace profile \"{name}\"");
+    }
+    let folders = missing
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Applied workspace profile \"{name}\", but a saved folder is missing (that side was left as is): {folders}. Save the profile again to update it."
+    )
+}
+
 /// Keep only the move placements that landed under their original name, so undo
 /// reverses them faithfully. A `KeepBoth` conflict lands at "name copy.ext"; a
 /// move there cannot be undone by relocating the file under the original name
@@ -1017,10 +1043,23 @@ impl Workspace {
                 if self.inactive_panel().preview.is_some() {
                     self.inactive_panel_mut().preview = None;
                 } else {
-                    let preview = {
+                    let (preview, declined) = {
                         let panel = self.active_panel_ref();
-                        panel.cursor_entry().and_then(panel::make_preview)
+                        let entry = panel.cursor_entry();
+                        let preview = entry.and_then(panel::make_preview);
+                        // Only an image can be declined; a folder has
+                        // nothing to preview by design.
+                        let declined = entry
+                            .filter(|entry| preview.is_none() && !entry.is_dir)
+                            .map(panel::image_preview_unavailable_message);
+                        (preview, declined)
                     };
+                    if let Some(message) = declined {
+                        self.emit_ui_request(UiRequest::Notice {
+                            message,
+                            error: true,
+                        });
+                    }
                     if preview.is_some() {
                         // Opened from the pane that was showing one (after
                         // Tab): only one side previews at a time.
@@ -1147,15 +1186,16 @@ impl Workspace {
             }
             Command::RepeatLast => {}
             Command::BrowseArchive => {
-                if let Some(entry) = self.active_panel_ref().cursor_entry().cloned() {
-                    if crate::archive::is_supported(&entry.path) {
+                // The `..` row (or an empty folder) has no entry: it is not
+                // an archive either, so it gets the same hint.
+                match self.active_panel_ref().cursor_entry().cloned() {
+                    Some(entry) if crate::archive::is_supported(&entry.path) => {
                         self.emit_ui_request(UiRequest::Archive(entry.path));
-                    } else {
-                        self.emit_ui_request(UiRequest::Notice {
-                            message: "Highlight a ZIP or tar.gz archive first".to_string(),
-                            error: true,
-                        });
                     }
+                    _ => self.emit_ui_request(UiRequest::Notice {
+                        message: "Highlight a ZIP or tar.gz archive first".to_string(),
+                        error: true,
+                    }),
                 }
             }
             Command::SetTrustTrusted => self.set_active_trust(crate::trust::TrustLabel::Trusted),
@@ -1210,20 +1250,31 @@ impl Workspace {
             });
             return;
         };
+        self.apply_profile(&profile);
+    }
+
+    fn apply_profile(&mut self, profile: &crate::workspace_profile::WorkspaceProfile) {
+        // A side whose saved folder is gone keeps its folder and filter: the
+        // filter was written for that folder's contents.
+        let mut missing = Vec::new();
         if profile.left_root.is_dir() {
             self.left.navigate_to(profile.left_root.clone());
+            self.left.set_search_query(profile.left_filter.clone());
+        } else {
+            missing.push(&profile.left_root);
         }
         if profile.right_root.is_dir() {
             self.right.navigate_to(profile.right_root.clone());
+            self.right.set_search_query(profile.right_filter.clone());
+        } else {
+            missing.push(&profile.right_root);
         }
-        self.left.set_search_query(profile.left_filter.clone());
-        self.right.set_search_query(profile.right_filter.clone());
         self.durability_profile = profile.durability;
         self.name_policy = profile.name_policy;
         self.symlink_policy = profile.symlink_policy;
         self.emit_ui_request(UiRequest::Notice {
-            message: format!("Applied workspace profile \"{}\"", profile.name),
-            error: false,
+            message: profile_applied_message(&profile.name, &missing),
+            error: !missing.is_empty(),
         });
     }
 
@@ -1258,15 +1309,7 @@ impl Workspace {
 
     fn create_symlinks(&mut self) {
         let report = fileops::create_symlinks(self);
-        let message = if report.errors.is_empty() {
-            format!("Created {} symlink(s)", report.created)
-        } else {
-            format!(
-                "Created {} symlink(s); {} issue(s)",
-                report.created,
-                report.errors.len()
-            )
-        };
+        let message = link_report_message("symlink(s)", report.created, &report.errors);
         self.emit_ui_request(UiRequest::Notice {
             message,
             error: !report.errors.is_empty() && report.created == 0,
@@ -1275,15 +1318,7 @@ impl Workspace {
 
     fn create_hardlinks(&mut self) {
         let report = fileops::create_hardlinks(self);
-        let message = if report.errors.is_empty() {
-            format!("Created {} hard link(s)", report.created)
-        } else {
-            format!(
-                "Created {} hard link(s); {} issue(s)",
-                report.created,
-                report.errors.len()
-            )
-        };
+        let message = link_report_message("hard link(s)", report.created, &report.errors);
         self.emit_ui_request(UiRequest::Notice {
             message,
             error: !report.errors.is_empty() && report.created == 0,
@@ -1377,9 +1412,12 @@ impl Workspace {
         if let Some(state) = &self.safe_state
             && &state.operation_id != operation_id
         {
+            // A stop latched outside any operation (a history invariant)
+            // carries a fresh id no operation matches: name the stop itself,
+            // not an operation number the user has never seen.
             return Err(format!(
-                "Safe-state review belongs to operation {}",
-                state.operation_id.0
+                "Another safe-state stop is under review ({}). Acknowledge it in the safe-state dialog first, then retry.",
+                state.reason
             ));
         }
         Ok(())
@@ -2350,20 +2388,42 @@ impl Workspace {
                 base.join(format!("{name} {}", i + 1))
             }
         });
-        if std::fs::create_dir(&folder).is_err() {
+        if let Err(error) = std::fs::create_dir(&folder) {
+            self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Could not create folder {}: {error}. Check that this folder is writable.",
+                    folder.display()
+                ),
+                error: true,
+            });
             return;
         }
+        // Without the new folder's identity a failed move could not prove
+        // the folder is ours to clean up: back out now, like a replay does.
+        let rollback_cleanup_identity =
+            match crate::path_identity::PathIdentity::observe_deep(&folder) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    let _ = std::fs::remove_dir(&folder);
+                    self.emit_ui_request(UiRequest::Notice {
+                    message: format!(
+                        "Could not gather into {}: the new folder could not be verified ({error})",
+                        folder.display()
+                    ),
+                    error: true,
+                });
+                    return;
+                }
+            };
         // Record the folder lifecycle separately from an ordinary Move so undo
         // can remove it and redo can recreate it.
         let undo = crate::undo::Action::Gather {
             folder: folder.clone(),
             pairs: move_pairs(&entries, &folder),
         };
-        let rollback_cleanup_identity =
-            crate::path_identity::PathIdentity::observe_deep(&folder).ok();
         let spec = TransferSpec {
             rollback_cleanup: Some(folder.clone()),
-            rollback_cleanup_identity,
+            rollback_cleanup_identity: Some(rollback_cleanup_identity),
             ..self.queued_spec(TransferKind::Move, entries, folder)
         };
         self.enqueue_only(spec, Some(undo));
@@ -2520,14 +2580,18 @@ impl Workspace {
             self.left.refresh();
             self.right.refresh();
         }
-        if let Some(action) = trash_undo_action(&outcome) {
-            match self.undo.record(action) {
-                Ok(()) => {}
-                Err(error) => {
-                    // History refusal must not hide a completed Trash mutation.
-                    let _ = error;
-                }
-            }
+        if let Some(action) = trash_undo_action(&outcome)
+            && let Err(error) = self.undo.record(action)
+        {
+            // History refusal must not hide a completed Trash mutation, nor
+            // latch a safe state: the items are in the Trash, only Cmd+Z
+            // cannot bring them back.
+            self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Moved to Trash, but undo history could not record it ({error}). Restore the items from the Trash if needed."
+                ),
+                error: true,
+            });
         }
         Some(outcome)
     }
@@ -2680,9 +2744,10 @@ impl Workspace {
     /// A sync source as the copy engine must see it: the lexical entry, so
     /// a symlink (even to a folder) is the link itself and the symlink
     /// policy applies to it, as for every other transfer source.
-    fn sync_source_entry(path: &Path) -> Option<FileEntry> {
-        let meta = std::fs::symlink_metadata(path).ok()?;
+    fn sync_source_entry(path: &Path) -> std::io::Result<FileEntry> {
+        let meta = std::fs::symlink_metadata(path)?;
         FileEntry::from_meta(path.to_path_buf(), &meta)
+            .ok_or_else(|| std::io::Error::other("unsupported entry"))
     }
 
     fn enqueue_sync_between(
@@ -2693,23 +2758,41 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) {
         use crate::sync::SyncDirection;
-        let load = Self::sync_source_entry;
         let mut to_right = Vec::new();
         let mut to_left = Vec::new();
+        // Sources that vanished between plan and commit.
+        let mut missing: Vec<(&Path, std::io::Error)> = Vec::new();
         for a in actions {
-            match a.direction {
-                SyncDirection::ToRight => {
-                    if let Some(e) = a.source_path().and_then(load) {
-                        to_right.push(e);
-                    }
-                }
-                SyncDirection::ToLeft => {
-                    if let Some(e) = a.source_path().and_then(load) {
-                        to_left.push(e);
-                    }
-                }
-                SyncDirection::Skip => {}
+            let side = match a.direction {
+                SyncDirection::ToRight => &mut to_right,
+                SyncDirection::ToLeft => &mut to_left,
+                SyncDirection::Skip => continue,
+            };
+            let Some(source) = a.source_path() else {
+                continue;
+            };
+            match Self::sync_source_entry(source) {
+                Ok(entry) => side.push(entry),
+                Err(error) => missing.push((source, error)),
             }
+        }
+        if let Some((first, error)) = missing.first() {
+            let more = match missing.len() {
+                1 => String::new(),
+                count => format!(" and {} more", count - 1),
+            };
+            let reason = if error.kind() == std::io::ErrorKind::NotFound {
+                "it no longer exists".to_string()
+            } else {
+                format!("it cannot be read ({error})")
+            };
+            self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Sync skipped {}{more}: {reason}. Compare again to refresh the plan.",
+                    first.display()
+                ),
+                error: true,
+            });
         }
         // Enqueue both passes; the queue runs them in order (the second starts
         // when the first finishes), so a two-way sync needs no special casing.

@@ -56,12 +56,12 @@ fn captured_text(bytes: &[u8], dropped: u64) -> String {
 fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) -> CommandOutput {
     use std::io::Read;
     use std::process::Stdio;
-    let failed = |cmdline: String, error: std::io::Error| CommandOutput {
+    let failed = |cmdline: String, error: String| CommandOutput {
         cmdline,
         stdout: String::new(),
         stderr: String::new(),
         exit_code: None,
-        error: Some(error.to_string()),
+        error: Some(error),
     };
     let mut command = std::process::Command::new("sh");
     command
@@ -77,7 +77,7 @@ fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) ->
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(error) => return failed(cmdline, error),
+        Err(error) => return failed(cmdline, spawn_error_message(cwd, &error)),
     };
     fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<(Vec<u8>, u64)> {
         std::thread::spawn(move || {
@@ -113,8 +113,68 @@ fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) ->
             exit_code: status.code(),
             error: None,
         },
-        Err(error) => failed(cmdline, error),
+        Err(error) => failed(cmdline, error.to_string()),
     }
+}
+
+/// A missing command surfaces as exit 127 from `sh`, so a spawn failure is
+/// usually the folder or the shell itself: name the folder, and suggest
+/// checking it only when it is really gone.
+fn spawn_error_message(cwd: &std::path::Path, error: &std::io::Error) -> String {
+    let mut message = format!("Could not run in {}: {error}", cwd.display());
+    // NotFound may also mean the shell itself is missing; only blame the
+    // folder when it really is gone.
+    if error.kind() == std::io::ErrorKind::NotFound && !cwd.is_dir() {
+        message.push_str(". Check that the folder still exists");
+    }
+    message
+}
+
+/// Why Run is refused for a folder, naming its trust label and the remedy.
+fn trust_block_message(label: crate::trust::TrustLabel) -> String {
+    format!(
+        "Run command is blocked: this folder is {}. Use \"Trust: mark Trusted\" to allow it",
+        label.label()
+    )
+}
+
+/// Text for a saved-template row: the raw line, prefixed by the template's
+/// name only when the name says something the line does not (auto-named
+/// templates are called after their first word).
+fn template_row_label(name: &str, raw: &str) -> String {
+    if raw.split_whitespace().next() == Some(name) {
+        raw.to_string()
+    } else {
+        format!("{name} · {raw}")
+    }
+}
+
+/// The expanded command as one label (placeholders tinted), so assistive
+/// tech reads the command that will run rather than disjoint fragments.
+fn preview_job(
+    segs: &[crate::cmdtemplate::Segment],
+    literal: egui::Color32,
+    substituted: egui::Color32,
+    empty: egui::Color32,
+) -> egui::text::LayoutJob {
+    let font = egui::FontId::monospace(11.0);
+    let mut job = egui::text::LayoutJob::default();
+    if segs.is_empty() {
+        job.append("(empty)", 0.0, egui::TextFormat::simple(font, empty));
+        return job;
+    }
+    for seg in segs {
+        let color = match seg.kind {
+            SegmentKind::Literal => literal,
+            SegmentKind::Substituted => substituted,
+        };
+        job.append(
+            &seg.text,
+            0.0,
+            egui::TextFormat::simple(font.clone(), color),
+        );
+    }
+    job
 }
 
 /// Toast text/kind for a finished command. No exit code without an error
@@ -136,10 +196,7 @@ impl App {
             self.toast(
                 ctx,
                 crate::toasts::ToastKind::Error,
-                format!(
-                    "Run command blocked by {} trust",
-                    crate::trust::label_for(&dir).label()
-                ),
+                trust_block_message(crate::trust::label_for(&dir)),
                 false,
             );
             return;
@@ -207,7 +264,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_min_width(520.0);
                 let item = if sel_count == 1 { "item" } else { "items" };
-                ui.label(
+                let title = ui.label(
                     egui::RichText::new(format!(
                         "Run command on {sel_count} {item}  ({{paths}} {{names}} {{dir}} {{dir_other}})"
                     ))
@@ -221,7 +278,7 @@ impl App {
                         .desired_width(f32::INFINITY)
                         .hint_text("open -a Preview {paths}")
                         .margin(egui::vec2(8.0, 6.0)),
-                );
+                ).labelled_by(title.id);
                 // Focus on the opening frame only (never yank it back).
                 if just_opened {
                     resp.request_focus();
@@ -230,24 +287,10 @@ impl App {
                 // Live expansion preview, placeholders tinted.
                 ui.add_space(6.0);
                 let segs = preview_segments(&state.line, &sctx);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    if segs.is_empty() {
-                        ui.label(
-                            egui::RichText::new("(empty)")
-                                .size(11.0)
-                                .monospace()
-                                .color(t.text_muted),
-                        );
-                    }
-                    for seg in &segs {
-                        let color = match seg.kind {
-                            SegmentKind::Literal => t.text_secondary,
-                            SegmentKind::Substituted => t.accent,
-                        };
-                        ui.label(egui::RichText::new(&seg.text).size(11.0).monospace().color(color));
-                    }
-                });
+                ui.add(
+                    egui::Label::new(preview_job(&segs, t.text_secondary, t.accent, t.text_muted))
+                        .wrap(),
+                );
 
                 // Saved templates that apply to this selection.
                 if !matching.is_empty() {
@@ -259,7 +302,7 @@ impl App {
                         .show(ui, |ui| {
                             for (name, raw) in &matching {
                                 let row = ui.add(
-                                    super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new(format!("{name} {raw}")) .size(12.0)),
+                                    super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new(template_row_label(name, raw)) .size(12.0)),
                                 );
                                 if row.clicked() {
                                     fill = Some(raw.clone());
@@ -270,7 +313,8 @@ impl App {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let can_run = !state.line.trim().is_empty() && state.run.is_none();
+                    let has_line = !state.line.trim().is_empty();
+                    let can_run = has_line && state.run.is_none();
                     if ui
                         .add_enabled(
                             can_run,
@@ -283,7 +327,7 @@ impl App {
                     ui.add_space(8.0);
                     if ui
                         .add_enabled(
-                            can_run,
+                            has_line,
                             super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new("Save as template") .size(13.0)),
                         )
                         .on_hover_text("Save this command line as a reusable template")
@@ -348,11 +392,22 @@ impl App {
                     } else {
                         t.text_secondary
                     };
-                    ui.label(
+                    let header_label = ui.label(
                         egui::RichText::new(header)
                             .size(11.0)
                             .color(header_color),
                     );
+                    // Announce completion; a failure interrupts.
+                    let failed = output.error.is_some();
+                    ui.ctx().accesskit_node_builder(header_label.id, |node| {
+                        if failed {
+                            node.set_role(egui::accesskit::Role::Alert);
+                            node.set_live(egui::accesskit::Live::Assertive);
+                        } else {
+                            node.set_role(egui::accesskit::Role::Status);
+                            node.set_live(egui::accesskit::Live::Polite);
+                        }
+                    });
                     egui::ScrollArea::vertical()
                         .id_salt(("run_command_output", state.scroll_nonce))
                         .max_height(220.0)
@@ -367,6 +422,11 @@ impl App {
                                 );
                             }
                             if !output.stderr.trim().is_empty() {
+                                ui.label(
+                                    egui::RichText::new("stderr")
+                                        .size(10.0)
+                                        .color(t.text_muted),
+                                );
                                 ui.label(
                                     egui::RichText::new(&output.stderr)
                                         .size(11.0)
@@ -425,7 +485,7 @@ impl App {
                 let added = self
                     .command_templates_mut()
                     .add(crate::cmdtemplate::Template {
-                        name,
+                        name: name.clone(),
                         raw: trimmed.to_string(),
                         exts: Vec::new(),
                     });
@@ -435,12 +495,18 @@ impl App {
                     true
                 };
                 let (text, kind) = if !added {
-                    ("Template already saved", crate::toasts::ToastKind::Info)
+                    (
+                        "Template already saved".to_string(),
+                        crate::toasts::ToastKind::Info,
+                    )
                 } else if saved_ok {
-                    ("Template saved", crate::toasts::ToastKind::Info)
+                    (
+                        format!("Saved template \"{name}\""),
+                        crate::toasts::ToastKind::Info,
+                    )
                 } else {
                     (
-                        "Could not save template to disk",
+                        "Could not save template to disk".to_string(),
                         crate::toasts::ToastKind::Error,
                     )
                 };
@@ -460,7 +526,7 @@ impl App {
                 self.toast(
                     ctx,
                     crate::toasts::ToastKind::Error,
-                    "Run command is blocked for this folder's trust label",
+                    trust_block_message(crate::trust::label_for(opening.dir())),
                     false,
                 );
                 return;
@@ -574,6 +640,78 @@ mod tests {
             exit_code,
             error: error.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn spawn_failure_names_the_folder() {
+        let error = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let message = spawn_error_message(std::path::Path::new("/gone/dir"), &error);
+        assert!(message.starts_with("Could not run in /gone/dir: "));
+        assert!(message.contains("folder still exists"));
+    }
+
+    #[test]
+    fn missing_shell_does_not_blame_an_existing_folder() {
+        let error = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let dir = std::env::temp_dir();
+        let message = spawn_error_message(&dir, &error);
+        assert!(message.starts_with("Could not run in "));
+        assert!(!message.contains("folder still exists"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_working_folder_is_reported_with_its_path() {
+        let gone = std::env::temp_dir().join(format!(
+            "commander-run-missing-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let slot = CommandChildSlot::default();
+        let output = run_shell("true".to_string(), &gone, &slot);
+        let error = output.error.expect("spawn must fail without a cwd");
+        assert!(error.contains(&gone.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn trust_block_names_label_and_remedy() {
+        let message = trust_block_message(crate::trust::TrustLabel::Untrusted);
+        assert!(message.contains("Untrusted"));
+        assert!(message.contains("Trust: mark Trusted"));
+    }
+
+    #[test]
+    fn template_row_shows_name_only_when_it_adds_information() {
+        assert_eq!(
+            template_row_label("open", "open -a Preview {paths}"),
+            "open -a Preview {paths}"
+        );
+        assert_eq!(
+            template_row_label("Preview", "open -a Preview {paths}"),
+            "Preview · open -a Preview {paths}"
+        );
+    }
+
+    #[test]
+    fn preview_is_one_job_with_tinted_placeholders() {
+        let selection = [entry("/opening/a.txt")];
+        let context = RunCommandOpeningContext {
+            active_panel: ActivePanel::Left,
+            selection: selection.to_vec(),
+            left_dir: PathBuf::from("/opening"),
+            right_dir: PathBuf::from("/other"),
+        }
+        .selection_context();
+        let segs = preview_segments("cat {paths}", &context);
+        let (lit, sub, empty) = (
+            egui::Color32::WHITE,
+            egui::Color32::RED,
+            egui::Color32::GRAY,
+        );
+        let job = preview_job(&segs, lit, sub, empty);
+        assert_eq!(job.text, "cat '/opening/a.txt'");
+        assert!(job.sections.iter().any(|s| s.format.color == sub));
+        assert_eq!(preview_job(&[], lit, sub, empty).text, "(empty)");
     }
 
     #[test]

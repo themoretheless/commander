@@ -76,17 +76,29 @@ fn load_store_at(persist: &dyn crate::persistence::Persist, path: &Path) -> Trus
     loaded.value.unwrap_or_default()
 }
 
-fn save_store(store: &TrustStore) {
-    let mut loaded =
-        crate::persistence::load_enveloped::<TrustStore>(persist(), &store_path(), STORE);
-    let _ = crate::persistence::save_enveloped(
-        persist(),
-        &store_path(),
+fn save_store(store: &TrustStore) -> bool {
+    save_store_at(persist(), &store_path(), store)
+}
+
+/// Whether `store` reached disk. A failure (including a corrupt or
+/// unreadable file, which blocks the save so it is not overwritten) is
+/// reported through persistence health, which the app shows as an error
+/// toast: the label then holds only until restart.
+fn save_store_at(
+    persist: &dyn crate::persistence::Persist,
+    path: &Path,
+    store: &TrustStore,
+) -> bool {
+    let mut loaded = crate::persistence::load_enveloped::<TrustStore>(persist, path, STORE);
+    let saved = crate::persistence::save_enveloped(
+        persist,
+        path,
         STORE,
         store,
         &mut loaded.gate,
         crate::persistence::SaveIntent::Explicit,
     );
+    crate::persistence::report_save("Trust labels", saved).is_some()
 }
 
 fn normalize_root(path: &Path) -> String {
@@ -127,7 +139,9 @@ fn best_label(roots: &BTreeMap<String, TrustLabel>, needle: &str) -> TrustLabel 
     best.map_or(TrustLabel::Trusted, |(_, label)| label)
 }
 
-pub fn set_label(path: &Path, label: TrustLabel) {
+/// Apply `label` to `path` for this session and persist it; returns whether
+/// it was saved (a failure is already reported to the user as a toast).
+pub fn set_label(path: &Path, label: TrustLabel) -> bool {
     // Serializes saves so snapshots reach disk in mutation order, while the
     // cache lock itself is released before any disk I/O so `label_for` on
     // search/provider threads never waits on the write. Order: SAVE, then cache.
@@ -143,7 +157,7 @@ pub fn set_label(path: &Path, label: TrustLabel) {
         }
         store.clone()
     };
-    save_store(&snapshot);
+    save_store(&snapshot)
 }
 
 pub fn allows_auto_archive_inspect(path: &Path) -> bool {
@@ -211,6 +225,25 @@ mod tests {
         let store = load_store_at(&crate::persistence::FsPersist::default(), &path);
         assert!(store.roots.is_empty());
         assert!(crate::persistence::health_snapshot().unreadable_stores > before);
+    }
+
+    #[test]
+    fn blocked_label_save_is_reported_and_keeps_the_file() {
+        let temp = TempDir::new();
+        let path = temp.file("root_trust.json", "{ not json");
+        let before = crate::persistence::health_snapshot().save_failures;
+        let store = TrustStore {
+            roots: BTreeMap::from([("/srv".to_string(), TrustLabel::Untrusted)]),
+        };
+
+        assert!(!save_store_at(
+            &crate::persistence::FsPersist::default(),
+            &path,
+            &store
+        ));
+
+        assert!(crate::persistence::health_snapshot().save_failures > before);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ not json");
     }
 
     #[test]

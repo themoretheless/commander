@@ -61,6 +61,37 @@ pub fn format_mode(mode: u32) -> String {
     s
 }
 
+/// The Get-Info permissions row. A failed stat says so (with its reason)
+/// rather than showing a mode string a real `000` file would also show.
+fn permissions_text(metadata: std::io::Result<fs::Metadata>) -> String {
+    match metadata {
+        #[cfg(unix)]
+        Ok(metadata) => {
+            use std::os::unix::fs::PermissionsExt;
+            format_mode(metadata.permissions().mode())
+        }
+        #[cfg(not(unix))]
+        Ok(metadata) => {
+            let text = if metadata.permissions().readonly() {
+                "read-only"
+            } else {
+                "read/write"
+            };
+            text.to_string()
+        }
+        Err(error) => format!("unavailable ({error})"),
+    }
+}
+
+/// Toast text for a preview request on an image the preview provider
+/// declined, which would otherwise open nothing without saying why.
+pub fn image_preview_unavailable_message(entry: &FileEntry) -> String {
+    format!(
+        "No preview for {}: image preview is turned off or not rolled out here (Developer panel \u{2192} Runtime controls)",
+        entry.name
+    )
+}
+
 /// Build a Get-Info card for `entry`. `dir_size`/`children` come from the
 /// panel's already-computed maps (None while still measuring).
 pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usize>) -> InfoCard {
@@ -76,23 +107,7 @@ pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usiz
     } else {
         format_size(entry.size)
     };
-    #[cfg(unix)]
-    let permissions = {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(&entry.path)
-            .map(|m| format_mode(m.permissions().mode()))
-            .unwrap_or_else(|_| "---------".to_string())
-    };
-    #[cfg(not(unix))]
-    let permissions = fs::metadata(&entry.path)
-        .map(|m| {
-            if m.permissions().readonly() {
-                "read-only".to_string()
-            } else {
-                "read/write".to_string()
-            }
-        })
-        .unwrap_or_else(|_| "---------".to_string());
+    let permissions = permissions_text(fs::metadata(&entry.path));
     InfoCard {
         name: entry.name.clone(),
         path: entry.path.display().to_string(),

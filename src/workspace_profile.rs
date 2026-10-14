@@ -78,37 +78,62 @@ fn persist() -> &'static crate::persistence::FsPersist {
 }
 
 fn load_store() -> ProfileBook {
-    crate::persistence::load_enveloped::<ProfileBook>(persist(), &store_path(), STORE)
-        .value
-        .unwrap_or_default()
+    load_store_at(persist(), &store_path())
 }
 
-fn save_store(store: &ProfileBook) {
-    let mut loaded =
-        crate::persistence::load_enveloped::<ProfileBook>(persist(), &store_path(), STORE);
-    let _ = crate::persistence::save_enveloped(
-        persist(),
-        &store_path(),
-        STORE,
-        store,
-        &mut loaded.gate,
-        crate::persistence::SaveIntent::Explicit,
-    );
+/// A store that exists but cannot be read loads empty and blocks saves, so
+/// it is reported through persistence health instead of vanishing silently.
+fn load_store_at(persist: &dyn crate::persistence::Persist, path: &Path) -> ProfileBook {
+    let loaded = crate::persistence::load_enveloped::<ProfileBook>(persist, path, STORE);
+    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
+        crate::persistence::record_unreadable("Workspace profiles");
+    }
+    loaded.value.unwrap_or_default()
+}
+
+fn save_store(store: &ProfileBook) -> bool {
+    save_store_at(persist(), &store_path(), store)
+}
+
+/// Failed or blocked saves reach persistence health (and its error toast);
+/// `false` when nothing was committed.
+fn save_store_at(
+    persist: &dyn crate::persistence::Persist,
+    path: &Path,
+    store: &ProfileBook,
+) -> bool {
+    let mut loaded = crate::persistence::load_enveloped::<ProfileBook>(persist, path, STORE);
+    crate::persistence::report_save(
+        "Workspace profiles",
+        crate::persistence::save_enveloped(
+            persist,
+            path,
+            STORE,
+            store,
+            &mut loaded.gate,
+            crate::persistence::SaveIntent::Explicit,
+        ),
+    )
+    .is_some()
 }
 
 pub fn load() -> ProfileBook {
     crate::lock_util::recover(cache()).clone()
 }
 
-pub fn save(book: &ProfileBook) {
+/// Updates the in-memory book and persists it; `false` when the write
+/// failed (already reported through persistence health).
+pub fn save(book: &ProfileBook) -> bool {
     *crate::lock_util::recover(cache()) = book.clone();
-    save_store(book);
+    save_store(book)
 }
 
-pub fn upsert(profile: WorkspaceProfile) {
+/// Adds or replaces `profile` and persists the book; `false` when the
+/// write failed (already reported through persistence health).
+pub fn upsert(profile: WorkspaceProfile) -> bool {
     let mut book = load();
     book.upsert(profile);
-    save(&book);
+    save(&book)
 }
 
 #[derive(Clone, Debug)]
@@ -136,7 +161,10 @@ pub fn capture(params: CaptureParams<'_>) -> WorkspaceProfile {
     profile.name_policy = params.name_policy;
     profile.symlink_policy = params.symlink_policy;
     profile.trusted_command_templates = params.trusted_command_templates;
-    upsert(profile.clone());
+    // The failure is already surfaced as an error toast by `save`. Callers
+    // that show a success notice (workspace.rs, developer_panel.rs) do not
+    // see this outcome yet; returning it from `capture` is follow-up work.
+    let _saved = upsert(profile.clone());
     profile
 }
 
@@ -161,5 +189,27 @@ mod tests {
         assert_eq!(book.get("photos").unwrap().left_root, PathBuf::from("/l2"));
         save(&book);
         assert!(load().get("photos").is_some());
+    }
+
+    #[test]
+    fn unreadable_store_is_reported_and_blocks_saves_visibly() {
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.file("store.json", "{ not json");
+        let persist = crate::persistence::FsPersist::default();
+        let before = crate::persistence::health_snapshot();
+        assert_eq!(load_store_at(&persist, &path), ProfileBook::default());
+        let after_load = crate::persistence::health_snapshot();
+        assert!(after_load.unreadable_stores > before.unreadable_stores);
+        assert!(!save_store_at(&persist, &path, &ProfileBook::default()));
+        assert!(crate::persistence::health_snapshot().save_failures > after_load.save_failures);
+    }
+
+    #[test]
+    fn missing_store_is_not_reported_as_unreadable() {
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.path().join("store.json");
+        let persist = crate::persistence::FsPersist::default();
+        assert_eq!(load_store_at(&persist, &path), ProfileBook::default());
+        assert!(save_store_at(&persist, &path, &ProfileBook::default()));
     }
 }

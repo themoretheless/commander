@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// Temp-memory key of the project whose Remove is armed.
+const REMOVE_ARMED: &str = "collections_remove_armed";
+
+/// Adding a name that already exists (any case) replaces its roots; say so
+/// instead of replacing silently.
+fn replaced_project_notice(existed: bool, name: &str) -> Option<String> {
+    existed.then(|| format!("Updated project {name} with the current folders"))
+}
+
 impl App {
     fn start_collection_view(&mut self, ctx: &egui::Context, name: &str) {
         let Some(collection) = self.project_collections.get(name).cloned() else {
@@ -84,6 +93,8 @@ impl App {
         if let Some(name) = selected {
             self.start_collection_view(ctx, &name);
         }
+        super::ui_state::set_armed_row(ctx, egui::Id::new(REMOVE_ARMED), None);
+        Self::mark_modal_opened(ctx, UiModal::Collections);
     }
 
     pub(crate) fn show_collections_dialog(&mut self, ctx: &egui::Context) {
@@ -110,6 +121,9 @@ impl App {
         let mut select = None;
         let mut delete = None;
         let mut reveal = None;
+        let just_opened = Self::take_modal_opened(ctx, UiModal::Collections);
+        let armed_id = egui::Id::new(REMOVE_ARMED);
+        let mut armed = super::ui_state::armed_row(ctx, armed_id);
 
         {
             let state = self.ui.modals.collections_dialog.as_mut().unwrap();
@@ -123,21 +137,31 @@ impl App {
                 .frame(super::dialog_frame(t, 14))
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.add(
+                        let name_resp = ui.add(
                             egui::TextEdit::singleline(&mut state.name)
                                 .desired_width(180.0)
                                 .hint_text("Project name")
                                 .margin(egui::vec2(7.0, 5.0)),
                         );
+                        ui.ctx().accesskit_node_builder(name_resp.id, |node| {
+                            node.set_label("Project name");
+                        });
+                        if just_opened {
+                            name_resp.request_focus();
+                        }
                         ui.checkbox(&mut state.include_left, "Left")
                             .on_hover_text(self.ws.left.current_path.display().to_string());
                         ui.checkbox(&mut state.include_right, "Right")
                             .on_hover_text(self.ws.right.current_path.display().to_string());
                         let can_add = !state.name.trim().is_empty()
                             && (state.include_left || state.include_right);
+                        // Enter in the name field adds, like the button.
+                        let enter = name_resp.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
                         if ui
                             .add_enabled(can_add, egui::Button::new("Add project"))
                             .clicked()
+                            || (enter && can_add)
                         {
                             add = true;
                         }
@@ -158,10 +182,33 @@ impl App {
                             ui.add_space(4.0);
                             for name in &collection_names {
                                 ui.horizontal(|ui| {
-                                    if ui
-                                        .small_button("Remove")
-                                        .on_hover_text("Delete project")
-                                        .clicked()
+                                    // Two clicks: the first arms "Confirm?".
+                                    let is_armed = armed.as_deref() == Some(name.as_str());
+                                    let (text, hover, label) = if is_armed {
+                                        (
+                                            "Confirm?",
+                                            "Click again to delete this project",
+                                            format!("Confirm remove project {name}"),
+                                        )
+                                    } else {
+                                        (
+                                            "Remove",
+                                            "Delete project",
+                                            format!("Remove project {name}"),
+                                        )
+                                    };
+                                    let remove = ui.small_button(text).on_hover_text(hover);
+                                    remove.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            &label,
+                                        )
+                                    });
+                                    if remove.clicked()
+                                        && super::ui_state::confirm_on_second_click(
+                                            &mut armed, name,
+                                        )
                                     {
                                         delete = Some(name.clone());
                                     }
@@ -280,6 +327,7 @@ impl App {
                     });
                 });
         }
+        super::ui_state::set_armed_row(ctx, armed_id, armed);
 
         if super::ui_state::modal_close_requested(window_open, false) {
             self.ui.modals.collections_dialog = None;
@@ -299,10 +347,14 @@ impl App {
             };
             let collection = crate::collections::ProjectCollection::new(name.clone(), roots);
             let previous = self.project_collections.clone();
+            let existed = self.project_collections.get(&name).is_some();
             if self.project_collections.add(collection) {
                 if crate::collections::save(&self.project_collections) {
                     if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
                         state.name.clear();
+                    }
+                    if let Some(notice) = replaced_project_notice(existed, &name) {
+                        self.toast(ctx, crate::toasts::ToastKind::Info, notice, false);
                     }
                     self.start_collection_view(ctx, &name);
                 } else {
@@ -351,6 +403,23 @@ impl App {
             } else {
                 self.ws.reveal(&path);
             }
+            // The window covers most of the panes; close it so the user
+            // sees where the row led.
+            self.ui.modals.collections_dialog = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replaced_project_notice;
+
+    #[test]
+    fn replacing_an_existing_project_is_announced() {
+        assert_eq!(replaced_project_notice(false, "web"), None);
+        assert_eq!(
+            replaced_project_notice(true, "Web").as_deref(),
+            Some("Updated project Web with the current folders")
+        );
     }
 }

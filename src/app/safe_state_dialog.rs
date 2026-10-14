@@ -8,6 +8,34 @@ fn review_recovery_request(operation_id: &crate::operation::OperationId) -> UiRe
     UiRequest::ReviewRecovery(operation_id.clone())
 }
 
+/// Where "Show location" lands for an affected path.
+#[derive(Debug, PartialEq, Eq)]
+enum LocationTarget {
+    /// Its folder still exists: open it with the cursor on the item.
+    Reveal(PathBuf),
+    /// Its folder is gone: open the nearest folder that still exists.
+    Nearest(PathBuf),
+    /// Nothing on the path exists any more.
+    Gone,
+}
+
+fn location_target(
+    path: &std::path::Path,
+    is_dir: impl Fn(&std::path::Path) -> bool,
+) -> LocationTarget {
+    match path.parent() {
+        Some(parent) if is_dir(parent) => LocationTarget::Reveal(path.to_path_buf()),
+        Some(parent) => parent
+            .ancestors()
+            .skip(1)
+            .find(|dir| !dir.as_os_str().is_empty() && is_dir(dir))
+            .map_or(LocationTarget::Gone, |dir| {
+                LocationTarget::Nearest(dir.to_path_buf())
+            }),
+        None => LocationTarget::Gone,
+    }
+}
+
 impl App {
     pub(crate) fn show_safe_state_details(&mut self, ui: &mut egui::Ui) {
         let Some(state) = self.ws.safe_state.clone() else {
@@ -113,11 +141,30 @@ impl App {
                 });
             });
 
-        if inspect
-            && let Some(parent) = state.paths.first().and_then(|path| path.parent())
-            && parent.is_dir()
-        {
-            self.ws.active_panel().navigate_to(parent.to_path_buf());
+        if inspect && let Some(path) = state.paths.first() {
+            let ctx = ui.ctx().clone();
+            match location_target(path, std::path::Path::is_dir) {
+                LocationTarget::Reveal(path) => self.ws.reveal(&path),
+                LocationTarget::Nearest(dir) => {
+                    self.toast(
+                        &ctx,
+                        crate::toasts::ToastKind::Info,
+                        format!(
+                            "{} no longer exists; showing {} instead",
+                            path.parent().unwrap_or(path).display(),
+                            dir.display()
+                        ),
+                        false,
+                    );
+                    self.ws.active_panel().navigate_to(dir);
+                }
+                LocationTarget::Gone => self.toast(
+                    &ctx,
+                    crate::toasts::ToastKind::Error,
+                    format!("Location no longer exists: {}", path.display()),
+                    false,
+                ),
+            }
         }
         if acknowledge {
             self.ws.acknowledge_safe_state();
@@ -140,6 +187,26 @@ mod tests {
         assert_eq!(
             review_recovery_request(&operation_id),
             UiRequest::ReviewRecovery(operation_id)
+        );
+    }
+
+    #[test]
+    fn show_location_reveals_the_item_or_falls_back_to_an_existing_ancestor() {
+        use std::path::Path;
+        let existing = |dirs: &'static [&'static str]| {
+            move |dir: &Path| dirs.iter().any(|d| Path::new(d) == dir)
+        };
+        assert_eq!(
+            location_target(Path::new("/a/b/file"), existing(&["/a/b", "/a", "/"])),
+            LocationTarget::Reveal(PathBuf::from("/a/b/file"))
+        );
+        assert_eq!(
+            location_target(Path::new("/a/b/file"), existing(&["/a", "/"])),
+            LocationTarget::Nearest(PathBuf::from("/a"))
+        );
+        assert_eq!(
+            location_target(Path::new("gone/file"), existing(&[])),
+            LocationTarget::Gone
         );
     }
 }

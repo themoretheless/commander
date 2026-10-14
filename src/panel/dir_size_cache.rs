@@ -86,8 +86,25 @@ fn cache_path() -> Option<PathBuf> {
         |root| Some(root.join("cache")),
     );
     let dir = dir?;
-    let _ = fs::create_dir_all(&dir);
+    if let Err(error) = fs::create_dir_all(&dir)
+        && first_cache_warning(&CACHE_DIR_WARNED)
+    {
+        log::warn!(
+            target: "commander::sizes",
+            "cannot create the folder-size cache directory {}: {error}; sizes are re-measured after restart",
+            dir.display()
+        );
+    }
     Some(dir.join("dir_sizes.json"))
+}
+
+static CACHE_DIR_WARNED: AtomicBool = AtomicBool::new(false);
+static CACHE_SAVE_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// True the first time a cache-persistence failure of one kind is seen, so
+/// a full disk logs once instead of on every size refresh.
+pub(super) fn first_cache_warning(warned: &AtomicBool) -> bool {
+    !warned.swap(true, AtomicOrdering::Relaxed)
 }
 
 /// Global cache: volume generation + path -> (mtime, size).
@@ -100,11 +117,23 @@ pub(super) fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemT
     })
 }
 
+/// Lower-bound sizes of folders whose last walk skipped unreadable parts:
+/// volume generation + path -> (mtime, size). Kept in memory only (never
+/// persisted as an exact size), so an unrelated recompute reuses the last
+/// partial measurement instead of re-walking the folder; watcher events in
+/// the folder drop it like the exact cache.
+pub(super) fn partial_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemTime, u64)>> {
+    static PARTIAL: OnceLock<Mutex<HashMap<VolumePathKey, (SystemTime, u64)>>> = OnceLock::new();
+    PARTIAL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const PARTIAL_SIZE_LIMIT: usize = 4_096;
+
 fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
     let Some(path) = cache_path() else {
         return HashMap::new();
     };
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(file) = fs::File::open(&path) else {
         return HashMap::new();
     };
     load_cache_from_reader_with_bounds(
@@ -112,7 +141,15 @@ fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
         DIR_SIZE_CACHE_LIMIT,
         DIR_SIZE_CACHE_RETAIN,
     )
-    .unwrap_or_default()
+    .unwrap_or_else(|error| {
+        // Self-healing: the next flush rewrites the file from scratch.
+        log::warn!(
+            target: "commander::sizes",
+            "ignoring unreadable folder-size cache {}: {error}",
+            path.display()
+        );
+        HashMap::new()
+    })
 }
 
 struct BoundedCacheAccumulator {
@@ -591,8 +628,9 @@ pub(super) fn publish_cached_size_if_current(
     if !scan_is_current(current, epoch) {
         return false;
     }
-    let cache = lock_recover(dir_size_cache());
-    let Some(&(cached_mtime, cached_size)) = cache.get(key) else {
+    let cached = lock_recover(dir_size_cache()).get(key).copied();
+    let cached = cached.or_else(|| lock_recover(partial_size_cache()).get(key).copied());
+    let Some((cached_mtime, cached_size)) = cached else {
         return false;
     };
     if expected_mtime.is_some_and(|expected| cached_mtime != expected) {
@@ -718,13 +756,40 @@ const fn mount_is_measurable(_path: &Path) -> bool {
 ///
 /// A `background` walk (sizes the user is not looking at) yields briefly
 /// before each folder while foreground listing/preview I/O is active.
+#[cfg(test)]
 pub(super) fn dir_size_recursive_until(
     path: &Path,
     background: bool,
     is_cancelled: impl Fn() -> bool,
 ) -> Option<u64> {
+    dir_size_walk_until(path, background, is_cancelled).map(|walk| walk.size)
+}
+
+/// Result of [`dir_size_walk_until`]: the bytes counted, and whether every
+/// folder and entry below `path` could actually be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DirWalk {
+    pub(super) size: u64,
+    /// False when an unreadable subfolder or entry was skipped, so `size` is
+    /// only a lower bound and must not be cached as the folder's size.
+    pub(super) complete: bool,
+}
+
+/// A walk error that leaves a gap in the total. Something that vanished
+/// mid-walk is gone, not uncounted.
+pub(super) fn walk_error_leaves_gap(error: &std::io::Error) -> bool {
+    error.kind() != std::io::ErrorKind::NotFound
+}
+
+/// [`dir_size_recursive_until`] that also reports skipped, unreadable parts.
+pub(super) fn dir_size_walk_until(
+    path: &Path,
+    background: bool,
+    is_cancelled: impl Fn() -> bool,
+) -> Option<DirWalk> {
     let mut pending = vec![path.to_path_buf()];
     let mut total = 0u64;
+    let mut complete = true;
     let device = fs::metadata(path).ok().as_ref().and_then(device_of);
     let parent_device = path
         .parent()
@@ -747,18 +812,30 @@ pub(super) fn dir_size_recursive_until(
         if background && !crate::io_budget::background_checkpoint(&is_cancelled) {
             return None;
         }
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                complete &= !walk_error_leaves_gap(&error);
+                continue;
+            }
         };
         for entry in entries {
             if is_cancelled() {
                 return None;
             }
-            let Ok(entry) = entry else {
-                continue;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    complete &= !walk_error_leaves_gap(&error);
+                    continue;
+                }
             };
-            let Ok(file_type) = entry.file_type() else {
-                continue;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    complete &= !walk_error_leaves_gap(&error);
+                    continue;
+                }
             };
             if file_type.is_dir() {
                 let other_device = device.is_some()
@@ -766,23 +843,34 @@ pub(super) fn dir_size_recursive_until(
                 if !other_device {
                     pending.push(entry.path());
                 }
+                continue;
+            }
             // `DirEntry::metadata` does not follow symlinks (like
             // `symlink_metadata`) and stats relative to the open directory
             // instead of building and re-resolving the full path per file.
-            } else if let Ok(metadata) = entry.metadata()
-                && shared_inode(&metadata).is_none_or(|inode| seen_inodes.insert(inode))
-            {
-                total = total.saturating_add(metadata.len());
+            match entry.metadata() {
+                Ok(metadata) => {
+                    if shared_inode(&metadata).is_none_or(|inode| seen_inodes.insert(inode)) {
+                        total = total.saturating_add(metadata.len());
+                    }
+                }
+                Err(error) => complete &= !walk_error_leaves_gap(&error),
             }
         }
     }
 
-    (!is_cancelled()).then_some(total)
+    (!is_cancelled()).then_some(DirWalk {
+        size: total,
+        complete,
+    })
 }
 
 pub(super) struct DirMeasurement {
     pub(super) path: PathBuf,
     pub(super) modified: Option<SystemTime>,
+    /// Whether the walk read every subfolder; a partial size is only a
+    /// lower bound and is never stored in the persistent cache.
+    pub(super) complete: bool,
     pub(super) cache_key: VolumePathKey,
     pub(super) path_epoch: Arc<ScanEpoch>,
     pub(super) size: u64,
@@ -881,16 +969,34 @@ pub(super) fn publish_dir_measurements_if_current(
         );
     }
 
-    let cache_changed = valid.iter().any(|result| result.modified.is_some());
+    {
+        let mut partial = lock_recover(partial_size_cache());
+        for result in &valid {
+            match result.modified {
+                Some(modified) if !result.complete => {
+                    if partial.len() >= PARTIAL_SIZE_LIMIT {
+                        partial.clear();
+                    }
+                    partial.insert(result.cache_key.clone(), (modified, result.size));
+                }
+                _ => {
+                    partial.remove(&result.cache_key);
+                }
+            }
+        }
+    }
+
+    let cacheable = |result: &&&DirMeasurement| result.complete && result.modified.is_some();
+    let cache_changed = valid.iter().any(|result| cacheable(&result));
     if cache_changed {
         let cache_paths: HashSet<&Path> = valid
             .iter()
-            .filter(|result| result.modified.is_some())
+            .filter(cacheable)
             .map(|result| result.path.as_path())
             .collect();
         let cache_keys: HashSet<&VolumePathKey> = valid
             .iter()
-            .filter(|result| result.modified.is_some())
+            .filter(cacheable)
             .map(|result| &result.cache_key)
             .collect();
         let mut cache = lock_recover(dir_size_cache());
@@ -905,7 +1011,7 @@ pub(super) fn publish_dir_measurements_if_current(
                 },
             ))
         });
-        let incoming = valid.iter().filter_map(|result| {
+        let incoming = valid.iter().filter(cacheable).filter_map(|result| {
             result.modified.map(|modified| {
                 (
                     result.cache_key.clone(),
@@ -1005,6 +1111,7 @@ pub(super) fn invalidate_size_cache_many<'a>(paths: impl IntoIterator<Item = &'a
         epochs.retain(|key, epoch| !is_stale(key) && epoch.strong_count() > 0);
     }
     lock_recover(dir_size_cache()).retain(|key, _| !is_stale(key));
+    lock_recover(partial_size_cache()).retain(|key, _| !is_stale(key));
     lock_recover(walk_log()).retain(|key, _| !is_stale(key));
 }
 
@@ -1040,5 +1147,13 @@ pub fn flush_cache() {
     };
     entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
     let persisted = PersistedCache { schema: 1, entries };
-    let _ = crate::persistence::save_json_atomic(&path, &persisted);
+    if let Err(error) = crate::persistence::save_json_atomic(&path, &persisted)
+        && first_cache_warning(&CACHE_SAVE_WARNED)
+    {
+        log::warn!(
+            target: "commander::sizes",
+            "cannot save the folder-size cache to {}: {error:?}; sizes are re-measured after restart",
+            path.display()
+        );
+    }
 }

@@ -19,6 +19,10 @@ type PlanResult = Result<(Vec<crate::sync::SyncAction>, crate::sync_guard::PlanS
 pub struct PlanScan {
     receiver: std::sync::mpsc::Receiver<PlanResult>,
     rerun: bool,
+    /// Policy the rows on screen were built with, so the user's per-row
+    /// direction edits can be told from defaults and carried into the new
+    /// plan. `None` when no plan was shown yet.
+    shown_policy: Option<SyncPolicy>,
 }
 
 impl PlanScan {
@@ -42,6 +46,7 @@ impl PlanScan {
         Self {
             receiver,
             rerun: false,
+            shown_policy: None,
         }
     }
 
@@ -57,10 +62,88 @@ impl PlanScan {
     }
 }
 
-/// Install a finished plan (or its error) into the sheet.
-fn apply_plan_result(state: &mut SyncState, result: PlanResult) {
+/// Rows whose direction the user changed from `policy`'s default.
+fn edited_directions(
+    actions: &[crate::sync::SyncAction],
+    policy: SyncPolicy,
+) -> std::collections::HashMap<String, SyncDirection> {
+    actions
+        .iter()
+        .filter(|a| a.direction != crate::sync::default_direction(a.status, policy))
+        .map(|a| (a.name.clone(), a.direction))
+        .collect()
+}
+
+/// Re-apply edited directions by name where the new row still allows them.
+/// Returns how many rows now differ from the new plan's default because of
+/// a kept edit.
+fn carry_edits(
+    actions: &mut [crate::sync::SyncAction],
+    edits: &std::collections::HashMap<String, SyncDirection>,
+) -> usize {
+    let mut kept = 0;
+    for action in actions {
+        if let Some(&dir) = edits.get(&action.name)
+            && action.allows(dir)
+        {
+            if action.direction != dir {
+                kept += 1;
+            }
+            action.direction = dir;
+        }
+    }
+    kept
+}
+
+/// Note shown after a policy switch kept earlier per-row (or bulk) edits,
+/// so a switch that seems to do nothing explains itself.
+fn kept_edits_note(kept: usize) -> Option<String> {
+    match kept {
+        0 => None,
+        1 => Some("1 edited row kept its direction from before the policy change".to_string()),
+        n => Some(format!(
+            "{n} edited rows kept their directions from before the policy change"
+        )),
+    }
+}
+
+/// Bulk direction: every row that can go `dir` does, except identical files
+/// (copying those would only add work).
+fn set_all_directions(actions: &mut [crate::sync::SyncAction], dir: SyncDirection) {
+    for action in actions {
+        if action.status != SyncStatus::Identical && action.allows(dir) {
+            action.direction = dir;
+        }
+    }
+}
+
+/// Skip every row whose two sides disagree without a clear winner.
+fn skip_conflicts(actions: &mut [crate::sync::SyncAction]) {
+    for action in actions {
+        if matches!(
+            action.status,
+            SyncStatus::Differing | SyncStatus::TypeConflict | SyncStatus::CaseConflict
+        ) {
+            action.direction = SyncDirection::Skip;
+        }
+    }
+}
+
+/// Install a finished plan (or its error) into the sheet. `shown_policy` is
+/// the policy of the rows being replaced; their edits carry over.
+fn apply_plan_result(state: &mut SyncState, result: PlanResult, shown_policy: Option<SyncPolicy>) {
     match result {
-        Ok((actions, stamp)) => {
+        Ok((mut actions, stamp)) => {
+            let kept = shown_policy.map_or(0, |policy| {
+                carry_edits(&mut actions, &edited_directions(&state.actions, policy))
+            });
+            // Only a policy switch can make kept edits look like the switch
+            // was ignored; a plain refresh stays quiet.
+            state.kept_edits = if shown_policy.is_some_and(|policy| policy != state.policy) {
+                kept
+            } else {
+                0
+            };
             state.actions = actions;
             state.settings_fingerprint = crate::sync_guard::settings_fingerprint(
                 state.policy,
@@ -88,20 +171,67 @@ fn poll_plan(state: &mut SyncState) {
     let Some(result) = scan.poll() else {
         return;
     };
+    let shown_policy = scan.shown_policy;
     if scan.rerun {
-        state.scan = Some(PlanScan::start(state));
+        // The rows on screen are still the ones the first scan replaced.
+        let mut rerun = PlanScan::start(state);
+        rerun.shown_policy = shown_policy;
+        state.scan = Some(rerun);
         return;
     }
     state.scan = None;
-    apply_plan_result(state, result);
+    apply_plan_result(state, result, shown_policy);
 }
 
 /// Ask for a new plan: start a scan now, or, when one is already running,
-/// queue a single rerun for when it finishes.
-fn request_plan(state: &mut SyncState) {
+/// queue a single rerun for when it finishes. `shown_policy` is the policy
+/// the rows currently on screen were built with.
+fn request_plan(state: &mut SyncState, shown_policy: SyncPolicy) {
     match state.scan.as_mut() {
         Some(scan) => scan.rerun = true,
-        None => state.scan = Some(PlanScan::start(state)),
+        None => {
+            let mut scan = PlanScan::start(state);
+            scan.shown_policy = Some(shown_policy);
+            state.scan = Some(scan);
+        }
+    }
+}
+
+/// "1 action", "2 additions": the sync assessment line, pluralized.
+fn assessment_summary(
+    actions: usize,
+    additions: usize,
+    replacements: usize,
+    fraction: f32,
+) -> String {
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    format!(
+        "{}   {}   {}   {:.0}% changed",
+        plural(actions, "action", "actions"),
+        plural(additions, "addition", "additions"),
+        plural(replacements, "replacement", "replacements"),
+        fraction * 100.0
+    )
+}
+
+/// Accessible name for a row's direction button, naming the file.
+fn direction_label(dir: SyncDirection, name: &str) -> String {
+    match dir {
+        SyncDirection::ToLeft => format!("Copy {name} to left"),
+        SyncDirection::Skip => format!("Skip {name}"),
+        SyncDirection::ToRight => format!("Copy {name} to right"),
+    }
+}
+
+/// Why `dir` is unavailable for a row (shown on the disabled button).
+const fn unavailable_reason(status: SyncStatus, dir: SyncDirection) -> &'static str {
+    match (status, dir) {
+        (SyncStatus::DirectoryPair, _) => "Folders are synchronized by their contents",
+        (SyncStatus::TypeConflict, _) => "A file and a folder share this name; resolve it by hand",
+        (_, SyncDirection::ToLeft) => "Only exists on the left",
+        (_, SyncDirection::ToRight) => "Only exists on the right",
+        (_, SyncDirection::Skip) => "Cannot skip this row",
     }
 }
 
@@ -136,6 +266,7 @@ impl App {
             error: None,
             dry_run: false,
             scan: None,
+            kept_edits: 0,
         };
         state.scan = Some(PlanScan::start(&state));
         self.ui.tools.replace_on(self.ws.active.other());
@@ -180,37 +311,73 @@ impl App {
                         .strong()
                         .color(t.text_primary),
                 );
+                // The plan is bound to these folders, not to wherever the
+                // panels have since navigated.
+                for (side, dir) in [("Left", &state.left_dir), ("Right", &state.right_dir)] {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{side}: {}", dir.display()))
+                                .size(10.0)
+                                .color(t.text_muted),
+                        )
+                        .truncate(),
+                    );
+                }
                 ui.add_space(8.0);
 
                 // ── Policy selector ─────────────────────────────────
                 ui.horizontal(|ui| {
-                    for (p, text) in [
-                        (SyncPolicy::TwoWay, "Two-way"),
-                        (SyncPolicy::MirrorLeftToRight, "Mirror \u{00bb}"),
-                        (SyncPolicy::MirrorRightToLeft, "Mirror \u{00ab}"),
+                    for (p, text, name) in [
+                        (SyncPolicy::TwoWay, "Two-way", "Two-way: copy newer and unique files both ways"),
+                        (
+                            SyncPolicy::MirrorLeftToRight,
+                            "Mirror \u{00bb}",
+                            "Mirror left to right: make the right folder match the left",
+                        ),
+                        (
+                            SyncPolicy::MirrorRightToLeft,
+                            "Mirror \u{00ab}",
+                            "Mirror right to left: make the left folder match the right",
+                        ),
                     ] {
-                        if ui
-                            .selectable_label(
-                                state.policy == p,
-                                egui::RichText::new(text).size(12.0),
+                        let selected = state.policy == p;
+                        let response = ui
+                            .selectable_label(selected, egui::RichText::new(text).size(12.0))
+                            .on_hover_text(name);
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::SelectableLabel,
+                                true,
+                                selected,
+                                name,
                             )
-                            .clicked()
-                            && state.policy != p
-                        {
+                        });
+                        if response.clicked() && !selected {
                             new_policy = Some(p);
                         }
                     }
                 });
                 ui.horizontal(|ui| {
+                    // Applying writes these back as the app-wide defaults
+                    // (as the copy/move sheet does), so say so.
                     ui.label(
-                        egui::RichText::new("Durability")
+                        egui::RichText::new("Default durability")
                             .size(10.0)
                             .color(t.text_muted),
                     );
                     for profile in crate::operation::DurabilityProfile::ALL {
-                        ui.selectable_value(&mut state.durability, profile, profile.label());
+                        ui.selectable_value(&mut state.durability, profile, profile.label())
+                            .on_hover_text(
+                                "Used for this sync and kept as the default for later copies and moves",
+                            );
                     }
                     if state.durability == crate::operation::DurabilityProfile::Versioned {
+                        ui.add_space(8.0);
+                        let retention_label = ui.label(
+                            egui::RichText::new("Retention")
+                                .size(10.0)
+                                .color(t.text_muted),
+                        );
                         egui::ComboBox::from_id_salt("sync_version_retention")
                             .selected_text(state.version_retention.label())
                             .show_ui(ui, |ui| {
@@ -222,7 +389,9 @@ impl App {
                                     )
                                     .on_hover_text(policy.consequence());
                                 }
-                            });
+                            })
+                            .response
+                            .labelled_by(retention_label.id);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.small_button("Refresh").clicked() {
@@ -257,6 +426,31 @@ impl App {
                             .color(t.text_muted),
                     );
                 }
+                if !state.actions.is_empty() {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("All \u{00ab}")
+                            .on_hover_text("Copy every row that can go left to the left")
+                            .clicked()
+                        {
+                            set_all_directions(&mut state.actions, SyncDirection::ToLeft);
+                        }
+                        if ui
+                            .small_button("All \u{00bb}")
+                            .on_hover_text("Copy every row that can go right to the right")
+                            .clicked()
+                        {
+                            set_all_directions(&mut state.actions, SyncDirection::ToRight);
+                        }
+                        if ui
+                            .small_button("Skip conflicts")
+                            .on_hover_text("Skip rows that differ without a newer side, and type or case conflicts")
+                            .clicked()
+                        {
+                            skip_conflicts(&mut state.actions);
+                        }
+                    });
+                }
                 // Fixed-height rows, so only the visible ones are laid out.
                 const ROW_H: f32 = 22.0;
                 let rows = state.actions.len();
@@ -289,7 +483,16 @@ impl App {
                                                 egui::RichText::new(glyph).size(13.0).color(color),
                                             ),
                                         )
-                                        .on_hover_text(hint);
+                                        .on_hover_text(hint)
+                                        .on_disabled_hover_text(unavailable_reason(a.status, dir));
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::selected(
+                                            egui::WidgetType::Button,
+                                            available,
+                                            active,
+                                            direction_label(dir, &a.name),
+                                        )
+                                    });
                                     if response.clicked() {
                                         a.direction = dir;
                                     }
@@ -336,17 +539,19 @@ impl App {
                 let assessment = crate::sync_guard::assess(&state.actions, &state.guard);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{} actions   {} additions   {} replacements   {:.0}% changed",
+                        egui::RichText::new(assessment_summary(
                             assessment.planned_actions,
                             assessment.additions,
                             assessment.changed_existing,
-                            assessment.change_fraction * 100.0
+                            assessment.change_fraction,
                         ))
                         .size(10.0)
                         .color(t.text_muted),
                     );
                 });
+                if let Some(note) = kept_edits_note(state.kept_edits) {
+                    ui.label(egui::RichText::new(note).size(10.0).color(t.text_muted));
+                }
                 if let Some(reason) = &assessment.circuit_breaker {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -354,7 +559,10 @@ impl App {
                                 .size(11.0)
                                 .color(t.accent_warning),
                         );
-                        ui.checkbox(&mut state.allow_large_plan, "Reviewed");
+                        ui.checkbox(
+                            &mut state.allow_large_plan,
+                            "I reviewed this large change; allow sync",
+                        );
                     });
                 } else {
                     state.allow_large_plan = false;
@@ -389,46 +597,47 @@ impl App {
                 );
 
                 ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{to_right} \u{00bb}    {to_left} \u{00ab}    {} skip",
+                        state.actions.len() - pending
+                    ))
+                    .size(11.0)
+                    .color(t.text_muted),
+                );
+                // Primary first, left to right, so Tab order matches the
+                // visual order and the other sheets.
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{to_right} \u{00bb}    {to_left} \u{00ab}    {} skip",
-                            state.actions.len() - pending
-                        ))
-                        .size(11.0)
-                        .color(t.text_muted),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(super::dialog_button(
+                    let apply_label = if state.dry_run {
+                        format!("Preview {pending}")
+                    } else {
+                        format!("Sync {pending}")
+                    };
+                    if ui
+                        .add_enabled(
+                            pending > 0 && guard_ready,
+                            super::dialog_button(
                                 t,
-                                super::ButtonRole::Secondary,
-                                egui::RichText::new("Cancel").size(13.0),
-                            ))
-                            .clicked()
-                        {
-                            cancel = true;
-                        }
-                        ui.add_space(8.0);
-                        let apply_label = if state.dry_run {
-                            format!("Preview {pending}")
-                        } else {
-                            format!("Sync {pending}")
-                        };
-                        if ui
-                            .add_enabled(
-                                pending > 0 && guard_ready,
-                                super::dialog_button(
-                                    t,
-                                    super::ButtonRole::Primary,
-                                    egui::RichText::new(apply_label).size(13.0),
-                                ),
-                            )
-                            .clicked()
-                        {
-                            commit = true;
-                        }
-                    });
+                                super::ButtonRole::Primary,
+                                egui::RichText::new(apply_label).size(13.0),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        commit = true;
+                    }
+                    ui.add_space(8.0);
+                    if ui
+                        .add(super::dialog_button(
+                            t,
+                            super::ButtonRole::Secondary,
+                            egui::RichText::new("Cancel").size(13.0),
+                        ))
+                        .clicked()
+                    {
+                        cancel = true;
+                    }
                 });
 
                 if escape_requested {
@@ -441,17 +650,20 @@ impl App {
             self.ui.tools.sync = None;
             return;
         }
+        let mut shown_policy = None;
         if let Some(p) = new_policy
             && let Some(s) = self.ui.tools.sync.as_mut()
         {
+            shown_policy = Some(s.policy);
             s.policy = p;
             refresh_plan = true;
         }
         if refresh_plan && let Some(state) = self.ui.tools.sync.as_mut() {
             // The previous rows stay visible (Apply disabled) until the new
             // plan arrives; a request made while a scan runs is coalesced
-            // into one rerun after it.
-            request_plan(state);
+            // into one rerun after it. Per-row edits carry into the new plan.
+            let shown = shown_policy.unwrap_or(state.policy);
+            request_plan(state, shown);
         }
         if commit {
             let Some(mut state) = self.ui.tools.sync.take() else {
@@ -483,33 +695,9 @@ impl App {
                 self.ui.tools.sync = Some(state);
                 return;
             }
-            {
-                let names: Vec<String> = state
-                    .actions
-                    .iter()
-                    .filter(|action| action.direction != SyncDirection::Skip)
-                    .map(|action| action.name.clone())
-                    .collect();
-                let file_kind = names
-                    .first()
-                    .map(|name| crate::conflict_rules::ConflictRuleBook::kind_for_name(name))
-                    .unwrap_or_else(|| "sync".into());
-                if crate::conflict_rules::load()
-                    .find(&state.left_dir, &state.right_dir, &file_kind)
-                    .is_none()
-                {
-                    let policy = crate::conflict_rules::StoredRelationPolicy::KeepNewer;
-                    let preview =
-                        crate::conflict_rules::ConflictRuleBook::sample_preview(policy, &names, 5);
-                    self.toast(ctx, crate::toasts::ToastKind::Info, preview, false);
-                    crate::conflict_rules::upsert(crate::conflict_rules::ConflictRule {
-                        left_root: state.left_dir.clone(),
-                        right_root: state.right_dir.clone(),
-                        file_kind,
-                        policy,
-                    });
-                }
-            }
+            // No conflict rule is stored here: sync applies the reviewed
+            // per-row directions, and silently saving a rule would change
+            // later copy/move previews without the user asking.
             let c = ctx.clone();
             self.ws.durability_profile = state.durability;
             self.ws.version_retention = state.version_retention;
@@ -577,8 +765,11 @@ const fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanScan, plan_shows_panels_match, poll_plan, request_plan};
-    use crate::sync::SyncPolicy;
+    use super::{
+        PlanScan, assessment_summary, direction_label, kept_edits_note, plan_shows_panels_match,
+        poll_plan, request_plan, set_all_directions, skip_conflicts, unavailable_reason,
+    };
+    use crate::sync::{SyncDirection, SyncPolicy, SyncStatus, test_action};
 
     fn sync_state(left: &std::path::Path, right: &std::path::Path) -> super::SyncState {
         super::SyncState {
@@ -599,6 +790,7 @@ mod tests {
             error: None,
             dry_run: false,
             scan: None,
+            kept_edits: 0,
         }
     }
 
@@ -649,13 +841,13 @@ mod tests {
         std::fs::create_dir_all(&right).expect("right");
         std::fs::write(left.join("only-left.txt"), "x").expect("file");
         let mut state = sync_state(&left, &right);
-        request_plan(&mut state);
+        request_plan(&mut state, SyncPolicy::MirrorLeftToRight);
         assert!(state.scan.as_ref().is_some_and(|scan| !scan.rerun));
         // Further requests while the scan runs only mark one rerun; no
         // second worker is started.
         state.policy = SyncPolicy::MirrorRightToLeft;
-        request_plan(&mut state);
-        request_plan(&mut state);
+        request_plan(&mut state, SyncPolicy::MirrorLeftToRight);
+        request_plan(&mut state, SyncPolicy::MirrorLeftToRight);
         assert!(state.scan.as_ref().is_some_and(|scan| scan.rerun));
         wait_for_plan(&mut state);
         assert!(state.error.is_none(), "{:?}", state.error);
@@ -673,6 +865,105 @@ mod tests {
                 &state.guard,
                 stamp.filter_key(),
             )
+        );
+    }
+
+    #[test]
+    fn policy_switch_keeps_per_row_edits_the_new_plan_allows() {
+        let temp = crate::testutil::TempDir::new();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        std::fs::create_dir_all(&left).expect("left");
+        std::fs::create_dir_all(&right).expect("right");
+        std::fs::write(left.join("keep-skipped.txt"), "x").expect("file");
+        std::fs::write(left.join("default.txt"), "x").expect("file");
+        let mut state = sync_state(&left, &right);
+        state.scan = Some(PlanScan::start(&state));
+        wait_for_plan(&mut state);
+        // Mirror left->right copies both; the user skips one row.
+        let edited = state
+            .actions
+            .iter_mut()
+            .find(|a| a.name == "keep-skipped.txt")
+            .expect("row");
+        assert_eq!(edited.direction, SyncDirection::ToRight);
+        edited.direction = SyncDirection::Skip;
+
+        let shown = state.policy;
+        state.policy = SyncPolicy::TwoWay;
+        request_plan(&mut state, shown);
+        wait_for_plan(&mut state);
+        let direction = |name: &str| {
+            state
+                .actions
+                .iter()
+                .find(|a| a.name == name)
+                .map(|a| a.direction)
+        };
+        assert_eq!(direction("keep-skipped.txt"), Some(SyncDirection::Skip));
+        assert_eq!(direction("default.txt"), Some(SyncDirection::ToRight));
+        // The switch says why the skipped row did not follow the new policy.
+        assert_eq!(state.kept_edits, 1);
+        assert!(kept_edits_note(state.kept_edits).is_some());
+
+        // A plain refresh with the same policy does not repeat the note.
+        let shown = state.policy;
+        request_plan(&mut state, shown);
+        wait_for_plan(&mut state);
+        assert_eq!(state.kept_edits, 0);
+        assert_eq!(kept_edits_note(0), None);
+    }
+
+    #[test]
+    fn bulk_controls_respect_row_availability() {
+        let mut actions = vec![
+            test_action("same", SyncStatus::Identical, SyncDirection::Skip),
+            test_action("dir", SyncStatus::DirectoryPair, SyncDirection::Skip),
+            test_action("newer", SyncStatus::LeftNewer, SyncDirection::ToRight),
+            test_action("diff", SyncStatus::Differing, SyncDirection::ToRight),
+        ];
+        set_all_directions(&mut actions, SyncDirection::ToLeft);
+        let dirs: Vec<_> = actions.iter().map(|a| a.direction).collect();
+        assert_eq!(
+            dirs,
+            [
+                SyncDirection::Skip,
+                SyncDirection::Skip,
+                SyncDirection::ToLeft,
+                SyncDirection::ToLeft
+            ]
+        );
+        skip_conflicts(&mut actions);
+        assert_eq!(actions[2].direction, SyncDirection::ToLeft);
+        assert_eq!(actions[3].direction, SyncDirection::Skip);
+    }
+
+    #[test]
+    fn assessment_line_is_pluralized() {
+        assert_eq!(
+            assessment_summary(1, 1, 0, 0.5),
+            "1 action   1 addition   0 replacements   50% changed"
+        );
+        assert_eq!(
+            assessment_summary(2, 0, 2, 1.0),
+            "2 actions   0 additions   2 replacements   100% changed"
+        );
+    }
+
+    #[test]
+    fn direction_buttons_name_the_file_and_explain_unavailability() {
+        assert_eq!(
+            direction_label(SyncDirection::ToLeft, "a.txt"),
+            "Copy a.txt to left"
+        );
+        assert_eq!(direction_label(SyncDirection::Skip, "a.txt"), "Skip a.txt");
+        assert_eq!(
+            unavailable_reason(SyncStatus::LeftOnly, SyncDirection::ToLeft),
+            "Only exists on the left"
+        );
+        assert_eq!(
+            unavailable_reason(SyncStatus::RightOnly, SyncDirection::ToRight),
+            "Only exists on the right"
         );
     }
 

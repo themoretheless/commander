@@ -300,6 +300,38 @@ fn unique_smart_folder_name(
         .expect("an unused suffix exists")
 }
 
+/// The toast after saving a smart folder. A failed save gets none here:
+/// the persistence layer already records the failure with its cause, and
+/// `begin_frame` toasts that, so a second, vaguer error toast would repeat it.
+fn smart_folder_saved_toast(name: &str, saved: bool) -> Option<String> {
+    saved.then(|| format!("Saved smart folder \"{name}\""))
+}
+
+/// Why a drop would be cancelled right now, worded to follow "Cannot drop: ".
+/// Mirrors the guard in `drop_dragged_as`, which cancels silently.
+fn drop_busy_reason(
+    mutation_block: Option<String>,
+    transfer_busy: bool,
+    pending_op: bool,
+) -> Option<String> {
+    if let Some(reason) = mutation_block {
+        let mut chars = reason.chars();
+        return Some(
+            chars
+                .next()
+                .map(|first| first.to_lowercase().chain(chars).collect())
+                .unwrap_or_default(),
+        );
+    }
+    if transfer_busy {
+        Some("wait for the running transfer to finish".to_string())
+    } else if pending_op {
+        Some("answer the open confirmation first".to_string())
+    } else {
+        None
+    }
+}
+
 /// Average file size once more than one file is picked. Folders report no
 /// size, so they are left out of the divisor.
 fn average_file_size(s: &crate::selection_summary::SelectionSummary) -> Option<u64> {
@@ -1122,19 +1154,10 @@ impl App {
                 root,
                 query,
             });
-        let ok = crate::smart_folder::save(self.smart_folders_mut());
-        let (msg, kind) = if ok {
-            (
-                format!("Saved smart folder \"{name}\""),
-                crate::toasts::ToastKind::Success,
-            )
-        } else {
-            (
-                format!("Could not save smart folder \"{name}\" to disk"),
-                crate::toasts::ToastKind::Error,
-            )
-        };
-        self.toast(ctx, kind, msg, false);
+        let saved = crate::smart_folder::save(self.smart_folders_mut());
+        if let Some(message) = smart_folder_saved_toast(&name, saved) {
+            self.toast(ctx, crate::toasts::ToastKind::Success, message, false);
+        }
     }
 
     /// A quiet pill near the bottom of the central area summarizing the active
@@ -1677,34 +1700,48 @@ impl App {
             };
             let alt = ctx.input(|input| input.modifiers.alt);
             let target = session.target;
-            let announcement = self.drag_announcement.get_or_compute(target, alt, || {
-                let Some(target) = target else {
-                    return crate::operation_view::DragAnnouncement::rejected(
-                        "highlight a destination folder",
-                    );
-                };
-                if !target.is_dir() {
-                    crate::operation_view::DragAnnouncement::rejected("destination is not a folder")
-                } else if crate::volume_profile::profile(target).read_only {
-                    crate::operation_view::DragAnnouncement::rejected(
-                        "destination volume is read-only",
-                    )
-                } else if drag_entries
-                    .iter()
-                    .any(|source| crate::fs_util::is_within_or_equal(target, source))
-                {
-                    crate::operation_view::DragAnnouncement::rejected(
-                        "a folder cannot be moved into itself",
-                    )
-                } else {
-                    let effect = if alt {
-                        crate::operation_view::DragEffect::Copy
-                    } else {
-                        crate::operation_view::DragEffect::Move
+            // A drop while other work runs is cancelled (`drop_dragged_as`), so
+            // say why up front instead of announcing a move that never happens.
+            // Checked every frame: the busy state can change mid-drag.
+            let busy = drop_busy_reason(
+                self.ws.mutation_block_reason("dropping"),
+                self.ws.has_unfinished_transfer_work(),
+                self.ws.pending_op.is_some(),
+            );
+            let announcement = if let Some(reason) = busy {
+                crate::operation_view::DragAnnouncement::rejected(reason)
+            } else {
+                self.drag_announcement.get_or_compute(target, alt, || {
+                    let Some(target) = target else {
+                        return crate::operation_view::DragAnnouncement::rejected(
+                            "highlight a destination folder",
+                        );
                     };
-                    crate::operation_view::DragAnnouncement::valid(target.clone(), effect)
-                }
-            });
+                    if !target.is_dir() {
+                        crate::operation_view::DragAnnouncement::rejected(
+                            "destination is not a folder",
+                        )
+                    } else if crate::volume_profile::profile(target).read_only {
+                        crate::operation_view::DragAnnouncement::rejected(
+                            "destination volume is read-only",
+                        )
+                    } else if drag_entries
+                        .iter()
+                        .any(|source| crate::fs_util::is_within_or_equal(target, source))
+                    {
+                        crate::operation_view::DragAnnouncement::rejected(
+                            "a folder cannot be moved into itself",
+                        )
+                    } else {
+                        let effect = if alt {
+                            crate::operation_view::DragEffect::Copy
+                        } else {
+                            crate::operation_view::DragEffect::Move
+                        };
+                        crate::operation_view::DragAnnouncement::valid(target.clone(), effect)
+                    }
+                })
+            };
             let target_label = announcement.text();
             let target_color = if matches!(
                 announcement,
@@ -1806,6 +1843,9 @@ impl App {
             active.len() as f32 * 44.0,
             &avoid,
         ) else {
+            // Hidden toasts must not expire unseen (an error would be lost);
+            // they keep their full lifetime until a corner is clear again.
+            self.toasts.hold(now);
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
             return;
         };
@@ -1922,6 +1962,7 @@ mod tests {
     use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
+    use super::{drop_busy_reason, smart_folder_saved_toast};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -2363,5 +2404,36 @@ mod tests {
         memo.clear();
         ask(&mut memo, None, true);
         assert_eq!(calls.get(), 5);
+    }
+
+    #[test]
+    fn a_failed_smart_folder_save_leaves_the_error_to_persistence_health() {
+        assert_eq!(
+            smart_folder_saved_toast("Filter: a - b", true).as_deref(),
+            Some("Saved smart folder \"Filter: a - b\"")
+        );
+        assert_eq!(smart_folder_saved_toast("Filter: a - b", false), None);
+    }
+
+    #[test]
+    fn drag_overlay_names_the_work_that_would_cancel_a_drop() {
+        assert_eq!(drop_busy_reason(None, false, false), None);
+        assert_eq!(
+            drop_busy_reason(None, true, true).as_deref(),
+            Some("wait for the running transfer to finish")
+        );
+        assert_eq!(
+            drop_busy_reason(None, false, true).as_deref(),
+            Some("answer the open confirmation first")
+        );
+        assert_eq!(
+            drop_busy_reason(
+                Some("Wait for the current Trash operation before dropping".to_string()),
+                true,
+                false
+            )
+            .as_deref(),
+            Some("wait for the current Trash operation before dropping")
+        );
     }
 }

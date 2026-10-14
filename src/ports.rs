@@ -35,7 +35,12 @@ impl NativeFailure {
             ErrorKind::PermissionDenied => NativeFailureKind::Denied,
             ErrorKind::NotFound => NativeFailureKind::NotFound,
             ErrorKind::ReadOnlyFilesystem => NativeFailureKind::ReadOnly,
-            ErrorKind::WouldBlock | ErrorKind::TimedOut => NativeFailureKind::Busy,
+            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::ResourceBusy => {
+                NativeFailureKind::Busy
+            }
+            // A dropped network mount: the object may or may not still exist.
+            ErrorKind::StaleNetworkFileHandle => NativeFailureKind::Stale,
+            ErrorKind::FileTooLarge => NativeFailureKind::Overflow,
             ErrorKind::Interrupted => NativeFailureKind::Cancelled,
             ErrorKind::InvalidInput | ErrorKind::InvalidFilename => NativeFailureKind::InvalidInput,
             ErrorKind::Unsupported => NativeFailureKind::Unsupported,
@@ -554,6 +559,19 @@ pub fn default_hasher() -> &'static dyn Hasher {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn from_io_classifies_busy_stale_and_too_large() {
+        use std::io::{Error, ErrorKind};
+        let kind = |error_kind| NativeFailure::from_io(&Error::from(error_kind)).kind;
+        assert_eq!(kind(ErrorKind::ResourceBusy), NativeFailureKind::Busy);
+        assert_eq!(
+            kind(ErrorKind::StaleNetworkFileHandle),
+            NativeFailureKind::Stale
+        );
+        assert_eq!(kind(ErrorKind::FileTooLarge), NativeFailureKind::Overflow);
+        assert_eq!(kind(ErrorKind::Other), NativeFailureKind::Unknown);
+    }
 
     #[test]
     fn native_preview_reads_through_a_hard_byte_limit() {

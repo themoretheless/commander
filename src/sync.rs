@@ -133,7 +133,7 @@ pub fn compare(left: &FileEntry, right: &FileEntry) -> SyncStatus {
 /// side to match the source (even overwriting a newer target); two-way moves
 /// each newer/unique file toward the side that lacks it and skips ambiguous
 /// same-time conflicts.
-const fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirection {
+pub const fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirection {
     use SyncDirection::{Skip, ToLeft, ToRight};
     use SyncStatus::*;
     match policy {

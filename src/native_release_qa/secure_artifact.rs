@@ -82,6 +82,7 @@ impl ArtifactDirectory {
     fn remove_stale(&self, name: &str) -> Result<(), String> {
         #[cfg(unix)]
         {
+            let path = self.path(name);
             let name = artifact_name(name)?;
             if unsafe { libc::unlinkat(self.directory.as_raw_fd(), name.as_ptr(), 0) } == 0 {
                 return Ok(());
@@ -91,7 +92,8 @@ impl ArtifactDirectory {
                 Ok(())
             } else {
                 Err(format!(
-                    "could not remove stale native QA artifact: {error}"
+                    "could not remove stale native QA artifact {}: {error}",
+                    path.display()
                 ))
             }
         }
@@ -121,6 +123,9 @@ impl ArtifactDirectory {
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         );
         let temp = artifact_name(&temp_name)?;
+        // The fd-relative calls below never see a path; these are for messages.
+        let destination_path = self.path(name);
+        let temp_path = self.path(&temp_name);
         let fd = unsafe {
             libc::openat(
                 self.directory.as_raw_fd(),
@@ -131,7 +136,8 @@ impl ArtifactDirectory {
         };
         if fd < 0 {
             return Err(format!(
-                "could not create private native QA artifact: {}",
+                "could not create private native QA artifact {}: {}",
+                temp_path.display(),
                 std::io::Error::last_os_error()
             ));
         }
@@ -142,7 +148,10 @@ impl ArtifactDirectory {
             unsafe {
                 libc::unlinkat(self.directory.as_raw_fd(), temp.as_ptr(), 0);
             }
-            return Err(format!("could not write native QA artifact: {error}"));
+            return Err(format!(
+                "could not write native QA artifact {}: {error}",
+                temp_path.display()
+            ));
         }
         if unsafe {
             libc::renameat(
@@ -157,11 +166,15 @@ impl ArtifactDirectory {
             unsafe {
                 libc::unlinkat(self.directory.as_raw_fd(), temp.as_ptr(), 0);
             }
-            return Err(format!("could not publish native QA artifact: {error}"));
+            return Err(format!(
+                "could not publish native QA artifact {}: {error}",
+                destination_path.display()
+            ));
         }
         if unsafe { libc::fsync(self.directory.as_raw_fd()) } != 0 {
             return Err(format!(
-                "could not make native QA artifact rename durable: {}",
+                "could not make native QA artifact rename durable in {}: {}",
+                self.root.display(),
                 std::io::Error::last_os_error()
             ));
         }
@@ -413,6 +426,31 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_errors_name_the_file_to_inspect() {
+        let root = temp_root("named-errors");
+        let _ = std::fs::remove_dir_all(&root);
+        let output = ArtifactDirectory::prepare(&root).unwrap();
+        // A directory where an artifact belongs cannot be replaced by a file.
+        std::fs::create_dir_all(root.join("report.json/child")).unwrap();
+        let error = output
+            .write_json("report.json", &serde_json::json!({}))
+            .unwrap_err();
+        assert!(
+            error.contains(&root.join("report.json").display().to_string()),
+            "{error}"
+        );
+
+        std::fs::create_dir_all(root.join("evidence.json/child")).unwrap();
+        let error = ArtifactDirectory::prepare(&root).err().unwrap();
+        assert!(
+            error.contains(&root.join("evidence.json").display().to_string()),
+            "{error}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[cfg(unix)]

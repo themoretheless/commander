@@ -144,6 +144,15 @@ const FLOW_SECS_PER_FILE: f64 = 0.08;
 const FLOW_MAX_SECS: f64 = 1.5;
 
 /// Rows already shown as transferred `elapsed` seconds into the animation.
+/// With reduced motion every row is shown at once and nothing animates.
+fn flow_rows(elapsed: f64, len: usize, reduced_motion: bool) -> usize {
+    if reduced_motion {
+        len
+    } else {
+        flow_transferred(elapsed, len)
+    }
+}
+
 fn flow_transferred(elapsed: f64, len: usize) -> usize {
     let per_file = (elapsed / FLOW_SECS_PER_FILE) as usize;
     let capped = (len as f64 * (elapsed / FLOW_MAX_SECS)) as usize;
@@ -171,6 +180,7 @@ fn clear_pending_dialog_state(ctx: &egui::Context) {
         d.remove::<f64>(egui::Id::new(PENDING_FLOW_START));
         d.remove::<bool>(egui::Id::new(CONFIRM_DRY_RUN));
         d.remove::<usize>(egui::Id::new(CONFLICT_DROPPED));
+        d.remove::<bool>(egui::Id::new(CONFIRM_FOCUSED));
     });
 }
 
@@ -194,6 +204,58 @@ fn dialog_enter_suppressed(ctx: &egui::Context, layer: egui::LayerId) -> bool {
             response.layer_id != layer && response.layer_id.order == egui::Order::Foreground
         });
     focus_within_layer(ctx, layer) || focus_in_popup || egui::Popup::is_any_open(ctx)
+}
+
+/// Set once the primary button took keyboard focus for this dialog, so the
+/// sheet is announced on open but later focus moves are left alone.
+const CONFIRM_FOCUSED: &str = "confirm_primary_focused";
+
+/// Focus the primary button the first frame it can take focus, unless the
+/// user already moved focus into the dialog (e.g. while the scan ran).
+const fn should_focus_primary(already_focused: bool, enabled: bool, focus_in_dialog: bool) -> bool {
+    !already_focused && enabled && !focus_in_dialog
+}
+
+/// Whether a click on an auto-focused confirm button should run. egui
+/// clicks a focused button on Space as well as Enter, and Space is a
+/// habitual file-manager key (select, Quick Look), so a Space press on the
+/// focused button is ignored; Enter and the pointer still confirm.
+pub(super) const fn honours_click(clicked: bool, space_pressed: bool, has_focus: bool) -> bool {
+    clicked && !(space_pressed && has_focus)
+}
+
+/// [`honours_click`] for a live button response.
+pub(super) fn confirm_clicked(ui: &egui::Ui, response: &egui::Response) -> bool {
+    honours_click(
+        response.clicked(),
+        ui.input(|i| i.key_pressed(egui::Key::Space)),
+        response.has_focus(),
+    )
+}
+
+/// Why the primary button is disabled, for its hover text; the first
+/// failing gate wins. `None` when it is enabled.
+fn primary_blocker(
+    flat_ready: bool,
+    resource_ready: bool,
+    overflow: bool,
+    preflight_blocked: bool,
+    mutation_block: Option<String>,
+    dry_run: bool,
+) -> Option<String> {
+    if !flat_ready {
+        Some("Still scanning the selected items".to_string())
+    } else if !resource_ready {
+        Some("Waiting for the size and free-space check".to_string())
+    } else if overflow {
+        Some("Not enough free space at the destination".to_string())
+    } else if preflight_blocked {
+        Some("The destination does not allow writing".to_string())
+    } else if dry_run {
+        None
+    } else {
+        mutation_block
+    }
 }
 
 /// Entries a conflict button already dropped from the pending transfer
@@ -236,11 +298,128 @@ fn collision_for_policy(
     }
 }
 
+/// Toast for a conflict policy that left nothing to transfer (Skip Existing
+/// when every item already exists), so the dialog does not just vanish.
+fn nothing_left_message(title: &str, dropped: usize) -> String {
+    let verb = title.to_lowercase();
+    match dropped {
+        1 => format!("Nothing to {verb}: the item already exists at the destination"),
+        n => format!("Nothing to {verb}: all {n} items already exist at the destination"),
+    }
+}
+
+/// Why Move to Trash did not start although the dialog allowed it: a
+/// transfer or another mutation began while the sheet was open.
+fn delete_not_started_message(block_reason: Option<String>) -> String {
+    block_reason.unwrap_or_else(|| {
+        "Wait for the transfer queue to finish before moving items to Trash".to_string()
+    })
+}
+
+/// After a confirm: the toast explaining why a Delete is still pending
+/// (the workspace refused to start it), or `None` when nothing is left.
+fn unstarted_delete_explanation(ws: &crate::workspace::Workspace) -> Option<String> {
+    matches!(ws.pending_op, Some(PendingOp::Delete { .. }))
+        .then(|| delete_not_started_message(ws.mutation_block_reason("moving items to Trash")))
+}
+
 fn unavailable_size_message(failure: &crate::ports::NativeFailure) -> String {
     format!(
-        "Transfer size could not be verified: {}. Confirmation is unavailable.",
+        "Transfer size could not be verified: {}. Confirmation is unavailable; check that \
+         the files are readable, then cancel and start the operation again.",
         failure.message
     )
+}
+
+/// "1 item" / "3 items".
+fn items_label(count: usize) -> String {
+    if count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{count} items")
+    }
+}
+
+/// Dialog heading. Delete says what actually happens: items go to the
+/// Trash and can be restored.
+fn dialog_heading(title: &str, is_delete: bool, count: usize) -> String {
+    let action = if is_delete { "Move to Trash" } else { title };
+    format!("{action} — {}", items_label(count))
+}
+
+/// Source column header: the shared parent folder, or a folder count when
+/// the picked items come from several folders (selected in another tab),
+/// with the full list for the hover text.
+fn source_header<'a>(
+    parents: impl IntoIterator<Item = Option<&'a std::path::Path>>,
+) -> (String, Option<String>) {
+    let mut folders: Vec<&std::path::Path> = Vec::new();
+    for parent in parents.into_iter().flatten() {
+        if !folders.contains(&parent) {
+            folders.push(parent);
+        }
+    }
+    match folders.as_slice() {
+        [] => (String::new(), None),
+        [only] => (only.display().to_string(), None),
+        many => (
+            format!("{} folders", many.len()),
+            Some(
+                many.iter()
+                    .map(|folder| folder.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ),
+    }
+}
+
+fn not_enough_space_message(need: u64, free: u64) -> String {
+    format!(
+        "Not enough space: needs {}, only {} free ({} short)",
+        format_size(need),
+        format_size(free),
+        format_size(need.saturating_sub(free))
+    )
+}
+
+fn conflict_banner(count: usize) -> String {
+    if count == 1 {
+        "1 item already exists at the destination".to_string()
+    } else {
+        format!("{count} items already exist at the destination")
+    }
+}
+
+/// One conflict row: the incoming (source) item against the existing
+/// destination item, marking whichever is newer.
+fn conflict_row_text(conflict: &crate::conflict::Conflict) -> String {
+    let newer = |is_newer: bool| if is_newer { " (newer)" } else { "" };
+    format!(
+        "{}    Incoming {}{}  \u{2192}  Existing {}{}",
+        conflict.name,
+        format_size(conflict.src_size),
+        newer(conflict.src_newer),
+        format_size(conflict.dst_size),
+        newer(conflict.dst_newer),
+    )
+}
+
+/// Normalization warning: how many names the chosen form rewrites and how
+/// many of the results collide.
+fn normalization_note(changes: usize, collisions: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    match changes {
+        0 => {}
+        1 => parts.push("1 name will be normalized".to_string()),
+        n => parts.push(format!("{n} names will be normalized")),
+    }
+    match collisions {
+        0 => {}
+        1 => parts.push("1 collision".to_string()),
+        n => parts.push(format!("{n} collisions")),
+    }
+    (!parts.is_empty()).then(|| parts.join("  \u{00b7}  "))
 }
 
 impl App {
@@ -249,6 +428,8 @@ impl App {
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::Confirmation);
         let mutations_blocked = self.ws.mutations_blocked();
+        let mutation_block = self.ws.mutation_block_reason("confirming this operation");
+        let reduced_motion = self.accessibility_preferences.reduced_motion;
         let Some(op) = &self.ws.pending_op else {
             clear_pending_dialog_state(ctx);
             self.confirm_cache = ConfirmCache::default();
@@ -265,12 +446,7 @@ impl App {
                         TransferKind::Copy => ("Copy", t.accent),
                         TransferKind::Move => ("Move", t.accent_warning),
                     };
-                    let source_dir = tr
-                        .entries
-                        .first()
-                        .and_then(|e| e.path.parent())
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default();
+                    let source_dir = source_header(tr.entries.iter().map(|e| e.path.parent()));
                     (
                         title,
                         title,
@@ -288,7 +464,7 @@ impl App {
                     t.accent_red,
                     entries.len(),
                     None,
-                    String::new(),
+                    (String::new(), None),
                     vec![],
                     flat.clone(),
                 ),
@@ -334,7 +510,7 @@ impl App {
         };
         let conflict_names: HashSet<&str> = conflicts.iter().map(String::as_str).collect();
         let is_delete = target.is_none();
-        let win_title = format!("{} — {} item(s)", title, count);
+        let win_title = dialog_heading(title, is_delete, count);
         let screen = ctx.input(|i| i.viewport_rect());
         let pad = 120.0;
         let avail_w = (screen.width() - pad * 2.0).max(300.0);
@@ -342,7 +518,7 @@ impl App {
         let win_w = 1000.0f32.min(avail_w);
         let win_h = 800.0f32.min(avail_h);
 
-        let dialog_response = egui::Window::new(win_title)
+        let dialog_response = egui::Window::new(win_title.as_str())
             .collapsible(false)
             .resizable(false)
             .fixed_size(Vec2::new(win_w, win_h))
@@ -353,7 +529,7 @@ impl App {
                 // Title + tabs on one line
                 if is_delete {
                     ui.label(
-                        egui::RichText::new(format!("Delete — {} item(s)", count))
+                        egui::RichText::new(&win_title)
                             .size(14.0)
                             .strong()
                             .color(t.text_primary),
@@ -395,11 +571,15 @@ impl App {
 
                     // Headers
                     ui.columns(2, |cols| {
-                        cols[0].label(
-                            egui::RichText::new(format!("Source: {}", source_dir))
+                        let (source_text, source_folders) = &source_dir;
+                        let source = cols[0].label(
+                            egui::RichText::new(format!("Source: {source_text}"))
                                 .size(11.0)
                                 .color(t.text_muted),
                         );
+                        if let Some(folders) = source_folders {
+                            source.on_hover_text(folders);
+                        }
                         cols[1].label(
                             egui::RichText::new(format!("Destination: {}", target_path.display()))
                                 .size(11.0)
@@ -414,7 +594,7 @@ impl App {
                         *d.get_temp_mut_or_insert_with(anim_id, || ctx.input(|i| i.time))
                     });
                     let elapsed = ctx.input(|i| i.time) - start_time;
-                    let transferred = flow_transferred(elapsed, flat.len());
+                    let transferred = flow_rows(elapsed, flat.len(), reduced_motion);
 
                     // Request repaint while animation is running
                     if transferred < flat.len() {
@@ -482,14 +662,7 @@ impl App {
                         let approximate =
                             matches!(precision, crate::ports::SpacePrecision::SaturatedLowerBound);
                         if *over {
-                            (
-                                format!(
-                                    "Not enough space: needs {} more than {} free",
-                                    format_size(need.saturating_sub(*free)),
-                                    format_size(*free)
-                                ),
-                                t.accent_red,
-                            )
+                            (not_enough_space_message(*need, *free), t.accent_red)
                         } else {
                             let message = if approximate {
                                 format!(
@@ -518,12 +691,9 @@ impl App {
                 if has_conflicts {
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new(format!(
-                            "  {} file(s) already exist at destination",
-                            conflicts.len()
-                        ))
-                        .size(12.0)
-                        .color(t.accent_warning),
+                        egui::RichText::new(format!("  {}", conflict_banner(conflicts.len())))
+                            .size(12.0)
+                            .color(t.accent_warning),
                     );
                     ui.add_space(4.0);
 
@@ -534,19 +704,10 @@ impl App {
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 for c in rich_conflicts.iter() {
-                                    let src = if c.src_newer { "src newer" } else { "" };
-                                    let dst = if c.dst_newer { "dst newer" } else { "" };
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "{}    src {} {}    \u{00bb} dst {} {}",
-                                            c.name,
-                                            format_size(c.src_size),
-                                            src,
-                                            format_size(c.dst_size),
-                                            dst,
-                                        ))
-                                        .size(11.0)
-                                        .color(t.text_secondary),
+                                        egui::RichText::new(conflict_row_text(c))
+                                            .size(11.0)
+                                            .color(t.text_secondary),
                                     );
                                 }
                             });
@@ -688,10 +849,16 @@ impl App {
                                 Some(PendingOp::Transfer(tr)) if tr.overflows()
                             );
                             if !still_overflows {
-                                self.confirm_pending_op(ctx);
+                                self.confirm_or_explain(ctx);
                             }
                         } else {
                             // Nothing left to transfer (everything skipped).
+                            self.toast(
+                                ctx,
+                                crate::toasts::ToastKind::Info,
+                                nothing_left_message(title, before),
+                                false,
+                            );
                             self.dismiss_pending_op(ctx);
                         }
                     }
@@ -741,23 +908,45 @@ impl App {
                     }
                     if !has_conflicts {
                         ui.add_space(8.0);
-                        if ui
-                            .add_enabled(
-                                primary_enabled,
-                                egui::Button::new(
-                                    egui::RichText::new(primary_label)
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(action_color)
-                                .corner_radius(CornerRadius::ZERO),
+                        let primary = ui.add_enabled(
+                            primary_enabled,
+                            egui::Button::new(
+                                egui::RichText::new(primary_label)
+                                    .size(13.0)
+                                    .color(Color32::WHITE),
                             )
-                            .clicked()
-                        {
+                            .fill(action_color)
+                            .corner_radius(CornerRadius::ZERO),
+                        );
+                        let primary = match primary_blocker(
+                            flat_ready,
+                            resource_ready,
+                            overflow,
+                            preflight_blocked,
+                            mutation_block.clone(),
+                            dry_run && supports_dry_run,
+                        ) {
+                            Some(reason) => primary.on_disabled_hover_text(reason),
+                            None => primary,
+                        };
+                        // Focus the primary button once so the sheet is
+                        // announced; Enter on it confirms exactly as before,
+                        // while Space on it is ignored (see `honours_click`).
+                        let focused_id = egui::Id::new(CONFIRM_FOCUSED);
+                        let already = ctx.data(|d| d.get_temp::<bool>(focused_id).is_some());
+                        if should_focus_primary(
+                            already,
+                            primary_enabled,
+                            focus_within_layer(ctx, ui.layer_id()),
+                        ) {
+                            primary.request_focus();
+                            ctx.data_mut(|d| d.insert_temp(focused_id, true));
+                        }
+                        if confirm_clicked(ui, &primary) {
                             if dry_run && supports_dry_run {
                                 self.dry_run_pending_op(ctx, title, count, total);
                             } else {
-                                self.confirm_pending_op(ctx);
+                                self.confirm_or_explain(ctx);
                             }
                         }
                     }
@@ -777,7 +966,7 @@ impl App {
                     if dry_run && supports_dry_run {
                         self.dry_run_pending_op(ctx, title, count, total);
                     } else {
-                        self.confirm_pending_op(ctx);
+                        self.confirm_or_explain(ctx);
                     }
                 }
             });
@@ -809,10 +998,23 @@ impl App {
         self.toast(
             ctx,
             crate::toasts::ToastKind::Info,
-            format!("Dry run: {title} {count} item(s){size} — nothing changed"),
+            format!(
+                "Dry run: {title} {}{size} — nothing changed",
+                items_label(count)
+            ),
             false,
         );
         self.dismiss_pending_op(ctx);
+    }
+
+    /// Confirm the pending operation; when a Delete could not start (a
+    /// transfer or another mutation began while the sheet was open), say why
+    /// instead of leaving the button doing nothing.
+    fn confirm_or_explain(&mut self, ctx: &egui::Context) {
+        self.confirm_pending_op(ctx);
+        if let Some(message) = unstarted_delete_explanation(&self.ws) {
+            self.toast(ctx, crate::toasts::ToastKind::Info, message, false);
+        }
     }
 
     /// Close the dialog and reset its per-dialog egui state.
@@ -835,6 +1037,7 @@ impl App {
     }
 
     fn durability_row(&mut self, ui: &mut egui::Ui, t: &ThemeColors) {
+        let is_delete = matches!(&self.ws.pending_op, Some(PendingOp::Delete { .. }));
         let current = match &self.ws.pending_op {
             Some(PendingOp::Transfer(transfer)) => transfer.durability,
             _ => self.ws.durability_profile,
@@ -851,7 +1054,19 @@ impl App {
                     .size(10.0)
                     .color(t.text_muted),
             );
-            for profile in crate::operation::DurabilityProfile::ALL {
+            let (show_profiles, show_retention) = durability_controls(is_delete, selected);
+            if !show_profiles {
+                ui.label(
+                    egui::RichText::new("Versioned (always)")
+                        .size(10.0)
+                        .color(t.text_secondary),
+                )
+                .on_hover_text("Moving to Trash always keeps a restorable version");
+            }
+            for profile in crate::operation::DurabilityProfile::ALL
+                .into_iter()
+                .filter(|_| show_profiles)
+            {
                 let tooltip = match profile {
                     crate::operation::DurabilityProfile::Fast => {
                         "Copy without content verification"
@@ -866,9 +1081,9 @@ impl App {
                 ui.selectable_value(&mut selected, profile, profile.label())
                     .on_hover_text(tooltip);
             }
-            if selected == crate::operation::DurabilityProfile::Versioned {
+            if show_retention {
                 ui.add_space(8.0);
-                ui.label(
+                let label = ui.label(
                     egui::RichText::new("Retention")
                         .size(10.0)
                         .color(t.text_muted),
@@ -880,7 +1095,9 @@ impl App {
                             ui.selectable_value(&mut retention, policy, policy.label())
                                 .on_hover_text(policy.consequence());
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(label.id);
                 ui.label(
                     egui::RichText::new(retention.consequence())
                         .size(10.0)
@@ -921,6 +1138,25 @@ impl App {
                 .data(|d| d.get_temp::<usize>(egui::Id::new(CONFLICT_DROPPED)))
                 .unwrap_or(0),
         );
+
+        let portability_details = (!transfer.filesystem.portability.is_empty()).then(|| {
+            transfer
+                .filesystem
+                .portability
+                .iter()
+                .take(8)
+                .map(|issue| {
+                    let targets = issue
+                        .targets
+                        .iter()
+                        .map(|target| target.label())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{} ({targets}): {}", issue.name, issue.reason)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
 
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -991,35 +1227,13 @@ impl App {
                     }
                 });
 
-            let change_count = transfer.filesystem.normalization.changes.len();
-            let collision_count = transfer.filesystem.normalization.collisions.len();
-            if change_count > 0 || collision_count > 0 {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{change_count} rename preview  \u{00b7}  {collision_count} collision{}",
-                        if collision_count == 1 { "" } else { "s" }
-                    ))
-                    .size(10.0)
-                    .color(t.accent_warning),
-                );
+            if let Some(note) = normalization_note(
+                transfer.filesystem.normalization.changes.len(),
+                transfer.filesystem.normalization.collisions.len(),
+            ) {
+                ui.label(egui::RichText::new(note).size(10.0).color(t.accent_warning));
             }
-            if !transfer.filesystem.portability.is_empty() {
-                let details = transfer
-                    .filesystem
-                    .portability
-                    .iter()
-                    .take(8)
-                    .map(|issue| {
-                        let targets = issue
-                            .targets
-                            .iter()
-                            .map(|target| target.label())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!("{} ({targets}): {}", issue.name, issue.reason)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            if let Some(details) = &portability_details {
                 ui.label(
                     egui::RichText::new(format!(
                         "{} portability warning{}",
@@ -1044,6 +1258,23 @@ impl App {
                 );
             }
         });
+        // Hover text is unreachable by keyboard and screen readers; the same
+        // details are also available in a collapsible section.
+        if let Some(details) = portability_details {
+            egui::CollapsingHeader::new(
+                egui::RichText::new("Portability details")
+                    .size(10.0)
+                    .color(t.text_muted),
+            )
+            .id_salt("portability_details")
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(details)
+                        .size(10.0)
+                        .color(t.text_secondary),
+                );
+            });
+        }
 
         if transfer.name_policy.normalization != previous_form {
             let names = transfer
@@ -1117,6 +1348,10 @@ impl App {
                 ))
                 .size(10.0)
                 .color(t.text_secondary),
+            )
+            .on_hover_text(
+                "Measured latency of this volume (95th percentile) and how many files \
+                 are copied in parallel",
             );
             if profile.capabilities.delta {
                 let delta_enabled = current.max_bytes_per_second.is_none();
@@ -1134,6 +1369,11 @@ impl App {
                 );
             }
 
+            let bandwidth = ui.label(
+                egui::RichText::new("Bandwidth")
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
             egui::ComboBox::from_id_salt(("volume_bandwidth", profile.volume_id))
                 .selected_text(bandwidth_label(selected.max_bytes_per_second))
                 .show_ui(ui, |ui| {
@@ -1144,8 +1384,15 @@ impl App {
                             bandwidth_label(limit),
                         );
                     }
-                });
+                })
+                .response
+                .labelled_by(bandwidth.id);
 
+            let quiet = ui.label(
+                egui::RichText::new("Quiet hours")
+                    .size(10.0)
+                    .color(t.text_muted),
+            );
             egui::ComboBox::from_id_salt(("volume_quiet_hours", profile.volume_id))
                 .selected_text(quiet_hours_label(selected.quiet_hours))
                 .show_ui(ui, |ui| {
@@ -1168,7 +1415,9 @@ impl App {
                     ] {
                         ui.selectable_value(&mut selected.quiet_hours, hours, label);
                     }
-                });
+                })
+                .response
+                .labelled_by(quiet.id);
         });
 
         if selected != current
@@ -1194,13 +1443,7 @@ impl App {
             FlatListMode::Destination { transferred } => &flat[..transferred.min(flat.len())],
             _ => flat,
         };
-        let header = match mode {
-            FlatListMode::Preview => format!("{} items", flat.len()),
-            FlatListMode::Source { .. } => format!("Source ({} items)", flat.len()),
-            FlatListMode::Destination { .. } => {
-                format!("Destination ({}/{})", rows.len(), flat.len())
-            }
-        };
+        let header = flat_list_header(mode, flat.len());
         Frame::NONE
             .fill(t.bg_card.linear_multiply(0.3))
             .corner_radius(CornerRadius::same(4))
@@ -1212,10 +1455,19 @@ impl App {
                     .id_salt(id_salt)
                     .show_rows(ui, ROW_H, rows.len(), |ui, range| {
                         for row_idx in range {
-                            let (rect, _) = ui.allocate_exact_size(
+                            let (rect, response) = ui.allocate_exact_size(
                                 Vec2::new(ui.available_width(), ROW_H),
                                 Sense::hover(),
                             );
+                            // Painter-only rows: name them for screen readers.
+                            let fe = &rows[row_idx];
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Label,
+                                    ui.is_enabled(),
+                                    flat_row_accessible_label(fe, is_conflict_row(fe, conflicts)),
+                                )
+                            });
                             paint_flat_row(
                                 ui.painter(),
                                 rect,
@@ -1287,37 +1539,91 @@ fn paint_flat_row(
         color,
     );
     let text_start = rect.left() + indent + 18.0;
-    p.text(
-        egui::pos2(text_start, mid),
-        egui::Align2::LEFT_CENTER,
-        &fe.name,
-        font,
-        color,
-    );
+    let size_color = if moved_away {
+        t.text_muted.linear_multiply(0.3)
+    } else {
+        t.text_muted
+    };
+    // The size is right-aligned; the name is elided to end before it.
+    let size_galley = (!fe.is_dir && fe.size > 0).then(|| {
+        p.layout_no_wrap(
+            format_size(fe.size),
+            egui::FontId::proportional(10.0),
+            size_color,
+        )
+    });
+    let name_right = size_galley.as_ref().map_or(rect.right() - 4.0, |galley| {
+        rect.right() - 4.0 - galley.size().x - 8.0
+    });
+    let name = elided_name(p, &fe.name, font, color, name_right - text_start);
+    let name_rect = egui::Align2::LEFT_CENTER.anchor_size(egui::pos2(text_start, mid), name.size());
+    p.galley(name_rect.min, name, color);
     if moved_away {
-        let text_end = text_start + fe.name.len() as f32 * 6.5;
         p.line_segment(
             [
                 egui::pos2(text_start, mid),
-                egui::pos2(text_end.min(rect.right() - 4.0), mid),
+                egui::pos2(name_rect.right().min(name_right), mid),
             ],
             Stroke::new(1.0_f32, t.text_muted.linear_multiply(0.3)),
         );
     }
-    if !fe.is_dir && fe.size > 0 {
-        let size_color = if moved_away {
-            t.text_muted.linear_multiply(0.3)
-        } else {
-            t.text_muted
-        };
-        p.text(
-            egui::pos2(rect.right() - 4.0, mid),
-            egui::Align2::RIGHT_CENTER,
-            format_size(fe.size),
-            egui::FontId::proportional(10.0),
-            size_color,
-        );
+    if let Some(size) = size_galley {
+        let size_rect = egui::Align2::RIGHT_CENTER
+            .anchor_size(egui::pos2(rect.right() - 4.0, mid), size.size());
+        p.galley(size_rect.min, size, size_color);
     }
+}
+
+/// `name` laid out on one line, elided with "…" to fit `max_width`.
+fn elided_name(
+    p: &egui::Painter,
+    name: &str,
+    font: egui::FontId,
+    color: Color32,
+    max_width: f32,
+) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    p.layout_job(job)
+}
+
+/// What a screen reader announces for a preview row.
+fn flat_row_accessible_label(fe: &FlatFileEntry, is_conflict: bool) -> String {
+    let mut label = fe.name.clone();
+    if fe.is_dir {
+        label.push_str(", folder");
+    } else if fe.size > 0 {
+        label.push_str(", ");
+        label.push_str(&format_size(fe.size));
+    }
+    if is_conflict {
+        label.push_str(", already exists at the destination");
+    }
+    label
+}
+
+/// Header above a preview list. The scan counts every nested file and
+/// folder, so it says "in total" to stay distinct from the title's count of
+/// picked items; the destination side is only an illustration, so it shows
+/// no counter that would read as transfer progress.
+fn flat_list_header(mode: FlatListMode, len: usize) -> String {
+    match mode {
+        FlatListMode::Preview => format!("{} in total", items_label(len)),
+        FlatListMode::Source { .. } => format!("Source ({} in total)", items_label(len)),
+        FlatListMode::Destination { .. } => "Destination preview".to_string(),
+    }
+}
+
+/// Which durability controls the sheet offers: `(profile buttons,
+/// retention combo)`. Moving to Trash always runs Versioned, so a Delete
+/// shows no profile choice (it would be ignored and silently change the
+/// transfer default) but always offers retention, which it does honour.
+fn durability_controls(
+    is_delete: bool,
+    selected: crate::operation::DurabilityProfile,
+) -> (bool, bool) {
+    let versioned = selected == crate::operation::DurabilityProfile::Versioned;
+    (!is_delete, is_delete || versioned)
 }
 
 /// Only top-level rows can collide with a destination name.
@@ -1350,11 +1656,15 @@ const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        CONFIRM_DRY_RUN, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache, FLOW_MAX_SECS,
-        OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state, collision_for_policy,
-        conflict_policy_enabled, dialog_enter_suppressed, dropped_items_note, dry_run_supported,
-        flat_total, flow_transferred, focus_within_layer, is_conflict_row,
-        unavailable_size_message, unavailable_space_message,
+        CONFIRM_DRY_RUN, CONFIRM_FOCUSED, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache,
+        FLOW_MAX_SECS, FlatListMode, OverwritePolicy, PENDING_FLOW_START, PendingOp,
+        clear_pending_dialog_state, collision_for_policy, conflict_banner, conflict_policy_enabled,
+        conflict_row_text, delete_not_started_message, dialog_enter_suppressed, dialog_heading,
+        dropped_items_note, dry_run_supported, durability_controls, elided_name, flat_list_header,
+        flat_row_accessible_label, flat_total, flow_rows, flow_transferred, focus_within_layer,
+        honours_click, is_conflict_row, normalization_note, not_enough_space_message,
+        nothing_left_message, primary_blocker, should_focus_primary, source_header,
+        unavailable_size_message, unavailable_space_message, unstarted_delete_explanation,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1515,12 +1825,14 @@ mod tests {
             d.insert_temp(egui::Id::new(PENDING_FLOW_START), 1.0f64);
             d.insert_temp(egui::Id::new(CONFIRM_DRY_RUN), true);
             d.insert_temp(egui::Id::new(CONFLICT_DROPPED), 2usize);
+            d.insert_temp(egui::Id::new(CONFIRM_FOCUSED), true);
         });
         clear_pending_dialog_state(&ctx);
         ctx.data(|d| {
             assert_eq!(d.get_temp::<usize>(egui::Id::new(CONFLICT_DROPPED)), None);
             assert_eq!(d.get_temp::<f64>(egui::Id::new(PENDING_FLOW_START)), None);
             assert_eq!(d.get_temp::<bool>(egui::Id::new(CONFIRM_DRY_RUN)), None);
+            assert_eq!(d.get_temp::<bool>(egui::Id::new(CONFIRM_FOCUSED)), None);
         });
     }
 
@@ -1583,5 +1895,260 @@ mod tests {
         let message = unavailable_size_message(&failure);
         assert!(message.contains("could not be verified"));
         assert!(message.contains("Confirmation is unavailable"));
+    }
+
+    #[test]
+    fn fully_skipped_transfer_says_nothing_was_copied() {
+        assert_eq!(
+            nothing_left_message("Copy", 3),
+            "Nothing to copy: all 3 items already exist at the destination"
+        );
+        assert_eq!(
+            nothing_left_message("Move", 1),
+            "Nothing to move: the item already exists at the destination"
+        );
+    }
+
+    #[test]
+    fn blocked_trash_names_the_blocker() {
+        assert!(delete_not_started_message(None).contains("transfer queue"));
+        assert_eq!(
+            delete_not_started_message(Some("Safe-state review is required".into())),
+            "Safe-state review is required"
+        );
+    }
+
+    #[test]
+    fn delete_heading_matches_the_trash_button() {
+        assert_eq!(dialog_heading("Delete", true, 1), "Move to Trash — 1 item");
+        assert_eq!(dialog_heading("Copy", false, 3), "Copy — 3 items");
+    }
+
+    #[test]
+    fn source_header_names_several_folders() {
+        use std::path::Path;
+        let same = [Some(Path::new("/a")), Some(Path::new("/a"))];
+        assert_eq!(source_header(same), ("/a".to_string(), None));
+        let mixed = [
+            Some(Path::new("/a")),
+            Some(Path::new("/b")),
+            Some(Path::new("/a")),
+        ];
+        assert_eq!(
+            source_header(mixed),
+            ("2 folders".to_string(), Some("/a\n/b".to_string()))
+        );
+    }
+
+    #[test]
+    fn space_shortfall_states_need_free_and_gap() {
+        let message = not_enough_space_message(4096, 1024);
+        assert!(message.contains("needs 4"), "{message}");
+        assert!(message.contains("only 1"), "{message}");
+        assert!(message.contains("short"), "{message}");
+    }
+
+    #[test]
+    fn conflict_text_is_pluralized_and_plain() {
+        assert_eq!(
+            conflict_banner(1),
+            "1 item already exists at the destination"
+        );
+        assert_eq!(
+            conflict_banner(2),
+            "2 items already exist at the destination"
+        );
+        let conflict = crate::conflict::Conflict {
+            name: "a.txt".into(),
+            src_path: "/s/a.txt".into(),
+            src_size: 0,
+            dst_size: 0,
+            src_is_dir: false,
+            dst_is_dir: false,
+            src_newer: true,
+            dst_newer: false,
+        };
+        let row = conflict_row_text(&conflict);
+        assert!(row.contains("Incoming") && row.contains("(newer)") && row.contains("Existing"));
+        assert!(!row.contains("src") && !row.contains("dst"), "{row}");
+    }
+
+    #[test]
+    fn normalization_note_says_names_will_change() {
+        assert_eq!(normalization_note(0, 0), None);
+        assert_eq!(
+            normalization_note(3, 1).as_deref(),
+            Some("3 names will be normalized  \u{00b7}  1 collision")
+        );
+        assert_eq!(
+            normalization_note(1, 0).as_deref(),
+            Some("1 name will be normalized")
+        );
+    }
+
+    #[test]
+    fn list_headers_count_consistently_and_destination_shows_no_counter() {
+        assert_eq!(
+            flat_list_header(FlatListMode::Preview, 1),
+            "1 item in total"
+        );
+        assert_eq!(
+            flat_list_header(FlatListMode::Source { transferred: 0 }, 57),
+            "Source (57 items in total)"
+        );
+        let destination = flat_list_header(FlatListMode::Destination { transferred: 12 }, 57);
+        assert!(!destination.contains("12"), "{destination}");
+    }
+
+    #[test]
+    fn unverified_size_suggests_a_next_step() {
+        let failure = crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Unknown,
+            message: "x".to_string(),
+        };
+        assert!(unavailable_size_message(&failure).contains("start the operation again"));
+    }
+
+    #[test]
+    fn reduced_motion_shows_every_row_without_animating() {
+        assert_eq!(flow_rows(0.0, 40, true), 40);
+        assert_eq!(flow_rows(0.0, 40, false), 0);
+    }
+
+    #[test]
+    fn long_and_wide_names_are_elided_to_the_name_column() {
+        let ctx = egui::Context::default();
+        let mut widths = Vec::new();
+        crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+            for name in ["a".repeat(300), "Ж".repeat(300), "文".repeat(300)] {
+                let galley = elided_name(
+                    ui.painter(),
+                    &name,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                    120.0,
+                );
+                widths.push(galley.size().x);
+            }
+        }));
+        for width in widths {
+            assert!(
+                width <= 121.0,
+                "name painted {width} px into a 120 px column"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_rows_have_accessible_names() {
+        assert_eq!(
+            flat_row_accessible_label(&entry("docs", 0, true, 0), false),
+            "docs, folder"
+        );
+        let label = flat_row_accessible_label(&entry("a.txt", 2048, false, 0), true);
+        assert!(label.starts_with("a.txt, 2"), "{label}");
+        assert!(
+            label.ends_with("already exists at the destination"),
+            "{label}"
+        );
+    }
+
+    #[test]
+    fn delete_offers_retention_but_no_ignored_durability_choice() {
+        use crate::operation::DurabilityProfile;
+        assert_eq!(
+            durability_controls(true, DurabilityProfile::Fast),
+            (false, true)
+        );
+        assert_eq!(
+            durability_controls(false, DurabilityProfile::Fast),
+            (true, false)
+        );
+        assert_eq!(
+            durability_controls(false, DurabilityProfile::Versioned),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn delete_blocked_after_confirm_stays_pending_and_is_explained() {
+        let (left, right) = (
+            crate::testutil::TempDir::new(),
+            crate::testutil::TempDir::new(),
+        );
+        let path = left.file("a.txt", "x");
+        let mut ws =
+            crate::workspace::Workspace::new(left.path().to_path_buf(), right.path().to_path_buf());
+        ws.left.refresh();
+        ws.request_context_delete(crate::workspace::ActivePanel::Left, &path);
+        assert!(matches!(ws.pending_op, Some(PendingOp::Delete { .. })));
+
+        // A mutation block raised while the sheet was open refuses the run.
+        ws.latch_safe_state(|| {
+            crate::operation::SafeState::integrity(
+                crate::operation::OperationId::default(),
+                "test".to_string(),
+                Vec::new(),
+            )
+        });
+        assert!(!ws.confirm_pending_op(|| {}));
+        assert!(matches!(ws.pending_op, Some(PendingOp::Delete { .. })));
+        let message = unstarted_delete_explanation(&ws).expect("explained");
+        assert!(message.contains("Safe-state review"), "{message}");
+
+        ws.dismiss_pending_op();
+        assert_eq!(unstarted_delete_explanation(&ws), None);
+    }
+
+    #[test]
+    fn space_on_focused_confirm_button_does_not_confirm() {
+        assert!(
+            honours_click(true, false, true),
+            "Enter or pointer confirms"
+        );
+        assert!(
+            !honours_click(true, true, true),
+            "Space on the focused button"
+        );
+        assert!(
+            honours_click(true, true, false),
+            "pointer click while Space held elsewhere"
+        );
+        assert!(!honours_click(false, false, true));
+    }
+
+    #[test]
+    fn primary_button_takes_focus_once_when_it_can() {
+        assert!(should_focus_primary(false, true, false));
+        assert!(!should_focus_primary(true, true, false), "only once");
+        assert!(
+            !should_focus_primary(false, false, false),
+            "disabled while scanning"
+        );
+        assert!(
+            !should_focus_primary(false, true, true),
+            "user already moved focus"
+        );
+    }
+
+    #[test]
+    fn disabled_primary_names_the_first_blocker() {
+        let blocked = Some("Wait for the current Trash operation".to_string());
+        assert_eq!(
+            primary_blocker(false, false, true, true, blocked.clone(), false).as_deref(),
+            Some("Still scanning the selected items")
+        );
+        assert_eq!(
+            primary_blocker(true, true, true, false, None, false).as_deref(),
+            Some("Not enough free space at the destination")
+        );
+        assert_eq!(
+            primary_blocker(true, true, false, false, blocked.clone(), false),
+            blocked
+        );
+        assert_eq!(
+            primary_blocker(true, true, false, false, blocked, true),
+            None
+        );
     }
 }

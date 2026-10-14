@@ -89,6 +89,17 @@ pub fn delete_count(groups: &[DupGroup]) -> usize {
     groups.iter().map(|g| g.files.len().saturating_sub(1)).sum()
 }
 
+/// Bytes the plan moves to the Trash: every non-kept member's size.
+pub fn bytes_reclaimed(groups: &[DupGroup]) -> u64 {
+    groups
+        .iter()
+        .map(|g| {
+            g.size
+                .saturating_mul(g.files.len().saturating_sub(1) as u64)
+        })
+        .fold(0, u64::saturating_add)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +132,19 @@ mod tests {
             .map(|f| f.path.to_str().unwrap())
             .collect();
         assert_eq!(names, vec!["/a.txt", "/b.txt"]); // stable order
+    }
+
+    #[test]
+    fn bytes_reclaimed_counts_every_copy_but_one() {
+        let group = |size, copies| DupGroup {
+            size,
+            files: (0..copies)
+                .map(|i| key(&format!("/{i}"), size, 1, None))
+                .collect(),
+        };
+        assert_eq!(bytes_reclaimed(&[]), 0);
+        assert_eq!(bytes_reclaimed(&[group(10, 3), group(7, 2)]), 27);
+        assert_eq!(bytes_reclaimed(&[group(u64::MAX, 3)]), u64::MAX);
     }
 
     #[test]

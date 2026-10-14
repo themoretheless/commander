@@ -35,7 +35,8 @@ use listing_job::{ListingJobController, PendingFocus};
 // Re-export preview/visit public API under `crate::panel::...` for stable paths.
 #[allow(unused_imports)]
 pub use preview::{
-    InfoCard, PreviewContent, PreviewIdentity, format_mode, make_info, make_preview,
+    InfoCard, PreviewContent, PreviewIdentity, format_mode, image_preview_unavailable_message,
+    make_info, make_preview,
 };
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
@@ -91,6 +92,15 @@ pub enum ViewApplyOutcome {
 pub enum DirectoryRead {
     Complete(Vec<FileEntry>),
     Incomplete(DirStatus),
+}
+
+/// Provenance of a watcher-driven re-list: a gap recovery reconciles.
+const fn watcher_provenance(recovered_gap: bool) -> crate::change_provenance::ChangeProvenance {
+    if recovered_gap {
+        crate::change_provenance::ChangeProvenance::Reconciliation
+    } else {
+        crate::change_provenance::ChangeProvenance::ExternalWatcher
+    }
 }
 
 /// Classify a directory read for UI messaging. `is_empty` is whether the
@@ -840,6 +850,11 @@ impl PanelState {
                 .acknowledge_snapshot(ready.ticket, &listing_binding);
             self.refresh_sizes(ready.forced_sizes);
             self.apply_pending_focus(ready.focus);
+            if let Some(recovered_gap) = ready.watcher_gap {
+                self.change_provenance
+                    .record(watcher_provenance(recovered_gap));
+                crate::watcher_health::record_listing_reconciliation(recovered_gap);
+            }
         } else if let Some(ticket) = ready.ticket.as_ref() {
             self.watcher.defer_snapshot(Some(ticket));
             let _ = ready.focus;
@@ -960,20 +975,14 @@ impl PanelState {
             self.sizes.mark_dirty();
         }
         if let Some(ticket) = outcome.ticket {
-            let source = if outcome.recovered_gap {
-                crate::change_provenance::ChangeProvenance::Reconciliation
-            } else {
-                crate::change_provenance::ChangeProvenance::ExternalWatcher
-            };
+            let source = watcher_provenance(outcome.recovered_gap);
             if self.can_async_list() {
                 let show_hidden = self.view.show_hidden();
-                self.listing_job.reconcile(path, show_hidden, ticket);
-                let applied = self.poll_listing_results();
-                if applied {
-                    self.change_provenance.record(source);
-                    crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
-                }
-                return applied;
+                self.listing_job
+                    .reconcile(path, show_hidden, ticket, outcome.recovered_gap);
+                // The result usually lands on a later poll; whichever poll
+                // applies it records the watcher provenance it carries.
+                return self.poll_listing_results();
             }
             if self.reload_entries() {
                 let listing_binding = self.listing.binding().to_path_buf();
@@ -2961,6 +2970,31 @@ mod tests {
     }
 
     #[test]
+    fn make_info_says_when_permissions_cannot_be_read() {
+        let tmp = TempDir::new();
+        let f = tmp.file("gone.txt", "hello");
+        let meta = std::fs::metadata(&f).unwrap();
+        let fe = FileEntry::from_meta(f.clone(), &meta).unwrap();
+        std::fs::remove_file(&f).unwrap();
+        let card = make_info(&fe, None, None);
+        // Not a fake mode string indistinguishable from a real `000` file.
+        assert!(
+            card.permissions.starts_with("unavailable ("),
+            "{}",
+            card.permissions
+        );
+    }
+
+    #[test]
+    fn declined_image_preview_message_names_the_file_and_the_switch() {
+        let mut img = entry("photo.jpg", false, 5_000);
+        img.extension = "jpg".into();
+        let message = image_preview_unavailable_message(&img);
+        assert!(message.contains("photo.jpg"), "{message}");
+        assert!(message.contains("Runtime controls"), "{message}");
+    }
+
+    #[test]
     fn facet_matches_kind_size_age() {
         use std::time::{Duration, UNIX_EPOCH};
         let now = UNIX_EPOCH + Duration::from_secs(100 * 24 * 60 * 60); // day 100
@@ -3315,6 +3349,71 @@ mod tests {
     }
 
     #[test]
+    fn partial_sizes_are_reused_in_memory_but_never_cached_as_exact() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("partial");
+        let cache_key = VolumePathKey::observe(&directory);
+        let path_epoch = capture_path_epoch(&cache_key);
+        let current = Arc::new(Mutex::new(Arc::new(ScanEpoch::new())));
+        let sizes = Arc::new(Mutex::new(HashMap::new()));
+        let counts = Arc::new(Mutex::new(HashMap::new()));
+        let revision = Arc::new(AtomicU64::new(0));
+        let scan_epoch = begin_panel_scan(
+            &current,
+            &sizes,
+            &counts,
+            &HashSet::from([directory.clone()]),
+            &revision,
+        );
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let measurement = DirMeasurement {
+            path: directory.clone(),
+            modified: Some(mtime),
+            complete: false,
+            cache_key: cache_key.clone(),
+            path_epoch,
+            size: 7,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+        let outcome = publish_dir_measurements_if_current(
+            &current,
+            &scan_epoch,
+            &sizes,
+            &[measurement],
+            &revision,
+        );
+        assert_eq!(outcome.published, 1);
+        assert!(!outcome.cache_changed, "a partial size is not persisted");
+        assert!(!lock_recover(dir_size_cache()).contains_key(&cache_key));
+
+        // A later recompute with the same folder mtime reuses it: no re-walk.
+        lock_recover(&sizes).clear();
+        assert!(publish_cached_size_if_current(
+            &current,
+            &scan_epoch,
+            &sizes,
+            &directory,
+            &cache_key,
+            Some(mtime),
+            &revision,
+        ));
+        assert_eq!(lock_recover(&sizes).get(&directory), Some(&7));
+
+        // A change inside the folder drops it like the exact cache.
+        invalidate_size_cache(&directory.join("file.bin"));
+        assert!(!publish_cached_size_if_current(
+            &current,
+            &scan_epoch,
+            &sizes,
+            &directory,
+            &cache_key,
+            Some(mtime),
+            &revision,
+        ));
+    }
+
+    #[test]
     fn watcher_invalidation_wins_against_worker_paused_before_commit() {
         let tmp = TempDir::new();
         let directory = tmp.dir("subject");
@@ -3352,6 +3451,7 @@ mod tests {
             let measurement = DirMeasurement {
                 path: worker_path,
                 modified: Some(SystemTime::now()),
+                complete: true,
                 cache_key: worker_key,
                 path_epoch: worker_path_epoch,
                 size: 42,
@@ -3436,6 +3536,56 @@ mod tests {
             dir_size_recursive_until(tmp.path(), false, || false),
             Some(1005)
         );
+    }
+
+    #[test]
+    fn size_walk_reports_whether_every_part_was_read() {
+        let tmp = TempDir::new();
+        tmp.dir("sub");
+        tmp.file("sub/a.bin", "1234");
+        assert_eq!(
+            dir_size_walk_until(tmp.path(), false, || false),
+            Some(DirWalk {
+                size: 4,
+                complete: true
+            })
+        );
+        // A vanished child is gone, an unreadable one is a gap in the total.
+        let gone = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!walk_error_leaves_gap(&gone));
+        assert!(walk_error_leaves_gap(&denied));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn size_walk_with_unreadable_subfolder_is_incomplete() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new();
+        tmp.file("a.bin", "12");
+        let locked = tmp.dir("locked");
+        tmp.file("locked/b.bin", "345");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(&locked).is_ok(); // root ignores modes
+        let walk = dir_size_walk_until(tmp.path(), false, || false);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            return;
+        }
+        assert_eq!(
+            walk,
+            Some(DirWalk {
+                size: 2,
+                complete: false
+            })
+        );
+    }
+
+    #[test]
+    fn cache_persistence_failures_warn_once() {
+        let warned = AtomicBool::new(false);
+        assert!(first_cache_warning(&warned));
+        assert!(!first_cache_warning(&warned));
     }
 
     #[cfg(target_os = "linux")]

@@ -12,6 +12,9 @@ pub struct OmnibarState {
     pub(crate) opening_panel: ActivePanel,
     pub(crate) selected: usize,
     pub(crate) probe: Option<crate::path_probe::PathProbeController>,
+    /// Path input submitted with Enter before the probe finished; it goes
+    /// once the probe validates that same input.
+    pub(crate) pending_go: Option<String>,
 }
 
 #[derive(Clone)]
@@ -61,6 +64,81 @@ fn step_selection(enabled: &[bool], selected: usize, up: bool, down: bool) -> us
     selected
 }
 
+/// Enter in path mode. Goes when the probe has validated this exact input;
+/// while the probe is still waiting or checking, the submit is remembered
+/// and fires once it turns valid. Editing the input or a probe error drops
+/// it.
+fn path_submit(
+    enter: bool,
+    pending: &mut Option<String>,
+    input: &str,
+    status: Option<&crate::path_probe::ProbeStatus>,
+    validated: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    use crate::path_probe::ProbeStatus;
+    if pending.as_deref().is_some_and(|pending| pending != input) {
+        *pending = None;
+    }
+    if !enter && pending.is_none() {
+        return None;
+    }
+    if let Some(path) = validated {
+        *pending = None;
+        return Some(path.to_path_buf());
+    }
+    *pending = matches!(
+        status,
+        Some(ProbeStatus::Waiting | ProbeStatus::Busy | ProbeStatus::Checking)
+    )
+    .then(|| input.to_string());
+    None
+}
+
+/// "1 saved search", "N saved searches".
+fn saved_searches_label(count: usize) -> String {
+    if count == 1 {
+        "1 saved search".to_string()
+    } else {
+        format!("{count} saved searches")
+    }
+}
+
+/// The clipboard style each copy-path command uses.
+const fn copy_style(command: crate::command::Command) -> Option<crate::clipboard::PathStyle> {
+    use crate::clipboard::PathStyle;
+    use crate::command::Command;
+    match command {
+        Command::CopyPath => Some(PathStyle::FullPath),
+        Command::CopyName => Some(PathStyle::NameOnly),
+        Command::CopyParentPath => Some(PathStyle::ParentPath),
+        Command::CopyFileUrl => Some(PathStyle::FileUrl),
+        Command::CopyShellPath => Some(PathStyle::ShellEscaped),
+        Command::CopyRelativePath => Some(PathStyle::RelativeToOther),
+        _ => None,
+    }
+}
+
+/// Preview for a copy-path command: the exact text it would copy when one
+/// item is picked (the six rows differ only there), else the item count.
+fn copy_preview(
+    style: crate::clipboard::PathStyle,
+    paths: &[std::path::PathBuf],
+    other_root: &std::path::Path,
+    picked: usize,
+) -> String {
+    if picked == 1 && paths.len() == 1 {
+        crate::clipboard::format(paths, style, Some(other_root))
+    } else {
+        format!("{picked} item(s)")
+    }
+}
+
+/// Accessible name of the omnibar input: includes the mode, which is shown
+/// only as a separate badge and changes as a prefix is typed.
+fn input_accessible_label(mode: &OmnibarMode<'_>) -> String {
+    format!("Omnibar, {} mode", mode.label())
+}
+
 impl App {
     pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
         self.open_omnibar(ctx, String::new());
@@ -72,6 +150,7 @@ impl App {
             opening_panel: self.ws.active,
             selected: 0,
             probe: None,
+            pending_go: None,
         });
         Self::mark_modal_opened(ctx, UiModal::Palette);
     }
@@ -140,7 +219,12 @@ impl App {
                     ctx.request_repaint_after(delay);
                 }
             }
-            _ => state.probe = None,
+            _ => {
+                // Leaving Path mode drops a deferred Enter, so retyping the
+                // same path later needs a fresh Enter to navigate.
+                state.probe = None;
+                state.pending_go = None;
+            }
         }
 
         // Rows for the current mode.
@@ -215,11 +299,14 @@ impl App {
             .probe
             .as_ref()
             .map(|p| (p.status().message(), p.status().clone()));
+        let probe_input = state.probe.as_ref().map(|p| p.input().to_string());
         let opening_panel = state.opening_panel;
 
         let mut action: Option<OmniAction> = None;
         let cancel = escape_requested;
         let width = (ctx.content_rect().width() - 32.0).clamp(280.0, 640.0);
+        let mut input_id = None;
+        let mut selected_row_id = None;
 
         egui::Window::new("Omnibar")
             .collapsible(false)
@@ -257,9 +344,11 @@ impl App {
                             .font(egui::FontId::proportional(15.0))
                             .margin(egui::vec2(6.0, 6.0)),
                     );
+                    let label = input_accessible_label(&mode);
                     ui.ctx().accesskit_node_builder(resp.id, |node| {
-                        node.set_label("Omnibar");
+                        node.set_label(label);
                     });
+                    input_id = Some(resp.id);
                     if just_opened {
                         resp.request_focus();
                         if let Some(mut text_state) = egui::TextEdit::load_state(ui.ctx(), resp.id)
@@ -298,8 +387,14 @@ impl App {
                                 node.set_live(egui::accesskit::Live::Polite);
                             });
                         }
-                        if enter && let Some(path) = &validated_path {
-                            action = Some(OmniAction::Go(path.clone()));
+                        if let Some(path) = path_submit(
+                            enter,
+                            &mut state.pending_go,
+                            probe_input.as_deref().unwrap_or_default(),
+                            probe_status.as_ref().map(|(_, status)| status),
+                            validated_path.as_deref(),
+                        ) {
+                            action = Some(OmniAction::Go(path));
                         }
                     }
                     OmnibarMode::Search(q) => {
@@ -459,6 +554,46 @@ impl App {
                                     } else {
                                         Sense::hover()
                                     });
+                                    // The arrow-selected row gets the file
+                                    // list's cursor outline, a Tab-focused
+                                    // row its double focus ring.
+                                    if is_selected {
+                                        ui.painter().rect_stroke(
+                                            response.rect.shrink(1.0),
+                                            crate::theme::ROUNDING_SM,
+                                            Stroke::new(1.0, t.accent),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        selected_row_id = Some(response.id);
+                                    }
+                                    if response.has_focus() {
+                                        ui.painter().rect_stroke(
+                                            response.rect.shrink(2.0),
+                                            crate::theme::ROUNDING_SM,
+                                            Stroke::new(2.0, t.text_primary),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        ui.painter().rect_stroke(
+                                            response.rect.shrink(4.0),
+                                            crate::theme::ROUNDING_SM,
+                                            Stroke::new(1.0, t.bg_panel),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                    }
+                                    let row_label = match row {
+                                        OmniRow::Folder { path, .. } => {
+                                            Self::palette_path_label(path)
+                                        }
+                                        OmniRow::Command(i) => matches[*i].label.to_string(),
+                                    };
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::selected(
+                                            egui::WidgetType::SelectableLabel,
+                                            enabled,
+                                            is_selected,
+                                            &row_label,
+                                        )
+                                    });
                                     let activate = (enabled && response.clicked())
                                         || (is_selected && enter && enabled);
                                     if activate {
@@ -482,6 +617,20 @@ impl App {
                 }
             });
 
+        if let Some(input_id) = input_id {
+            // Expose the arrow-selected row as the input's active
+            // descendant, so AT announces what Enter would run.
+            ctx.accesskit_node_builder(input_id, |node| match selected_row_id {
+                Some(row) => node.set_active_descendant(row.accesskit_id()),
+                None => node.clear_active_descendant(),
+            });
+            // A singleline TextEdit gives up focus on Enter; when Enter ran
+            // nothing (no match, empty query, path still being checked),
+            // keep typing in the input.
+            if enter && action.is_none() && !cancel {
+                ctx.memory_mut(|memory| memory.request_focus(input_id));
+            }
+        }
         if cancel || action.is_some() {
             self.ui.modals.palette_input = None;
         }
@@ -595,7 +744,10 @@ impl App {
             Command::BeginBatchRename => format!("{picked} item(s)"),
             Command::BeginSync => format!("{active_path} <-> {inactive_path}"),
             Command::FindDuplicates | Command::DiskTreemap | Command::BeginFind => active_path,
-            Command::OpenSavedSearch => "saved smart folders".to_string(),
+            Command::OpenSavedSearch => match self.smart_folders.as_ref() {
+                Some(store) => saved_searches_label(store.items.len()),
+                None => "saved searches".to_string(),
+            },
             Command::OpenProjectCollections => "multi-root project views".to_string(),
             Command::OpenRecoveryCenter => format!(
                 "{} interrupted, {} staging",
@@ -607,7 +759,24 @@ impl App {
             | Command::CopyParentPath
             | Command::CopyFileUrl
             | Command::CopyShellPath
-            | Command::CopyRelativePath => format!("{picked} item(s)"),
+            | Command::CopyRelativePath => {
+                let Some(style) = copy_style(command) else {
+                    return format!("{picked} item(s)");
+                };
+                // Clone the one picked entry only; larger selections show
+                // just their count.
+                let paths: Vec<std::path::PathBuf> = if picked == 1 {
+                    active
+                        .selected_or_cursor()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|entry| entry.path)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                copy_preview(style, &paths, &inactive.current_path, picked)
+            }
             Command::ToggleInfo => "opposite panel inspector".to_string(),
             Command::BeginGoToPath => "jump to folder".to_string(),
             Command::BeginRecent => "recent folders".to_string(),
@@ -702,8 +871,16 @@ fn picked_count(panel: &PanelState) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        OmnibarMode, command_rows_shown, home_relative_display, picked_count, step_selection,
+        OmnibarMode, command_rows_shown, copy_preview, copy_style, home_relative_display,
+        input_accessible_label, path_submit, picked_count, saved_searches_label, step_selection,
     };
+
+    #[test]
+    fn saved_search_count_agrees_with_its_noun() {
+        assert_eq!(saved_searches_label(0), "0 saved searches");
+        assert_eq!(saved_searches_label(1), "1 saved search");
+        assert_eq!(saved_searches_label(2), "2 saved searches");
+    }
 
     #[test]
     fn only_commands_that_get_rows_are_ranked() {
@@ -769,5 +946,108 @@ mod tests {
         // Resting on a disabled row falls back to the first enabled one.
         assert_eq!(step_selection(&enabled, 3, false, false), 0);
         assert_eq!(step_selection(&[], 3, true, true), 0);
+    }
+
+    #[test]
+    fn enter_before_the_probe_finishes_goes_once_it_validates() {
+        use crate::path_probe::ProbeStatus;
+        let mut pending = None;
+        let checking = Some(&ProbeStatus::Checking);
+        let valid = Some(Path::new("/tmp"));
+        assert_eq!(
+            path_submit(true, &mut pending, "/tmp", checking, None),
+            None
+        );
+        assert_eq!(pending.as_deref(), Some("/tmp"));
+        // Next frames: no Enter, still checking, then valid.
+        assert_eq!(
+            path_submit(false, &mut pending, "/tmp", checking, None),
+            None
+        );
+        assert_eq!(
+            path_submit(
+                false,
+                &mut pending,
+                "/tmp",
+                Some(&ProbeStatus::Valid),
+                valid
+            ),
+            Some(Path::new("/tmp").to_path_buf())
+        );
+        assert_eq!(pending, None);
+        // Without a pending submit, a valid probe alone does nothing.
+        assert_eq!(
+            path_submit(
+                false,
+                &mut pending,
+                "/tmp",
+                Some(&ProbeStatus::Valid),
+                valid
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn pending_path_submit_is_dropped_by_edits_and_errors() {
+        use crate::path_probe::ProbeStatus;
+        let mut pending = Some("/tm".to_string());
+        assert_eq!(
+            path_submit(
+                false,
+                &mut pending,
+                "/tmp",
+                Some(&ProbeStatus::Valid),
+                Some(Path::new("/tmp"))
+            ),
+            None,
+            "an edited input never goes on the old Enter"
+        );
+        assert_eq!(pending, None);
+        let mut pending = Some("/nope".to_string());
+        let error = ProbeStatus::WorkerFailed("gone".to_string());
+        assert_eq!(
+            path_submit(false, &mut pending, "/nope", Some(&error), None),
+            None
+        );
+        assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn copy_commands_preview_the_text_they_would_copy() {
+        use crate::clipboard::PathStyle;
+        use crate::command::Command;
+        assert_eq!(copy_style(Command::CopyName), Some(PathStyle::NameOnly));
+        assert_eq!(copy_style(Command::SwapPanels), None);
+        let path = Path::new("/home/user/docs/a.txt").to_path_buf();
+        let other = Path::new("/home/user");
+        assert_eq!(
+            copy_preview(PathStyle::NameOnly, std::slice::from_ref(&path), other, 1),
+            "a.txt"
+        );
+        assert_eq!(
+            copy_preview(PathStyle::FullPath, std::slice::from_ref(&path), other, 1),
+            crate::clipboard::format(
+                std::slice::from_ref(&path),
+                PathStyle::FullPath,
+                Some(other)
+            )
+        );
+        assert_eq!(
+            copy_preview(PathStyle::NameOnly, &[], other, 3),
+            "3 item(s)"
+        );
+    }
+
+    #[test]
+    fn input_label_names_the_mode() {
+        assert_eq!(
+            input_accessible_label(&OmnibarMode::parse(">copy")),
+            "Omnibar, Command mode"
+        );
+        assert_eq!(
+            input_accessible_label(&OmnibarMode::parse("")),
+            "Omnibar, Go mode"
+        );
     }
 }

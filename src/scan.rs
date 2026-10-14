@@ -606,37 +606,48 @@ fn flatten_entry(
     });
 
     if is_dir && depth < MAX_FLAT_DEPTH {
-        if let Ok(rd) = std::fs::read_dir(path) {
-            let mut children: Vec<_> = rd.filter_map(|e| e.ok()).collect();
-            children.sort_by_key(|a| a.file_name());
-            for child in children {
-                if *truncated {
-                    return;
+        match std::fs::read_dir(path) {
+            // An unreadable folder would otherwise look empty in the delete
+            // preview, hiding that its contents are unknown.
+            Err(_) if result.len() >= MAX_FLAT_ENTRIES => *truncated = true,
+            Err(error) => result.push(FlatFileEntry {
+                name: format!("(contents unreadable: {error})"),
+                size: 0,
+                is_dir: false,
+                depth: depth + 1,
+            }),
+            Ok(rd) => {
+                let mut children: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+                children.sort_by_key(|a| a.file_name());
+                for child in children {
+                    if *truncated {
+                        return;
+                    }
+                    let cp = child.path();
+                    let cn = child.file_name().to_string_lossy().to_string();
+                    // Use the directory entry's own type, which does not follow
+                    // symlinks: a symlinked directory is shown as a leaf, never
+                    // recursed into. That keeps the preview bounded (no escaping the
+                    // subtree, no cycles) and matches how the copy treats links.
+                    let child_type = child.file_type().ok();
+                    let child_is_dir = child_type.is_some_and(|t| t.is_dir());
+                    // A link is copied as a link, so like capture_source it has
+                    // no size of its own (lstat would report the target text).
+                    let child_size = if child_is_dir || child_type.is_some_and(|t| t.is_symlink()) {
+                        0
+                    } else {
+                        child.metadata().map(|m| m.len()).unwrap_or(0)
+                    };
+                    flatten_entry(
+                        &cp,
+                        &cn,
+                        child_is_dir,
+                        child_size,
+                        depth + 1,
+                        result,
+                        truncated,
+                    );
                 }
-                let cp = child.path();
-                let cn = child.file_name().to_string_lossy().to_string();
-                // Use the directory entry's own type, which does not follow
-                // symlinks: a symlinked directory is shown as a leaf, never
-                // recursed into. That keeps the preview bounded (no escaping the
-                // subtree, no cycles) and matches how the copy treats links.
-                let child_type = child.file_type().ok();
-                let child_is_dir = child_type.is_some_and(|t| t.is_dir());
-                // A link is copied as a link, so like capture_source it has
-                // no size of its own (lstat would report the target text).
-                let child_size = if child_is_dir || child_type.is_some_and(|t| t.is_symlink()) {
-                    0
-                } else {
-                    child.metadata().map(|m| m.len()).unwrap_or(0)
-                };
-                flatten_entry(
-                    &cp,
-                    &cn,
-                    child_is_dir,
-                    child_size,
-                    depth + 1,
-                    result,
-                    truncated,
-                );
             }
         }
     } else if is_dir && depth >= MAX_FLAT_DEPTH {
@@ -655,6 +666,25 @@ mod tests {
     use super::*;
     use crate::panel::FileEntry;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn unreadable_folder_is_marked_instead_of_looking_empty() {
+        let tmp = TempDir::new();
+        let folder = tmp.dir("gone");
+        let entry = entry_for(&folder);
+        // The listing still says folder, but its contents cannot be read.
+        std::fs::remove_dir(&folder).unwrap();
+
+        let flat = flatten_entries(&[entry]);
+
+        let names = flat
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(flat[1].depth, 1);
+        assert!(names[1].starts_with("(contents unreadable: "), "{names:?}");
+    }
 
     fn entry_for(path: &std::path::Path) -> FileEntry {
         let lexical = std::fs::symlink_metadata(path).unwrap();
