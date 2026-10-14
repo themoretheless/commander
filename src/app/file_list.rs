@@ -59,20 +59,67 @@ fn visible_rows(
     total_rows: usize,
     ensure_row: Option<usize>,
 ) -> (usize, usize) {
-    let page = (viewport_h / row_h).ceil() as usize + 2;
+    // Float-to-usize casts saturate, so additions must saturate too.
+    let page = ((viewport_h / row_h).ceil() as usize).saturating_add(2);
     let mut first = ((scroll_top.max(0.0) / row_h).floor() as usize).min(total_rows);
-    let mut last =
-        (((scroll_top + viewport_h).max(0.0) / row_h).ceil() as usize + 1).min(total_rows);
+    let mut last = ((((scroll_top + viewport_h).max(0.0) / row_h).ceil() as usize)
+        .saturating_add(1))
+    .min(total_rows);
     if let Some(row) = ensure_row.filter(|_| total_rows > 0) {
         if row < first {
             first = row;
-            last = (first + page).min(total_rows);
+            last = first.saturating_add(page).min(total_rows);
         } else if row >= last {
-            last = (row + 1).min(total_rows);
+            last = row.saturating_add(1).min(total_rows);
             first = last.saturating_sub(page);
         }
     }
-    (first, last)
+    // A degenerate clip rect (negative or NaN height) must yield an empty
+    // window, never `first > last`, which would panic when slicing.
+    (first, last.max(first))
+}
+
+/// Whether a drag over this pane may autoscroll it: its folder exists and
+/// sits on a writable volume. Probed once per drag and folder and kept in
+/// egui temp state, since each probe stats the path (a stall on slow network
+/// mounts) and a drag repaints every frame. Cleared when the drag ends.
+fn drop_target_writable(
+    ctx: &egui::Context,
+    panel_side: &str,
+    path: &std::path::Path,
+    dragging: bool,
+) -> bool {
+    let key = egui::Id::new(("drop_target_writable", panel_side));
+    if !dragging {
+        ctx.data_mut(|d| d.remove::<(std::path::PathBuf, bool)>(key));
+        return false;
+    }
+    if let Some((cached, writable)) = ctx.data(|d| d.get_temp::<(std::path::PathBuf, bool)>(key))
+        && cached == path
+    {
+        return writable;
+    }
+    let writable = path.is_dir() && !crate::volume_profile::profile(path).read_only;
+    ctx.data_mut(|d| d.insert_temp(key, (path.to_path_buf(), writable)));
+    writable
+}
+
+/// Selected rows in the filtered view and their total display size, in one
+/// pass. Skipped entirely (no hash lookups) when nothing is selected.
+fn visible_selection_summary(panel: &PanelState) -> (usize, u64) {
+    if panel.selected_count() == 0 {
+        return (0, 0);
+    }
+    let sizes = panel.size_snapshot();
+    let entries = panel.entries();
+    panel
+        .filtered_indices()
+        .iter()
+        .filter_map(|&index| entries.get(index))
+        .filter(|entry| panel.is_selected(&entry.path))
+        .fold((0, 0), |(count, size), entry| {
+            (count + 1, size.saturating_add(sizes.display_size(entry)))
+        })
 }
 
 /// Filtered row the list must bring into view, if any. Cursor 0 is the ".."
@@ -356,9 +403,7 @@ impl App {
 
                 // Both panes share one drag flag and the same y range, so the
                 // pointer must also be over this pane horizontally.
-                if dragging
-                    && panel.current_path.is_dir()
-                    && !crate::volume_profile::profile(&panel.current_path).read_only
+                if drop_target_writable(ui.ctx(), panel_side, &panel.current_path, dragging)
                     && let Some(pointer) = ui.ctx().input(|input| input.pointer.hover_pos())
                     && viewport.x_range().contains(pointer.x)
                 {
@@ -880,7 +925,8 @@ impl App {
                             let shown = panel.filtered_count();
                             let total = panel.entries().len();
                             let selected_total = panel.selected_count();
-                            let selected_visible = panel.visible_selected_count();
+                            let (selected_visible, selected_bytes) =
+                                visible_selection_summary(panel);
                             // One pass for the folder total plus its largest/oldest entry.
                             let overview = panel.folder_overview();
                             let filters_active = crate::panel::filter_is_active(
@@ -909,7 +955,7 @@ impl App {
                                 );
                             }
                             if selected_total > 0 {
-                                let selected_size = format_size(panel.visible_selected_size());
+                                let selected_size = format_size(selected_bytes);
                                 let selection_text = if selected_visible == selected_total {
                                     format!("{selected_total} selected ({selected_size})")
                                 } else {
@@ -1088,8 +1134,56 @@ fn highlight_name_job(
 #[cfg(test)]
 mod tests {
     use super::{
-        cursor_row_to_reveal, folder_changed, map_ranges_to_display, name_char_budget, visible_rows,
+        cursor_row_to_reveal, drop_target_writable, folder_changed, map_ranges_to_display,
+        name_char_budget, visible_rows, visible_selection_summary,
     };
+
+    #[test]
+    fn degenerate_viewport_never_inverts_the_row_window() {
+        // Negative height while scrolled: previously (34, 1), a slice panic.
+        let (first, last) = visible_rows(1000.0, -2000.0, 29.0, 100, None);
+        assert!(first <= last);
+        let (first, last) = visible_rows(1000.0, f32::NAN, 29.0, 100, None);
+        assert!(first <= last);
+        let (first, last) = visible_rows(f32::INFINITY, 290.0, 29.0, 100, None);
+        assert!(first <= last && last <= 100);
+        let (first, last) = visible_rows(0.0, f32::INFINITY, 29.0, 100, Some(usize::MAX));
+        assert!(first <= last && last <= 100);
+    }
+
+    #[test]
+    fn drop_target_is_probed_once_per_drag() {
+        let ctx = egui::Context::default();
+        let temp = crate::testutil::TempDir::new();
+        let dir = temp.path().join("target");
+        std::fs::create_dir(&dir).expect("create dir");
+        assert!(drop_target_writable(&ctx, "left", &dir, true));
+        std::fs::remove_dir(&dir).expect("remove dir");
+        // Same drag: the cached answer is reused without touching the disk.
+        assert!(drop_target_writable(&ctx, "left", &dir, true));
+        // The drag ended; the next one probes again.
+        assert!(!drop_target_writable(&ctx, "left", &dir, false));
+        assert!(!drop_target_writable(&ctx, "left", &dir, true));
+    }
+
+    #[test]
+    fn selection_summary_counts_only_visible_selected_rows() {
+        let temp = crate::testutil::TempDir::new();
+        std::fs::write(temp.path().join("a.txt"), "aaa").expect("write a");
+        std::fs::write(temp.path().join("b.log"), "bbbbb").expect("write b");
+        std::fs::write(temp.path().join("c.txt"), "c").expect("write c");
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        assert_eq!(visible_selection_summary(&panel), (0, 0));
+        panel.toggle_select(temp.path().join("a.txt"));
+        panel.toggle_select(temp.path().join("b.log"));
+        assert_eq!(visible_selection_summary(&panel), (2, 8));
+        assert_eq!(panel.visible_selected_count(), 2);
+        assert_eq!(panel.visible_selected_size(), 8);
+        panel.set_search_query("txt");
+        assert_eq!(visible_selection_summary(&panel), (1, 3));
+        assert_eq!(panel.visible_selected_count(), 1);
+    }
 
     #[test]
     fn entering_another_folder_is_detected_once_per_pane() {
