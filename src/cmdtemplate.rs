@@ -53,44 +53,63 @@ pub struct Segment {
 
 /// The recognised placeholders and their expanded values, in replacement
 /// order. `{dir_other}` precedes `{dir}` so the longer token is matched first.
-fn substitutions(ctx: &SelectionCtx) -> [(&'static str, String); 4] {
-    let quote_join = |items: &[String]| -> String {
+/// A value is computed only when its token occurs in `template` (`None`
+/// otherwise): the run-command bar previews every frame, and quoting a large
+/// selection for a `{paths}` the line never uses would be wasted work.
+fn substitutions(template: &str, ctx: &SelectionCtx) -> [(&'static str, Option<String>); 4] {
+    fn quote_join(items: impl Iterator<Item = String>) -> String {
         items
-            .iter()
-            .map(|s| crate::clipboard::shell_quote(s))
+            .map(|s| crate::clipboard::shell_quote(&s))
             .collect::<Vec<_>>()
             .join(" ")
-    };
-    let paths: Vec<String> = ctx
-        .paths
-        .iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
+    }
+    let wanted = |tok: &str| template.contains(tok);
     [
-        ("{paths}", quote_join(&paths)),
-        ("{names}", quote_join(&ctx.names())),
+        (
+            "{paths}",
+            wanted("{paths}")
+                .then(|| quote_join(ctx.paths.iter().map(|p| p.to_string_lossy().to_string()))),
+        ),
+        (
+            "{names}",
+            wanted("{names}").then(|| quote_join(ctx.names().into_iter().map(dash_safe))),
+        ),
         (
             "{dir_other}",
-            crate::clipboard::shell_quote(&ctx.dir_other.to_string_lossy()),
+            wanted("{dir_other}")
+                .then(|| crate::clipboard::shell_quote(&ctx.dir_other.to_string_lossy())),
         ),
         (
             "{dir}",
-            crate::clipboard::shell_quote(&ctx.dir.to_string_lossy()),
+            wanted("{dir}").then(|| crate::clipboard::shell_quote(&ctx.dir.to_string_lossy())),
         ),
     ]
+}
+
+/// A bare file name that starts with `-` would be parsed as an option by the
+/// command it is passed to (`rm {names}` on a file named `-rf`); quoting does
+/// not help, so such names are anchored to the current directory with `./`.
+fn dash_safe(name: String) -> String {
+    if name.starts_with('-') {
+        format!("./{name}")
+    } else {
+        name
+    }
 }
 
 /// Split the expanded command into literal vs substituted spans (single
 /// left-to-right pass), so the run-command bar can tint placeholders.
 ///
 /// Supported placeholders: `{paths}`, `{names}`, `{dir}`, `{dir_other}`. An
-/// empty selection expands `{paths}`/`{names}` to nothing; any unrecognised
+/// empty selection expands `{paths}`/`{names}` to nothing; a `{names}` entry
+/// starting with `-` is written as `./-name` so it is not read as an option;
+/// any unrecognised
 /// `{token}` is left verbatim as literal text. Because the pass consumes the
 /// template once and emits each substituted value opaquely, a substituted value
 /// that happens to contain a placeholder (e.g. a file literally named
 /// `{dir}.txt`) is never re-substituted.
 pub fn preview_segments(template: &str, ctx: &SelectionCtx) -> Vec<Segment> {
-    let subs = substitutions(ctx);
+    let subs = substitutions(template, ctx);
     let mut out: Vec<Segment> = Vec::new();
     let push_literal = |out: &mut Vec<Segment>, s: &str| {
         if s.is_empty() {
@@ -110,7 +129,10 @@ pub fn preview_segments(template: &str, ctx: &SelectionCtx) -> Vec<Segment> {
         // The earliest-positioned known placeholder in what remains.
         let next = subs
             .iter()
-            .filter_map(|(tok, val)| rest.find(tok).map(|pos| (pos, *tok, val)))
+            .filter_map(|(tok, val)| {
+                let val = val.as_ref()?;
+                rest.find(tok).map(|pos| (pos, *tok, val))
+            })
             .min_by_key(|(pos, _, _)| *pos);
         match next {
             Some((pos, tok, val)) => {
@@ -303,6 +325,35 @@ mod tests {
         assert_eq!(expand("ls {names}", &c), "ls ");
         // Directories still expand.
         assert_eq!(expand("ls {dir}", &c), "ls '/a'");
+    }
+
+    #[test]
+    fn names_starting_with_dash_are_not_options() {
+        // `rm {names}` on a file named "-rf" must not become `rm '-rf'`.
+        let c = ctx(&["/a/-rf", "/a/a-b", "/a/-"], "/a", "/o");
+        assert_eq!(expand("rm {names}", &c), "rm './-rf' 'a-b' './-'");
+        // Absolute paths already start with a separator and are unchanged.
+        assert_eq!(expand("rm {paths}", &c), "rm '/a/-rf' '/a/a-b' '/a/-'");
+    }
+
+    #[test]
+    fn substitutions_skip_tokens_absent_from_the_template() {
+        let c = ctx(&["/a/b.txt"], "/a", "/o");
+        let subs = substitutions("cd {dir}", &c);
+        let computed: Vec<&str> = subs
+            .iter()
+            .filter(|(_, v)| v.is_some())
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(computed, vec!["{dir}"]);
+        // `{dir_other}` alone does not count as containing `{dir}`.
+        let subs = substitutions("cp {paths} {dir_other}", &c);
+        let computed: Vec<&str> = subs
+            .iter()
+            .filter(|(_, v)| v.is_some())
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(computed, vec!["{paths}", "{dir_other}"]);
     }
 
     #[test]
