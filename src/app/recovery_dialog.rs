@@ -50,11 +50,10 @@ impl RecoveryState {
                 self.orphans.clear();
             }
         }
-        if self
-            .selected
-            .as_ref()
-            .is_none_or(|selected| !self.operations.iter().any(|record| &record.id == selected))
-        {
+        // A requested operation that is missing from the inventory stays
+        // selected so the panel can say it no longer needs recovery, rather
+        // than silently showing another operation's detail.
+        if self.selected.is_none() {
             self.selected = self.operations.first().map(|record| record.id.clone());
         }
         self.refresh_selected();
@@ -73,11 +72,20 @@ impl RecoveryState {
         self.repair_loaded = false;
     }
 
+    fn selected_in_inventory(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(|selected| self.operations.iter().any(|record| &record.id == selected))
+    }
+
     fn load_repair(&mut self) {
         if self.repair_loaded {
             return;
         }
         self.repair_loaded = true;
+        if !self.selected_in_inventory() {
+            return;
+        }
         let Some(operation_id) = self.selected.as_ref() else {
             return;
         };
@@ -576,7 +584,13 @@ impl App {
                                     }
                                 } else {
                                     ui.label(
-                                        egui::RichText::new("Select an operation to inspect")
+                                        egui::RichText::new(if state.selected.is_none() {
+                                            "Select an operation to inspect"
+                                        } else if state.scanning {
+                                            "Scanning operations..."
+                                        } else {
+                                            "Operation no longer needs recovery"
+                                        })
                                             .size(11.0)
                                             .color(t.text_muted),
                                     );
@@ -727,5 +741,50 @@ impl App {
             state.load_repair();
         }
         self.recovery = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deliver(
+        state: &mut RecoveryState,
+        operations: Vec<crate::operation_journal::OperationRecord>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(RecoveryScanResult {
+                inventory: Ok(crate::operation_journal::RecoveryInventory {
+                    operations,
+                    orphans: Vec::new(),
+                }),
+            })
+            .unwrap();
+        state.scanning = true;
+        state.scan_rx = Some(receiver);
+        state.poll_scan();
+    }
+
+    #[test]
+    fn a_requested_operation_missing_from_the_scan_stays_selected() {
+        let requested = crate::operation::OperationId("op-gone".to_string());
+        let mut state = RecoveryState::default();
+        state.select(requested.clone());
+        state.detail = RecoveryDetail::Repair;
+        deliver(&mut state, Vec::new());
+
+        assert_eq!(state.selected, Some(requested));
+        assert!(!state.selected_in_inventory());
+        state.load_repair();
+        assert!(state.repair_plan.is_none());
+        assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn no_request_and_an_empty_scan_selects_nothing() {
+        let mut state = RecoveryState::default();
+        deliver(&mut state, Vec::new());
+        assert_eq!(state.selected, None);
     }
 }
