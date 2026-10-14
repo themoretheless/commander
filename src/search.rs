@@ -675,7 +675,14 @@ impl CompiledQuery {
         })
     }
 
-    fn evaluate_metadata(&self, entry: &FileEntry, now: SystemTime) -> Option<MatchExplanation> {
+    /// `root` is the search root: `path:` matches the path below it, as the
+    /// Find list shows it, so terms in the root itself do not match every hit.
+    fn evaluate_metadata(
+        &self,
+        entry: &FileEntry,
+        root: &Path,
+        now: SystemTime,
+    ) -> Option<MatchExplanation> {
         let mut explanation = MatchExplanation::default();
         for predicate in &self.predicates {
             match predicate {
@@ -690,7 +697,11 @@ impl CompiledQuery {
                     });
                 }
                 CompiledPredicate::Path(matcher) => {
-                    let path = entry.path.to_string_lossy();
+                    let path = entry
+                        .path
+                        .strip_prefix(root)
+                        .unwrap_or(&entry.path)
+                        .to_string_lossy();
                     let matched = matcher.evaluate(&path)?;
                     explanation.total_score += matched.score;
                     explanation.components.push(MatchComponent {
@@ -812,7 +823,7 @@ fn open_regular_file(path: &Path) -> Option<(std::fs::File, u64)> {
     }
     let file = options.open(path).ok()?;
     let metadata = file.metadata().ok()?;
-    metadata.is_file().then(|| (file, metadata.len()))
+    metadata.is_file().then_some((file, metadata.len()))
 }
 
 enum ContentVerdict {
@@ -840,6 +851,7 @@ fn run_worker(
     let mut cancelled = false;
     let mut channel_open = true;
     let mut last_progress = Instant::now();
+    let root = provider.root().to_path_buf();
 
     provider.visit(&request, &mut |record| {
         if request.cancelled() {
@@ -866,7 +878,7 @@ fn run_worker(
             content,
             location,
         } = candidate;
-        let Some(mut explanation) = query.evaluate_metadata(&entry, now) else {
+        let Some(mut explanation) = query.evaluate_metadata(&entry, &root, now) else {
             channel_open = maybe_send_progress(
                 generation,
                 scanned,
@@ -903,6 +915,12 @@ fn run_worker(
             }
             ContentVerdict::Matched => {}
         }
+        // Only a match beyond the cap proves the results are truncated; a
+        // walk that ends with exactly `cap` matches is complete.
+        if matched >= cap {
+            truncated = true;
+            return false;
+        }
         batch.push(SearchHit {
             entry,
             identity,
@@ -926,10 +944,6 @@ fn run_worker(
                 return false;
             }
             notify();
-        }
-        if matched >= cap {
-            truncated = true;
-            return false;
         }
         channel_open = maybe_send_progress(
             generation,
@@ -1096,11 +1110,17 @@ pub fn time_bucket(hit: &SearchHit, pivot: TimePivot, now: SystemTime) -> TimeBu
     let Some(value) = value else {
         return TimeBucket::Unknown;
     };
-    let Ok(age) = now.duration_since(value) else {
+    if value > now {
         return TimeBucket::Today;
-    };
-    match age.as_secs() / 86_400 {
-        0 => TimeBucket::Today,
+    }
+    // Count local calendar days, not 24-hour windows, so a file changed at
+    // 23:00 yesterday is "Yesterday" at 08:00 today.
+    let local_date = |time: SystemTime| chrono::DateTime::<chrono::Local>::from(time).date_naive();
+    let days = local_date(now)
+        .signed_duration_since(local_date(value))
+        .num_days();
+    match days {
+        ..=0 => TimeBucket::Today,
         1 => TimeBucket::Yesterday,
         2..=6 => TimeBucket::ThisWeek,
         7..=30 => TimeBucket::ThisMonth,
@@ -1410,7 +1430,7 @@ mod tests {
         .into_iter()
         .filter_map(|name| {
             let entry = file_entry(PathBuf::from(format!("/fixture/{name}")), 1);
-            let explanation = compiled.evaluate_metadata(&entry, now)?;
+            let explanation = compiled.evaluate_metadata(&entry, Path::new("/fixture"), now)?;
             Some(SearchHit {
                 entry,
                 identity: FileIdentity::Path(PathBuf::from(name)),
@@ -1506,7 +1526,11 @@ mod tests {
                         64
                     },
                 );
-                matched += usize::from(query.evaluate_metadata(&entry, now).is_some());
+                matched += usize::from(
+                    query
+                        .evaluate_metadata(&entry, Path::new("/"), now)
+                        .is_some(),
+                );
             }
             eprintln!(
                 "search-bench {label}: {count} entries, {matched} matches, {:?}",
@@ -1563,5 +1587,70 @@ mod tests {
             ContentVerdict::Matched
         ));
         assert!(explanation.summary().contains("first 16MB"));
+    }
+
+    #[test]
+    fn path_predicate_ignores_the_search_root() {
+        let compiled =
+            CompiledQuery::new(Query::parse("path:home", MatchMode::Exact).unwrap()).unwrap();
+        let now = SystemTime::now();
+        let root = Path::new("/home/user");
+        let outside = file_entry(PathBuf::from("/home/user/docs/a.txt"), 1);
+        let inside = file_entry(PathBuf::from("/home/user/home/b.txt"), 1);
+        assert!(compiled.evaluate_metadata(&outside, root, now).is_none());
+        let explanation = compiled.evaluate_metadata(&inside, root, now).unwrap();
+        assert_eq!(explanation.components[0].matched_ranges, vec![(0, 4)]);
+    }
+
+    #[test]
+    fn exactly_cap_matches_is_not_truncated() {
+        let tmp = TempDir::new();
+        tmp.file("match-1.txt", "x");
+        tmp.file("match-2.txt", "x");
+        let engine = SearchEngine::default();
+        let query = || Query::parse("match", MatchMode::Exact).unwrap();
+
+        let run = engine
+            .start(tmp.path().to_path_buf(), query(), 2, Arc::new(|| {}))
+            .unwrap();
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(hits.len(), 2);
+        assert!(!summary.truncated);
+
+        tmp.file("match-3.txt", "x");
+        let run = engine
+            .start(tmp.path().to_path_buf(), query(), 2, Arc::new(|| {}))
+            .unwrap();
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(summary.matched, 2);
+        assert!(summary.truncated);
+    }
+
+    #[test]
+    fn time_buckets_follow_local_calendar_days() {
+        use chrono::TimeZone;
+        let at = |y, m, d, h| -> SystemTime {
+            chrono::Local
+                .with_ymd_and_hms(y, m, d, h, 0, 0)
+                .single()
+                .unwrap()
+                .into()
+        };
+        let now = at(2026, 6, 10, 8);
+        let mut hit = SearchHit {
+            entry: file_entry(PathBuf::from("/x/a.txt"), 1),
+            identity: FileIdentity::Path(PathBuf::from("/x/a.txt")),
+            accessed: None,
+            explanation: MatchExplanation::default(),
+            location: SearchLocation::Native(PathBuf::from("/x/a.txt")),
+        };
+        let mut bucket = |value| {
+            hit.entry.modified = Some(value);
+            time_bucket(&hit, TimePivot::Modified, now)
+        };
+        assert_eq!(bucket(at(2026, 6, 10, 1)), TimeBucket::Today);
+        assert_eq!(bucket(at(2026, 6, 9, 23)), TimeBucket::Yesterday);
+        assert_eq!(bucket(at(2026, 6, 8, 9)), TimeBucket::ThisWeek);
     }
 }
