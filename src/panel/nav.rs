@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::PanelState;
 use super::listing_job::PendingFocus;
@@ -63,7 +64,7 @@ impl PanelState {
         let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .back_pruning(|p| p != current && p.is_dir())
+            .back_pruning(|p| p != current && history_dir_alive(p))
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);
@@ -78,11 +79,52 @@ impl PanelState {
         let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .forward_pruning(|p| p != current && p.is_dir())
+            .forward_pruning(|p| p != current && history_dir_alive(p))
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);
             self.load_remembered_path(path);
         }
+    }
+}
+
+/// How long Back/Forward waits on one history entry's existence check.
+const HISTORY_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Whether a history entry is still a directory worth stepping to. The stat
+/// runs on a helper thread so an entry on a hung network mount cannot freeze
+/// the UI: one that has not answered in time counts as alive, and the async
+/// listing then reports it gone or denied like any other navigation. A hung
+/// probe leaks its thread until the mount answers.
+fn history_dir_alive(path: &Path) -> bool {
+    probe_bounded(path, HISTORY_PROBE_TIMEOUT)
+}
+
+fn probe_bounded(path: &Path, timeout: Duration) -> bool {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let probe_path = path.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("commander-history-probe".to_string())
+        .spawn(move || {
+            let _ = sender.send(probe_path.is_dir());
+        });
+    if spawned.is_err() {
+        return path.is_dir();
+    }
+    receiver.recv_timeout(timeout).unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_probe_answers_for_live_and_missing_dirs() {
+        let tmp = crate::testutil::TempDir::new();
+        let file = tmp.file("plain.txt", "x");
+        let timeout = Duration::from_secs(10);
+        assert!(probe_bounded(tmp.path(), timeout));
+        assert!(!probe_bounded(&tmp.path().join("missing"), timeout));
+        assert!(!probe_bounded(&file, timeout));
     }
 }

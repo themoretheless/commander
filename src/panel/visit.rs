@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use crate::lock_util::recover;
+
 /// Session-wide most-recent-first list of visited directories (for the
 /// Cmd+P quick switcher), distinct from each panel's linear history.
 fn visited_log() -> &'static Mutex<Vec<PathBuf>> {
@@ -86,36 +88,25 @@ pub(super) fn record_visit_into(
 
 /// Record a visit to `path` in the global recent list.
 pub fn record_visit(path: &Path) {
-    let Ok(mut log) = visited_log().lock() else {
-        return;
-    };
-    if let Ok(mut stats) = visit_stats().lock() {
-        record_visit_into(&mut log, &mut stats, path, VISITED_CAP);
-    } else {
-        push_visit(&mut log, path, VISITED_CAP);
-    }
+    let mut log = recover(visited_log());
+    let mut stats = recover(visit_stats());
+    record_visit_into(&mut log, &mut stats, path, VISITED_CAP);
 }
 
 /// Snapshot of recently visited directories, most recent first.
 pub fn visited_paths() -> Vec<PathBuf> {
-    visited_log().lock().map(|v| v.clone()).unwrap_or_default()
+    recover(visited_log()).clone()
 }
 
 pub fn visit_snapshot() -> (Vec<PathBuf>, VisitStats) {
-    (
-        visited_paths(),
-        visit_stats().lock().map(|s| s.clone()).unwrap_or_default(),
-    )
+    (visited_paths(), recover(visit_stats()).clone())
 }
 
 pub fn restore_visit_snapshot(paths: &[PathBuf], stats: &VisitStats) {
-    if let Ok(mut log) = visited_log().lock() {
-        *log = paths.iter().take(VISITED_CAP).cloned().collect();
-    }
-    if let Ok(mut current) = visit_stats().lock() {
-        *current = stats.clone();
-        current.uses.retain(|path, _| paths.contains(path));
-    }
+    *recover(visited_log()) = paths.iter().take(VISITED_CAP).cloned().collect();
+    let mut current = recover(visit_stats());
+    *current = stats.clone();
+    current.uses.retain(|path, _| paths.contains(path));
 }
 
 /// Rank recent destinations by a bounded frequency/recency score. The fuzzy
@@ -163,4 +154,27 @@ pub fn rank_visited(
         });
     }
     matches.into_iter().map(|(_, item)| item).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_poisoned_visit_log_keeps_recording() {
+        let _ = std::thread::spawn(|| {
+            let _log = visited_log().lock();
+            let _stats = visit_stats().lock();
+            panic!("poison the visit globals");
+        })
+        .join();
+        assert!(visited_log().is_poisoned() && visit_stats().is_poisoned());
+
+        let path = Path::new("/visit-poison-test/recorded");
+        record_visit(path);
+        let (paths, stats) = visit_snapshot();
+        assert!(paths.contains(&path.to_path_buf()));
+        assert!(stats.uses.contains_key(path));
+        assert!(visited_paths().contains(&path.to_path_buf()));
+    }
 }
