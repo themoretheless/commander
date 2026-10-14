@@ -116,7 +116,7 @@ use egui::ViewportBuilder;
 fn main() -> eframe::Result<()> {
     logging::init();
 
-    let launch = launch::sanitize_launch_paths(launch::parse_launch_args(std::env::args()));
+    let launch = launch::sanitize_launch_paths(launch::parse_launch_args(std::env::args_os()));
 
     #[cfg(feature = "visual-qa")]
     if let Some(result) = visual_qa::maybe_run() {
