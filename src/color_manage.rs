@@ -13,9 +13,17 @@ pub enum ColorSpaceHint {
     Other,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HdrToneMapBudget {
     pub max_nits_bps: u32,
+}
+
+/// A derived default would be 0 bps, which clamps to the 0.1 floor and
+/// darkens HDR previews by 90%; default to the bounded budget instead.
+impl Default for HdrToneMapBudget {
+    fn default() -> Self {
+        Self::bounded_default()
+    }
 }
 
 impl HdrToneMapBudget {
@@ -99,6 +107,19 @@ mod tests {
         frame.apply_rgba8(&mut rgba);
         assert_eq!(rgba[3], 255);
         assert!(hint_from_extension("HDR").1);
+    }
+
+    #[test]
+    fn default_budget_matches_bounded_default() {
+        assert_eq!(
+            HdrToneMapBudget::default(),
+            HdrToneMapBudget::bounded_default()
+        );
+        let frame = ColorManagedFrame {
+            tone_map: HdrToneMapBudget::default(),
+            ..ColorManagedFrame::display_referred(1, 1, ColorSpaceHint::Other, true)
+        };
+        assert!((frame.tone_map_scale() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -105,13 +105,22 @@ pub fn format_store_bytes(bytes: u64) -> String {
     }
 }
 
+/// Sum of every blob's on-disk bytes. Sizes come from the persisted manifest,
+/// so a corrupt huge size must saturate rather than overflow.
+fn total_bytes_on_disk(blobs: &BTreeMap<String, ContentBlob>) -> u64 {
+    blobs
+        .values()
+        .map(ContentBlob::bytes_on_disk)
+        .fold(0, u64::saturating_add)
+}
+
 pub fn usage_of(
     blobs: &BTreeMap<String, ContentBlob>,
     record_count: usize,
     quota: VersionStoreQuota,
 ) -> VersionStoreUsage {
     VersionStoreUsage {
-        bytes_used: blobs.values().map(ContentBlob::bytes_on_disk).sum(),
+        bytes_used: total_bytes_on_disk(blobs),
         bytes_quota: quota.max_bytes,
         unique_blobs: blobs.len(),
         records: record_count,
@@ -317,7 +326,7 @@ pub fn quota_overflow_keys(
     payload_files: &BTreeMap<String, Vec<PayloadFile>>,
     quota: VersionStoreQuota,
 ) -> Vec<String> {
-    let mut used: u64 = blobs.values().map(ContentBlob::bytes_on_disk).sum();
+    let mut used = total_bytes_on_disk(blobs);
     if used <= quota.max_bytes {
         return Vec::new();
     }
@@ -489,6 +498,40 @@ mod tests {
         assert_eq!(
             quota_overflow_keys(&order, &blobs, &files, quota),
             vec!["3".to_string(), "2".to_string()]
+        );
+    }
+
+    #[test]
+    fn corrupt_huge_blob_sizes_saturate_usage_and_quota() {
+        let blob = |size| ContentBlob {
+            size,
+            refs: 1,
+            exemplar: PathBuf::from("x"),
+            copies: BTreeMap::from([(0, 1)]),
+            exemplar_copy: 0,
+        };
+        let blobs = BTreeMap::from([
+            ("a".to_string(), blob(u64::MAX)),
+            ("b".to_string(), blob(u64::MAX - 1)),
+        ]);
+        assert_eq!(usage(&blobs), u64::MAX);
+        let files = BTreeMap::from([
+            (
+                "1".to_string(),
+                vec![PayloadFile {
+                    relative: PathBuf::from("a"),
+                    digest: "a".into(),
+                    size: u64::MAX,
+                    copy: 0,
+                }],
+            ),
+            ("2".to_string(), Vec::new()),
+        ]);
+        let order = ["1", "2"].map(String::from);
+        let quota = VersionStoreQuota { max_bytes: 4 };
+        assert_eq!(
+            quota_overflow_keys(&order, &blobs, &files, quota),
+            vec!["1".to_string()]
         );
     }
 
