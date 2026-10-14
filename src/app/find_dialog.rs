@@ -105,6 +105,47 @@ fn index_build_refusal(enabled: bool, last_error: Option<String>) -> String {
     }
 }
 
+/// The nonzero skip counters of an index build, or `None` when nothing was
+/// skipped.
+fn index_skipped_summary(
+    binary: usize,
+    large: usize,
+    unreadable: usize,
+    quota: usize,
+) -> Option<String> {
+    let parts: Vec<String> = [
+        (binary, "binary"),
+        (large, "over the file size limit"),
+        (unreadable, "unreadable"),
+        (quota, "over the index size limit"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, label)| format!("{count} {label}"))
+    .collect();
+    (!parts.is_empty()).then(|| format!("Skipped: {}", parts.join(", ")))
+}
+
+/// One history row: what was searched, how, and where, so entries for
+/// different folders are told apart.
+fn history_row_label(entry: &crate::search::QueryHistoryEntry) -> String {
+    let expression = if entry.expression.is_empty() {
+        "All files"
+    } else {
+        &entry.expression
+    };
+    let folder = entry.root.file_name().map_or_else(
+        || entry.root.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    format!(
+        "{expression}  |  {}  |  in {folder}  |  {} results  |  {} ms",
+        entry.mode.label(),
+        entry.result_count,
+        entry.duration_ms
+    )
+}
+
 /// Add `definition` and persist the store; if saving fails the store is
 /// rolled back so the UI never shows a search that is lost on restart.
 fn add_smart_folder(
@@ -384,6 +425,7 @@ impl App {
         let mut edited = false;
         let mut save = false;
         let mut reveal = None;
+        let mut open_path = None;
         let mut replay = None;
         let mut remove_predicate = None;
         let mut root_change = None;
@@ -416,17 +458,24 @@ impl App {
                         {
                             root_change = Some(layout.head.full_path.clone());
                         }
+                        // Collapsed ancestors behind a "..." menu, as in the
+                        // panel path bar.
                         if !layout.collapsed.is_empty() {
                             ui.label(egui::RichText::new("/").color(t.text_muted));
-                            ui.label(egui::RichText::new("...").color(t.text_muted))
-                                .on_hover_text(
-                                    layout
-                                        .collapsed
-                                        .iter()
-                                        .map(|crumb| crumb.label.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join("/"),
-                                );
+                            ui.menu_button("\u{2026}", |ui| {
+                                for crumb in &layout.collapsed {
+                                    if ui
+                                        .button(&crumb.label)
+                                        .on_hover_text(crumb.full_path.display().to_string())
+                                        .clicked()
+                                    {
+                                        root_change = Some(crumb.full_path.clone());
+                                        ui.close();
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text("Choose a hidden parent folder");
                         }
                         for crumb in &layout.tail {
                             ui.label(egui::RichText::new("/").color(t.text_muted));
@@ -458,6 +507,9 @@ impl App {
                         && ui.input(|input| input.key_pressed(egui::Key::Enter))
                     {
                         run_now = true;
+                        // A single-line field gives up focus on Enter; keep
+                        // it so the query can be refined right away.
+                        response.request_focus();
                     }
 
                     ui.add_space(6.0);
@@ -514,15 +566,21 @@ impl App {
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             for (index, chip) in query.chips().iter().enumerate() {
-                                if ui
+                                let chip_response = ui
                                     .add(
                                         egui::Button::new(format!("{chip}  x"))
                                             .fill(t.bg_card)
                                             .corner_radius(CornerRadius::same(2)),
                                     )
-                                    .on_hover_text("Remove filter")
-                                    .clicked()
-                                {
+                                    .on_hover_text("Remove filter");
+                                chip_response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        format!("Remove filter {chip}"),
+                                    )
+                                });
+                                if chip_response.clicked() {
                                     remove_predicate = Some(index);
                                 }
                             }
@@ -544,22 +602,26 @@ impl App {
                                     );
                                 }
                                 for entry in &history {
-                                    let label = if entry.expression.is_empty() {
-                                        "All files"
-                                    } else {
-                                        &entry.expression
-                                    };
-                                    let response = ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!(
-                                                "{}  |  {} results  |  {} ms",
-                                                label, entry.result_count, entry.duration_ms
-                                            ))
-                                            .size(11.0)
-                                            .color(t.text_secondary),
+                                    let label = history_row_label(entry);
+                                    let response =
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&label)
+                                                    .size(11.0)
+                                                    .color(t.text_secondary),
+                                            )
+                                            .sense(Sense::click()),
                                         )
-                                        .sense(Sense::click()),
-                                    );
+                                        .on_hover_text(
+                                            format!("Replay in {}", entry.root.display()),
+                                        );
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            format!("Replay search {label}"),
+                                        )
+                                    });
                                     if response.clicked() {
                                         replay = Some(entry.clone());
                                     }
@@ -641,17 +703,21 @@ impl App {
                                 .size(10.0)
                                 .color(t.text_muted),
                             );
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Skipped: {} binary, {} large, {} unreadable, {} quota",
-                                    index_status.skipped_binary,
-                                    index_status.skipped_large,
-                                    index_status.skipped_unreadable,
-                                    index_status.skipped_quota
-                                ))
-                                .size(10.0)
-                                .color(t.text_muted),
-                            );
+                            if let Some(skipped) = index_skipped_summary(
+                                index_status.skipped_binary,
+                                index_status.skipped_large,
+                                index_status.skipped_unreadable,
+                                index_status.skipped_quota,
+                            ) {
+                                ui.label(
+                                    egui::RichText::new(skipped).size(10.0).color(t.text_muted),
+                                )
+                                .on_hover_text(format!(
+                                    "Text is indexed for files up to {} and up to {} in total",
+                                    format_size(crate::content_index::MAX_FILE_BYTES),
+                                    format_size(crate::content_index::MAX_CONTENT_BYTES as u64)
+                                ));
+                            }
                             if index_status.truncated {
                                 ui.label(
                                     egui::RichText::new("Document cap reached")
@@ -707,7 +773,13 @@ impl App {
                         } else {
                             "Ready".to_string()
                         };
-                        ui.label(egui::RichText::new(status).size(11.0).color(t.text_muted));
+                        let status =
+                            ui.label(egui::RichText::new(status).size(11.0).color(t.text_muted));
+                        // Announce progress and the finished count.
+                        ui.ctx().accesskit_node_builder(status.id, |node| {
+                            node.set_role(egui::accesskit::Role::Status);
+                            node.set_live(egui::accesskit::Live::Polite);
+                        });
                         if state.content_skipped > 0 {
                             ui.label(
                                 egui::RichText::new(format!(
@@ -782,16 +854,31 @@ impl App {
                                             ui.add_space(4.0);
                                         }
                                         ui.horizontal(|ui| {
-                                            let response = ui.add_sized(
-                                                [ui.available_width() - 92.0, 22.0],
-                                                egui::Label::new(
-                                                    egui::RichText::new(relative)
-                                                        .size(12.0)
-                                                        .color(t.text_secondary),
+                                            let response = ui
+                                                .add_sized(
+                                                    [ui.available_width() - 92.0, 22.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(&relative)
+                                                            .size(12.0)
+                                                            .color(t.text_secondary),
+                                                    )
+                                                    .truncate()
+                                                    .sense(Sense::click()),
                                                 )
-                                                .truncate()
-                                                .sense(Sense::click()),
-                                            );
+                                                .on_hover_text(
+                                                    "Click to show in the panel, double-click \
+                                                     to open",
+                                                );
+                                            response.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::WidgetType::Button,
+                                                    true,
+                                                    format!("Reveal {relative}"),
+                                                )
+                                            });
+                                            if response.double_clicked() && !hit.entry.is_dir {
+                                                open_path = Some(path.clone());
+                                            }
                                             if response.clicked() {
                                                 reveal = Some(path);
                                             }
@@ -800,19 +887,25 @@ impl App {
                                                     .size(10.0)
                                                     .color(t.text_muted),
                                             );
-                                            if ui
-                                                .small_button("?")
-                                                .on_hover_text(&explanation)
-                                                .clicked()
-                                            {
-                                                explanation_change = Some(
-                                                    if open_explanation.as_ref() == Some(&identity)
-                                                    {
-                                                        None
-                                                    } else {
-                                                        Some(identity)
-                                                    },
-                                                );
+                                            let explaining =
+                                                open_explanation.as_ref() == Some(&identity);
+                                            let why = ui
+                                                .add(
+                                                    egui::Button::selectable(explaining, "?")
+                                                        .small(),
+                                                )
+                                                .on_hover_text(&explanation);
+                                            why.widget_info(|| {
+                                                egui::WidgetInfo::selected(
+                                                    egui::WidgetType::Button,
+                                                    true,
+                                                    explaining,
+                                                    format!("Why matched: {relative}"),
+                                                )
+                                            });
+                                            if why.clicked() {
+                                                explanation_change =
+                                                    Some((!explaining).then_some(identity));
                                             }
                                         });
                                     },
@@ -820,32 +913,49 @@ impl App {
                             }
                         });
 
+                    if state.ran && !state.searching && state.results.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "No files match in {}. Try a broader query, another match \
+                                 mode, or remove filters.",
+                                state.root.display()
+                            ))
+                            .size(11.0)
+                            .color(t.text_muted),
+                        );
+                    }
                     if let Some(identity) = &state.explanation_open
                         && let Some(hit) =
                             state.results.iter().find(|hit| &hit.identity == identity)
                     {
                         ui.separator();
                         ui.label(
-                            egui::RichText::new(hit.explanation.summary())
-                                .size(11.0)
-                                .color(t.text_secondary),
+                            egui::RichText::new(format!(
+                                "{}: {}",
+                                hit.relative_to(&state.root).display(),
+                                hit.explanation.summary()
+                            ))
+                            .size(11.0)
+                            .color(t.text_secondary),
                         );
                     }
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.add(
+                        let name = ui.add(
                             egui::TextEdit::singleline(&mut state.save_name)
                                 .desired_width(180.0)
                                 .hint_text("Saved search name")
                                 .margin(egui::vec2(6.0, 4.0)),
                         );
+                        let can_save =
+                            !state.save_name.trim().is_empty() && state.build_query().is_ok();
+                        let enter = name.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
                         if ui
-                            .add_enabled(
-                                !state.save_name.trim().is_empty() && state.build_query().is_ok(),
-                                egui::Button::new("Save"),
-                            )
+                            .add_enabled(can_save, egui::Button::new("Save"))
                             .clicked()
+                            || (enter && can_save)
                         {
                             save = true;
                         }
@@ -965,7 +1075,9 @@ impl App {
             }
             edited = true;
         }
-        if let Some(path) = root_change {
+        // Choosing the crumb that already is the root changes nothing, so it
+        // must not cancel and restart a running search.
+        if let Some(path) = root_change.filter(|path| *path != index_root) {
             let exclusions = format_index_exclusions(&path, &self.content_index.exclusions(&path));
             if let Some(state) = self.ui.modals.find.as_mut() {
                 state.root = path;
@@ -997,6 +1109,9 @@ impl App {
         if let Some(path) = reveal {
             self.ws.reveal(&path);
         }
+        if let Some(path) = open_path {
+            self.open_external(crate::ports::OpenRequest::OpenPath(path), ctx);
+        }
         if save {
             let definition = self.ui.modals.find.as_ref().and_then(|state| {
                 state
@@ -1015,6 +1130,9 @@ impl App {
                     definition,
                     crate::smart_folder::save,
                 );
+                if saved && let Some(state) = self.ui.modals.find.as_mut() {
+                    state.save_name.clear();
+                }
                 let (message, kind) = if saved {
                     (
                         format!("Saved search \"{name}\""),
@@ -1038,7 +1156,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_smart_folder, index_build_refusal, pivot_order, result_row_height, search_root_error,
+        add_smart_folder, history_row_label, index_build_refusal, index_skipped_summary,
+        pivot_order, result_row_height, search_root_error,
     };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -1110,6 +1229,7 @@ mod tests {
         assert!(result_row_height(true) >= 12.0 + 22.0);
         assert_eq!(result_row_height(false), 4.0 + 22.0);
     }
+
     #[test]
     fn vanished_search_root_is_an_error_not_an_empty_result() {
         let temp = crate::testutil::TempDir::new();
@@ -1137,6 +1257,32 @@ mod tests {
         assert_eq!(
             index_build_refusal(false, Some("ignored".into())),
             "Enable the content index before rebuilding"
+        );
+    }
+
+    #[test]
+    fn index_skipped_summary_lists_only_nonzero_counts() {
+        assert_eq!(index_skipped_summary(0, 0, 0, 0), None);
+        assert_eq!(
+            index_skipped_summary(2, 0, 0, 1).as_deref(),
+            Some("Skipped: 2 binary, 1 over the index size limit")
+        );
+    }
+
+    #[test]
+    fn history_rows_name_mode_and_folder() {
+        let entry = crate::search::QueryHistoryEntry {
+            expression: String::new(),
+            mode: crate::query::MatchMode::Fuzzy,
+            root: PathBuf::from("/home/me/projects"),
+            result_count: 3,
+            scanned: 10,
+            duration_ms: 7,
+            last_run: 0,
+        };
+        assert_eq!(
+            history_row_label(&entry),
+            "All files  |  Fuzzy  |  in projects  |  3 results  |  7 ms"
         );
     }
 
