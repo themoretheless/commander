@@ -349,6 +349,7 @@ impl DeltaBackend for ProductionDelta {
                 base_bytes: request.base_bytes,
                 allow_clone_seed: request.profile.capabilities.clone,
                 resume_offset,
+                reverify_staging: request.durability.verifies(),
             },
             &mut publish,
         )?;
