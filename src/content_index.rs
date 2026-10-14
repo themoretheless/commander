@@ -1353,6 +1353,10 @@ mod tests {
 
     #[test]
     fn scan_descends_below_the_open_directory_limit() {
+        // Covers correctness of the buffered (handle-closed) levels below
+        // MAX_OPEN_DIRS only. The tree is too shallow to exhaust any fd
+        // limit, and fd counts are not stable while other tests run in
+        // parallel threads, so fd release itself is not asserted here.
         let temp = TempDir::new();
         let mut deep = PathBuf::new();
         for level in 0..MAX_OPEN_DIRS + 6 {
@@ -1509,6 +1513,18 @@ mod tests {
         envelope["payload"] = serde_json::json!({ "unexpected": true });
         std::fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
         assert!(load_index_from(&path, temp.path()).is_err());
+        // The save gate skips the payload, so a payload that is not a
+        // `RootIndex` still reads as a current file instead of unreadable.
+        let gate = crate::persistence::load_enveloped::<serde::de::IgnoredAny>(
+            &crate::persistence::FsPersist::default(),
+            &path,
+            INDEX_STORE,
+        )
+        .gate;
+        assert!(matches!(
+            gate.status(),
+            crate::persistence::LoadStatus::Current
+        ));
 
         save_index_to(&path, &index).unwrap();
 
