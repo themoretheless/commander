@@ -79,6 +79,9 @@ pub struct VisitSummary {
     pub unsafe_members: usize,
     pub unreadable_members: usize,
     pub content_skipped: usize,
+    /// The archive's members were not searched at all because content search
+    /// is not supported for this format (tar.gz would need a full decompress).
+    pub members_not_searched: bool,
     pub cancelled: bool,
 }
 
@@ -138,7 +141,10 @@ pub fn visit_members(
         Some(ArchiveKind::TarGz) => {
             if needs_content {
                 budget.archives += 1;
-                return Ok(VisitSummary::default());
+                return Ok(VisitSummary {
+                    members_not_searched: true,
+                    ..Default::default()
+                });
             }
             return visit_tar_gz_list(archive_path, budget, cancelled, |member| {
                 emit(SearchMember {

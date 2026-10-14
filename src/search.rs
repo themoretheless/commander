@@ -384,12 +384,18 @@ impl ArchiveProvider {
                 keep_going
             },
         );
-        if let Err(error) = result {
-            // A corrupt or encrypted archive: its members are not searched.
-            request.note_unsearched();
-            log::info!(target: "commander::search", "archive not searched: {error}");
-            if keep_going {
-                keep_going = emit(None);
+        match result {
+            // Content search does not open this format: its members were
+            // skipped, so count it rather than drop them silently.
+            Ok(summary) if summary.members_not_searched => request.note_unsearched(),
+            Ok(_) => {}
+            Err(error) => {
+                // A corrupt or encrypted archive: its members are not searched.
+                request.note_unsearched();
+                log::info!(target: "commander::search", "archive not searched: {error}");
+                if keep_going {
+                    keep_going = emit(None);
+                }
             }
         }
         keep_going && !request.cancelled()
@@ -1454,6 +1460,17 @@ mod tests {
         tmp.file("broken.zip", "not a zip archive");
         let summary = name_search(tmp.path(), "nothing-matches-this");
         assert_eq!(summary.content_skipped, 1);
+    }
+
+    #[test]
+    fn filtered_content_search_counts_unsearched_tar_gz_archives() {
+        let tmp = TempDir::new();
+        tmp.file("server.log", "no match here");
+        // The archive fails the name filter, so it is never read as a binary
+        // file; its members are still skipped and must be counted.
+        tmp.file("logs.tgz", "members would hold server.log with ERROR");
+        let summary = name_search(tmp.path(), "path:server.log content:ERROR");
+        assert!(summary.content_skipped >= 1, "{summary:?}");
     }
 
     #[test]
