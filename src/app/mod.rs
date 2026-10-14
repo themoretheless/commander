@@ -242,6 +242,27 @@ pub struct RunCommandState {
 
 pub struct CommandOutputRun {
     pub receiver: std::sync::mpsc::Receiver<CommandOutput>,
+    /// The running process, shared with its worker so Stop (or closing the
+    /// bar, via `Drop`) can kill it instead of leaving it running unseen.
+    pub child: CommandChildSlot,
+}
+
+pub type CommandChildSlot = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
+
+impl CommandOutputRun {
+    pub fn stop(&self) {
+        if let Some(child) = crate::lock_util::recover(&self.child).as_mut() {
+            // std never signals a child it has already reaped, so this is
+            // safe after normal completion too.
+            let _ = child.kill();
+        }
+    }
+}
+
+impl Drop for CommandOutputRun {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[derive(Clone, Debug)]
