@@ -671,13 +671,9 @@ pub fn records_for(operation_id: &OperationId) -> Vec<VersionRecord> {
         .collect()
 }
 
-pub fn records() -> Vec<VersionRecord> {
-    records_or_blocked().unwrap_or_default()
-}
-
-/// [`records`], but a manifest that is unreadable or incompatible is an
-/// error rather than an empty list, for callers (the support bundle) that
-/// must not report "no versions" when the store could not be read.
+/// Every preserved version. A manifest that is unreadable or incompatible is
+/// an error rather than an empty list, so callers (the support bundle) do not
+/// report "no versions" when the store could not be read.
 pub fn records_or_blocked() -> Result<Vec<VersionRecord>, String> {
     let root = versions_dir();
     let loaded = load_manifest_with(manifest_persist(), &root);
@@ -1160,7 +1156,6 @@ mod tests {
             records_or_blocked(),
             Err("version manifest is corrupt".to_string())
         );
-        assert!(records().is_empty());
     }
 
     #[test]
