@@ -522,6 +522,9 @@ pub struct SyncState {
     pub dry_run: bool,
     /// Plan being built off the UI thread; Apply waits for it.
     pub scan: Option<sync_dialog::PlanScan>,
+    /// Rows whose earlier edits overrode the new policy on the last policy
+    /// switch; shown as a note so the switch does not look ignored.
+    pub kept_edits: usize,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in

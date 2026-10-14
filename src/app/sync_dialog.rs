@@ -75,16 +75,35 @@ fn edited_directions(
 }
 
 /// Re-apply edited directions by name where the new row still allows them.
+/// Returns how many rows now differ from the new plan's default because of
+/// a kept edit.
 fn carry_edits(
     actions: &mut [crate::sync::SyncAction],
     edits: &std::collections::HashMap<String, SyncDirection>,
-) {
+) -> usize {
+    let mut kept = 0;
     for action in actions {
         if let Some(&dir) = edits.get(&action.name)
             && action.allows(dir)
         {
+            if action.direction != dir {
+                kept += 1;
+            }
             action.direction = dir;
         }
+    }
+    kept
+}
+
+/// Note shown after a policy switch kept earlier per-row (or bulk) edits,
+/// so a switch that seems to do nothing explains itself.
+fn kept_edits_note(kept: usize) -> Option<String> {
+    match kept {
+        0 => None,
+        1 => Some("1 edited row kept its direction from before the policy change".to_string()),
+        n => Some(format!(
+            "{n} edited rows kept their directions from before the policy change"
+        )),
     }
 }
 
@@ -115,9 +134,16 @@ fn skip_conflicts(actions: &mut [crate::sync::SyncAction]) {
 fn apply_plan_result(state: &mut SyncState, result: PlanResult, shown_policy: Option<SyncPolicy>) {
     match result {
         Ok((mut actions, stamp)) => {
-            if let Some(policy) = shown_policy {
-                carry_edits(&mut actions, &edited_directions(&state.actions, policy));
-            }
+            let kept = shown_policy.map_or(0, |policy| {
+                carry_edits(&mut actions, &edited_directions(&state.actions, policy))
+            });
+            // Only a policy switch can make kept edits look like the switch
+            // was ignored; a plain refresh stays quiet.
+            state.kept_edits = if shown_policy.is_some_and(|policy| policy != state.policy) {
+                kept
+            } else {
+                0
+            };
             state.actions = actions;
             state.settings_fingerprint = crate::sync_guard::settings_fingerprint(
                 state.policy,
@@ -240,6 +266,7 @@ impl App {
             error: None,
             dry_run: false,
             scan: None,
+            kept_edits: 0,
         };
         state.scan = Some(PlanScan::start(&state));
         self.ui.tools.replace_on(self.ws.active.other());
@@ -522,6 +549,9 @@ impl App {
                         .color(t.text_muted),
                     );
                 });
+                if let Some(note) = kept_edits_note(state.kept_edits) {
+                    ui.label(egui::RichText::new(note).size(10.0).color(t.text_muted));
+                }
                 if let Some(reason) = &assessment.circuit_breaker {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -736,8 +766,8 @@ const fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PlanScan, assessment_summary, direction_label, plan_shows_panels_match, poll_plan,
-        request_plan, set_all_directions, skip_conflicts, unavailable_reason,
+        PlanScan, assessment_summary, direction_label, kept_edits_note, plan_shows_panels_match,
+        poll_plan, request_plan, set_all_directions, skip_conflicts, unavailable_reason,
     };
     use crate::sync::{SyncDirection, SyncPolicy, SyncStatus, test_action};
 
@@ -760,6 +790,7 @@ mod tests {
             error: None,
             dry_run: false,
             scan: None,
+            kept_edits: 0,
         }
     }
 
@@ -871,6 +902,16 @@ mod tests {
         };
         assert_eq!(direction("keep-skipped.txt"), Some(SyncDirection::Skip));
         assert_eq!(direction("default.txt"), Some(SyncDirection::ToRight));
+        // The switch says why the skipped row did not follow the new policy.
+        assert_eq!(state.kept_edits, 1);
+        assert!(kept_edits_note(state.kept_edits).is_some());
+
+        // A plain refresh with the same policy does not repeat the note.
+        let shown = state.policy;
+        request_plan(&mut state, shown);
+        wait_for_plan(&mut state);
+        assert_eq!(state.kept_edits, 0);
+        assert_eq!(kept_edits_note(0), None);
     }
 
     #[test]
