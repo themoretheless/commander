@@ -5,8 +5,11 @@ use crate::panel::{FileEntry, format_size};
 use crate::selection_summary::{Kind, kind_of};
 
 const ROW_HEIGHT: f32 = 28.0;
-/// Height reserved under the map for the kind legend.
-const LEGEND_HEIGHT: f32 = 20.0;
+/// Height of one wrapped row of the kind legend under the map.
+const LEGEND_ROW_HEIGHT: f32 = 20.0;
+/// Legend swatch edge, and the gap after each swatch-and-label item.
+const LEGEND_SWATCH: f32 = 10.0;
+const LEGEND_ITEM_GAP: f32 = 6.0;
 /// Below this the tiles are too small to read or click.
 const MIN_MAP_SIZE: Vec2 = Vec2::new(120.0, 80.0);
 
@@ -24,6 +27,22 @@ const fn map_empty_message(scan_finished: bool, any_items: bool) -> &'static str
         (true, false) => "Folder is empty",
         (true, true) => "Folder holds only empty items",
     }
+}
+
+/// Rows the wrapped legend needs for items of `widths` in a `available`-wide
+/// pane. Items are packed whole, which never needs fewer rows than egui's
+/// per-widget wrapping, so the reserved height is never too small.
+fn legend_rows(widths: &[f32], available: f32) -> usize {
+    let mut rows = 0;
+    let mut used = 0.0;
+    for &width in widths {
+        if rows == 0 || (used > 0.0 && used + width > available) {
+            rows += 1;
+            used = 0.0;
+        }
+        used += width;
+    }
+    rows
 }
 
 /// Kinds present on the map, in kind order, for the colour legend.
@@ -358,7 +377,27 @@ fn show_map(
         return;
     }
 
-    let Some(size) = map_size(ui.available_size() - Vec2::new(0.0, LEGEND_HEIGHT)) else {
+    // Reserve every row the wrapped legend will take, so a narrow pane with
+    // many kinds does not push the legend past the bottom edge.
+    let kinds = legend_kinds(visible.iter().map(|(entry, _)| entry));
+    let spacing = ui.spacing().item_spacing.x;
+    let widths: Vec<f32> = kinds
+        .iter()
+        .map(|kind| {
+            let label = ui
+                .painter()
+                .layout_no_wrap(
+                    kind.label().to_string(),
+                    egui::FontId::proportional(10.0),
+                    t.text_muted,
+                )
+                .size()
+                .x;
+            LEGEND_SWATCH + label + LEGEND_ITEM_GAP + 3.0 * spacing
+        })
+        .collect();
+    let legend_height = legend_rows(&widths, ui.available_width()) as f32 * LEGEND_ROW_HEIGHT;
+    let Some(size) = map_size(ui.available_size() - Vec2::new(0.0, legend_height)) else {
         ui.label(
             egui::RichText::new("Pane too small for the map; widen it or use Tree")
                 .size(12.0)
@@ -428,9 +467,9 @@ fn show_map(
 
     // Colour legend, so kinds are not told apart by fill alone.
     ui.horizontal_wrapped(|ui| {
-        for kind in legend_kinds(visible.iter().map(|(entry, _)| entry)) {
+        for kind in kinds {
             let (red, green, blue) = crate::file_color::kind_color(kind, dark);
-            let (swatch, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+            let (swatch, _) = ui.allocate_exact_size(Vec2::splat(LEGEND_SWATCH), Sense::hover());
             ui.painter().rect_filled(
                 swatch,
                 CornerRadius::same(2),
@@ -441,7 +480,7 @@ fn show_map(
                     .size(10.0)
                     .color(t.text_muted),
             );
-            ui.add_space(6.0);
+            ui.add_space(LEGEND_ITEM_GAP);
         }
     });
 }
@@ -554,6 +593,16 @@ mod tests {
         );
         assert_eq!(map_size(Vec2::new(100.0, 300.0)), None);
         assert_eq!(map_size(Vec2::new(300.0, 60.0)), None);
+    }
+
+    #[test]
+    fn legend_reserves_a_row_per_wrap() {
+        assert_eq!(legend_rows(&[], 300.0), 0);
+        assert_eq!(legend_rows(&[80.0, 80.0, 80.0], 300.0), 1);
+        assert_eq!(legend_rows(&[80.0, 80.0, 80.0, 80.0], 300.0), 2);
+        assert_eq!(legend_rows(&[80.0, 80.0, 80.0], 100.0), 3);
+        // An item wider than the pane still takes just its own row.
+        assert_eq!(legend_rows(&[500.0], 100.0), 1);
     }
 
     #[test]
