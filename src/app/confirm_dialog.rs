@@ -16,12 +16,44 @@ pub struct ConfirmCache {
     /// Finished scan, its file total, and the list it was read from (kept
     /// alive so `Arc::ptr_eq` cannot match a reused allocation).
     flat: Option<(FlatList, Arc<Vec<FlatFileEntry>>, u64)>,
-    /// Conflict detail keyed on (target, conflict names, entry count).
-    conflicts: Option<(ConflictKey, Arc<Vec<crate::conflict::Conflict>>)>,
+    /// Conflict detail, the staged transfer it was read for, and when.
+    conflicts: Option<(
+        ConflictKey,
+        std::time::Instant,
+        Arc<Vec<crate::conflict::Conflict>>,
+    )>,
     profile: Option<(PathBuf, Arc<crate::volume_profile::VolumeProfile>)>,
 }
 
-type ConflictKey = (PathBuf, Vec<String>, usize);
+/// How long conflict detail (size/mtime on both sides) is shown before it is
+/// re-read, so destination files changed while the dialog is open show up.
+const CONFLICT_DETAIL_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Identity of the staged transfer that conflict detail was read for. The
+/// `FlatList` is created per staged transfer, so it tells a replaced or
+/// restaged operation apart even when target, names and counts match; it is
+/// kept alive so `Arc::ptr_eq` cannot match a reused allocation.
+struct ConflictKey {
+    flat: FlatList,
+    target: PathBuf,
+    names: Vec<String>,
+    entries: usize,
+}
+
+impl ConflictKey {
+    fn matches(
+        &self,
+        flat: &FlatList,
+        target: &std::path::Path,
+        names: &[String],
+        entries: usize,
+    ) -> bool {
+        Arc::ptr_eq(&self.flat, flat)
+            && self.target == target
+            && self.names == names
+            && self.entries == entries
+    }
+}
 
 impl ConfirmCache {
     /// The finished scan behind `source` and its file total, or `None` while
@@ -39,24 +71,48 @@ impl ConfirmCache {
         Some((flat, total))
     }
 
-    /// Per-conflict detail, re-read from disk only when the conflict set,
-    /// target or staged entries change (a resolve or restage).
+    /// Per-conflict detail, re-read from disk when the staged transfer
+    /// changes (a resolve, restage or replacement) or after
+    /// `CONFLICT_DETAIL_TTL`.
     fn conflicts(&mut self, ws: &Workspace) -> Arc<Vec<crate::conflict::Conflict>> {
         let Some(PendingOp::Transfer(tr)) = &ws.pending_op else {
             return Arc::default();
         };
-        if let Some(((target, names, len), cached)) = &self.conflicts
-            && *target == tr.target
-            && *names == tr.conflicts
-            && *len == tr.entries.len()
+        self.conflicts_for(
+            &tr.flat,
+            &tr.target,
+            &tr.conflicts,
+            tr.entries.len(),
+            std::time::Instant::now(),
+            || ws.pending_conflicts(),
+        )
+    }
+
+    fn conflicts_for(
+        &mut self,
+        flat: &FlatList,
+        target: &std::path::Path,
+        names: &[String],
+        entries: usize,
+        now: std::time::Instant,
+        load: impl FnOnce() -> Vec<crate::conflict::Conflict>,
+    ) -> Arc<Vec<crate::conflict::Conflict>> {
+        if let Some((key, read_at, cached)) = &self.conflicts
+            && key.matches(flat, target, names, entries)
+            && now
+                .checked_duration_since(*read_at)
+                .is_some_and(|age| age < CONFLICT_DETAIL_TTL)
         {
             return cached.clone();
         }
-        let detail = Arc::new(ws.pending_conflicts());
-        self.conflicts = Some((
-            (tr.target.clone(), tr.conflicts.clone(), tr.entries.len()),
-            detail.clone(),
-        ));
+        let detail = Arc::new(load());
+        let key = ConflictKey {
+            flat: flat.clone(),
+            target: target.to_path_buf(),
+            names: names.to_vec(),
+            entries,
+        };
+        self.conflicts = Some((key, now, detail.clone()));
         detail
     }
 
@@ -1294,14 +1350,14 @@ const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        CONFIRM_DRY_RUN, CONFLICT_DROPPED, ConfirmCache, FLOW_MAX_SECS, OverwritePolicy,
-        PENDING_FLOW_START, clear_pending_dialog_state, collision_for_policy,
+        CONFIRM_DRY_RUN, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache, FLOW_MAX_SECS,
+        OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state, collision_for_policy,
         conflict_policy_enabled, dialog_enter_suppressed, dropped_items_note, dry_run_supported,
         flat_total, flow_transferred, focus_within_layer, is_conflict_row,
         unavailable_size_message, unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
-    use crate::scan::FlatFileEntry;
+    use crate::scan::{FlatFileEntry, FlatList};
     use std::collections::HashSet;
     use std::sync::Arc;
 
@@ -1358,6 +1414,56 @@ mod tests {
         let (third, total) = cache.flat(&restaged).expect("new scan");
         assert_eq!(third[0].name, "b");
         assert_eq!(total, 9);
+    }
+
+    #[test]
+    fn conflict_detail_follows_the_staged_transfer_and_expires() {
+        let mut cache = ConfirmCache::default();
+        let target = std::path::Path::new("/dest");
+        let names = vec!["a.txt".to_string()];
+        let flat = crate::scan::pending_flat_list();
+        let start = std::time::Instant::now();
+        let loads = std::cell::Cell::new(0);
+        let read = |cache: &mut ConfirmCache, flat: &FlatList, now| {
+            cache.conflicts_for(flat, target, &names, 1, now, || {
+                loads.set(loads.get() + 1);
+                Vec::new()
+            });
+        };
+        read(&mut cache, &flat, start);
+        read(
+            &mut cache,
+            &flat,
+            start + std::time::Duration::from_millis(500),
+        );
+        assert_eq!(loads.get(), 1, "same transfer within the TTL is cached");
+        // A replacement with the same target, names and count but its own
+        // scan list is a different transfer.
+        let replaced = crate::scan::pending_flat_list();
+        read(
+            &mut cache,
+            &replaced,
+            start + std::time::Duration::from_millis(600),
+        );
+        assert_eq!(loads.get(), 2);
+        read(&mut cache, &replaced, start + CONFLICT_DETAIL_TTL * 2);
+        assert_eq!(loads.get(), 3, "detail is re-read after the TTL");
+        // A clock that went backwards also re-reads.
+        read(&mut cache, &replaced, start);
+        assert_eq!(loads.get(), 4);
+    }
+
+    #[test]
+    fn volume_profile_is_probed_once_per_target() {
+        let temp = crate::testutil::TempDir::new();
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&other).expect("dir");
+        let mut cache = ConfirmCache::default();
+        let first = cache.profile(temp.path());
+        let second = cache.profile(temp.path());
+        assert!(Arc::ptr_eq(&first, &second), "same target is not re-probed");
+        let third = cache.profile(&other);
+        assert!(!Arc::ptr_eq(&first, &third), "a new target is probed");
     }
 
     #[test]
