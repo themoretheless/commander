@@ -709,9 +709,11 @@ impl App {
             });
         }
 
-        // Keep repainting during transfer
+        // Keep repainting during transfer at the strip's cadence; progress
+        // samples only arrive every 500 ms, so repainting at display rate
+        // just burns CPU while the Operations panel is open.
         if !finished {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
 
