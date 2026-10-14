@@ -179,7 +179,6 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
     out
 }
 
-/// Whether an open pane tool replaces `side`'s file list.
 /// Drag-overlay verdict for the hovered target and Alt state. Computing it
 /// stats the target and probes its volume, so the overlay reuses it while the
 /// pointer stays on the same folder instead of re-probing every frame. It is
@@ -216,20 +215,25 @@ impl DragAnnouncementMemo {
     }
 }
 
-/// Drop the cached tree children of `dir` and of its parent, for both
-/// hidden-file modes, so the tree re-reads only the folders a pane change
-/// can have altered.
+/// Drop the cached tree children of `dir`, of its descendants and of its
+/// parent, for both hidden-file modes, so the tree re-reads only the folders
+/// a pane change can have altered. Descendants are included because an
+/// operation dropped onto a subfolder row (or a refresh after one) changes
+/// that subfolder without either pane showing it. Scanning the cache keys is
+/// far cheaper than the `read_dir` calls a full clear would trigger.
 fn invalidate_tree_children(
     cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
     dir: &std::path::Path,
 ) {
-    for path in std::iter::once(dir).chain(dir.parent()) {
+    cache.retain(|(path, _), _| !path.starts_with(dir));
+    if let Some(parent) = dir.parent() {
         for show_hidden in [false, true] {
-            cache.remove(&(path.to_path_buf(), show_hidden));
+            cache.remove(&(parent.to_path_buf(), show_hidden));
         }
     }
 }
 
+/// Whether an open pane tool replaces `side`'s file list.
 fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bool {
     tools.side == Some(side) && tools.any_open()
 }
@@ -628,8 +632,8 @@ impl App {
         let right_listing = self.ws.right.poll_listing();
         let left_fs = self.ws.left.poll_fs_changes();
         let right_fs = self.ws.right.poll_fs_changes();
-        // A pane change can only alter the tree rows for that pane's folder
-        // (and its parent); clearing everything made the tree re-read every
+        // A pane change can only alter the tree rows for that pane's folder,
+        // its subfolders and its parent; clearing everything made the tree re-read every
         // visible folder synchronously on each watcher refresh.
         if left_listing || left_fs {
             invalidate_tree_children(&mut self.tree_children_cache, &self.ws.left.current_path);
@@ -2298,10 +2302,10 @@ mod tests {
     }
 
     #[test]
-    fn tree_invalidation_drops_only_the_changed_folder_and_its_parent() {
+    fn tree_invalidation_drops_the_changed_folder_its_descendants_and_parent() {
         use std::path::PathBuf;
         let mut cache = std::collections::HashMap::new();
-        for path in ["/a", "/a/b", "/a/b/c", "/x"] {
+        for path in ["/a", "/a/b", "/a/b/c", "/a/b/c/d", "/a/bc", "/a/z", "/x"] {
             for show_hidden in [false, true] {
                 cache.insert((PathBuf::from(path), show_hidden), Vec::new());
             }
@@ -2315,8 +2319,10 @@ mod tests {
         assert_eq!(
             kept,
             vec![
-                ("/a/b/c".to_string(), false),
-                ("/a/b/c".to_string(), true),
+                ("/a/bc".to_string(), false),
+                ("/a/bc".to_string(), true),
+                ("/a/z".to_string(), false),
+                ("/a/z".to_string(), true),
                 ("/x".to_string(), false),
                 ("/x".to_string(), true),
             ]
