@@ -4315,6 +4315,40 @@ fn profile_applied_message_names_missing_folders() {
 }
 
 #[test]
+fn applying_a_profile_with_a_missing_root_leaves_that_side_alone() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let saved_right = r.dir("saved");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_search_query("keep");
+    let left_before = ws.left.current_path.clone();
+    let gone = l.path().join("removed");
+    let mut profile = crate::workspace_profile::WorkspaceProfile::new(
+        "default",
+        gone.clone(),
+        saved_right.clone(),
+    );
+    profile.left_filter = "from-profile".to_string();
+    profile.right_filter = "right-filter".to_string();
+    ws.drain_ui_requests();
+
+    ws.apply_profile(&profile);
+
+    assert_eq!(ws.left.current_path, left_before);
+    assert_eq!(ws.left.search_query(), "keep");
+    assert_eq!(ws.right.current_path, saved_right);
+    assert_eq!(ws.right.search_query(), "right-filter");
+    let requests = ws.drain_ui_requests();
+    assert!(
+        requests.iter().any(|request| matches!(
+            request,
+            UiRequest::Notice { message, error: true }
+                if message.contains(&gone.display().to_string())
+        )),
+        "{requests:?}"
+    );
+}
+
+#[test]
 fn recovery_on_a_history_only_stop_names_the_stop_not_an_operation() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&l, &r);
@@ -4345,6 +4379,7 @@ fn sync_reports_sources_that_vanished_after_the_plan() {
             UiRequest::Notice { message, error: true }
                 if message.starts_with("Sync skipped")
                     && message.contains(&gone.display().to_string())
+                    && message.contains("no longer exists")
         )),
         "{requests:?}"
     );

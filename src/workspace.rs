@@ -1253,6 +1253,10 @@ impl Workspace {
             });
             return;
         };
+        self.apply_profile(&profile);
+    }
+
+    fn apply_profile(&mut self, profile: &crate::workspace_profile::WorkspaceProfile) {
         // A side whose saved folder is gone keeps its folder and filter: the
         // filter was written for that folder's contents.
         let mut missing = Vec::new();
@@ -2747,9 +2751,10 @@ impl Workspace {
     /// A sync source as the copy engine must see it: the lexical entry, so
     /// a symlink (even to a folder) is the link itself and the symlink
     /// policy applies to it, as for every other transfer source.
-    fn sync_source_entry(path: &Path) -> Option<FileEntry> {
-        let meta = std::fs::symlink_metadata(path).ok()?;
+    fn sync_source_entry(path: &Path) -> std::io::Result<FileEntry> {
+        let meta = std::fs::symlink_metadata(path)?;
         FileEntry::from_meta(path.to_path_buf(), &meta)
+            .ok_or_else(|| std::io::Error::other("unsupported entry"))
     }
 
     fn enqueue_sync_between(
@@ -2763,7 +2768,7 @@ impl Workspace {
         let mut to_right = Vec::new();
         let mut to_left = Vec::new();
         // Sources that vanished between plan and commit.
-        let mut missing: Vec<&Path> = Vec::new();
+        let mut missing: Vec<(&Path, std::io::Error)> = Vec::new();
         for a in actions {
             let side = match a.direction {
                 SyncDirection::ToRight => &mut to_right,
@@ -2774,18 +2779,23 @@ impl Workspace {
                 continue;
             };
             match Self::sync_source_entry(source) {
-                Some(entry) => side.push(entry),
-                None => missing.push(source),
+                Ok(entry) => side.push(entry),
+                Err(error) => missing.push((source, error)),
             }
         }
-        if let Some(first) = missing.first() {
+        if let Some((first, error)) = missing.first() {
             let more = match missing.len() {
                 1 => String::new(),
                 count => format!(" and {} more", count - 1),
             };
+            let reason = if error.kind() == std::io::ErrorKind::NotFound {
+                "it no longer exists".to_string()
+            } else {
+                format!("it cannot be read ({error})")
+            };
             self.emit_ui_request(UiRequest::Notice {
                 message: format!(
-                    "Sync skipped {}{more}: it no longer exists. Compare again to refresh the plan.",
+                    "Sync skipped {}{more}: {reason}. Compare again to refresh the plan.",
                     first.display()
                 ),
                 error: true,
