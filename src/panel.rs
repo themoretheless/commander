@@ -3270,6 +3270,33 @@ mod tests {
     }
 
     #[test]
+    fn batched_invalidation_matches_per_path_invalidation() {
+        let tmp = TempDir::new();
+        let keys: Vec<VolumePathKey> = ["x", "x/deep", "x/deep/below", "y", "y/sub", "z"]
+            .into_iter()
+            .map(|name| VolumePathKey::observe(&tmp.dir(name)))
+            .collect();
+        let now = SystemTime::now();
+        {
+            let _boundary = lock_recover(scan_commit_boundary());
+            let mut cache = lock_recover(dir_size_cache());
+            for key in &keys {
+                cache.insert(key.clone(), (now, 1));
+            }
+        }
+
+        let changed_x = tmp.path().join("x/deep/file.txt");
+        let changed_y = tmp.path().join("y");
+        invalidate_size_cache_many([changed_x.as_path(), changed_y.as_path()]);
+
+        let cache = lock_recover(dir_size_cache());
+        let kept: Vec<bool> = keys.iter().map(|key| cache.contains_key(key)).collect();
+        // Ancestors of each change go; a folder below a change and an
+        // unrelated sibling stay.
+        assert_eq!(kept, [false, false, true, false, true, true]);
+    }
+
+    #[test]
     fn directory_cache_key_rejects_an_old_mount_generation() {
         let path = PathBuf::from("/fixture/folder");
         let first = VolumePathKey {

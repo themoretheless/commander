@@ -926,20 +926,42 @@ pub fn reset_walk_log() {
 /// Active per-path epochs are cancelled before cache entries are removed, so
 /// an already-running walk cannot recreate data invalidated by this event.
 pub fn invalidate_size_cache(path: &Path) {
+    invalidate_size_cache_many([path]);
+}
+
+/// [`invalidate_size_cache`] for a batch of changed paths (one watcher
+/// poll): the caches are scanned once under one boundary acquisition, not
+/// once per path, so an event flood costs O(cache + paths × depth).
+pub(super) fn invalidate_size_cache_many<'a>(paths: impl IntoIterator<Item = &'a Path>) {
+    // Every directory that contains (or is) a changed path. Ancestors are
+    // added leaf-first, so meeting one already present means the rest of
+    // the chain is too.
+    let mut stale: HashSet<&Path> = HashSet::new();
+    for path in paths {
+        for ancestor in path.ancestors() {
+            if !stale.insert(ancestor) {
+                break;
+            }
+        }
+    }
+    if stale.is_empty() {
+        return;
+    }
+    let is_stale = |key: &VolumePathKey| stale.contains(key.path.as_path());
     let _boundary = lock_recover(scan_commit_boundary());
     {
         let mut epochs = lock_recover(active_path_epochs());
         for (key, epoch) in epochs.iter() {
-            if path.starts_with(&key.path)
+            if is_stale(key)
                 && let Some(epoch) = epoch.upgrade()
             {
                 epoch.cancel();
             }
         }
-        epochs.retain(|key, epoch| !path.starts_with(&key.path) && epoch.strong_count() > 0);
+        epochs.retain(|key, epoch| !is_stale(key) && epoch.strong_count() > 0);
     }
-    lock_recover(dir_size_cache()).retain(|key, _| !path.starts_with(&key.path));
-    lock_recover(walk_log()).retain(|key, _| !path.starts_with(&key.path));
+    lock_recover(dir_size_cache()).retain(|key, _| !is_stale(key));
+    lock_recover(walk_log()).retain(|key, _| !is_stale(key));
 }
 
 /// Save current cache to disk (best-effort, called from background threads).
