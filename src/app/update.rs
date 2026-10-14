@@ -211,6 +211,55 @@ fn newest_undoable_toast(toasts: &[crate::toasts::Toast]) -> Option<u64> {
         .map(crate::toasts::Toast::id)
 }
 
+/// The auto-generated smart folder name, suffixed ` (2)`, ` (3)`, ... when
+/// another search (a same-named folder elsewhere, or a clipped label)
+/// already holds it, since adding under a taken name replaces that search.
+/// Re-saving the identical search keeps its name and updates it in place.
+fn unique_smart_folder_name(
+    existing: &[crate::smart_folder::Definition],
+    base: String,
+    root: &std::path::Path,
+    query: &crate::query::Query,
+) -> String {
+    let free = |name: &str| {
+        existing
+            .iter()
+            .find(|def| def.name == name)
+            .is_none_or(|def| def.root == root && &def.query == query)
+    };
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base} ({n})"))
+        .find(|name| free(name))
+        .expect("an unused suffix exists")
+}
+
+/// Average file size once more than one file is picked. Folders report no
+/// size, so they are left out of the divisor.
+fn average_file_size(s: &crate::selection_summary::SelectionSummary) -> Option<u64> {
+    let files = s.count.saturating_sub(s.dir_count);
+    (files >= 2 && s.total_bytes > 0).then(|| s.total_bytes / files as u64)
+}
+
+/// The folder-tree width to persist after this frame: the rendered width
+/// once the user resized the sidebar, or the stored preference while the
+/// rendered width only reflects the window's cap.
+fn resized_tree_width(stored: f32, max: f32, actual: f32) -> f32 {
+    if (actual - stored.min(max)).abs() > 0.5 {
+        actual
+    } else {
+        stored
+    }
+}
+
+/// Open routes an archive file to the built-in viewer; a folder that merely
+/// has an archive-like name (`x.zip/`) opens as a folder.
+fn opens_in_archive_viewer(path: &std::path::Path) -> bool {
+    crate::archive::is_supported(path) && !path.is_dir()
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _frame_latency =
@@ -828,7 +877,7 @@ impl App {
         ctx: &egui::Context,
     ) {
         if let crate::ports::OpenRequest::OpenPath(path) = &request
-            && crate::archive::is_supported(path)
+            && opens_in_archive_viewer(path)
         {
             self.ws.emit_ui_request(UiRequest::Archive(path.clone()));
             ctx.request_repaint();
@@ -993,6 +1042,7 @@ impl App {
                 query,
             )
         };
+        let name = unique_smart_folder_name(&self.smart_folders_mut().items, name, &root, &query);
         self.smart_folders_mut()
             .add(crate::smart_folder::Definition {
                 name: name.clone(),
@@ -1047,12 +1097,8 @@ impl App {
                 crate::panel::format_size(s.total_bytes)
             ));
         }
-        // Average file size, once more than one item is picked.
-        if s.count >= 2 && s.total_bytes > 0 {
-            head.push_str(&format!(
-                " \u{00b7} avg {}",
-                crate::panel::format_size(s.total_bytes / s.count as u64)
-            ));
+        if let Some(avg) = average_file_size(&s) {
+            head.push_str(&format!(" \u{00b7} avg {}", crate::panel::format_size(avg)));
         }
         // Largest/oldest are only meaningful once more than one item is picked.
         if s.count >= 2 {
@@ -1261,6 +1307,9 @@ impl App {
                         });
                 });
             tree_actual_width = tree_resp.response.rect.width();
+            // Persist a user resize; a width only clamped by a narrow window
+            // keeps the stored preference.
+            self.tree_width = resized_tree_width(self.tree_width, tree_max, tree_actual_width);
         }
 
         // Compute half from remaining space (after tree)
@@ -1788,6 +1837,9 @@ mod tests {
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
+    use super::{
+        average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
+    };
     use super::{newest_undoable_toast, trash_undo_matches};
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2062,5 +2114,75 @@ mod tests {
             hidden_files_rejection_message(crate::panel::DirStatus::Partial),
             "the folder could not be read completely"
         );
+    }
+
+    #[test]
+    fn a_folder_named_like_an_archive_opens_as_a_folder() {
+        let dir = crate::testutil::TempDir::new();
+        let folder = dir.dir("photos.zip");
+        let file = dir.file("bundle.zip", "");
+        assert!(!opens_in_archive_viewer(&folder));
+        assert!(opens_in_archive_viewer(&file));
+    }
+
+    #[test]
+    fn a_clashing_smart_folder_name_gets_a_suffix_instead_of_replacing() {
+        let query = |text: &str| crate::query::Query {
+            predicates: vec![crate::query::Predicate::NameContains(text.into())],
+            ..Default::default()
+        };
+        let def = |name: &str, root: &str, text: &str| crate::smart_folder::Definition {
+            name: name.into(),
+            root: root.into(),
+            query: query(text),
+        };
+        let existing = vec![
+            def("Filter: src - rs", "/a/src", "rs"),
+            def("Filter: src - rs (2)", "/b/src", "rs"),
+        ];
+        let base = || "Filter: src - rs".to_string();
+        // Same search re-saved: keeps its name.
+        assert_eq!(
+            unique_smart_folder_name(&existing, base(), "/a/src".as_ref(), &query("rs")),
+            "Filter: src - rs"
+        );
+        // Same name, another root: the first free suffix.
+        assert_eq!(
+            unique_smart_folder_name(&existing, base(), "/c/src".as_ref(), &query("rs")),
+            "Filter: src - rs (3)"
+        );
+        assert_eq!(
+            unique_smart_folder_name(&existing, base(), "/b/src".as_ref(), &query("rs")),
+            "Filter: src - rs (2)"
+        );
+    }
+
+    #[test]
+    fn selection_average_leaves_folders_out() {
+        let one_file_one_folder = crate::selection_summary::SelectionSummary {
+            count: 2,
+            dir_count: 1,
+            total_bytes: 1_000,
+            ..Default::default()
+        };
+        assert_eq!(average_file_size(&one_file_one_folder), None);
+        let two_files_one_folder = crate::selection_summary::SelectionSummary {
+            count: 3,
+            dir_count: 1,
+            total_bytes: 1_000,
+            ..Default::default()
+        };
+        assert_eq!(average_file_size(&two_files_one_folder), Some(500));
+    }
+
+    #[test]
+    fn tree_width_persists_resizes_but_not_window_caps() {
+        // Window cap narrower than the preference: keep the preference.
+        assert_eq!(resized_tree_width(300.0, 200.0, 200.0), 300.0);
+        // Unchanged width: nothing to persist.
+        assert_eq!(resized_tree_width(220.0, 400.0, 220.0), 220.0);
+        // User dragged the sidebar.
+        assert_eq!(resized_tree_width(220.0, 400.0, 260.0), 260.0);
+        assert_eq!(resized_tree_width(300.0, 200.0, 150.0), 150.0);
     }
 }
