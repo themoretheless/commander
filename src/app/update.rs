@@ -184,6 +184,33 @@ fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bo
     tools.side == Some(side) && tools.any_open()
 }
 
+/// Whether `action` is the Trash undo recorded for exactly these delete
+/// results: every trashed item, with the version preserved for it.
+fn trash_undo_matches(
+    items: &[crate::workspace::DeleteItemResult],
+    action: &crate::undo::Action,
+) -> bool {
+    let crate::undo::Action::Trash { items: recorded } = action else {
+        return false;
+    };
+    let trashed = items
+        .iter()
+        .filter(|item| item.outcome == crate::ports::TrashItemOutcome::Trashed);
+    trashed.clone().count() == recorded.len()
+        && trashed.zip(recorded).all(|(item, recorded)| {
+            item.path == recorded.path && item.version.as_ref() == Some(&recorded.version)
+        })
+}
+
+/// The id of the newest toast that offers Undo.
+fn newest_undoable_toast(toasts: &[crate::toasts::Toast]) -> Option<u64> {
+    toasts
+        .iter()
+        .rev()
+        .find(|toast| toast.undoable)
+        .map(crate::toasts::Toast::id)
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _frame_latency =
@@ -601,10 +628,12 @@ impl App {
                 crate::toasts::ToastKind::Error,
             )
         };
+        // Only this delete's own history record may back the Undo: when it
+        // recorded none, the top entry is an older Trash.
         let undo_action = self
             .ws
             .top_undo_action()
-            .filter(|action| matches!(action, crate::undo::Action::Trash { .. }))
+            .filter(|action| trash_undo_matches(&outcome.items, action))
             .filter(|_| outcome.trashed > 0 && !outcome.indeterminate)
             .cloned();
         self.toast(ctx, kind, message, undo_action.is_some());
@@ -1653,6 +1682,9 @@ impl App {
             return;
         };
 
+        // Undo reverses the newest action, so only the newest undoable toast
+        // offers it; an older toast's button would undo something else.
+        let undo_toast = newest_undoable_toast(active);
         // Newest on top, in the nearest corner that preserves focus and errors.
         for (row, toast) in active.iter().rev().enumerate() {
             let y = stack.y + row as f32 * 44.0;
@@ -1683,7 +1715,7 @@ impl App {
                                         .size(12.0)
                                         .color(t.text_primary),
                                 );
-                                if toast.undoable {
+                                if undo_toast == Some(toast.id()) {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui
                                             .add(
@@ -1756,6 +1788,7 @@ mod tests {
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
+    use super::{newest_undoable_toast, trash_undo_matches};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -1899,6 +1932,71 @@ mod tests {
         // modal surface.
         assert!(!any_modal_surface_open(false, false));
         assert!(frame_policy(true, false, false).background_enabled());
+    }
+
+    fn version(path: &str, n: u64) -> crate::version_store::VersionRecord {
+        crate::version_store::VersionRecord {
+            operation_id: crate::operation::OperationId(format!("op-{n}")),
+            key: crate::operation::IdempotencyKey(format!("key-{n}")),
+            original: std::path::PathBuf::from(path),
+            stored: std::path::PathBuf::from(format!("stored-{n}")),
+            created_at_secs: n,
+        }
+    }
+
+    fn trashed(
+        path: &str,
+        version: Option<crate::version_store::VersionRecord>,
+    ) -> crate::workspace::DeleteItemResult {
+        crate::workspace::DeleteItemResult {
+            path: std::path::PathBuf::from(path),
+            outcome: crate::ports::TrashItemOutcome::Trashed,
+            version,
+        }
+    }
+
+    #[test]
+    fn delete_undo_attaches_only_its_own_trash_record() {
+        let older = crate::undo::Action::Trash {
+            items: vec![crate::undo::TrashedItem {
+                path: "/old".into(),
+                version: version("/old", 1),
+            }],
+        };
+        // This delete preserved no version, so it recorded no undo.
+        assert!(!trash_undo_matches(&[trashed("/new", None)], &older));
+        // A versioned delete matches the record it produced.
+        let own = crate::undo::Action::Trash {
+            items: vec![crate::undo::TrashedItem {
+                path: "/new".into(),
+                version: version("/new", 2),
+            }],
+        };
+        assert!(trash_undo_matches(
+            &[trashed("/new", Some(version("/new", 2)))],
+            &own
+        ));
+        assert!(!trash_undo_matches(
+            &[trashed("/new", Some(version("/new", 2)))],
+            &older
+        ));
+    }
+
+    #[test]
+    fn only_the_newest_undoable_toast_offers_undo() {
+        use crate::toasts::{Toast, ToastKind, ToastQueue};
+        let mut queue = ToastQueue::default();
+        queue.push(Toast::new(
+            "Moved 1 to Trash",
+            ToastKind::Success,
+            true,
+            0.0,
+        ));
+        queue.push(Toast::new("Renamed a", ToastKind::Success, true, 1.0));
+        queue.push(Toast::new("Copied path", ToastKind::Info, false, 2.0));
+        let newest = queue.active()[1].id();
+        assert_eq!(newest_undoable_toast(queue.active()), Some(newest));
+        assert_eq!(newest_undoable_toast(&[]), None);
     }
 
     #[test]
