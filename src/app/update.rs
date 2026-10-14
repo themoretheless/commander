@@ -430,6 +430,56 @@ fn selection_hud_head(
     head
 }
 
+/// Where the egui fallback context menu opens: below the row for a
+/// keyboard invocation (its anchor is the row rect relative to `origin`, the
+/// viewport's top-left), otherwise at the pointer.
+fn fallback_menu_pos(
+    invocation: &crate::ports::ContextMenuInvocation,
+    origin: egui::Pos2,
+    pointer: Option<egui::Pos2>,
+    fallback: egui::Pos2,
+) -> egui::Pos2 {
+    match (invocation.trigger, invocation.anchor) {
+        (
+            crate::ports::ContextMenuTrigger::Keyboard,
+            crate::ports::ContextMenuAnchor::ViewRect(rect),
+        ) => origin + egui::vec2(rect.min_x as f32, rect.max_y as f32),
+        _ => pointer.unwrap_or(fallback),
+    }
+}
+
+/// Keyboard focus bookkeeping for the fallback context menu, kept in egui
+/// temp data under [`FALLBACK_MENU_FOCUS`] while the menu is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FallbackMenuFocus {
+    /// The row that opened the menu; it gets focus back when the menu closes.
+    restore: egui::Id,
+    /// Whether the first item already took focus.
+    armed: bool,
+}
+
+const FALLBACK_MENU_FOCUS: &str = "fallback_context_menu_focus";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuFocusStep {
+    FocusFirst,
+    Keep,
+    Close,
+}
+
+/// The fallback menu takes focus on its first item when it opens, like a
+/// native menu, and closes once focus leaves it (Tab out, a click on another
+/// widget), so it never floats unfocused while keys act on the list.
+const fn fallback_menu_focus_step(armed: bool, focus_in_menu: bool) -> MenuFocusStep {
+    if !armed {
+        MenuFocusStep::FocusFirst
+    } else if focus_in_menu {
+        MenuFocusStep::Keep
+    } else {
+        MenuFocusStep::Close
+    }
+}
+
 /// Height a toast row takes before it has been measured once.
 const TOAST_ROW_HEIGHT: f32 = 44.0;
 /// Gap between stacked toasts.
@@ -669,10 +719,22 @@ impl App {
             return;
         }
         if !self.context_menu.presents_native_menu() {
-            let pos = ctx
-                .pointer_latest_pos()
-                .unwrap_or_else(|| ctx.content_rect().center());
+            let pos = fallback_menu_pos(
+                &request.invocation,
+                ctx.input(|input| input.viewport_rect().min),
+                ctx.pointer_latest_pos(),
+                ctx.content_rect().center(),
+            );
             self.fallback_menu = Some((request.panel, request.invocation.target.path.clone(), pos));
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    egui::Id::new(FALLBACK_MENU_FOCUS),
+                    FallbackMenuFocus {
+                        restore: request.focus_id,
+                        armed: false,
+                    },
+                );
+            });
             return;
         }
         let context_menu = std::rc::Rc::clone(&self.context_menu);
@@ -689,16 +751,19 @@ impl App {
     /// Context menu drawn by egui where no native menu exists (Linux, Windows).
     fn show_fallback_context_menu(&mut self, ctx: &egui::Context) {
         use crate::provider_runtime::ContextMenuUiEffect as Effect;
+        let focus_key = egui::Id::new(FALLBACK_MENU_FOCUS);
         // A modal opened from the keyboard (F8, F2...) dismisses the menu,
         // which would otherwise float above it with live items.
         if self.has_modal_surface() {
             self.fallback_menu = None;
         }
         let Some((panel, path, pos)) = self.fallback_menu.clone() else {
+            ctx.data_mut(|data| data.remove::<FallbackMenuFocus>(focus_key));
             return;
         };
         let t = self.colors;
         let mut effect: Option<Effect> = None;
+        let mut items: Vec<egui::Id> = Vec::new();
         let area = egui::Area::new(egui::Id::new("fallback_context_menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
@@ -711,15 +776,16 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_min_width(180.0);
                         let mut item = |ui: &mut egui::Ui, label: &str, value: Effect| {
-                            if ui
-                                .add(
-                                    egui::Button::new(label)
-                                        .fill(Color32::TRANSPARENT)
-                                        .stroke(Stroke::NONE)
-                                        .min_size(Vec2::new(ui.available_width(), 24.0)),
-                                )
-                                .clicked()
-                            {
+                            let response = ui.add(
+                                egui::Button::new(label)
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::NONE)
+                                    .min_size(Vec2::new(ui.available_width(), 24.0)),
+                            );
+                            items.push(response.id);
+                            // The first item is focused on open, so Space
+                            // (select, Quick Look) must not run it; Enter does.
+                            if super::confirm_dialog::confirm_clicked(ui, &response) {
                                 effect = Some(value);
                             }
                         };
@@ -740,10 +806,37 @@ impl App {
                         item(ui, "Refresh", Effect::RefreshPanels);
                     });
             });
-        let dismissed = ctx.input(|input| input.key_pressed(egui::Key::Escape))
-            || (area.response.clicked_elsewhere() && effect.is_none());
+        let mut focus = ctx.data(|data| data.get_temp::<FallbackMenuFocus>(focus_key));
+        let focus_in_menu = ctx
+            .memory(|memory| memory.focused())
+            .is_some_and(|id| items.contains(&id));
+        let escaped = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+        let mut focus_lost = false;
+        match focus.map(|focus| fallback_menu_focus_step(focus.armed, focus_in_menu)) {
+            Some(MenuFocusStep::FocusFirst) => {
+                if let Some(first) = items.first() {
+                    ctx.memory_mut(|memory| memory.request_focus(*first));
+                }
+                if let Some(focus) = focus.as_mut() {
+                    focus.armed = true;
+                    ctx.data_mut(|data| data.insert_temp(focus_key, *focus));
+                }
+            }
+            Some(MenuFocusStep::Close) => focus_lost = true,
+            Some(MenuFocusStep::Keep) | None => {}
+        }
+        let dismissed =
+            escaped || focus_lost || (area.response.clicked_elsewhere() && effect.is_none());
         if effect.is_some() || dismissed {
             self.fallback_menu = None;
+            ctx.data_mut(|data| data.remove::<FallbackMenuFocus>(focus_key));
+            // Like the native menu, hand focus back to the row, unless the
+            // user moved it elsewhere (Tab, a click) or a modal now owns it.
+            if (escaped || effect.is_some())
+                && let Some(focus) = focus
+            {
+                ctx.memory_mut(|memory| memory.request_focus(focus.restore));
+            }
         }
         if effect.is_some() {
             self.apply_context_menu_effect(panel, effect, ctx);
@@ -879,7 +972,14 @@ impl App {
         self.ws.left.drag.clear_drop_target();
         self.ws.right.drag.clear_drop_target();
 
-        self.handle_keys(ctx);
+        // The fallback context menu owns the keyboard while it is open:
+        // arrows, Enter and Delete act on its items, not the list behind it.
+        if self.fallback_menu.is_some() {
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+        } else {
+            self.handle_keys(ctx);
+        }
         self.preload_images(ctx);
         {
             let c = ctx.clone();
@@ -2144,6 +2244,7 @@ mod tests {
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
+    use super::{MenuFocusStep, fallback_menu_focus_step, fallback_menu_pos};
     use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
@@ -2789,6 +2890,64 @@ mod tests {
         assert_eq!(
             toast_live_region(ToastKind::Success),
             (Role::Status, Live::Polite)
+        );
+    }
+
+    #[test]
+    fn fallback_menu_takes_focus_once_and_closes_when_focus_leaves() {
+        assert_eq!(
+            fallback_menu_focus_step(false, false),
+            MenuFocusStep::FocusFirst
+        );
+        assert_eq!(fallback_menu_focus_step(true, true), MenuFocusStep::Keep);
+        assert_eq!(fallback_menu_focus_step(true, false), MenuFocusStep::Close);
+    }
+
+    #[test]
+    fn keyboard_fallback_menu_opens_below_the_row_not_at_the_pointer() {
+        use crate::ports::{
+            ContextMenuAnchor, ContextMenuInvocation, ContextMenuTarget, ContextMenuTrigger,
+            ContextMenuViewPoint, ContextMenuViewRect,
+        };
+        let path = std::path::PathBuf::from("/tmp/context-target");
+        let target = ContextMenuTarget {
+            expected: crate::path_identity::PathIdentity::missing(&path),
+            path,
+        };
+        let keyboard = ContextMenuInvocation {
+            target: target.clone(),
+            trigger: ContextMenuTrigger::Keyboard,
+            anchor: ContextMenuAnchor::ViewRect(ContextMenuViewRect {
+                min_x: 10.0,
+                min_y: 100.0,
+                max_x: 400.0,
+                max_y: 120.0,
+                native_points_per_ui_point: 1.0,
+            }),
+        };
+        let origin = egui::pos2(5.0, 7.0);
+        let pointer = Some(egui::pos2(600.0, 500.0));
+        let center = egui::pos2(300.0, 300.0);
+        assert_eq!(
+            fallback_menu_pos(&keyboard, origin, pointer, center),
+            egui::pos2(15.0, 127.0)
+        );
+        let pointer_invocation = ContextMenuInvocation {
+            target,
+            trigger: ContextMenuTrigger::Pointer,
+            anchor: ContextMenuAnchor::ViewPoint(ContextMenuViewPoint {
+                x: 1.0,
+                y: 2.0,
+                native_points_per_ui_point: 1.0,
+            }),
+        };
+        assert_eq!(
+            fallback_menu_pos(&pointer_invocation, origin, pointer, center),
+            egui::pos2(600.0, 500.0)
+        );
+        assert_eq!(
+            fallback_menu_pos(&pointer_invocation, origin, None, center),
+            center
         );
     }
 }
