@@ -253,7 +253,8 @@ impl App {
                         ),
                     );
                     // Take focus on open so the sheet is announced: the
-                    // command when it can run, else Cancel.
+                    // command when it can run, else Cancel. Space on the
+                    // focused command is ignored; Enter still confirms.
                     if just_opened {
                         if can_execute {
                             primary.request_focus();
@@ -261,7 +262,7 @@ impl App {
                             cancel_button.request_focus();
                         }
                     }
-                    if primary.clicked() {
+                    if super::confirm_dialog::confirm_clicked(ui, &primary) {
                         confirm = true;
                     }
                 });

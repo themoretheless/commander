@@ -216,6 +216,23 @@ const fn should_focus_primary(already_focused: bool, enabled: bool, focus_in_dia
     !already_focused && enabled && !focus_in_dialog
 }
 
+/// Whether a click on an auto-focused confirm button should run. egui
+/// clicks a focused button on Space as well as Enter, and Space is a
+/// habitual file-manager key (select, Quick Look), so a Space press on the
+/// focused button is ignored; Enter and the pointer still confirm.
+pub(super) const fn honours_click(clicked: bool, space_pressed: bool, has_focus: bool) -> bool {
+    clicked && !(space_pressed && has_focus)
+}
+
+/// [`honours_click`] for a live button response.
+pub(super) fn confirm_clicked(ui: &egui::Ui, response: &egui::Response) -> bool {
+    honours_click(
+        response.clicked(),
+        ui.input(|i| i.key_pressed(egui::Key::Space)),
+        response.has_focus(),
+    )
+}
+
 /// Why the primary button is disabled, for its hover text; the first
 /// failing gate wins. `None` when it is enabled.
 fn primary_blocker(
@@ -906,7 +923,8 @@ impl App {
                             None => primary,
                         };
                         // Focus the primary button once so the sheet is
-                        // announced; Enter on it confirms exactly as before.
+                        // announced; Enter on it confirms exactly as before,
+                        // while Space on it is ignored (see `honours_click`).
                         let focused_id = egui::Id::new(CONFIRM_FOCUSED);
                         let already = ctx.data(|d| d.get_temp::<bool>(focused_id).is_some());
                         if should_focus_primary(
@@ -917,7 +935,7 @@ impl App {
                             primary.request_focus();
                             ctx.data_mut(|d| d.insert_temp(focused_id, true));
                         }
-                        if primary.clicked() {
+                        if confirm_clicked(ui, &primary) {
                             if dry_run && supports_dry_run {
                                 self.dry_run_pending_op(ctx, title, count, total);
                             } else {
@@ -1636,9 +1654,9 @@ mod tests {
         conflict_row_text, delete_not_started_message, dialog_enter_suppressed, dialog_heading,
         dropped_items_note, dry_run_supported, durability_controls, elided_name, flat_list_header,
         flat_row_accessible_label, flat_total, flow_rows, flow_transferred, focus_within_layer,
-        is_conflict_row, normalization_note, not_enough_space_message, nothing_left_message,
-        primary_blocker, should_focus_primary, source_header, unavailable_size_message,
-        unavailable_space_message,
+        honours_click, is_conflict_row, normalization_note, not_enough_space_message,
+        nothing_left_message, primary_blocker, should_focus_primary, source_header,
+        unavailable_size_message, unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -2042,6 +2060,23 @@ mod tests {
             durability_controls(false, DurabilityProfile::Versioned),
             (true, true)
         );
+    }
+
+    #[test]
+    fn space_on_focused_confirm_button_does_not_confirm() {
+        assert!(
+            honours_click(true, false, true),
+            "Enter or pointer confirms"
+        );
+        assert!(
+            !honours_click(true, true, true),
+            "Space on the focused button"
+        );
+        assert!(
+            honours_click(true, true, false),
+            "pointer click while Space held elsewhere"
+        );
+        assert!(!honours_click(false, false, true));
     }
 
     #[test]
