@@ -48,6 +48,95 @@ fn context_menu_candidate(
     })
 }
 
+/// Filtered rows `[first, last)` to lay out this frame. `scroll_top` is the
+/// viewport top measured from the first file row (below the ".." row), so it
+/// is negative while the ".." row is in view. `ensure_row` forces that row
+/// into the window (keyboard scroll, keyboard context menu).
+fn visible_rows(
+    scroll_top: f32,
+    viewport_h: f32,
+    row_h: f32,
+    total_rows: usize,
+    ensure_row: Option<usize>,
+) -> (usize, usize) {
+    let page = (viewport_h / row_h).ceil() as usize + 2;
+    let mut first = ((scroll_top.max(0.0) / row_h).floor() as usize).min(total_rows);
+    let mut last =
+        (((scroll_top + viewport_h).max(0.0) / row_h).ceil() as usize + 1).min(total_rows);
+    if let Some(row) = ensure_row.filter(|_| total_rows > 0) {
+        if row < first {
+            first = row;
+            last = (first + page).min(total_rows);
+        } else if row >= last {
+            last = (row + 1).min(total_rows);
+            first = last.saturating_sub(page);
+        }
+    }
+    (first, last)
+}
+
+/// Filtered row the list must bring into view, if any. Cursor 0 is the ".."
+/// row, which is scrolled to directly, so it never forces the row window.
+fn cursor_row_to_reveal(cursor: usize, reveal: bool) -> Option<usize> {
+    (reveal && cursor > 0).then(|| cursor - 1)
+}
+
+/// Name column budget in characters. File names are proportional text, so
+/// the budget uses a measured average glyph width, not one em per glyph.
+fn name_char_budget(name_width: f32, avg_glyph_width: f32) -> usize {
+    if avg_glyph_width <= 0.0 {
+        return 1;
+    }
+    ((name_width / avg_glyph_width).floor() as usize).max(1)
+}
+
+/// Map character ranges matched in `name` onto `display`, the output of
+/// `truncate_preserving_extension` (`head + "…" + tail`). Matches inside the
+/// elided middle land on the ellipsis.
+fn map_ranges_to_display(
+    name: &str,
+    display: &str,
+    ranges: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
+    let name_len = name.chars().count();
+    let display_len = display.chars().count();
+    if display_len >= name_len {
+        return ranges.to_vec();
+    }
+    if display_len == 0 {
+        return Vec::new();
+    }
+    let head = name
+        .chars()
+        .zip(display.chars())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(display_len - 1);
+    let tail = display_len - 1 - head;
+    let tail_start = name_len - tail;
+    let map = |idx: usize| {
+        if idx < head {
+            idx
+        } else if idx >= tail_start {
+            idx - tail_start + head + 1
+        } else {
+            head
+        }
+    };
+    let mut mapped: Vec<(usize, usize)> = Vec::new();
+    for &(start, end) in ranges {
+        if start >= end {
+            continue;
+        }
+        let (start, end) = (map(start), map(end - 1) + 1);
+        match mapped.last_mut() {
+            Some(last) if last.1 >= start => last.1 = last.1.max(end),
+            _ => mapped.push((start, end)),
+        }
+    }
+    mapped
+}
+
 impl App {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_file_list(
@@ -63,7 +152,10 @@ impl App {
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
     ) -> Option<ui_state::ContextMenuCandidate> {
+        // Only claim Shift+F10 when the cursor is on a file row; on ".." or an
+        // empty list there is nothing for the menu to target.
         let keyboard_context_menu_requested = is_active
+            && panel.cursor() > 0
             && ui.is_enabled()
             && crate::accessibility::text_input_state(ui.ctx())
                 .mode()
@@ -80,7 +172,9 @@ impl App {
             .frame(Frame::NONE)
             .show(ui, |ui| Self::render_status_bar(ui, panel, t, compare));
         egui::ScrollArea::vertical()
-            .id_salt(format!("file_list_{}", panel_side))
+            // Per folder, so a newly entered folder does not inherit the
+            // previous folder's pixel offset.
+            .id_salt(("file_list", panel_side, panel.current_path.clone()))
             .auto_shrink([false; 2])
             .animated(!reduced_motion)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
@@ -89,6 +183,10 @@ impl App {
 
                 // ".." row — go up one directory (cursor == 0)
                 let can_go_up = panel.current_path.parent().is_some();
+                if !can_go_up && panel.cursor() == 0 && panel.filtered_count() > 0 {
+                    // No ".." row at the root: keep the cursor on a visible row.
+                    panel.set_cursor(1);
+                }
                 if can_go_up {
                     let is_cursor_on_up = panel.cursor() == 0;
                     let up_bg = if is_cursor_on_up && is_active {
@@ -125,6 +223,12 @@ impl App {
                         )
                     });
 
+                    if is_cursor_on_up && panel.scroll_to_cursor() {
+                        // Keyboard moved onto "..": reveal it and settle the
+                        // request here, since no file row holds the cursor.
+                        ui.scroll_to_rect(up_row.rect, None);
+                        panel.set_scroll_to_cursor(false);
+                    }
                     if up_row.double_clicked() {
                         panel.go_up();
                     } else if up_row.clicked() {
@@ -228,12 +332,16 @@ impl App {
                     (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
                 let total_rows = filtered.len();
                 let viewport = ui.clip_rect();
-                let scroll_top = viewport.top() - ui.min_rect().top();
+                // Measured from where file rows start, i.e. below "..".
+                let scroll_top = viewport.top() - ui.cursor().top();
 
+                // Both panes share one drag flag and the same y range, so the
+                // pointer must also be over this pane horizontally.
                 if dragging
                     && panel.current_path.is_dir()
                     && !crate::volume_profile::profile(&panel.current_path).read_only
                     && let Some(pointer) = ui.ctx().input(|input| input.pointer.hover_pos())
+                    && viewport.x_range().contains(pointer.x)
                 {
                     let velocity = crate::operation_view::edge_autoscroll_velocity(
                         pointer.y,
@@ -267,27 +375,21 @@ impl App {
                     0
                 };
 
-                // Which rows are visible
-                let mut first_visible = ((scroll_top / row_h).floor() as usize).min(total_rows);
-                let mut last_visible =
-                    ((scroll_top + viewport.height()) / row_h).ceil() as usize + 1;
-                last_visible = last_visible.min(total_rows);
-
-                // Ensure cursor row is in visible range when keyboard scrolling
-                let cursor_file_idx = if cursor > 0 { cursor - 1 } else { 0 };
-                if scroll_pending && total_rows > 0 {
-                    if cursor_file_idx < first_visible {
-                        first_visible = cursor_file_idx;
-                        last_visible =
-                            (first_visible + ((viewport.height() / row_h).ceil() as usize) + 2)
-                                .min(total_rows);
-                    } else if cursor_file_idx >= last_visible {
-                        last_visible = (cursor_file_idx + 1).min(total_rows);
-                        let visible_count = ((viewport.height() / row_h).ceil() as usize) + 2;
-                        first_visible = last_visible.saturating_sub(visible_count);
-                    }
-                }
+                // Which rows are visible. The cursor row is forced into the
+                // window for keyboard scrolling and for a keyboard context
+                // menu, which can only open on a laid-out row.
+                let reveal_cursor = scroll_pending || keyboard_context_menu_requested;
+                let (first_visible, last_visible) = visible_rows(
+                    scroll_top,
+                    viewport.height(),
+                    row_h,
+                    total_rows,
+                    cursor_row_to_reveal(cursor, reveal_cursor),
+                );
                 panel.set_scroll_anchor(first_visible);
+                let avg_glyph_width = ui.ctx().fonts_mut(|fonts| {
+                    fonts.glyph_width(&egui::FontId::proportional(metrics.name_pt), 'n')
+                });
 
                 // Space before visible rows
                 if first_visible > 0 {
@@ -385,7 +487,7 @@ impl App {
                     }
 
                     // Scroll to cursor row when navigating with keyboard
-                    if is_cursor && scroll_pending {
+                    if is_cursor && reveal_cursor {
                         ui.scroll_to_rect(row_rect, Some(Align::Center));
                         scrolled = true;
                     }
@@ -550,12 +652,12 @@ impl App {
                         let responsive =
                             crate::accessibility::file_row_layout(ui.available_width());
                         let max_name_chars =
-                            (responsive.name_width / metrics.name_pt).floor() as usize;
+                            name_char_budget(responsive.name_width, avg_glyph_width);
                         let display_name = crate::display_name::truncate_preserving_extension(
                             &entry.name,
-                            max_name_chars.max(1),
+                            max_name_chars,
                         );
-                        let shortened = matches!(&display_name, std::borrow::Cow::Owned(_));
+                        let shortened = display_name.as_ref() != entry.name;
                         let name_label = if query.is_empty() {
                             egui::Label::new(
                                 egui::RichText::new(display_name.as_ref())
@@ -563,9 +665,19 @@ impl App {
                                     .color(name_color),
                             )
                         } else {
+                            // Score the full name (what the filter matched) and
+                            // carry the hits through the truncation.
+                            let ranges = crate::fuzzy::score(&query, &entry.name)
+                                .map(|m| m.matched_ranges)
+                                .unwrap_or_default();
+                            let ranges = if shortened {
+                                map_ranges_to_display(&entry.name, &display_name, &ranges)
+                            } else {
+                                ranges
+                            };
                             egui::Label::new(highlight_name_job(
                                 display_name.as_ref(),
-                                &query,
+                                &ranges,
                                 name_color,
                                 t.accent,
                                 metrics.name_pt,
@@ -671,7 +783,7 @@ impl App {
                     }
 
                     // Drag start — selection resolved after the loop
-                    if row_resp.drag_started() {
+                    if row_resp.drag_started_by(egui::PointerButton::Primary) {
                         pending_cursor = Some(row_cursor);
                         drag_anchor = Some(entry.path.clone());
                     }
@@ -925,19 +1037,16 @@ impl App {
 }
 
 /// Build a file name as a [`LayoutJob`], tinting the characters the fuzzy
-/// filter matched in `accent` so the user sees why the row survived the filter.
-/// Falls back to a flat `base`-coloured name when nothing matches.
+/// filter matched (`ranges`, char indices into `name`) in `accent` so the
+/// user sees why the row survived the filter.
 fn highlight_name_job(
     name: &str,
-    query: &str,
+    ranges: &[(usize, usize)],
     base: Color32,
     accent: Color32,
     size: f32,
 ) -> egui::text::LayoutJob {
     use egui::text::{LayoutJob, TextFormat};
-    let ranges = crate::fuzzy::score(query, name)
-        .map(|m| m.matched_ranges)
-        .unwrap_or_default();
     let font = egui::FontId::proportional(size);
     let mut job = LayoutJob::default();
     let mut buf = [0u8; 4];
@@ -955,4 +1064,63 @@ fn highlight_name_job(
         );
     }
     job
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cursor_row_to_reveal, map_ranges_to_display, name_char_budget, visible_rows};
+
+    #[test]
+    fn row_window_is_measured_below_the_parent_row() {
+        // ".." still in view: start at the first file row.
+        assert_eq!(visible_rows(-26.0, 290.0, 29.0, 100, None), (0, 11));
+        // Scrolled exactly ten rows past the header.
+        assert_eq!(visible_rows(290.0, 290.0, 29.0, 100, None).0, 10);
+        // Partially visible row above stays in the window.
+        assert_eq!(visible_rows(300.0, 290.0, 29.0, 100, None).0, 10);
+    }
+
+    #[test]
+    fn revealed_row_is_pulled_into_the_window() {
+        let (first, last) = visible_rows(2900.0, 290.0, 29.0, 200, Some(3));
+        assert_eq!(first, 3);
+        assert!(last > 3);
+        let (first, last) = visible_rows(0.0, 290.0, 29.0, 200, Some(150));
+        assert_eq!(last, 151);
+        assert!(first <= 150);
+        assert_eq!(visible_rows(0.0, 290.0, 29.0, 0, Some(5)), (0, 0));
+    }
+
+    #[test]
+    fn parent_row_cursor_never_forces_the_file_window() {
+        assert_eq!(cursor_row_to_reveal(0, true), None);
+        assert_eq!(cursor_row_to_reveal(1, true), Some(0));
+        assert_eq!(cursor_row_to_reveal(4, false), None);
+    }
+
+    #[test]
+    fn name_budget_uses_average_glyph_width() {
+        // A 300px column at ~6.5px per glyph fits ~46 chars, not 300/13 = 23.
+        assert_eq!(name_char_budget(300.0, 6.5), 46);
+        assert_eq!(name_char_budget(5.0, 6.5), 1);
+        assert_eq!(name_char_budget(300.0, 0.0), 1);
+    }
+
+    #[test]
+    fn matches_are_mapped_through_the_ellipsis() {
+        let name = "abcdefghij.txt";
+        let display = crate::display_name::truncate_preserving_extension(name, 8);
+        assert_eq!(display, "abc\u{2026}.txt");
+        // "a" stays, "f" (elided) lands on the ellipsis, "t" maps into the suffix.
+        assert_eq!(
+            map_ranges_to_display(name, &display, &[(0, 1), (5, 6), (11, 12)]),
+            vec![(0, 1), (3, 4), (5, 6)]
+        );
+        // Untruncated names keep their ranges.
+        assert_eq!(
+            map_ranges_to_display("a.txt", "a.txt", &[(0, 1)]),
+            vec![(0, 1)]
+        );
+        assert!(map_ranges_to_display(name, "", &[(0, 1)]).is_empty());
+    }
 }
