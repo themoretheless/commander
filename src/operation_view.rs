@@ -327,7 +327,11 @@ mod tests {
 
     #[test]
     fn short_viewport_scrolls_toward_the_nearer_edge() {
+        // 40 lies in both unclamped zones (>= 30, < 44); it is nearer the
+        // bottom edge, so it must scroll down rather than let the top zone win.
+        assert!(edge_autoscroll_velocity(40.0, 0.0, 60.0, 44.0, 100.0) < 0.0);
         assert!(edge_autoscroll_velocity(50.0, 0.0, 60.0, 44.0, 100.0) < 0.0);
+        assert!(edge_autoscroll_velocity(20.0, 0.0, 60.0, 44.0, 100.0) > 0.0);
         assert!(edge_autoscroll_velocity(10.0, 0.0, 60.0, 44.0, 100.0) > 0.0);
     }
 
