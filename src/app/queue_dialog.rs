@@ -1,4 +1,4 @@
-//! Unified, non-modal Operations Center for queue, history, failures, and
+//! Unified, non-modal Operations panel for queue, history, failures, and
 //! durable recovery. The full-height side surface keeps normal file work
 //! available and replaces three competing floating windows.
 
@@ -62,6 +62,27 @@ fn terminal_failure_notice(
 fn undo_last_label(verb: &str, items: usize) -> String {
     let noun = if items == 1 { "item" } else { "items" };
     format!("Undo last: {verb} {items} {noun}")
+}
+
+/// Tab to show when a new failure arrives: an open panel keeps the tab the
+/// user chose (the Errors badge already counts it); a closed one opens on
+/// Errors.
+fn tab_for_new_failure(open: bool, current: OperationsTab) -> OperationsTab {
+    if open { current } else { OperationsTab::Errors }
+}
+
+/// Accessible name for a per-row button: the action plus which row it acts
+/// on, so a list of identical "Dismiss" buttons can be told apart.
+fn row_action_label(action: &str, row: &str) -> String {
+    format!("{action}: {row}")
+}
+
+/// Give `response` the accessible name `label` (glyph and repeated
+/// buttons otherwise announce only their visible text).
+fn with_accessible_label(response: egui::Response, label: &str) -> egui::Response {
+    let enabled = response.enabled();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response
 }
 
 impl App {
@@ -129,8 +150,8 @@ impl App {
             notice.created_at_millis,
         );
         self.operation_failures.upsert(notice);
+        self.operations_tab = tab_for_new_failure(self.show_operations_center, self.operations_tab);
         self.show_operations_center = true;
-        self.operations_tab = OperationsTab::Errors;
     }
 
     pub(crate) fn show_operations_center(&mut self, ui: &mut egui::Ui) {
@@ -208,15 +229,13 @@ impl App {
                         );
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add_sized(
-                                [24.0, 24.0],
-                                egui::Button::new(
-                                    egui::RichText::new("\u{00d7}").color(t.text_muted),
-                                )
+                        let close_button = ui.add_sized(
+                            [24.0, 24.0],
+                            egui::Button::new(egui::RichText::new("\u{00d7}").color(t.text_muted))
                                 .frame(false),
-                            )
-                            .on_hover_text("Close Operations Center")
+                        );
+                        if with_accessible_label(close_button, "Close Operations panel")
+                            .on_hover_text("Close Operations panel")
                             .clicked()
                         {
                             close = true;
@@ -251,7 +270,8 @@ impl App {
                                     },
                                 ))
                                 .fill(if selected { t.accent } else { t.bg_card })
-                                .corner_radius(CornerRadius::ZERO),
+                                .corner_radius(CornerRadius::ZERO)
+                                .selected(selected),
                             )
                             .clicked()
                         {
@@ -518,15 +538,24 @@ impl App {
         // Undo is global (the top of the undo stack), not tied to a notice,
         // so the button names the action it would revert.
         let undo_label = self.ws.top_undo_action().map(undo_label_for);
+        let active_operation = self
+            .ws
+            .active_transfer_view()
+            .map(|active| active.operation_id.clone());
         let mut view = None;
-        let mut retry = None;
+        let mut recover = None;
         let mut rollback = None;
         let mut dismiss = None;
+        let mut dismiss_all = false;
         let mut undo = false;
+        if notices.len() > 1 && ui.small_button("Dismiss all").clicked() {
+            dismiss_all = true;
+        }
         egui::ScrollArea::vertical()
             .id_salt("ops_errors")
             .show(ui, |ui| {
             for notice in notices {
+                let row = notice.summary.label();
                 ui.label(
                     egui::RichText::new(notice.summary.label())
                         .size(11.0)
@@ -546,11 +575,22 @@ impl App {
                     .color(t.accent_red),
                 );
                 ui.horizontal_wrapped(|ui| {
-                    if ui.small_button("View").clicked() {
+                    if with_accessible_label(ui.small_button("View"), &row_action_label("View", &row))
+                        .clicked()
+                    {
                         view = Some(notice.operation_id.clone());
                     }
-                    if ui.small_button("Retry").clicked() {
-                        retry = Some(notice.operation_id.clone());
+                    // View already opens the recovery inspector for a
+                    // finished operation; only the active one needs both.
+                    if active_operation.as_ref() == Some(&notice.operation_id)
+                        && with_accessible_label(
+                            ui.small_button("Recover\u{2026}"),
+                            &row_action_label("Recover", &row),
+                        )
+                        .on_hover_text("Open the recovery inspector for this operation")
+                        .clicked()
+                    {
+                        recover = Some(notice.operation_id.clone());
                     }
                     if ui
                         .add_enabled(
@@ -566,14 +606,21 @@ impl App {
                         undo = true;
                     }
                     let roll_back = crate::operation_view::CancellationAction::RollBack;
-                    if ui
-                        .small_button(roll_back.label())
-                        .on_hover_text(roll_back.consequence())
-                        .clicked()
+                    if with_accessible_label(
+                        ui.small_button(roll_back.label()),
+                        &row_action_label(roll_back.label(), &row),
+                    )
+                    .on_hover_text(roll_back.consequence())
+                    .clicked()
                     {
                         rollback = Some(notice.operation_id.clone());
                     }
-                    if ui.small_button("Dismiss").clicked() {
+                    if with_accessible_label(
+                        ui.small_button("Dismiss"),
+                        &row_action_label("Dismiss", &row),
+                    )
+                    .clicked()
+                    {
                         dismiss = Some(notice.attempt_id);
                     }
                 });
@@ -588,12 +635,13 @@ impl App {
                 .active_transfer_view()
                 .is_some_and(|active| active.operation_id == operation_id);
             if active {
-                self.show_operations_center = false;
+                // The live transfer's details render on the Queue tab.
+                self.operations_tab = OperationsTab::Queue;
             } else {
                 self.open_recovery_operation(operation_id, RecoveryDetail::Inspect);
             }
         }
-        if let Some(operation_id) = retry {
+        if let Some(operation_id) = recover {
             self.open_recovery_operation(operation_id, RecoveryDetail::Inspect);
         }
         if let Some(operation_id) = rollback {
@@ -604,6 +652,17 @@ impl App {
         }
         if let Some(attempt_id) = dismiss {
             self.operation_failures.dismiss(attempt_id);
+        }
+        if dismiss_all {
+            let attempts = self
+                .operation_failures
+                .notices()
+                .iter()
+                .map(|notice| notice.attempt_id)
+                .collect::<Vec<_>>();
+            for attempt_id in attempts {
+                self.operation_failures.dismiss(attempt_id);
+            }
         }
     }
 
@@ -643,9 +702,29 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        mark_failure_notice_seen, terminal_failure_notice, undo_label_for, undo_last_label,
-        unseen_failure_notice,
+        OperationsTab, mark_failure_notice_seen, row_action_label, tab_for_new_failure,
+        terminal_failure_notice, undo_label_for, undo_last_label, unseen_failure_notice,
     };
+
+    #[test]
+    fn new_failure_keeps_the_open_panel_on_the_users_tab() {
+        assert_eq!(
+            tab_for_new_failure(true, OperationsTab::History),
+            OperationsTab::History
+        );
+        assert_eq!(
+            tab_for_new_failure(false, OperationsTab::History),
+            OperationsTab::Errors
+        );
+    }
+
+    #[test]
+    fn row_buttons_name_the_row_they_act_on() {
+        assert_eq!(
+            row_action_label("Dismiss", "Copy 2 items"),
+            "Dismiss: Copy 2 items"
+        );
+    }
     use std::path::PathBuf;
 
     #[test]
