@@ -115,6 +115,12 @@ pub fn dir_size_recursive(path: &Path) -> u64 {
 /// only the destination root created by this call.
 pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir(dst)?;
+    fill_new_dir(src, dst)
+}
+
+/// Copy `src`'s contents into the just-created, empty `dst`, removing `dst`
+/// again if the copy fails part-way.
+fn fill_new_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     if let Err(copy_error) = copy_dir_contents(src, dst) {
         return match std::fs::remove_dir_all(dst) {
             Ok(()) => Err(copy_error),
@@ -152,8 +158,13 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Recreate the symlink `src` at `dst` without following it.
 pub fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     let target = std::fs::read_link(src)?;
-    // Windows needs to know whether the link points at a directory.
+    // Windows needs to know whether the link points at a directory. Elsewhere
+    // the answer is unused, so skip the following stat, which can block on a
+    // dead network mount behind the link.
+    #[cfg(windows)]
     let directory = std::fs::metadata(src).is_ok_and(|metadata| metadata.is_dir());
+    #[cfg(not(windows))]
+    let directory = false;
     create_symlink(&target, dst, directory)
 }
 
@@ -275,21 +286,103 @@ pub fn available_copy_name(path: &Path) -> PathBuf {
 /// Duplicate a file or directory next to itself, Finder-style. Returns the
 /// new path.
 pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
-    let dest = available_copy_name(path);
+    duplicate_to_first_free(path, || available_copy_name(path))
+}
+
+/// Attempts at claiming a copy name before giving up; each lost race to a
+/// concurrent creator moves on to the next free name.
+const DUPLICATE_NAME_ATTEMPTS: usize = 16;
+
+/// Claim the name exclusively (`create_new` file, `create_dir`, symlink) before
+/// writing, so an entry created between the name probe and the copy is never
+/// overwritten: losing that race retries with the next free name.
+fn duplicate_to_first_free(
+    path: &Path,
+    mut next_name: impl FnMut() -> PathBuf,
+) -> std::io::Result<PathBuf> {
     let file_type = std::fs::symlink_metadata(path)?.file_type();
-    if file_type.is_symlink() {
-        copy_symlink(path, &dest)?;
-    } else if file_type.is_dir() {
-        copy_dir_all(path, &dest)?;
-    } else if file_type.is_file() {
-        std::fs::copy(path, &dest)?;
-    } else {
+    if !(file_type.is_symlink() || file_type.is_dir() || file_type.is_file()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "only files, folders and links can be duplicated",
         ));
     }
-    Ok(dest)
+    let mut last_error = None;
+    for _ in 0..DUPLICATE_NAME_ATTEMPTS {
+        let dest = next_name();
+        // On APFS, clonefile both claims the name atomically (EEXIST means
+        // another creator won it) and makes an instant copy-on-write clone.
+        // A placeholder followed by fs::copy would defeat the clone, because
+        // std's fclonefileat refuses an existing destination and falls back to
+        // a full byte copy.
+        #[cfg(target_vendor = "apple")]
+        if file_type.is_file() {
+            match clone_to_new(path, &dest) {
+                Ok(true) => return Ok(dest),
+                Ok(false) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let claimed = if file_type.is_symlink() {
+            copy_symlink(path, &dest)
+        } else if file_type.is_dir() {
+            std::fs::create_dir(&dest)
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&dest)
+                .map(drop)
+        };
+        match claimed {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_error = Some(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+        if file_type.is_dir() {
+            fill_new_dir(path, &dest)?;
+        } else if file_type.is_file() {
+            // The placeholder is ours; fs::copy truncates it and keeps
+            // permissions/metadata as before.
+            if let Err(error) = std::fs::copy(path, &dest) {
+                let _ = std::fs::remove_file(&dest);
+                return Err(error);
+            }
+        }
+        return Ok(dest);
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+}
+
+/// Clone `src` to the new name `dest` with `clonefile`, which fails with
+/// EEXIST instead of replacing an existing entry. `Ok(false)` means the volume
+/// cannot clone (ENOTSUP/EXDEV) and the caller should byte-copy instead.
+#[cfg(target_vendor = "apple")]
+fn clone_to_new(src: &Path, dest: &Path) -> std::io::Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    let to_c = |p: &Path| {
+        std::ffi::CString::new(p.as_os_str().as_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    };
+    let (src_c, dest_c) = (to_c(src)?, to_c(dest)?);
+    // SAFETY: both pointers are valid NUL-terminated paths for the call.
+    if unsafe { libc::clonefile(src_c.as_ptr(), dest_c.as_ptr(), 0) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(code) if code == libc::ENOTSUP || code == libc::EOPNOTSUPP || code == libc::EXDEV => {
+            Ok(false)
+        }
+        _ => Err(error),
+    }
 }
 
 /// How a planned transfer consumes space on the target volume, which decides
@@ -519,6 +612,38 @@ mod tests {
 
         let second = duplicate(&f).unwrap();
         assert_eq!(second, tmp.path().join("doc copy 2.txt"));
+    }
+
+    #[test]
+    fn duplicate_never_overwrites_a_name_taken_after_the_probe() {
+        let tmp = TempDir::new();
+        let f = tmp.file("doc.txt", "data");
+        // A concurrent creator took "doc copy.txt" after the name was probed.
+        let raced = tmp.file("doc copy.txt", "someone else's");
+        let fallback = tmp.path().join("doc copy 2.txt");
+        let mut names = vec![fallback.clone(), raced.clone()];
+        let dest = duplicate_to_first_free(&f, || names.pop().unwrap()).unwrap();
+        assert_eq!(dest, fallback);
+        assert_eq!(std::fs::read_to_string(&raced).unwrap(), "someone else's");
+        assert_eq!(std::fs::read_to_string(&fallback).unwrap(), "data");
+    }
+
+    #[test]
+    fn duplicate_of_a_folder_retries_a_raced_name() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("src");
+        tmp.file("src/a.txt", "a");
+        let raced = tmp.dir("src copy");
+        tmp.file("src copy/keep.txt", "keep");
+        let fallback = tmp.path().join("src copy 2");
+        let mut names = vec![fallback.clone(), raced.clone()];
+        let dest = duplicate_to_first_free(&dir, || names.pop().unwrap()).unwrap();
+        assert_eq!(dest, fallback);
+        assert!(!raced.join("a.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(fallback.join("a.txt")).unwrap(),
+            "a"
+        );
     }
 
     #[test]

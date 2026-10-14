@@ -142,6 +142,10 @@ pub struct DeltaRequest<'a> {
     pub base_bytes: u64,
     pub allow_clone_seed: bool,
     pub resume_offset: Option<u64>,
+    /// Re-hash the whole staging file at the end. The incremental checkpoint
+    /// digests already read every staging byte once, so this extra full read
+    /// (over the slow link) is kept only for verifying durability profiles.
+    pub reverify_staging: bool,
 }
 
 pub fn select(
@@ -214,6 +218,7 @@ fn copy_file_inner(
         base_bytes,
         allow_clone_seed,
         resume_offset,
+        reverify_staging,
     } = *request;
     let source_size = source.metadata()?.len();
     let start_offset = resume_offset.unwrap_or(0);
@@ -265,7 +270,7 @@ fn copy_file_inner(
         )?,
     };
     let staging = std::fs::OpenOptions::new().write(true).open(destination)?;
-    checkpoints.sync(&staging, destination, source_size, true)?;
+    checkpoints.sync(&staging, destination, source_size, reverify_staging)?;
     drop(staging);
     // Permissions last and best-effort, as in the buffered copy: a read-only
     // source mode must not lock us out of the final sync above, and remote
@@ -419,6 +424,7 @@ fn copy_content_defined(
         let key = chunk_key(&chunk.data);
         let matched = matching_basis_chunk(
             &mut basis,
+            chunk.offset,
             index.get(&key).map(Vec::as_slice).unwrap_or_default(),
             &chunk.data,
             &mut basis_buffer,
@@ -453,12 +459,21 @@ fn chunk_key(data: &[u8]) -> ChunkKey {
     }
 }
 
+/// The basis offset holding `expected`, reading it into `buffer` when the
+/// bytes must be relocated. A candidate at `chunk_offset` itself needs no
+/// write (the staging file was seeded from the basis), so the 32-byte BLAKE3 +
+/// length key is trusted there and the slow-link re-read is skipped; the
+/// checkpoint digests still compare every staging byte with the source.
 fn matching_basis_chunk(
     basis: &mut std::fs::File,
+    chunk_offset: u64,
     offsets: &[u64],
     expected: &[u8],
     buffer: &mut Vec<u8>,
 ) -> std::io::Result<Option<u64>> {
+    if offsets.contains(&chunk_offset) {
+        return Ok(Some(chunk_offset));
+    }
     buffer.resize(expected.len(), 0);
     for offset in offsets {
         basis.seek(SeekFrom::Start(*offset))?;
@@ -579,6 +594,70 @@ mod tests {
     }
 
     #[test]
+    fn in_place_basis_match_trusts_the_chunk_key_without_rereading() {
+        let temp = TempDir::new();
+        let basis_path = temp.file("basis.bin", "zzzz----");
+        let mut basis = std::fs::File::open(&basis_path).unwrap();
+        let mut buffer = Vec::new();
+        // The key index said offset 0 holds "data"; at the chunk's own offset
+        // that is trusted, so the (here deliberately different) basis bytes
+        // are not read back over the slow link.
+        assert_eq!(
+            matching_basis_chunk(&mut basis, 0, &[0], b"data", &mut buffer).unwrap(),
+            Some(0)
+        );
+        // A relocated candidate is still read and compared byte for byte.
+        assert_eq!(
+            matching_basis_chunk(&mut basis, 8, &[0, 4], b"----", &mut buffer).unwrap(),
+            Some(4)
+        );
+        assert_eq!(buffer, b"----");
+        assert_eq!(
+            matching_basis_chunk(&mut basis, 8, &[0], b"data", &mut buffer).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn final_staging_rehash_runs_only_when_reverifying() {
+        let temp = TempDir::new();
+        let basis = temp.path().join("basis-final.bin");
+        let source = temp.path().join("source-final.bin");
+        let bytes = vec![5_u8; CHECKPOINT_INTERVAL as usize + FIXED_BLOCK_SIZE];
+        std::fs::write(&basis, &bytes).unwrap();
+        std::fs::write(&source, &bytes).unwrap();
+        for reverify_staging in [false, true] {
+            let destination = temp
+                .path()
+                .join(format!("staging-final-{reverify_staging}.bin"));
+            // After the mid-file checkpoint is published, flip a byte in the
+            // already verified prefix: only a full re-hash can notice it.
+            let mut corrupt = |offset: u64, _digest: [u8; 32]| {
+                if offset == CHECKPOINT_INTERVAL {
+                    let mut file = std::fs::OpenOptions::new().write(true).open(&destination)?;
+                    file.write_all(&[6])?;
+                }
+                Ok(())
+            };
+            let result = copy_file(
+                DeltaRequest {
+                    source: &source,
+                    basis: &basis,
+                    destination: &destination,
+                    mode: DeltaMode::Fixed,
+                    state: &state(bytes.len() as u64),
+                    base_bytes: 0,
+                    allow_clone_seed: true,
+                    resume_offset: None,
+                    reverify_staging,
+                },
+                &mut corrupt,
+            );
+            assert_eq!(result.is_err(), reverify_staging);
+        }
+    }
+
+    #[test]
     fn fixed_delta_rewrites_only_changed_blocks() {
         let temp = TempDir::new();
         let basis = temp.path().join("basis.bin");
@@ -599,6 +678,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume_offset: None,
+                reverify_staging: true,
             },
             &mut |_, _| Ok(()),
         )
@@ -637,6 +717,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume_offset: Some(FIXED_BLOCK_SIZE as u64),
+                reverify_staging: true,
             },
             &mut |offset, _| {
                 checkpoints.push(offset);
@@ -670,6 +751,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume_offset: None,
+                reverify_staging: true,
             },
             &mut |offset, _| {
                 checkpoints.push(offset);
@@ -714,6 +796,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume_offset: None,
+                reverify_staging: true,
             },
             &mut |_, _| Ok(()),
         )
@@ -742,6 +825,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume_offset: None,
+                reverify_staging: true,
             },
             &mut |_, _| {
                 calls += 1;
@@ -775,6 +859,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume_offset: None,
+                reverify_staging: true,
             },
             &mut |_, _| Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
         )
@@ -804,6 +889,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume_offset: None,
+                reverify_staging: true,
             },
             &mut |_, _| {
                 let mode = std::fs::metadata(&destination)

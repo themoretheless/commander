@@ -404,6 +404,21 @@ pub struct ProviderRpcResponse {
     pub error: Option<String>,
 }
 
+/// Kills and reaps the provider process on every exit path, so an early
+/// return (or a panic) between spawn and the exit wait leaves no orphan or
+/// zombie. Once the process has exited, `try_wait` reports it and drop is a
+/// no-op.
+struct ReapOnDrop(std::process::Child);
+
+impl Drop for ReapOnDrop {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalProviderClient {
     executable: PathBuf,
@@ -431,13 +446,16 @@ impl ExternalProviderClient {
         // The deadline covers the whole exchange, including sending the
         // request: a provider that never reads stdin must not block us.
         let deadline = Instant::now() + timeout;
-        let mut child = Command::new(&self.executable)
-            .args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("could not start provider process: {error}"))?;
+        let mut guard = ReapOnDrop(
+            Command::new(&self.executable)
+                .args(&self.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("could not start provider process: {error}"))?,
+        );
+        let child = &mut guard.0;
         let mut stdin = child
             .stdin
             .take()
@@ -470,16 +488,9 @@ impl ExternalProviderClient {
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(2));
                 }
-                Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("provider process timed out".to_string());
-                }
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("provider process wait failed: {error}"));
-                }
+                // Dropping the guard kills and reaps the process.
+                Ok(None) => return Err("provider process timed out".to_string()),
+                Err(error) => return Err(format!("provider process wait failed: {error}")),
             }
         };
         if let Ok(Err(error)) = written.try_recv()
@@ -506,6 +517,21 @@ impl ExternalProviderClient {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[cfg(unix)]
+    #[test]
+    fn dropped_provider_guard_kills_and_reaps_the_process() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        drop(ReapOnDrop(child));
+        // Reaped: the pid is no longer our child (no zombie left behind).
+        let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(reaped, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
 
     struct FakeContextMenuPort {
         result: ContextMenuResult,

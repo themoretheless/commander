@@ -321,9 +321,14 @@ fn open_private_output_directory(root: &Path) -> Result<File, String> {
                 canonical_existing.display()
             )
         })?;
+    // Whether this run created the final component; only then is it ours to
+    // chmod. An existing folder the user pointed at keeps its mode.
+    let mut created_final = false;
     for component in missing.iter().rev() {
         let name = path_component(component)?;
+        created_final = true;
         if unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            created_final = false;
             let error = std::io::Error::last_os_error();
             if error.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(format!(
@@ -346,11 +351,28 @@ fn open_private_output_directory(root: &Path) -> Result<File, String> {
         }
         directory = unsafe { File::from_raw_fd(fd) };
     }
-    if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
-        return Err(format!(
-            "could not make native QA output private: {}",
-            std::io::Error::last_os_error()
-        ));
+    if created_final {
+        if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+            return Err(format!(
+                "could not make native QA output private: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    } else {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = directory
+            .metadata()
+            .map_err(|error| format!("could not inspect native QA output: {error}"))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "native QA output {} already exists and is accessible to other users \
+                 (mode {:o}); choose a new directory or restrict it to 0700",
+                root.display(),
+                mode & 0o777
+            ));
+        }
     }
     Ok(directory)
 }
@@ -443,6 +465,26 @@ mod tests {
         ));
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(victim_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_output_folder_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("existing");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(ArtifactDirectory::prepare(&root).is_err());
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "a folder this run did not create is not chmodded"
+        );
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(ArtifactDirectory::prepare(&root).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
