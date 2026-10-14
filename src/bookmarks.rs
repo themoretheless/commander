@@ -137,6 +137,22 @@ impl Bookmarks {
     pub fn contains(&self, path: &Path) -> bool {
         self.items.iter().any(|b| b.path == path)
     }
+
+    /// Restore the [`Self::add`]/[`Self::assign_slot`] invariants on data that
+    /// did not come through them (a hand-edited or damaged file): keep the
+    /// first bookmark per path, drop slots outside 1..=9 and keep each slot
+    /// only on its first holder.
+    fn normalize(&mut self) {
+        let mut paths = std::collections::HashSet::new();
+        self.items.retain(|b| paths.insert(b.path.clone()));
+        let mut slots = [false; MAX_SLOT as usize + 1];
+        for b in &mut self.items {
+            b.slot = b.slot.filter(|&slot| {
+                (1..=MAX_SLOT).contains(&slot)
+                    && !std::mem::replace(&mut slots[slot as usize], true)
+            });
+        }
+    }
 }
 
 /// A render-ready Favorites row: the bookmark plus whether either panel is
@@ -197,8 +213,10 @@ fn load_at(persist: &dyn crate::persistence::Persist, path: &Path) -> LoadedBook
             Vec::new()
         }
     };
+    let mut store = Bookmarks { items };
+    store.normalize();
     LoadedBookmarks {
-        store: Bookmarks { items },
+        store,
         gate: loaded.gate,
     }
 }
@@ -366,6 +384,55 @@ mod tests {
         let mut val = serde_json::json!({ "items": [ { "name": "Code", "path": "/a" } ] });
         let back: Bookmarks = serde_json::from_value(val.take()).unwrap();
         assert_eq!(back.items[0].slot, None);
+    }
+
+    #[test]
+    fn load_restores_path_and_slot_invariants() {
+        let temp = TempDir::new();
+        let persist = FsPersist::default();
+        let path = temp.path().join("bookmarks.json");
+        let raw = Bookmarks {
+            items: vec![
+                Bookmark {
+                    name: "A".into(),
+                    path: "/a".into(),
+                    slot: Some(3),
+                },
+                Bookmark {
+                    name: "A again".into(),
+                    path: "/a".into(),
+                    slot: Some(4),
+                },
+                Bookmark {
+                    name: "B".into(),
+                    path: "/b".into(),
+                    slot: Some(3),
+                },
+                Bookmark {
+                    name: "C".into(),
+                    path: "/c".into(),
+                    slot: Some(0),
+                },
+                Bookmark {
+                    name: "D".into(),
+                    path: "/d".into(),
+                    slot: Some(42),
+                },
+            ],
+        };
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &raw, &mut gate).unwrap();
+
+        let loaded = load_at(&persist, &path).store;
+        let rows: Vec<(&str, Option<u8>)> = loaded
+            .items
+            .iter()
+            .map(|b| (b.name.as_str(), b.slot))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![("A", Some(3)), ("B", None), ("C", None), ("D", None)]
+        );
     }
 
     #[test]

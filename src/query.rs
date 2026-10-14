@@ -75,6 +75,10 @@ impl Predicate {
 
     fn expression(&self) -> String {
         match self {
+            // A bare `a:b` would reparse as field `a`, so spell the field out.
+            Self::NameContains(value) if value.contains(':') => {
+                format!("name:{}", quote_if_needed(value))
+            }
             Self::NameContains(value) => quote_if_needed(value),
             Self::PathContains(value) => format!("path:{}", quote_if_needed(value)),
             Self::ContentContains(value) => format!("content:{}", quote_if_needed(value)),
@@ -87,10 +91,13 @@ impl Predicate {
     }
 }
 
+/// Whole days since `modified`. A future mtime (clock skew, a copy from a
+/// machine ahead of us) counts as modified today, as search's time buckets do.
 fn age_days(modified: Option<SystemTime>, now: SystemTime) -> Option<u64> {
-    now.duration_since(modified?)
-        .ok()
-        .map(|d| d.as_secs() / SECONDS_PER_DAY)
+    Some(
+        now.duration_since(modified?)
+            .map_or(0, |d| d.as_secs() / SECONDS_PER_DAY),
+    )
 }
 
 fn text_matches(mode: MatchMode, needle: &str, candidate: &str) -> bool {
@@ -115,8 +122,11 @@ pub struct Query {
 impl Query {
     pub fn parse(expression: &str, mode: MatchMode) -> Result<Self, QueryError> {
         let mut predicates = Vec::new();
-        for token in tokenize(expression)? {
-            let Some((field, value)) = token.split_once(':') else {
+        for (token, quoted) in tokenize(expression)? {
+            // A token that opens with a quote is literal name text, so
+            // `"note: draft"` searches for the colon instead of a field.
+            let split = if quoted { None } else { token.split_once(':') };
+            let Some((field, value)) = split else {
                 predicates.push(Predicate::NameContains(token));
                 continue;
             };
@@ -220,17 +230,24 @@ impl fmt::Display for QueryError {
     }
 }
 
-fn tokenize(expression: &str) -> Result<Vec<String>, QueryError> {
+/// Split an expression into tokens, each flagged with whether it opened with
+/// a quote.
+fn tokenize(expression: &str) -> Result<Vec<(String, bool)>, QueryError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;
+    let mut quoted_start = false;
     let mut chars = expression.chars().peekable();
 
     while let Some(ch) = chars.next() {
         if ch == '\\' {
-            let escapable = chars
-                .peek()
-                .is_some_and(|next| next.is_whitespace() || *next == '\\' || Some(*next) == quote);
+            // Outside quotes `\"` and `\'` are literal quote characters.
+            let escapable = chars.peek().is_some_and(|next| {
+                next.is_whitespace()
+                    || *next == '\\'
+                    || Some(*next) == quote
+                    || (quote.is_none() && matches!(*next, '"' | '\''))
+            });
             if escapable {
                 current.push(chars.next().unwrap());
             } else {
@@ -248,11 +265,15 @@ fn tokenize(expression: &str) -> Result<Vec<String>, QueryError> {
             continue;
         }
         if matches!(ch, '\'' | '"') {
+            if current.is_empty() {
+                quoted_start = true;
+            }
             quote = Some(ch);
         } else if ch.is_whitespace() {
             if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
+                tokens.push((std::mem::take(&mut current), quoted_start));
             }
+            quoted_start = false;
         } else {
             current.push(ch);
         }
@@ -261,7 +282,7 @@ fn tokenize(expression: &str) -> Result<Vec<String>, QueryError> {
         return Err(QueryError::new(delimiter.to_string(), "unterminated quote"));
     }
     if !current.is_empty() {
-        tokens.push(current);
+        tokens.push((current, quoted_start));
     }
     Ok(tokens)
 }
@@ -291,9 +312,15 @@ fn parse_size(value: &str) -> Result<Vec<Predicate>, &'static str> {
     }
     let (operator, number) = split_operator(value);
     let bytes = parse_bytes(number)?;
+    // Size predicates are inclusive, so strict operators shift by one byte.
     match operator {
-        "<" | "<=" => Ok(vec![Predicate::MaxSize(bytes)]),
-        ">" | ">=" | "" => Ok(vec![Predicate::MinSize(bytes)]),
+        "<" => bytes
+            .checked_sub(1)
+            .map(|max| vec![Predicate::MaxSize(max)])
+            .ok_or("no size is below zero"),
+        "<=" => Ok(vec![Predicate::MaxSize(bytes)]),
+        ">" => Ok(vec![Predicate::MinSize(bytes.saturating_add(1))]),
+        ">=" | "" => Ok(vec![Predicate::MinSize(bytes)]),
         _ => Err("invalid size operator"),
     }
 }
@@ -372,7 +399,10 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 fn quote_if_needed(value: &str) -> String {
-    if value.chars().all(|ch| !ch.is_whitespace() && ch != '"') {
+    if value
+        .chars()
+        .all(|ch| !ch.is_whitespace() && !matches!(ch, '"' | '\''))
+    {
         value.to_string()
     } else {
         format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
@@ -557,6 +587,80 @@ mod tests {
             &entry("quarterly-reportXtxt", false, 1, None),
             SystemTime::now()
         ));
+    }
+
+    fn round_trip(query: &Query) -> Query {
+        Query::parse(&query.to_expression(), query.mode).unwrap()
+    }
+
+    #[test]
+    fn name_with_colon_survives_round_trip() {
+        let query = from_panel_filter("12:30", &crate::panel::FacetSet::default());
+        assert_eq!(round_trip(&query), query);
+        let query = Query::parse("name:a:b", MatchMode::Exact).unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![Predicate::NameContains("a:b".into())]
+        );
+        assert_eq!(round_trip(&query), query);
+        let spaced = q(vec![Predicate::NameContains("note: draft".into())]);
+        assert_eq!(round_trip(&spaced), spaced);
+    }
+
+    #[test]
+    fn quoted_token_with_colon_is_name_text() {
+        let query = Query::parse("\"note: draft\" 'a:b'", MatchMode::Exact).unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate::NameContains("note: draft".into()),
+                Predicate::NameContains("a:b".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn apostrophe_value_survives_round_trip() {
+        let query = q(vec![
+            Predicate::NameContains("it's".into()),
+            Predicate::PathContains("bob's files".into()),
+        ]);
+        assert_eq!(round_trip(&query), query);
+    }
+
+    #[test]
+    fn backslash_escapes_quotes_outside_quotes() {
+        let query = Query::parse(r#"foo\"bar it\'s"#, MatchMode::Exact).unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate::NameContains("foo\"bar".into()),
+                Predicate::NameContains("it's".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn future_mtime_counts_as_today() {
+        let now = SystemTime::now();
+        let future = now + Duration::from_secs(3 * SECONDS_PER_DAY);
+        let file = entry("a", false, 1, Some(future));
+        assert!(q(vec![Predicate::MaxAgeDays(1)]).matches(&file, now));
+        assert!(!q(vec![Predicate::MinAgeDays(1)]).matches(&file, now));
+    }
+
+    #[test]
+    fn strict_size_operators_exclude_the_bound() {
+        let now = SystemTime::now();
+        let positive = Query::parse("size:>0", MatchMode::Exact).unwrap();
+        assert!(!positive.matches(&entry("empty", false, 0, None), now));
+        assert!(positive.matches(&entry("one", false, 1, None), now));
+        let small = Query::parse("size:<1KB", MatchMode::Exact).unwrap();
+        assert!(!small.matches(&entry("k", false, 1024, None), now));
+        assert!(small.matches(&entry("k", false, 1023, None), now));
+        let inclusive = Query::parse("size:<=1KB", MatchMode::Exact).unwrap();
+        assert!(inclusive.matches(&entry("k", false, 1024, None), now));
+        assert!(Query::parse("size:<0", MatchMode::Exact).is_err());
     }
 
     #[test]

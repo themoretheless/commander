@@ -37,9 +37,27 @@ pub const fn style_label(style: PathStyle) -> &'static str {
 pub fn format(paths: &[PathBuf], style: PathStyle, other_root: Option<&Path>) -> String {
     paths
         .iter()
-        .map(|p| format_one(p, style, other_root))
+        .map(|p| {
+            let line = format_one(p, style, other_root);
+            match style {
+                // Quoted and percent-encoded forms already carry controls safely.
+                PathStyle::ShellEscaped | PathStyle::FileUrl => line,
+                _ => one_line(line),
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Keep a path with a newline (legal in Unix names) on one line, escaping it
+/// the way listing export does. Paths without line controls are untouched,
+/// so Windows backslash separators are never doubled.
+fn one_line(line: String) -> String {
+    if line.contains(['\n', '\r', '\t']) {
+        crate::listing_export::escape_controls(&line).into_owned()
+    } else {
+        line
+    }
 }
 
 fn format_one(p: &Path, style: PathStyle, other_root: Option<&Path>) -> String {
@@ -54,7 +72,7 @@ fn format_one(p: &Path, style: PathStyle, other_root: Option<&Path>) -> String {
             .parent()
             .map(|d| d.to_string_lossy().to_string())
             .unwrap_or_default(),
-        PathStyle::FileUrl => format!("file://{}", percent_encode_path(&p.to_string_lossy())),
+        PathStyle::FileUrl => format!("file://{}", percent_encode_path(&path_bytes(p))),
         PathStyle::ShellEscaped => shell_quote(&p.to_string_lossy()),
         PathStyle::RelativeToOther => match other_root {
             Some(root) => p
@@ -66,10 +84,26 @@ fn format_one(p: &Path, style: PathStyle, other_root: Option<&Path>) -> String {
     }
 }
 
+/// The raw bytes of `p` for URL encoding. On Unix these are the exact name
+/// bytes, so a non-UTF-8 name is encoded faithfully instead of as U+FFFD.
+#[cfg(unix)]
+fn path_bytes(p: &Path) -> std::borrow::Cow<'_, [u8]> {
+    use std::os::unix::ffi::OsStrExt;
+    std::borrow::Cow::Borrowed(p.as_os_str().as_bytes())
+}
+
+#[cfg(not(unix))]
+fn path_bytes(p: &Path) -> std::borrow::Cow<'_, [u8]> {
+    match p.to_string_lossy() {
+        std::borrow::Cow::Borrowed(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s.into_bytes()),
+    }
+}
+
 /// Percent-encode a path, keeping `/` and the RFC 3986 unreserved set.
-fn percent_encode_path(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
+fn percent_encode_path(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 out.push(b as char);
@@ -155,6 +189,40 @@ mod tests {
                 Some(&root)
             ),
             "/elsewhere/f.txt"
+        );
+    }
+
+    #[test]
+    fn newline_in_a_name_stays_on_one_line() {
+        let paths = [p("/a/two\nlines.txt"), p("/a/y.txt")];
+        let text = format(&paths, PathStyle::FullPath, None);
+        assert_eq!(text, "/a/two\\nlines.txt\n/a/y.txt");
+        assert_eq!(text.lines().count(), 2);
+        assert_eq!(
+            format(&paths[..1], PathStyle::NameOnly, None),
+            "two\\nlines.txt"
+        );
+        // Shell quoting keeps the raw newline; it is safe inside quotes.
+        assert_eq!(
+            format(&paths[..1], PathStyle::ShellEscaped, None),
+            "'/a/two\nlines.txt'"
+        );
+        // Backslashes alone are left alone.
+        assert_eq!(
+            format(&[p("/a/b\\c")], PathStyle::FullPath, None),
+            "/a/b\\c"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_url_encodes_non_utf8_bytes_exactly() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let path = PathBuf::from(OsStr::from_bytes(b"/tmp/caf\xe9.txt"));
+        assert_eq!(
+            format(&[path], PathStyle::FileUrl, None),
+            "file:///tmp/caf%E9.txt"
         );
     }
 

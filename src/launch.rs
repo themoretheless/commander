@@ -36,10 +36,17 @@ where
     paths
 }
 
+/// Keep only launch paths that are directories, made absolute so a relative
+/// argument (`commander .`) does not leave the panel, its breadcrumbs and
+/// history holding a path that depends on the process working directory.
 pub fn sanitize_launch_paths(paths: LaunchPaths) -> LaunchPaths {
+    let usable = |path: PathBuf| {
+        let path = std::path::absolute(&path).ok()?;
+        path.is_dir().then_some(path)
+    };
     LaunchPaths {
-        left: paths.left.filter(|path| Path::new(path).is_dir()),
-        right: paths.right.filter(|path| Path::new(path).is_dir()),
+        left: paths.left.and_then(usable),
+        right: paths.right.and_then(usable),
     }
 }
 
@@ -63,6 +70,19 @@ mod tests {
                 right: None,
             }
         );
+    }
+
+    #[test]
+    fn relative_launch_dirs_become_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        let sanitized = sanitize_launch_paths(LaunchPaths {
+            left: Some(PathBuf::from(".")),
+            right: Some(PathBuf::from("definitely-missing-launch-dir")),
+        });
+        let left = sanitized.left.unwrap();
+        assert!(left.is_absolute());
+        assert_eq!(left.canonicalize().unwrap(), cwd.canonicalize().unwrap());
+        assert_eq!(sanitized.right, None);
     }
 
     #[test]

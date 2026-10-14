@@ -130,14 +130,16 @@ fn is_valid_name(name: &str) -> bool {
 /// Plan a batch rename. `names` are the entries to rename (their order drives
 /// the counter); `existing` is every name currently in the directory
 /// (including the ones being renamed) so collisions with untouched siblings
-/// are caught. Comparison is case-insensitive, matching the default macOS FS.
+/// are caught. Comparison is case- and Unicode-normalization-insensitive
+/// ([`crate::rename_order::name_key`]), matching the default macOS FS.
 pub fn plan_batch_rename(
     names: &[String],
     existing: &HashSet<String>,
     rule: &RenameRule,
 ) -> Vec<RenamePlan> {
-    let batch_lower: HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
-    let existing_lower: HashSet<String> = existing.iter().map(|n| n.to_lowercase()).collect();
+    use crate::rename_order::name_key;
+    let batch_lower: HashSet<String> = names.iter().map(|n| name_key(n)).collect();
+    let existing_lower: HashSet<String> = existing.iter().map(|n| name_key(n)).collect();
 
     // Compiled once for the whole batch, not per name.
     let compiled = (rule.regex && !rule.find.is_empty())
@@ -152,14 +154,14 @@ pub fn plan_batch_rename(
     // How many targets share each lowercased name (intra-batch clashes).
     let mut counts: HashMap<String, usize> = HashMap::new();
     for t in &targets {
-        *counts.entry(t.to_lowercase()).or_insert(0) += 1;
+        *counts.entry(name_key(t)).or_insert(0) += 1;
     }
 
     names
         .iter()
         .zip(targets.iter())
         .map(|(from, to)| {
-            let to_lower = to.to_lowercase();
+            let to_lower = name_key(to);
             let status = if !is_valid_name(to) {
                 PlanStatus::Invalid
             } else if to == from {
@@ -399,6 +401,25 @@ mod tests {
         let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &rule);
         assert_eq!(plans[0].status, PlanStatus::Invalid);
         assert!(!plan_is_applicable(&plans));
+    }
+
+    #[test]
+    fn normalization_equivalent_sibling_is_a_collision() {
+        // A decomposed "café.txt" (e + U+0301) already exists untouched; a
+        // rename producing the precomposed form would land on it on APFS.
+        let decomposed = "cafe\u{301}.txt";
+        let rule = RenameRule {
+            find: "Q".into(),
+            replace: "\u{e9}".into(),
+            ..Default::default()
+        };
+        let plans = plan_batch_rename(
+            &names(&["cafQ.txt"]),
+            &existing(&["cafQ.txt", decomposed]),
+            &rule,
+        );
+        assert_eq!(plans[0].to, "caf\u{e9}.txt");
+        assert_eq!(plans[0].status, PlanStatus::Collision);
     }
 
     #[test]
