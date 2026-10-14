@@ -4031,3 +4031,52 @@ fn reveal_lands_on_the_file_when_the_listing_is_asynchronous() {
         Some(target)
     );
 }
+
+fn versioned_workspace_with_two_trashed(
+    left: &TempDir,
+    right: &TempDir,
+    trash: Arc<ScriptedTrashPort>,
+) -> (Workspace, PathBuf, PathBuf) {
+    let first = left.file("first.txt", "one");
+    let second = left.file("second.txt", "two");
+    let mut ws = Workspace::with_versioned_delete_ports(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        trash,
+        Arc::new(TestFreeSpacePort),
+    );
+    ws.left.refresh();
+    ws.right.refresh();
+    ws.left.select_all();
+    ws.request_delete();
+    assert!(ws.confirm_pending_op(|| {}));
+    assert_eq!(ws.finish_delete().expect("delete outcome").trashed, 2);
+    (ws, first, second)
+}
+
+#[test]
+fn partially_failed_trash_redo_refreshes_and_latches_safe_state() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed, // redo: first
+        crate::ports::TrashItemOutcome::Failed(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "scripted".to_string(),
+        }),
+    ]));
+    let (mut ws, first, second) = versioned_workspace_with_two_trashed(&left, &right, trash);
+    ws.perform_undo(|| {}).expect("restore both");
+    assert!(first.is_file() && second.is_file());
+
+    assert!(ws.perform_redo(|| {}).is_err());
+    assert!(!first.exists(), "the first item was trashed again");
+    assert!(
+        !ws.left.entries().iter().any(|entry| entry.path == first),
+        "listing reflects the partial redo"
+    );
+    assert!(ws.safe_state.is_some(), "partial replay needs review");
+}

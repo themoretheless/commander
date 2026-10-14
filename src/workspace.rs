@@ -227,8 +227,17 @@ pub struct DeleteOutcome {
 }
 
 impl DeleteOutcome {
-    pub const fn refresh_required(&self) -> bool {
+    /// Whether the panels must re-list: something was trashed, or the worker
+    /// died mid-item, so a trash may have committed without a report.
+    pub fn refresh_required(&self) -> bool {
         self.trashed > 0
+            || (self.indeterminate
+                && self.items.iter().any(|item| {
+                    matches!(
+                        item.outcome,
+                        crate::ports::TrashItemOutcome::Indeterminate(_)
+                    )
+                }))
     }
 }
 
@@ -2086,14 +2095,19 @@ impl Workspace {
                 }
                 std::fs::create_dir(&folder)
                     .map_err(|error| format!("Could not recreate {}: {error}", folder.display()))?;
-                self.enqueue_silent_move(
+                if let Err(error) = self.enqueue_silent_move(
                     entries,
                     folder.clone(),
                     None,
                     Some(folder.clone()),
                     transfer_queue::HistoryIntent::replay(reservation),
                     notify,
-                )?;
+                ) {
+                    // Nothing was queued: do not leave the fresh, still empty
+                    // folder behind (`remove_dir` refuses a non-empty one).
+                    let _ = std::fs::remove_dir(&folder);
+                    return Err(error);
+                }
                 Ok(ActionExecution::Started)
             }
             crate::undo::Action::Ungather { folder, pairs } => {
@@ -2123,13 +2137,16 @@ impl Workspace {
             crate::undo::Action::RestoreTrash { items } => {
                 let _ = reservation;
                 let _ = notify;
+                let mut restored = Vec::new();
                 for item in &items {
-                    crate::version_store::restore(&item.version).map_err(|error| {
-                        format!(
+                    if let Err(error) = crate::version_store::restore(&item.version) {
+                        let error = format!(
                             "Could not restore {}: {error}",
                             item.version.original.display()
-                        )
-                    })?;
+                        );
+                        return Err(self.stop_partial_trash_replay("Trash undo", &restored, error));
+                    }
+                    restored.push(item.version.original.clone());
                 }
                 self.left.refresh();
                 self.right.refresh();
@@ -2138,39 +2155,70 @@ impl Workspace {
             crate::undo::Action::Trash { items } => {
                 let _ = reservation;
                 let _ = notify;
+                let mut trashed = Vec::new();
                 for item in &items {
-                    let expected = crate::path_identity::PathIdentity::observe(&item.path)
-                        .map_err(|error| {
-                            format!(
-                                "Could not inspect {} for Trash redo: {error}",
-                                item.path.display()
-                            )
-                        })?;
-                    if !expected.exists {
-                        return Err(format!(
-                            "Trash redo source no longer exists: {}",
-                            item.path.display()
-                        ));
+                    if let Err(error) = self.retrash_one(&item.path) {
+                        return Err(self.stop_partial_trash_replay("Trash redo", &trashed, error));
                     }
-                    let target = crate::ports::TrashTarget {
-                        path: item.path.clone(),
-                        expected,
-                    };
-                    match self.deletes.trash_one(&target) {
-                        crate::ports::TrashItemOutcome::Trashed => {}
-                        other => {
-                            return Err(format!(
-                                "Could not re-trash {}: {other:?}",
-                                item.path.display()
-                            ));
-                        }
-                    }
+                    trashed.push(item.path.clone());
                 }
                 self.left.refresh();
                 self.right.refresh();
                 Ok(ActionExecution::Completed)
             }
         }
+    }
+
+    /// Move one item back to the Trash for a Trash redo.
+    fn retrash_one(&self, path: &Path) -> Result<(), String> {
+        let expected = crate::path_identity::PathIdentity::observe(path).map_err(|error| {
+            format!(
+                "Could not inspect {} for Trash redo: {error}",
+                path.display()
+            )
+        })?;
+        if !expected.exists {
+            return Err(format!(
+                "Trash redo source no longer exists: {}",
+                path.display()
+            ));
+        }
+        let target = crate::ports::TrashTarget {
+            path: path.to_path_buf(),
+            expected,
+        };
+        match self.deletes.trash_one(&target) {
+            crate::ports::TrashItemOutcome::Trashed => Ok(()),
+            other => Err(format!("Could not re-trash {}: {other:?}", path.display())),
+        }
+    }
+
+    /// A Trash undo/redo failed on one item. When earlier items already
+    /// changed, the history entry no longer describes the filesystem: show
+    /// the change and stop further mutations until it is reviewed, rather
+    /// than reporting a plain abort over stale listings. Returns `error`.
+    fn stop_partial_trash_replay(
+        &mut self,
+        replay: &str,
+        changed: &[PathBuf],
+        error: String,
+    ) -> String {
+        if changed.is_empty() {
+            return error;
+        }
+        self.left.refresh();
+        self.right.refresh();
+        self.latch_safe_state(|| {
+            crate::operation::SafeState::integrity(
+                crate::operation::OperationId::new(),
+                format!(
+                    "{replay} stopped after {} of its items: {error}",
+                    changed.len()
+                ),
+                changed.to_vec(),
+            )
+        });
+        error
     }
 
     fn entries_for_paths(sources: &[PathBuf]) -> Result<Vec<FileEntry>, String> {
