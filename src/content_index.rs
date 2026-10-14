@@ -629,7 +629,7 @@ fn scan_index_within(
     wait_for_idle(&idle, &cancelled, scheduler_cancel.as_ref())?;
     let root_entries = fs::read_dir(&root)
         .map_err(|error| format!("Could not read index root {}: {error}", root.display()))?;
-    let mut stack = vec![DirCursor::Open(root_entries)];
+    let mut stack = vec![DirCursor::Open(Box::new(root_entries))];
     let mut documents = Vec::new();
     let mut progress = BuildProgress::default();
     let mut skipped_binary = 0usize;
@@ -792,7 +792,8 @@ const MAX_OPEN_DIRS: usize = 64;
 
 /// One directory level of the scan stack.
 enum DirCursor {
-    Open(ReadDir),
+    // Boxed: Windows' `ReadDir` embeds a whole `WIN32_FIND_DATAW`.
+    Open(Box<ReadDir>),
     Buffered(std::vec::IntoIter<std::io::Result<CursorEntry>>),
 }
 
@@ -800,7 +801,7 @@ impl DirCursor {
     fn open(path: &Path, depth: usize) -> std::io::Result<Self> {
         let entries = fs::read_dir(path)?;
         if depth < MAX_OPEN_DIRS {
-            return Ok(Self::Open(entries));
+            return Ok(Self::Open(Box::new(entries)));
         }
         // `DirEntry` keeps its directory handle alive, so only owned
         // values are buffered.
@@ -820,6 +821,9 @@ impl DirCursor {
     }
 }
 
+// Not boxed: one entry is live at a time, and boxing the large Windows
+// `DirEntry` would cost an allocation per scanned entry.
+#[allow(clippy::large_enum_variant)]
 enum CursorEntry {
     Open(fs::DirEntry),
     Buffered(PathBuf, Option<fs::FileType>),
