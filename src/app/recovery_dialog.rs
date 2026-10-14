@@ -38,6 +38,7 @@ impl RecoveryState {
         };
         self.scanning = false;
         self.scan_rx = None;
+        self.version_usage_label = None;
         match result.inventory {
             Ok(inventory) => {
                 self.error = None;
@@ -449,11 +450,25 @@ impl App {
         let mut resume = None;
         let mut rollback = None;
         let mut clean_orphan = None;
+        // The tab selectors edit copies so the panel can borrow `state`
+        // (and the selected record with all its steps) instead of cloning.
+        let mut section = state.section;
+        let mut detail = state.detail;
+        let usage_label = state
+            .version_usage_label
+            .get_or_insert_with(|| {
+                let usage = crate::version_store::store_usage();
+                if usage.over_quota() {
+                    format!("Version store {} · over quota", usage.label())
+                } else {
+                    format!("Version store {}", usage.label())
+                }
+            })
+            .clone();
         let selected_record = state
             .selected
             .as_ref()
-            .and_then(|id| state.operations.iter().find(|record| &record.id == id))
-            .cloned();
+            .and_then(|id| state.operations.iter().find(|record| &record.id == id));
 
         ui.vertical(|ui| {
                 ui.horizontal(|ui| {
@@ -497,12 +512,12 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.selectable_value(
-                        &mut state.section,
+                        &mut section,
                         RecoverySection::Operations,
                         format!("Operations {}", state.operations.len()),
                     );
                     ui.selectable_value(
-                        &mut state.section,
+                        &mut section,
                         RecoverySection::Staging,
                         format!("Staging cleanup {}", state.orphans.len()),
                     );
@@ -526,26 +541,19 @@ impl App {
                     ui.add_space(5.0);
                 }
                 ui.label(
-                    egui::RichText::new({
-                        let usage = crate::version_store::store_usage();
-                        if usage.over_quota() {
-                            format!("Version store {} · over quota", usage.label())
-                        } else {
-                            format!("Version store {}", usage.label())
-                        }
-                    })
+                    egui::RichText::new(usage_label)
                     .size(10.0)
                     .color(t.text_muted),
                 );
                 ui.add_space(4.0);
 
-                match state.section {
+                match section {
                     RecoverySection::Operations => {
                         ui.vertical(|ui| {
                             show_operation_list(ui, &state, t, &mut selected);
                             ui.separator();
                             ui.vertical(|ui| {
-                                if let Some(record) = &selected_record {
+                                if let Some(record) = selected_record {
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             egui::RichText::new(format!(
@@ -581,18 +589,18 @@ impl App {
                                     });
                                     ui.horizontal(|ui| {
                                         ui.selectable_value(
-                                            &mut state.detail,
+                                            &mut detail,
                                             RecoveryDetail::Inspect,
                                             "Inspect",
                                         );
                                         ui.selectable_value(
-                                            &mut state.detail,
+                                            &mut detail,
                                             RecoveryDetail::Repair,
                                             "Repair plan",
                                         );
                                     });
                                     ui.add_space(5.0);
-                                    match state.detail {
+                                    match detail {
                                         RecoveryDetail::Inspect => show_inspect(ui, record, t),
                                         RecoveryDetail::Repair => {
                                             show_repair(ui, &state, record, t, &mut rollback)
@@ -678,6 +686,8 @@ impl App {
                 }
             });
 
+        state.section = section;
+        state.detail = detail;
         if let Some(operation_id) = selected {
             state.select(operation_id);
         }
@@ -802,6 +812,16 @@ mod tests {
         assert_eq!(operation_time(u64::MAX), "Unknown time");
         assert_eq!(operation_time(i64::MAX as u64 + 1), "Unknown time");
         assert_ne!(operation_time(0), "Unknown time");
+    }
+
+    #[test]
+    fn a_completed_scan_drops_the_cached_version_usage() {
+        let mut state = RecoveryState {
+            version_usage_label: Some("Version store 1 KB".to_string()),
+            ..RecoveryState::default()
+        };
+        deliver(&mut state, Vec::new());
+        assert_eq!(state.version_usage_label, None);
     }
 
     #[test]
