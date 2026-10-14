@@ -3438,6 +3438,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn size_walk_reports_whether_every_part_was_read() {
+        let tmp = TempDir::new();
+        tmp.dir("sub");
+        tmp.file("sub/a.bin", "1234");
+        assert_eq!(
+            dir_size_walk_until(tmp.path(), false, || false),
+            Some(DirWalk {
+                size: 4,
+                complete: true
+            })
+        );
+        // A vanished child is gone, an unreadable one is a gap in the total.
+        let gone = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!walk_error_leaves_gap(&gone));
+        assert!(walk_error_leaves_gap(&denied));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn size_walk_with_unreadable_subfolder_is_incomplete() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new();
+        tmp.file("a.bin", "12");
+        let locked = tmp.dir("locked");
+        tmp.file("locked/b.bin", "345");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(&locked).is_ok(); // root ignores modes
+        let walk = dir_size_walk_until(tmp.path(), false, || false);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            return;
+        }
+        assert_eq!(
+            walk,
+            Some(DirWalk {
+                size: 2,
+                complete: false
+            })
+        );
+    }
+
+    #[test]
+    fn cache_persistence_failures_warn_once() {
+        let warned = AtomicBool::new(false);
+        assert!(first_cache_warning(&warned));
+        assert!(!first_cache_warning(&warned));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn recursive_size_does_not_walk_into_another_filesystem() {

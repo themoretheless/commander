@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime};
 
 use super::{
     DirMeasurement, FileEntry, FolderOverview, Notify, ScanEpoch, VolumePathKey, WALK_COOLDOWN,
-    WALK_EXPENSIVE, begin_panel_scan, capture_path_epoch, dir_size_recursive_until, flush_cache,
+    WALK_EXPENSIVE, begin_panel_scan, capture_path_epoch, dir_size_walk_until, flush_cache,
     lock_recover, publish_cached_size_if_current, publish_dir_measurements_if_current,
     publish_scan_values_if_current, scan_commit_boundary, scan_is_current, visible_window,
     walk_log,
@@ -509,16 +509,18 @@ impl SizeIndex {
                     }
                     let path_epoch = capture_path_epoch(cache_key);
                     let started = Instant::now();
-                    let size = dir_size_recursive_until(path, background, || {
+                    let walk = dir_size_walk_until(path, background, || {
                         scan_epoch.is_cancelled() || path_epoch.is_cancelled()
                     })?;
                     let completed_at = Instant::now();
                     Some(DirMeasurement {
                         path: path.clone(),
-                        modified: *modified,
+                        // A walk that skipped unreadable parts undercounts:
+                        // show it, but do not cache it as the exact size.
+                        modified: modified.filter(|_| walk.complete),
                         cache_key: cache_key.clone(),
                         path_epoch,
-                        size,
+                        size: walk.size,
                         completed_at,
                         elapsed: completed_at.duration_since(started),
                     })
