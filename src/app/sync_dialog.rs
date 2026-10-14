@@ -665,33 +665,9 @@ impl App {
                 self.ui.tools.sync = Some(state);
                 return;
             }
-            {
-                let names: Vec<String> = state
-                    .actions
-                    .iter()
-                    .filter(|action| action.direction != SyncDirection::Skip)
-                    .map(|action| action.name.clone())
-                    .collect();
-                let file_kind = names
-                    .first()
-                    .map(|name| crate::conflict_rules::ConflictRuleBook::kind_for_name(name))
-                    .unwrap_or_else(|| "sync".into());
-                if crate::conflict_rules::load()
-                    .find(&state.left_dir, &state.right_dir, &file_kind)
-                    .is_none()
-                {
-                    let policy = crate::conflict_rules::StoredRelationPolicy::KeepNewer;
-                    let preview =
-                        crate::conflict_rules::ConflictRuleBook::sample_preview(policy, &names, 5);
-                    self.toast(ctx, crate::toasts::ToastKind::Info, preview, false);
-                    crate::conflict_rules::upsert(crate::conflict_rules::ConflictRule {
-                        left_root: state.left_dir.clone(),
-                        right_root: state.right_dir.clone(),
-                        file_kind,
-                        policy,
-                    });
-                }
-            }
+            // No conflict rule is stored here: sync applies the reviewed
+            // per-row directions, and silently saving a rule would change
+            // later copy/move previews without the user asking.
             let c = ctx.clone();
             self.ws.durability_profile = state.durability;
             self.ws.version_retention = state.version_retention;
