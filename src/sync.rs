@@ -157,34 +157,40 @@ const fn default_direction(status: SyncStatus, policy: SyncPolicy) -> SyncDirect
 /// entries are walked first (stable order), then right-only entries.
 pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) -> Vec<SyncAction> {
     let mut left_counts: HashMap<&str, usize> = HashMap::new();
-    let mut right_counts: HashMap<&str, usize> = HashMap::new();
     for entry in left {
         *left_counts.entry(entry.name_lower.as_str()).or_default() += 1;
     }
-    for entry in right {
-        *right_counts.entry(entry.name_lower.as_str()).or_default() += 1;
+    // Right indices by exact and by folded name, ascending, so each left entry
+    // finds its partner by hash lookup instead of rescanning `right` (20k-entry
+    // folders made that quadratic on the UI thread). Taking the first unused
+    // index keeps the order the old linear scan matched in.
+    let mut right_exact: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut right_folded: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, entry) in right.iter().enumerate() {
+        right_exact.entry(entry.name.as_str()).or_default().push(i);
+        right_folded
+            .entry(entry.name_lower.as_str())
+            .or_default()
+            .push(i);
     }
+    let right_counts: HashMap<&str, usize> =
+        right_folded.iter().map(|(k, v)| (*k, v.len())).collect();
 
-    let mut actions = Vec::new();
+    let mut actions = Vec::with_capacity(left.len() + right.len());
     let mut used_right = vec![false; right.len()];
+    let first_unused = |candidates: Option<&Vec<usize>>, used: &[bool]| {
+        candidates.and_then(|v| v.iter().copied().find(|&i| !used[i]))
+    };
 
     for l in left {
-        let exact = right
-            .iter()
-            .enumerate()
-            .find(|(i, r)| !used_right[*i] && r.name == l.name)
-            .map(|(i, _)| i);
+        let exact = first_unused(right_exact.get(l.name.as_str()), &used_right);
         let unique_fold = left_counts.get(l.name_lower.as_str()) == Some(&1)
             && right_counts.get(l.name_lower.as_str()) == Some(&1);
         let matched = exact.or_else(|| {
             if !unique_fold {
                 return None;
             }
-            right
-                .iter()
-                .enumerate()
-                .find(|(i, r)| !used_right[*i] && r.name_lower == l.name_lower)
-                .map(|(i, _)| i)
+            first_unused(right_folded.get(l.name_lower.as_str()), &used_right)
         });
 
         let ambiguous = left_counts.get(l.name_lower.as_str()).copied().unwrap_or(0) > 1
@@ -457,6 +463,50 @@ mod tests {
         let actions = sync_diff(&left, &right, SyncPolicy::TwoWay);
         assert_eq!(actions.len(), 1, "matched as the same file");
         assert_eq!(actions[0].status, SyncStatus::Identical);
+    }
+
+    #[test]
+    fn diff_prefers_exact_pairs_and_folds_only_unique_names() {
+        let left = [
+            entry("a.txt", 1, Some(100)),
+            entry("README", 1, Some(100)),
+            entry("Notes", 1, Some(100)),
+            entry("x", 1, Some(100)),
+        ];
+        let right = [
+            entry("readme", 2, Some(100)),
+            entry("NOTES", 1, Some(100)),
+            entry("README", 1, Some(100)),
+            entry("a.txt", 1, Some(100)),
+            entry("y", 1, Some(100)),
+        ];
+        let actions = sync_diff(&left, &right, SyncPolicy::TwoWay);
+        let rows: Vec<(&str, SyncStatus, Option<&Path>)> = actions
+            .iter()
+            .map(|a| (a.name.as_str(), a.status, a.right_path.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("a.txt", SyncStatus::Identical, Some(Path::new("/x/a.txt"))),
+                // Exact pair wins even though "readme" folds the same way.
+                (
+                    "README",
+                    SyncStatus::Identical,
+                    Some(Path::new("/x/README"))
+                ),
+                // Unique folded name pairs across case.
+                ("Notes", SyncStatus::Identical, Some(Path::new("/x/NOTES"))),
+                ("x", SyncStatus::LeftOnly, None),
+                // Left-over right entries, in right order.
+                (
+                    "readme",
+                    SyncStatus::CaseConflict,
+                    Some(Path::new("/x/readme"))
+                ),
+                ("y", SyncStatus::RightOnly, Some(Path::new("/x/y"))),
+            ]
+        );
     }
 
     #[test]

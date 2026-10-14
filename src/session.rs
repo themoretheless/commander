@@ -4,6 +4,12 @@
 use crate::panel::{SortColumn, SortOrder};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// How long startup waits for the restored panel paths to answer `is_dir`.
+/// A stale hard-mounted NFS/SMB share can block that stat indefinitely, and it
+/// runs before the first frame, so the window would never appear.
+const RESTORE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 const STORE: crate::persistence::StoreSpec =
     crate::persistence::StoreSpec::new("commander.session", 1, 8 * 1024 * 1024);
@@ -147,15 +153,44 @@ const fn default_true() -> bool {
 
 impl Session {
     /// Panel paths that still exist as directories, falling back to `home`.
+    /// A path that does not answer within [`RESTORE_PROBE_TIMEOUT`] (a hung
+    /// mount) also falls back, so startup never blocks on it.
     pub fn sanitized_paths(&self, home: &Path) -> (PathBuf, PathBuf) {
-        let pick = |p: &Path| {
-            if p.is_dir() {
-                p.to_path_buf()
+        self.sanitized_paths_with(home, RESTORE_PROBE_TIMEOUT, |p| p.is_dir())
+    }
+
+    /// [`Self::sanitized_paths`] with an injected probe and time budget. Both
+    /// probes run concurrently on helper threads against one shared deadline.
+    /// A probe still running at the deadline counts as "not a directory"; its
+    /// thread is detached, since a stat stuck in the kernel cannot be
+    /// cancelled, and it exits on its own if the mount ever answers.
+    fn sanitized_paths_with(
+        &self,
+        home: &Path,
+        timeout: Duration,
+        probe: impl Fn(&Path) -> bool + Send + Clone + 'static,
+    ) -> (PathBuf, PathBuf) {
+        let spawn = |path: &Path| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let path = path.to_path_buf();
+            let probe = probe.clone();
+            std::thread::spawn(move || {
+                let _ = sender.send(probe(&path));
+            });
+            receiver
+        };
+        let left = spawn(&self.left_path);
+        let right = spawn(&self.right_path);
+        let deadline = Instant::now() + timeout;
+        let pick = |receiver: std::sync::mpsc::Receiver<bool>, path: &Path| {
+            let budget = deadline.saturating_duration_since(Instant::now());
+            if receiver.recv_timeout(budget).unwrap_or(false) {
+                path.to_path_buf()
             } else {
                 home.to_path_buf()
             }
         };
-        (pick(&self.left_path), pick(&self.right_path))
+        (pick(left, &self.left_path), pick(right, &self.right_path))
     }
 
     pub(crate) fn view_configs(&self) -> [crate::panel::ViewConfig; 2] {
@@ -395,6 +430,35 @@ mod tests {
         let (l, r) = s.sanitized_paths(home.path());
         assert_eq!(l, real); // exists -> kept
         assert_eq!(r, home.path()); // missing -> home
+    }
+
+    #[test]
+    fn sanitized_paths_fall_back_to_home_when_a_probe_hangs() {
+        use std::sync::{Arc, Mutex};
+        let home = TempDir::new();
+        let real = home.dir("Documents");
+        let hung = PathBuf::from("/mnt/stale-share");
+        let s = sample(hung.clone(), real.clone());
+        // The probe for `hung` blocks until the test releases it, like a stat
+        // on a dead hard mount.
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(gate));
+        let probe = {
+            let hung = hung.clone();
+            move |p: &Path| {
+                if p == hung {
+                    let _ = gate.lock().map(|g| g.recv());
+                    return true;
+                }
+                p.is_dir()
+            }
+        };
+        let started = Instant::now();
+        let (l, r) = s.sanitized_paths_with(home.path(), Duration::from_millis(100), probe);
+        assert!(started.elapsed() < Duration::from_secs(5), "did not block");
+        assert_eq!(l, home.path()); // unanswered -> home
+        assert_eq!(r, real); // answered in time -> kept
+        drop(release);
     }
 
     #[test]

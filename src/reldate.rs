@@ -4,8 +4,31 @@
 //! regardless of the machine's timezone (handy for golden tests, and the exact
 //! local timestamp stays available as the row's hover tooltip).
 
-use chrono::Datelike;
-use std::time::SystemTime;
+use chrono::{DateTime, Datelike, Utc};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Shown when a timestamp lies outside the range chrono can represent (an mtime
+/// hundreds of thousands of years away); matches the panel's unknown-mtime dash.
+const OUT_OF_RANGE: &str = "–";
+
+/// `t` as a UTC datetime, or `None` when it is outside chrono's range. chrono's
+/// `From<SystemTime>` panics there, and a row render must never panic on a
+/// hostile mtime.
+fn to_utc(t: SystemTime) -> Option<DateTime<Utc>> {
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => DateTime::from_timestamp(i64::try_from(d.as_secs()).ok()?, d.subsec_nanos()),
+        Err(e) => {
+            let d = e.duration();
+            let secs = i64::try_from(d.as_secs()).ok()?;
+            match d.subsec_nanos() {
+                0 => DateTime::from_timestamp(-secs, 0),
+                n => {
+                    DateTime::from_timestamp(secs.checked_neg()?.checked_sub(1)?, 1_000_000_000 - n)
+                }
+            }
+        }
+    }
+}
 
 /// A human-friendly modified time relative to `now`.
 ///
@@ -35,8 +58,9 @@ pub fn relative_date(modified: SystemTime, now: SystemTime) -> String {
             if e.duration().as_secs() <= FUTURE_SKEW_TOLERANCE {
                 return "just now".to_string();
             }
-            let modified_utc: chrono::DateTime<chrono::Utc> = modified.into();
-            let now_utc: chrono::DateTime<chrono::Utc> = now.into();
+            let (Some(modified_utc), Some(now_utc)) = (to_utc(modified), to_utc(now)) else {
+                return OUT_OF_RANGE.to_string();
+            };
             return if modified_utc.year() == now_utc.year() {
                 modified_utc.format("%b %-d").to_string()
             } else {
@@ -59,12 +83,16 @@ pub fn relative_date(modified: SystemTime, now: SystemTime) -> String {
         return "Yesterday".to_string();
     }
 
-    let modified_utc: chrono::DateTime<chrono::Utc> = modified.into();
+    let Some(modified_utc) = to_utc(modified) else {
+        return OUT_OF_RANGE.to_string();
+    };
     if secs < WEEK {
         return modified_utc.format("%A").to_string();
     }
 
-    let now_utc: chrono::DateTime<chrono::Utc> = now.into();
+    let Some(now_utc) = to_utc(now) else {
+        return OUT_OF_RANGE.to_string();
+    };
     if modified_utc.year() == now_utc.year() {
         modified_utc.format("%b %-d").to_string()
     } else {
@@ -156,5 +184,30 @@ mod tests {
     fn older_includes_year() {
         // 400 days ago is 2020-05-11 12:00 UTC, a different calendar year.
         assert_eq!(rel(NOW - 400 * DAY), "May 11 2020");
+    }
+
+    #[test]
+    fn out_of_range_mtime_shows_placeholder_instead_of_panicking() {
+        // Beyond chrono's year ~262143. Not every platform's SystemTime reaches
+        // that far (Windows tops out earlier), in which case there is nothing
+        // to guard.
+        let Some(far) = UNIX_EPOCH.checked_add(Duration::from_secs(9_000_000_000_000)) else {
+            return;
+        };
+        assert_eq!(relative_date(far, at(NOW)), OUT_OF_RANGE); // far future
+        assert_eq!(relative_date(at(NOW), far), OUT_OF_RANGE); // "now" out of range
+    }
+
+    #[test]
+    fn to_utc_matches_chrono_on_both_sides_of_the_epoch() {
+        for t in [
+            at(NOW),
+            UNIX_EPOCH + Duration::from_millis(1_500),
+            UNIX_EPOCH - Duration::from_secs(3),
+            UNIX_EPOCH - Duration::from_millis(1_500),
+        ] {
+            let expected: DateTime<Utc> = t.into();
+            assert_eq!(to_utc(t), Some(expected), "{t:?}");
+        }
     }
 }
