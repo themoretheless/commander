@@ -124,13 +124,41 @@ pub fn collect(paths: &[PathBuf]) -> SupportBundle {
     let mut warnings = Vec::new();
     let operations = match crate::operation_journal::load() {
         Ok(journal) => journal.operations,
-        Err(_) => {
-            warnings.push("operation journal unavailable".to_string());
+        Err(error) => {
+            warnings.push(format!(
+                "operation journal unavailable: {}",
+                journal_unavailable_reason(&error)
+            ));
             Vec::new()
         }
     };
-    let versions = crate::version_store::records();
+    let versions = match crate::version_store::records_or_blocked() {
+        Ok(versions) => versions,
+        Err(reason) => {
+            warnings.push(format!("version store unavailable: {reason}"));
+            Vec::new()
+        }
+    };
     build(paths, &operations, &versions, warnings)
+}
+
+/// A path-free reason for an operation-journal load failure: the bundle is
+/// redacted, and the raw error text can embed absolute paths.
+fn journal_unavailable_reason(error: &str) -> &'static str {
+    let error = error.to_ascii_lowercase();
+    if error.contains("lock") {
+        "its store lock could not be acquired"
+    } else if error.contains("directory") {
+        "its directory could not be created"
+    } else if error.contains("unreadable") {
+        "the file is unreadable"
+    } else if error.contains("newer") || error.contains("schema") {
+        "it was written by an unsupported version"
+    } else if error.contains("corrupt") {
+        "the file is corrupt"
+    } else {
+        "its records failed validation"
+    }
 }
 
 pub(crate) fn build(
@@ -361,6 +389,28 @@ fn now_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_failure_reasons_are_classified_without_paths() {
+        assert_eq!(
+            journal_unavailable_reason(
+                "Operation journal is corrupt: envelope or payload rejected"
+            ),
+            "the file is corrupt"
+        );
+        assert_eq!(
+            journal_unavailable_reason(
+                "Could not open operation journal lock: Permission denied (os error 13)"
+            ),
+            "its store lock could not be acquired"
+        );
+        assert_eq!(
+            journal_unavailable_reason("Unsupported operation journal schema 9; expected 3"),
+            "it was written by an unsupported version"
+        );
+        let reason = journal_unavailable_reason("step /home/user/private/file.txt is invalid");
+        assert!(!reason.contains("/home"), "{reason}");
+    }
 
     #[test]
     fn redaction_salt_is_fresh_per_bundle() {

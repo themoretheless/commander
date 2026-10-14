@@ -26,9 +26,10 @@ pub fn config_dir() -> PathBuf {
         },
         |root| root.join("config"),
     );
-    if let Some(dir) = ensure_private_directory(&preferred) {
-        return dir;
-    }
+    let preferred_error = match ensure_private_directory(&preferred) {
+        Ok(()) => return preferred,
+        Err(error) => error,
+    };
     #[cfg(unix)]
     let fallback = std::env::temp_dir().join(format!(
         "commander-{}",
@@ -37,8 +38,10 @@ pub fn config_dir() -> PathBuf {
     ));
     #[cfg(not(unix))]
     let fallback = std::env::temp_dir().join(format!("commander-{}", std::process::id()));
-    if let Some(dir) = ensure_private_directory(&fallback) {
-        return dir;
+    let fallback_result = ensure_private_directory(&fallback);
+    warn_config_dir_fallback(&preferred, &preferred_error, &fallback, &fallback_result);
+    if fallback_result.is_ok() {
+        return fallback;
     }
     #[cfg(unix)]
     {
@@ -50,37 +53,135 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
-fn ensure_private_directory(path: &Path) -> Option<PathBuf> {
-    std::fs::create_dir_all(path).ok()?;
-    let metadata = std::fs::symlink_metadata(path).ok()?;
+/// The config-directory fallback warning, kept for the life of the process.
+/// `config_dir` runs before the file logger exists (the logger opens its file
+/// under that directory), so `logging::init` re-emits this once installed.
+static CONFIG_DIR_WARNING: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The config-directory fallback warning, if one was raised. `logging::init`
+/// logs it after installing the logger so it reaches `commander.log`.
+pub fn config_dir_warning() -> Option<&'static str> {
+    CONFIG_DIR_WARNING.get().map(String::as_str)
+}
+
+/// Warn once per process that state is not going to the preferred config
+/// directory: settings saved in the temp fallback look reset and vanish on
+/// reboot. `config_dir` runs constantly, so only the first call warns. The
+/// message is always stored for `logging::init`; it is logged here only when
+/// a logger is already installed, so it is never spent on the no-op logger.
+fn warn_config_dir_fallback(
+    preferred: &Path,
+    preferred_error: &std::io::Error,
+    fallback: &Path,
+    fallback_result: &std::io::Result<()>,
+) {
+    if CONFIG_DIR_WARNING.get().is_some() {
+        return;
+    }
+    let message = config_fallback_message(preferred, preferred_error, fallback, fallback_result);
+    if !record_warning_once(&CONFIG_DIR_WARNING, message) {
+        return;
+    }
+    let message = CONFIG_DIR_WARNING.get().map_or("", String::as_str);
+    eprintln!("commander: {message}");
+    if log::max_level() != log::LevelFilter::Off {
+        log::warn!(target: "commander::fs_util", "{message}");
+    }
+}
+
+/// Store `message` in `cell` unless a warning is already there; true when
+/// this call stored it.
+fn record_warning_once(cell: &std::sync::OnceLock<String>, message: String) -> bool {
+    let mut stored = false;
+    cell.get_or_init(|| {
+        stored = true;
+        message
+    });
+    stored
+}
+
+fn config_fallback_message(
+    preferred: &Path,
+    preferred_error: &std::io::Error,
+    fallback: &Path,
+    fallback_result: &std::io::Result<()>,
+) -> String {
+    let unusable = format!(
+        "config directory {} is unusable ({preferred_error})",
+        preferred.display()
+    );
+    match fallback_result {
+        Ok(()) => format!(
+            "{unusable}; settings are kept in {} for this session and may be lost on reboot. Fix the directory's owner and permissions to keep them.",
+            fallback.display()
+        ),
+        Err(error) => format!(
+            "{unusable} and the fallback {} is unusable too ({error}); settings will not be saved.",
+            fallback.display()
+        ),
+    }
+}
+
+/// Create `path` if needed and make sure it is a real directory owned by
+/// this user and private to it. The error says which check failed.
+fn ensure_private_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return None;
+        return Err(std::io::Error::other("it is a symlink or not a directory"));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         // SAFETY: `geteuid` has no preconditions and does not retain pointers.
-        if metadata.uid() != unsafe { libc::geteuid() } {
-            return None;
+        let uid = unsafe { libc::geteuid() };
+        if metadata.uid() != uid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("owned by uid {}, not the current uid {uid}", metadata.uid()),
+            ));
         }
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).ok()?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     }
-    Some(path.to_path_buf())
+    Ok(())
 }
 
 /// Atomically write `contents` to `path`: write a sibling temp file, then
 /// rename it over the destination, so a crash or concurrent reader mid-write
-/// never sees a truncated file. Best-effort; returns whether it succeeded.
+/// never sees a truncated file. Best-effort; returns whether it succeeded,
+/// and logs the reason when it did not.
 pub fn write_atomic(path: &Path, contents: &str) -> bool {
+    match try_write_atomic(path, contents) {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!(target: "commander::fs_util", "{error}");
+            false
+        }
+    }
+}
+
+/// [`write_atomic`] for callers that show the failure: the error names the
+/// path, the step that failed and the OS error (e.g. disk full vs denied).
+pub fn try_write_atomic(path: &Path, contents: &str) -> Result<(), String> {
     match crate::persistence::commit_bytes_atomic(path, contents.as_bytes()) {
-        Ok(crate::persistence::AtomicWriteOutcome::Durable) => true,
+        Ok(crate::persistence::AtomicWriteOutcome::Durable) => Ok(()),
         Ok(crate::persistence::AtomicWriteOutcome::CommittedButNotDurable(error)) => {
             crate::persistence::record_durability_warning("Legacy store", &error);
-            true
+            Ok(())
         }
-        Err(_) => false,
+        Err(error) => Err(describe_write_failure(path, &error)),
     }
+}
+
+fn describe_write_failure(path: &Path, error: &crate::persistence::PreCommitError) -> String {
+    use crate::persistence::PreCommitError;
+    let reason = match error {
+        PreCommitError::Serialize(source) => format!("could not serialize ({source})"),
+        PreCommitError::Conflict => "another writer changed the file".to_string(),
+        PreCommitError::Io { stage, source, .. } => format!("could not {stage} ({source})"),
+    };
+    format!("Could not write {}: {reason}", path.display())
 }
 
 /// Flush a pathname mutation in `path`'s parent directory before a durable
@@ -452,19 +553,22 @@ pub fn space_verdict(
 }
 
 /// Compress a file or directory into "<name>.zip" next to it.
-/// Runs `ditto` in the background; returns once the process is spawned.
+/// Runs `ditto` in the background; returns once the process is spawned, and
+/// a reaper thread collects it and logs a failed exit (disk full, permission
+/// denied) with `ditto`'s stderr.
 /// An existing archive is never replaced: like Finder, the name counts up
 /// ("name 2.zip", "name 3.zip", ...) because `ditto` would overwrite it.
 pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
     let archive = zip_archive_path(path)?;
-    std::process::Command::new("ditto")
-        .arg("-c")
-        .arg("-k")
-        .arg("--sequesterRsrc")
-        .arg(path)
-        .arg(&archive)
-        .spawn()
-        .map(|_| ())
+    crate::native_effect::spawn_reaped_logging_failure(
+        std::process::Command::new("ditto")
+            .arg("-c")
+            .arg("-k")
+            .arg("--sequesterRsrc")
+            .arg(path)
+            .arg(&archive),
+        format!("Compressing {} to {}", path.display(), archive.display()),
+    )
 }
 
 fn zip_archive_path(path: &Path) -> std::io::Result<PathBuf> {
@@ -758,10 +862,7 @@ mod tests {
 
         let tmp = TempDir::new();
         let directory = tmp.path().join("private");
-        assert_eq!(
-            ensure_private_directory(&directory).as_deref(),
-            Some(directory.as_path())
-        );
+        assert!(ensure_private_directory(&directory).is_ok());
         assert_eq!(
             std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
             0o700
@@ -770,7 +871,51 @@ mod tests {
         let target = tmp.dir("target");
         let link = tmp.path().join("link");
         symlink(target, &link).unwrap();
-        assert!(ensure_private_directory(&link).is_none());
+        assert!(ensure_private_directory(&link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_directory_owned_by_another_user_names_the_owner() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("foreign");
+        // Only root can give a directory away; elsewhere there is nothing to test.
+        if std::os::unix::fs::chown(&directory, Some(4242), None).is_err() {
+            return;
+        }
+        let error = ensure_private_directory(&directory).unwrap_err();
+        assert!(error.to_string().contains("owned by uid 4242"), "{error}");
+
+        let message =
+            config_fallback_message(&directory, &error, Path::new("/tmp/commander-0"), &Ok(()));
+        assert!(
+            message.contains(&directory.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("owned by uid 4242"), "{message}");
+        assert!(message.contains("/tmp/commander-0"), "{message}");
+    }
+
+    #[test]
+    fn config_dir_warning_is_kept_for_the_logger() {
+        let cell = std::sync::OnceLock::new();
+        assert!(record_warning_once(&cell, "first".to_owned()));
+        assert!(!record_warning_once(&cell, "second".to_owned()));
+        // The first warning stays retrievable for `logging::init` to log.
+        assert_eq!(cell.get().map(String::as_str), Some("first"));
+    }
+
+    #[test]
+    fn failed_atomic_write_names_the_path_and_os_error() {
+        let tmp = TempDir::new();
+        let blocker = tmp.file("blocker", "a file, not a directory");
+        let path = blocker.join("store.json");
+
+        let error = try_write_atomic(&path, "{}").unwrap_err();
+
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("could not "), "{error}");
+        assert!(!write_atomic(&path, "{}"));
     }
 
     #[test]

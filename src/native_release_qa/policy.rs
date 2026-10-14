@@ -321,16 +321,32 @@ pub(super) fn evaluate_verdict(
 ) -> (NativeVerdict, Vec<String>) {
     let mut reasons = Vec::new();
     if !subject.worktree_clean {
-        reasons.push("worktree is not clean".to_string());
+        if subject.worktree_problems.is_empty() {
+            reasons.push("worktree is not clean".to_string());
+        } else {
+            reasons.extend(
+                subject
+                    .worktree_problems
+                    .iter()
+                    .map(|problem| format!("worktree is not an exact clean build: {problem}")),
+            );
+        }
     }
     if !valid_commit(&subject.commit) {
         reasons.push("subject commit is invalid or unknown".to_string());
     }
+    let identity_error = subject.binary_identity_error.as_deref();
     if !valid_digest(&subject.binary_blake3) {
-        reasons.push("subject binary digest is invalid".to_string());
+        reasons.push(match identity_error {
+            Some(error) => format!("subject binary digest is invalid: {error}"),
+            None => "subject binary digest is invalid".to_string(),
+        });
     }
     if !subject.binary_identity_verified {
-        reasons.push("on-disk executable identity does not match the running process".to_string());
+        reasons.push(match identity_error {
+            Some(error) => format!("on-disk executable identity could not be verified: {error}"),
+            None => "on-disk executable identity does not match the running process".to_string(),
+        });
     }
     if !capabilities.release_ready() {
         reasons.push("one or more native capabilities are unavailable".to_string());
@@ -629,7 +645,9 @@ mod tests {
             commit: "a".repeat(40),
             binary_blake3: "b".repeat(64),
             binary_identity_verified: true,
+            binary_identity_error: None,
             worktree_clean: true,
+            worktree_problems: Vec::new(),
         };
         let capabilities = NativeCapabilities {
             window_server: CapabilityState::Available,
@@ -651,7 +669,9 @@ mod tests {
             commit: "a".repeat(40),
             binary_blake3: "b".repeat(64),
             binary_identity_verified: true,
+            binary_identity_error: None,
             worktree_clean: true,
+            worktree_problems: Vec::new(),
         };
         let capabilities = NativeCapabilities {
             window_server: CapabilityState::Available,
@@ -679,6 +699,42 @@ mod tests {
         assert_eq!(
             evaluate_verdict(&capabilities, &subject, &[], &attestation).0,
             NativeVerdict::Failed
+        );
+    }
+
+    #[test]
+    fn release_verdict_reasons_carry_the_identity_and_worktree_causes() {
+        let subject = QaSubject {
+            commit: "a".repeat(40),
+            binary_blake3: "unavailable".to_string(),
+            binary_identity_verified: false,
+            binary_identity_error: Some("could not open /app/commander: denied".to_string()),
+            worktree_clean: false,
+            worktree_problems: vec!["checkout status is unknown: git missing".to_string()],
+        };
+        let capabilities = NativeCapabilities {
+            window_server: CapabilityState::Available,
+            accessibility: CapabilityState::Available,
+            screen_recording: CapabilityState::Available,
+            voice_over: CapabilityState::Available,
+        };
+        let attestation = CheckEvidence::passed("manual_attestation", "complete");
+        let (verdict, reasons) = evaluate_verdict(&capabilities, &subject, &[], &attestation);
+        assert_eq!(verdict, NativeVerdict::Failed);
+        assert!(
+            reasons.contains(
+                &"worktree is not an exact clean build: checkout status is unknown: git missing"
+                    .to_string()
+            )
+        );
+        assert!(reasons.contains(
+            &"subject binary digest is invalid: could not open /app/commander: denied".to_string()
+        ));
+        // An unverifiable identity is not reported as a mismatch.
+        assert!(
+            reasons
+                .iter()
+                .all(|reason| !reason.contains("does not match the running process"))
         );
     }
 }

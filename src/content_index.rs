@@ -192,6 +192,12 @@ pub struct ContentIndex {
     /// settings change, since `status()` asks for the snapshot every frame.
     unloadable: HashSet<PathBuf>,
     load_errors: HashMap<PathBuf, String>,
+    /// Why the settings file could not be loaded; shown for every root until
+    /// a settings change is saved again.
+    settings_error: Option<String>,
+    /// The settings file exists but could not be read. Saving now would
+    /// replace the user's roots with the defaults, so saves are refused.
+    settings_unreadable: bool,
     active: Option<BuildRun>,
     workload: crate::workload::WorkloadHandle,
     idle: Arc<AtomicBool>,
@@ -200,7 +206,11 @@ pub struct ContentIndex {
 
 impl ContentIndex {
     pub fn load(workload: crate::workload::WorkloadHandle) -> Self {
-        Self::from_settings(load_settings_from(&settings_path()), workload)
+        let loaded = load_settings_from(&settings_path());
+        let mut index = Self::from_settings(loaded.settings, workload);
+        index.settings_error = loaded.problem;
+        index.settings_unreadable = loaded.unreadable;
+        index
     }
 
     #[cfg(feature = "visual-qa")]
@@ -215,6 +225,8 @@ impl ContentIndex {
             snapshot_order: Vec::new(),
             unloadable: HashSet::new(),
             load_errors: HashMap::new(),
+            settings_error: None,
+            settings_unreadable: false,
             active: None,
             workload,
             idle: Arc::new(AtomicBool::new(false)),
@@ -234,7 +246,18 @@ impl ContentIndex {
             .is_some_and(|settings| settings.enabled)
     }
 
+    /// Why settings must not be saved right now: the file is there but was
+    /// unreadable at load, so a save would overwrite it with the defaults.
+    fn settings_save_blocked(&self) -> Option<String> {
+        settings_save_blocked_reason(self.settings_unreadable, &settings_path())
+    }
+
     pub fn set_enabled(&mut self, root: PathBuf, enabled: bool) -> bool {
+        if let Some(reason) = self.settings_save_blocked() {
+            log::warn!(target: "commander::content_index", "{reason}");
+            self.settings_error = Some(reason);
+            return false;
+        }
         let previous = self.settings.clone();
         let settings = self.settings_for_mut(root.clone());
         settings.enabled = enabled;
@@ -249,14 +272,22 @@ impl ContentIndex {
             self.evict_snapshot(&root);
         }
         self.unloadable.remove(&root);
+        self.settings_error = None;
+        self.settings_unreadable = false;
         true
     }
 
     pub fn set_exclusions(&mut self, root: &Path, values: Vec<PathBuf>) -> Result<(), String> {
         let exclusions = normalize_exclusions(root, values)?;
+        if let Some(reason) = self.settings_save_blocked() {
+            self.settings_error = Some(reason.clone());
+            return Err(reason);
+        }
         let previous = self.settings.clone();
         self.settings_for_mut(root.to_path_buf()).excluded_roots = exclusions;
         if save_settings_to(&settings_path(), &self.settings) {
+            self.settings_error = None;
+            self.settings_unreadable = false;
             Ok(())
         } else {
             self.settings = previous;
@@ -291,7 +322,7 @@ impl ContentIndex {
         if !self.is_enabled(&root) {
             return false;
         }
-        if !crate::provider_runtime::activate_builtin(
+        if let Err(reason) = crate::provider_runtime::activate_builtin_explained(
             "content-index",
             &crate::provider_runtime::ActivationRequest {
                 capability: crate::provider_runtime::ProviderCapability::IndexBuild,
@@ -300,10 +331,8 @@ impl ContentIndex {
                 bytes: None,
             },
         ) {
-            self.load_errors.insert(
-                root,
-                "Content index provider activation exceeded its startup budget".to_string(),
-            );
+            self.load_errors
+                .insert(root, format!("Content index could not start: {reason}"));
             return false;
         }
         let exclusions = self.exclusions(&root);
@@ -506,7 +535,12 @@ impl ContentIndex {
             .and_then(|settings| settings.last_error.clone());
         let snapshot = enabled.then(|| self.snapshot(root)).flatten();
         let active = self.active.as_ref().filter(|run| run.root == root);
-        let last_error = self.load_errors.get(root).cloned().or(settings_error);
+        let last_error = self
+            .load_errors
+            .get(root)
+            .cloned()
+            .or(settings_error)
+            .or_else(|| self.settings_error.clone());
         let phase = if !enabled {
             IndexPhase::Disabled
         } else if active.is_some() && !self.idle.load(Ordering::Acquire) {
@@ -1052,11 +1086,100 @@ fn index_path(root: &Path) -> PathBuf {
     indexes_dir().join(format!("content-v{SCHEMA_VERSION}-{hash:016x}.json"))
 }
 
-fn load_settings_from(path: &Path) -> SettingsStore {
-    fs::File::open(path)
-        .ok()
-        .and_then(|file| serde_json::from_reader(BufReader::new(file)).ok())
-        .unwrap_or_default()
+/// Settings as loaded, plus a problem to show in the index panel.
+struct LoadedSettings {
+    settings: SettingsStore,
+    problem: Option<String>,
+    /// The file exists but could not be read; saves must not replace it.
+    unreadable: bool,
+}
+
+impl LoadedSettings {
+    fn ok(settings: SettingsStore) -> Self {
+        Self {
+            settings,
+            problem: None,
+            unreadable: false,
+        }
+    }
+}
+
+/// The saved settings, plus a problem to show in the index panel when they
+/// could not be loaded. Every save writes the whole store, so a file that
+/// does not parse is moved aside first: otherwise the next settings change
+/// would replace the user's roots and exclusions with defaults. A file that
+/// cannot be read is left in place and marked so saves are refused.
+fn load_settings_from(path: &Path) -> LoadedSettings {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return LoadedSettings::ok(SettingsStore::default());
+        }
+        Err(error) => {
+            let message = format!(
+                "Could not read index settings {}: {error}. Defaults are active and changes are not saved until the file is readable.",
+                path.display()
+            );
+            log::warn!(target: "commander::content_index", "{message}");
+            return LoadedSettings {
+                settings: SettingsStore::default(),
+                problem: Some(message),
+                unreadable: true,
+            };
+        }
+    };
+    let error = match serde_json::from_reader(BufReader::new(file)) {
+        Ok(settings) => return LoadedSettings::ok(settings),
+        Err(error) => error,
+    };
+    let backup = unused_backup_path(path);
+    let message = match fs::rename(path, &backup) {
+        Ok(()) => format!(
+            "Index settings {} were damaged ({error}); defaults are active and the old file was kept as {}.",
+            path.display(),
+            backup.display()
+        ),
+        Err(rename_error) => format!(
+            "Index settings {} were damaged ({error}) and could not be moved aside ({rename_error}); the next settings change will replace them.",
+            path.display()
+        ),
+    };
+    log::warn!(target: "commander::content_index", "{message}");
+    LoadedSettings {
+        settings: SettingsStore::default(),
+        problem: Some(message),
+        unreadable: false,
+    }
+}
+
+/// Why a settings save to `path` must be refused: it was unreadable at load
+/// and is still there, so saving would replace it with the defaults.
+fn settings_save_blocked_reason(unreadable: bool, path: &Path) -> Option<String> {
+    if !unreadable || fs::symlink_metadata(path).is_err() {
+        return None;
+    }
+    Some(format!(
+        "Index settings {} could not be read, so changes are not saved over it. Fix its permissions and restart Commander.",
+        path.display()
+    ))
+}
+
+/// `<path>.bak`, or `<path>.bak.N` when earlier backups exist, so a second
+/// damaged file never replaces the first one's backup.
+fn unused_backup_path(path: &Path) -> PathBuf {
+    let with_suffix = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let first = with_suffix(".bak");
+    if fs::symlink_metadata(&first).is_err() {
+        return first;
+    }
+    (1..1000)
+        .map(|n| with_suffix(&format!(".bak.{n}")))
+        .find(|candidate| fs::symlink_metadata(candidate).is_err())
+        .unwrap_or_else(|| with_suffix(&format!(".bak.{}", std::process::id())))
 }
 
 fn save_settings_to(path: &Path, settings: &SettingsStore) -> bool {
@@ -1125,8 +1248,37 @@ fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
         crate::persistence::SaveIntent::Automatic,
     ) {
         Ok(outcome) => crate::persistence::require_durable(INDEX_NOUN, outcome),
-        Err(error) => Err(format!("Could not save content index: {error:?}")),
+        Err(error) => Err(describe_index_save_error(path, &error)),
     }
+}
+
+/// A sentence for the Find index panel; the error's `Debug` form
+/// (`Blocked(Corrupt)`, `PreCommit(Io { .. })`) means nothing to a user.
+fn describe_index_save_error(path: &Path, error: &crate::persistence::JsonSaveError) -> String {
+    use crate::persistence::{JsonSaveError, PreCommitError};
+    let reason = match error {
+        JsonSaveError::Blocked(status) => format!(
+            "the existing index file is {}",
+            format!("{status:?}").to_lowercase()
+        ),
+        JsonSaveError::GenerationExhausted => "its revision counter is exhausted".to_string(),
+        JsonSaveError::RecoveryPreservation => {
+            "the previous index file could not be preserved".to_string()
+        }
+        JsonSaveError::PreCommit(PreCommitError::Conflict) => {
+            "another writer changed it during the build".to_string()
+        }
+        JsonSaveError::PreCommit(PreCommitError::Serialize(source)) => {
+            format!("it could not be serialized ({source})")
+        }
+        JsonSaveError::PreCommit(PreCommitError::Io { stage, source, .. }) => {
+            format!("could not {stage} ({source})")
+        }
+    };
+    format!(
+        "Could not save content index {}: {reason}. Rebuild the index to try again.",
+        path.display()
+    )
 }
 
 #[cfg(test)]
@@ -1630,5 +1782,96 @@ mod tests {
         let normalized =
             normalize_exclusions(temp.path(), vec![PathBuf::from("Build/Out/new")]).unwrap();
         assert_eq!(normalized, vec![temp.path().join("Build/Out/new")]);
+    }
+
+    #[test]
+    fn damaged_settings_are_moved_aside_and_reported() {
+        let temp = TempDir::new();
+        let path = temp.path().join("content_index_settings.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let loaded = load_settings_from(&path);
+
+        assert!(loaded.settings.roots.is_empty());
+        assert!(!loaded.unreadable);
+        let error = loaded.problem.expect("a damaged file is reported");
+        assert!(error.contains("damaged"), "{error}");
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(temp.path().join("content_index_settings.json.bak")).unwrap(),
+            b"{ not json"
+        );
+        // A missing file is the normal first run, not an error.
+        assert!(load_settings_from(&path).problem.is_none());
+
+        // A second damaged file keeps the first backup.
+        std::fs::write(&path, b"{ also not json").unwrap();
+        assert!(load_settings_from(&path).problem.is_some());
+        assert_eq!(
+            std::fs::read(temp.path().join("content_index_settings.json.bak")).unwrap(),
+            b"{ not json"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("content_index_settings.json.bak.1")).unwrap(),
+            b"{ also not json"
+        );
+    }
+
+    #[test]
+    fn saves_are_refused_while_the_settings_file_is_unreadable() {
+        let temp = TempDir::new();
+        let path = temp.file("content_index_settings.json", "{}");
+
+        let reason = settings_save_blocked_reason(true, &path).expect("save is refused");
+        assert!(reason.contains(&path.display().to_string()), "{reason}");
+        assert!(settings_save_blocked_reason(false, &path).is_none());
+        // Once the unreadable file is gone, saving cannot destroy it.
+        std::fs::remove_file(&path).unwrap();
+        assert!(settings_save_blocked_reason(true, &path).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_settings_are_left_in_place_and_flagged() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new();
+        let path = temp.file("content_index_settings.json", "{\"roots\": []}");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads the file anyway; there is no read error to test then.
+        if std::fs::File::open(&path).is_ok() {
+            return;
+        }
+
+        let loaded = load_settings_from(&path);
+
+        assert!(loaded.unreadable);
+        assert!(loaded.problem.is_some());
+        assert!(path.exists());
+        assert!(!temp.path().join("content_index_settings.json.bak").exists());
+    }
+
+    #[test]
+    fn index_save_errors_read_as_sentences() {
+        let path = Path::new("/indexes/content.json");
+        let blocked = describe_index_save_error(
+            path,
+            &crate::persistence::JsonSaveError::Blocked(crate::persistence::LoadStatus::Corrupt),
+        );
+        assert!(!blocked.contains("Blocked("), "{blocked}");
+        assert!(blocked.contains("is corrupt"), "{blocked}");
+        assert!(blocked.contains("/indexes/content.json"), "{blocked}");
+
+        let io = describe_index_save_error(
+            path,
+            &crate::persistence::JsonSaveError::PreCommit(crate::persistence::PreCommitError::Io {
+                stage: crate::persistence::SaveStage::Write,
+                source: std::io::Error::other("disk full"),
+                cleanup: None,
+            }),
+        );
+        assert!(
+            io.contains("could not write temporary file (disk full)"),
+            "{io}"
+        );
     }
 }

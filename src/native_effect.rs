@@ -119,14 +119,16 @@ mod appkit {
             }
             let result = match request {
                 OpenRequest::OpenPath(path) => open::that(path),
-                OpenRequest::Reveal(path) => {
-                    spawn_reaped(std::process::Command::new("open").arg("-R").arg(path))
-                }
-                OpenRequest::OpenWith { path, application } => spawn_reaped(
+                OpenRequest::Reveal(path) => spawn_reaped_logging_failure(
+                    std::process::Command::new("open").arg("-R").arg(path),
+                    format!("Reveal in Finder for {}", path.display()),
+                ),
+                OpenRequest::OpenWith { path, application } => spawn_reaped_logging_failure(
                     std::process::Command::new("open")
                         .arg("-a")
                         .arg(application)
                         .arg(path),
+                    format!("Opening {} with {application:?}", path.display()),
                 ),
                 OpenRequest::QuickLook(path) => spawn_reaped(
                     std::process::Command::new("qlmanage")
@@ -135,7 +137,7 @@ mod appkit {
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null()),
                 ),
-                OpenRequest::GetInfo(path) => spawn_reaped(
+                OpenRequest::GetInfo(path) => spawn_reaped_logging_failure(
                     std::process::Command::new("osascript")
                         .arg("-e")
                         .arg("on run argv")
@@ -148,6 +150,10 @@ mod appkit {
                         .arg("end run")
                         .arg("--")
                         .arg(path),
+                    format!(
+                        "Get Info for {} (if Finder automation was denied, allow it in System Settings > Privacy & Security > Automation)",
+                        path.display()
+                    ),
                 ),
             };
             match result {
@@ -180,6 +186,82 @@ fn spawn_reaped_with_handle(
             let _ = child.wait();
         })
         .ok())
+}
+
+/// Launch a helper like [`spawn_reaped`], but have the reaper log a failed
+/// exit with the helper's stderr: the launch itself is reported as accepted,
+/// so without this a helper that fails (Finder automation denied, disk full)
+/// leaves no trace. `what` names the operation and its path.
+pub fn spawn_reaped_logging_failure(
+    command: &mut std::process::Command,
+    what: String,
+) -> std::io::Result<()> {
+    spawn_reaped_reporting(command, what, |message| {
+        log::warn!(target: "commander::native_effect", "{message}");
+    })
+    .map(drop)
+}
+
+fn spawn_reaped_reporting(
+    command: &mut std::process::Command,
+    what: String,
+    on_failure: impl FnOnce(String) + Send + 'static,
+) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
+    let mut child = command.stderr(std::process::Stdio::piped()).spawn()?;
+    Ok(std::thread::Builder::new()
+        .name("child-reaper".to_string())
+        .spawn(move || {
+            let stderr = child
+                .stderr
+                .take()
+                .map(read_bounded_stderr)
+                .unwrap_or_default();
+            let message = match child.wait() {
+                Ok(status) => helper_failure_message(&what, status, &stderr),
+                Err(error) => Some(format!(
+                    "{what}: could not collect the exit status: {error}"
+                )),
+            };
+            if let Some(message) = message {
+                on_failure(message);
+            }
+        })
+        .ok())
+}
+
+/// Keep the head of a helper's stderr but drain the rest, so a chatty helper
+/// cannot block on a full pipe before it exits.
+fn read_bounded_stderr(mut stderr: impl std::io::Read) -> Vec<u8> {
+    const KEEP: usize = 4 * 1024;
+    let mut kept = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        match stderr.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                let room = KEEP.saturating_sub(kept.len()).min(read);
+                kept.extend_from_slice(&buffer[..room]);
+            }
+        }
+    }
+    kept
+}
+
+fn helper_failure_message(
+    what: &str,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> Option<String> {
+    if status.success() {
+        return None;
+    }
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    Some(if stderr.is_empty() {
+        format!("{what} failed ({status})")
+    } else {
+        format!("{what} failed ({status}): {stderr}")
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -523,6 +605,40 @@ mod tests {
             .expect("reaper thread starts");
         // The reaper finishes only after wait() has collected the child.
         handle.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_helpers_report_status_and_stderr() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let handle = spawn_reaped_reporting(
+            std::process::Command::new("sh").args(["-c", "echo denied >&2; exit 3"]),
+            "Get Info for /tmp/x".to_string(),
+            move |message| sender.send(message).unwrap(),
+        )
+        .unwrap()
+        .expect("reaper thread starts");
+        handle.join().unwrap();
+
+        let message = receiver.try_recv().expect("a failed exit is reported");
+        assert!(
+            message.starts_with("Get Info for /tmp/x failed"),
+            "{message}"
+        );
+        assert!(message.contains('3'), "{message}");
+        assert!(message.ends_with(": denied"), "{message}");
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        spawn_reaped_reporting(
+            &mut std::process::Command::new("true"),
+            "ok".to_string(),
+            move |message| sender.send(message).unwrap(),
+        )
+        .unwrap()
+        .expect("reaper thread starts")
+        .join()
+        .unwrap();
+        assert!(receiver.try_recv().is_err(), "success is not reported");
     }
 
     #[test]

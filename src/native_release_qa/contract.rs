@@ -270,7 +270,15 @@ pub struct QaSubject {
     pub commit: String,
     pub binary_blake3: String,
     pub binary_identity_verified: bool,
+    /// Why the digest or identity could not be checked (open/read failure,
+    /// codesign unavailable); `None` with an unverified identity is a mismatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_identity_error: Option<String>,
     pub worktree_clean: bool,
+    /// Why `worktree_clean` is false: dirty build, dirty checkout, commit
+    /// mismatch or git unavailable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktree_problems: Vec<String>,
 }
 
 #[cfg(any(test, feature = "visual-qa"))]

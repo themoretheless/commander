@@ -371,21 +371,49 @@ fn builtin_registry() -> &'static Mutex<ProviderRegistry> {
 
 #[must_use]
 pub fn activate_builtin(id: &str, request: &ActivationRequest<'_>) -> bool {
-    let enabled = match request.capability {
+    activate_builtin_explained(id, request).is_ok()
+}
+
+/// [`activate_builtin`] with the reason for a refusal, as a sentence a
+/// surface can show: a runtime control turned the feature off, the request
+/// is outside the provider's capabilities, or the startup budget ran out.
+pub fn activate_builtin_explained(id: &str, request: &ActivationRequest<'_>) -> Result<(), String> {
+    let feature = match request.capability {
         ProviderCapability::PreviewImage | ProviderCapability::PreviewText => {
-            crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview)
+            Some(crate::feature_flags::RiskyFeature::ImagePreview)
         }
         ProviderCapability::SearchIndex | ProviderCapability::IndexBuild => {
-            crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ContentIndex)
+            Some(crate::feature_flags::RiskyFeature::ContentIndex)
         }
-        ProviderCapability::SearchLive => true,
+        ProviderCapability::SearchLive => None,
     };
-    if !enabled {
-        return false;
+    if let Some(feature) = feature
+        && !crate::feature_flags::enabled(feature)
+    {
+        return Err(format!(
+            "{} is turned off in the developer panel's runtime controls",
+            feature.label()
+        ));
     }
     crate::lock_util::recover(builtin_registry())
         .activate(id, request)
-        .is_ok()
+        .map(drop)
+        .map_err(|error| describe_activation_error(&error))
+}
+
+fn describe_activation_error(error: &ActivationError) -> String {
+    match error {
+        ActivationError::UnknownProvider(id) => format!("provider {id} is not registered"),
+        ActivationError::CapabilityMismatch(detail) => {
+            format!("provider policy refused this request ({detail})")
+        }
+        ActivationError::StartupBudgetExceeded(id) => format!(
+            "provider {id} would exceed this session's provider startup budget; restart the app to reset it"
+        ),
+        ActivationError::OptionalProviderMustBeExternal(id) => {
+            format!("optional provider {id} must run as an external process")
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,11 +530,13 @@ impl ExternalProviderClient {
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| "provider output stayed open past the timeout".to_string())?
             .map_err(|error| format!("provider response read failed: {error}"))?;
-        if !status.success() {
-            return Err(format!("provider process exited with {status}"));
-        }
+        // The reader stops at the budget and closes the pipe, so an oversized
+        // provider usually dies of SIGPIPE: the budget is the real cause.
         if bytes.len() > max_response_bytes {
             return Err("provider response exceeded its byte budget".to_string());
+        }
+        if !status.success() {
+            return Err(format!("provider process exited with {status}"));
         }
         serde_json::from_slice(&bytes)
             .map_err(|error| format!("provider response is invalid: {error}"))
@@ -517,6 +547,32 @@ impl ExternalProviderClient {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn refused_builtin_activation_says_why() {
+        let request = |capability| ActivationRequest {
+            capability,
+            root: Path::new("/"),
+            extension: None,
+            bytes: None,
+        };
+        assert_eq!(
+            activate_builtin_explained(
+                "no-such-provider",
+                &request(ProviderCapability::SearchLive)
+            ),
+            Err("provider no-such-provider is not registered".to_string())
+        );
+        let mismatch =
+            activate_builtin_explained("content-index", &request(ProviderCapability::SearchLive))
+                .unwrap_err();
+        assert!(mismatch.contains("policy refused"), "{mismatch}");
+        let budget = describe_activation_error(&ActivationError::StartupBudgetExceeded(
+            "live-search".to_string(),
+        ));
+        assert!(budget.contains("startup budget"), "{budget}");
+        assert!(budget.contains("restart"), "{budget}");
+    }
 
     #[cfg(unix)]
     #[test]
@@ -841,6 +897,30 @@ mod tests {
         let (result, elapsed) = slow_request(&client, PathBuf::from("x".repeat(1 << 20)));
         assert_eq!(result.unwrap_err(), "provider process timed out");
         assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_provider_response_reports_the_byte_budget() {
+        let client = ExternalProviderClient::new(
+            PathBuf::from("/bin/sh"),
+            vec!["-c".to_string(), "read request; yes".to_string()],
+        );
+        let result = client.request(
+            &ProviderRpcRequest {
+                capability: ProviderCapability::PreviewText,
+                root: PathBuf::from("/tmp"),
+                path: None,
+                expression: None,
+                max_bytes: 16,
+            },
+            Duration::from_secs(2),
+            16,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "provider response exceeded its byte budget"
+        );
     }
 
     #[cfg(unix)]

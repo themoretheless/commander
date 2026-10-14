@@ -162,16 +162,33 @@ unsafe fn inspect_rendered_menu(
                     .key_equivalent
                     .as_ref()
                     .map_or(0, key_equivalent_modifier_mask);
-                if title != expected.title
-                    || enabled != expected.enabled
-                    || (item_state != 0) != (expected.state == MenuItemState::On)
-                    || key != expected_key
-                    || mask != expected_mask
-                    || label != expected.accessible_label
-                    || identifier != expected.accessibility_id
-                {
+                if let Some(divergence) = describe_divergence(&[
+                    (
+                        "title",
+                        format!("{:?}", expected.title),
+                        format!("{title:?}"),
+                    ),
+                    ("enabled", expected.enabled.to_string(), enabled.to_string()),
+                    (
+                        "on",
+                        (expected.state == MenuItemState::On).to_string(),
+                        (item_state != 0).to_string(),
+                    ),
+                    ("key", format!("{expected_key:?}"), format!("{key:?}")),
+                    ("mask", expected_mask.to_string(), mask.to_string()),
+                    (
+                        "label",
+                        format!("{:?}", expected.accessible_label),
+                        format!("{label:?}"),
+                    ),
+                    (
+                        "id",
+                        format!("{:?}", expected.accessibility_id),
+                        format!("{identifier:?}"),
+                    ),
+                ]) {
                     return Err(format!(
-                        "NSMenu item {} diverged from model (title={title:?}, id={identifier:?}, label={label:?}, enabled={enabled}, state={item_state}, key={key:?}, mask={mask})",
+                        "NSMenu item {} diverged from model (expected != actual: {divergence})",
                         expected.accessibility_id
                     ));
                 }
@@ -227,4 +244,34 @@ unsafe fn inspect_rendered_menu(
         }
     }
     Ok(inspected)
+}
+
+/// `field: expected != actual` for every field that differs, so a QA failure
+/// names what diverged; `None` when the rendered item matches its model.
+fn describe_divergence(fields: &[(&str, String, String)]) -> Option<String> {
+    let mismatches = fields
+        .iter()
+        .filter(|(_, expected, actual)| expected != actual)
+        .map(|(field, expected, actual)| format!("{field}: {expected} != {actual}"))
+        .collect::<Vec<_>>();
+    (!mismatches.is_empty()).then(|| mismatches.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_divergence;
+
+    #[test]
+    fn divergence_names_each_mismatching_field_with_expected_and_actual() {
+        let fields = [
+            ("title", "\"Copy\"".to_string(), "\"Copy\"".to_string()),
+            ("enabled", "true".to_string(), "false".to_string()),
+            ("mask", "1048576".to_string(), "0".to_string()),
+        ];
+        assert_eq!(
+            describe_divergence(&fields).as_deref(),
+            Some("enabled: true != false, mask: 1048576 != 0")
+        );
+        assert_eq!(describe_divergence(&fields[..1]), None);
+    }
 }
