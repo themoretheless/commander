@@ -7,9 +7,17 @@ use super::*;
 /// What the Activity strip shows this frame.
 enum ActivityLine {
     SafeState(String),
-    Trash(crate::workspace::DeleteActivity),
+    /// A Trash job, plus the transfer it hides when one runs alongside.
+    Trash(crate::workspace::DeleteActivity, Option<BackgroundTransfer>),
     Transfer(TransferLine),
     Errors(usize),
+}
+
+/// A transfer running behind a Trash job: just enough to keep it visible.
+struct BackgroundTransfer {
+    fraction: Option<f32>,
+    finished: bool,
+    errors: usize,
 }
 
 /// A frame's snapshot of the running transfer, taken under one lock.
@@ -46,12 +54,13 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| match line {
                     ActivityLine::SafeState(reason) => {
-                        ui.label(
+                        let status = ui.label(
                             egui::RichText::new("Paused for integrity review")
                                 .size(11.0)
                                 .strong()
                                 .color(t.accent_warning),
                         );
+                        announce(ui, status.id, true);
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(reason)
@@ -74,30 +83,20 @@ impl App {
                             }
                         });
                     }
-                    ActivityLine::Trash(activity) => {
-                        ui.label(
+                    ActivityLine::Trash(activity, transfer) => {
+                        let status = ui.label(
                             egui::RichText::new("Moving to Trash")
                                 .size(11.0)
                                 .strong()
                                 .color(t.text_primary),
                         );
+                        announce(ui, status.id, false);
                         let fraction = if activity.total == 0 {
                             0.0
                         } else {
                             activity.completed as f32 / activity.total as f32
                         };
-                        let (rect, _) =
-                            ui.allocate_exact_size(Vec2::new(140.0, 4.0), Sense::hover());
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::ZERO, t.bg_card);
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                rect.min,
-                                Vec2::new(rect.width() * fraction, 4.0),
-                            ),
-                            CornerRadius::ZERO,
-                            t.accent,
-                        );
+                        strip_bar(ui, &t, "Moving to Trash", Some(fraction));
                         ui.label(
                             egui::RichText::new(format!(
                                 "{} of {}",
@@ -106,7 +105,22 @@ impl App {
                             .size(11.0)
                             .color(t.text_muted),
                         );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if let Some(transfer) = &transfer {
+                            ui.label(
+                                egui::RichText::new(background_transfer_text(transfer))
+                                    .size(11.0)
+                                    .color(if transfer.errors > 0 {
+                                        t.accent_red
+                                    } else {
+                                        t.text_muted
+                                    }),
+                            );
+                        }
+                        right_aligned_in_reading_order(ui, "trash_actions", |ui| {
+                            if transfer.is_some() && self.activity_details_button(ui) {
+                                self.show_operations_center = true;
+                                self.operations_tab = OperationsTab::Queue;
+                            }
                             if ui
                                 .add_enabled(
                                     !activity.cancel_requested,
@@ -131,14 +145,12 @@ impl App {
                     }
                     ActivityLine::Transfer(transfer) => self.show_transfer_line(ui, transfer),
                     ActivityLine::Errors(count) => {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{count} operation{} need review",
-                                if count == 1 { "" } else { "s" }
-                            ))
-                            .size(11.0)
-                            .color(t.accent_red),
+                        let status = ui.label(
+                            egui::RichText::new(review_text(count))
+                                .size(11.0)
+                                .color(t.accent_red),
                         );
+                        announce(ui, status.id, true);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
                                 .add(super::dialog_button(
@@ -162,7 +174,17 @@ impl App {
             return Some(ActivityLine::SafeState(state.reason.clone()));
         }
         if let Some(activity) = self.ws.delete_activity() {
-            return Some(ActivityLine::Trash(activity));
+            // Deletes may run during a transfer; keep the transfer (and a
+            // retained error waiting for Dismiss) visible beside the job.
+            let transfer = self.ws.active_transfer_view().map(|active| {
+                let s = crate::lock_util::recover(&active.progress);
+                BackgroundTransfer {
+                    fraction: s.progress_fraction(),
+                    finished: s.finished,
+                    errors: s.errors.len(),
+                }
+            });
+            return Some(ActivityLine::Trash(activity, transfer));
         }
         if let Some(active) = self.ws.active_transfer_view() {
             let s = crate::lock_util::recover(&active.progress);
@@ -186,24 +208,21 @@ impl App {
         (unresolved > 0).then_some(ActivityLine::Errors(unresolved))
     }
 
+    /// The strip's Details button; true when it was clicked.
+    fn activity_details_button(&self, ui: &mut egui::Ui) -> bool {
+        ui.add(super::dialog_button(
+            self.colors,
+            super::ButtonRole::Secondary,
+            egui::RichText::new("Details").size(11.0),
+        ))
+        .on_hover_text(operations_panel_hint())
+        .clicked()
+    }
+
     fn show_transfer_line(&mut self, ui: &mut egui::Ui, line: TransferLine) {
         let t = self.colors;
         let ctx = ui.ctx().clone();
-        let status = if line.finished {
-            if line.errors == 0 {
-                "\u{2713}".to_string()
-            } else {
-                format!(
-                    "{} error{}",
-                    line.errors,
-                    if line.errors == 1 { "" } else { "s" }
-                )
-            }
-        } else if let Some(reason) = &line.paused {
-            reason.clone()
-        } else {
-            line.phase.to_string()
-        };
+        let status = transfer_status_text(&line);
         let status_color = if line.errors > 0 {
             t.accent_red
         } else if line.paused.is_some() {
@@ -211,23 +230,24 @@ impl App {
         } else {
             t.text_muted
         };
-        ui.label(
-            egui::RichText::new(&line.label)
-                .size(11.0)
-                .strong()
-                .color(t.text_primary),
-        );
-        ui.label(egui::RichText::new(status).size(11.0).color(status_color));
-        if !line.finished {
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 4.0), Sense::hover());
-            ui.painter()
-                .rect_filled(rect, CornerRadius::ZERO, t.bg_card);
-            let fraction = line.fraction.unwrap_or(0.0).clamp(0.0, 1.0);
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * fraction, 4.0)),
-                CornerRadius::ZERO,
-                t.accent,
+        // A long destination name must not push the controls off-screen;
+        // the elided label shows the full text on hover.
+        ui.scope(|ui| {
+            ui.set_max_width((ui.available_width() * 0.4).max(80.0));
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&line.label)
+                        .size(11.0)
+                        .strong()
+                        .color(t.text_primary),
+                )
+                .truncate(),
             );
+        });
+        let status_label = ui.label(egui::RichText::new(status).size(11.0).color(status_color));
+        announce(ui, status_label.id, line.finished && line.errors > 0);
+        if !line.finished {
+            strip_bar(ui, &t, &line.label, line.fraction);
             let mut meta = line.fraction.map_or_else(
                 || "estimating".to_string(),
                 |f| format!("{:.0}%", f * 100.0),
@@ -251,7 +271,12 @@ impl App {
                     .color(t.accent),
             );
         }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        // Reading order, so Tab reaches Details before the destructive Cancel.
+        right_aligned_in_reading_order(ui, "transfer_actions", |ui| {
+            if self.activity_details_button(ui) {
+                self.show_operations_center = true;
+                self.operations_tab = OperationsTab::Queue;
+            }
             if line.finished {
                 if ui
                     .add(super::dialog_button(
@@ -270,6 +295,27 @@ impl App {
                     }
                 }
             } else {
+                let stop = crate::operation_view::CancellationAction::StopAfterCurrentFile;
+                if ui
+                    .add_enabled(
+                        !line.stop_requested,
+                        super::dialog_button(
+                            t,
+                            super::ButtonRole::Secondary,
+                            egui::RichText::new(if line.stop_requested {
+                                "Stopping..."
+                            } else {
+                                stop.label()
+                            })
+                            .size(11.0),
+                        ),
+                    )
+                    .on_hover_text(stop.consequence())
+                    .on_disabled_hover_text(stop.consequence())
+                    .clicked()
+                {
+                    self.ws.stop_transfer_after_current();
+                }
                 let cancel = crate::operation_view::CancellationAction::CancelCurrent;
                 if ui
                     .add(super::dialog_button(
@@ -282,33 +328,6 @@ impl App {
                 {
                     self.ws.cancel_transfer();
                 }
-                let stop = crate::operation_view::CancellationAction::StopAfterCurrentFile;
-                if ui
-                    .add_enabled(
-                        !line.stop_requested,
-                        super::dialog_button(
-                            t,
-                            super::ButtonRole::Secondary,
-                            egui::RichText::new(stop.label()).size(11.0),
-                        ),
-                    )
-                    .on_hover_text(stop.consequence())
-                    .clicked()
-                {
-                    self.ws.stop_transfer_after_current();
-                }
-            }
-            if ui
-                .add(super::dialog_button(
-                    t,
-                    super::ButtonRole::Secondary,
-                    egui::RichText::new("Details").size(11.0),
-                ))
-                .on_hover_text("Operations panel (Cmd+J)")
-                .clicked()
-            {
-                self.show_operations_center = true;
-                self.operations_tab = OperationsTab::Queue;
             }
         });
         if !line.finished {
@@ -795,6 +814,117 @@ impl App {
     }
 }
 
+/// Mark a status label as a live region so assistive tech speaks its
+/// changes; `urgent` ones (integrity pause, errors) interrupt.
+fn announce(ui: &egui::Ui, id: egui::Id, urgent: bool) {
+    ui.ctx().accesskit_node_builder(id, |node| {
+        if urgent {
+            node.set_role(egui::accesskit::Role::Alert);
+            node.set_live(egui::accesskit::Live::Assertive);
+        } else {
+            node.set_role(egui::accesskit::Role::Status);
+            node.set_live(egui::accesskit::Live::Polite);
+        }
+    });
+}
+
+/// Progressbar semantics for a painted bar: its label and percent value.
+fn progress_info(label: &str, fraction: Option<f32>) -> egui::WidgetInfo {
+    let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, true, label);
+    info.value = fraction.map(|f| (f64::from(f.clamp(0.0, 1.0)) * 100.0).round());
+    info
+}
+
+/// The strip's thin progress bar.
+fn strip_bar(ui: &mut egui::Ui, t: &ThemeColors, label: &str, fraction: Option<f32>) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(140.0, 4.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, t.bg_card);
+    let filled = fraction.unwrap_or(0.0).clamp(0.0, 1.0);
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * filled, 4.0)),
+        CornerRadius::ZERO,
+        t.accent,
+    );
+    response.widget_info(|| progress_info(label, fraction));
+}
+
+/// Lay out a button group flush right but create it in reading order, so
+/// Tab visits it left to right (a right-to-left layout reverses that). The
+/// group's width comes from the previous pass; a changed width discards the
+/// frame so the group never paints out of place.
+fn right_aligned_in_reading_order<R>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let id = ui.id().with(("reading_order_group", id_salt));
+    let remembered = ui.data(|data| data.get_temp::<f32>(id));
+    let gap = ui.available_width() - remembered.unwrap_or(0.0);
+    if gap > 0.0 {
+        ui.add_space(gap);
+    }
+    let group = ui.horizontal(add_contents);
+    let width = group.response.rect.width();
+    if remembered.is_none_or(|known| (known - width).abs() > 0.5) {
+        ui.data_mut(|data| data.insert_temp(id, width));
+        ui.ctx()
+            .request_discard("activity strip button group resized");
+    }
+    group.inner
+}
+
+fn plural(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
+/// The strip's line for operations whose failures wait for review.
+fn review_text(count: usize) -> String {
+    let verb = if count == 1 { "needs" } else { "need" };
+    format!("{} {verb} review", plural(count, "operation"))
+}
+
+/// The transfer's status word on the strip. A finished transfer reads as
+/// "Done", not a bare check mark that assistive tech speaks as a glyph name.
+fn transfer_status_text(line: &TransferLine) -> String {
+    if line.finished {
+        if line.errors == 0 {
+            "Done \u{2713}".to_string()
+        } else {
+            plural(line.errors, "error")
+        }
+    } else if let Some(reason) = &line.paused {
+        reason.clone()
+    } else {
+        line.phase.to_string()
+    }
+}
+
+/// The compact note for a transfer running behind a Trash job.
+fn background_transfer_text(transfer: &BackgroundTransfer) -> String {
+    if transfer.finished {
+        if transfer.errors == 0 {
+            "+ transfer done".to_string()
+        } else {
+            format!("+ transfer: {}", plural(transfer.errors, "error"))
+        }
+    } else {
+        transfer.fraction.map_or_else(
+            || "+ transfer estimating".to_string(),
+            |f| format!("+ transfer {:.0}%", f * 100.0),
+        )
+    }
+}
+
+/// Hover text for Details, with the Operations panel shortcut as it is
+/// pressed on this platform.
+fn operations_panel_hint() -> String {
+    super::toolbar::command_shortcut(crate::command::Command::ToggleQueuePanel).map_or_else(
+        || "Operations panel".to_string(),
+        |shortcut| format!("Operations panel ({shortcut})"),
+    )
+}
+
 /// Newest transfer errors shown in the details view. Older ones stay in the
 /// report; cloning and laying out thousands of rows each frame stalls the UI.
 const DETAIL_ERROR_ROWS: usize = 200;
@@ -855,7 +985,11 @@ fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{graph_speeds, labeled_error_rows};
+    use super::{
+        BackgroundTransfer, TransferLine, background_transfer_text, graph_speeds,
+        labeled_error_rows, operations_panel_hint, review_text, right_aligned_in_reading_order,
+        strip_bar, transfer_status_text,
+    };
     use crate::operation::{ClassifiedFailure, FailureClass};
 
     #[test]
@@ -929,5 +1063,104 @@ mod tests {
         let samples = [(0.0, 0.0), (1.0, 500.0), (2.0, 100.0), (3.0, 300.0)];
         let speeds = graph_speeds(&samples);
         assert_eq!(speeds, vec![500.0, 0.0, 200.0]);
+    }
+
+    fn line(finished: bool, errors: usize) -> TransferLine {
+        TransferLine {
+            label: "Copy 3 items".to_string(),
+            fraction: Some(0.5),
+            speed: 0.0,
+            eta: None,
+            phase: "Transfer",
+            paused: None,
+            finished,
+            stop_requested: false,
+            errors,
+            queued: 0,
+        }
+    }
+
+    #[test]
+    fn strip_text_agrees_in_number_and_names_the_finished_state() {
+        assert_eq!(review_text(1), "1 operation needs review");
+        assert_eq!(review_text(3), "3 operations need review");
+        assert_eq!(transfer_status_text(&line(true, 0)), "Done \u{2713}");
+        assert_eq!(transfer_status_text(&line(true, 1)), "1 error");
+        assert_eq!(transfer_status_text(&line(true, 2)), "2 errors");
+        assert_eq!(transfer_status_text(&line(false, 0)), "Transfer");
+    }
+
+    #[test]
+    fn a_transfer_behind_a_trash_job_stays_visible() {
+        let running = BackgroundTransfer {
+            fraction: Some(0.42),
+            finished: false,
+            errors: 0,
+        };
+        assert_eq!(background_transfer_text(&running), "+ transfer 42%");
+        let failed = BackgroundTransfer {
+            fraction: Some(1.0),
+            finished: true,
+            errors: 2,
+        };
+        assert_eq!(background_transfer_text(&failed), "+ transfer: 2 errors");
+    }
+
+    #[test]
+    fn details_hint_uses_the_platform_shortcut() {
+        let expected = super::super::toolbar::platform_shortcut("Cmd+J");
+        assert_eq!(
+            operations_panel_hint(),
+            format!("Operations panel ({expected})")
+        );
+    }
+
+    #[test]
+    fn strip_bar_publishes_progressbar_semantics() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let t = crate::theme::ThemeColors::for_preferences(
+            crate::theme::ThemeMode::Light,
+            crate::accessibility::Preferences::default(),
+        );
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                strip_bar(ui, &t, "Copy 3 items", Some(0.42));
+            }));
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output");
+        let bar = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.role() == egui::accesskit::Role::ProgressIndicator)
+            .expect("progress node");
+        assert_eq!(bar.label(), Some("Copy 3 items"));
+        assert_eq!(bar.numeric_value(), Some(42.0));
+    }
+
+    #[test]
+    fn strip_buttons_sit_right_in_reading_order() {
+        let ctx = egui::Context::default();
+        let mut rects = Vec::new();
+        let mut right_edge = 0.0;
+        for _ in 0..2 {
+            crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.horizontal(|ui| {
+                    right_edge = ui.max_rect().right();
+                    ui.label("status");
+                    rects = right_aligned_in_reading_order(ui, "test", |ui| {
+                        vec![ui.button("Details").rect, ui.button("Cancel").rect]
+                    });
+                });
+            }));
+        }
+        assert!(rects[0].left() < rects[1].left(), "{rects:?}");
+        assert!(
+            (rects[1].right() - right_edge).abs() < 1.0,
+            "{rects:?} vs {right_edge}"
+        );
     }
 }
