@@ -12,13 +12,13 @@ use super::super::{ActivePanel, FileEntry, TransferKind, Workspace};
 /// are confirmed, cross-volume moves work, self/descendant drops are rejected
 /// and errors surface. A clean, conflict-free drop runs immediately; a
 /// conflicting one opens the confirmation dialog.
-pub(crate) fn drop_dragged(workspace: &mut Workspace, notify: impl Fn() + Send + 'static) {
+pub fn drop_dragged(workspace: &mut Workspace, notify: impl Fn() + Send + 'static) {
     drop_dragged_as(workspace, TransferKind::Move, notify);
 }
 
 /// Complete a drag using its announced effect. Option-drag copies; the default
 /// and keyboard equivalent move. Both share identical preflight.
-pub(crate) fn drop_dragged_as(
+pub fn drop_dragged_as(
     workspace: &mut Workspace,
     kind: TransferKind,
     notify: impl Fn() + Send + 'static,
@@ -49,7 +49,7 @@ pub(crate) fn drop_dragged_as(
 /// Keyboard equivalent of dropping the active selection onto the folder under
 /// the cursor. The synthesized drag plan deliberately enters the normal drop
 /// pipeline, preserving every safety check and confirmation.
-pub(crate) fn transfer_selection_into_cursor_folder(
+pub fn transfer_selection_into_cursor_folder(
     workspace: &mut Workspace,
     kind: TransferKind,
     notify: impl Fn() + Send + 'static,
@@ -85,7 +85,7 @@ fn keyboard_drop_plan(workspace: &Workspace) -> Option<(Vec<PathBuf>, PathBuf)> 
 }
 
 /// A drag in flight, read from both panels' [`crate::panel::DragState`].
-pub(crate) struct DragSession<'a> {
+pub struct DragSession<'a> {
     pub source: ActivePanel,
     pub entries: &'a [PathBuf],
     /// A target hovered in the source panel itself (drag onto its own
@@ -94,7 +94,7 @@ pub(crate) struct DragSession<'a> {
 }
 
 /// The panel whose drag holds entries. Left wins if both somehow do.
-pub(crate) fn drag_source(workspace: &Workspace) -> Option<ActivePanel> {
+pub const fn drag_source(workspace: &Workspace) -> Option<ActivePanel> {
     if !workspace.left.drag.is_empty() {
         Some(ActivePanel::Left)
     } else if !workspace.right.drag.is_empty() {
@@ -104,7 +104,7 @@ pub(crate) fn drag_source(workspace: &Workspace) -> Option<ActivePanel> {
     }
 }
 
-pub(crate) fn drag_session(workspace: &Workspace) -> Option<DragSession<'_>> {
+pub fn drag_session(workspace: &Workspace) -> Option<DragSession<'_>> {
     let source = drag_source(workspace)?;
     let (from, other) = match source {
         ActivePanel::Left => (&workspace.left.drag, &workspace.right.drag),
@@ -119,7 +119,7 @@ pub(crate) fn drag_session(workspace: &Workspace) -> Option<DragSession<'_>> {
 
 /// Consume the drag session: its entries and resolved target. With no
 /// explicit target the drag is consumed as a cancellation.
-pub(crate) fn take_drop_plan(workspace: &mut Workspace) -> Option<(Vec<PathBuf>, PathBuf)> {
+pub fn take_drop_plan(workspace: &mut Workspace) -> Option<(Vec<PathBuf>, PathBuf)> {
     let (source, other) = match drag_source(workspace)? {
         ActivePanel::Left => (&mut workspace.left.drag, &mut workspace.right.drag),
         ActivePanel::Right => (&mut workspace.right.drag, &mut workspace.left.drag),
@@ -135,7 +135,7 @@ pub(crate) fn take_drop_plan(workspace: &mut Workspace) -> Option<(Vec<PathBuf>,
     Some((paths, target?))
 }
 
-pub(crate) fn cancel_drag(workspace: &mut Workspace) {
+pub fn cancel_drag(workspace: &mut Workspace) {
     let _ = workspace.left.drag.take();
     let _ = workspace.right.drag.take();
 }

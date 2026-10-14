@@ -4,17 +4,17 @@ use super::super::Workspace;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LinkReport {
+pub struct LinkReport {
     pub created: usize,
     pub skipped: usize,
     pub errors: Vec<String>,
 }
 
-pub(crate) fn create_symlinks(workspace: &mut Workspace) -> LinkReport {
+pub fn create_symlinks(workspace: &mut Workspace) -> LinkReport {
     create_links(workspace, LinkKind::Symbolic)
 }
 
-pub(crate) fn create_hardlinks(workspace: &mut Workspace) -> LinkReport {
+pub fn create_hardlinks(workspace: &mut Workspace) -> LinkReport {
     create_links(workspace, LinkKind::Hard)
 }
 

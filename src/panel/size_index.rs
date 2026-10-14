@@ -33,7 +33,7 @@ pub struct SizeSnapshot {
 }
 
 impl SizeSnapshot {
-    pub fn revision(&self) -> u64 {
+    pub const fn revision(&self) -> u64 {
         self.revision
     }
 
@@ -124,7 +124,7 @@ impl SizeIndex {
         self.revision.fetch_add(1, Ordering::Release);
     }
 
-    pub(super) fn mark_dirty(&mut self) {
+    pub(super) const fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
@@ -522,7 +522,7 @@ impl SizeIndex {
     }
 
     #[cfg(test)]
-    pub(super) fn mark_dirty_immediately_for_test(&mut self) {
+    pub(super) const fn mark_dirty_immediately_for_test(&mut self) {
         self.dirty = true;
         self.last_recompute = None;
     }

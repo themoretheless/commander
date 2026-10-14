@@ -6,7 +6,7 @@ use super::super::Workspace;
 use super::batch_rename::dir_names;
 
 #[derive(Debug)]
-pub(crate) struct RenameExecutionError {
+pub struct RenameExecutionError {
     pub(crate) message: String,
     pub(crate) integrity_uncertain: bool,
     pub(crate) paths: Vec<PathBuf>,
@@ -38,7 +38,7 @@ impl std::fmt::Display for RenameExecutionError {
 
 /// Names beside `old`, excluding `old` itself. Captured by the rename UI at
 /// open time; commit performs the same check again against the live disk.
-pub(crate) fn rename_siblings(old: &Path) -> Vec<String> {
+pub fn rename_siblings(old: &Path) -> Vec<String> {
     let old_name = old.file_name().map(|n| n.to_string_lossy().to_string());
     old.parent()
         .map(dir_names)
@@ -52,7 +52,7 @@ pub(crate) fn rename_siblings(old: &Path) -> Vec<String> {
 /// changes stage through a temporary name and roll back if the second move
 /// fails, preserving the recovery path in a composite error if rollback
 /// itself also fails.
-pub(crate) fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecutionError> {
+pub fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecutionError> {
     if from == to {
         return Ok(());
     }
@@ -100,10 +100,7 @@ pub(crate) fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), Renam
     }
 }
 
-pub(crate) fn latch_rename_execution_error(
-    workspace: &mut Workspace,
-    error: &RenameExecutionError,
-) {
+pub fn latch_rename_execution_error(workspace: &mut Workspace, error: &RenameExecutionError) {
     if !error.integrity_uncertain {
         return;
     }
@@ -121,11 +118,7 @@ pub(crate) fn latch_rename_execution_error(
 
 /// Rename `old` to `new_name` in the same directory. A no-op (unchanged
 /// name) succeeds silently. Successful changes are recorded for undo/redo.
-pub(crate) fn commit_rename(
-    workspace: &mut Workspace,
-    old: &Path,
-    new_name: &str,
-) -> Result<(), String> {
+pub fn commit_rename(workspace: &mut Workspace, old: &Path, new_name: &str) -> Result<(), String> {
     if let Some(reason) = workspace.mutation_block_reason("rename") {
         return Err(reason);
     }

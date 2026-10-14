@@ -16,7 +16,7 @@ impl DragState {
         Self::default()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
@@ -24,11 +24,11 @@ impl DragState {
         &self.entries
     }
 
-    pub fn drop_target(&self) -> Option<&PathBuf> {
+    pub const fn drop_target(&self) -> Option<&PathBuf> {
         self.drop_target.as_ref()
     }
 
-    pub fn has_drop_target(&self) -> bool {
+    pub const fn has_drop_target(&self) -> bool {
         self.drop_target.is_some()
     }
 
@@ -46,7 +46,7 @@ impl DragState {
         self.drop_target = None;
     }
 
-    pub fn take_drop_target(&mut self) -> Option<PathBuf> {
+    pub const fn take_drop_target(&mut self) -> Option<PathBuf> {
         self.drop_target.take()
     }
 

@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use super::{Notify, invalidate_size_cache};
 
-pub(crate) const WATCHER_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+pub const WATCHER_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 
 enum DirectoryWatcher {
     Native(notify::RecommendedWatcher),
@@ -182,7 +182,7 @@ impl DirectoryWatcherState {
         self.notify.is_some()
     }
 
-    pub(super) fn is_active(&self) -> bool {
+    pub(super) const fn is_active(&self) -> bool {
         self.watcher.is_some()
     }
 
@@ -468,7 +468,7 @@ impl DirectoryWatcherState {
     }
 
     #[cfg(test)]
-    pub(super) fn has_pending_reconciliation_for_test(&self) -> bool {
+    pub(super) const fn has_pending_reconciliation_for_test(&self) -> bool {
         self.requested_generation > self.applied_generation
     }
 

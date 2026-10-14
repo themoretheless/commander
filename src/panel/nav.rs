@@ -37,11 +37,11 @@ impl PanelState {
         }
     }
 
-    pub fn can_go_back(&self) -> bool {
+    pub const fn can_go_back(&self) -> bool {
         self.history.can_back()
     }
 
-    pub fn can_go_forward(&self) -> bool {
+    pub const fn can_go_forward(&self) -> bool {
         self.history.can_forward()
     }
 

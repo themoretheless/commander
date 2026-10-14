@@ -277,7 +277,7 @@ pub(super) struct ScanEpoch {
 }
 
 impl ScanEpoch {
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             cancelled: AtomicBool::new(false),
         }
@@ -774,7 +774,7 @@ pub(super) fn publish_dir_measurements_if_current(
 }
 
 #[cfg(test)]
-pub(crate) fn reset_walk_log() {
+pub fn reset_walk_log() {
     let _boundary = lock_recover(scan_commit_boundary());
     lock_recover(walk_log()).clear();
 }

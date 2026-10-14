@@ -7,7 +7,7 @@ use super::rename::{RenameExecutionError, latch_rename_execution_error};
 
 /// Every name currently in `dir` (best-effort), so a rename batch can be
 /// ordered against the live directory at apply/replay time.
-pub(crate) fn dir_names(dir: &Path) -> std::collections::HashSet<String> {
+pub fn dir_names(dir: &Path) -> std::collections::HashSet<String> {
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -21,7 +21,7 @@ pub(crate) fn dir_names(dir: &Path) -> std::collections::HashSet<String> {
 /// see [`crate::rename_order`]) and executing it, rolling back on an OS
 /// failure. Returns how many entries were renamed, or a user-facing error
 /// (an unresolvable conflict, or the first OS error).
-pub(crate) fn apply_rename_order(
+pub fn apply_rename_order(
     dir: &Path,
     map: &[(String, String)],
     existing: &std::collections::HashSet<String>,
@@ -31,7 +31,7 @@ pub(crate) fn apply_rename_order(
     })
 }
 
-pub(crate) fn apply_rename_order_using<E: std::fmt::Display>(
+pub fn apply_rename_order_using<E: std::fmt::Display>(
     dir: &Path,
     map: &[(String, String)],
     existing: &std::collections::HashSet<String>,
@@ -58,7 +58,7 @@ pub(crate) fn apply_rename_order_using<E: std::fmt::Display>(
     }
 }
 
-pub(crate) fn batch_rename_context(workspace: &Workspace) -> Option<BatchRenameContext> {
+pub fn batch_rename_context(workspace: &Workspace) -> Option<BatchRenameContext> {
     let panel = workspace.active_panel_ref();
     let targets: Vec<String> = panel
         .selected_or_cursor()
@@ -80,7 +80,7 @@ pub(crate) fn batch_rename_context(workspace: &Workspace) -> Option<BatchRenameC
 /// Apply a batch rename to the exact context captured when its dialog
 /// opened. The live directory is re-read at commit time so newly-created
 /// siblings still participate in collision checks.
-pub(crate) fn apply_batch_rename_in(
+pub fn apply_batch_rename_in(
     workspace: &mut Workspace,
     context: &BatchRenameContext,
     rule: &crate::rename::RenameRule,

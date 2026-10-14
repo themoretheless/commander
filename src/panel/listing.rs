@@ -10,7 +10,7 @@ use super::{DirStatus, FacetSet, FileEntry, facet_matches};
 pub(super) struct ListingRevision(u64);
 
 impl ListingRevision {
-    pub(super) fn value(self) -> u64 {
+    pub(super) const fn value(self) -> u64 {
         self.0
     }
 }
@@ -68,11 +68,11 @@ impl ListingState {
         &self.entries
     }
 
-    pub(super) fn status(&self) -> DirStatus {
+    pub(super) const fn status(&self) -> DirStatus {
         self.status
     }
 
-    pub(super) fn revision(&self) -> ListingRevision {
+    pub(super) const fn revision(&self) -> ListingRevision {
         self.revision
     }
 
@@ -129,7 +129,7 @@ impl ListingState {
         self.bump_revision();
     }
 
-    fn bump_revision(&mut self) {
+    const fn bump_revision(&mut self) {
         self.revision = ListingRevision(
             self.revision
                 .0

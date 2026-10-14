@@ -25,7 +25,7 @@ mod visit;
 mod watcher;
 
 #[cfg(test)]
-pub(crate) use dir_size_cache::reset_walk_log;
+pub use dir_size_cache::reset_walk_log;
 use dir_size_cache::*;
 pub use dir_size_cache::{flush_cache, invalidate_size_cache};
 pub use drag::DragState;
@@ -51,7 +51,7 @@ pub use visit::{
     record_visit, restore_visit_snapshot, visit_snapshot, visited_paths,
 };
 use watcher::DirectoryWatcherState;
-pub(crate) use watcher::WATCHER_RETRY_BACKOFF;
+pub use watcher::WATCHER_RETRY_BACKOFF;
 
 const DEFAULT_VISIBLE_ROWS: usize = 32;
 
@@ -88,7 +88,7 @@ pub enum ViewApplyOutcome {
     ReadRejected(DirStatus),
 }
 
-pub(super) enum DirectoryRead {
+pub enum DirectoryRead {
     Complete(Vec<FileEntry>),
     Incomplete(DirStatus),
 }
@@ -161,7 +161,7 @@ impl FileEntry {
             format_size(size)
         };
         let name_lower = name.to_lowercase();
-        Some(FileEntry {
+        Some(Self {
             name,
             name_lower,
             identity: ListingIdentity::Captured(crate::path_identity::PathIdentity::from_metadata(
@@ -392,7 +392,7 @@ impl PanelState {
     /// This prevents sort/hidden indicators from temporarily disagreeing with
     /// rows loaded under default settings.
     pub(crate) fn new_with_view(path: PathBuf, config: ViewConfig) -> Self {
-        PanelState {
+        Self {
             current_path: path.clone(),
             listing: ListingState::new(path.clone()),
             selection: SelectionState::new(path.clone()),
@@ -458,12 +458,12 @@ impl PanelState {
             .mutate_entries_without_revision_for_test(Vec::clear);
     }
 
-    pub fn dir_status(&self) -> DirStatus {
+    pub const fn dir_status(&self) -> DirStatus {
         self.listing.status()
     }
 
     #[cfg(test)]
-    pub fn selected_paths(&self) -> &HashSet<PathBuf> {
+    pub const fn selected_paths(&self) -> &HashSet<PathBuf> {
         self.selection.selected()
     }
 
@@ -541,7 +541,7 @@ impl PanelState {
             .replace_selected(paths.into_iter().collect::<HashSet<_>>());
     }
 
-    pub fn cursor(&self) -> usize {
+    pub const fn cursor(&self) -> usize {
         self.selection.cursor()
     }
 
@@ -564,31 +564,31 @@ impl PanelState {
             .filter(|entry| &entry.path == expected)
     }
 
-    pub fn scroll_to_cursor(&self) -> bool {
+    pub const fn scroll_to_cursor(&self) -> bool {
         self.selection.scroll_to_cursor()
     }
 
-    pub fn set_scroll_to_cursor(&mut self, value: bool) {
+    pub const fn set_scroll_to_cursor(&mut self, value: bool) {
         self.selection.set_scroll_to_cursor(value);
     }
 
-    pub fn scroll_anchor(&self) -> usize {
+    pub const fn scroll_anchor(&self) -> usize {
         self.selection.scroll_anchor()
     }
 
-    pub fn set_scroll_anchor(&mut self, anchor: usize) {
+    pub const fn set_scroll_anchor(&mut self, anchor: usize) {
         self.selection.set_scroll_anchor(anchor);
     }
 
-    pub fn page_rows(&self) -> usize {
+    pub const fn page_rows(&self) -> usize {
         self.selection.page_rows()
     }
 
-    pub fn set_page_rows(&mut self, rows: usize) {
+    pub const fn set_page_rows(&mut self, rows: usize) {
         self.selection.set_page_rows(rows);
     }
 
-    pub fn view_config(&self) -> ViewConfig {
+    pub const fn view_config(&self) -> ViewConfig {
         self.view.config()
     }
 
@@ -600,7 +600,7 @@ impl PanelState {
         self.preserving_focus(|panel| panel.view.set_search_query(query));
     }
 
-    pub fn facets(&self) -> FacetSet {
+    pub const fn facets(&self) -> FacetSet {
         self.view.facets()
     }
 
@@ -609,16 +609,16 @@ impl PanelState {
     }
 
     #[cfg(test)]
-    pub(crate) fn sort_column(&self) -> SortColumn {
+    pub(crate) const fn sort_column(&self) -> SortColumn {
         self.view.sort_col()
     }
 
     #[cfg(test)]
-    pub(crate) fn sort_order(&self) -> SortOrder {
+    pub(crate) const fn sort_order(&self) -> SortOrder {
         self.view.sort_order()
     }
 
-    pub fn show_hidden(&self) -> bool {
+    pub const fn show_hidden(&self) -> bool {
         self.view.show_hidden()
     }
 
@@ -652,15 +652,15 @@ impl PanelState {
         ViewApplyOutcome::Applied
     }
 
-    pub fn density(&self) -> crate::density::Density {
+    pub const fn density(&self) -> crate::density::Density {
         self.view.density()
     }
 
-    pub fn set_density(&mut self, density: crate::density::Density) {
+    pub const fn set_density(&mut self, density: crate::density::Density) {
         self.view.set_density(density);
     }
 
-    pub fn watcher_active(&self) -> bool {
+    pub const fn watcher_active(&self) -> bool {
         self.watcher.is_active()
     }
 
@@ -730,8 +730,7 @@ impl PanelState {
         let Some(notify) = self.watcher.notify() else {
             return false;
         };
-        self.listing_job
-            .drive(&workload, notify, PanelState::read_dir);
+        self.listing_job.drive(&workload, notify, Self::read_dir);
         let Some(ready) = self.listing_job.take_ready() else {
             return false;
         };
@@ -1237,7 +1236,7 @@ impl PanelState {
     }
 
     /// Clamp the cursor after any filter, facet, or ordering change. Cursor 0
-    /// is the synthetic parent row; real rows occupy 1..=filtered_count().
+    /// is the synthetic parent row; real rows occupy `1..=filtered_count()`.
     pub fn ensure_cursor_valid(&mut self) {
         let clamped = self.cursor().min(self.filtered_count());
         if self.cursor() != clamped {
@@ -1423,7 +1422,7 @@ impl PanelState {
     /// Monotonic generation of this panel's entry list, bumped on every content
     /// or order change. Lets the app cache per-panel derived data (e.g. the
     /// cross-panel compare map) and rebuild only when the entries change.
-    pub fn entries_gen(&self) -> u64 {
+    pub const fn entries_gen(&self) -> u64 {
         self.listing.revision().value()
     }
 
@@ -3385,10 +3384,10 @@ mod tests {
     }
 
     /// Profiling harness, not a test: drives a real watcher + poll loop
-    /// at ~60 "fps" against COMMANDER_PROFILE_ROOT for
-    /// COMMANDER_PROFILE_SECS seconds while an external driver generates
+    /// at ~60 "fps" against `COMMANDER_PROFILE_ROOT` for
+    /// `COMMANDER_PROFILE_SECS` seconds while an external driver generates
     /// fs activity and samples this process's CPU.
-    /// Run: cargo test --release watcher_profile_harness -- --ignored --nocapture
+    /// Run: cargo test --release `watcher_profile_harness` -- --ignored --nocapture
     #[test]
     #[ignore = "profiling harness, run manually"]
     fn watcher_profile_harness() {

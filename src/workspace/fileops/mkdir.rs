@@ -2,7 +2,7 @@
 
 use super::super::Workspace;
 
-pub(crate) fn create_dir(workspace: &mut Workspace) {
+pub fn create_dir(workspace: &mut Workspace) {
     if workspace.mutation_commits_blocked() {
         return;
     }
