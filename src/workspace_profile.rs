@@ -128,10 +128,12 @@ pub fn save(book: &ProfileBook) -> bool {
     save_store(book)
 }
 
-pub fn upsert(profile: WorkspaceProfile) {
+/// Adds or replaces `profile` and persists the book; `false` when the
+/// write failed (already reported through persistence health).
+pub fn upsert(profile: WorkspaceProfile) -> bool {
     let mut book = load();
     book.upsert(profile);
-    let _ = save(&book);
+    save(&book)
 }
 
 #[derive(Clone, Debug)]
@@ -159,7 +161,10 @@ pub fn capture(params: CaptureParams<'_>) -> WorkspaceProfile {
     profile.name_policy = params.name_policy;
     profile.symlink_policy = params.symlink_policy;
     profile.trusted_command_templates = params.trusted_command_templates;
-    upsert(profile.clone());
+    // The failure is already surfaced as an error toast by `save`. Callers
+    // that show a success notice (workspace.rs, developer_panel.rs) do not
+    // see this outcome yet; returning it from `capture` is follow-up work.
+    let _saved = upsert(profile.clone());
     profile
 }
 
