@@ -187,6 +187,8 @@ pub struct UiState {
     pub(crate) escape_request: EscapeRoute,
     /// Identity source for transient widget state across reopenings.
     pub(crate) transient_nonce: u64,
+    /// The last committed select-by-mask text, prefilled on the next open.
+    pub(crate) last_mask: String,
     /// A render barrier between row focus mutation and synchronous `AppKit`
     /// tracking. Frame B publishes paint/AccessKit; frame C may show the menu.
     pending_context_menu: Option<PendingContextMenu>,
@@ -206,6 +208,7 @@ impl Default for UiState {
             focus_moved: 0.0,
             escape_request: EscapeRoute::None,
             transient_nonce: 0,
+            last_mask: String::new(),
             pending_context_menu: None,
         }
     }
