@@ -256,9 +256,101 @@ fn delete_not_started_message(block_reason: Option<String>) -> String {
 
 fn unavailable_size_message(failure: &crate::ports::NativeFailure) -> String {
     format!(
-        "Transfer size could not be verified: {}. Confirmation is unavailable.",
+        "Transfer size could not be verified: {}. Confirmation is unavailable; check that \
+         the files are readable, then cancel and start the operation again.",
         failure.message
     )
+}
+
+/// "1 item" / "3 items".
+fn items_label(count: usize) -> String {
+    if count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{count} items")
+    }
+}
+
+/// Dialog heading. Delete says what actually happens: items go to the
+/// Trash and can be restored.
+fn dialog_heading(title: &str, is_delete: bool, count: usize) -> String {
+    let action = if is_delete { "Move to Trash" } else { title };
+    format!("{action} — {}", items_label(count))
+}
+
+/// Source column header: the shared parent folder, or a folder count when
+/// the picked items come from several folders (selected in another tab),
+/// with the full list for the hover text.
+fn source_header<'a>(
+    parents: impl IntoIterator<Item = Option<&'a std::path::Path>>,
+) -> (String, Option<String>) {
+    let mut folders: Vec<&std::path::Path> = Vec::new();
+    for parent in parents.into_iter().flatten() {
+        if !folders.contains(&parent) {
+            folders.push(parent);
+        }
+    }
+    match folders.as_slice() {
+        [] => (String::new(), None),
+        [only] => (only.display().to_string(), None),
+        many => (
+            format!("{} folders", many.len()),
+            Some(
+                many.iter()
+                    .map(|folder| folder.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ),
+    }
+}
+
+fn not_enough_space_message(need: u64, free: u64) -> String {
+    format!(
+        "Not enough space: needs {}, only {} free ({} short)",
+        format_size(need),
+        format_size(free),
+        format_size(need.saturating_sub(free))
+    )
+}
+
+fn conflict_banner(count: usize) -> String {
+    if count == 1 {
+        "1 item already exists at the destination".to_string()
+    } else {
+        format!("{count} items already exist at the destination")
+    }
+}
+
+/// One conflict row: the incoming (source) item against the existing
+/// destination item, marking whichever is newer.
+fn conflict_row_text(conflict: &crate::conflict::Conflict) -> String {
+    let newer = |is_newer: bool| if is_newer { " (newer)" } else { "" };
+    format!(
+        "{}    Incoming {}{}  \u{2192}  Existing {}{}",
+        conflict.name,
+        format_size(conflict.src_size),
+        newer(conflict.src_newer),
+        format_size(conflict.dst_size),
+        newer(conflict.dst_newer),
+    )
+}
+
+/// Normalization warning: how many names the chosen form rewrites and how
+/// many of the results collide.
+fn normalization_note(changes: usize, collisions: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    match changes {
+        0 => {}
+        1 => parts.push("1 name will be normalized".to_string()),
+        n => parts.push(format!("{n} names will be normalized")),
+    }
+    match collisions {
+        0 => {}
+        1 => parts.push("1 collision".to_string()),
+        n => parts.push(format!("{n} collisions")),
+    }
+    (!parts.is_empty()).then(|| parts.join("  \u{00b7}  "))
 }
 
 impl App {
@@ -283,12 +375,7 @@ impl App {
                         TransferKind::Copy => ("Copy", t.accent),
                         TransferKind::Move => ("Move", t.accent_warning),
                     };
-                    let source_dir = tr
-                        .entries
-                        .first()
-                        .and_then(|e| e.path.parent())
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default();
+                    let source_dir = source_header(tr.entries.iter().map(|e| e.path.parent()));
                     (
                         title,
                         title,
@@ -306,7 +393,7 @@ impl App {
                     t.accent_red,
                     entries.len(),
                     None,
-                    String::new(),
+                    (String::new(), None),
                     vec![],
                     flat.clone(),
                 ),
@@ -352,7 +439,7 @@ impl App {
         };
         let conflict_names: HashSet<&str> = conflicts.iter().map(String::as_str).collect();
         let is_delete = target.is_none();
-        let win_title = format!("{} — {} item(s)", title, count);
+        let win_title = dialog_heading(title, is_delete, count);
         let screen = ctx.input(|i| i.viewport_rect());
         let pad = 120.0;
         let avail_w = (screen.width() - pad * 2.0).max(300.0);
@@ -360,7 +447,7 @@ impl App {
         let win_w = 1000.0f32.min(avail_w);
         let win_h = 800.0f32.min(avail_h);
 
-        let dialog_response = egui::Window::new(win_title)
+        let dialog_response = egui::Window::new(win_title.as_str())
             .collapsible(false)
             .resizable(false)
             .fixed_size(Vec2::new(win_w, win_h))
@@ -371,7 +458,7 @@ impl App {
                 // Title + tabs on one line
                 if is_delete {
                     ui.label(
-                        egui::RichText::new(format!("Delete — {} item(s)", count))
+                        egui::RichText::new(&win_title)
                             .size(14.0)
                             .strong()
                             .color(t.text_primary),
@@ -413,11 +500,15 @@ impl App {
 
                     // Headers
                     ui.columns(2, |cols| {
-                        cols[0].label(
-                            egui::RichText::new(format!("Source: {}", source_dir))
+                        let (source_text, source_folders) = &source_dir;
+                        let source = cols[0].label(
+                            egui::RichText::new(format!("Source: {source_text}"))
                                 .size(11.0)
                                 .color(t.text_muted),
                         );
+                        if let Some(folders) = source_folders {
+                            source.on_hover_text(folders);
+                        }
                         cols[1].label(
                             egui::RichText::new(format!("Destination: {}", target_path.display()))
                                 .size(11.0)
@@ -500,14 +591,7 @@ impl App {
                         let approximate =
                             matches!(precision, crate::ports::SpacePrecision::SaturatedLowerBound);
                         if *over {
-                            (
-                                format!(
-                                    "Not enough space: needs {} more than {} free",
-                                    format_size(need.saturating_sub(*free)),
-                                    format_size(*free)
-                                ),
-                                t.accent_red,
-                            )
+                            (not_enough_space_message(*need, *free), t.accent_red)
                         } else {
                             let message = if approximate {
                                 format!(
@@ -536,12 +620,9 @@ impl App {
                 if has_conflicts {
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new(format!(
-                            "  {} file(s) already exist at destination",
-                            conflicts.len()
-                        ))
-                        .size(12.0)
-                        .color(t.accent_warning),
+                        egui::RichText::new(format!("  {}", conflict_banner(conflicts.len())))
+                            .size(12.0)
+                            .color(t.accent_warning),
                     );
                     ui.add_space(4.0);
 
@@ -552,19 +633,10 @@ impl App {
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 for c in rich_conflicts.iter() {
-                                    let src = if c.src_newer { "src newer" } else { "" };
-                                    let dst = if c.dst_newer { "dst newer" } else { "" };
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "{}    src {} {}    \u{00bb} dst {} {}",
-                                            c.name,
-                                            format_size(c.src_size),
-                                            src,
-                                            format_size(c.dst_size),
-                                            dst,
-                                        ))
-                                        .size(11.0)
-                                        .color(t.text_secondary),
+                                        egui::RichText::new(conflict_row_text(c))
+                                            .size(11.0)
+                                            .color(t.text_secondary),
                                     );
                                 }
                             });
@@ -1027,17 +1099,11 @@ impl App {
                     }
                 });
 
-            let change_count = transfer.filesystem.normalization.changes.len();
-            let collision_count = transfer.filesystem.normalization.collisions.len();
-            if change_count > 0 || collision_count > 0 {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{change_count} rename preview  \u{00b7}  {collision_count} collision{}",
-                        if collision_count == 1 { "" } else { "s" }
-                    ))
-                    .size(10.0)
-                    .color(t.accent_warning),
-                );
+            if let Some(note) = normalization_note(
+                transfer.filesystem.normalization.changes.len(),
+                transfer.filesystem.normalization.collisions.len(),
+            ) {
+                ui.label(egui::RichText::new(note).size(10.0).color(t.accent_warning));
             }
             if !transfer.filesystem.portability.is_empty() {
                 let details = transfer
@@ -1230,13 +1296,7 @@ impl App {
             FlatListMode::Destination { transferred } => &flat[..transferred.min(flat.len())],
             _ => flat,
         };
-        let header = match mode {
-            FlatListMode::Preview => format!("{} items", flat.len()),
-            FlatListMode::Source { .. } => format!("Source ({} items)", flat.len()),
-            FlatListMode::Destination { .. } => {
-                format!("Destination ({}/{})", rows.len(), flat.len())
-            }
-        };
+        let header = flat_list_header(mode, flat.len());
         Frame::NONE
             .fill(t.bg_card.linear_multiply(0.3))
             .corner_radius(CornerRadius::same(4))
@@ -1356,6 +1416,18 @@ fn paint_flat_row(
     }
 }
 
+/// Header above a preview list. The scan counts every nested file and
+/// folder, so it says "in total" to stay distinct from the title's count of
+/// picked items; the destination side is only an illustration, so it shows
+/// no counter that would read as transfer progress.
+fn flat_list_header(mode: FlatListMode, len: usize) -> String {
+    match mode {
+        FlatListMode::Preview => format!("{} in total", items_label(len)),
+        FlatListMode::Source { .. } => format!("Source ({} in total)", items_label(len)),
+        FlatListMode::Destination { .. } => "Destination preview".to_string(),
+    }
+}
+
 /// Only top-level rows can collide with a destination name.
 fn is_conflict_row(fe: &FlatFileEntry, conflicts: &HashSet<&str>) -> bool {
     fe.depth == 0 && conflicts.contains(fe.name.as_str())
@@ -1387,10 +1459,12 @@ const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) ->
 mod tests {
     use super::{
         CONFIRM_DRY_RUN, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache, FLOW_MAX_SECS,
-        OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state, collision_for_policy,
-        conflict_policy_enabled, delete_not_started_message, dialog_enter_suppressed,
-        dropped_items_note, dry_run_supported, flat_total, flow_transferred, focus_within_layer,
-        is_conflict_row, nothing_left_message, unavailable_size_message, unavailable_space_message,
+        FlatListMode, OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state,
+        collision_for_policy, conflict_banner, conflict_policy_enabled, conflict_row_text,
+        delete_not_started_message, dialog_enter_suppressed, dialog_heading, dropped_items_note,
+        dry_run_supported, flat_list_header, flat_total, flow_transferred, focus_within_layer,
+        is_conflict_row, normalization_note, not_enough_space_message, nothing_left_message,
+        source_header, unavailable_size_message, unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1640,5 +1714,96 @@ mod tests {
             delete_not_started_message(Some("Safe-state review is required".into())),
             "Safe-state review is required"
         );
+    }
+
+    #[test]
+    fn delete_heading_matches_the_trash_button() {
+        assert_eq!(dialog_heading("Delete", true, 1), "Move to Trash — 1 item");
+        assert_eq!(dialog_heading("Copy", false, 3), "Copy — 3 items");
+    }
+
+    #[test]
+    fn source_header_names_several_folders() {
+        use std::path::Path;
+        let same = [Some(Path::new("/a")), Some(Path::new("/a"))];
+        assert_eq!(source_header(same), ("/a".to_string(), None));
+        let mixed = [
+            Some(Path::new("/a")),
+            Some(Path::new("/b")),
+            Some(Path::new("/a")),
+        ];
+        assert_eq!(
+            source_header(mixed),
+            ("2 folders".to_string(), Some("/a\n/b".to_string()))
+        );
+    }
+
+    #[test]
+    fn space_shortfall_states_need_free_and_gap() {
+        let message = not_enough_space_message(4096, 1024);
+        assert!(message.contains("needs 4"), "{message}");
+        assert!(message.contains("only 1"), "{message}");
+        assert!(message.contains("short"), "{message}");
+    }
+
+    #[test]
+    fn conflict_text_is_pluralized_and_plain() {
+        assert_eq!(
+            conflict_banner(1),
+            "1 item already exists at the destination"
+        );
+        assert_eq!(
+            conflict_banner(2),
+            "2 items already exist at the destination"
+        );
+        let conflict = crate::conflict::Conflict {
+            name: "a.txt".into(),
+            src_path: "/s/a.txt".into(),
+            src_size: 0,
+            dst_size: 0,
+            src_is_dir: false,
+            dst_is_dir: false,
+            src_newer: true,
+            dst_newer: false,
+        };
+        let row = conflict_row_text(&conflict);
+        assert!(row.contains("Incoming") && row.contains("(newer)") && row.contains("Existing"));
+        assert!(!row.contains("src") && !row.contains("dst"), "{row}");
+    }
+
+    #[test]
+    fn normalization_note_says_names_will_change() {
+        assert_eq!(normalization_note(0, 0), None);
+        assert_eq!(
+            normalization_note(3, 1).as_deref(),
+            Some("3 names will be normalized  \u{00b7}  1 collision")
+        );
+        assert_eq!(
+            normalization_note(1, 0).as_deref(),
+            Some("1 name will be normalized")
+        );
+    }
+
+    #[test]
+    fn list_headers_count_consistently_and_destination_shows_no_counter() {
+        assert_eq!(
+            flat_list_header(FlatListMode::Preview, 1),
+            "1 item in total"
+        );
+        assert_eq!(
+            flat_list_header(FlatListMode::Source { transferred: 0 }, 57),
+            "Source (57 items in total)"
+        );
+        let destination = flat_list_header(FlatListMode::Destination { transferred: 12 }, 57);
+        assert!(!destination.contains("12"), "{destination}");
+    }
+
+    #[test]
+    fn unverified_size_suggests_a_next_step() {
+        let failure = crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Unknown,
+            message: "x".to_string(),
+        };
+        assert!(unavailable_size_message(&failure).contains("start the operation again"));
     }
 }
