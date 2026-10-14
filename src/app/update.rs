@@ -180,6 +180,42 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
 }
 
 /// Whether an open pane tool replaces `side`'s file list.
+/// Drag-overlay verdict for the hovered target and Alt state. Computing it
+/// stats the target and probes its volume, so the overlay reuses it while the
+/// pointer stays on the same folder instead of re-probing every frame. It is
+/// cleared whenever no drag is in progress, so each drag starts fresh.
+#[derive(Default)]
+pub struct DragAnnouncementMemo {
+    cached: Option<(
+        Option<PathBuf>,
+        bool,
+        crate::operation_view::DragAnnouncement,
+    )>,
+}
+
+impl DragAnnouncementMemo {
+    fn get_or_compute(
+        &mut self,
+        target: Option<&PathBuf>,
+        alt: bool,
+        compute: impl FnOnce() -> crate::operation_view::DragAnnouncement,
+    ) -> crate::operation_view::DragAnnouncement {
+        if let Some((cached_target, cached_alt, announcement)) = &self.cached
+            && cached_target.as_ref() == target
+            && *cached_alt == alt
+        {
+            return announcement.clone();
+        }
+        let announcement = compute();
+        self.cached = Some((target.cloned(), alt, announcement.clone()));
+        announcement
+    }
+
+    fn clear(&mut self) {
+        self.cached = None;
+    }
+}
+
 /// Drop the cached tree children of `dir` and of its parent, for both
 /// hidden-file modes, so the tree re-reads only the folders a pane change
 /// can have altered.
@@ -1624,6 +1660,7 @@ impl App {
     fn show_drag_overlay(&mut self, ctx: &egui::Context) {
         let t = self.colors;
         let Some(session) = self.ws.drag_session() else {
+            self.drag_announcement.clear();
             return;
         };
         let drag_entries = session.entries;
@@ -1637,7 +1674,14 @@ impl App {
             } else {
                 format!("{} items", count)
             };
-            let announcement = if let Some(target) = session.target {
+            let alt = ctx.input(|input| input.modifiers.alt);
+            let target = session.target;
+            let announcement = self.drag_announcement.get_or_compute(target, alt, || {
+                let Some(target) = target else {
+                    return crate::operation_view::DragAnnouncement::rejected(
+                        "highlight a destination folder",
+                    );
+                };
                 if !target.is_dir() {
                     crate::operation_view::DragAnnouncement::rejected("destination is not a folder")
                 } else if crate::volume_profile::profile(target).read_only {
@@ -1652,16 +1696,14 @@ impl App {
                         "a folder cannot be moved into itself",
                     )
                 } else {
-                    let effect = if ctx.input(|input| input.modifiers.alt) {
+                    let effect = if alt {
                         crate::operation_view::DragEffect::Copy
                     } else {
                         crate::operation_view::DragEffect::Move
                     };
                     crate::operation_view::DragAnnouncement::valid(target.clone(), effect)
                 }
-            } else {
-                crate::operation_view::DragAnnouncement::rejected("highlight a destination folder")
-            };
+            });
             let target_label = announcement.text();
             let target_color = if matches!(
                 announcement,
@@ -1870,13 +1912,15 @@ impl App {
 mod tests {
     use super::pane_tool_covers;
     use super::{
+        DragAnnouncementMemo, invalidate_tree_children, newest_undoable_toast, trash_undo_matches,
+    };
+    use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
     use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
-    use super::{invalidate_tree_children, newest_undoable_toast, trash_undo_matches};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -2277,5 +2321,44 @@ mod tests {
                 ("/x".to_string(), true),
             ]
         );
+    }
+
+    #[test]
+    fn drag_announcement_is_recomputed_only_when_target_or_alt_changes() {
+        use crate::operation_view::{DragAnnouncement, DragEffect};
+        use std::path::PathBuf;
+        let mut memo = DragAnnouncementMemo::default();
+        let calls = std::cell::Cell::new(0);
+        let a = PathBuf::from("/a");
+        let b = PathBuf::from("/b");
+        let ask = |memo: &mut DragAnnouncementMemo, target: Option<&PathBuf>, alt| {
+            memo.get_or_compute(target, alt, || {
+                calls.set(calls.get() + 1);
+                DragAnnouncement::valid(
+                    target.cloned().unwrap_or_default(),
+                    if alt {
+                        DragEffect::Copy
+                    } else {
+                        DragEffect::Move
+                    },
+                )
+            })
+        };
+        let first = ask(&mut memo, Some(&a), false);
+        assert_eq!(ask(&mut memo, Some(&a), false), first);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            ask(&mut memo, Some(&a), true),
+            DragAnnouncement::valid(a.clone(), DragEffect::Copy)
+        );
+        assert_eq!(
+            ask(&mut memo, Some(&b), true),
+            DragAnnouncement::valid(b.clone(), DragEffect::Copy)
+        );
+        ask(&mut memo, None, true);
+        assert_eq!(calls.get(), 4);
+        memo.clear();
+        ask(&mut memo, None, true);
+        assert_eq!(calls.get(), 5);
     }
 }

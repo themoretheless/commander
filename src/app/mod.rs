@@ -77,6 +77,7 @@ pub struct App {
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    pub(crate) drag_announcement: update::DragAnnouncementMemo,
     pub(crate) tree_width: f32,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
@@ -775,6 +776,7 @@ impl App {
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
@@ -862,6 +864,7 @@ impl App {
             show_tree: seed.show_tree,
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
             show_size_bars: true,
             show_compare: false,
