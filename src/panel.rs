@@ -228,14 +228,19 @@ impl FileEntry {
 
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        return format!("{} B", bytes);
     }
+    // The unit is chosen after rounding to the printed precision, so a value
+    // just under a boundary reads "1.0 MB" rather than "1024.0 KB".
+    let kb = bytes as f64 / 1024.0;
+    if (kb * 10.0).round() < 10240.0 {
+        return format!("{:.1} KB", kb);
+    }
+    let mb = kb / 1024.0;
+    if (mb * 10.0).round() < 10240.0 {
+        return format!("{:.1} MB", mb);
+    }
+    format!("{:.2} GB", mb / 1024.0)
 }
 
 /// Glob match supporting `*` (any run) and `?` (one char). Inputs are
@@ -273,13 +278,15 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 pub fn parse_mask(mask: &str) -> Vec<(String, bool)> {
     mask.split(',')
         .map(str::trim)
-        .filter(|t| !t.is_empty())
         .map(
             |t| match t.strip_prefix('!').or_else(|| t.strip_prefix('-')) {
                 Some(rest) => (rest.trim().to_lowercase(), true),
                 None => (t.to_lowercase(), false),
             },
         )
+        // A bare `!`/`-` leaves an empty term, which would match every
+        // extension-less entry; drop it like an empty positive term.
+        .filter(|(t, _)| !t.is_empty())
         .collect()
 }
 
@@ -1083,15 +1090,12 @@ impl PanelState {
     /// (`.DS_Store`, `.localized`, `Thumbs.db`, `desktop.ini`, the custom-icon
     /// `Icon\r`). Folders are never matched. Returns how many were added.
     pub fn select_junk(&mut self) -> usize {
-        const JUNK_NAMES: &[&str] = &[
-            ".DS_Store",
-            ".localized",
-            "Thumbs.db",
-            "desktop.ini",
-            "Icon\r",
-        ];
+        // Lowercased: case-insensitive volumes carry variants such as
+        // `thumbs.db` or `Desktop.ini`. `Icon\r` stays an exact match.
+        const JUNK_NAMES_LOWER: &[&str] = &[".ds_store", ".localized", "thumbs.db", "desktop.ini"];
         self.select_filtered_where(|entry| {
-            !entry.is_dir && JUNK_NAMES.contains(&entry.name.as_str())
+            !entry.is_dir
+                && (entry.name == "Icon\r" || JUNK_NAMES_LOWER.contains(&entry.name_lower.as_str()))
         })
     }
 
@@ -1558,6 +1562,10 @@ mod tests {
         assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
         assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.00 GB");
+        // Just below a boundary rounds up into the next unit.
+        assert_eq!(format_size(1024 * 1024 - 1), "1.0 MB");
+        assert_eq!(format_size(1024 * 1024 * 1024 - 1), "1.00 GB");
+        assert_eq!(format_size(1024 * 1024 - 52), "1023.9 KB");
     }
 
     #[test]
@@ -1693,6 +1701,19 @@ mod tests {
         assert!(names.contains(".DS_Store"));
         assert!(names.contains("Thumbs.db"));
         assert!(!names.contains("photo.jpg"));
+    }
+
+    #[test]
+    fn select_junk_matches_case_variants() {
+        let mut p = panel_with(vec![
+            entry("thumbs.db", false, 10),
+            entry("Desktop.ini", false, 10),
+            entry("notes.txt", false, 20),
+        ]);
+        assert_eq!(p.select_junk(), 2);
+        let names = selected_names(&p);
+        assert!(names.contains("thumbs.db"));
+        assert!(names.contains("Desktop.ini"));
     }
 
     fn selected_names(p: &PanelState) -> std::collections::HashSet<String> {
@@ -2649,6 +2670,9 @@ mod tests {
                 ("tmp".to_string(), true),
             ]
         );
+        // A bare subtraction marker is not an (empty) term.
+        assert!(parse_mask("-").is_empty());
+        assert_eq!(parse_mask("*.jpg, !"), vec![("*.jpg".to_string(), false)]);
     }
 
     #[test]
