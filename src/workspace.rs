@@ -346,6 +346,10 @@ pub struct Workspace {
     command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
     pub nav_lock: bool,
     last_command: Option<Command>,
+    /// The cursor entry the preview pane last found nothing to show for (a
+    /// folder, or an image the provider declines), so `sync_preview` does
+    /// not retry `make_preview` on every frame while the cursor rests there.
+    preview_declined: Option<panel::PreviewIdentity>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -541,6 +545,7 @@ impl Workspace {
             command_capabilities: std::cell::RefCell::new(None),
             nav_lock: false,
             last_command: None,
+            preview_declined: None,
         }
     }
 
@@ -2766,7 +2771,12 @@ impl Workspace {
             Some(PreviewContent::Info(_)) => return,
             None => false,
         };
-        if shown_matches {
+        if shown_matches
+            || self
+                .preview_declined
+                .as_ref()
+                .is_some_and(|declined| declined.matches_entry(entry))
+        {
             return;
         }
         // A folder (or an image the preview provider declines) has nothing to
@@ -2775,6 +2785,9 @@ impl Workspace {
         // over a folder.
         if let Some(preview) = panel::make_preview(entry) {
             target.preview = Some(preview);
+            self.preview_declined = None;
+        } else {
+            self.preview_declined = Some(panel::PreviewIdentity::from_entry(entry));
         }
     }
 

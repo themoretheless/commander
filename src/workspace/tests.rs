@@ -3968,6 +3968,13 @@ fn preview_stays_open_while_the_cursor_passes_over_a_folder() {
         ws.right.preview.is_some(),
         "preview mode survives a folder row"
     );
+    // The declined row is remembered, so later frames do not retry it.
+    assert!(
+        ws.preview_declined
+            .as_ref()
+            .is_some_and(|declined| declined.path == l.path().join("folder"))
+    );
+    ws.sync_preview();
 
     ws.left.set_cursor(row(&ws, "z.txt"));
     ws.sync_preview();
@@ -3977,6 +3984,7 @@ fn preview_stays_open_while_the_cursor_passes_over_a_folder() {
         }
         other => panic!("expected the preview to follow again, got {other:?}"),
     }
+    assert!(ws.preview_declined.is_none());
 }
 
 #[test]
