@@ -455,6 +455,40 @@ fn drop_busy_reason(
     }
 }
 
+/// Whether every dragged source already sits directly in `target`, so a
+/// move there would only conflict with itself.
+fn sources_already_in(target: &std::path::Path, sources: &[PathBuf]) -> bool {
+    !sources.is_empty() && sources.iter().all(|source| source.parent() == Some(target))
+}
+
+/// Why the dragged `sources` cannot land in `target`, judged from their
+/// paths and worded to follow "Cannot drop: ". `copy` is the Alt-drag
+/// effect: copying items next to themselves is allowed (it duplicates them).
+fn drag_path_rejection(
+    target: &std::path::Path,
+    sources: &[PathBuf],
+    copy: bool,
+) -> Option<&'static str> {
+    if sources
+        .iter()
+        .any(|source| crate::fs_util::is_within_or_equal(target, source))
+    {
+        Some(if copy {
+            "a folder cannot be copied into itself"
+        } else {
+            "a folder cannot be moved into itself"
+        })
+    } else if !copy && sources_already_in(target, sources) {
+        Some(if sources.len() == 1 {
+            "the item is already in this folder"
+        } else {
+            "the items are already in this folder"
+        })
+    } else {
+        None
+    }
+}
+
 /// Average file size once more than one file is picked. Folders report no
 /// size, so they are left out of the divisor.
 fn average_file_size(s: &crate::selection_summary::SelectionSummary) -> Option<u64> {
@@ -1789,7 +1823,7 @@ impl App {
                 self.drag_announcement.get_or_compute(target, alt, || {
                     let Some(target) = target else {
                         return crate::operation_view::DragAnnouncement::rejected(
-                            "highlight a destination folder",
+                            "point at a folder or the other pane",
                         );
                     };
                     if !target.is_dir() {
@@ -1800,13 +1834,8 @@ impl App {
                         crate::operation_view::DragAnnouncement::rejected(
                             "destination volume is read-only",
                         )
-                    } else if drag_entries
-                        .iter()
-                        .any(|source| crate::fs_util::is_within_or_equal(target, source))
-                    {
-                        crate::operation_view::DragAnnouncement::rejected(
-                            "a folder cannot be moved into itself",
-                        )
+                    } else if let Some(reason) = drag_path_rejection(target, drag_entries, alt) {
+                        crate::operation_view::DragAnnouncement::rejected(reason)
                     } else {
                         let effect = if alt {
                             crate::operation_view::DragEffect::Copy
@@ -2015,7 +2044,16 @@ impl App {
         } else {
             TransferKind::Move
         };
-        if kind == TransferKind::Move {
+        // The overlay already said the items are in this folder; moving them
+        // onto themselves would only raise a conflict dialog.
+        let onto_own_folder = self.ws.drag_session().is_some_and(|session| {
+            session
+                .target
+                .is_some_and(|target| sources_already_in(target, session.entries))
+        });
+        if kind == TransferKind::Move && onto_own_folder {
+            self.ws.cancel_drag();
+        } else if kind == TransferKind::Move {
             self.ws.drop_dragged(move || ctx2.request_repaint());
         } else {
             self.ws
@@ -2041,6 +2079,7 @@ mod tests {
         command_shortcut, copied_paths_label, delete_outcome_toast, selection_hud_head,
         undo_recorded_toast,
     };
+    use super::{drag_path_rejection, sources_already_in};
     use super::{drop_busy_reason, smart_folder_saved_toast};
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2613,5 +2652,39 @@ mod tests {
             selection_hud_head(0, 0, 5, 2),
             "5 selected in 2 other folders"
         );
+    }
+
+    #[test]
+    fn drag_rejections_follow_the_drag_effect_and_the_source_folder() {
+        let dir = crate::testutil::TempDir::new();
+        let folder = dir.dir("photos");
+        let file = dir.file("a.txt", "");
+        let root = dir.path().to_path_buf();
+        assert_eq!(
+            drag_path_rejection(&folder, std::slice::from_ref(&folder), true),
+            Some("a folder cannot be copied into itself")
+        );
+        assert_eq!(
+            drag_path_rejection(&folder, std::slice::from_ref(&folder), false),
+            Some("a folder cannot be moved into itself")
+        );
+        // The other pane showing the sources' own folder.
+        assert_eq!(
+            drag_path_rejection(&root, std::slice::from_ref(&file), false),
+            Some("the item is already in this folder")
+        );
+        assert_eq!(
+            drag_path_rejection(&root, &[file.clone(), folder.clone()], false),
+            Some("the items are already in this folder")
+        );
+        assert_eq!(
+            drag_path_rejection(&root, std::slice::from_ref(&file), true),
+            None
+        );
+        assert_eq!(
+            drag_path_rejection(&folder, std::slice::from_ref(&file), false),
+            None
+        );
+        assert!(!sources_already_in(&root, &[]));
     }
 }
