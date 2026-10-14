@@ -19,6 +19,12 @@ fn budget_state(latency: crate::measurement::LatencyPercentiles, hard_p95_ms: f6
     }
 }
 
+/// The recovery row flags its own counters: any watcher error means a pane
+/// may have missed filesystem events, regardless of how many are active.
+fn watcher_recovery_needs_attention(errors: u64) -> bool {
+    errors > 0
+}
+
 impl App {
     pub(crate) fn show_developer_panel(&mut self, ctx: &egui::Context, input_enabled: bool) {
         if !self.show_developer_panel {
@@ -192,10 +198,10 @@ impl App {
                                     watcher.reconnects,
                                     watcher.gap_reconciliations
                                 ),
-                                if active_watchers == 2 {
-                                    t.text_primary
-                                } else {
+                                if watcher_recovery_needs_attention(watcher_errors) {
                                     t.accent_warning
+                                } else {
+                                    t.text_primary
                                 },
                             );
                             text_row(
@@ -584,6 +590,12 @@ fn percentile_text(latency: crate::measurement::LatencyPercentiles) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watcher_recovery_row_flags_errors() {
+        assert!(!watcher_recovery_needs_attention(0));
+        assert!(watcher_recovery_needs_attention(1));
+    }
 
     #[test]
     fn budget_state_distinguishes_missing_within_and_over() {
