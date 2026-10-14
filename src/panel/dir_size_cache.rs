@@ -33,13 +33,18 @@ impl VolumePathKey {
         identity: &ListingIdentity,
         parent: &crate::volume_profile::VolumeProfile,
     ) -> Self {
+        #[cfg(unix)]
+        let same_volume = matches!(
+            identity,
+            ListingIdentity::Captured(identity) if identity.volume == Some(parent.volume_id)
+        );
         // Off Unix the volume id is derived from the path's prefix, which a
         // child always shares with its parent.
-        let same_volume = !cfg!(unix)
-            || matches!(
-                identity,
-                ListingIdentity::Captured(identity) if identity.volume == Some(parent.volume_id)
-            );
+        #[cfg(not(unix))]
+        let same_volume = {
+            let _ = identity;
+            true
+        };
         if same_volume {
             Self {
                 path: path.to_path_buf(),
