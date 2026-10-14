@@ -549,6 +549,14 @@ impl SizeIndex {
                     }
                 });
 
+                // Persist the visible sizes before the background walks,
+                // which can take long (or hang on a slow subtree) and would
+                // otherwise hold them back until they return, or lose them
+                // if the app exits first. Nothing changed means no rewrite.
+                if !background_sizes.is_empty() && cache_changed.swap(false, Ordering::Relaxed) {
+                    flush_cache();
+                }
+
                 if !epoch.is_cancelled() {
                     let background_results: Vec<_> = background_sizes
                         .par_iter()
@@ -570,7 +578,7 @@ impl SizeIndex {
                         wake();
                     }
                 }
-                // One rewrite of the persisted cache per scan.
+                // At most one more rewrite, for what the background added.
                 if cache_changed.into_inner() {
                     flush_cache();
                 }
