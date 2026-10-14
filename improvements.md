@@ -43,7 +43,7 @@ workspace delete/fileops/transfer queue), test-first.
 
 | PR | Items | Done |
 | --- | --- | --- |
-| P1 | 264 | 208 |
+| P1 | 264 | 207 |
 | P2 | 34 | 0 |
 | P3 | 38 | 0 |
 | P4 | 72 | 0 |
@@ -51,7 +51,7 @@ workspace delete/fileops/transfer queue), test-first.
 | P6 | 398 | 0 |
 | P7 | 268 | 0 |
 | P8 | 209 | 0 |
-| **Total** | **1371** | **208** |
+| **Total** | **1371** | **207** |
 
 ## Items
 
@@ -65,7 +65,7 @@ workspace delete/fileops/transfer queue), test-first.
 | I-0006 | sw:app-dialogs-a-2 | bug | med | y | S | `src/app/confirm_dialog.rs:445` show_confirm_dialog | Conflict-policy buttons start the transfer even when destination Write capability is Unavailable (primary button is gated). → Disable policy buttons (or skip confirm after resolve) when preflight_blocked/mutations_blocked, mirroring can_apply. | P1 | done:e0ca84b |
 | I-0007 | sw:app-dialogs-a-15 | bug | low | y | S | `src/app/confirm_dialog.rs:451` show_confirm_dialog | confirm_pending_op paths never clear pending_flow_start/confirm_dry_run temp ids; next dialog skips the flow animation (stale start). → Extract clear_pending_dialog_state(ctx) used by dismiss and after every confirm_pending_op call (or key ids by op generation). | P1 | done:e0ca84b |
 | I-0008 | sw2:surfaces-3 | bug | high | y | S | `src/app/confirm_dialog.rs:529` show_confirm_dialog | Enter on a focused Dry-run checkbox toggles it (egui fake click), then global Enter confirms with the new value: real Move/Trash runs → Skip the global Enter confirm when ctx.memory(¦m¦ m.focused().is_some()), or read dry_run before the checkbox and ignore Enter when checkbox response changed | P1 | done:e36c57d |
-| I-0009 | sw:app-dialogs-b-30 | bug | low | y | S | `src/app/developer_panel.rs:195` show_developer_panel | Watcher recovery row is never highlighted for errors/reconnects; color copies the active-watchers check → Color the row warning when watcher_errors > 0 (optionally reconnects > 0), else text_primary | P1 | done:26f298b |
+| I-0009 | sw:app-dialogs-b-30 | bug | low | n | S | `src/app/developer_panel.rs:195` show_developer_panel | Watcher recovery row is never highlighted for errors/reconnects; color copies the active-watchers check → Color the row warning when watcher_errors > 0 (optionally reconnects > 0), else text_primary | P1 | done:26f298b |
 | I-0010 | bl#92 | bug | low | y | S | `src/app/diff_dialog.rs:11` read_text | Diffing a FIFO or /dev/zero passes the size check, then read_to_string blocks or grows unbounded on the UI thread. → Require meta.is_file() and read via File::open(..).take(DIFF_SIZE_CAP + 1), rejecting if more bytes arrive. | P1 | done:26f298b |
 | I-0011 | sw:app-surfaces-18 | bug | med | y | S | `src/app/file_list.rs:231` render_file_list | Virtualization ignores the '..' row height: rows start up_h lower than scroll_top/row_h assumes, leaving a blank strip at the top when scrolled → Measure up_row height (+item spacing) and use (scroll_top - up_h).max(0) for first/last_visible; spacer math unchanged | P1 | done:89ae784 |
 | I-0012 | sw2:list-render-3 | bug | med | y | S | `src/app/file_list.rs:236` render_file_list | Drag edge-autoscroll checks only pointer.y, so hovering near the top/bottom of one pane also scrolls the other pane's list → Gate on viewport.x_range().contains(pointer.x) (or ui.rect_contains_pointer(viewport)) before computing the velocity | P1 | done:89ae784 |

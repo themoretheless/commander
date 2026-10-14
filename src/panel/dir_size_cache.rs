@@ -587,9 +587,10 @@ const fn shared_inode(_metadata: &fs::Metadata) -> Option<(u64, u64)> {
 
 /// Whether a folder that is itself a mount point holds real files worth
 /// walking. Pseudo filesystems (`/proc`, `/sys`, `/dev` on macOS) report
-/// absurd sizes, and remote or FUSE mounts are slow to walk, so those count
-/// 0; local disks, partitions and subvolumes (a separate `/home`, an APFS
-/// Data-volume firmlink, a drive under `/media`) are measured.
+/// absurd sizes, and network mounts are slow to walk, so those count 0;
+/// local disks, partitions and subvolumes (a separate `/home`, an APFS
+/// Data-volume firmlink, a drive under `/media`, including FUSE-backed ones
+/// such as ntfs-3g) are measured.
 #[cfg(target_os = "linux")]
 fn mount_is_measurable(path: &Path) -> bool {
     use std::ffi::CString;
@@ -627,12 +628,12 @@ fn mount_is_measurable(path: &Path) -> bool {
             | 0x9584_58F6 // hugetlbfs
             | 0xF97C_FF8C // selinuxfs
             | 0x6E73_6673 // nsfs
-            // Remote and FUSE filesystems.
+            // Network filesystems. FUSE is measured: it backs local disks
+            // as often as remote ones (ntfs-3g, exfat-fuse on external drives).
             | 0x6969 // nfs
             | 0x517B // smb
             | 0xFF53_4D42 // cifs
             | 0xFE53_4D42 // smb2
-            | 0x6573_5546 // fuse
             | 0x0102_1997 // 9p
             | 0x00C3_6400 // ceph
     )
@@ -669,8 +670,8 @@ const fn mount_is_measurable(_path: &Path) -> bool {
 /// Recursive byte total of `path`, like `du -x`: the walk stays on the
 /// folder's own filesystem and does not descend into other mounts below it,
 /// and a hard-linked file counts once. A folder that is itself a mount point
-/// is measured in full when it is a local disk; a pseudo, remote or FUSE
-/// mount (e.g. `/proc` listed in `/`) is not walked and counts 0.
+/// is measured in full when it is a local disk; a pseudo or network mount
+/// (e.g. `/proc` listed in `/`) is not walked and counts 0.
 pub(super) fn dir_size_recursive_until(
     path: &Path,
     is_cancelled: impl Fn() -> bool,
