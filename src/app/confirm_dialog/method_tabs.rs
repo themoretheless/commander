@@ -41,7 +41,7 @@ pub fn show(
     painter.text(
         egui::pos2(row_rect.left() + 4.0, row_rect.center().y),
         egui::Align2::LEFT_CENTER,
-        format!("{title} — {count} item(s)"),
+        format!("{title} — {}", super::items_label(count)),
         egui::FontId::proportional(13.0),
         colors.text_primary,
     );

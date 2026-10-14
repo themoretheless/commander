@@ -991,7 +991,10 @@ impl App {
         self.toast(
             ctx,
             crate::toasts::ToastKind::Info,
-            format!("Dry run: {title} {count} item(s){size} — nothing changed"),
+            format!(
+                "Dry run: {title} {}{size} — nothing changed",
+                items_label(count)
+            ),
             false,
         );
         self.dismiss_pending_op(ctx);
