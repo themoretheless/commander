@@ -542,6 +542,8 @@ pub struct BatchRenameState {
     pub error: Option<String>,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
+    /// Plan for the last rule shown; rebuilt only when the rule changes.
+    pub validation: Option<batch_rename_dialog::ValidatedBatchRename>,
 }
 
 impl BatchRenameState {
