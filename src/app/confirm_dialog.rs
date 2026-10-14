@@ -144,6 +144,15 @@ const FLOW_SECS_PER_FILE: f64 = 0.08;
 const FLOW_MAX_SECS: f64 = 1.5;
 
 /// Rows already shown as transferred `elapsed` seconds into the animation.
+/// With reduced motion every row is shown at once and nothing animates.
+fn flow_rows(elapsed: f64, len: usize, reduced_motion: bool) -> usize {
+    if reduced_motion {
+        len
+    } else {
+        flow_transferred(elapsed, len)
+    }
+}
+
 fn flow_transferred(elapsed: f64, len: usize) -> usize {
     let per_file = (elapsed / FLOW_SECS_PER_FILE) as usize;
     let capped = (len as f64 * (elapsed / FLOW_MAX_SECS)) as usize;
@@ -359,6 +368,7 @@ impl App {
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::Confirmation);
         let mutations_blocked = self.ws.mutations_blocked();
+        let reduced_motion = self.accessibility_preferences.reduced_motion;
         let Some(op) = &self.ws.pending_op else {
             clear_pending_dialog_state(ctx);
             self.confirm_cache = ConfirmCache::default();
@@ -523,7 +533,7 @@ impl App {
                         *d.get_temp_mut_or_insert_with(anim_id, || ctx.input(|i| i.time))
                     });
                     let elapsed = ctx.input(|i| i.time) - start_time;
-                    let transferred = flow_transferred(elapsed, flat.len());
+                    let transferred = flow_rows(elapsed, flat.len(), reduced_motion);
 
                     // Request repaint while animation is running
                     if transferred < flat.len() {
@@ -1308,10 +1318,19 @@ impl App {
                     .id_salt(id_salt)
                     .show_rows(ui, ROW_H, rows.len(), |ui, range| {
                         for row_idx in range {
-                            let (rect, _) = ui.allocate_exact_size(
+                            let (rect, response) = ui.allocate_exact_size(
                                 Vec2::new(ui.available_width(), ROW_H),
                                 Sense::hover(),
                             );
+                            // Painter-only rows: name them for screen readers.
+                            let fe = &rows[row_idx];
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Label,
+                                    ui.is_enabled(),
+                                    flat_row_accessible_label(fe, is_conflict_row(fe, conflicts)),
+                                )
+                            });
                             paint_flat_row(
                                 ui.painter(),
                                 rect,
@@ -1383,37 +1402,67 @@ fn paint_flat_row(
         color,
     );
     let text_start = rect.left() + indent + 18.0;
-    p.text(
-        egui::pos2(text_start, mid),
-        egui::Align2::LEFT_CENTER,
-        &fe.name,
-        font,
-        color,
-    );
+    let size_color = if moved_away {
+        t.text_muted.linear_multiply(0.3)
+    } else {
+        t.text_muted
+    };
+    // The size is right-aligned; the name is elided to end before it.
+    let size_galley = (!fe.is_dir && fe.size > 0).then(|| {
+        p.layout_no_wrap(
+            format_size(fe.size),
+            egui::FontId::proportional(10.0),
+            size_color,
+        )
+    });
+    let name_right = size_galley.as_ref().map_or(rect.right() - 4.0, |galley| {
+        rect.right() - 4.0 - galley.size().x - 8.0
+    });
+    let name = elided_name(p, &fe.name, font, color, name_right - text_start);
+    let name_rect = egui::Align2::LEFT_CENTER.anchor_size(egui::pos2(text_start, mid), name.size());
+    p.galley(name_rect.min, name, color);
     if moved_away {
-        let text_end = text_start + fe.name.len() as f32 * 6.5;
         p.line_segment(
             [
                 egui::pos2(text_start, mid),
-                egui::pos2(text_end.min(rect.right() - 4.0), mid),
+                egui::pos2(name_rect.right().min(name_right), mid),
             ],
             Stroke::new(1.0_f32, t.text_muted.linear_multiply(0.3)),
         );
     }
-    if !fe.is_dir && fe.size > 0 {
-        let size_color = if moved_away {
-            t.text_muted.linear_multiply(0.3)
-        } else {
-            t.text_muted
-        };
-        p.text(
-            egui::pos2(rect.right() - 4.0, mid),
-            egui::Align2::RIGHT_CENTER,
-            format_size(fe.size),
-            egui::FontId::proportional(10.0),
-            size_color,
-        );
+    if let Some(size) = size_galley {
+        let size_rect = egui::Align2::RIGHT_CENTER
+            .anchor_size(egui::pos2(rect.right() - 4.0, mid), size.size());
+        p.galley(size_rect.min, size, size_color);
     }
+}
+
+/// `name` laid out on one line, elided with "…" to fit `max_width`.
+fn elided_name(
+    p: &egui::Painter,
+    name: &str,
+    font: egui::FontId,
+    color: Color32,
+    max_width: f32,
+) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    p.layout_job(job)
+}
+
+/// What a screen reader announces for a preview row.
+fn flat_row_accessible_label(fe: &FlatFileEntry, is_conflict: bool) -> String {
+    let mut label = fe.name.clone();
+    if fe.is_dir {
+        label.push_str(", folder");
+    } else if fe.size > 0 {
+        label.push_str(", ");
+        label.push_str(&format_size(fe.size));
+    }
+    if is_conflict {
+        label.push_str(", already exists at the destination");
+    }
+    label
 }
 
 /// Header above a preview list. The scan counts every nested file and
@@ -1462,9 +1511,10 @@ mod tests {
         FlatListMode, OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state,
         collision_for_policy, conflict_banner, conflict_policy_enabled, conflict_row_text,
         delete_not_started_message, dialog_enter_suppressed, dialog_heading, dropped_items_note,
-        dry_run_supported, flat_list_header, flat_total, flow_transferred, focus_within_layer,
-        is_conflict_row, normalization_note, not_enough_space_message, nothing_left_message,
-        source_header, unavailable_size_message, unavailable_space_message,
+        dry_run_supported, elided_name, flat_list_header, flat_row_accessible_label, flat_total,
+        flow_rows, flow_transferred, focus_within_layer, is_conflict_row, normalization_note,
+        not_enough_space_message, nothing_left_message, source_header, unavailable_size_message,
+        unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1805,5 +1855,49 @@ mod tests {
             message: "x".to_string(),
         };
         assert!(unavailable_size_message(&failure).contains("start the operation again"));
+    }
+
+    #[test]
+    fn reduced_motion_shows_every_row_without_animating() {
+        assert_eq!(flow_rows(0.0, 40, true), 40);
+        assert_eq!(flow_rows(0.0, 40, false), 0);
+    }
+
+    #[test]
+    fn long_and_wide_names_are_elided_to_the_name_column() {
+        let ctx = egui::Context::default();
+        let mut widths = Vec::new();
+        crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+            for name in ["a".repeat(300), "Ж".repeat(300), "文".repeat(300)] {
+                let galley = elided_name(
+                    ui.painter(),
+                    &name,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::WHITE,
+                    120.0,
+                );
+                widths.push(galley.size().x);
+            }
+        }));
+        for width in widths {
+            assert!(
+                width <= 121.0,
+                "name painted {width} px into a 120 px column"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_rows_have_accessible_names() {
+        assert_eq!(
+            flat_row_accessible_label(&entry("docs", 0, true, 0), false),
+            "docs, folder"
+        );
+        let label = flat_row_accessible_label(&entry("a.txt", 2048, false, 0), true);
+        assert!(label.starts_with("a.txt, 2"), "{label}");
+        assert!(
+            label.ends_with("already exists at the destination"),
+            "{label}"
+        );
     }
 }
