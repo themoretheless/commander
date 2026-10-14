@@ -13,6 +13,16 @@ pub struct ContentBlob {
     pub size: u64,
     pub refs: u32,
     pub exemplar: PathBuf,
+    /// Referencing files that hold their own physical copy because they could
+    /// not be hard-linked to the exemplar; each adds `size` to store usage.
+    #[serde(default)]
+    pub separate_copies: u32,
+}
+
+impl ContentBlob {
+    const fn bytes_on_disk(&self) -> u64 {
+        self.size.saturating_mul(1 + self.separate_copies as u64)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +30,9 @@ pub struct PayloadFile {
     pub relative: PathBuf,
     pub digest: String,
     pub size: u64,
+    /// True when this file is not hard-linked to its blob's exemplar.
+    #[serde(default)]
+    pub separate: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,7 +75,7 @@ pub fn usage_of(
     quota: VersionStoreQuota,
 ) -> VersionStoreUsage {
     VersionStoreUsage {
-        bytes_used: blobs.values().map(|b| b.size).sum(),
+        bytes_used: blobs.values().map(ContentBlob::bytes_on_disk).sum(),
         bytes_quota: quota.max_bytes,
         unique_blobs: blobs.len(),
         records: record_count,
@@ -98,6 +111,9 @@ pub fn release_payload_refs(
     };
     for file in files {
         let drop = blobs.get_mut(&file.digest).is_some_and(|blob| {
+            if file.separate {
+                blob.separate_copies = blob.separate_copies.saturating_sub(1);
+            }
             blob.refs = blob.refs.saturating_sub(1);
             blob.refs == 0
         });
@@ -120,12 +136,22 @@ pub fn register_payload_dedup(
             .strip_prefix(stored)
             .map_or_else(|_| PathBuf::from("."), Path::to_path_buf);
         let (digest, size) = hash_file_chunked(&absolute)?;
-        if let Some(blob) = blobs.get(&digest) {
-            if blob.exemplar != absolute {
-                let _ = hardlink_replace(&blob.exemplar, &absolute);
+        let mut separate = false;
+        if let Some(blob) = blobs.get_mut(&digest) {
+            match hardlink_replace(&blob.exemplar, &absolute) {
+                LinkOutcome::Linked => {}
+                LinkOutcome::NotLinked => separate = true,
+                // The exemplar's record was pruned: surviving references
+                // still share its inode, so this file is a new physical copy
+                // and becomes the exemplar later duplicates link to.
+                LinkOutcome::ExemplarMissing => {
+                    blob.exemplar.clone_from(&absolute);
+                    separate = true;
+                }
             }
-            if let Some(blob) = blobs.get_mut(&digest) {
-                blob.refs = blob.refs.saturating_add(1);
+            blob.refs = blob.refs.saturating_add(1);
+            if separate {
+                blob.separate_copies = blob.separate_copies.saturating_add(1);
             }
         } else {
             blobs.insert(
@@ -134,6 +160,7 @@ pub fn register_payload_dedup(
                     size,
                     refs: 1,
                     exemplar: absolute.clone(),
+                    separate_copies: 0,
                 },
             );
         }
@@ -141,28 +168,54 @@ pub fn register_payload_dedup(
             relative,
             digest,
             size,
+            separate,
         });
     }
     payload_files.insert(key.to_string(), files);
     Ok(())
 }
 
-fn hardlink_replace(exemplar: &Path, target: &Path) -> Result<(), String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkOutcome {
+    Linked,
+    NotLinked,
+    ExemplarMissing,
+}
+
+fn hardlink_replace(exemplar: &Path, target: &Path) -> LinkOutcome {
     if exemplar == target {
-        return Ok(());
+        return LinkOutcome::Linked;
     }
-    let Ok(meta) = fs::symlink_metadata(exemplar) else {
-        return Ok(());
+    let meta = match fs::symlink_metadata(exemplar) {
+        Ok(meta) if meta.is_file() => meta,
+        Ok(_) => return LinkOutcome::ExemplarMissing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return LinkOutcome::ExemplarMissing;
+        }
+        Err(_) => return LinkOutcome::NotLinked,
     };
-    if !meta.is_file() || meta.file_type().is_symlink() {
-        return Ok(());
+    // A hard link shares the inode's mode, so restoring this version would
+    // apply the exemplar's permissions; keep a separate copy instead.
+    if !fs::symlink_metadata(target).is_ok_and(|own| own.permissions() == meta.permissions()) {
+        return LinkOutcome::NotLinked;
     }
-    let tmp = target.with_extension("commander-dedup-tmp");
-    let _ = fs::remove_file(&tmp);
-    if fs::hard_link(exemplar, &tmp).is_ok() && fs::rename(&tmp, target).is_err() {
+    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+        return LinkOutcome::NotLinked;
+    };
+    // A unique hidden name, never pre-deleted, so a real payload file that
+    // happens to share it cannot be removed.
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".dedup-{:016x}", rand::random::<u64>()));
+    let tmp = parent.join(tmp_name);
+    if fs::hard_link(exemplar, &tmp).is_err() {
+        return LinkOutcome::NotLinked;
+    }
+    if fs::rename(&tmp, target).is_err() {
         let _ = fs::remove_file(&tmp);
+        return LinkOutcome::NotLinked;
     }
-    Ok(())
+    LinkOutcome::Linked
 }
 
 fn collect_regular_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -212,7 +265,7 @@ pub fn quota_overflow_keys(
     payload_files: &BTreeMap<String, Vec<PayloadFile>>,
     quota: VersionStoreQuota,
 ) -> Vec<String> {
-    let mut used: u64 = blobs.values().map(|b| b.size).sum();
+    let mut used: u64 = blobs.values().map(ContentBlob::bytes_on_disk).sum();
     if used <= quota.max_bytes {
         return Vec::new();
     }
@@ -226,6 +279,9 @@ pub fn quota_overflow_keys(
         if let Some(files) = payload_files.get(key) {
             for file in files {
                 if let Some(blob) = refs.get_mut(&file.digest) {
+                    if file.separate {
+                        used = used.saturating_sub(blob.size);
+                    }
                     blob.refs = blob.refs.saturating_sub(1);
                     if blob.refs == 0 {
                         used = used.saturating_sub(blob.size);
@@ -256,5 +312,68 @@ mod tests {
         register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs.values().next().unwrap().refs, 2);
+    }
+
+    fn usage(blobs: &BTreeMap<String, ContentBlob>) -> u64 {
+        usage_of(blobs, 0, VersionStoreQuota::default()).bytes_used
+    }
+
+    #[test]
+    fn dedup_never_deletes_a_payload_file_named_like_its_temp() {
+        let temp = TempDir::new();
+        let a = temp.file("one/a.bin", "same");
+        let b = temp.file("two/a.bin", "same");
+        let bystander = temp.file("two/a.commander-dedup-tmp", "keep me");
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&a, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
+        assert_eq!(fs::read_to_string(bystander).unwrap(), "keep me");
+        assert_eq!(fs::read_to_string(b).unwrap(), "same");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dedup_keeps_a_separate_copy_when_permissions_differ() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new();
+        let public = temp.file("one/a.bin", "same");
+        let private = temp.file("two/a.bin", "same");
+        fs::set_permissions(&public, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&public, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&private, "2", &mut blobs, &mut files).unwrap();
+
+        let mode = fs::metadata(&private).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Two physical copies count twice toward the quota.
+        assert_eq!(usage(&blobs), 8);
+        release_payload_refs(&mut blobs, &mut files, "2");
+        assert_eq!(usage(&blobs), 4);
+    }
+
+    #[test]
+    fn duplicates_after_the_exemplar_is_pruned_are_counted_and_relinked() {
+        let temp = TempDir::new();
+        let a = temp.file("one/a.bin", "same");
+        let b = temp.file("two/a.bin", "same");
+        let c = temp.file("three/a.bin", "same");
+        let d = temp.file("four/a.bin", "same");
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&a, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
+        release_payload_refs(&mut blobs, &mut files, "1");
+        fs::remove_file(&a).unwrap();
+
+        register_payload_dedup(&c, "3", &mut blobs, &mut files).unwrap();
+        // b's inode and c are two physical copies.
+        assert_eq!(usage(&blobs), 8);
+        assert_eq!(blobs.values().next().unwrap().exemplar, c);
+
+        register_payload_dedup(&d, "4", &mut blobs, &mut files).unwrap();
+        assert_eq!(usage(&blobs), 8, "d links to the new exemplar");
     }
 }
