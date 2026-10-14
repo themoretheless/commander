@@ -681,7 +681,7 @@ impl App {
 /// path/search/shell modes.
 fn command_rows_shown(mode: &OmnibarMode<'_>) -> usize {
     match mode {
-        OmnibarMode::Jump(q) if q.is_empty() => 0,
+        OmnibarMode::Jump("") => 0,
         OmnibarMode::Jump(_) => 8,
         OmnibarMode::Command(_) => usize::MAX,
         OmnibarMode::Path(_) | OmnibarMode::Search(_) | OmnibarMode::Shell(_) => 0,
