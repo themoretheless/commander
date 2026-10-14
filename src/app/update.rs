@@ -169,6 +169,58 @@ struct PaneDropContext {
 /// Seconds a modifier must be held before the key bar floats in.
 const KEY_BAR_REVEAL_DELAY: f64 = 0.45;
 
+/// Whether held modifiers should float the key bar in. Shift is left out:
+/// it is held for range selection, and a revealed bar over the bottom rows
+/// would turn a Shift-click there into a command.
+const fn key_bar_modifier_held(modifiers: egui::Modifiers) -> bool {
+    modifiers.command || modifiers.alt || modifiers.ctrl
+}
+
+/// Temp-data key for the floating key bar's rect while it shows this frame.
+const KEY_BAR_OVERLAY_RECT: &str = "shortcuts_overlay_rect";
+
+/// The selection HUD's bottom edge: just above the central area's bottom,
+/// and above the floating key bar while that shows, since both sit at the
+/// bottom centre.
+fn selection_hud_bottom(area_bottom: f32, key_bar_top: Option<f32>) -> f32 {
+    let bottom = area_bottom - 14.0;
+    key_bar_top.map_or(bottom, |top| bottom.min(top - 6.0))
+}
+
+/// Accessible name of the pane-tool close button, whose visible text is
+/// only a multiplication sign.
+const CLOSE_PANE_TOOL_LABEL: &str = "Close pane tool";
+
+/// Temp-data key for the left pane's share of the two panes' width.
+const PANE_SPLIT_RATIO: &str = "pane_split_ratio";
+
+/// The left pane width that keeps the user's split `ratio` of `remaining`,
+/// leaving both panes at least `pane_min` wide when there is room.
+fn split_left_width(ratio: f32, remaining: f32, pane_min: f32) -> f32 {
+    let half = remaining / 2.0;
+    (remaining * ratio.clamp(0.0, 1.0)).clamp(pane_min.min(half), (remaining - pane_min).max(half))
+}
+
+/// The keyboard focus ring (a double outline, as on file rows) for a
+/// widget whose own frame is hidden, so tabbing to it stays visible.
+fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, t: &crate::theme::ThemeColors) {
+    if !response.has_focus() {
+        return;
+    }
+    ui.painter().rect_stroke(
+        response.rect,
+        crate::theme::ROUNDING_SM,
+        Stroke::new(2.0, t.text_primary),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().rect_stroke(
+        response.rect.shrink(2.0),
+        crate::theme::ROUNDING_SM,
+        Stroke::new(1.0, t.bg_panel),
+        egui::StrokeKind::Inside,
+    );
+}
+
 fn clipped_label(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
@@ -782,6 +834,7 @@ impl App {
                                     .stroke(Stroke::NONE)
                                     .min_size(Vec2::new(ui.available_width(), 24.0)),
                             );
+                            paint_focus_ring(ui, &response, &t);
                             items.push(response.id);
                             // The first item is focused on open, so Space
                             // (select, Quick Look) must not run it; Enter does.
@@ -1276,10 +1329,8 @@ impl App {
         let t = self.colors;
         let ctx = ui.ctx().clone();
         let now = ctx.input(|input| input.time);
-        let held = ctx.input(|input| {
-            let m = input.modifiers;
-            m.command || m.shift || m.alt || m.ctrl
-        });
+        ctx.data_mut(|data| data.remove::<egui::Rect>(egui::Id::new(KEY_BAR_OVERLAY_RECT)));
+        let held = ctx.input(|input| key_bar_modifier_held(input.modifiers));
         self.ui.modifier_held_since = match (held, self.ui.modifier_held_since) {
             (true, None) => Some(now),
             (true, since) => since,
@@ -1314,6 +1365,7 @@ impl App {
                             .corner_radius(crate::theme::ROUNDING_SM),
                         )
                         .on_hover_text(hint.label);
+                    paint_focus_ring(ui, &response, &t);
                     if response.clicked() {
                         *run = Some(hint.command);
                     }
@@ -1332,7 +1384,7 @@ impl App {
             // The overlay is a root Area that would not inherit this disabled
             // Ui; skip it while a dialog owns input, so holding a modifier
             // in a dialog cannot reveal clickable commands above it.
-            egui::Area::new(egui::Id::new("shortcuts_overlay"))
+            let overlay = egui::Area::new(egui::Id::new("shortcuts_overlay"))
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
                 .order(egui::Order::Foreground)
                 .interactable(true)
@@ -1347,6 +1399,9 @@ impl App {
                             draw(ui, &mut run);
                         });
                 });
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new(KEY_BAR_OVERLAY_RECT), overlay.response.rect);
+            });
         }
         if let Some(command) = run
             && ui.is_enabled()
@@ -1482,12 +1537,15 @@ impl App {
 
         let area = ui.available_rect_before_wrap();
         let screen = ctx.input(|i| i.viewport_rect());
+        let key_bar =
+            ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(KEY_BAR_OVERLAY_RECT)));
+        let bottom = selection_hud_bottom(area.bottom(), key_bar.map(|rect| rect.top()));
         egui::Area::new(egui::Id::new("selection_hud"))
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
                 [
                     area.center().x - screen.center().x,
-                    -(screen.bottom() - area.bottom()) - 14.0,
+                    bottom - screen.bottom(),
                 ],
             )
             .order(egui::Order::Foreground)
@@ -1663,7 +1721,11 @@ impl App {
         // Compute half from remaining space (after tree)
         let remaining = window_width - tree_actual_width - 6.0;
         let half = remaining / 2.0;
-        // Reset panel width when window resizes or tree toggled
+        let pane_min = crate::accessibility::pane_min_width(remaining);
+        let split_ratio_id = egui::Id::new(PANE_SPLIT_RATIO);
+        let split_ratio: f32 = ctx.data_mut(|d| d.get_temp(split_ratio_id).unwrap_or(0.5));
+        // Re-lay the panes when the window resizes or the tree toggles,
+        // keeping the user's split ratio rather than snapping to 50/50.
         {
             let prev_half: f32 =
                 ctx.data_mut(|d| d.get_temp(egui::Id::new("prev_half")).unwrap_or(0.0));
@@ -1685,10 +1747,9 @@ impl App {
             external_open.borrow_mut().push(request);
         };
         // Left panel
-        let pane_min = crate::accessibility::pane_min_width(remaining);
         let left_resp = egui::Panel::left(panel_id)
             .resizable(true)
-            .default_size(half)
+            .default_size(split_left_width(split_ratio, remaining, pane_min))
             .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
@@ -1740,7 +1801,11 @@ impl App {
             if input_policy.allows_divider_reset(containing_ui_enabled, double_clicked) {
                 ctx.data_mut(|d| {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
+                    d.insert_temp(split_ratio_id, 0.5_f32);
                 });
+            } else if remaining > 0.0 {
+                let ratio = panel_rect.width() / remaining;
+                ctx.data_mut(|d| d.insert_temp(split_ratio_id, ratio));
             }
         }
 
@@ -1863,16 +1928,25 @@ impl App {
                 // Each tool draws its own heading; the host only adds Close.
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
+                        let close_button = ui
                             .add(
                                 egui::Button::new(
                                     egui::RichText::new("\u{00d7}").color(t.text_muted),
                                 )
                                 .frame(false),
                             )
-                            .on_hover_text("Close (Esc)")
-                            .clicked()
-                        {
+                            .on_hover_text("Close (Esc)");
+                        // egui names a button by its text; the glyph alone
+                        // would be read as "multiplication sign".
+                        let enabled = close_button.enabled();
+                        close_button.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                enabled,
+                                CLOSE_PANE_TOOL_LABEL,
+                            )
+                        });
+                        if close_button.clicked() {
                             close = true;
                         }
                     });
@@ -2036,9 +2110,8 @@ impl App {
         }
         let t = self.colors;
         let label = format!("\u{00bb} {buffer}");
-        let screen = ctx.input(|i| i.viewport_rect());
         egui::Area::new(egui::Id::new("type_ahead_overlay"))
-            .fixed_pos(egui::pos2(screen.center().x - 60.0, screen.bottom() - 80.0))
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -50.0])
             .order(egui::Order::Tooltip)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style())
@@ -2254,6 +2327,7 @@ mod tests {
     };
     use super::{drag_path_rejection, sources_already_in};
     use super::{drop_busy_reason, smart_folder_saved_toast};
+    use super::{key_bar_modifier_held, selection_hud_bottom, split_left_width};
     use super::{toast_live_region, toast_stack_offsets, toast_text};
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2949,5 +3023,37 @@ mod tests {
             fallback_menu_pos(&pointer_invocation, origin, None, center),
             center
         );
+    }
+
+    #[test]
+    fn shift_alone_does_not_float_the_key_bar() {
+        use egui::Modifiers;
+        assert!(!key_bar_modifier_held(Modifiers::SHIFT));
+        assert!(!key_bar_modifier_held(Modifiers::NONE));
+        assert!(key_bar_modifier_held(Modifiers::COMMAND));
+        assert!(key_bar_modifier_held(Modifiers::ALT));
+        assert!(key_bar_modifier_held(Modifiers::CTRL));
+        assert!(key_bar_modifier_held(Modifiers::SHIFT | Modifiers::ALT));
+    }
+
+    #[test]
+    fn selection_hud_rises_above_the_floating_key_bar() {
+        assert_eq!(selection_hud_bottom(800.0, None), 786.0);
+        // The bar's top sits above the HUD's normal bottom: clear it.
+        assert_eq!(selection_hud_bottom(800.0, Some(770.0)), 764.0);
+        // A bar lower than the HUD changes nothing.
+        assert_eq!(selection_hud_bottom(700.0, Some(770.0)), 686.0);
+    }
+
+    #[test]
+    fn pane_split_keeps_its_ratio_across_resizes() {
+        assert_eq!(split_left_width(0.3, 1000.0, 100.0), 300.0);
+        assert_eq!(split_left_width(0.3, 2000.0, 100.0), 600.0);
+        assert_eq!(split_left_width(0.5, 1000.0, 100.0), 500.0);
+        // Both panes keep their minimum width.
+        assert_eq!(split_left_width(0.02, 1000.0, 100.0), 100.0);
+        assert_eq!(split_left_width(0.99, 1000.0, 100.0), 900.0);
+        // Too narrow for two minimums: split evenly instead of inverting.
+        assert_eq!(split_left_width(0.1, 150.0, 100.0), 75.0);
     }
 }
