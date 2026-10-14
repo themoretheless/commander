@@ -430,6 +430,49 @@ fn selection_hud_head(
     head
 }
 
+/// Height a toast row takes before it has been measured once.
+const TOAST_ROW_HEIGHT: f32 = 44.0;
+/// Gap between stacked toasts.
+const TOAST_GAP: f32 = 6.0;
+
+/// Top offset of each stacked toast (newest first) and the stack's total
+/// height, from each toast's last measured height. A wrapped message makes
+/// its toast taller, so a fixed row pitch would overlap the next one.
+fn toast_stack_offsets(heights: &[Option<f32>]) -> (Vec<f32>, f32) {
+    let mut offsets = Vec::with_capacity(heights.len());
+    let mut y = 0.0;
+    for height in heights {
+        offsets.push(y);
+        y += height.unwrap_or(TOAST_ROW_HEIGHT - TOAST_GAP) + TOAST_GAP;
+    }
+    (offsets, y)
+}
+
+/// The visible toast text. Errors carry a warning icon so their kind is not
+/// told by the accent colour alone.
+fn toast_text(kind: crate::toasts::ToastKind, message: &str) -> String {
+    match kind {
+        crate::toasts::ToastKind::Error => format!("\u{26a0} {message}"),
+        crate::toasts::ToastKind::Success | crate::toasts::ToastKind::Info => message.to_string(),
+    }
+}
+
+/// How assistive technology announces a toast: errors interrupt, every
+/// other result is read when the user is idle.
+const fn toast_live_region(
+    kind: crate::toasts::ToastKind,
+) -> (egui::accesskit::Role, egui::accesskit::Live) {
+    match kind {
+        crate::toasts::ToastKind::Error => (
+            egui::accesskit::Role::Alert,
+            egui::accesskit::Live::Assertive,
+        ),
+        crate::toasts::ToastKind::Success | crate::toasts::ToastKind::Info => {
+            (egui::accesskit::Role::Status, egui::accesskit::Live::Polite)
+        }
+    }
+}
+
 /// Why a drop would be cancelled right now, worded to follow "Cannot drop: ".
 /// Mirrors the guard in `drop_dragged_as`, which cancels silently.
 fn drop_busy_reason(
@@ -1936,6 +1979,16 @@ impl App {
                 });
             }
         }
+        // Newest on top; each row is as tall as it measured last frame.
+        let heights: Vec<Option<f32>> = active
+            .iter()
+            .rev()
+            .map(|toast| {
+                ctx.memory(|memory| memory.area_rect(egui::Id::new(("toast", toast.id()))))
+                    .map(|rect| rect.height())
+            })
+            .collect();
+        let (offsets, stack_height) = toast_stack_offsets(&heights);
         let Some(stack) = crate::accessibility::place_overlay(
             crate::accessibility::Rect {
                 x: screen.left(),
@@ -1944,7 +1997,7 @@ impl App {
                 height: screen.height(),
             },
             268.0,
-            active.len() as f32 * 44.0,
+            stack_height,
             &avoid,
         ) else {
             // Hidden toasts must not expire unseen (an error would be lost);
@@ -1958,8 +2011,9 @@ impl App {
         // offers it; an older toast's button would undo something else.
         let undo_toast = newest_undoable_toast(active);
         // Newest on top, in the nearest corner that preserves focus and errors.
-        for (row, toast) in active.iter().rev().enumerate() {
-            let y = stack.y + row as f32 * 44.0;
+        let undo_label = format!("Undo {}", command_shortcut("Z"));
+        for (toast, offset) in active.iter().rev().zip(offsets) {
+            let y = stack.y + offset;
             let accent = match toast.kind {
                 crate::toasts::ToastKind::Success => t.accent,
                 crate::toasts::ToastKind::Error => t.accent_red,
@@ -1982,17 +2036,12 @@ impl App {
                         .show(ui, |ui| {
                             ui.set_width(236.0);
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&toast.message)
-                                        .size(12.0)
-                                        .color(t.text_primary),
-                                );
-                                if undo_toast == Some(toast.id()) {
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if undo_toast == Some(toast.id())
+                                        && ui
                                             .add(
                                                 egui::Button::new(
-                                                    egui::RichText::new("Undo \u{2318}Z")
+                                                    egui::RichText::new(&undo_label)
                                                         .size(11.0)
                                                         .color(Color32::WHITE),
                                                 )
@@ -2000,11 +2049,34 @@ impl App {
                                                 .corner_radius(CornerRadius::ZERO),
                                             )
                                             .clicked()
-                                        {
-                                            undo = true;
-                                        }
-                                    });
-                                }
+                                    {
+                                        undo = true;
+                                    }
+                                    // The message wraps in the space the Undo
+                                    // button leaves instead of widening the toast.
+                                    ui.allocate_ui_with_layout(
+                                        Vec2::new(ui.available_width(), 0.0),
+                                        Layout::top_down(Align::Min),
+                                        |ui| {
+                                            let message = ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(toast_text(
+                                                        toast.kind,
+                                                        &toast.message,
+                                                    ))
+                                                    .size(12.0)
+                                                    .color(t.text_primary),
+                                                )
+                                                .wrap(),
+                                            );
+                                            let (role, live) = toast_live_region(toast.kind);
+                                            ui.ctx().accesskit_node_builder(message.id, |node| {
+                                                node.set_role(role);
+                                                node.set_live(live);
+                                            });
+                                        },
+                                    );
+                                });
                             });
                             // Hairline countdown.
                             let (rect, _) = ui.allocate_exact_size(
@@ -2081,6 +2153,7 @@ mod tests {
     };
     use super::{drag_path_rejection, sources_already_in};
     use super::{drop_busy_reason, smart_folder_saved_toast};
+    use super::{toast_live_region, toast_stack_offsets, toast_text};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -2686,5 +2759,36 @@ mod tests {
             None
         );
         assert!(!sources_already_in(&root, &[]));
+    }
+
+    #[test]
+    fn toasts_stack_by_their_measured_height() {
+        let (offsets, total) = toast_stack_offsets(&[None, Some(70.0), Some(30.0)]);
+        assert_eq!(offsets, vec![0.0, 44.0, 120.0]);
+        assert_eq!(total, 156.0);
+        assert_eq!(toast_stack_offsets(&[]), (Vec::new(), 0.0));
+    }
+
+    #[test]
+    fn error_toasts_have_an_icon_and_interrupt_assistive_technology() {
+        use crate::toasts::ToastKind;
+        use egui::accesskit::{Live, Role};
+        assert_eq!(
+            toast_text(ToastKind::Error, "Could not copy"),
+            "\u{26a0} Could not copy"
+        );
+        assert_eq!(toast_text(ToastKind::Success, "Copied path"), "Copied path");
+        assert_eq!(
+            toast_live_region(ToastKind::Error),
+            (Role::Alert, Live::Assertive)
+        );
+        assert_eq!(
+            toast_live_region(ToastKind::Info),
+            (Role::Status, Live::Polite)
+        );
+        assert_eq!(
+            toast_live_region(ToastKind::Success),
+            (Role::Status, Live::Polite)
+        );
     }
 }
