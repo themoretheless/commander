@@ -609,13 +609,12 @@ mod tests {
         assert!(!watcher.poll(Path::new("/watched")).recovered_gap);
     }
 
+    type TestHandler = Box<dyn FnMut(Result<notify::Event, notify::Error>) + Send>;
+
     fn test_callback(
         root: &str,
         canonical: Option<&str>,
-    ) -> (
-        Box<dyn FnMut(Result<notify::Event, notify::Error>) + Send>,
-        mpsc::Receiver<WatchMessage>,
-    ) {
+    ) -> (TestHandler, mpsc::Receiver<WatchMessage>) {
         let (sender, receiver) = mpsc::channel();
         let callback = WatcherCallback {
             binding: WatchBinding {
