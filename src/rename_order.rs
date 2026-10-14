@@ -133,15 +133,24 @@ pub enum RenameOrder {
     Conflict(String),
 }
 
+/// The occupancy key for a name: case-folded and NFC-normalized, so names a
+/// case-insensitive, normalization-insensitive volume (default APFS) treats
+/// as one (`Foo`/`foo`, precomposed/decomposed `café`) share a key.
+pub fn name_key(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.to_lowercase().nfc().collect()
+}
+
 fn key(s: &str) -> String {
-    s.to_lowercase()
+    name_key(s)
 }
 
 /// Order `map` (each `(old, new)`) into a mid-batch-safe rename sequence, or
 /// report a [`RenameOrder::Conflict`]. `existing` is every name currently in the
 /// directory (so a target landing on an untouched sibling is caught).
 ///
-/// Occupancy is compared case-insensitively, matching the default macOS volume,
+/// Occupancy is compared case- and normalization-insensitively ([`name_key`]),
+/// matching the default macOS volume,
 /// while the steps carry the exact cased names. Exact no-op pairs (`old == new`)
 /// are dropped; a case-only change (`Foo` -> `foo`) is kept and routed through a
 /// temporary so the case actually changes.
@@ -555,6 +564,17 @@ mod tests {
         assert_eq!(error.rollback_failures[0].to, "a");
         assert_eq!(error.rollback_failures[0].error, "rollback failure");
         assert_eq!(fs, existing(&["x", "b"]));
+    }
+
+    #[test]
+    fn normalization_equivalent_sibling_occupies_the_target() {
+        let decomposed = "cafe\u{301}.txt".to_string();
+        let map = vec![("old.txt".to_string(), "caf\u{e9}.txt".to_string())];
+        let existing: HashSet<String> = ["old.txt".to_string(), decomposed].into();
+        assert!(matches!(
+            safe_rename_order(&map, &existing),
+            RenameOrder::Conflict(_)
+        ));
     }
 
     #[test]
