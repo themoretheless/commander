@@ -73,6 +73,9 @@ pub(super) struct ListingReady {
     /// The user asked for this listing (navigation, refresh): its size
     /// recompute may re-walk expensive folders. Watcher re-lists may not.
     pub forced_sizes: bool,
+    /// `Some(recovered_gap)` when a watcher reconciliation asked for this
+    /// listing, so the panel can record that provenance once it applies.
+    pub watcher_gap: Option<bool>,
 }
 
 pub(super) struct ListingJobController {
@@ -81,6 +84,8 @@ pub(super) struct ListingJobController {
     ticket: Option<ReconciliationTicket>,
     focus: PendingFocus,
     forced_sizes: bool,
+    /// See [`ListingReady::watcher_gap`].
+    watcher_gap: Option<bool>,
     in_flight: Vec<InFlightListing>,
     ready: Option<ListingReady>,
     /// True while the desired binding still needs a worker result.
@@ -95,6 +100,7 @@ impl Default for ListingJobController {
             ticket: None,
             focus: PendingFocus::None,
             forced_sizes: false,
+            watcher_gap: None,
             in_flight: Vec::new(),
             ready: None,
             awaiting: false,
@@ -153,6 +159,7 @@ impl ListingJobController {
         self.ticket = ticket;
         self.focus = focus;
         self.forced_sizes = forced_sizes;
+        self.watcher_gap = None;
         self.ready = None;
         self.awaiting = true;
         binding
@@ -165,11 +172,13 @@ impl ListingJobController {
     /// restarting would cancel slow reads every frame. A change that raced
     /// the running read keeps the watcher's generation ahead of the old
     /// ticket, so the next poll re-lists once this result lands.
+    /// `recovered_gap` marks a re-list after the watcher lost events.
     pub(super) fn reconcile(
         &mut self,
         path: PathBuf,
         show_hidden: bool,
         ticket: ReconciliationTicket,
+        recovered_gap: bool,
     ) {
         let pending_same = (self.awaiting || self.ready.is_some())
             && self
@@ -178,6 +187,19 @@ impl ListingJobController {
                 .is_some_and(|desired| desired.path == path && desired.show_hidden == show_hidden);
         if !pending_same {
             self.request_with(path, show_hidden, Some(ticket), PendingFocus::None, false);
+            self.watcher_gap = Some(recovered_gap);
+        } else {
+            // A user-requested listing (no watcher attribution yet) still
+            // answers a gap recovery: claim it so the recovery is counted.
+            let slot = match self.ready.as_mut() {
+                Some(ready) => &mut ready.watcher_gap,
+                None => &mut self.watcher_gap,
+            };
+            match slot {
+                Some(gap) => *gap |= recovered_gap,
+                None if recovered_gap => *slot = Some(true),
+                None => {}
+            }
         }
     }
 
@@ -307,6 +329,7 @@ impl ListingJobController {
             ticket: self.ticket.take(),
             focus: std::mem::replace(&mut self.focus, PendingFocus::None),
             forced_sizes: self.forced_sizes,
+            watcher_gap: self.watcher_gap.take(),
         }
     }
 
@@ -433,14 +456,14 @@ mod tests {
             PendingFocus::NamedChild("child".into()),
         );
         // The watcher hands out the same unacknowledged ticket every frame.
-        job.reconcile(PathBuf::from("/parent"), false, ticket.clone());
-        job.reconcile(PathBuf::from("/parent"), false, ticket.clone());
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone(), false);
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone(), false);
         assert_eq!(job.desired_binding(), Some(&first));
         assert_eq!(named(&job.focus), Some("child"));
         assert_eq!(job.ticket.as_ref(), Some(&ticket));
 
         // Hidden-file toggles are a different binding and do re-list.
-        job.reconcile(PathBuf::from("/parent"), true, ticket);
+        job.reconcile(PathBuf::from("/parent"), true, ticket, false);
         assert_ne!(job.desired_binding(), Some(&first));
     }
 
@@ -491,17 +514,48 @@ mod tests {
         let ticket = watcher.snapshot_ticket().unwrap();
         let mut job = ListingJobController::default();
 
-        job.reconcile(PathBuf::from("/parent"), false, ticket.clone());
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone(), false);
         assert!(!job.forced_sizes, "a watcher re-list is background work");
 
         job.request(PathBuf::from("/parent"), false, None, PendingFocus::None);
         assert!(job.forced_sizes);
         // A watcher ticket arriving while the user's read runs keeps it.
-        job.reconcile(PathBuf::from("/parent"), false, ticket);
+        job.reconcile(PathBuf::from("/parent"), false, ticket, false);
         assert!(job.forced_sizes);
         let binding = job.desired_binding().unwrap().clone();
         let ready = job.settle(binding, DirectoryRead::Incomplete(DirStatus::Gone));
         assert!(ready.forced_sizes);
+    }
+
+    #[test]
+    fn watcher_listing_carries_its_provenance_to_the_result() {
+        let mut watcher = super::super::watcher::DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/parent"));
+        let ticket = watcher.snapshot_ticket().unwrap();
+        let mut job = ListingJobController::default();
+
+        // The worker result lands frames after poll_fs_changes asked for it,
+        // so the result itself must say the watcher requested it.
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone(), false);
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone(), true);
+        let binding = job.desired_binding().unwrap().clone();
+        let ready = job.settle(binding, DirectoryRead::Incomplete(DirStatus::Gone));
+        assert_eq!(ready.watcher_gap, Some(true));
+
+        // A user-requested listing is not attributed to the watcher, even
+        // when a watcher ticket arrives while it runs.
+        job.request(PathBuf::from("/parent"), false, None, PendingFocus::None);
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone(), false);
+        let binding = job.desired_binding().unwrap().clone();
+        let ready = job.settle(binding, DirectoryRead::Incomplete(DirStatus::Gone));
+        assert_eq!(ready.watcher_gap, None);
+
+        // ...but a gap recovery it answers is still counted.
+        job.request(PathBuf::from("/parent"), false, None, PendingFocus::None);
+        job.reconcile(PathBuf::from("/parent"), false, ticket, true);
+        let binding = job.desired_binding().unwrap().clone();
+        let ready = job.settle(binding, DirectoryRead::Incomplete(DirStatus::Gone));
+        assert_eq!(ready.watcher_gap, Some(true));
     }
 
     #[test]
