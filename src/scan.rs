@@ -609,6 +609,7 @@ fn flatten_entry(
         match std::fs::read_dir(path) {
             // An unreadable folder would otherwise look empty in the delete
             // preview, hiding that its contents are unknown.
+            Err(_) if result.len() >= MAX_FLAT_ENTRIES => *truncated = true,
             Err(error) => result.push(FlatFileEntry {
                 name: format!("(contents unreadable: {error})"),
                 size: 0,
