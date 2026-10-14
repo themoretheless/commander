@@ -1728,14 +1728,8 @@ fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = image::DynamicImage::from_decoder(decoder).map_err(|error| error.to_string())?;
-    img.apply_orientation(orientation);
-    let img = if img.width() > target.width || img.height() > target.height {
-        img.thumbnail(target.width, target.height)
-    } else {
-        img
-    };
-    let rgba = img.into_rgba8();
+    let img = image::DynamicImage::from_decoder(decoder).map_err(|error| error.to_string())?;
+    let rgba = fit_oriented(img, orientation, target).into_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
     let extension = path
@@ -1753,6 +1747,36 @@ fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         byte_size,
         decoded_for: target,
     })
+}
+
+/// Downscale `img` to fit `target` once `orientation` is applied. The
+/// thumbnail is taken first (into a swapped box for quarter turns) so a
+/// rotation copies the small image, not a second full-resolution buffer.
+fn fit_oriented(
+    img: image::DynamicImage,
+    orientation: image::metadata::Orientation,
+    target: PreviewTarget,
+) -> image::DynamicImage {
+    use image::metadata::Orientation;
+    let quarter_turn = matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    );
+    let (box_width, box_height) = if quarter_turn {
+        (target.height, target.width)
+    } else {
+        (target.width, target.height)
+    };
+    let mut img = if img.width() > box_width || img.height() > box_height {
+        img.thumbnail(box_width, box_height)
+    } else {
+        img
+    };
+    img.apply_orientation(orientation);
+    img
 }
 
 /// Bitmap color space for CoreGraphics draws. egui treats texture bytes as
@@ -1777,12 +1801,15 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 
+    // Validate the path before creating the pool: an early `?` return after
+    // it would skip the drain.
+    let path_str = path.to_str().ok_or("invalid path")?;
+    let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
+
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
 
         // Create CFURL from path
-        let path_str = path.to_str().ok_or("invalid path")?;
-        let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
         let cf_str: *mut Object =
             msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
         if cf_str.is_null() {
@@ -1974,14 +2001,23 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 
+    // Validate the path before creating the pool: an early `?` return after
+    // it would skip the drain.
+    let path_str = path.to_str().ok_or("invalid path")?;
+    let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
+
     unsafe {
         let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
 
         // NSURL
-        let path_str = path.to_str().ok_or("invalid path")?;
-        let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
         let ns_str: *mut Object =
             msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
+        // `fileURLWithPath:` raises an ObjC exception on nil, which aborts
+        // the process across the FFI boundary.
+        if ns_str.is_null() {
+            let _: () = msg_send![pool, drain];
+            return Err("failed to create NSString".into());
+        }
         let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_str];
         if url.is_null() {
             let _: () = msg_send![pool, drain];
@@ -2162,7 +2198,7 @@ mod tests {
         TEXT_PREVIEW_TIMEOUT, TextPreviewClock, TextPreviewExecutor, TextPreviewFingerprint,
         TextPreviewJob, TextPreviewPipeline, TextPreviewPoll, TextPreviewStore,
         TextPreviewSubmission, TextPreviewTaskHandle, allocate_rgba_pixels, classify_failure,
-        color_image_from_rgba, decode_text_bytes, load_via_image_crate,
+        color_image_from_rgba, decode_text_bytes, fit_oriented, load_via_image_crate,
     };
     use crate::panel::PreviewIdentity;
     use crate::testutil::TempDir;
@@ -2172,6 +2208,55 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn oriented_thumbnail_matches_rotating_the_full_image_first() {
+        use image::metadata::Orientation;
+        // A non-square smooth gradient so a wrong box or rotation shows in
+        // both dimensions and pixels.
+        let source =
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(400, 100, |x, y| {
+                image::Rgba([(x * 255 / 399) as u8, (y * 255 / 99) as u8, 128, 255])
+            }));
+        let target = PreviewTarget {
+            width: 64,
+            height: 48,
+        };
+        for orientation in [
+            Orientation::NoTransforms,
+            Orientation::Rotate90,
+            Orientation::Rotate180,
+            Orientation::Rotate270,
+            Orientation::FlipHorizontal,
+            Orientation::Rotate90FlipH,
+            Orientation::Rotate270FlipH,
+        ] {
+            let mut expected = source.clone();
+            expected.apply_orientation(orientation);
+            let expected = expected.thumbnail(target.width, target.height);
+
+            let fitted = fit_oriented(source.clone(), orientation, target);
+
+            assert_eq!(fitted.width(), expected.width(), "{orientation:?}");
+            assert_eq!(fitted.height(), expected.height(), "{orientation:?}");
+            assert!(fitted.width() <= target.width && fitted.height() <= target.height);
+            // Downscaling before or after the exact rotation samples slightly
+            // differently; the result must still be the same picture.
+            let max_difference = fitted
+                .to_rgba8()
+                .as_raw()
+                .iter()
+                .zip(expected.to_rgba8().as_raw())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            assert!(max_difference <= 8, "{orientation:?}: {max_difference}");
+        }
+        // Already small enough: only oriented, never upscaled.
+        let small = image::DynamicImage::new_rgba8(20, 10);
+        let fitted = fit_oriented(small, Orientation::Rotate90, target);
+        assert_eq!((fitted.width(), fitted.height()), (10, 20));
+    }
 
     type TestJobQueue = Arc<Mutex<VecDeque<(TextPreviewJob, Arc<AtomicBool>, Arc<AtomicBool>)>>>;
 

@@ -16,6 +16,10 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 pub const MAX_DOCUMENTS: usize = 200_000;
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_CONTENT_BYTES: usize = 32 * 1024 * 1024;
+/// Loaded indexes kept in memory at once. Enough for every root the UI
+/// asks about in one frame (Find dialog, developer panel), so they never
+/// evict each other and reload from disk.
+const MAX_CACHED_SNAPSHOTS: usize = 4;
 /// Largest index file the loader accepts.
 const MAX_INDEX_FILE_BYTES: usize = 64 * 1024 * 1024;
 /// Serialized-size budget for documents; the rest of the file cap covers the
@@ -52,16 +56,8 @@ impl IndexedDocument {
             .extension()
             .map(|value| value.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        let modified = self
-            .modified_secs
-            .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds));
-        let modified_str = modified.map_or_else(
-            || "-".to_string(),
-            |time| {
-                let value: chrono::DateTime<chrono::Local> = time.into();
-                value.format("%d %b %y  %H:%M").to_string()
-            },
-        );
+        let modified = self.modified_secs.and_then(epoch_secs);
+        let modified_str = modified.map_or_else(|| "-".to_string(), crate::search::format_modified);
         Some(FileEntry {
             name_lower: name.to_lowercase(),
             name,
@@ -81,9 +77,14 @@ impl IndexedDocument {
     }
 
     pub fn accessed(&self) -> Option<SystemTime> {
-        self.accessed_secs
-            .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+        self.accessed_secs.and_then(epoch_secs)
     }
+}
+
+/// `UNIX_EPOCH + seconds`, or `None` when a corrupt or hand-edited index
+/// stores a value `SystemTime` cannot hold (the plain `+` panics there).
+fn epoch_secs(seconds: u64) -> Option<SystemTime> {
+    std::time::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -185,6 +186,11 @@ impl Drop for BuildRun {
 pub struct ContentIndex {
     settings: SettingsStore,
     snapshots: HashMap<PathBuf, Arc<RootIndex>>,
+    /// Cached roots, least recently used first.
+    snapshot_order: Vec<PathBuf>,
+    /// Roots whose index file failed to load; not retried until a build or
+    /// settings change, since `status()` asks for the snapshot every frame.
+    unloadable: HashSet<PathBuf>,
     load_errors: HashMap<PathBuf, String>,
     active: Option<BuildRun>,
     workload: crate::workload::WorkloadHandle,
@@ -206,6 +212,8 @@ impl ContentIndex {
         Self {
             settings,
             snapshots: HashMap::new(),
+            snapshot_order: Vec::new(),
+            unloadable: HashSet::new(),
             load_errors: HashMap::new(),
             active: None,
             workload,
@@ -237,6 +245,10 @@ impl ContentIndex {
         if !enabled && self.active.as_ref().is_some_and(|run| run.root == root) {
             self.active = None;
         }
+        if !enabled {
+            self.evict_snapshot(&root);
+        }
+        self.unloadable.remove(&root);
         true
     }
 
@@ -301,6 +313,7 @@ impl ContentIndex {
             return false;
         }
         self.load_errors.remove(&root);
+        self.unloadable.remove(&root);
         if let Some(settings) = self
             .settings
             .roots
@@ -410,7 +423,8 @@ impl ContentIndex {
         if let (Some(root), Some(result)) = (root, complete) {
             match result {
                 Ok(index) => {
-                    self.snapshots.insert(root.clone(), Arc::new(index));
+                    self.cache_snapshot(root.clone(), Arc::new(index));
+                    self.unloadable.remove(&root);
                     self.load_errors.remove(&root);
                     self.set_last_error(&root, None);
                 }
@@ -424,23 +438,59 @@ impl ContentIndex {
     }
 
     pub fn snapshot(&mut self, root: &Path) -> Option<Arc<RootIndex>> {
-        if let Some(snapshot) = self.snapshots.get(root) {
-            return Some(Arc::clone(snapshot));
+        self.snapshot_from(&index_path(root), root)
+    }
+
+    fn snapshot_from(&mut self, path: &Path, root: &Path) -> Option<Arc<RootIndex>> {
+        if let Some(snapshot) = self.snapshots.get(root).map(Arc::clone) {
+            self.touch_snapshot(root);
+            return Some(snapshot);
         }
-        match load_index_from(&index_path(root), root) {
+        if self.unloadable.contains(root) {
+            return None;
+        }
+        match load_index_from(path, root) {
             Ok(Some(index)) => {
                 let index = Arc::new(index);
-                self.snapshots
-                    .insert(root.to_path_buf(), Arc::clone(&index));
+                self.cache_snapshot(root.to_path_buf(), Arc::clone(&index));
                 self.load_errors.remove(root);
                 Some(index)
             }
             Ok(None) => None,
             Err(error) => {
+                self.unloadable.insert(root.to_path_buf());
                 self.load_errors.insert(root.to_path_buf(), error);
                 None
             }
         }
+    }
+
+    /// Keep at most `MAX_CACHED_SNAPSHOTS` indexes (each up to
+    /// `MAX_CONTENT_BYTES` of text) alive, dropping the least recently used.
+    fn cache_snapshot(&mut self, root: PathBuf, index: Arc<RootIndex>) {
+        self.touch_snapshot(&root);
+        if self.snapshots.insert(root.clone(), index).is_none() {
+            self.snapshot_order.push(root);
+        }
+        while self.snapshot_order.len() > MAX_CACHED_SNAPSHOTS {
+            let evicted = self.snapshot_order.remove(0);
+            self.snapshots.remove(&evicted);
+        }
+    }
+
+    fn touch_snapshot(&mut self, root: &Path) {
+        if self.snapshot_order.last().is_some_and(|last| last == root) {
+            return;
+        }
+        if let Some(position) = self.snapshot_order.iter().position(|cached| cached == root) {
+            let cached = self.snapshot_order.remove(position);
+            self.snapshot_order.push(cached);
+        }
+    }
+
+    fn evict_snapshot(&mut self, root: &Path) {
+        self.snapshots.remove(root);
+        self.snapshot_order.retain(|cached| cached != root);
     }
 
     pub fn status(&mut self, root: &Path) -> IndexStatus {
@@ -550,9 +600,21 @@ fn scan_index(
         idle,
         cancelled,
         scheduler_cancel,
-        MAX_DOCUMENT_JSON_BYTES,
+        ScanBudget {
+            json_bytes: MAX_DOCUMENT_JSON_BYTES,
+            content_bytes: MAX_CONTENT_BYTES,
+        },
         report,
     )
+}
+
+/// Size caps for one build; tests shrink them to reach the limits cheaply.
+#[derive(Clone, Copy)]
+struct ScanBudget {
+    /// Serialized size of all documents (see `MAX_DOCUMENT_JSON_BYTES`).
+    json_bytes: usize,
+    /// Decoded text kept across all documents (see `MAX_CONTENT_BYTES`).
+    content_bytes: usize,
 }
 
 fn scan_index_within(
@@ -561,13 +623,13 @@ fn scan_index_within(
     idle: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     scheduler_cancel: Option<crate::workload::CancellationToken>,
-    json_budget: usize,
+    budget: ScanBudget,
     mut report: impl FnMut(&BuildProgress) -> bool,
 ) -> Result<RootIndex, String> {
     wait_for_idle(&idle, &cancelled, scheduler_cancel.as_ref())?;
     let root_entries = fs::read_dir(&root)
         .map_err(|error| format!("Could not read index root {}: {error}", root.display()))?;
-    let mut stack: Vec<ReadDir> = vec![root_entries];
+    let mut stack = vec![DirCursor::Open(Box::new(root_entries))];
     let mut documents = Vec::new();
     let mut progress = BuildProgress::default();
     let mut skipped_binary = 0usize;
@@ -585,7 +647,7 @@ fn scan_index_within(
         }) {
             return Err("Index build cancelled".to_string());
         }
-        let Some(next) = entries.next() else {
+        let Some(next) = entries.next_entry() else {
             stack.pop();
             continue;
         };
@@ -605,12 +667,7 @@ fn scan_index_within(
             skipped_unreadable = skipped_unreadable.saturating_add(1);
             continue;
         };
-        let metadata = if file_type.is_symlink() {
-            fs::symlink_metadata(&path)
-        } else {
-            dir_entry.metadata()
-        };
-        let Ok(metadata) = metadata else {
+        let Ok(metadata) = dir_entry.metadata(file_type) else {
             skipped_unreadable = skipped_unreadable.saturating_add(1);
             continue;
         };
@@ -633,12 +690,21 @@ fn scan_index_within(
                 skipped_large = skipped_large.saturating_add(1);
             } else if progress
                 .content_bytes
-                .saturating_add(metadata.len() as usize)
-                > MAX_CONTENT_BYTES
+                .saturating_add(usize::try_from(metadata.len()).unwrap_or(usize::MAX))
+                > budget.content_bytes
             {
                 skipped_quota = skipped_quota.saturating_add(1);
             } else {
                 match read_indexable_text(&path, metadata.len()) {
+                    // Lossy decoding turns each invalid byte into a 3-byte
+                    // U+FFFD, so the text can outgrow the on-disk size that
+                    // passed the check above.
+                    Ok(Some(text))
+                        if progress.content_bytes.saturating_add(text.len())
+                            > budget.content_bytes =>
+                    {
+                        skipped_quota = skipped_quota.saturating_add(1);
+                    }
                     Ok(Some(text)) => {
                         progress.content_bytes = progress.content_bytes.saturating_add(text.len());
                         progress.content_indexed = progress.content_indexed.saturating_add(1);
@@ -651,7 +717,7 @@ fn scan_index_within(
         }
         let document_bytes =
             DOCUMENT_JSON_OVERHEAD.saturating_add(json_string_len(&path.to_string_lossy()));
-        if json_bytes.saturating_add(document_bytes) > json_budget {
+        if json_bytes.saturating_add(document_bytes) > budget.json_bytes {
             truncated = true;
             break;
         }
@@ -659,7 +725,7 @@ fn scan_index_within(
         if json_bytes
             .saturating_add(document_bytes)
             .saturating_add(content_json_bytes)
-            > json_budget
+            > budget.json_bytes
             && let Some(text) = content.take()
         {
             // Keep the document's metadata; its text no longer fits the file.
@@ -685,7 +751,7 @@ fn scan_index_within(
         progress.indexed = documents.len();
 
         if is_dir {
-            match fs::read_dir(&path) {
+            match DirCursor::open(&path, stack.len()) {
                 Ok(entries) => stack.push(entries),
                 Err(_) => skipped_unreadable = skipped_unreadable.saturating_add(1),
             }
@@ -716,6 +782,77 @@ fn scan_index_within(
         excluded_roots,
         truncated,
     })
+}
+
+/// Open directory levels the scan keeps as live `ReadDir` handles. Deeper
+/// levels are read fully and closed before descending, so a pathologically
+/// deep tree cannot exhaust file descriptors (one per open level) and turn
+/// every directory below into "unreadable".
+const MAX_OPEN_DIRS: usize = 64;
+
+/// One directory level of the scan stack.
+enum DirCursor {
+    // Boxed: Windows' `ReadDir` embeds a whole `WIN32_FIND_DATAW`.
+    Open(Box<ReadDir>),
+    Buffered(std::vec::IntoIter<std::io::Result<CursorEntry>>),
+}
+
+impl DirCursor {
+    fn open(path: &Path, depth: usize) -> std::io::Result<Self> {
+        let entries = fs::read_dir(path)?;
+        if depth < MAX_OPEN_DIRS {
+            return Ok(Self::Open(Box::new(entries)));
+        }
+        // `DirEntry` keeps its directory handle alive, so only owned
+        // values are buffered.
+        let buffered: Vec<_> = entries
+            .map(|entry| {
+                entry.map(|entry| CursorEntry::Buffered(entry.path(), entry.file_type().ok()))
+            })
+            .collect();
+        Ok(Self::Buffered(buffered.into_iter()))
+    }
+
+    fn next_entry(&mut self) -> Option<std::io::Result<CursorEntry>> {
+        match self {
+            Self::Open(entries) => entries.next().map(|entry| entry.map(CursorEntry::Open)),
+            Self::Buffered(entries) => entries.next(),
+        }
+    }
+}
+
+// Not boxed: one entry is live at a time, and boxing the large Windows
+// `DirEntry` would cost an allocation per scanned entry.
+#[allow(clippy::large_enum_variant)]
+enum CursorEntry {
+    Open(fs::DirEntry),
+    Buffered(PathBuf, Option<fs::FileType>),
+}
+
+impl CursorEntry {
+    fn path(&self) -> PathBuf {
+        match self {
+            Self::Open(entry) => entry.path(),
+            Self::Buffered(path, _) => path.clone(),
+        }
+    }
+
+    fn file_type(&self) -> std::io::Result<fs::FileType> {
+        match self {
+            Self::Open(entry) => entry.file_type(),
+            Self::Buffered(_, file_type) => {
+                file_type.ok_or_else(|| std::io::Error::other("file type unavailable"))
+            }
+        }
+    }
+
+    /// Metadata of the entry itself, never of a symlink's target.
+    fn metadata(&self, file_type: fs::FileType) -> std::io::Result<fs::Metadata> {
+        match self {
+            Self::Open(entry) if !file_type.is_symlink() => entry.metadata(),
+            _ => fs::symlink_metadata(self.path()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -757,13 +894,30 @@ fn wait_for_idle(
     }
 }
 
+/// Leading bytes checked for NULs to tell binary files from text.
+const BINARY_SNIFF_BYTES: u64 = 8_192;
+
 fn read_indexable_text(path: &Path, size: u64) -> std::io::Result<Option<String>> {
-    let file = fs::File::open(path)?;
-    let mut bytes = Vec::with_capacity(size as usize);
-    file.take(MAX_FILE_BYTES).read_to_end(&mut bytes)?;
-    if bytes.iter().take(8_192).any(|byte| *byte == 0) {
+    read_indexable_from(fs::File::open(path)?, size)
+}
+
+/// Sniff the head before reading the rest, so a binary file costs one
+/// small read instead of up to `MAX_FILE_BYTES`.
+fn read_indexable_from(reader: impl Read, size: u64) -> std::io::Result<Option<String>> {
+    let mut reader = reader.take(MAX_FILE_BYTES);
+    let mut bytes = Vec::with_capacity(usize::try_from(size.min(BINARY_SNIFF_BYTES)).unwrap_or(0));
+    Read::by_ref(&mut reader)
+        .take(BINARY_SNIFF_BYTES)
+        .read_to_end(&mut bytes)?;
+    if bytes.contains(&0) {
         return Ok(None);
     }
+    bytes.reserve(
+        usize::try_from(size.min(MAX_FILE_BYTES))
+            .unwrap_or(0)
+            .saturating_sub(bytes.len()),
+    );
+    reader.read_to_end(&mut bytes)?;
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
@@ -932,8 +1086,11 @@ const INDEX_NOUN: &str = "Content index";
 
 fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
     let persist = crate::persistence::FsPersist::default();
+    // Only the gate (revision and status) is needed: skip decoding the old
+    // payload into a `RootIndex`, which can be tens of MB of documents.
     let mut gate =
-        crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+        crate::persistence::load_enveloped::<serde::de::IgnoredAny>(&persist, path, INDEX_STORE)
+            .gate;
     if !matches!(
         gate.status(),
         crate::persistence::LoadStatus::Missing
@@ -952,7 +1109,12 @@ fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
                 ));
             }
         }
-        gate = crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+        gate = crate::persistence::load_enveloped::<serde::de::IgnoredAny>(
+            &persist,
+            path,
+            INDEX_STORE,
+        )
+        .gate;
     }
     match crate::persistence::save_enveloped_streaming(
         &persist,
@@ -1150,7 +1312,10 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicBool::new(false)),
             None,
-            budget,
+            ScanBudget {
+                json_bytes: budget,
+                content_bytes: MAX_CONTENT_BYTES,
+            },
             |_| true,
         )
         .unwrap();
@@ -1159,6 +1324,212 @@ mod tests {
         assert!(!index.documents.is_empty());
         let documents_json = serde_json::to_vec_pretty(&index.documents).unwrap();
         assert!(documents_json.len() <= budget);
+    }
+
+    #[test]
+    fn content_quota_counts_decoded_text_not_file_size() {
+        let temp = TempDir::new();
+        // 10 invalid bytes decode to 10 three-byte U+FFFD characters.
+        std::fs::write(temp.path().join("latin1.txt"), [0xffu8; 10]).unwrap();
+        let index = scan_index_within(
+            temp.path().to_path_buf(),
+            Vec::new(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            ScanBudget {
+                json_bytes: MAX_DOCUMENT_JSON_BYTES,
+                content_bytes: 20,
+            },
+            |_| true,
+        )
+        .unwrap();
+
+        assert_eq!(index.skipped_quota, 1);
+        assert_eq!(index.content_indexed, 0);
+        assert_eq!(index.content_bytes, 0);
+        assert!(index.documents[0].content.is_none());
+    }
+
+    #[test]
+    fn scan_descends_below_the_open_directory_limit() {
+        // Covers correctness of the buffered (handle-closed) levels below
+        // MAX_OPEN_DIRS only. The tree is too shallow to exhaust any fd
+        // limit, and fd counts are not stable while other tests run in
+        // parallel threads, so fd release itself is not asserted here.
+        let temp = TempDir::new();
+        let mut deep = PathBuf::new();
+        for level in 0..MAX_OPEN_DIRS + 6 {
+            deep.push(format!("d{level}"));
+        }
+        temp.file(&deep.join("leaf.txt").to_string_lossy(), "deep words");
+        temp.file(
+            &deep.parent().unwrap().join("side.txt").to_string_lossy(),
+            "side",
+        );
+
+        let index = scan(temp.path(), Vec::new());
+
+        assert_eq!(index.skipped_unreadable, 0);
+        assert_eq!(index.directories_seen, MAX_OPEN_DIRS + 6);
+        assert_eq!(index.content_indexed, 2);
+        assert!(index.documents.iter().any(|document| {
+            document.path == temp.path().join(&deep).join("leaf.txt")
+                && document.content.as_deref() == Some("deep words")
+        }));
+    }
+
+    #[test]
+    fn corrupt_index_times_do_not_panic() {
+        let document = IndexedDocument {
+            path: PathBuf::from("/data/file.txt"),
+            is_dir: false,
+            size: 1,
+            modified_secs: Some(u64::MAX),
+            accessed_secs: Some(u64::MAX),
+            volume: None,
+            file_id: None,
+            content: None,
+        };
+        let entry = document.entry().unwrap();
+        assert_eq!(entry.modified, None);
+        assert_eq!(entry.modified_str, "-");
+        assert_eq!(document.accessed(), None);
+
+        // Past chrono's ~year 262k limit (still a valid SystemTime on Unix).
+        let far = IndexedDocument {
+            modified_secs: Some(1 << 43),
+            ..document.clone()
+        };
+        assert_eq!(far.entry().unwrap().modified_str, "-");
+
+        let normal = IndexedDocument {
+            modified_secs: Some(0),
+            accessed_secs: Some(60),
+            ..document
+        };
+        assert_eq!(
+            normal.entry().unwrap().modified,
+            Some(std::time::UNIX_EPOCH)
+        );
+        assert_eq!(
+            normal.accessed(),
+            Some(std::time::UNIX_EPOCH + Duration::from_secs(60))
+        );
+    }
+
+    fn test_content_index() -> ContentIndex {
+        let runtime = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        ContentIndex::from_settings(SettingsStore::default(), runtime.handle())
+    }
+
+    #[test]
+    fn failed_index_load_is_not_retried_every_frame() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let path = temp.path().join("index.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        let mut index = test_content_index();
+
+        assert!(index.snapshot_from(&path, temp.path()).is_none());
+        assert!(index.load_errors.contains_key(temp.path()));
+        // A now-valid file is not re-read until a build or settings change.
+        save_index_to(&path, &scan(temp.path(), Vec::new())).unwrap();
+        assert!(index.snapshot_from(&path, temp.path()).is_none());
+
+        index.unloadable.clear();
+        assert!(index.snapshot_from(&path, temp.path()).is_some());
+    }
+
+    #[test]
+    fn snapshot_cache_evicts_the_least_recently_used_root() {
+        let temp = TempDir::new();
+        let built = Arc::new(scan(temp.path(), Vec::new()));
+        let mut index = test_content_index();
+        let roots: Vec<PathBuf> = (0..=MAX_CACHED_SNAPSHOTS)
+            .map(|number| PathBuf::from(format!("/root-{number}")))
+            .collect();
+        for root in &roots[..MAX_CACHED_SNAPSHOTS] {
+            index.cache_snapshot(root.clone(), Arc::clone(&built));
+        }
+        // Reading the oldest root makes the second-oldest the eviction pick.
+        let missing = temp.path().join("missing.json");
+        assert!(index.snapshot_from(&missing, &roots[0]).is_some());
+
+        index.cache_snapshot(roots[MAX_CACHED_SNAPSHOTS].clone(), built);
+
+        assert_eq!(index.snapshots.len(), MAX_CACHED_SNAPSHOTS);
+        assert!(index.snapshots.contains_key(&roots[0]));
+        assert!(!index.snapshots.contains_key(&roots[1]));
+        index.evict_snapshot(&roots[0]);
+        assert!(!index.snapshots.contains_key(&roots[0]));
+        assert_eq!(index.snapshot_order.len(), MAX_CACHED_SNAPSHOTS - 1);
+    }
+
+    #[test]
+    fn binary_files_are_rejected_after_reading_only_the_head() {
+        struct Counting<'a>(&'a [u8], &'a std::cell::Cell<usize>);
+        impl Read for Counting<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.0.read(buf)?;
+                self.1.set(self.1.get() + read);
+                Ok(read)
+            }
+        }
+        let read = std::cell::Cell::new(0);
+        let mut binary = vec![b'a'; MAX_FILE_BYTES as usize];
+        binary[10] = 0;
+        let size = binary.len() as u64;
+        assert!(
+            read_indexable_from(Counting(&binary, &read), size)
+                .unwrap()
+                .is_none()
+        );
+        assert!(read.get() as u64 <= BINARY_SNIFF_BYTES);
+
+        // A NUL past the sniffed head is still text, read in full.
+        let mut late_nul = vec![b'a'; 20_000];
+        late_nul[10_000] = 0;
+        let text = read_indexable_from(&late_nul[..], 20_000).unwrap().unwrap();
+        assert_eq!(text.len(), 20_000);
+        let capped = vec![b'b'; MAX_FILE_BYTES as usize + 10];
+        let text = read_indexable_from(&capped[..], capped.len() as u64)
+            .unwrap()
+            .unwrap();
+        assert_eq!(text.len() as u64, MAX_FILE_BYTES);
+    }
+
+    #[test]
+    fn save_replaces_an_index_whose_payload_no_longer_decodes() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let index = scan(temp.path(), Vec::new());
+        let path = temp.path().join("index.json");
+        save_index_to(&path, &index).unwrap();
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        envelope["payload"] = serde_json::json!({ "unexpected": true });
+        std::fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        assert!(load_index_from(&path, temp.path()).is_err());
+        // The save gate skips the payload, so a payload that is not a
+        // `RootIndex` still reads as a current file instead of unreadable.
+        let gate = crate::persistence::load_enveloped::<serde::de::IgnoredAny>(
+            &crate::persistence::FsPersist::default(),
+            &path,
+            INDEX_STORE,
+        )
+        .gate;
+        assert!(matches!(
+            gate.status(),
+            crate::persistence::LoadStatus::Current
+        ));
+
+        save_index_to(&path, &index).unwrap();
+
+        let loaded = load_index_from(&path, temp.path()).unwrap().unwrap();
+        assert_eq!(loaded.documents.len(), index.documents.len());
     }
 
     #[test]
