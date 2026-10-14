@@ -178,7 +178,11 @@ impl PreviewError {
             Self::Binary => "This file appears to contain binary data.",
             Self::UnsupportedEncoding => "UTF-16 text preview is not supported.",
             Self::InvalidUtf8 => "This file is not valid UTF-8 text.",
-            Self::Changed => "The file changed while it was being read. Retry the preview.",
+            // Retry reuses the listing's size and mtime, so it keeps failing
+            // until the folder is refreshed (watched folders do this alone).
+            Self::Changed => {
+                "The file changed while it was being read. Refresh the folder, then retry the preview."
+            }
             Self::Cancelled => "The preview request was cancelled.",
             Self::ProviderUnavailable => "No text preview provider is available for this file.",
             Self::ProviderPanicked => "The text preview provider stopped unexpectedly.",
@@ -1009,6 +1013,8 @@ pub enum PreviewFailure {
     Unsupported,
     TimedOut,
     Busy,
+    /// The decoder breaker paused this format after repeated failures.
+    Quarantined,
     Decode,
 }
 
@@ -1020,6 +1026,9 @@ impl PreviewFailure {
             Self::Unsupported => "This image format is not supported.",
             Self::TimedOut => "The preview provider exceeded its time budget.",
             Self::Busy => "All preview decoders are busy. Retry in a moment.",
+            Self::Quarantined => {
+                "Previews of this format are paused after repeated decode failures. Retry to test the decoder again."
+            }
             Self::Decode => "The image is incomplete or damaged.",
         }
     }
@@ -1449,7 +1458,15 @@ impl ImageCache {
 
 fn classify_failure(error: &str) -> PreviewFailure {
     let normalized = error.to_ascii_lowercase();
-    if normalized.contains("still busy")
+    if normalized.contains("quarantined") {
+        PreviewFailure::Quarantined
+    } else if normalized.contains("unsupported video format") {
+        // Checked before the keywords below: AVFoundation's own description
+        // (e.g. "Cannot Open") follows and must not change the verdict.
+        PreviewFailure::Unsupported
+    } else if normalized.contains("video frame could not be read") {
+        PreviewFailure::Decode
+    } else if normalized.contains("still busy")
         || normalized.contains("decoder capacity")
         || normalized.contains("could not start")
         || normalized.contains("deferred")
@@ -1994,6 +2011,52 @@ unsafe extern "C" {}
 #[link(name = "CoreMedia", kind = "framework")]
 unsafe extern "C" {}
 
+/// Copy an `NSString` into Rust; nil or non-UTF-8 strings become empty.
+#[cfg(target_os = "macos")]
+unsafe fn nsstring_lossy(string: *mut objc::runtime::Object) -> String {
+    use objc::{msg_send, sel, sel_impl};
+    if string.is_null() {
+        return String::new();
+    }
+    let utf8: *const std::ffi::c_char = unsafe { msg_send![string, UTF8String] };
+    if utf8.is_null() {
+        return String::new();
+    }
+    unsafe { std::ffi::CStr::from_ptr(utf8) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Containers `AVFoundation` cannot open at all; a failure on them is an
+/// unsupported format, not a damaged file.
+const AVFOUNDATION_UNSUPPORTED: &[&str] = &["mkv", "webm", "wmv", "flv"];
+
+/// `AVErrorFileFormatNotRecognized` and `AVErrorDecoderNotFound`.
+const AV_UNSUPPORTED_CODES: &[i64] = &[-11828, -11833];
+
+/// The error for a failed video frame grab, from `AVFoundation`'s `NSError`
+/// (domain, code, localized description) when it gave one. Wording that
+/// [`classify_failure`] reads as unsupported is used for containers and
+/// codes `AVFoundation` cannot handle, so the preview does not claim the
+/// file is damaged.
+#[cfg(any(target_os = "macos", test))]
+fn video_failure_message(path: &Path, error: Option<(&str, i64, &str)>) -> String {
+    let unsupported_container = has_extension_in(path, AVFOUNDATION_UNSUPPORTED);
+    match error {
+        Some((domain, code, description)) => {
+            if unsupported_container
+                || (domain == "AVFoundationErrorDomain" && AV_UNSUPPORTED_CODES.contains(&code))
+            {
+                format!("unsupported video format: {description} ({domain} {code})")
+            } else {
+                format!("video frame could not be read: {description} ({domain} {code})")
+            }
+        }
+        None if unsupported_container => "unsupported video format".to_string(),
+        None => "video frame could not be read".to_string(),
+    }
+}
+
 /// Extract first frame from video via `AVFoundation`'s `AVAssetImageGenerator`.
 #[cfg(target_os = "macos")]
 fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
@@ -2087,8 +2150,24 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         let _: () = msg_send![generator, release];
 
         if cg_image.is_null() {
+            // The NSError is autoreleased: read it before draining the pool.
+            let failure = if error.is_null() {
+                video_failure_message(path, None)
+            } else {
+                let domain: *mut Object = msg_send![error, domain];
+                let code: isize = msg_send![error, code];
+                let description: *mut Object = msg_send![error, localizedDescription];
+                video_failure_message(
+                    path,
+                    Some((
+                        &nsstring_lossy(domain),
+                        code as i64,
+                        &nsstring_lossy(description),
+                    )),
+                )
+            };
             let _: () = msg_send![pool, drain];
-            return Err("copyCGImageAtTime failed".into());
+            return Err(failure);
         }
 
         // Convert CGImage to RGBA pixels (same as imageio path)
@@ -3157,6 +3236,59 @@ mod tests {
         assert_eq!(
             classify_failure("preview provider thread could not start: EAGAIN"),
             PreviewFailure::Busy
+        );
+        assert_eq!(
+            classify_failure(
+                "preview format is temporarily quarantined after repeated decode failures"
+            ),
+            PreviewFailure::Quarantined
+        );
+    }
+
+    #[test]
+    fn changed_text_preview_tells_the_user_to_refresh_first() {
+        assert!(
+            PreviewError::Changed
+                .message()
+                .contains("Refresh the folder")
+        );
+    }
+
+    #[test]
+    fn video_failures_name_the_cause_and_spot_unsupported_formats() {
+        let unsupported = super::video_failure_message(
+            std::path::Path::new("clip.MKV"),
+            Some((
+                "AVFoundationErrorDomain",
+                -11800,
+                "The operation could not be completed",
+            )),
+        );
+        assert!(
+            unsupported.contains("could not be completed"),
+            "{unsupported}"
+        );
+        assert_eq!(classify_failure(&unsupported), PreviewFailure::Unsupported);
+
+        let unrecognized = super::video_failure_message(
+            std::path::Path::new("clip.mp4"),
+            Some(("AVFoundationErrorDomain", -11828, "Cannot Open")),
+        );
+        assert_eq!(classify_failure(&unrecognized), PreviewFailure::Unsupported);
+
+        let damaged = super::video_failure_message(
+            std::path::Path::new("clip.mov"),
+            Some(("AVFoundationErrorDomain", -11829, "Cannot Open")),
+        );
+        assert!(damaged.contains("-11829"), "{damaged}");
+        assert_eq!(classify_failure(&damaged), PreviewFailure::Decode);
+
+        assert_eq!(
+            classify_failure(&super::video_failure_message(
+                std::path::Path::new("clip.webm"),
+                None
+            )),
+            PreviewFailure::Unsupported
         );
     }
 
