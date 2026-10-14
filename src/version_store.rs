@@ -24,7 +24,7 @@ fn test_versions_dir_slot() -> &'static Mutex<Option<PathBuf>> {
 }
 
 #[cfg(test)]
-pub(crate) struct TestVersionsDirGuard {
+pub struct TestVersionsDirGuard {
     previous: Option<PathBuf>,
 }
 
@@ -36,7 +36,7 @@ impl Drop for TestVersionsDirGuard {
 }
 
 #[cfg(test)]
-pub(crate) fn use_test_versions_dir(path: PathBuf) -> TestVersionsDirGuard {
+pub fn use_test_versions_dir(path: PathBuf) -> TestVersionsDirGuard {
     let previous = crate::lock_util::recover(test_versions_dir_slot()).replace(path);
     TestVersionsDirGuard { previous }
 }
@@ -145,7 +145,7 @@ fn preserve_at(
         .map_err(|failure| failure.message)
 }
 
-pub(crate) fn preserve_expected_at(
+pub fn preserve_expected_at(
     root: &Path,
     path: &Path,
     expected: &PathIdentity,
@@ -360,7 +360,7 @@ pub fn discard_record(record: &VersionRecord) -> Result<(), String> {
 }
 
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
+pub fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
     let persist = manifest_persist();
     let _manifest_guard = crate::lock_util::recover(manifest_transaction());
     let mut loaded = load_manifest_with(persist, root);

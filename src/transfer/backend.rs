@@ -120,11 +120,11 @@ pub(super) struct BackendProgress {
 }
 
 impl BackendProgress {
-    pub(super) fn new(state: TransferState) -> Self {
+    pub(super) const fn new(state: TransferState) -> Self {
         Self { state }
     }
 
-    fn state(&self) -> &TransferState {
+    const fn state(&self) -> &TransferState {
         &self.state
     }
 

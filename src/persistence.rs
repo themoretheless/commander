@@ -73,14 +73,14 @@ pub enum PreCommitError {
 }
 
 impl PreCommitError {
-    pub fn stage(&self) -> Option<SaveStage> {
+    pub const fn stage(&self) -> Option<SaveStage> {
         match self {
             Self::Serialize(_) | Self::Conflict => None,
             Self::Io { stage, .. } => Some(*stage),
         }
     }
 
-    pub fn cleanup(&self) -> Option<&io::Error> {
+    pub const fn cleanup(&self) -> Option<&io::Error> {
         match self {
             Self::Serialize(_) | Self::Conflict => None,
             Self::Io { cleanup, .. } => cleanup.as_ref(),
@@ -275,7 +275,7 @@ fn acquire_process_store_lock(path: &Path) -> io::Result<ProcessStoreLock> {
     }
 }
 
-fn process_lock_io(error: io::Error) -> PreCommitError {
+const fn process_lock_io(error: io::Error) -> PreCommitError {
     PreCommitError::Io {
         stage: SaveStage::ValidatePath,
         source: error,
@@ -403,7 +403,7 @@ fn default_fs_persist() -> &'static FsPersist {
     PERSIST.get_or_init(FsPersist::default)
 }
 
-fn read_failure(kind: ReadFailureKind, source: io::Error) -> ReadFailure {
+const fn read_failure(kind: ReadFailureKind, source: io::Error) -> ReadFailure {
     ReadFailure { kind, source }
 }
 
@@ -505,11 +505,8 @@ pub enum LoadStatus {
 
 impl LoadStatus {
     /// Statuses that must block writes instead of replacing unread data.
-    pub fn fails_closed(self) -> bool {
-        matches!(
-            self,
-            LoadStatus::Corrupt | LoadStatus::FutureVersion | LoadStatus::Unreadable
-        )
+    pub const fn fails_closed(self) -> bool {
+        matches!(self, Self::Corrupt | Self::FutureVersion | Self::Unreadable)
     }
 }
 
@@ -554,7 +551,7 @@ pub struct StoreGate {
 }
 
 impl StoreGate {
-    pub fn missing() -> Self {
+    pub const fn missing() -> Self {
         Self {
             status: LoadStatus::Missing,
             generation: 0,
@@ -563,7 +560,7 @@ impl StoreGate {
         }
     }
 
-    pub fn status(&self) -> LoadStatus {
+    pub const fn status(&self) -> LoadStatus {
         self.status
     }
 
@@ -572,7 +569,7 @@ impl StoreGate {
         self.status = status;
     }
 
-    pub(crate) fn mark_recovered(&mut self) {
+    pub(crate) const fn mark_recovered(&mut self) {
         if matches!(
             self.status,
             LoadStatus::Legacy | LoadStatus::Current | LoadStatus::Recovered
@@ -1063,7 +1060,7 @@ pub fn save_item_store<T: Serialize>(path: &Path, store: &'static str, value: &T
     }
 }
 
-pub(crate) fn commit_bytes_atomic(
+pub fn commit_bytes_atomic(
     path: &Path,
     bytes: &[u8],
 ) -> Result<AtomicWriteOutcome, PreCommitError> {
@@ -1205,7 +1202,11 @@ fn create_unique_temp(
     ))
 }
 
-fn precommit_io(stage: SaveStage, source: io::Error, cleanup: Option<io::Error>) -> PreCommitError {
+const fn precommit_io(
+    stage: SaveStage,
+    source: io::Error,
+    cleanup: Option<io::Error>,
+) -> PreCommitError {
     PreCommitError::Io {
         stage,
         source,
@@ -1266,7 +1267,7 @@ fn publish_issue(health: &mut PersistenceHealth) {
     }
 }
 
-pub(crate) fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
+pub fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
     let mut health = crate::lock_util::recover(health_state());
     health.recovered_stores = health.recovered_stores.saturating_add(1);
     health.recovered_items = health
@@ -1281,7 +1282,7 @@ pub(crate) fn record_recovery(store: &'static str, recovered: usize, rejected: u
     publish_issue(&mut health);
 }
 
-pub(crate) fn record_unreadable(store: &'static str) {
+pub fn record_unreadable(store: &'static str) {
     let mut health = crate::lock_util::recover(health_state());
     health.unreadable_stores = health.unreadable_stores.saturating_add(1);
     health.last_issue = Some(format!(

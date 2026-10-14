@@ -31,7 +31,7 @@ struct PanicTerminalGuard<'a, N: Fn()> {
 }
 
 impl<'a, N: Fn()> PanicTerminalGuard<'a, N> {
-    fn new(
+    const fn new(
         terminal: TerminalContext,
         progress: &'a TransferState,
         notify: &'a N,
@@ -47,11 +47,11 @@ impl<'a, N: Fn()> PanicTerminalGuard<'a, N> {
         }
     }
 
-    fn journal_started(&mut self) {
+    const fn journal_started(&mut self) {
         self.journal_started = true;
     }
 
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -122,7 +122,7 @@ fn run_before_terminal_publish(terminal: &TerminalContext) {
 }
 
 #[cfg(not(test))]
-fn run_before_terminal_publish(_terminal: &TerminalContext) {}
+const fn run_before_terminal_publish(_terminal: &TerminalContext) {}
 
 pub fn spawn_transfer(
     spec: TransferSpec,
@@ -133,7 +133,7 @@ pub fn spawn_transfer(
 }
 
 #[cfg(test)]
-pub(crate) fn spawn_transfer_with_workload(
+pub fn spawn_transfer_with_workload(
     workload: crate::workload::WorkloadHandle,
     spec: TransferSpec,
     progress: TransferState,
@@ -176,7 +176,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
     }
 
     #[cfg(test)]
-    pub(super) fn with_backends(
+    pub(super) const fn with_backends(
         workload: crate::workload::WorkloadHandle,
         spec: TransferSpec,
         progress: TransferState,

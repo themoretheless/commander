@@ -67,7 +67,7 @@ impl std::fmt::Display for TransitionError {
 }
 
 impl OperationStatus {
-    pub fn is_terminal(self) -> bool {
+    pub const fn is_terminal(self) -> bool {
         !matches!(self, Self::Planned | Self::Running)
     }
 
@@ -114,14 +114,14 @@ impl OperationStatus {
         })
     }
 
-    pub fn recoverable(self) -> bool {
+    pub const fn recoverable(self) -> bool {
         matches!(
             self,
             Self::Planned | Self::Running | Self::Stopped | Self::Failed | Self::NeedsReview
         )
     }
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Planned => "Planned",
             Self::Running => "Interrupted",
@@ -157,7 +157,7 @@ pub enum StepEvent {
 }
 
 impl StepStatus {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Planned => "Planned",
             Self::Running => "Interrupted",
@@ -169,7 +169,7 @@ impl StepStatus {
         }
     }
 
-    pub fn is_terminal(self) -> bool {
+    pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Skipped | Self::RolledBack)
     }
 
@@ -390,7 +390,7 @@ static TEST_JOURNAL_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 static TEST_JOURNAL_SERIAL: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
-pub(crate) struct TestJournalPathGuard {
+pub struct TestJournalPathGuard {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -402,7 +402,7 @@ impl Drop for TestJournalPathGuard {
 }
 
 #[cfg(test)]
-pub(crate) fn use_test_journal(path: PathBuf) -> TestJournalPathGuard {
+pub fn use_test_journal(path: PathBuf) -> TestJournalPathGuard {
     let serial = crate::lock_util::recover(&TEST_JOURNAL_SERIAL);
     *crate::lock_util::recover(&TEST_JOURNAL_PATH) = Some(path);
     TestJournalPathGuard { _serial: serial }

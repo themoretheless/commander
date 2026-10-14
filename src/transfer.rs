@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_MOUNT_RETRIES: usize = 2;
 
-pub(crate) use crate::verified_hash::prefix as prefix_digest;
+pub use crate::verified_hash::prefix as prefix_digest;
 
 /// What to do when destination file already exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ pub enum OverwritePolicy {
 pub enum CopyMethod {
     /// Byte-by-byte with 1MB buffer, full progress tracking.
     Buffered,
-    /// Native macOS copyfile() with APFS clone support, xattr/ACL preservation.
+    /// Native macOS `copyfile()` with APFS clone support, xattr/ACL preservation.
     Native,
 }
 
@@ -90,7 +90,7 @@ pub struct TransferProgress {
     pub errors: Vec<String>,
     pub failures: Vec<ClassifiedFailure>,
     /// `(source, final landing)` for every entry a Move actually placed, so
-    /// undo can target where files really landed: a KeepBoth conflict lands at
+    /// undo can target where files really landed: a `KeepBoth` conflict lands at
     /// "name copy.ext", not "name". Empty for copies.
     pub placements: Vec<(PathBuf, PathBuf)>,
     finalization: Option<FinalizationOutcome>,
@@ -100,12 +100,12 @@ pub struct TransferProgress {
 pub type TransferState = Arc<Mutex<TransferProgress>>;
 
 /// The error every copy primitive returns when the user cancels.
-pub(crate) fn cancelled_error() -> std::io::Error {
+pub fn cancelled_error() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
 }
 
 /// `Err(cancelled)` once the user has cancelled this transfer.
-pub(crate) fn check_cancelled(state: &Mutex<TransferProgress>) -> std::io::Result<()> {
+pub fn check_cancelled(state: &Mutex<TransferProgress>) -> std::io::Result<()> {
     if crate::lock_util::recover(state).cancelled {
         Err(cancelled_error())
     } else {
@@ -165,7 +165,7 @@ impl TransferProgress {
         }
     }
 
-    pub fn request_cancel(&mut self) -> bool {
+    pub const fn request_cancel(&mut self) -> bool {
         if self.finished || self.finalization.is_some() {
             return false;
         }
@@ -173,7 +173,7 @@ impl TransferProgress {
         true
     }
 
-    pub fn request_stop(&mut self) {
+    pub const fn request_stop(&mut self) {
         if !self.finished && self.finalization.is_none() {
             self.stop_requested = true;
         }
@@ -223,7 +223,7 @@ impl TransferProgress {
         remaining / speed
     }
 
-    pub fn set_phase(&mut self, phase: crate::operation_view::OperationPhase) {
+    pub const fn set_phase(&mut self, phase: crate::operation_view::OperationPhase) {
         self.phase = phase;
     }
 
@@ -286,7 +286,7 @@ impl TransferProgress {
     }
 }
 
-pub(crate) fn request_cancel(progress: &TransferState) {
+pub fn request_cancel(progress: &TransferState) {
     let task = {
         let mut state = crate::lock_util::recover(progress);
         if state.request_cancel() {
@@ -322,7 +322,7 @@ impl backend::CheckpointSink for JournalCheckpointSink<'_> {
 }
 
 #[cfg(test)]
-fn requires_resumable_buffer(
+const fn requires_resumable_buffer(
     profile: &crate::volume_profile::VolumeProfile,
     source_size: u64,
 ) -> bool {
@@ -471,7 +471,7 @@ impl ResumeCheckpoint {
     /// Whether the partial file as observed now can still hold this
     /// checkpoint: a prefix may have grown past the offset, while delta
     /// layouts preallocate and must keep their recorded size.
-    pub fn size_fits(&self, partial_now: &PathIdentity) -> bool {
+    pub const fn size_fits(&self, partial_now: &PathIdentity) -> bool {
         match self.layout {
             CheckpointLayout::Prefix => partial_now.size >= self.offset,
             CheckpointLayout::DeltaFixed | CheckpointLayout::DeltaCdc => {
@@ -500,7 +500,7 @@ pub enum CheckpointLayout {
 }
 
 impl CheckpointLayout {
-    fn delta_mode(self) -> Option<crate::delta_copy::DeltaMode> {
+    const fn delta_mode(self) -> Option<crate::delta_copy::DeltaMode> {
         match self {
             Self::Prefix => None,
             Self::DeltaFixed => Some(crate::delta_copy::DeltaMode::Fixed),
@@ -508,7 +508,7 @@ impl CheckpointLayout {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Prefix => "buffered",
             Self::DeltaFixed => "delta",
@@ -537,7 +537,7 @@ pub fn capture_expectations(entries: &[FileEntry], target: &Path) -> Vec<Transfe
     }
 }
 
-pub(crate) fn expectations_from_source_identities(
+pub fn expectations_from_source_identities(
     entries: &[FileEntry],
     target: &Path,
     sources: Vec<Result<crate::path_identity::TransferSourceIdentity, crate::ports::NativeFailure>>,
@@ -861,12 +861,12 @@ fn complete_without_copy(
 }
 
 #[cfg(test)]
-fn journal_enabled(spec: &TransferSpec) -> bool {
+const fn journal_enabled(spec: &TransferSpec) -> bool {
     spec.journal_enabled
 }
 
 #[cfg(not(test))]
-fn journal_enabled(_spec: &TransferSpec) -> bool {
+const fn journal_enabled(_spec: &TransferSpec) -> bool {
     true
 }
 
@@ -1035,7 +1035,7 @@ enum FinalizationOutcome {
 }
 
 impl FinalizationOutcome {
-    fn permits_late_interruption_success(self) -> bool {
+    const fn permits_late_interruption_success(self) -> bool {
         matches!(
             self,
             Self::Reached(PostSuccessOutcome::NotRequired | PostSuccessOutcome::Succeeded)
@@ -1052,7 +1052,7 @@ pub fn spawn_transfer(
 }
 
 #[cfg(test)]
-pub(crate) fn spawn_transfer_with_workload(
+pub fn spawn_transfer_with_workload(
     workload: crate::workload::WorkloadHandle,
     spec: TransferSpec,
     progress: TransferState,
