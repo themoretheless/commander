@@ -1636,27 +1636,21 @@ impl Workspace {
         let Some(PendingOp::Transfer(tr)) = &self.pending_op else {
             return Vec::new();
         };
-        // Prefer an already-loaded destination panel. A drop into a subfolder
-        // that neither panel displays still needs rich conflict metadata, so
-        // fall back to the known conflicting names on disk.
-        let disk_dest;
-        let dest: &[FileEntry] = if self.left.current_path == tr.target {
-            self.left.entries()
-        } else if self.right.current_path == tr.target {
-            self.right.entries()
-        } else {
-            disk_dest = tr
-                .conflicts
-                .iter()
-                .filter_map(|name| {
-                    let path = tr.target.join(name);
-                    let meta = std::fs::symlink_metadata(&path).ok()?;
-                    FileEntry::from_meta(path, &meta)
-                })
-                .collect::<Vec<_>>();
-            &disk_dest
-        };
-        crate::conflict::detect(&tr.entries, dest)
+        // Read the known conflicting names from disk rather than a panel
+        // listing: a destination panel hiding dotfiles would miss them, so a
+        // relation policy (keep newer/larger) could not exclude them and the
+        // copy would overwrite them unconditionally. It is also the only
+        // source for a drop into a subfolder neither panel displays.
+        let dest = tr
+            .conflicts
+            .iter()
+            .filter_map(|name| {
+                let path = tr.target.join(name);
+                let meta = std::fs::symlink_metadata(&path).ok()?;
+                FileEntry::from_meta(path, &meta)
+            })
+            .collect::<Vec<_>>();
+        crate::conflict::detect(&tr.entries, &dest)
     }
 
     /// Apply a relation policy to the pending Copy: filter its entries to the
@@ -1664,6 +1658,7 @@ impl Workspace {
     /// `true` if anything remains to transfer.
     pub fn resolve_pending_conflicts(&mut self, policy: crate::conflict::RelationPolicy) -> bool {
         let conflicts = self.pending_conflicts();
+        let name_policy = self.name_policy;
         let resolved = {
             let Some(PendingOp::Transfer(tr)) = &mut self.pending_op else {
                 return false;
@@ -1671,6 +1666,9 @@ impl Workspace {
             let res = crate::conflict::resolve(&tr.entries, &conflicts, policy);
             let keep: std::collections::HashSet<PathBuf> = res.keep.into_iter().collect();
             tr.entries.retain(|entry| keep.contains(&entry.path));
+            // The normalization/portability audit describes the entries that
+            // will actually transfer.
+            tr.filesystem = filesystem_preflight(&tr.entries, &tr.target, name_policy);
             tr.expectations.clear();
             tr.policy = match res.decision {
                 crate::conflict::Decision::Overwrite => OverwritePolicy::OverwriteAll,
@@ -2645,6 +2643,14 @@ impl Workspace {
         Ok(assessment)
     }
 
+    /// A sync source as the copy engine must see it: the lexical entry, so
+    /// a symlink (even to a folder) is the link itself and the symlink
+    /// policy applies to it, as for every other transfer source.
+    fn sync_source_entry(path: &Path) -> Option<FileEntry> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        FileEntry::from_meta(path.to_path_buf(), &meta)
+    }
+
     fn enqueue_sync_between(
         &mut self,
         actions: &[crate::sync::SyncAction],
@@ -2653,10 +2659,7 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) {
         use crate::sync::SyncDirection;
-        let load = |path: &Path| {
-            let meta = std::fs::metadata(path).ok()?;
-            FileEntry::from_meta(path.to_path_buf(), &meta)
-        };
+        let load = Self::sync_source_entry;
         let mut to_right = Vec::new();
         let mut to_left = Vec::new();
         for a in actions {

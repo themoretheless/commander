@@ -199,8 +199,10 @@ pub fn preview(action: &Action) -> ReplayPreview {
         _ => None,
     };
     let gather_folder_conflict = created_parent.is_some_and(path_is_taken);
+    // A Move or Ungather replays as one transfer into one folder, so every
+    // pair must share it (an Ungather of a cross-folder Gather does not).
     let move_parent = match action {
-        Action::Move { pairs } => pairs
+        Action::Move { pairs } | Action::Ungather { pairs, .. } => pairs
             .first()
             .and_then(|(_, to)| to.parent())
             .map(Path::to_path_buf),
@@ -216,7 +218,7 @@ pub fn preview(action: &Action) -> ReplayPreview {
                 Some("Multiple entries target the same path".to_string())
             } else if gather_folder_conflict {
                 Some("Gather folder already exists".to_string())
-            } else if matches!(action, Action::Move { .. })
+            } else if matches!(action, Action::Move { .. } | Action::Ungather { .. })
                 && (to.parent() != move_parent.as_deref() || from.file_name() != to.file_name())
             {
                 Some("Move replay no longer has one faithful destination".to_string())

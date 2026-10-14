@@ -4032,6 +4032,48 @@ fn reveal_lands_on_the_file_when_the_listing_is_asynchronous() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn sync_sources_keep_symlinks_lexical() {
+    let l = TempDir::new();
+    l.dir("folder");
+    let link = l.path().join("link");
+    std::os::unix::fs::symlink("folder", &link).unwrap();
+
+    let entry = Workspace::sync_source_entry(&link).unwrap();
+    assert!(!entry.is_dir, "the link is synced as a link, not a folder");
+    assert!(entry.is_symlink());
+}
+
+#[test]
+fn undo_of_a_cross_folder_gather_is_refused_instead_of_misplacing_items() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let sub = l.dir("sub");
+    let top = l.file("top.txt", "t");
+    let inner = l.file("sub/inner.txt", "i");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(top);
+    ws.left.navigate_to(sub.clone());
+    ws.left.select_path(inner);
+
+    ws.gather_into_folder(|| {});
+    drain_transfers(&mut ws);
+    let folder = std::fs::read_dir(&sub)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_dir())
+        .expect("gather folder");
+    assert!(folder.join("top.txt").is_file());
+    assert!(folder.join("inner.txt").is_file());
+
+    // One undo transfer cannot return items to two different folders.
+    assert!(ws.perform_undo(|| {}).is_err());
+    drain_transfers(&mut ws);
+    assert!(!sub.join("top.txt").exists(), "top.txt is not misplaced");
+    assert!(folder.join("top.txt").is_file());
+    assert!(folder.join("inner.txt").is_file());
+}
+
 fn versioned_workspace_with_two_trashed(
     left: &TempDir,
     right: &TempDir,
@@ -4079,4 +4121,48 @@ fn partially_failed_trash_redo_refreshes_and_latches_safe_state() {
         "listing reflects the partial redo"
     );
     assert!(ws.safe_state.is_some(), "partial replay needs review");
+}
+
+#[test]
+fn relation_policy_sees_dotfile_conflicts_the_destination_panel_hides() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file(".env", "small");
+    let existing = r.file(".env", "the larger existing destination");
+    r.file("visible.txt", "listed");
+    let mut ws = workspace(&l, &r);
+    assert_eq!(ws.left.toggle_hidden(), panel::ViewApplyOutcome::Applied);
+    assert!(!ws.right.show_hidden(), "destination hides dotfiles");
+    ws.left.select_path(source.clone());
+    ws.request_copy();
+
+    assert_eq!(ws.pending_conflicts().len(), 1);
+    // Keep Larger keeps the larger destination: nothing is left to copy.
+    assert!(!ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::KeepLarger));
+    assert_eq!(
+        std::fs::read_to_string(existing).unwrap(),
+        "the larger existing destination"
+    );
+}
+
+#[test]
+fn resolving_conflicts_recomputes_the_filesystem_preflight() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("CON.txt", "reserved on Windows");
+    l.file("ok.txt", "fine");
+    r.file("CON.txt", "existing");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_all();
+    ws.request_copy();
+    let portable = |ws: &Workspace| match &ws.pending_op {
+        Some(PendingOp::Transfer(tr)) => tr
+            .filesystem
+            .portability
+            .iter()
+            .any(|issue| issue.name == "CON.txt"),
+        _ => panic!("pending copy"),
+    };
+    assert!(portable(&ws), "audit covers the reserved name");
+
+    assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
+    assert!(!portable(&ws), "skipped entries leave the audit");
 }
