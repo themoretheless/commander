@@ -869,8 +869,7 @@ impl PanelState {
             };
             if self.can_async_list() {
                 let show_hidden = self.view.show_hidden();
-                self.listing_job
-                    .request(path, show_hidden, Some(ticket), PendingFocus::None);
+                self.listing_job.reconcile(path, show_hidden, ticket);
                 let applied = self.poll_listing_results();
                 if applied {
                     self.change_provenance.record(source);
