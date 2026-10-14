@@ -178,6 +178,16 @@ impl FileEntry {
         })
     }
 
+    /// Whether the listing captured this row as a symlink (its display
+    /// fields describe the link's target).
+    pub fn is_symlink(&self) -> bool {
+        matches!(
+            &self.identity,
+            ListingIdentity::Captured(identity)
+                if identity.kind == Some(crate::path_identity::PathKind::Symlink)
+        )
+    }
+
     pub fn is_image(&self) -> bool {
         self.is_static_image() || self.is_video()
     }
@@ -316,6 +326,25 @@ fn mask_verdict(terms: &[(String, bool)], entry: &FileEntry) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Drop entries that sit inside another picked folder: picking `X` in its
+/// parent and `X/a` inside it must act on `X` once, not on both (a copy
+/// would duplicate `a` or conflict with itself). Folder symlinks are not
+/// containers here: acting on the link does not act on its target's rows.
+fn drop_nested_picks(entries: Vec<FileEntry>) -> Vec<FileEntry> {
+    let folders: HashSet<PathBuf> = entries
+        .iter()
+        .filter(|entry| entry.is_dir && !entry.is_symlink())
+        .map(|entry| entry.path.clone())
+        .collect();
+    if folders.is_empty() {
+        return entries;
+    }
+    entries
+        .into_iter()
+        .filter(|entry| !entry.path.ancestors().skip(1).any(|a| folders.contains(a)))
+        .collect()
 }
 
 /// Size used for the occupancy bar: a file's own size, or a directory's
@@ -526,8 +555,20 @@ impl PanelState {
                 paths
             })
             .filter_map(|path| {
-                let meta = fs::symlink_metadata(path).ok()?;
-                FileEntry::from_meta(path.clone(), &meta)
+                // Like `read_dir`: a symlink shows its target's type (a link
+                // to a folder is a folder row) but keeps the link's identity.
+                let lexical = fs::symlink_metadata(path).ok()?;
+                let followed = lexical
+                    .file_type()
+                    .is_symlink()
+                    .then(|| fs::metadata(path).ok())
+                    .flatten();
+                let mut entry =
+                    FileEntry::from_meta(path.clone(), followed.as_ref().unwrap_or(&lexical))?;
+                entry.identity = ListingIdentity::Captured(
+                    crate::path_identity::PathIdentity::from_metadata(path.clone(), &lexical),
+                );
+                Some(entry)
             })
             .collect()
     }
@@ -540,7 +581,7 @@ impl PanelState {
         }
         let mut entries = self.selected_entries();
         entries.extend(self.selected_elsewhere_entries());
-        Ok(entries)
+        Ok(drop_nested_picks(entries))
     }
 
     pub fn replace_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
@@ -951,7 +992,17 @@ impl PanelState {
                 return DirectoryRead::Incomplete(status);
             }
         };
+        Self::read_dir_entries(entries, show_hidden)
+    }
 
+    /// Build rows from a directory iterator. A child that vanished between
+    /// readdir and stat is simply not listed: it is gone, not unreadable,
+    /// so it must not turn the whole read into a partial one.
+    fn read_dir_entries(
+        entries: impl Iterator<Item = std::io::Result<fs::DirEntry>>,
+        show_hidden: bool,
+    ) -> DirectoryRead {
+        let vanished = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
         let mut result = Vec::new();
         let mut complete = true;
         for entry in entries {
@@ -972,14 +1023,16 @@ impl PanelState {
             }
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
-                Err(_) => {
-                    complete = false;
+                Err(error) => {
+                    complete &= vanished(&error);
                     continue;
                 }
             };
-            let lexical = entry
-                .metadata()
-                .map_err(|error| crate::ports::NativeFailure::from_io(&error));
+            let lexical = match entry.metadata() {
+                Ok(metadata) => Ok(metadata),
+                Err(error) if vanished(&error) => continue,
+                Err(error) => Err(crate::ports::NativeFailure::from_io(&error)),
+            };
             let followed = file_type
                 .is_symlink()
                 .then(|| fs::metadata(&path).ok())
@@ -1480,7 +1533,13 @@ impl PanelState {
         };
         let mut dirs: Vec<PathBuf> = rd
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            // Folder symlinks are folders here, as in the file list; the
+            // tree expands lazily, so following them cannot loop.
+            .filter(|e| match e.file_type() {
+                Ok(t) if t.is_symlink() => e.path().is_dir(),
+                Ok(t) => t.is_dir(),
+                Err(_) => false,
+            })
             .map(|e| e.path())
             .filter(|p| {
                 show_hidden
@@ -1526,6 +1585,81 @@ mod tests {
                 format_size(size)
             },
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_vanishing_between_readdir_and_stat_is_not_a_partial_read() {
+        let temp = TempDir::new();
+        temp.file("kept.txt", "k");
+        let gone = temp.file("gone.txt", "g");
+        // The first `next` buffers this small directory's names; the file
+        // then disappears before its metadata is read.
+        let mut entries = fs::read_dir(temp.path()).unwrap().peekable();
+        let _ = entries.peek();
+        fs::remove_file(gone).unwrap();
+
+        let DirectoryRead::Complete(rows) = PanelState::read_dir_entries(entries, true) else {
+            panic!("a vanished child must not make the read partial");
+        };
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, vec!["kept.txt"]);
+    }
+
+    #[test]
+    fn picked_entries_drop_rows_inside_a_picked_folder() {
+        let tmp = TempDir::new();
+        let folder = tmp.dir("folder");
+        let inner = tmp.file("folder/inner.txt", "a");
+        let other = tmp.file("other.txt", "b");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        p.toggle_select(folder.clone());
+        p.toggle_select(other.clone());
+        p.navigate_to(folder.clone());
+        p.toggle_select(inner);
+
+        let mut picked: Vec<PathBuf> = p
+            .picked_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        picked.sort();
+        assert_eq!(picked, vec![folder, other]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_subdirs_include_folder_symlinks() {
+        let temp = TempDir::new();
+        let target = temp.dir("target");
+        temp.file("file.txt", "f");
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        std::os::unix::fs::symlink("file.txt", temp.path().join("file-link")).unwrap();
+
+        assert_eq!(PanelState::subdirs(temp.path(), false), vec![link, target]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selection_elsewhere_reads_folder_symlinks_like_the_listing() {
+        let temp = TempDir::new();
+        let target = temp.dir("target");
+        let link = temp.path().join("folder-link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+
+        let mut p = PanelState::new(temp.path().to_path_buf());
+        p.refresh();
+        p.toggle_select(link.clone());
+        p.navigate_to(target);
+
+        let picked = p.picked_entries().unwrap();
+        let entry = picked.iter().find(|entry| entry.path == link).unwrap();
+        assert!(entry.is_dir, "a folder link is a folder row");
+        assert!(entry.is_symlink(), "identity stays the link itself");
     }
 
     #[cfg(unix)]
