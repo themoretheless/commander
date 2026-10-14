@@ -541,8 +541,10 @@ mod tests {
         job.request(PathBuf::from("/fresh"), false, None, PendingFocus::None);
         job.drive(&workload, Arc::clone(&notify), read_dir.clone());
 
-        // Both blocked reads were superseded; the new one is still admitted.
+        // Both blocked reads were superseded; the new one is still admitted
+        // and actually runs, although the scheduler caps listings at two.
         assert_eq!(job.in_flight.len(), 3);
+        wait_started(3);
         assert!(
             job.in_flight
                 .iter()
