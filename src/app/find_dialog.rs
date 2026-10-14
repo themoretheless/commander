@@ -74,6 +74,53 @@ pub(super) fn format_index_exclusions(root: &std::path::Path, exclusions: &[Path
         .join("\n")
 }
 
+/// Why a search cannot start in `root`: a saved search or history entry can
+/// name a folder that was since moved or deleted, and walking it would just
+/// report zero results.
+fn search_root_error(root: &std::path::Path) -> Option<String> {
+    match std::fs::metadata(root) {
+        Ok(metadata) if metadata.is_dir() => None,
+        Ok(_) => Some(format!(
+            "Search folder {} is not a folder. Pick another folder above.",
+            root.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(format!(
+            "Search folder not found: {}. Pick another folder above.",
+            root.display()
+        )),
+        Err(error) => Some(format!(
+            "Could not open search folder {}: {error}",
+            root.display()
+        )),
+    }
+}
+
+/// Message for an index build that did not start. The index keeps the real
+/// reason (runtime control, battery/thermal pressure, a full queue).
+fn index_build_refusal(enabled: bool, last_error: Option<String>) -> String {
+    if enabled {
+        last_error.unwrap_or_else(|| "Content index build did not start; try again later".into())
+    } else {
+        "Enable the content index before rebuilding".to_string()
+    }
+}
+
+/// Add `definition` and persist the store; if saving fails the store is
+/// rolled back so the UI never shows a search that is lost on restart.
+fn add_smart_folder(
+    store: &mut crate::smart_folder::SmartFolders,
+    definition: crate::smart_folder::Definition,
+    save: impl FnOnce(&crate::smart_folder::SmartFolders) -> bool,
+) -> bool {
+    let previous = store.clone();
+    store.add(definition);
+    let saved = save(store);
+    if !saved {
+        *store = previous;
+    }
+    saved
+}
+
 impl App {
     fn poll_find_events(
         &mut self,
@@ -174,6 +221,13 @@ impl App {
             }
         };
         let root = state.root.clone();
+        if let Some(error) = search_root_error(&root) {
+            if let Some(state) = self.ui.modals.find.as_mut() {
+                state.error = Some(error);
+                state.pending_rerun = false;
+            }
+            return;
+        }
         let query_key = (query.to_expression(), query.mode, root.clone());
         let previous = if state.last_query.as_ref() == Some(&query_key) {
             state
@@ -815,9 +869,12 @@ impl App {
                         index_root.clone(),
                         std::sync::Arc::new(move || repaint.request_repaint()),
                     );
+                    let refusal = (!started).then(|| {
+                        index_build_refusal(true, self.content_index.status(&index_root).last_error)
+                    });
                     if let Some(state) = self.ui.modals.find.as_mut() {
                         state.index_rerun_after_build = started;
-                        state.error = None;
+                        state.error = refusal;
                     }
                 } else if let Some(state) = self.ui.modals.find.as_mut() {
                     state.index_rerun_after_build = false;
@@ -851,17 +908,24 @@ impl App {
                         &self.content_index.exclusions(&index_root),
                     );
                     let mut started = false;
+                    let mut refusal = None;
                     if self.content_index.is_enabled(&index_root) {
                         let repaint = ctx.clone();
                         started = self.content_index.start_build(
                             index_root.clone(),
                             std::sync::Arc::new(move || repaint.request_repaint()),
                         );
+                        if !started {
+                            refusal = Some(index_build_refusal(
+                                true,
+                                self.content_index.status(&index_root).last_error,
+                            ));
+                        }
                     }
                     if let Some(state) = self.ui.modals.find.as_mut() {
                         state.index_exclusions = formatted;
                         state.index_rerun_after_build = started;
-                        state.error = None;
+                        state.error = refusal;
                     }
                 }
                 Err(error) => {
@@ -877,13 +941,15 @@ impl App {
                 index_root.clone(),
                 std::sync::Arc::new(move || repaint.request_repaint()),
             );
+            let refusal = (!started).then(|| {
+                index_build_refusal(
+                    self.content_index.is_enabled(&index_root),
+                    self.content_index.status(&index_root).last_error,
+                )
+            });
             if let Some(state) = self.ui.modals.find.as_mut() {
                 state.index_rerun_after_build = started;
-                if !started {
-                    state.error = Some("Enable the content index before rebuilding".to_string());
-                } else {
-                    state.error = None;
-                }
+                state.error = refusal;
             }
         }
         if let Some(entry) = replay {
@@ -944,8 +1010,11 @@ impl App {
             });
             if let Some(definition) = definition {
                 let name = definition.name.clone();
-                self.smart_folders_mut().add(definition);
-                let saved = crate::smart_folder::save(self.smart_folders_mut());
+                let saved = add_smart_folder(
+                    self.smart_folders_mut(),
+                    definition,
+                    crate::smart_folder::save,
+                );
                 let (message, kind) = if saved {
                     (
                         format!("Saved search \"{name}\""),
@@ -953,7 +1022,10 @@ impl App {
                     )
                 } else {
                     (
-                        format!("Could not save search \"{name}\""),
+                        format!(
+                            "Could not save search \"{name}\"; it was not kept. Check that \
+                             the settings folder is writable."
+                        ),
                         crate::toasts::ToastKind::Error,
                     )
                 };
@@ -965,7 +1037,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{pivot_order, result_row_height};
+    use super::{
+        add_smart_folder, index_build_refusal, pivot_order, result_row_height, search_root_error,
+    };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
@@ -1035,5 +1109,51 @@ mod tests {
         // 4px gap + 22px row is exactly the plain height.
         assert!(result_row_height(true) >= 12.0 + 22.0);
         assert_eq!(result_row_height(false), 4.0 + 22.0);
+    }
+    #[test]
+    fn vanished_search_root_is_an_error_not_an_empty_result() {
+        let temp = crate::testutil::TempDir::new();
+        assert_eq!(search_root_error(temp.path()), None);
+        let gone = temp.path().join("gone");
+        let error = search_root_error(&gone).unwrap();
+        assert!(error.starts_with("Search folder not found: "), "{error}");
+        assert!(error.contains("gone"), "{error}");
+        let file = temp.path().join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(
+            search_root_error(&file)
+                .unwrap()
+                .contains("is not a folder")
+        );
+    }
+
+    #[test]
+    fn index_build_refusal_reports_the_index_reason() {
+        assert_eq!(
+            index_build_refusal(true, Some("deferred under pressure".into())),
+            "deferred under pressure"
+        );
+        assert!(index_build_refusal(true, None).contains("did not start"));
+        assert_eq!(
+            index_build_refusal(false, Some("ignored".into())),
+            "Enable the content index before rebuilding"
+        );
+    }
+
+    #[test]
+    fn failed_smart_folder_save_rolls_back_the_store() {
+        let definition = |name: &str| crate::smart_folder::Definition {
+            name: name.to_string(),
+            root: PathBuf::from("/x"),
+            query: crate::query::Query {
+                predicates: vec![crate::query::Predicate::NameContains("a".into())],
+                mode: crate::query::MatchMode::Exact,
+            },
+        };
+        let mut store = crate::smart_folder::SmartFolders::default();
+        assert!(add_smart_folder(&mut store, definition("kept"), |_| true));
+        let before = store.clone();
+        assert!(!add_smart_folder(&mut store, definition("lost"), |_| false));
+        assert_eq!(store, before);
     }
 }
