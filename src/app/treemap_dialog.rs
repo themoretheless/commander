@@ -396,7 +396,12 @@ fn show_map(
             LEGEND_SWATCH + label + LEGEND_ITEM_GAP + 3.0 * spacing
         })
         .collect();
-    let legend_height = legend_rows(&widths, ui.available_width()) as f32 * LEGEND_ROW_HEIGHT;
+    // A wrapped row is at least the interact height plus the row gap, and
+    // egui inserts one more item gap between the map and the legend.
+    let spacing = ui.spacing();
+    let row_height = LEGEND_ROW_HEIGHT.max(spacing.interact_size.y) + spacing.item_spacing.y;
+    let legend_height =
+        legend_rows(&widths, ui.available_width()) as f32 * row_height + spacing.item_spacing.y;
     let Some(size) = map_size(ui.available_size() - Vec2::new(0.0, legend_height)) else {
         ui.label(
             egui::RichText::new("Pane too small for the map; widen it or use Tree")
