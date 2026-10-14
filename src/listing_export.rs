@@ -69,12 +69,20 @@ pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
 }
 
 /// Quote a CSV field when it contains a comma, quote, or newline, doubling any
-/// embedded quotes (RFC 4180).
+/// embedded quotes (RFC 4180). A field starting with `=`, `+`, `-`, `@`, tab or
+/// carriage return is first prefixed with `'`, so a spreadsheet opening the
+/// export shows a hostile file name such as `=HYPERLINK(...)` as text instead
+/// of evaluating it as a formula.
 fn csv_escape(s: &str) -> String {
+    let s: Cow<'_, str> = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        Cow::Owned(format!("'{s}"))
+    } else {
+        Cow::Borrowed(s)
+    };
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
-        s.to_string()
+        s.into_owned()
     }
 }
 
@@ -144,6 +152,24 @@ mod tests {
         let out = format(&refs(&v), ListingFormat::Csv);
         assert!(out.starts_with("Name,Size (bytes),Modified\n"));
         assert!(out.contains("\"a,b.txt\",5,2026-06-25"));
+    }
+
+    #[test]
+    fn csv_neutralises_formula_prefixes() {
+        for (name, cell) in [
+            ("=1+1", "'=1+1"),
+            ("+x", "'+x"),
+            ("-rf", "'-rf"),
+            ("@SUM(A1)", "'@SUM(A1)"),
+            ("\tx", "'\tx"),
+            ("\rx", "\"'\rx\""),
+            ("=a,b", "\"'=a,b\""),
+            ("a=b", "a=b"),
+        ] {
+            let v = vec![entry(name, 5)];
+            let out = format(&refs(&v), ListingFormat::Csv);
+            assert!(out.contains(&format!("\n{cell},5,")), "{name:?} -> {out:?}");
+        }
     }
 
     #[test]

@@ -76,7 +76,8 @@ pub struct App {
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
-    pub(crate) tree_children_cache: std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    pub(crate) tree_children_cache: tree::ChildCache,
+    pub(crate) drag_announcement: update::DragAnnouncementMemo,
     pub(crate) tree_width: f32,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
@@ -127,10 +128,14 @@ pub struct App {
         crate::compare::CompareMap,
         crate::compare::CompareMap,
     )>,
+    /// Data the confirm dialog derives from the pending operation once
+    /// instead of on every repaint of its flow animation.
+    pub(crate) confirm_cache: confirm_dialog::ConfirmCache,
     /// Startup instrumentation remains live through the first directory read.
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
     pub(crate) show_developer_panel: bool,
     pub(crate) developer_notice: Option<DeveloperNotice>,
+    pub(crate) developer_store_usage: developer_panel::StoreUsageCache,
     pub(crate) persistence_issue_seen: u64,
 }
 
@@ -355,6 +360,8 @@ pub struct ArchiveState {
     pub run: Option<crate::archive::ListingRun>,
     pub extract: Option<crate::archive::ExtractRun>,
     pub listing: Option<crate::archive::ArchiveListing>,
+    /// Filter matches for `listing`; reset whenever the listing is replaced.
+    pub member_filter: archive_dialog::MemberFilter,
     pub selected: std::collections::BTreeSet<usize>,
     pub status: Option<String>,
     pub error: Option<String>,
@@ -513,6 +520,8 @@ pub struct SyncState {
     pub error: Option<String>,
     /// When true, Apply only reports the planned actions without transferring.
     pub dry_run: bool,
+    /// Plan being built off the UI thread; Apply waits for it.
+    pub scan: Option<sync_dialog::PlanScan>,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in
@@ -534,6 +543,8 @@ pub struct BatchRenameState {
     pub error: Option<String>,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
+    /// Plan for the last rule shown; rebuilt only when the rule changes.
+    pub validation: Option<batch_rename_dialog::ValidatedBatchRename>,
 }
 
 impl BatchRenameState {
@@ -628,10 +639,23 @@ pub struct RecoveryState {
     pub scanning: bool,
     pub repair_loaded: bool,
     pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
+    /// Pending background load of the selected operation's repair plan.
+    pub repair_rx: Option<std::sync::mpsc::Receiver<RepairLoadResult>>,
+    /// Version-store usage line and when it was read from the on-disk
+    /// manifest. Dropped when a scan completes (scans follow rollback and
+    /// cleanup) and re-read after `VERSION_USAGE_REFRESH` so versions saved
+    /// by a running transfer show up.
+    pub version_usage_label: Option<(std::time::Instant, String)>,
 }
 
 pub struct RecoveryScanResult {
     pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
+}
+
+pub struct RepairLoadResult {
+    pub operation_id: crate::operation::OperationId,
+    pub plan: Result<crate::operation_journal::RepairPlan, String>,
+    pub versions: Vec<crate::version_store::VersionRecord>,
 }
 
 impl App {
@@ -764,6 +788,7 @@ impl App {
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
@@ -796,9 +821,11 @@ impl App {
             project_collections,
             command_templates: None,
             compare_cache: None,
+            confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: Some(startup),
             show_developer_panel: false,
             developer_notice: None,
+            developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: 0,
         };
         if let Some(trace) = &mut app.startup_trace {
@@ -851,6 +878,7 @@ impl App {
             show_tree: seed.show_tree,
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
             show_size_bars: true,
             show_compare: false,
@@ -877,9 +905,11 @@ impl App {
             project_collections: crate::collections::ProjectCollections::default(),
             command_templates: None,
             compare_cache: None,
+            confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: None,
             show_developer_panel: false,
             developer_notice: None,
+            developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: crate::persistence::issue_generation(),
         }
     }

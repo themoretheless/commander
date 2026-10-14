@@ -166,7 +166,9 @@ pub fn summarize(entries: &[FileEntry]) -> SelectionSummary {
         if e.is_dir {
             dir_count += 1;
         }
-        total_bytes += e.size;
+        // Logical sizes of sparse files can approach i64::MAX each, so two of
+        // them overflow a plain sum; pin the total at u64::MAX instead.
+        total_bytes = total_bytes.saturating_add(e.size);
         // Strictly-greater keeps the first-seen entry on a size tie.
         if largest.as_ref().is_none_or(|(_, sz)| e.size > *sz) {
             largest = Some((e.name.clone(), e.size));
@@ -231,6 +233,18 @@ mod tests {
         assert_eq!(kind_of(&entry("a.zip", false, 1)), Kind::Archive);
         assert_eq!(kind_of(&entry("a.xyz", false, 1)), Kind::Other);
         assert_eq!(kind_of(&entry("noext", false, 1)), Kind::Other);
+    }
+
+    #[test]
+    fn summarize_saturates_total_bytes() {
+        let huge = i64::MAX as u64;
+        let s = summarize(&[
+            entry("a.img", false, huge),
+            entry("b.img", false, huge),
+            entry("c.img", false, huge),
+        ]);
+        assert_eq!(s.total_bytes, u64::MAX);
+        assert_eq!(s.count, 3);
     }
 
     #[test]

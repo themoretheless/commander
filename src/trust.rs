@@ -62,9 +62,18 @@ fn persist() -> &'static crate::persistence::FsPersist {
 }
 
 fn load_store() -> TrustStore {
-    crate::persistence::load_enveloped::<TrustStore>(persist(), &store_path(), STORE)
-        .value
-        .unwrap_or_default()
+    load_store_at(persist(), &store_path())
+}
+
+/// A store that exists but cannot be read leaves every root Trusted, so the
+/// user is warned through persistence health instead of silently losing
+/// Restricted/Untrusted labels.
+fn load_store_at(persist: &dyn crate::persistence::Persist, path: &Path) -> TrustStore {
+    let loaded = crate::persistence::load_enveloped::<TrustStore>(persist, path, STORE);
+    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
+        crate::persistence::record_unreadable("Trust");
+    }
+    loaded.value.unwrap_or_default()
 }
 
 fn save_store(store: &TrustStore) {
@@ -119,14 +128,22 @@ fn best_label(roots: &BTreeMap<String, TrustLabel>, needle: &str) -> TrustLabel 
 }
 
 pub fn set_label(path: &Path, label: TrustLabel) {
+    // Serializes saves so snapshots reach disk in mutation order, while the
+    // cache lock itself is released before any disk I/O so `label_for` on
+    // search/provider threads never waits on the write. Order: SAVE, then cache.
+    static SAVE: Mutex<()> = Mutex::new(());
     let key = normalize_root(path);
-    let mut store = crate::lock_util::recover(cache());
-    if label == TrustLabel::Trusted {
-        store.roots.remove(&key);
-    } else {
-        store.roots.insert(key, label);
-    }
-    save_store(&store);
+    let _save = crate::lock_util::recover(&SAVE);
+    let snapshot = {
+        let mut store = crate::lock_util::recover(cache());
+        if label == TrustLabel::Trusted {
+            store.roots.remove(&key);
+        } else {
+            store.roots.insert(key, label);
+        }
+        store.clone()
+    };
+    save_store(&snapshot);
 }
 
 pub fn allows_auto_archive_inspect(path: &Path) -> bool {
@@ -184,6 +201,24 @@ mod tests {
         set_label(&root, TrustLabel::Trusted);
         assert_eq!(label_for(&child), TrustLabel::Trusted);
         reset_for_test();
+    }
+
+    #[test]
+    fn unreadable_store_is_reported_to_persistence_health() {
+        let temp = TempDir::new();
+        let path = temp.file("root_trust.json", "{ not json");
+        let before = crate::persistence::health_snapshot().unreadable_stores;
+        let store = load_store_at(&crate::persistence::FsPersist::default(), &path);
+        assert!(store.roots.is_empty());
+        assert!(crate::persistence::health_snapshot().unreadable_stores > before);
+    }
+
+    #[test]
+    fn missing_store_is_not_reported_as_unreadable() {
+        let temp = TempDir::new();
+        let path = temp.path().join("root_trust.json");
+        let store = load_store_at(&crate::persistence::FsPersist::default(), &path);
+        assert!(store.roots.is_empty());
     }
 
     #[cfg(unix)]

@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use super::PanelState;
 use super::listing_job::PendingFocus;
@@ -63,7 +66,7 @@ impl PanelState {
         let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .back_pruning(|p| p != current && p.is_dir())
+            .back_pruning(|p| p != current && history_dir_alive(p))
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);
@@ -78,11 +81,124 @@ impl PanelState {
         let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .forward_pruning(|p| p != current && p.is_dir())
+            .forward_pruning(|p| p != current && history_dir_alive(p))
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);
             self.load_remembered_path(path);
         }
+    }
+}
+
+/// How long Back/Forward waits on one history entry's existence check.
+const HISTORY_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+/// Hung history probes remembered at once; past this, entries are assumed
+/// alive without probing.
+const MAX_HUNG_HISTORY_PROBES: usize = 64;
+
+/// Whether a history entry is still a directory worth stepping to. The stat
+/// runs on a helper thread so an entry on a hung network mount cannot freeze
+/// the UI: one that has not answered in time counts as alive, and the async
+/// listing then reports it gone or denied like any other navigation.
+fn history_dir_alive(path: &Path) -> bool {
+    probe_bounded(path, HISTORY_PROBE_TIMEOUT, Path::is_dir)
+}
+
+/// Paths with a history probe still running. A path stays here until its
+/// probe thread returns, so pressing Back/Forward again over an entry on a
+/// hung mount answers at once instead of leaking another thread.
+fn probes_in_flight() -> &'static Mutex<HashSet<PathBuf>> {
+    static IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(Mutex::default)
+}
+
+fn probe_bounded(
+    path: &Path,
+    timeout: Duration,
+    probe: impl FnOnce(&Path) -> bool + Send + 'static,
+) -> bool {
+    {
+        let mut in_flight = crate::lock_util::recover(probes_in_flight());
+        if in_flight.contains(path) || in_flight.len() >= MAX_HUNG_HISTORY_PROBES {
+            return true;
+        }
+        in_flight.insert(path.to_path_buf());
+    }
+    // Unmarks the path when the probe closure is dropped: after the probe
+    // returns on its thread, or at once if no thread could be spawned.
+    struct InFlight(PathBuf);
+    impl Drop for InFlight {
+        fn drop(&mut self) {
+            crate::lock_util::recover(probes_in_flight()).remove(&self.0);
+        }
+    }
+    let marker = InFlight(path.to_path_buf());
+    // Timed out (or unspawnable): counts as alive. A hung path stays marked
+    // until its thread returns, so it is not probed again meanwhile.
+    crate::mount_guard::run_bounded(move || probe(&marker.0), timeout).unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_probe_answers_for_live_and_missing_dirs() {
+        let tmp = crate::testutil::TempDir::new();
+        let file = tmp.file("plain.txt", "x");
+        let timeout = Duration::from_secs(10);
+        assert!(probe_bounded(tmp.path(), timeout, Path::is_dir));
+        assert!(!probe_bounded(
+            &tmp.path().join("missing"),
+            timeout,
+            Path::is_dir
+        ));
+        assert!(!probe_bounded(&file, timeout, Path::is_dir));
+    }
+
+    #[test]
+    fn a_hung_history_probe_answers_alive_and_is_not_respawned() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let path = PathBuf::from("/hung-history-probe-test/entry");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicBool::new(false));
+        let hanging_probe = || {
+            let calls = Arc::clone(&calls);
+            let released = Arc::clone(&released);
+            move |_: &Path| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !released.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                false
+            }
+        };
+        let short = Duration::from_millis(20);
+
+        assert!(
+            probe_bounded(&path, short, hanging_probe()),
+            "timeout = alive"
+        );
+        // While the first probe hangs, presses answer at once without
+        // spawning another thread.
+        assert!(probe_bounded(&path, short, hanging_probe()));
+        assert!(probe_bounded(&path, short, hanging_probe()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Once the mount answers, the path is probed normally again.
+        released.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while crate::lock_util::recover(probes_in_flight()).contains(&path) {
+            assert!(std::time::Instant::now() < deadline, "probe never returned");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!probe_bounded(
+            &path,
+            Duration::from_secs(10),
+            hanging_probe()
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

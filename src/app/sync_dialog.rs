@@ -5,6 +5,106 @@
 use super::*;
 use crate::sync::{SyncDirection, SyncPolicy, SyncStatus};
 
+type PlanResult = Result<(Vec<crate::sync::SyncAction>, crate::sync_guard::PlanStamp), String>;
+
+/// A synchronization plan being built on a worker thread. Reading both
+/// folders (and every entry's metadata) can stall on slow or network
+/// volumes, so the sheet shows "Scanning" instead of freezing the UI.
+/// Dropping it abandons the result; the worker ends after its one scan.
+///
+/// At most one worker runs per sheet: a refresh requested while a scan is
+/// still running only marks `rerun`, and the sheet starts one fresh scan (with
+/// the then-current settings) when the running one finishes. Repeated Refresh
+/// clicks or policy changes therefore never pile up concurrent full scans.
+pub struct PlanScan {
+    receiver: std::sync::mpsc::Receiver<PlanResult>,
+    rerun: bool,
+}
+
+impl PlanScan {
+    fn start(state: &SyncState) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let left = state.left_dir.clone();
+        let right = state.right_dir.clone();
+        let (left_hidden, right_hidden) = (state.left_show_hidden, state.right_show_hidden);
+        let policy = state.policy;
+        let build =
+            move || crate::sync_guard::build_plan(&left, &right, left_hidden, right_hidden, policy);
+        let worker_sender = sender.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sync-plan".to_string())
+            .spawn(move || {
+                let _ = worker_sender.send(build());
+            });
+        if let Err(error) = spawned {
+            let _ = sender.send(Err(format!("Could not start the folder scan: {error}")));
+        }
+        Self {
+            receiver,
+            rerun: false,
+        }
+    }
+
+    /// The finished plan, if the worker has delivered it.
+    fn poll(&self) -> Option<PlanResult> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err("The folder scan stopped unexpectedly".to_string()))
+            }
+        }
+    }
+}
+
+/// Install a finished plan (or its error) into the sheet.
+fn apply_plan_result(state: &mut SyncState, result: PlanResult) {
+    match result {
+        Ok((actions, stamp)) => {
+            state.actions = actions;
+            state.settings_fingerprint = crate::sync_guard::settings_fingerprint(
+                state.policy,
+                &state.guard,
+                stamp.filter_key(),
+            );
+            state.stamp = Some(stamp);
+            state.allow_large_plan = false;
+            state.error = None;
+        }
+        Err(error) => {
+            state.actions.clear();
+            state.stamp = None;
+            state.error = Some(error);
+        }
+    }
+}
+
+/// Take the worker's plan once it is ready. A result whose settings were
+/// superseded while it ran is dropped and one fresh scan starts instead.
+fn poll_plan(state: &mut SyncState) {
+    let Some(scan) = state.scan.as_ref() else {
+        return;
+    };
+    let Some(result) = scan.poll() else {
+        return;
+    };
+    if scan.rerun {
+        state.scan = Some(PlanScan::start(state));
+        return;
+    }
+    state.scan = None;
+    apply_plan_result(state, result);
+}
+
+/// Ask for a new plan: start a scan now, or, when one is already running,
+/// queue a single rerun for when it finishes.
+fn request_plan(state: &mut SyncState) {
+    match state.scan.as_mut() {
+        Some(scan) => scan.rerun = true,
+        None => state.scan = Some(PlanScan::start(state)),
+    }
+}
+
 impl App {
     pub(crate) fn open_sync(&mut self) {
         let policy = SyncPolicy::TwoWay;
@@ -18,32 +118,28 @@ impl App {
             .as_deref()
             .map_or_else(String::new, |path| path.to_string_lossy().into_owned());
         let marker_enabled = guard.health_marker.is_some();
-        let (actions, stamp, error) = match self.ws.build_guarded_sync_plan(policy) {
-            Ok((actions, stamp)) => (actions, Some(stamp), None),
-            Err(error) => (Vec::new(), None, Some(error)),
-        };
-        let settings_fingerprint = stamp.as_ref().map_or(0, |stamp| {
-            crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key())
-        });
-        self.ui.tools.replace_on(self.ws.active.other());
-        self.ui.tools.sync = Some(SyncState {
+        let mut state = SyncState {
             policy,
             durability: self.ws.durability_profile,
             version_retention: self.ws.version_retention,
-            actions,
+            actions: Vec::new(),
             left_dir,
             right_dir,
             left_show_hidden,
             right_show_hidden,
             guard,
-            stamp,
-            settings_fingerprint,
+            stamp: None,
+            settings_fingerprint: 0,
             allow_large_plan: false,
             marker_enabled,
             marker_input,
-            error,
+            error: None,
             dry_run: false,
-        });
+            scan: None,
+        };
+        state.scan = Some(PlanScan::start(&state));
+        self.ui.tools.replace_on(self.ws.active.other());
+        self.ui.tools.sync = Some(state);
     }
 
     pub(crate) fn show_sync_tool(&mut self, ui: &mut egui::Ui) {
@@ -64,6 +160,8 @@ impl App {
         // Borrow the sync state only for the window body (no `self.ws` use here).
         {
             let state = self.ui.tools.sync.as_mut().unwrap();
+            poll_plan(state);
+            let scanning = state.scan.is_some();
             let mut to_right = 0usize;
             let mut to_left = 0usize;
             for a in &state.actions {
@@ -138,7 +236,17 @@ impl App {
                 ui.add_space(6.0);
 
                 // ── Per-row plan ────────────────────────────────────
-                if plan_shows_panels_match(
+                if scanning {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Scanning both folders\u{2026}")
+                                .size(12.0)
+                                .color(t.text_muted),
+                        );
+                    });
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                } else if plan_shows_panels_match(
                     state.actions.is_empty(),
                     state.error.is_some(),
                     state.stamp.is_some(),
@@ -149,12 +257,16 @@ impl App {
                             .color(t.text_muted),
                     );
                 }
+                // Fixed-height rows, so only the visible ones are laid out.
+                const ROW_H: f32 = 22.0;
+                let rows = state.actions.len();
                 egui::ScrollArea::vertical()
                     .max_height(280.0)
                     .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        for a in &mut state.actions {
+                    .show_rows(ui, ROW_H, rows, |ui, range| {
+                        for a in &mut state.actions[range] {
                             ui.horizontal(|ui| {
+                                ui.set_height(ROW_H);
                                 // Direction control: ← skip → as selectable arrows.
                                 for (dir, glyph) in [
                                     (SyncDirection::ToLeft, "\u{00ab}"),
@@ -264,7 +376,8 @@ impl App {
                     );
                 }
 
-                let guard_ready = marker_error.is_none()
+                let guard_ready = !scanning
+                    && marker_error.is_none()
                     && state.error.is_none()
                     && state.stamp.is_some()
                     && (assessment.circuit_breaker.is_none() || state.allow_large_plan);
@@ -335,30 +448,10 @@ impl App {
             refresh_plan = true;
         }
         if refresh_plan && let Some(state) = self.ui.tools.sync.as_mut() {
-            match crate::sync_guard::build_plan(
-                &state.left_dir,
-                &state.right_dir,
-                state.left_show_hidden,
-                state.right_show_hidden,
-                state.policy,
-            ) {
-                Ok((actions, stamp)) => {
-                    state.actions = actions;
-                    state.settings_fingerprint = crate::sync_guard::settings_fingerprint(
-                        state.policy,
-                        &state.guard,
-                        stamp.filter_key(),
-                    );
-                    state.stamp = Some(stamp);
-                    state.allow_large_plan = false;
-                    state.error = None;
-                }
-                Err(error) => {
-                    state.actions.clear();
-                    state.stamp = None;
-                    state.error = Some(error);
-                }
-            }
+            // The previous rows stay visible (Apply disabled) until the new
+            // plan arrives; a request made while a scan runs is coalesced
+            // into one rerun after it.
+            request_plan(state);
         }
         if commit {
             let Some(mut state) = self.ui.tools.sync.take() else {
@@ -484,7 +577,104 @@ const fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::plan_shows_panels_match;
+    use super::{PlanScan, plan_shows_panels_match, poll_plan, request_plan};
+    use crate::sync::SyncPolicy;
+
+    fn sync_state(left: &std::path::Path, right: &std::path::Path) -> super::SyncState {
+        super::SyncState {
+            policy: SyncPolicy::MirrorLeftToRight,
+            durability: crate::operation::DurabilityProfile::Fast,
+            version_retention: crate::operation::VersionRetentionPolicy::ALL[0],
+            actions: Vec::new(),
+            left_dir: left.to_path_buf(),
+            right_dir: right.to_path_buf(),
+            left_show_hidden: false,
+            right_show_hidden: false,
+            guard: crate::sync_guard::GuardPolicy::default(),
+            stamp: None,
+            settings_fingerprint: 0,
+            allow_large_plan: false,
+            marker_enabled: false,
+            marker_input: String::new(),
+            error: None,
+            dry_run: false,
+            scan: None,
+        }
+    }
+
+    fn wait_for_plan(state: &mut super::SyncState) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while state.scan.is_some() {
+            assert!(std::time::Instant::now() < deadline, "plan never arrived");
+            std::thread::yield_now();
+            poll_plan(state);
+        }
+    }
+
+    #[test]
+    fn plan_is_built_off_the_ui_thread_and_installed_when_ready() {
+        let temp = crate::testutil::TempDir::new();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        std::fs::create_dir_all(&left).expect("left");
+        std::fs::create_dir_all(&right).expect("right");
+        std::fs::write(left.join("only-left.txt"), "x").expect("file");
+        let mut state = sync_state(&left, &right);
+        state.scan = Some(PlanScan::start(&state));
+        wait_for_plan(&mut state);
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.stamp.is_some());
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(state.actions[0].name, "only-left.txt");
+    }
+
+    #[test]
+    fn failed_background_plan_reports_its_error() {
+        let temp = crate::testutil::TempDir::new();
+        let missing = temp.path().join("missing");
+        let mut state = sync_state(&missing, temp.path());
+        state.scan = Some(PlanScan::start(&state));
+        wait_for_plan(&mut state);
+        assert!(state.error.is_some());
+        assert!(state.stamp.is_none());
+        assert!(state.actions.is_empty());
+    }
+
+    #[test]
+    fn refresh_during_a_scan_coalesces_into_one_rerun_with_new_settings() {
+        let temp = crate::testutil::TempDir::new();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        std::fs::create_dir_all(&left).expect("left");
+        std::fs::create_dir_all(&right).expect("right");
+        std::fs::write(left.join("only-left.txt"), "x").expect("file");
+        let mut state = sync_state(&left, &right);
+        request_plan(&mut state);
+        assert!(state.scan.as_ref().is_some_and(|scan| !scan.rerun));
+        // Further requests while the scan runs only mark one rerun; no
+        // second worker is started.
+        state.policy = SyncPolicy::MirrorRightToLeft;
+        request_plan(&mut state);
+        request_plan(&mut state);
+        assert!(state.scan.as_ref().is_some_and(|scan| scan.rerun));
+        wait_for_plan(&mut state);
+        assert!(state.error.is_none(), "{:?}", state.error);
+        // The installed plan comes from the rerun, built with the newer
+        // policy: a right-to-left mirror skips the left-only file instead of
+        // copying it right.
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(state.actions[0].name, "only-left.txt");
+        assert_eq!(state.actions[0].direction, crate::sync::SyncDirection::Skip);
+        let stamp = state.stamp.as_ref().expect("stamp");
+        assert_eq!(
+            state.settings_fingerprint,
+            crate::sync_guard::settings_fingerprint(
+                SyncPolicy::MirrorRightToLeft,
+                &state.guard,
+                stamp.filter_key(),
+            )
+        );
+    }
 
     #[test]
     fn failed_plan_is_not_reported_as_already_matching() {

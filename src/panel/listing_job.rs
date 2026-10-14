@@ -12,6 +12,11 @@ use super::{DirStatus, DirectoryRead, Notify};
 
 const MAX_IN_FLIGHT_LISTINGS: usize = 2;
 
+/// Superseded listings still blocked in `read_dir` (a hung mount) do not
+/// count toward [`MAX_IN_FLIGHT_LISTINGS`], so they cannot leave a new
+/// navigation stuck on Loading; this separately bounds how many may pile up.
+const MAX_CANCELLED_LISTINGS: usize = 4;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ListingBinding {
     pub path: PathBuf,
@@ -65,6 +70,9 @@ pub(super) struct ListingReady {
     pub read: DirectoryRead,
     pub ticket: Option<ReconciliationTicket>,
     pub focus: PendingFocus,
+    /// The user asked for this listing (navigation, refresh): its size
+    /// recompute may re-walk expensive folders. Watcher re-lists may not.
+    pub forced_sizes: bool,
 }
 
 pub(super) struct ListingJobController {
@@ -72,6 +80,7 @@ pub(super) struct ListingJobController {
     desired: Option<ListingBinding>,
     ticket: Option<ReconciliationTicket>,
     focus: PendingFocus,
+    forced_sizes: bool,
     in_flight: Vec<InFlightListing>,
     ready: Option<ListingReady>,
     /// True while the desired binding still needs a worker result.
@@ -85,6 +94,7 @@ impl Default for ListingJobController {
             desired: None,
             ticket: None,
             focus: PendingFocus::None,
+            forced_sizes: false,
             in_flight: Vec::new(),
             ready: None,
             awaiting: false,
@@ -99,6 +109,17 @@ impl ListingJobController {
         show_hidden: bool,
         ticket: Option<ReconciliationTicket>,
         focus: PendingFocus,
+    ) -> ListingBinding {
+        self.request_with(path, show_hidden, ticket, focus, true)
+    }
+
+    fn request_with(
+        &mut self,
+        path: PathBuf,
+        show_hidden: bool,
+        ticket: Option<ReconciliationTicket>,
+        focus: PendingFocus,
+        forced_sizes: bool,
     ) -> ListingBinding {
         self.generation = self
             .generation
@@ -131,6 +152,7 @@ impl ListingJobController {
         self.desired = Some(binding.clone());
         self.ticket = ticket;
         self.focus = focus;
+        self.forced_sizes = forced_sizes;
         self.ready = None;
         self.awaiting = true;
         binding
@@ -155,7 +177,7 @@ impl ListingJobController {
                 .as_ref()
                 .is_some_and(|desired| desired.path == path && desired.show_hidden == show_hidden);
         if !pending_same {
-            self.request(path, show_hidden, Some(ticket), PendingFocus::None);
+            self.request_with(path, show_hidden, Some(ticket), PendingFocus::None, false);
         }
     }
 
@@ -198,7 +220,14 @@ impl ListingJobController {
         {
             return;
         }
-        if self.in_flight.len() >= MAX_IN_FLIGHT_LISTINGS {
+        let cancelled = self
+            .in_flight
+            .iter()
+            .filter(|in_flight| in_flight.cancellation_requested)
+            .count();
+        if self.in_flight.len() - cancelled >= MAX_IN_FLIGHT_LISTINGS
+            || cancelled >= MAX_CANCELLED_LISTINGS
+        {
             return;
         }
 
@@ -257,12 +286,8 @@ impl ListingJobController {
                 self.poll_terminals();
             }
             Err(_) => {
-                self.ready = Some(ListingReady {
-                    binding,
-                    read: DirectoryRead::Incomplete(DirStatus::Denied),
-                    ticket: self.ticket.take(),
-                    focus: std::mem::replace(&mut self.focus, PendingFocus::None),
-                });
+                self.ready =
+                    Some(self.settle(binding, DirectoryRead::Incomplete(DirStatus::Denied)));
                 self.awaiting = false;
             }
         }
@@ -271,6 +296,18 @@ impl ListingJobController {
     pub(super) fn take_ready(&mut self) -> Option<ListingReady> {
         self.poll_terminals();
         self.ready.take()
+    }
+
+    /// The result for the desired binding, carrying its pending ticket,
+    /// focus and size policy.
+    fn settle(&mut self, binding: ListingBinding, read: DirectoryRead) -> ListingReady {
+        ListingReady {
+            binding,
+            read,
+            ticket: self.ticket.take(),
+            focus: std::mem::replace(&mut self.focus, PendingFocus::None),
+            forced_sizes: self.forced_sizes,
+        }
     }
 
     fn poll_terminals(&mut self) {
@@ -295,21 +332,14 @@ impl ListingJobController {
             }
             match event {
                 WorkerEvent::Completed { binding, read } if binding == retired.binding => {
-                    self.ready = Some(ListingReady {
-                        binding,
-                        read,
-                        ticket: self.ticket.take(),
-                        focus: std::mem::replace(&mut self.focus, PendingFocus::None),
-                    });
+                    self.ready = Some(self.settle(binding, read));
                     self.awaiting = false;
                 }
                 WorkerEvent::Completed { .. } => {
-                    self.ready = Some(ListingReady {
-                        binding: retired.binding,
-                        read: DirectoryRead::Incomplete(DirStatus::Denied),
-                        ticket: self.ticket.take(),
-                        focus: std::mem::replace(&mut self.focus, PendingFocus::None),
-                    });
+                    self.ready = Some(self.settle(
+                        retired.binding,
+                        DirectoryRead::Incomplete(DirStatus::Denied),
+                    ));
                     self.awaiting = false;
                 }
                 WorkerEvent::Cancelled { .. } => {
@@ -321,12 +351,10 @@ impl ListingJobController {
                     }
                 }
                 WorkerEvent::Abandoned { .. } => {
-                    self.ready = Some(ListingReady {
-                        binding: retired.binding,
-                        read: DirectoryRead::Incomplete(DirStatus::Denied),
-                        ticket: self.ticket.take(),
-                        focus: std::mem::replace(&mut self.focus, PendingFocus::None),
-                    });
+                    self.ready = Some(self.settle(
+                        retired.binding,
+                        DirectoryRead::Incomplete(DirStatus::Denied),
+                    ));
                     self.awaiting = false;
                 }
             }
@@ -454,5 +482,74 @@ mod tests {
         assert_eq!(ready.binding.path, dir.path());
         assert!(matches!(ready.read, DirectoryRead::Complete(_)));
         assert!(matches!(ready.focus, PendingFocus::Remembered { .. }));
+    }
+
+    #[test]
+    fn only_user_requested_listings_force_size_rewalks() {
+        let mut watcher = super::super::watcher::DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/parent"));
+        let ticket = watcher.snapshot_ticket().unwrap();
+        let mut job = ListingJobController::default();
+
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone());
+        assert!(!job.forced_sizes, "a watcher re-list is background work");
+
+        job.request(PathBuf::from("/parent"), false, None, PendingFocus::None);
+        assert!(job.forced_sizes);
+        // A watcher ticket arriving while the user's read runs keeps it.
+        job.reconcile(PathBuf::from("/parent"), false, ticket);
+        assert!(job.forced_sizes);
+        let binding = job.desired_binding().unwrap().clone();
+        let ready = job.settle(binding, DirectoryRead::Incomplete(DirStatus::Gone));
+        assert!(ready.forced_sizes);
+    }
+
+    #[test]
+    fn superseded_reads_stuck_on_a_hung_mount_do_not_block_navigation() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let runtime = WorkloadRuntime::new(SchedulerLimits::default());
+        let workload = WorkloadHandle::from_runtime(runtime);
+        let notify: Notify = Arc::new(|| {});
+        let started = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicBool::new(false));
+        let read_dir = {
+            let started = Arc::clone(&started);
+            let released = Arc::clone(&released);
+            move |_: &Path, _: bool| {
+                started.fetch_add(1, Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !released.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                DirectoryRead::Complete(Vec::new())
+            }
+        };
+        let wait_started = |count: usize| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while started.load(Ordering::SeqCst) < count {
+                assert!(Instant::now() < deadline, "listing worker never started");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+
+        let mut job = ListingJobController::default();
+        for (index, path) in ["/hung/a", "/hung/b"].into_iter().enumerate() {
+            job.request(PathBuf::from(path), false, None, PendingFocus::None);
+            job.drive(&workload, Arc::clone(&notify), read_dir.clone());
+            wait_started(index + 1);
+        }
+        job.request(PathBuf::from("/fresh"), false, None, PendingFocus::None);
+        job.drive(&workload, Arc::clone(&notify), read_dir.clone());
+
+        // Both blocked reads were superseded; the new one is still admitted
+        // and actually runs, although the scheduler caps listings at two.
+        assert_eq!(job.in_flight.len(), 3);
+        wait_started(3);
+        assert!(
+            job.in_flight
+                .iter()
+                .any(|in_flight| in_flight.binding.path == Path::new("/fresh"))
+        );
+        released.store(true, Ordering::SeqCst);
     }
 }

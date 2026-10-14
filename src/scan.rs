@@ -255,7 +255,7 @@ fn capture_source(
             depth: usize,
             metadata: Option<Box<std::fs::Metadata>>,
         },
-        ExitDirectory(std::path::PathBuf),
+        ExitDirectory(Option<std::path::PathBuf>),
         FinishProof(usize),
     }
 
@@ -316,7 +316,9 @@ fn capture_source(
                 });
             }
             Task::ExitDirectory(canonical) => {
-                ancestors.remove(&canonical);
+                if let Some(canonical) = canonical {
+                    ancestors.remove(&canonical);
+                }
             }
             Task::Visit {
                 proof,
@@ -418,17 +420,26 @@ fn capture_source(
                     continue;
                 }
 
-                let canonical = std::fs::canonicalize(&path)
-                    .map_err(|error| classify_scan_failure(&path, "resolve", error))?;
-                if !ancestors.insert(canonical.clone()) {
-                    return Err(crate::ports::NativeFailure {
-                        kind: crate::ports::NativeFailureKind::Stale,
-                        message: format!(
-                            "Could not scan {}: symlink cycle detected",
-                            path.display()
-                        ),
-                    });
-                }
+                // Only followed links can lead back to an ancestor, so the
+                // per-directory canonicalize (a syscall per path component)
+                // is skipped when links are preserved or skipped.
+                let canonical = if symlink_policy == crate::filesystem_policy::SymlinkPolicy::Follow
+                {
+                    let canonical = std::fs::canonicalize(&path)
+                        .map_err(|error| classify_scan_failure(&path, "resolve", error))?;
+                    if !ancestors.insert(canonical.clone()) {
+                        return Err(crate::ports::NativeFailure {
+                            kind: crate::ports::NativeFailureKind::Stale,
+                            message: format!(
+                                "Could not scan {}: symlink cycle detected",
+                                path.display()
+                            ),
+                        });
+                    }
+                    Some(canonical)
+                } else {
+                    None
+                };
                 let read_dir = std::fs::read_dir(&path)
                     .map_err(|error| classify_scan_failure(&path, "read", error))?;
                 let mut children = Vec::new();

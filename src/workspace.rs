@@ -908,8 +908,11 @@ impl Workspace {
             }
             Command::CursorMove(delta) => {
                 let panel = self.active_panel();
-                let max = panel.filtered_count() as i32;
-                panel.set_cursor((panel.cursor() as i32 + delta).clamp(0, max) as usize);
+                // A vim count can be up to `i32::MAX`: step in `usize`,
+                // saturating, so a huge count lands on the last row.
+                let max = panel.filtered_count();
+                let step = isize::try_from(delta).unwrap_or(isize::MAX);
+                panel.set_cursor(panel.cursor().saturating_add_signed(step).min(max));
                 panel.set_scroll_to_cursor(true);
             }
             Command::ExtendSelectDown => {
@@ -1638,10 +1641,16 @@ impl Workspace {
 
     /// Rich conflict list for the pending Copy/Move: source entries whose name
     /// already exists in the destination folder, with both sides' size/mtime.
+    /// Read fresh on every call; the confirm dialog caches the result and
+    /// re-reads it on a short timer so destination changes still show.
     pub fn pending_conflicts(&self) -> Vec<crate::conflict::Conflict> {
         let Some(PendingOp::Transfer(tr)) = &self.pending_op else {
             return Vec::new();
         };
+        Self::read_pending_conflicts(tr)
+    }
+
+    fn read_pending_conflicts(tr: &PendingTransfer) -> Vec<crate::conflict::Conflict> {
         // Read the known conflicting names from disk rather than a panel
         // listing: a destination panel hiding dotfiles would miss them, so a
         // relation policy (keep newer/larger) could not exclude them and the
@@ -1663,7 +1672,11 @@ impl Workspace {
     /// resolution's keep-set and set the matching overwrite policy. Returns
     /// `true` if anything remains to transfer.
     pub fn resolve_pending_conflicts(&mut self, policy: crate::conflict::RelationPolicy) -> bool {
-        let conflicts = self.pending_conflicts();
+        // Decide on the destination as it is now, not as first displayed.
+        let conflicts = match &self.pending_op {
+            Some(PendingOp::Transfer(tr)) => Self::read_pending_conflicts(tr),
+            _ => Vec::new(),
+        };
         let name_policy = self.name_policy;
         let resolved = {
             let Some(PendingOp::Transfer(tr)) = &mut self.pending_op else {
@@ -2396,9 +2409,11 @@ impl Workspace {
 
     /// Find duplicate files in the active panel's directory (files only,
     /// non-recursive for now). Size-prefilters so only files whose size
-    /// collides are content-hashed, groups by (size, hash), then confirms each
-    /// group is byte-identical (a 64-bit hash match is not proof) before
-    /// reporting it, so the dialog never offers to trash a false positive.
+    /// collides are hashed, groups by (size, digest prefix), then confirms
+    /// each group by the full 256-bit digest (a 64-bit prefix match is not
+    /// proof) before reporting it, so the dialog never offers to trash a
+    /// false positive. Each candidate is read once: the verified BLAKE3
+    /// digest that groups it also confirms it.
     pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
         use std::collections::HashMap;
         let files: Vec<&FileEntry> = self
@@ -2412,46 +2427,58 @@ impl Workspace {
             *size_counts.entry(f.size).or_insert(0) += 1;
         }
         let mut keys: Vec<crate::dedup::FileKey> = Vec::new();
+        let mut digests: HashMap<PathBuf, crate::verified_hash::VerifiedHash> = HashMap::new();
         for f in &files {
             if size_counts.get(&f.size).copied().unwrap_or(0) < 2 {
                 continue; // a unique size cannot have a duplicate
             }
-            if let Some(hash) = crate::fs_util::content_hash(&f.path) {
-                keys.push(crate::dedup::FileKey {
-                    path: f.path.clone(),
-                    identity: f.identity.clone(),
-                    size: f.size,
-                    hash,
-                    modified: f.modified,
-                });
-            }
+            // Unreadable, non-regular or changing files fail closed.
+            let Ok(digest) = crate::verified_hash::file(&f.path) else {
+                continue;
+            };
+            let mut prefix = [0_u8; 8];
+            prefix.copy_from_slice(&digest[..8]);
+            keys.push(crate::dedup::FileKey {
+                path: f.path.clone(),
+                identity: f.identity.clone(),
+                size: f.size,
+                hash: u64::from_be_bytes(prefix),
+                modified: f.modified,
+            });
+            digests.insert(f.path.clone(), digest);
         }
         crate::dedup::group_duplicates(&keys)
             .into_iter()
-            .flat_map(Self::confirm_dup_group)
+            .flat_map(|group| Self::confirm_dup_group(group, &digests))
             .collect()
     }
 
-    /// Split a hash-matched group into byte-identical clusters, keeping only
-    /// those with two or more members. Guards against 64-bit hash collisions
-    /// being trashed as duplicates.
-    fn confirm_dup_group(group: crate::dedup::DupGroup) -> Vec<crate::dedup::DupGroup> {
+    /// Split a prefix-matched group into clusters with the same full digest,
+    /// keeping only those with two or more members. Guards against 64-bit
+    /// prefix collisions being trashed as duplicates.
+    fn confirm_dup_group(
+        group: crate::dedup::DupGroup,
+        digests: &std::collections::HashMap<PathBuf, crate::verified_hash::VerifiedHash>,
+    ) -> Vec<crate::dedup::DupGroup> {
         let size = group.size;
-        let mut clusters: Vec<Vec<crate::dedup::FileKey>> = Vec::new();
+        let mut clusters: Vec<(
+            crate::verified_hash::VerifiedHash,
+            Vec<crate::dedup::FileKey>,
+        )> = Vec::new();
         for file in group.files {
-            if let Some(c) = clusters
-                .iter_mut()
-                .find(|c| crate::fs_util::files_equal(&c[0].path, &file.path))
-            {
-                c.push(file);
+            let Some(digest) = digests.get(&file.path).copied() else {
+                continue;
+            };
+            if let Some((_, cluster)) = clusters.iter_mut().find(|(other, _)| *other == digest) {
+                cluster.push(file);
             } else {
-                clusters.push(vec![file]);
+                clusters.push((digest, vec![file]));
             }
         }
         clusters
             .into_iter()
-            .filter(|c| c.len() >= 2)
-            .map(|files| crate::dedup::DupGroup { size, files })
+            .filter(|(_, files)| files.len() >= 2)
+            .map(|(_, files)| crate::dedup::DupGroup { size, files })
             .collect()
     }
 
@@ -2593,6 +2620,7 @@ impl Workspace {
     }
 
     /// Build a sync plan and baseline from the same fresh directory reads.
+    #[cfg(test)]
     pub fn build_guarded_sync_plan(
         &self,
         policy: crate::sync::SyncPolicy,

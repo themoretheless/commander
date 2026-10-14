@@ -22,6 +22,39 @@ impl VolumePathKey {
             generation: profile.generation,
         }
     }
+
+    /// Key for a folder listed directly in a panel folder whose volume is
+    /// `parent`, without re-observing it. `observe` costs two stats per call,
+    /// once per subfolder on the UI thread. A child on the parent's volume
+    /// shares its volume id and generation; one that may be a mount point
+    /// (another device, or no captured identity) is observed as before.
+    pub(super) fn for_listed_child(
+        path: &Path,
+        identity: &ListingIdentity,
+        parent: &crate::volume_profile::VolumeProfile,
+    ) -> Self {
+        #[cfg(unix)]
+        let same_volume = matches!(
+            identity,
+            ListingIdentity::Captured(identity) if identity.volume == Some(parent.volume_id)
+        );
+        // Off Unix the volume id is derived from the path's prefix, which a
+        // child always shares with its parent.
+        #[cfg(not(unix))]
+        let same_volume = {
+            let _ = identity;
+            true
+        };
+        if same_volume {
+            Self {
+                path: path.to_path_buf(),
+                volume_id: parent.volume_id,
+                generation: parent.generation,
+            }
+        } else {
+            Self::observe(path)
+        }
+    }
 }
 
 /// On-disk entry: mount identity plus mtime and measured size.
@@ -39,20 +72,22 @@ pub(super) struct PersistedCache {
     pub(super) entries: Vec<PersistedCacheEntry>,
 }
 
-fn cache_path() -> PathBuf {
+/// Where the size cache persists, or `None` to keep it in memory only. With
+/// no per-user cache dir (HOME/XDG unset) there is no private place for it: a
+/// shared `/tmp/commander` could be pre-created by another user and feed this
+/// one wrong sizes.
+fn cache_path() -> Option<PathBuf> {
     #[cfg(test)]
-    let dir = std::env::temp_dir().join(format!("commander-test-cache-{}", std::process::id()));
+    let dir =
+        Some(std::env::temp_dir().join(format!("commander-test-cache-{}", std::process::id())));
     #[cfg(not(test))]
     let dir = crate::fs_util::storage_root_override().map_or_else(
-        || {
-            dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("commander")
-        },
-        |root| root.join("cache"),
+        || dirs::cache_dir().map(|dir| dir.join("commander")),
+        |root| Some(root.join("cache")),
     );
+    let dir = dir?;
     let _ = fs::create_dir_all(&dir);
-    dir.join("dir_sizes.json")
+    Some(dir.join("dir_sizes.json"))
 }
 
 /// Global cache: volume generation + path -> (mtime, size).
@@ -66,7 +101,9 @@ pub(super) fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemT
 }
 
 fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
-    let path = cache_path();
+    let Some(path) = cache_path() else {
+        return HashMap::new();
+    };
     let Ok(file) = fs::File::open(path) else {
         return HashMap::new();
     };
@@ -90,6 +127,12 @@ impl BoundedCacheAccumulator {
     }
 
     pub(super) fn push(&mut self, entry: PersistedCacheEntry) {
+        // The writer never stores whole seconds in the nanos field, and
+        // `Duration::new` panics when carrying them overflows the seconds:
+        // a corrupt entry is dropped instead.
+        if entry.mtime_nanos >= 1_000_000_000 {
+            return;
+        }
         let Some(mtime) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(
             entry.mtime_secs,
             entry.mtime_nanos,
@@ -672,8 +715,12 @@ const fn mount_is_measurable(_path: &Path) -> bool {
 /// and a hard-linked file counts once. A folder that is itself a mount point
 /// is measured in full when it is a local disk; a pseudo or network mount
 /// (e.g. `/proc` listed in `/`) is not walked and counts 0.
+///
+/// A `background` walk (sizes the user is not looking at) yields briefly
+/// before each folder while foreground listing/preview I/O is active.
 pub(super) fn dir_size_recursive_until(
     path: &Path,
+    background: bool,
     is_cancelled: impl Fn() -> bool,
 ) -> Option<u64> {
     let mut pending = vec![path.to_path_buf()];
@@ -697,6 +744,9 @@ pub(super) fn dir_size_recursive_until(
         if is_cancelled() {
             return None;
         }
+        if background && !crate::io_budget::background_checkpoint(&is_cancelled) {
+            return None;
+        }
         let Ok(entries) = fs::read_dir(directory) else {
             continue;
         };
@@ -716,7 +766,10 @@ pub(super) fn dir_size_recursive_until(
                 if !other_device {
                     pending.push(entry.path());
                 }
-            } else if let Ok(metadata) = fs::symlink_metadata(entry.path())
+            // `DirEntry::metadata` does not follow symlinks (like
+            // `symlink_metadata`) and stats relative to the open directory
+            // instead of building and re-resolving the full path per file.
+            } else if let Ok(metadata) = entry.metadata()
                 && shared_inode(&metadata).is_none_or(|inode| seen_inodes.insert(inode))
             {
                 total = total.saturating_add(metadata.len());
@@ -917,20 +970,42 @@ pub fn reset_walk_log() {
 /// Active per-path epochs are cancelled before cache entries are removed, so
 /// an already-running walk cannot recreate data invalidated by this event.
 pub fn invalidate_size_cache(path: &Path) {
+    invalidate_size_cache_many([path]);
+}
+
+/// [`invalidate_size_cache`] for a batch of changed paths (one watcher
+/// poll): the caches are scanned once under one boundary acquisition, not
+/// once per path, so an event flood costs O(cache + paths × depth).
+pub(super) fn invalidate_size_cache_many<'a>(paths: impl IntoIterator<Item = &'a Path>) {
+    // Every directory that contains (or is) a changed path. Ancestors are
+    // added leaf-first, so meeting one already present means the rest of
+    // the chain is too.
+    let mut stale: HashSet<&Path> = HashSet::new();
+    for path in paths {
+        for ancestor in path.ancestors() {
+            if !stale.insert(ancestor) {
+                break;
+            }
+        }
+    }
+    if stale.is_empty() {
+        return;
+    }
+    let is_stale = |key: &VolumePathKey| stale.contains(key.path.as_path());
     let _boundary = lock_recover(scan_commit_boundary());
     {
         let mut epochs = lock_recover(active_path_epochs());
         for (key, epoch) in epochs.iter() {
-            if path.starts_with(&key.path)
+            if is_stale(key)
                 && let Some(epoch) = epoch.upgrade()
             {
                 epoch.cancel();
             }
         }
-        epochs.retain(|key, epoch| !path.starts_with(&key.path) && epoch.strong_count() > 0);
+        epochs.retain(|key, epoch| !is_stale(key) && epoch.strong_count() > 0);
     }
-    lock_recover(dir_size_cache()).retain(|key, _| !path.starts_with(&key.path));
-    lock_recover(walk_log()).retain(|key, _| !path.starts_with(&key.path));
+    lock_recover(dir_size_cache()).retain(|key, _| !is_stale(key));
+    lock_recover(walk_log()).retain(|key, _| !is_stale(key));
 }
 
 /// Save current cache to disk (best-effort, called from background threads).
@@ -938,6 +1013,9 @@ pub fn invalidate_size_cache(path: &Path) {
 /// Stale paths are harmless because reuse always verifies mtime; probing them
 /// here could block every panel behind the mutex when a remote volume is down.
 pub fn flush_cache() {
+    let Some(path) = cache_path() else {
+        return;
+    };
     // Serialize snapshot + commit so an older panel worker cannot publish
     // after a newer one. The persistence layer supplies a unique private temp
     // file and durable atomic replacement.
@@ -962,5 +1040,5 @@ pub fn flush_cache() {
     };
     entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
     let persisted = PersistedCache { schema: 1, entries };
-    let _ = crate::persistence::save_json_atomic(&cache_path(), &persisted);
+    let _ = crate::persistence::save_json_atomic(&path, &persisted);
 }

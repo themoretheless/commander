@@ -297,6 +297,8 @@ impl ArchiveProvider {
         };
         let modified = metadata.modified().ok();
         let accessed = metadata.accessed().ok();
+        // Every member shows the archive's own mtime; format it once.
+        let modified_str = modified.map_or_else(|| "-".to_string(), format_modified);
         let mut keep_going = true;
         let result = crate::archive::visit_members(
             archive_path,
@@ -317,13 +319,6 @@ impl ArchiveProvider {
                     .extension()
                     .map(|extension| extension.to_string_lossy().to_lowercase())
                     .unwrap_or_default();
-                let modified_str = modified.map_or_else(
-                    || "-".to_string(),
-                    |time| {
-                        let value: chrono::DateTime<chrono::Local> = time.into();
-                        value.format("%d %b %y  %H:%M").to_string()
-                    },
-                );
                 let entry = FileEntry {
                     name_lower: name.to_lowercase(),
                     name,
@@ -337,7 +332,7 @@ impl ArchiveProvider {
                     },
                     extension,
                     modified,
-                    modified_str,
+                    modified_str: modified_str.clone(),
                     size_str: if member.member.is_dir {
                         "...".to_string()
                     } else {
@@ -589,10 +584,15 @@ impl TextMatcher {
     fn new(mode: MatchMode, value: String) -> Result<Self, QueryError> {
         match mode {
             MatchMode::Exact => {
+                // An escaped literal always parses, but a huge pasted token
+                // can still exceed the compiled-size limit.
                 let regex = regex::RegexBuilder::new(&regex::escape(&value))
                     .case_insensitive(true)
                     .build()
-                    .expect("an escaped literal is always a valid regex");
+                    .map_err(|error| QueryError {
+                        token: value.clone(),
+                        message: error.to_string(),
+                    })?;
                 Ok(Self::Exact {
                     original: value,
                     regex,
@@ -745,17 +745,9 @@ impl CompiledQuery {
                 let Some((file, size)) = open_regular_file(&entry.path) else {
                     return ContentVerdict::Skipped;
                 };
-                let mut bytes = Vec::with_capacity(size.min(MAX_CONTENT_BYTES) as usize);
-                if file
-                    .take(MAX_CONTENT_BYTES)
-                    .read_to_end(&mut bytes)
-                    .is_err()
-                {
+                let Some(bytes) = read_text_bytes(file, size) else {
                     return ContentVerdict::Skipped;
-                }
-                if bytes.iter().take(8192).any(|byte| *byte == 0) {
-                    return ContentVerdict::Skipped;
-                }
+                };
                 let content = String::from_utf8_lossy(&bytes);
                 // The opened file's size, not the listing's: for a symlink
                 // the listing holds the link's own (lstat) length.
@@ -806,6 +798,31 @@ impl CompiledQuery {
         }
         ContentVerdict::Matched
     }
+}
+
+/// Leading bytes checked for NULs to tell binary files from text.
+const BINARY_SNIFF_BYTES: u64 = 8_192;
+
+/// Up to `MAX_CONTENT_BYTES` of a text file, or `None` for a binary file or
+/// a read error. The head is sniffed before the rest is read, so a binary
+/// file costs one small read instead of up to 16 MB.
+fn read_text_bytes(reader: impl Read, size: u64) -> Option<Vec<u8>> {
+    let mut reader = reader.take(MAX_CONTENT_BYTES);
+    let mut bytes = Vec::with_capacity(usize::try_from(size.min(BINARY_SNIFF_BYTES)).ok()?);
+    Read::by_ref(&mut reader)
+        .take(BINARY_SNIFF_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    bytes.reserve(
+        usize::try_from(size.min(MAX_CONTENT_BYTES))
+            .unwrap_or(0)
+            .saturating_sub(bytes.len()),
+    );
+    reader.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// Open `path` for a content read only if it is a regular file, returning the
@@ -1139,6 +1156,19 @@ pub fn time_bucket(hit: &SearchHit, pivot: TimePivot, now: SystemTime) -> TimeBu
 }
 
 fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
+    local_datetime(time).map(|local| local.date_naive())
+}
+
+/// Listing-style "modified" text for `time`, or "-" when chrono cannot
+/// represent it (an mtime past ~year 262k): `From<SystemTime>` panics there.
+pub fn format_modified(time: SystemTime) -> String {
+    local_datetime(time).map_or_else(
+        || "-".to_string(),
+        |local| local.format("%d %b %y  %H:%M").to_string(),
+    )
+}
+
+fn local_datetime(time: SystemTime) -> Option<chrono::DateTime<chrono::Local>> {
     let (secs, nanos) = match time.duration_since(std::time::UNIX_EPOCH) {
         Ok(after) => (i64::try_from(after.as_secs()).ok()?, after.subsec_nanos()),
         Err(error) => {
@@ -1155,7 +1185,7 @@ fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
         }
     };
     let utc = chrono::DateTime::from_timestamp(secs, nanos)?;
-    Some(utc.with_timezone(&chrono::Local).date_naive())
+    Some(utc.with_timezone(&chrono::Local))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1224,6 +1254,48 @@ mod tests {
             modified: None,
             modified_str: "-".into(),
             size_str: crate::panel::format_size(size),
+        }
+    }
+
+    #[test]
+    fn content_read_stops_after_the_head_of_a_binary_file() {
+        struct Counting<'a>(&'a [u8], &'a std::cell::Cell<usize>);
+        impl Read for Counting<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.0.read(buf)?;
+                self.1.set(self.1.get() + read);
+                Ok(read)
+            }
+        }
+        let read = std::cell::Cell::new(0);
+        let mut binary = vec![b'a'; 1 << 20];
+        binary[100] = 0;
+        assert!(read_text_bytes(Counting(&binary, &read), binary.len() as u64).is_none());
+        assert!(read.get() as u64 <= BINARY_SNIFF_BYTES);
+
+        let mut late_nul = vec![b'a'; 20_000];
+        late_nul[9_000] = 0;
+        assert_eq!(read_text_bytes(&late_nul[..], 20_000).unwrap(), late_nul);
+    }
+
+    #[test]
+    fn oversized_literal_query_is_an_error_not_a_panic() {
+        let huge = "ab".repeat(1 << 17);
+        let error = TextMatcher::new(MatchMode::Exact, huge.clone())
+            .err()
+            .expect("compiled-size limit");
+        assert_eq!(error.token, huge);
+        assert!(TextMatcher::new(MatchMode::Exact, "a.b".to_string()).is_ok());
+    }
+
+    #[test]
+    fn modified_text_falls_back_for_times_chrono_cannot_hold() {
+        let epoch = format_modified(std::time::UNIX_EPOCH);
+        assert_ne!(epoch, "-");
+        // ~278k years: past chrono's range. Skipped where SystemTime itself
+        // cannot hold it (Windows FILETIME).
+        if let Some(far) = std::time::UNIX_EPOCH.checked_add(Duration::from_secs(1 << 43)) {
+            assert_eq!(format_modified(far), "-");
         }
     }
 

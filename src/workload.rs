@@ -159,6 +159,13 @@ impl Default for CancellationToken {
     }
 }
 
+/// Cancelled-but-still-running tasks of one kind that stop holding that
+/// kind's running slot (see [`Scheduler::slots_in_use`]).
+const MAX_DETACHED_PER_KIND: usize = 4;
+/// Cancelled-but-still-running tasks overall that stop holding a
+/// `max_running` slot.
+const MAX_DETACHED_TOTAL: usize = 8;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskState {
     Queued,
@@ -379,7 +386,7 @@ impl Scheduler {
     }
 
     pub fn start_next_at(&mut self, tick: u64) -> Option<StartedTask> {
-        if self.running_count() >= self.limits.max_running {
+        if self.slots_in_use(None) >= self.limits.max_running {
             return None;
         }
         let running_bytes = self.inflight_bytes();
@@ -388,7 +395,7 @@ impl Scheduler {
             .values()
             .filter(|record| record.state == TaskState::Queued && !record.token.is_cancelled())
             .filter(|record| {
-                self.running_of_kind(record.snapshot.kind)
+                self.slots_in_use(Some(record.snapshot.kind))
                     < self.limits.per_kind_running[record.snapshot.kind.index()].max(1)
             })
             .filter(|record| {
@@ -530,11 +537,34 @@ impl Scheduler {
             .count()
     }
 
-    fn running_of_kind(&self, kind: TaskKind) -> usize {
-        self.tasks
+    /// Running slots counted against `max_running` (`kind: None`) or a
+    /// per-kind limit. A task whose cancellation was requested but whose job
+    /// has not returned yet (for example a `read_dir` blocked on a hung
+    /// mount) is detached: it stops holding a slot, so it cannot keep fresh
+    /// work of its kind queued forever. Detached tasks still count once there
+    /// are more of them than the detached allowance, which bounds the extra
+    /// threads a stuck backend can pin.
+    fn slots_in_use(&self, kind: Option<TaskKind>) -> usize {
+        let (live, detached) = self
+            .tasks
             .values()
-            .filter(|record| record.state == TaskState::Running && record.snapshot.kind == kind)
-            .count()
+            .filter(|record| {
+                record.state == TaskState::Running
+                    && kind.is_none_or(|kind| record.snapshot.kind == kind)
+            })
+            .fold((0_usize, 0_usize), |(live, detached), record| {
+                if record.token.is_cancelled() {
+                    (live, detached + 1)
+                } else {
+                    (live + 1, detached)
+                }
+            });
+        let allowance = if kind.is_some() {
+            MAX_DETACHED_PER_KIND
+        } else {
+            MAX_DETACHED_TOTAL
+        };
+        live + detached.saturating_sub(allowance)
     }
 
     fn inflight_bytes(&self) -> u64 {
@@ -1145,6 +1175,42 @@ mod tests {
             scheduler.start_next_at(7).unwrap().snapshot.id,
             background.id
         );
+    }
+
+    #[test]
+    fn cancelled_running_tasks_release_their_kind_slot_up_to_a_bound() {
+        let mut scheduler = Scheduler::new(SchedulerLimits {
+            per_kind_running: [1; TaskKind::COUNT],
+            ..SchedulerLimits::default()
+        });
+        let submit = |scheduler: &mut Scheduler, tick| {
+            scheduler
+                .submit_at(spec(TaskKind::Listing, tick, Priority::Interactive), tick)
+                .unwrap()
+        };
+        let mut stuck = Vec::new();
+        for tick in 1..=u64::try_from(MAX_DETACHED_PER_KIND).unwrap() {
+            let task = submit(&mut scheduler, tick * 10);
+            // Each earlier cancelled-but-running read no longer holds the slot.
+            assert_eq!(
+                scheduler.start_next_at(tick * 10 + 1).unwrap().snapshot,
+                task
+            );
+            assert!(scheduler.cancel_at(task.id, tick * 10 + 2));
+            stuck.push(task.id);
+        }
+        let live = submit(&mut scheduler, 100);
+        assert_eq!(scheduler.start_next_at(101).unwrap().snapshot, live);
+        submit(&mut scheduler, 102);
+        assert!(
+            scheduler.start_next_at(103).is_none(),
+            "a live task holds it"
+        );
+        // Past the detached allowance the stuck tasks hold the slot again.
+        assert!(scheduler.cancel_at(live.id, 104));
+        assert!(scheduler.start_next_at(105).is_none());
+        scheduler.complete_at(stuck[0], 106, false);
+        assert!(scheduler.start_next_at(107).is_some());
     }
 
     #[test]

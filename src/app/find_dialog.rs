@@ -14,6 +14,26 @@ const fn result_row_height(pivot_active: bool) -> f32 {
     if pivot_active { 40.0 } else { 26.0 }
 }
 
+/// Display order of the results: grouped by time bucket under a pivot,
+/// stable within a bucket. Each hit's bucket (a local-calendar conversion) is
+/// computed once, not once per sort comparison.
+fn pivot_order(
+    results: &[crate::search::SearchHit],
+    pivot: crate::search::TimePivot,
+    clock: SystemTime,
+) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..results.len()).collect();
+    if pivot != crate::search::TimePivot::None {
+        indices.sort_by_cached_key(|&index| {
+            (
+                crate::search::time_bucket(&results[index], pivot, clock),
+                index,
+            )
+        });
+    }
+    indices
+}
+
 const fn index_phase_label(phase: crate::content_index::IndexPhase) -> &'static str {
     match phase {
         crate::content_index::IndexPhase::Disabled => "Off",
@@ -657,19 +677,7 @@ impl App {
                     ui.separator();
 
                     let clock = SystemTime::now();
-                    let mut indices: Vec<usize> = (0..state.results.len()).collect();
-                    if state.time_pivot != crate::search::TimePivot::None {
-                        indices.sort_by_key(|index| {
-                            (
-                                crate::search::time_bucket(
-                                    &state.results[*index],
-                                    state.time_pivot,
-                                    clock,
-                                ),
-                                *index,
-                            )
-                        });
-                    }
+                    let indices = pivot_order(&state.results, state.time_pivot, clock);
                     let pivot = state.time_pivot;
                     let row_height = result_row_height(pivot != crate::search::TimePivot::None);
                     let root = state.root.clone();
@@ -957,7 +965,69 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::result_row_height;
+    use super::{pivot_order, result_row_height};
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+
+    fn hit(name: &str, modified: Option<SystemTime>) -> crate::search::SearchHit {
+        let path = PathBuf::from(format!("/x/{name}"));
+        crate::search::SearchHit {
+            entry: crate::panel::FileEntry {
+                name: name.to_string(),
+                name_lower: name.to_lowercase(),
+                path: path.clone(),
+                identity: crate::panel::ListingIdentity::Unavailable,
+                is_dir: false,
+                size: 1,
+                extension: String::new(),
+                modified,
+                modified_str: String::new(),
+                size_str: String::new(),
+            },
+            identity: crate::search::FileIdentity::Native { volume: 1, file: 1 },
+            accessed: None,
+            explanation: crate::search::MatchExplanation::default(),
+            location: crate::search::SearchLocation::Native(path),
+        }
+    }
+
+    #[test]
+    fn pivot_groups_results_by_bucket_and_keeps_rank_within_one() {
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(400 * 86_400);
+        let results = [
+            hit("old-a", Some(old)),
+            hit("new-a", Some(now)),
+            hit("unknown", None),
+            hit("old-b", Some(old)),
+            hit("new-b", Some(now)),
+        ];
+        assert_eq!(
+            pivot_order(&results, crate::search::TimePivot::None, now),
+            [0, 1, 2, 3, 4]
+        );
+        let order = pivot_order(&results, crate::search::TimePivot::Modified, now);
+        let names: Vec<_> = order
+            .iter()
+            .map(|&index| results[index].entry.name.as_str())
+            .collect();
+        let bucket = |name: &str| {
+            let index = results.iter().position(|h| h.entry.name == name).unwrap();
+            crate::search::time_bucket(&results[index], crate::search::TimePivot::Modified, now)
+        };
+        // Sorted by bucket, original rank breaking ties.
+        assert!(
+            names
+                .windows(2)
+                .all(|pair| bucket(pair[0]) <= bucket(pair[1]))
+        );
+        let new_a = names.iter().position(|n| *n == "new-a").unwrap();
+        let new_b = names.iter().position(|n| *n == "new-b").unwrap();
+        let old_a = names.iter().position(|n| *n == "old-a").unwrap();
+        let old_b = names.iter().position(|n| *n == "old-b").unwrap();
+        assert_eq!(new_b, new_a + 1);
+        assert_eq!(old_b, old_a + 1);
+    }
 
     #[test]
     fn result_rows_are_allocated_at_the_show_rows_stride() {

@@ -363,9 +363,14 @@ impl App {
         let delta_reused_bytes = s.delta_reused_bytes;
         let delta_source_bytes = s.delta_source_bytes;
         let active_workers = s.active_workers;
-        let errors = s.errors.clone();
-        let failures = s.failures.clone();
+        // Copy only the newest rows: the error list is unbounded and this runs
+        // every frame under the progress lock.
+        let error_count = s.errors.len();
+        let error_tail = s.errors[error_count.saturating_sub(DETAIL_ERROR_ROWS)..].to_vec();
+        let failure_tail =
+            s.failures[s.failures.len().saturating_sub(DETAIL_ERROR_ROWS)..].to_vec();
         drop(s);
+        let error_rows = labeled_error_rows(&error_tail, &failure_tail);
         // Transfers waiting behind this one in the queue.
         let queued = self.ws.queued_count();
 
@@ -374,7 +379,7 @@ impl App {
         } else if finished && stopped {
             "Stopped Safely"
         } else if finished {
-            if errors.is_empty() {
+            if error_count == 0 {
                 "Transfer Complete"
             } else {
                 "Completed with Errors"
@@ -591,10 +596,10 @@ impl App {
             }
 
             // Errors collected during the transfer
-            if !errors.is_empty() {
+            if error_count > 0 {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!("{} error(s):", errors.len()))
+                    egui::RichText::new(format!("{error_count} error(s):"))
                         .size(12.0)
                         .strong()
                         .color(t.accent_red),
@@ -603,11 +608,15 @@ impl App {
                     .id_salt("transfer_errors")
                     .max_height(120.0)
                     .show(ui, |ui| {
-                        for (index, err) in errors.iter().enumerate() {
-                            let text = failures.get(index).map_or_else(
-                                || err.clone(),
-                                |failure| format!("{}: {err}", failure.class.label()),
+                        let hidden = error_count - error_rows.len();
+                        if hidden > 0 {
+                            ui.label(
+                                egui::RichText::new(format!("{hidden} earlier error(s) not shown"))
+                                    .size(11.0)
+                                    .color(t.text_muted),
                             );
+                        }
+                        for text in &error_rows {
                             ui.label(egui::RichText::new(text).size(11.0).color(t.accent_red));
                         }
                     });
@@ -694,15 +703,17 @@ impl App {
             }
         });
 
-        if !errors.is_empty() {
+        if error_count > 0 {
             ctx.data_mut(|data| {
                 data.insert_temp(egui::Id::new("active_error_surface"), details.response.rect);
             });
         }
 
-        // Keep repainting during transfer
+        // Keep repainting during transfer at the strip's cadence; progress
+        // samples only arrive every 500 ms, so repainting at display rate
+        // just burns CPU while the Operations panel is open.
         if !finished {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
 
@@ -784,6 +795,42 @@ impl App {
     }
 }
 
+/// Newest transfer errors shown in the details view. Older ones stay in the
+/// report; cloning and laying out thousands of rows each frame stalls the UI.
+const DETAIL_ERROR_ROWS: usize = 200;
+
+/// Error rows prefixed with their failure class. `errors` and `failures` are
+/// not parallel: a backend may push an error with no classified failure (the
+/// macOS copyfile callback does), so index pairing would shift labels onto the
+/// wrong rows. Each failure is recorded right after its own error as
+/// "<context>: <message>", so pair them by that suffix, walking back from the
+/// newest entries. Matching from the end means the tails of both lists give
+/// the same rows as the full lists.
+fn labeled_error_rows(
+    errors: &[String],
+    failures: &[crate::operation::ClassifiedFailure],
+) -> Vec<String> {
+    let mut pending = failures.iter().rev().peekable();
+    let mut rows: Vec<String> = errors
+        .iter()
+        .rev()
+        .map(|err| {
+            let class = pending
+                .next_if(|failure| {
+                    err.strip_suffix(failure.message.as_str())
+                        .is_some_and(|head| head.ends_with(": "))
+                })
+                .map(|failure| failure.class);
+            match class {
+                Some(class) => format!("{}: {err}", class.label()),
+                None => err.clone(),
+            }
+        })
+        .collect();
+    rows.reverse();
+    rows
+}
+
 /// Per-interval speeds (bytes/s) for the speed graph. Samples closer than
 /// 10 ms apart (per-file samples on small-file copies) are merged into the
 /// next interval rather than plotted as false 0 B/s drops, and a rewound byte
@@ -808,7 +855,64 @@ fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::graph_speeds;
+    use super::{graph_speeds, labeled_error_rows};
+    use crate::operation::{ClassifiedFailure, FailureClass};
+
+    #[test]
+    fn error_labels_skip_errors_without_a_classified_failure() {
+        // The macOS copyfile callback pushes an unclassified error before the
+        // executor records the classified one for the same entry.
+        let errors = vec![
+            "a.txt: disk full".to_string(),
+            "Failed to copy: b.txt".to_string(),
+            "b.txt: permission denied".to_string(),
+        ];
+        let failures = vec![
+            ClassifiedFailure::message(FailureClass::Blocked, None, "disk full".to_string()),
+            ClassifiedFailure::message(
+                FailureClass::UserDecision,
+                None,
+                "permission denied".to_string(),
+            ),
+        ];
+        let rows = labeled_error_rows(&errors, &failures);
+        assert_eq!(
+            rows,
+            vec![
+                format!("{}: a.txt: disk full", FailureClass::Blocked.label()),
+                "Failed to copy: b.txt".to_string(),
+                format!(
+                    "{}: b.txt: permission denied",
+                    FailureClass::UserDecision.label()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn error_labels_from_tails_match_full_lists() {
+        let mut errors = Vec::new();
+        let mut failures = Vec::new();
+        for index in 0..10 {
+            if index % 3 == 0 {
+                errors.push(format!("Failed to copy: f{index}"));
+            }
+            let message = format!("failure {index}");
+            errors.push(format!("f{index}: {message}"));
+            failures.push(ClassifiedFailure::message(
+                FailureClass::Retryable,
+                None,
+                message,
+            ));
+        }
+        let full = labeled_error_rows(&errors, &failures);
+        let tail = 5;
+        let from_tails = labeled_error_rows(
+            &errors[errors.len() - tail..],
+            &failures[failures.len() - tail..],
+        );
+        assert_eq!(from_tails, full[full.len() - tail..]);
+    }
 
     #[test]
     fn graph_speeds_merge_close_samples_instead_of_dropping_to_zero() {

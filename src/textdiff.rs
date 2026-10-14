@@ -68,19 +68,32 @@ pub fn diff_lines(a: &str, b: &str) -> Result<Vec<DiffLine>, DiffTooLarge> {
         != (has(&b, Ending::CrLf), has(&b, Ending::Lf));
     let mark_eof = !a.is_empty() && !b.is_empty() && has(&a, Ending::Eof) != has(&b, Ending::Eof);
 
-    let rows = n.checked_add(1).ok_or(DiffTooLarge)?;
-    let cols = m.checked_add(1).ok_or(DiffTooLarge)?;
+    // Shared leading and trailing lines are always part of the LCS, so only
+    // the differing middle needs the quadratic matrix: two long files that
+    // differ in one line stay well under the cap instead of being refused.
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (a_mid, b_mid) = (&a[prefix..n - suffix], &b[prefix..m - suffix]);
+    let (n_mid, m_mid) = (a_mid.len(), b_mid.len());
+
+    let rows = n_mid.checked_add(1).ok_or(DiffTooLarge)?;
+    let cols = m_mid.checked_add(1).ok_or(DiffTooLarge)?;
     let cells = rows.checked_mul(cols).ok_or(DiffTooLarge)?;
     if cells > MAX_DIFF_CELLS {
         return Err(DiffTooLarge);
     }
 
-    // dp[i][j] = LCS length of a[i..] and b[j..].
+    // dp[i][j] = LCS length of a_mid[i..] and b_mid[j..].
     let mut dp = vec![0u32; cells];
     let at = |i: usize, j: usize| i * cols + j;
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            dp[at(i, j)] = if a[i] == b[j] {
+    for i in (0..n_mid).rev() {
+        for j in (0..m_mid).rev() {
+            dp[at(i, j)] = if a_mid[i] == b_mid[j] {
                 dp[at(i + 1, j + 1)] + 1
             } else {
                 dp[at(i + 1, j)].max(dp[at(i, j + 1)])
@@ -89,28 +102,24 @@ pub fn diff_lines(a: &str, b: &str) -> Result<Vec<DiffLine>, DiffTooLarge> {
     }
 
     let mut ops: Vec<(DiffKind, (&str, Ending))> = Vec::with_capacity(n.max(m));
+    ops.extend(a[..prefix].iter().map(|&line| (DiffKind::Equal, line)));
     let (mut i, mut j) = (0usize, 0usize);
-    while i < n && j < m {
-        if a[i] == b[j] {
-            ops.push((DiffKind::Equal, a[i]));
+    while i < n_mid && j < m_mid {
+        if a_mid[i] == b_mid[j] {
+            ops.push((DiffKind::Equal, a_mid[i]));
             i += 1;
             j += 1;
         } else if dp[at(i + 1, j)] >= dp[at(i, j + 1)] {
-            ops.push((DiffKind::Delete, a[i]));
+            ops.push((DiffKind::Delete, a_mid[i]));
             i += 1;
         } else {
-            ops.push((DiffKind::Insert, b[j]));
+            ops.push((DiffKind::Insert, b_mid[j]));
             j += 1;
         }
     }
-    while i < n {
-        ops.push((DiffKind::Delete, a[i]));
-        i += 1;
-    }
-    while j < m {
-        ops.push((DiffKind::Insert, b[j]));
-        j += 1;
-    }
+    ops.extend(a_mid[i..].iter().map(|&line| (DiffKind::Delete, line)));
+    ops.extend(b_mid[j..].iter().map(|&line| (DiffKind::Insert, line)));
+    ops.extend(a[n - suffix..].iter().map(|&line| (DiffKind::Equal, line)));
     Ok(render(&ops, mark_cr, mark_eof))
 }
 
@@ -267,9 +276,40 @@ mod tests {
 
     #[test]
     fn rejects_quadratic_work_before_allocating_the_matrix() {
-        let many_lines = std::iter::repeat_n("x", 3_000)
+        // Identical files now trim to an empty middle, so the cap is exercised
+        // with two 3000-line files that share no line at all.
+        let xs = std::iter::repeat_n("x", 3_000)
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(diff_lines(&many_lines, &many_lines), Err(DiffTooLarge));
+        let ys = std::iter::repeat_n("y", 3_000)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(diff_lines(&xs, &ys), Err(DiffTooLarge));
+        // Shared context around the differing middle does not rescue it.
+        let wrapped = |mid: &str| format!("head\n{mid}\ntail");
+        assert_eq!(diff_lines(&wrapped(&xs), &wrapped(&ys)), Err(DiffTooLarge));
+    }
+
+    #[test]
+    fn long_files_with_a_small_change_are_not_refused() {
+        let lines: Vec<String> = (0..3_000).map(|k| format!("line {k}")).collect();
+        let a = lines.join("\n");
+        let mut changed = lines.clone();
+        changed[1_500] = "edited".to_string();
+        let b = changed.join("\n");
+
+        let d = diff_lines(&a, &b).unwrap();
+        assert_eq!(change_counts(&d), (1, 1));
+        assert_eq!(d.len(), 3_001);
+        assert_eq!(d[1_499].kind, DiffKind::Equal);
+        assert_eq!(d[1_500].kind, DiffKind::Delete);
+        assert_eq!(d[1_500].text, "line 1500");
+        assert_eq!(d[1_501].kind, DiffKind::Insert);
+        assert_eq!(d[1_501].text, "edited");
+        assert_eq!(d[3_000].text, "line 2999");
+        // Identical long files diff as all-equal instead of too large.
+        let same = diff_lines(&a, &a).unwrap();
+        assert_eq!(same.len(), 3_000);
+        assert_eq!(change_counts(&same), (0, 0));
     }
 }

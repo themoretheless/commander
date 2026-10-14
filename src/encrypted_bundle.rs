@@ -1,21 +1,25 @@
 //! Recipient-encrypted support-bundle envelope (research **J005**).
 //!
-//! # Format `commander-encrypted-bundle-v1`
+//! # Format `commander-encrypted-bundle-v2`
 //!
 //! Cleartext fields (inspectable without decrypting): recipient id, created /
-//! expires timestamps, and a redacted plaintext preview.
+//! expires timestamps, and a redacted plaintext preview. In v2 these fields
+//! are bound as AEAD associated data, so editing any of them makes decryption
+//! fail. Legacy v1 envelopes (no associated data) still decrypt.
 //!
 //! Ciphertext uses **XChaCha20-Poly1305**. The payload key is
 //! `BLAKE3::derive_key("commander encrypted support bundle v1", salt || secret)`
 //! where `secret` is the recipient shared secret / passphrase supplied at export.
 
-use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "commander-encrypted-bundle-v1";
+pub const FORMAT: &str = "commander-encrypted-bundle-v2";
+/// Pre-AAD format; still accepted by [`decrypt`] for bundles already exported.
+const LEGACY_FORMAT_V1: &str = "commander-encrypted-bundle-v1";
 pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 const DERIVE_CONTEXT: &str = "commander encrypted support bundle v1";
 
@@ -70,20 +74,47 @@ pub fn encrypt(request: EncryptRequest<'_>) -> Result<EncryptedBundleManifest, S
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|_| "could not initialize XChaCha20-Poly1305".to_string())?;
     let nonce = XNonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, request.plaintext)
-        .map_err(|_| "support bundle encryption failed".to_string())?;
-    Ok(EncryptedBundleManifest {
+    let mut manifest = EncryptedBundleManifest {
         format: FORMAT.to_string(),
         recipient_id: request.recipient_id.to_string(),
         created_at_secs: request.created_at_secs,
         expires_at_secs: request.created_at_secs.saturating_add(request.ttl_secs),
         plaintext_preview: truncate_preview(request.plaintext_preview, 240),
-        ciphertext_bytes: ciphertext.len() as u64,
+        ciphertext_bytes: 0,
         salt_hex: hex_encode(&salt),
         nonce_hex: hex_encode(&nonce_bytes),
-        ciphertext_hex: hex_encode(&ciphertext),
-    })
+        ciphertext_hex: String::new(),
+    };
+    let aad = associated_data(&manifest);
+    let ciphertext = cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: request.plaintext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| "support bundle encryption failed".to_string())?;
+    manifest.ciphertext_bytes = ciphertext.len() as u64;
+    manifest.ciphertext_hex = hex_encode(&ciphertext);
+    Ok(manifest)
+}
+
+/// Associated data binding the cleartext header to the ciphertext (v2).
+/// Each field is length-prefixed so field boundaries cannot be shifted.
+fn associated_data(manifest: &EncryptedBundleManifest) -> Vec<u8> {
+    let mut aad = Vec::new();
+    for field in [
+        manifest.format.as_bytes(),
+        manifest.recipient_id.as_bytes(),
+        manifest.plaintext_preview.as_bytes(),
+    ] {
+        aad.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        aad.extend_from_slice(field);
+    }
+    aad.extend_from_slice(&manifest.created_at_secs.to_le_bytes());
+    aad.extend_from_slice(&manifest.expires_at_secs.to_le_bytes());
+    aad
 }
 
 pub fn decrypt(
@@ -91,12 +122,16 @@ pub fn decrypt(
     recipient_secret: &str,
     now_secs: u64,
 ) -> Result<Vec<u8>, String> {
-    if manifest.format != FORMAT {
-        return Err(format!(
-            "unsupported encrypted bundle format {}",
-            manifest.format
-        ));
-    }
+    let aad = match manifest.format.as_str() {
+        FORMAT => associated_data(manifest),
+        LEGACY_FORMAT_V1 => Vec::new(),
+        _ => {
+            return Err(format!(
+                "unsupported encrypted bundle format {}",
+                manifest.format
+            ));
+        }
+    };
     if manifest.expired(now_secs) {
         return Err("encrypted support bundle has expired".into());
     }
@@ -112,7 +147,11 @@ pub fn decrypt(
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|_| "could not initialize XChaCha20-Poly1305".to_string())?;
     let nonce = XNonce::from_slice(&nonce_bytes);
-    cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
+    let payload = Payload {
+        msg: ciphertext.as_ref(),
+        aad: &aad,
+    };
+    cipher.decrypt(nonce, payload).map_err(|_| {
         "support bundle decryption failed (wrong secret or tampered ciphertext)".into()
     })
 }
@@ -236,6 +275,58 @@ mod tests {
         assert_eq!(recovered, plaintext);
         assert!(decrypt(&manifest, "wrong", 1_050).is_err());
         assert!(decrypt(&manifest, "test-secret", 2_000).is_err());
+    }
+
+    #[test]
+    fn edited_cleartext_header_fails_decryption() {
+        let manifest = encrypt(EncryptRequest {
+            recipient_id: "alice",
+            recipient_secret: "test-secret",
+            created_at_secs: 1_000,
+            ttl_secs: 60,
+            plaintext_preview: "schema=2",
+            plaintext: b"payload",
+        })
+        .unwrap();
+        let mut extended = manifest.clone();
+        extended.expires_at_secs = u64::MAX;
+        assert!(decrypt(&extended, "test-secret", 1_050).is_err());
+        let mut retargeted = manifest.clone();
+        retargeted.recipient_id = "mallory".into();
+        assert!(decrypt(&retargeted, "test-secret", 1_050).is_err());
+        let mut repreviewed = manifest.clone();
+        repreviewed.plaintext_preview = "nothing to see".into();
+        assert!(decrypt(&repreviewed, "test-secret", 1_050).is_err());
+        let mut downgraded = manifest.clone();
+        downgraded.format = LEGACY_FORMAT_V1.into();
+        assert!(decrypt(&downgraded, "test-secret", 1_050).is_err());
+        assert_eq!(
+            decrypt(&manifest, "test-secret", 1_050).unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn legacy_v1_envelope_without_aad_still_decrypts() {
+        let salt = [7_u8; 32];
+        let nonce_bytes = [9_u8; 24];
+        let key = derive_key(b"secret", &salt);
+        let cipher = XChaCha20Poly1305::new_from_slice(&key).unwrap();
+        let ciphertext = cipher
+            .encrypt(XNonce::from_slice(&nonce_bytes), b"old".as_ref())
+            .unwrap();
+        let manifest = EncryptedBundleManifest {
+            format: LEGACY_FORMAT_V1.into(),
+            recipient_id: "ops".into(),
+            created_at_secs: 0,
+            expires_at_secs: 100,
+            plaintext_preview: String::new(),
+            ciphertext_bytes: ciphertext.len() as u64,
+            salt_hex: hex_encode(&salt),
+            nonce_hex: hex_encode(&nonce_bytes),
+            ciphertext_hex: hex_encode(&ciphertext),
+        };
+        assert_eq!(decrypt(&manifest, "secret", 10).unwrap(), b"old");
     }
 
     #[test]

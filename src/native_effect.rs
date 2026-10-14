@@ -119,38 +119,36 @@ mod appkit {
             }
             let result = match request {
                 OpenRequest::OpenPath(path) => open::that(path),
-                OpenRequest::Reveal(path) => std::process::Command::new("open")
-                    .arg("-R")
-                    .arg(path)
-                    .spawn()
-                    .map(|_| ()),
-                OpenRequest::OpenWith { path, application } => std::process::Command::new("open")
-                    .arg("-a")
-                    .arg(application)
-                    .arg(path)
-                    .spawn()
-                    .map(|_| ()),
-                OpenRequest::QuickLook(path) => std::process::Command::new("qlmanage")
-                    .arg("-p")
-                    .arg(path)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .map(|_| ()),
-                OpenRequest::GetInfo(path) => std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg("on run argv")
-                    .arg("-e")
-                    .arg(
-                        "tell application \"Finder\" to open information window of \
+                OpenRequest::Reveal(path) => {
+                    spawn_reaped(std::process::Command::new("open").arg("-R").arg(path))
+                }
+                OpenRequest::OpenWith { path, application } => spawn_reaped(
+                    std::process::Command::new("open")
+                        .arg("-a")
+                        .arg(application)
+                        .arg(path),
+                ),
+                OpenRequest::QuickLook(path) => spawn_reaped(
+                    std::process::Command::new("qlmanage")
+                        .arg("-p")
+                        .arg(path)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null()),
+                ),
+                OpenRequest::GetInfo(path) => spawn_reaped(
+                    std::process::Command::new("osascript")
+                        .arg("-e")
+                        .arg("on run argv")
+                        .arg("-e")
+                        .arg(
+                            "tell application \"Finder\" to open information window of \
                          (POSIX file (item 1 of argv) as alias)",
-                    )
-                    .arg("-e")
-                    .arg("end run")
-                    .arg("--")
-                    .arg(path)
-                    .spawn()
-                    .map(|_| ()),
+                        )
+                        .arg("-e")
+                        .arg("end run")
+                        .arg("--")
+                        .arg(path),
+                ),
             };
             match result {
                 Ok(()) => OpenOutcome::Accepted,
@@ -161,6 +159,28 @@ mod appkit {
 }
 #[cfg(target_os = "macos")]
 pub use appkit::{MacOsClipboard, MacOsOpener};
+
+/// Launch a helper process without leaving a zombie: dropping a `Child` does
+/// not reap it, so a detached thread waits for it to exit.
+#[cfg(any(target_os = "macos", test))]
+fn spawn_reaped(command: &mut std::process::Command) -> std::io::Result<()> {
+    spawn_reaped_with_handle(command).map(drop)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn spawn_reaped_with_handle(
+    command: &mut std::process::Command,
+) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
+    let mut child = command.spawn()?;
+    // The process is already running; if no reaper thread can start, the
+    // launch still succeeded and only the exit status goes uncollected.
+    Ok(std::thread::Builder::new()
+        .name("child-reaper".to_string())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .ok())
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeTrash;
@@ -248,40 +268,114 @@ impl FreeSpacePort for NativeFreeSpace {
 }
 
 #[cfg(unix)]
-fn probe_free_space(path: &Path) -> SpaceProbeOutcome {
-    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    let path = path.to_path_buf();
+/// A filesystem probe that may block on a hung mount, keyed so a repeat of
+/// one still stuck in the kernel does not start another thread.
+#[cfg(any(unix, test))]
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+enum ProbeKey {
+    FreeSpace(std::path::PathBuf),
+    Relation(std::path::PathBuf, std::path::PathBuf),
+}
+
+#[cfg(any(unix, test))]
+#[cfg_attr(not(unix), allow(dead_code))]
+fn in_flight_probes() -> &'static std::sync::Mutex<std::collections::HashSet<ProbeKey>> {
+    static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<ProbeKey>>> =
+        std::sync::OnceLock::new();
+    IN_FLIGHT.get_or_init(Default::default)
+}
+
+/// Why [`run_bounded`] produced no result.
+#[cfg(any(unix, test))]
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedFailure {
+    /// The same probe is still blocked from an earlier call.
+    StillBlocked,
+    TimedOut,
+    SpawnFailed(String),
+    Disconnected,
+}
+
+/// Run `work` on a helper thread and wait at most `timeout`. A timed-out
+/// thread is abandoned (a blocked `stat`/`statvfs` cannot be interrupted) but
+/// stays registered under `key` until it returns, so repeated calls on a hung
+/// mount fail fast instead of accumulating blocked threads.
+#[cfg(any(unix, test))]
+#[cfg_attr(not(unix), allow(dead_code))]
+fn run_bounded<T: Send + 'static>(
+    key: ProbeKey,
+    timeout: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, BoundedFailure> {
+    if !crate::lock_util::recover(in_flight_probes()).insert(key.clone()) {
+        return Err(BoundedFailure::StillBlocked);
+    }
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let worker_key = key.clone();
     let spawn = std::thread::Builder::new()
-        .name("statvfs-probe".to_string())
+        .name("fs-probe".to_string())
         .spawn(move || {
-            let _ = sender.send(probe_free_space_blocking(&path));
+            // Released on return and on unwind, so a panicking probe does not
+            // leave its key marked busy for the rest of the process.
+            struct Release(ProbeKey);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    crate::lock_util::recover(in_flight_probes()).remove(&self.0);
+                }
+            }
+            let release = Release(worker_key);
+            let outcome = work();
+            drop(release);
+            let _ = sender.send(outcome);
         });
     if let Err(error) = spawn {
-        return SpaceProbeOutcome::Unknown(NativeFailure {
+        crate::lock_util::recover(in_flight_probes()).remove(&key);
+        return Err(BoundedFailure::SpawnFailed(error.to_string()));
+    }
+    match receiver.recv_timeout(timeout) {
+        Ok(outcome) => Ok(outcome),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(BoundedFailure::TimedOut),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(BoundedFailure::Disconnected),
+    }
+}
+
+#[cfg(unix)]
+fn bounded_failure(what: &str, failure: BoundedFailure) -> NativeFailure {
+    match failure {
+        BoundedFailure::StillBlocked => NativeFailure {
+            kind: NativeFailureKind::Busy,
+            message: format!("{what} is still blocked from an earlier attempt"),
+        },
+        BoundedFailure::TimedOut => NativeFailure {
+            kind: NativeFailureKind::Busy,
+            message: format!("{what} timed out after {}s", PROBE_TIMEOUT.as_secs()),
+        },
+        BoundedFailure::SpawnFailed(error) => NativeFailure {
             kind: NativeFailureKind::Unknown,
-            message: format!("Could not start free-space probe: {error}"),
-        });
+            message: format!("Could not start {what}: {error}"),
+        },
+        BoundedFailure::Disconnected => NativeFailure {
+            kind: NativeFailureKind::Unknown,
+            message: format!("{what} stopped before publishing a result"),
+        },
     }
-    match receiver.recv_timeout(PROBE_TIMEOUT) {
-        Ok(outcome) => outcome,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            SpaceProbeOutcome::Unknown(NativeFailure {
-                kind: NativeFailureKind::Busy,
-                message: format!(
-                    "free-space probe timed out after {}s",
-                    PROBE_TIMEOUT.as_secs()
-                ),
-            })
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            SpaceProbeOutcome::Unknown(NativeFailure {
-                kind: NativeFailureKind::Unknown,
-                message: "free-space probe stopped before publishing a result".to_string(),
-            })
-        }
-    }
+}
+
+#[cfg(unix)]
+fn probe_free_space(path: &Path) -> SpaceProbeOutcome {
+    let owned = path.to_path_buf();
+    run_bounded(
+        ProbeKey::FreeSpace(path.to_path_buf()),
+        PROBE_TIMEOUT,
+        move || probe_free_space_blocking(&owned),
+    )
+    .unwrap_or_else(|failure| {
+        SpaceProbeOutcome::Unknown(bounded_failure("free-space probe", failure))
+    })
 }
 
 #[cfg(unix)]
@@ -329,8 +423,21 @@ fn classify_space_product(blocks: u128, block_size: u128) -> SpaceProbeOutcome {
     }
 }
 
+/// Stats both paths under the same timeout as the free-space probe, so a hung
+/// target mount cannot block the space-probe worker before `probe` runs.
 #[cfg(unix)]
 fn volume_relation(source: &Path, target: &Path) -> VolumeRelation {
+    let (owned_source, owned_target) = (source.to_path_buf(), target.to_path_buf());
+    run_bounded(
+        ProbeKey::Relation(source.to_path_buf(), target.to_path_buf()),
+        PROBE_TIMEOUT,
+        move || volume_relation_blocking(&owned_source, &owned_target),
+    )
+    .unwrap_or_else(|failure| VolumeRelation::Unknown(bounded_failure("volume probe", failure)))
+}
+
+#[cfg(unix)]
+fn volume_relation_blocking(source: &Path, target: &Path) -> VolumeRelation {
     use std::os::unix::fs::MetadataExt;
 
     match (std::fs::metadata(source), std::fs::metadata(target)) {
@@ -352,6 +459,71 @@ fn volume_relation(_source: &Path, _target: &Path) -> VolumeRelation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_still_blocked_probe_is_not_spawned_again() {
+        let key = ProbeKey::FreeSpace("/test/hung-mount".into());
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let first = run_bounded(key.clone(), Duration::from_millis(20), move || {
+            let _ = blocked.recv();
+            1
+        });
+        assert_eq!(first, Err(BoundedFailure::TimedOut));
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_in_worker = ran.clone();
+        let second = run_bounded(key.clone(), Duration::from_secs(5), move || {
+            ran_in_worker.store(true, std::sync::atomic::Ordering::SeqCst);
+            2
+        });
+        assert_eq!(second, Err(BoundedFailure::StillBlocked));
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Once the stuck call returns, the key is free again.
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match run_bounded(key.clone(), Duration::from_secs(5), || 3) {
+                Ok(value) => {
+                    assert_eq!(value, 3);
+                    break;
+                }
+                Err(BoundedFailure::StillBlocked) if std::time::Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_panicking_probe_releases_its_key() {
+        let key = ProbeKey::FreeSpace("/test/panicking-probe".into());
+        let first: Result<u8, _> = run_bounded(key.clone(), Duration::from_secs(5), || {
+            panic!("probe failed")
+        });
+        assert_eq!(first, Err(BoundedFailure::Disconnected));
+        assert_eq!(run_bounded(key, Duration::from_secs(5), || 4), Ok(4));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn volume_relation_still_classifies_same_volume() {
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.file("a", "");
+        let b = temp.file("b", "");
+        assert_eq!(volume_relation(&a, &b), VolumeRelation::Same);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawned_helpers_are_reaped() {
+        let handle = spawn_reaped_with_handle(&mut std::process::Command::new("true"))
+            .unwrap()
+            .expect("reaper thread starts");
+        // The reaper finishes only after wait() has collected the child.
+        handle.join().unwrap();
+    }
 
     #[test]
     fn free_space_product_distinguishes_exact_and_saturated_values() {

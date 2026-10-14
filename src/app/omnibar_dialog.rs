@@ -148,17 +148,22 @@ impl App {
             OmnibarMode::Jump(q) | OmnibarMode::Command(q) => Some(q),
             _ => None,
         };
-        let matches = command_query
+        // Only commands that get a row are ranked, checked and previewed.
+        let shown_commands = command_rows_shown(&mode);
+        let mut matches = command_query
+            .filter(|_| shown_commands > 0)
             .map(|q| crate::command::rank(q, &self.palette_usage, self.palette_tick))
             .unwrap_or_default();
+        matches.truncate(shown_commands);
         let command_context = self.ws.command_context();
         let availabilities: Vec<crate::command::CommandAvailability> = matches
             .iter()
             .map(|m| crate::command::availability(m.command, &command_context))
             .collect();
+        let picked = picked_count(self.ws.active_panel_ref());
         let previews: Vec<String> = matches
             .iter()
-            .map(|m| self.palette_command_preview(m.command))
+            .map(|m| self.palette_command_preview(m.command, picked))
             .collect();
 
         let mut rows: Vec<OmniRow> = Vec::new();
@@ -181,9 +186,7 @@ impl App {
                         });
                     }
                 }
-                if !q.is_empty() {
-                    rows.extend((0..matches.len().min(8)).map(OmniRow::Command));
-                }
+                rows.extend((0..matches.len()).map(OmniRow::Command));
             }
             OmnibarMode::Command(_) => rows.extend((0..matches.len()).map(OmniRow::Command)),
             OmnibarMode::Path(_) | OmnibarMode::Search(_) | OmnibarMode::Shell(_) => {}
@@ -557,13 +560,12 @@ impl App {
             .collect()
     }
 
-    fn palette_command_preview(&self, command: crate::command::Command) -> String {
+    /// Preview text for a palette command; `picked` is the active pane's
+    /// selection-or-cursor count, computed once per frame by the caller.
+    fn palette_command_preview(&self, command: crate::command::Command, picked: usize) -> String {
         use crate::command::Command;
         let active = self.ws.active_panel_ref();
         let inactive = self.ws.inactive_panel();
-        let picked = active
-            .selected_or_cursor()
-            .map_or(0, |entries| entries.len());
         let active_path = Self::palette_path_label(&active.current_path);
         let inactive_path = Self::palette_path_label(&inactive.current_path);
         match command {
@@ -674,9 +676,69 @@ impl App {
     }
 }
 
+/// Command rows the omnibar shows: all of them after `>`, at most eight
+/// under a typed Jump query, and none for an empty Jump query or the
+/// path/search/shell modes.
+fn command_rows_shown(mode: &OmnibarMode<'_>) -> usize {
+    match mode {
+        OmnibarMode::Jump("") => 0,
+        OmnibarMode::Jump(_) => 8,
+        OmnibarMode::Command(_) => usize::MAX,
+        OmnibarMode::Path(_) | OmnibarMode::Search(_) | OmnibarMode::Shell(_) => 0,
+    }
+}
+
+/// How many entries a selection command would act on: the selection, or the
+/// cursor entry when nothing is selected. Equals
+/// `selected_or_cursor().map_or(0, len)` without cloning any entry.
+fn picked_count(panel: &PanelState) -> usize {
+    if panel.selected_count() == 0 {
+        usize::from(panel.cursor_entry().is_some())
+    } else {
+        panel.visible_selected_count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{home_relative_display, step_selection};
+    use super::{
+        OmnibarMode, command_rows_shown, home_relative_display, picked_count, step_selection,
+    };
+
+    #[test]
+    fn only_commands_that_get_rows_are_ranked() {
+        assert_eq!(command_rows_shown(&OmnibarMode::Jump("")), 0);
+        assert_eq!(command_rows_shown(&OmnibarMode::Jump("co")), 8);
+        assert_eq!(command_rows_shown(&OmnibarMode::Command("")), usize::MAX);
+        assert_eq!(command_rows_shown(&OmnibarMode::Path("/tmp")), 0);
+        assert_eq!(command_rows_shown(&OmnibarMode::Search("x")), 0);
+        assert_eq!(command_rows_shown(&OmnibarMode::Shell("ls")), 0);
+    }
+
+    #[test]
+    fn picked_count_matches_selected_or_cursor() {
+        let temp = crate::testutil::TempDir::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(temp.path().join(name), "x").expect("write");
+        }
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        let expected = |panel: &crate::panel::PanelState| {
+            panel
+                .selected_or_cursor()
+                .map_or(0, |entries| entries.len())
+        };
+        // Cursor on "..": nothing picked.
+        panel.set_cursor(0);
+        assert_eq!(picked_count(&panel), expected(&panel));
+        panel.set_cursor(1);
+        assert_eq!(picked_count(&panel), 1);
+        assert_eq!(picked_count(&panel), expected(&panel));
+        panel.toggle_select(temp.path().join("a.txt"));
+        panel.toggle_select(temp.path().join("c.txt"));
+        assert_eq!(picked_count(&panel), 2);
+        assert_eq!(picked_count(&panel), expected(&panel));
+    }
     use std::path::{MAIN_SEPARATOR, Path};
 
     #[test]

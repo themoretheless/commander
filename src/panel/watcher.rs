@@ -1,11 +1,29 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
-use super::{Notify, invalidate_size_cache};
+use super::{Notify, invalidate_size_cache, invalidate_size_cache_many};
 
 pub const WATCHER_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Longest wait between retries for a directory no watcher backend can
+/// subscribe to (the base backoff doubles per consecutive failure).
+const WATCHER_RETRY_BACKOFF_MAX_SHIFT: u32 = 4;
+
+/// Messages the callbacks may queue before further events collapse into a
+/// single gap (a full re-list): frames can stop while the window is hidden,
+/// and an event burst must not grow the inbox without bound.
+const INBOX_CAPACITY: usize = 4_096;
+/// `overflowed` bit: an event was dropped on a full inbox (re-list).
+const DROPPED_EVENT: u8 = 1;
+/// `overflowed` bit: the dropped event was a backend error that needs the
+/// watcher torn down and resubscribed.
+const DROPPED_RESTART: u8 = 2;
+
+/// Messages one `poll` (one frame) applies; the rest wait for the next frame
+/// so an event flood cannot stall a single frame.
+const MAX_MESSAGES_PER_POLL: usize = 1_024;
 
 enum DirectoryWatcher {
     Native(notify::RecommendedWatcher),
@@ -69,8 +87,12 @@ struct WatcherCallback {
     /// canonicalizes watched paths (`/tmp` -> `/private/tmp`). `None` when
     /// it equals the binding path.
     canonical: Option<PathBuf>,
-    sender: mpsc::Sender<WatchMessage>,
+    sender: mpsc::SyncSender<WatchMessage>,
     wake_scheduled: Arc<AtomicBool>,
+    /// [`DROPPED_EVENT`] (and [`DROPPED_RESTART`] for a backend error) when
+    /// the inbox was full and a message was dropped; the next poll treats it
+    /// as a gap, or as a backend error.
+    overflowed: Arc<AtomicU8>,
     wake: Option<Notify>,
 }
 
@@ -92,15 +114,20 @@ fn error_needs_restart(error: &notify::Error, is_root: impl Fn(&Path) -> bool) -
 
 impl WatcherCallback {
     fn send(&self, kind: WatchMessageKind) {
-        if self
-            .sender
-            .send(WatchMessage {
-                binding: self.binding.clone(),
-                kind,
-            })
-            .is_err()
-        {
-            return;
+        match self.sender.try_send(WatchMessage {
+            binding: self.binding.clone(),
+            kind,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(message)) => {
+                let dropped = if matches!(message.kind, WatchMessageKind::BackendError) {
+                    DROPPED_EVENT | DROPPED_RESTART
+                } else {
+                    DROPPED_EVENT
+                };
+                self.overflowed.fetch_or(dropped, Ordering::AcqRel);
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => return,
         }
         let coalesced = self.wake_scheduled.swap(true, Ordering::AcqRel);
         crate::watcher_health::record_event_batch(coalesced);
@@ -150,6 +177,12 @@ impl WatcherCallback {
                 self.send(WatchMessageKind::Gap);
                 return;
             }
+            // Reads change nothing. inotify reports opens, so without this
+            // the app's own listing, count and size walks would invalidate
+            // sizes and re-list the folder they just read.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
 
             let paths: Vec<PathBuf> = event
                 .paths
@@ -180,10 +213,13 @@ pub(super) struct DirectoryWatcherState {
     watcher: Option<DirectoryWatcher>,
     binding: Option<WatchBinding>,
     retry: Option<(PathBuf, Instant)>,
+    /// Consecutive failures to subscribe to this path with any backend.
+    unavailable: Option<(PathBuf, u32)>,
     notify: Option<Notify>,
-    sender: mpsc::Sender<WatchMessage>,
+    sender: mpsc::SyncSender<WatchMessage>,
     receiver: mpsc::Receiver<WatchMessage>,
     wake_scheduled: Arc<AtomicBool>,
+    overflowed: Arc<AtomicU8>,
     next_binding_epoch: u64,
     requested_generation: u64,
     applied_generation: u64,
@@ -194,15 +230,17 @@ pub(super) struct DirectoryWatcherState {
 
 impl Default for DirectoryWatcherState {
     fn default() -> Self {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(INBOX_CAPACITY);
         Self {
             watcher: None,
             binding: None,
             retry: None,
+            unavailable: None,
             notify: None,
             sender,
             receiver,
             wake_scheduled: Arc::new(AtomicBool::new(false)),
+            overflowed: Arc::new(AtomicU8::new(0)),
             next_binding_epoch: 1,
             requested_generation: 0,
             applied_generation: 0,
@@ -219,6 +257,7 @@ impl DirectoryWatcherState {
         self.watcher = None;
         self.binding = None;
         self.retry = None;
+        self.unavailable = None;
         self.retry_reconciliation_at = None;
     }
 
@@ -261,6 +300,7 @@ impl DirectoryWatcherState {
         self.watcher = None;
         self.binding = None;
         self.wake_scheduled = Arc::new(AtomicBool::new(false));
+        self.overflowed = Arc::new(AtomicU8::new(0));
 
         let binding = WatchBinding {
             path: path.to_path_buf(),
@@ -290,6 +330,7 @@ impl DirectoryWatcherState {
                 canonical: canonical.clone(),
                 sender: self.sender.clone(),
                 wake_scheduled: Arc::clone(&self.wake_scheduled),
+                overflowed: Arc::clone(&self.overflowed),
                 wake: self.notify.clone(),
             };
             let watcher = match backend {
@@ -315,6 +356,7 @@ impl DirectoryWatcherState {
             self.binding = Some(binding.clone());
             self.watcher = Some(watcher);
             self.retry = None;
+            self.unavailable = None;
             self.request_reconciliation(true);
             crate::watcher_health::record_watcher_start(backend, depth, fallback);
             if recovering {
@@ -389,10 +431,22 @@ impl DirectoryWatcherState {
         self.ensure_binding(path);
         let mut outcome = WatchPoll::default();
         let mut restart = false;
+        let mut changed = Vec::new();
+        let mut applied = 0usize;
+        let mut backlog = false;
 
         loop {
-            while let Ok(message) = self.receiver.try_recv() {
-                restart |= self.apply_message(message, &mut outcome);
+            while applied < MAX_MESSAGES_PER_POLL
+                && let Ok(message) = self.receiver.try_recv()
+            {
+                applied += 1;
+                restart |= self.apply_message(message, &mut outcome, &mut changed);
+            }
+            if applied >= MAX_MESSAGES_PER_POLL {
+                // Leave the coalescing gate set (callbacks stay quiet) and
+                // wake the next frame to drain the rest.
+                backlog = true;
+                break;
             }
 
             // Clear the coalescing gate, then check once more. An event racing
@@ -401,11 +455,26 @@ impl DirectoryWatcherState {
             self.wake_scheduled.store(false, Ordering::Release);
             match self.receiver.try_recv() {
                 Ok(message) => {
-                    restart |= self.apply_message(message, &mut outcome);
+                    applied += 1;
+                    restart |= self.apply_message(message, &mut outcome, &mut changed);
                     continue;
                 }
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             }
+        }
+        let dropped = self.overflowed.swap(0, Ordering::AcqRel);
+        if dropped != 0
+            && let Some(binding) = &self.binding
+        {
+            // Events were dropped on a full inbox: re-list like a gap, and
+            // resubscribe if one of them was a backend error.
+            changed.push(binding.path.clone());
+            self.request_reconciliation(true);
+            restart |= dropped & DROPPED_RESTART != 0;
+        }
+        invalidate_size_cache_many(changed.iter().map(PathBuf::as_path));
+        if backlog && let Some(wake) = &self.notify {
+            wake();
         }
 
         if restart {
@@ -427,18 +496,23 @@ impl DirectoryWatcherState {
         outcome
     }
 
-    fn apply_message(&mut self, message: WatchMessage, outcome: &mut WatchPoll) -> bool {
+    /// Apply one inbox message. Paths whose cached sizes went stale are
+    /// collected into `changed` and invalidated once per poll.
+    fn apply_message(
+        &mut self,
+        message: WatchMessage,
+        outcome: &mut WatchPoll,
+        changed: &mut Vec<PathBuf>,
+    ) -> bool {
         if self.binding.as_ref() != Some(&message.binding) {
             return false;
         }
         match message.kind {
             WatchMessageKind::Changed { paths, direct } => {
                 if paths.is_empty() {
-                    invalidate_size_cache(&message.binding.path);
+                    changed.push(message.binding.path);
                 } else {
-                    for changed in paths {
-                        invalidate_size_cache(&changed);
-                    }
+                    changed.extend(paths);
                 }
                 if direct {
                     self.request_reconciliation(false);
@@ -448,12 +522,12 @@ impl DirectoryWatcherState {
                 false
             }
             WatchMessageKind::Gap => {
-                invalidate_size_cache(&message.binding.path);
+                changed.push(message.binding.path);
                 self.request_reconciliation(true);
                 false
             }
             WatchMessageKind::BackendError => {
-                invalidate_size_cache(&message.binding.path);
+                changed.push(message.binding.path);
                 self.request_reconciliation(true);
                 true
             }
@@ -471,12 +545,25 @@ impl DirectoryWatcherState {
         }
     }
 
+    /// No backend could subscribe to `path`. The first failure re-lists and
+    /// re-measures once; repeated failures only back off further (2s, 4s, ...
+    /// up to 32s) instead of re-listing and force-rescanning sizes on every
+    /// retry.
     fn mark_unavailable(&mut self, path: &Path) {
-        invalidate_size_cache(path);
+        let failures = match &self.unavailable {
+            Some((failed, count)) if failed == path => count.saturating_add(1),
+            _ => 0,
+        };
+        self.unavailable = Some((path.to_path_buf(), failures));
         self.watcher = None;
         self.binding = None;
-        self.retry = Some((path.to_path_buf(), Instant::now() + WATCHER_RETRY_BACKOFF));
-        self.request_reconciliation(true);
+        let backoff = WATCHER_RETRY_BACKOFF
+            .saturating_mul(1 << failures.min(WATCHER_RETRY_BACKOFF_MAX_SHIFT));
+        self.retry = Some((path.to_path_buf(), Instant::now() + backoff));
+        if failures == 0 {
+            invalidate_size_cache(path);
+            self.request_reconciliation(true);
+        }
     }
 
     #[cfg(test)]
@@ -631,7 +718,7 @@ mod tests {
         root: &str,
         canonical: Option<&str>,
     ) -> (TestHandler, mpsc::Receiver<WatchMessage>) {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(INBOX_CAPACITY);
         let callback = WatcherCallback {
             binding: WatchBinding {
                 path: PathBuf::from(root),
@@ -640,6 +727,7 @@ mod tests {
             canonical: canonical.map(PathBuf::from),
             sender,
             wake_scheduled: Arc::new(AtomicBool::new(false)),
+            overflowed: Arc::new(AtomicU8::new(0)),
             wake: None,
         };
         (callback.into_handler(), receiver)
@@ -693,6 +781,152 @@ mod tests {
             receiver.try_recv().unwrap().kind,
             WatchMessageKind::BackendError
         ));
+    }
+
+    #[test]
+    fn access_events_are_ignored() {
+        let (mut handler, receiver) = test_callback("/watched", None);
+        for kind in [
+            notify::EventKind::Access(notify::event::AccessKind::Open(
+                notify::event::AccessMode::Read,
+            )),
+            notify::EventKind::Access(notify::event::AccessKind::Close(
+                notify::event::AccessMode::Read,
+            )),
+        ] {
+            handler(Ok(
+                notify::Event::new(kind).add_path(PathBuf::from("/watched/sub"))
+            ));
+        }
+        assert!(receiver.try_recv().is_err(), "reads queue nothing");
+
+        handler(Ok(notify::Event::new(notify::EventKind::Create(
+            notify::event::CreateKind::File,
+        ))
+        .add_path(PathBuf::from("/watched/new.txt"))));
+        assert!(matches!(
+            receiver.try_recv().unwrap().kind,
+            WatchMessageKind::Changed { direct: true, .. }
+        ));
+    }
+
+    #[test]
+    fn a_full_inbox_collapses_into_a_gap() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let overflowed = Arc::new(AtomicU8::new(0));
+        let mut handler = WatcherCallback {
+            binding: WatchBinding {
+                path: PathBuf::from("/watched"),
+                epoch: 1,
+            },
+            canonical: None,
+            sender,
+            wake_scheduled: Arc::new(AtomicBool::new(false)),
+            overflowed: Arc::clone(&overflowed),
+            wake: None,
+        }
+        .into_handler();
+        for name in ["a", "b", "c"] {
+            handler(Ok(notify::Event::new(notify::EventKind::Any)
+                .add_path(PathBuf::from("/watched").join(name))));
+        }
+        assert_eq!(overflowed.load(Ordering::Acquire), DROPPED_EVENT);
+        handler(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)));
+        assert_eq!(
+            overflowed.load(Ordering::Acquire),
+            DROPPED_EVENT | DROPPED_RESTART,
+            "a dropped backend error is remembered as one"
+        );
+        assert_eq!(receiver.try_iter().count(), 1, "the inbox stays bounded");
+
+        let mut watcher = DirectoryWatcherState::default();
+        let binding = watcher.activate_test_binding(Path::new("/watched"));
+        watcher.acknowledge_snapshot(watcher.snapshot_ticket(), Path::new("/watched"));
+        assert!(!watcher.has_pending_reconciliation_for_test());
+        watcher.overflowed.store(DROPPED_EVENT, Ordering::Release);
+        let outcome = watcher.poll(&binding.path);
+        assert!(outcome.ticket.is_some(), "dropped events force a re-list");
+        assert!(outcome.recovered_gap);
+        assert_eq!(watcher.overflowed.load(Ordering::Acquire), 0);
+        assert!(watcher.retry.is_none(), "a dropped change does not restart");
+    }
+
+    #[test]
+    fn a_backend_error_dropped_on_a_full_inbox_still_restarts() {
+        let mut watcher = DirectoryWatcherState::default();
+        let binding = watcher.activate_test_binding(Path::new("/watched"));
+        watcher.acknowledge_snapshot(watcher.snapshot_ticket(), Path::new("/watched"));
+        watcher
+            .overflowed
+            .store(DROPPED_EVENT | DROPPED_RESTART, Ordering::Release);
+        let outcome = watcher.poll(&binding.path);
+        assert!(outcome.recovered_gap);
+        assert!(
+            watcher
+                .retry
+                .as_ref()
+                .is_some_and(|(path, _)| path == &binding.path),
+            "the lost backend error tears the watcher down for a retry"
+        );
+    }
+
+    #[test]
+    fn one_poll_applies_a_bounded_number_of_messages() {
+        let mut watcher = DirectoryWatcherState::default();
+        let binding = watcher.activate_test_binding(Path::new("/watched"));
+        for index in 0..MAX_MESSAGES_PER_POLL + 10 {
+            watcher.inject_test_message(
+                binding.clone(),
+                WatchMessageKind::Changed {
+                    paths: vec![PathBuf::from(format!("/watched/sub/{index}"))],
+                    direct: false,
+                },
+            );
+        }
+        // The callbacks set the coalescing gate when they queued these.
+        watcher.wake_scheduled.store(true, Ordering::Release);
+        let outcome = watcher.poll(Path::new("/watched"));
+        assert!(outcome.sizes_dirty);
+        assert!(
+            watcher.wake_scheduled.load(Ordering::Acquire),
+            "callbacks stay coalesced while a backlog remains"
+        );
+        assert_eq!(watcher.receiver.try_iter().count(), 10);
+    }
+
+    #[test]
+    fn repeated_subscription_failures_back_off_without_relisting() {
+        let mut watcher = DirectoryWatcherState::default();
+        let path = Path::new("/unwatchable");
+        let start = watcher.requested_generation;
+
+        watcher.mark_unavailable(path);
+        assert_eq!(
+            watcher.requested_generation,
+            start + 1,
+            "first failure re-lists"
+        );
+        let first_retry = watcher.retry.as_ref().unwrap().1;
+
+        watcher.mark_unavailable(path);
+        watcher.mark_unavailable(path);
+        assert_eq!(
+            watcher.requested_generation,
+            start + 1,
+            "retries do not re-list"
+        );
+        let later_retry = watcher.retry.as_ref().unwrap().1;
+        assert!(later_retry >= first_retry + WATCHER_RETRY_BACKOFF * 2);
+
+        for _ in 0..10 {
+            watcher.mark_unavailable(path);
+        }
+        let capped = watcher.retry.as_ref().unwrap().1;
+        assert!(capped <= Instant::now() + WATCHER_RETRY_BACKOFF * 16);
+
+        // Another folder failing starts its own count.
+        watcher.mark_unavailable(Path::new("/other"));
+        assert_eq!(watcher.requested_generation, start + 2);
     }
 
     #[test]

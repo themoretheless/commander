@@ -1075,6 +1075,13 @@ fn cursor_move_jumps_by_a_signed_count_and_clamps() {
 
     ws.execute(Command::CursorMove(-100));
     assert_eq!(ws.left.cursor(), 0, "clamped to the first row");
+
+    // A ten-digit vim count must not overflow (debug panic, release wrap).
+    ws.execute(Command::CursorMove(3));
+    ws.execute(Command::CursorMove(i32::MAX));
+    assert_eq!(ws.left.cursor(), 10, "a huge count lands on the last entry");
+    ws.execute(Command::CursorMove(i32::MIN));
+    assert_eq!(ws.left.cursor(), 0, "a huge negative count lands on top");
 }
 
 #[test]
@@ -2399,6 +2406,41 @@ fn find_duplicates_groups_identical_files_in_active_dir() {
         .collect();
     assert!(names.contains(&"a.txt".to_string()));
     assert!(names.contains(&"b.txt".to_string()));
+}
+
+#[test]
+fn duplicate_groups_are_confirmed_by_the_full_digest() {
+    let key = |name: &str| crate::dedup::FileKey {
+        path: PathBuf::from(format!("/dups/{name}")),
+        identity: crate::panel::ListingIdentity::Unavailable,
+        size: 4,
+        // Every key shares one 64-bit prefix, as in a prefix collision.
+        hash: 7,
+        modified: None,
+    };
+    let group = crate::dedup::DupGroup {
+        size: 4,
+        files: vec![key("a"), key("b"), key("c"), key("d")],
+    };
+    let digests: std::collections::HashMap<PathBuf, crate::verified_hash::VerifiedHash> = [
+        ("a", [1_u8; 32]),
+        ("b", [2_u8; 32]),
+        ("c", [1_u8; 32]),
+        // "d" could not be hashed and must never be offered.
+    ]
+    .into_iter()
+    .map(|(name, digest)| (PathBuf::from(format!("/dups/{name}")), digest))
+    .collect();
+
+    let confirmed = Workspace::confirm_dup_group(group, &digests);
+
+    assert_eq!(confirmed.len(), 1);
+    let paths: Vec<&Path> = confirmed[0]
+        .files
+        .iter()
+        .map(|f| f.path.as_path())
+        .collect();
+    assert_eq!(paths, [Path::new("/dups/a"), Path::new("/dups/c")]);
 }
 
 #[test]
@@ -4149,6 +4191,30 @@ fn relation_policy_sees_dotfile_conflicts_the_destination_panel_hides() {
     assert_eq!(
         std::fs::read_to_string(existing).unwrap(),
         "the larger existing destination"
+    );
+}
+
+#[test]
+fn conflict_detail_and_resolution_read_the_destination_fresh() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file("a.txt", "a medium source");
+    let existing = r.file("a.txt", "tiny");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(source);
+    ws.request_copy();
+
+    let shown = ws.pending_conflicts();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].dst_size, 4);
+    // The destination grows while the dialog is open: the next read sees it
+    // (the dialog throttles these reads itself)...
+    std::fs::write(&existing, "a much larger destination than the source").unwrap();
+    assert_eq!(ws.pending_conflicts()[0].dst_size, 41);
+    // ...and Keep Larger decides on the destination as it is now.
+    assert!(!ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::KeepLarger));
+    assert_eq!(
+        std::fs::read_to_string(existing).unwrap(),
+        "a much larger destination than the source"
     );
 }
 

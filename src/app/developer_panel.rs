@@ -25,6 +25,70 @@ fn watcher_recovery_needs_attention(errors: u64) -> bool {
     errors > 0
 }
 
+/// How long a version-store usage reading is reused; reading it parses the
+/// store manifest and stats every record, too costly for every frame.
+const STORE_USAGE_REFRESH_SECS: f64 = 2.0;
+
+/// Version-store usage label with the input time it was read at.
+#[derive(Default)]
+pub struct StoreUsageCache {
+    label: Option<(f64, String)>,
+}
+
+impl StoreUsageCache {
+    fn label(&mut self, now: f64, read: impl FnOnce() -> String) -> &str {
+        let fresh = |at: f64| (at..at + STORE_USAGE_REFRESH_SECS).contains(&now);
+        match &mut self.label {
+            Some((at, label)) if fresh(*at) => label,
+            slot => &slot.insert((now, read())).1,
+        }
+    }
+}
+
+fn store_usage_label() -> String {
+    let usage = crate::version_store::store_usage();
+    let quota = crate::version_store::store_quota();
+    if usage.over_quota() {
+        format!("{} · {} · OVER QUOTA", usage.label(), quota.label())
+    } else {
+        format!("{} · {}", usage.label(), quota.label())
+    }
+}
+
+/// Key material for the encrypted support bundle. Without
+/// `COMMANDER_SUPPORT_BUNDLE_SECRET` the secret falls back to the recipient
+/// id, which the bundle manifest carries in plaintext: such a bundle is only
+/// obfuscated, and the UI must not present it as confidential.
+#[derive(Debug, PartialEq, Eq)]
+struct BundleKey {
+    recipient: String,
+    secret: String,
+    confidential: bool,
+}
+
+fn bundle_key(recipient: Option<String>, secret: Option<String>) -> BundleKey {
+    let recipient = recipient.unwrap_or_else(|| "local-dev".to_string());
+    match secret.filter(|secret| !secret.is_empty()) {
+        Some(secret) => BundleKey {
+            recipient,
+            secret,
+            confidential: true,
+        },
+        None => BundleKey {
+            secret: recipient.clone(),
+            recipient,
+            confidential: false,
+        },
+    }
+}
+
+fn bundle_key_from_env() -> BundleKey {
+    bundle_key(
+        std::env::var("COMMANDER_SUPPORT_BUNDLE_RECIPIENT").ok(),
+        std::env::var("COMMANDER_SUPPORT_BUNDLE_SECRET").ok(),
+    )
+}
+
 impl App {
     pub(crate) fn show_developer_panel(&mut self, ctx: &egui::Context, input_enabled: bool) {
         if !self.show_developer_panel {
@@ -56,6 +120,11 @@ impl App {
         let frame_latency = metric(crate::measurement::MetricName::FrameTime);
         let budgets = crate::measurement::ci_budgets().ok();
         let startup = crate::measurement::latest_startup();
+        let store_usage = self
+            .developer_store_usage
+            .label(ctx.input(|input| input.time), store_usage_label)
+            .to_owned();
+        let bundle_key = bundle_key_from_env();
         let screen = ctx.input(|input| input.viewport_rect());
         let width = 480.0_f32.min((screen.width() - 32.0).max(320.0));
         let height = 680.0_f32.min((screen.height() - 32.0).max(360.0));
@@ -97,24 +166,7 @@ impl App {
                                 ),
                                 t.text_primary,
                             );
-                            text_row(
-                                ui,
-                                "Version store",
-                                &{
-                                    let usage = crate::version_store::store_usage();
-                                    let quota = crate::version_store::store_quota();
-                                    if usage.over_quota() {
-                                        format!(
-                                            "{} · {} · OVER QUOTA",
-                                            usage.label(),
-                                            quota.label()
-                                        )
-                                    } else {
-                                        format!("{} · {}", usage.label(), quota.label())
-                                    }
-                                },
-                                t.text_primary,
-                            );
+                            text_row(ui, "Version store", &store_usage, t.text_primary);
                             text_row(
                                 ui,
                                 "Trust labels",
@@ -469,24 +521,37 @@ impl App {
                                     Err(error) => DeveloperNotice::error(error),
                                 });
                         }
-                        if ui.button("Create encrypted support bundle").clicked() {
+                        let (button_label, created_label) = if bundle_key.confidential {
+                            (
+                                "Create encrypted support bundle",
+                                "Encrypted support bundle created",
+                            )
+                        } else {
+                            (
+                                "Create support bundle (dev key only)",
+                                "Dev-key support bundle created, not confidential",
+                            )
+                        };
+                        let bundle_button = ui.button(button_label);
+                        let bundle_button = if bundle_key.confidential {
+                            bundle_button
+                        } else {
+                            bundle_button.on_hover_text(
+                                "COMMANDER_SUPPORT_BUNDLE_SECRET is not set: the key is the \
+                                 recipient id stored in the bundle, so anyone can decrypt it",
+                            )
+                        };
+                        if bundle_button.clicked() {
                             let paths = self.diagnostic_paths();
-                            let recipient = std::env::var("COMMANDER_SUPPORT_BUNDLE_RECIPIENT")
-                                .unwrap_or_else(|_| "local-dev".to_string());
-                            let secret = std::env::var("COMMANDER_SUPPORT_BUNDLE_SECRET")
-                                .unwrap_or_else(|_| recipient.clone());
                             self.developer_notice = Some(
                                 match crate::support_bundle::export_encrypted(
                                     &paths,
-                                    &recipient,
-                                    &secret,
+                                    &bundle_key.recipient,
+                                    &bundle_key.secret,
                                     crate::support_encrypt::default_ttl_secs(),
                                 ) {
                                     Ok((path, manifest)) => DeveloperNotice::success(
-                                        format!(
-                                            "Encrypted support bundle created ({})",
-                                            manifest.preview_line()
-                                        ),
+                                        format!("{created_label} ({})", manifest.preview_line()),
                                         path,
                                     ),
                                     Err(error) => DeveloperNotice::error(error),
@@ -590,6 +655,41 @@ fn percentile_text(latency: crate::measurement::LatencyPercentiles) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_without_secret_is_not_presented_as_confidential() {
+        let dev = bundle_key(None, None);
+        assert_eq!(dev.recipient, "local-dev");
+        assert_eq!(dev.secret, "local-dev");
+        assert!(!dev.confidential);
+        // A recipient alone is still public: it is in the manifest.
+        let named = bundle_key(Some("ops".into()), None);
+        assert_eq!(named.secret, "ops");
+        assert!(!named.confidential);
+        assert!(!bundle_key(Some("ops".into()), Some(String::new())).confidential);
+        let real = bundle_key(Some("ops".into()), Some("s3cret".into()));
+        assert_eq!(real.secret, "s3cret");
+        assert!(real.confidential);
+    }
+
+    #[test]
+    fn store_usage_is_reread_only_after_the_refresh_interval() {
+        let mut cache = StoreUsageCache::default();
+        let mut reads = 0;
+        let mut read = |now| {
+            cache
+                .label(now, || {
+                    reads += 1;
+                    format!("read {reads}")
+                })
+                .to_owned()
+        };
+        assert_eq!(read(10.0), "read 1");
+        assert_eq!(read(10.5), "read 1");
+        assert_eq!(read(10.0 + STORE_USAGE_REFRESH_SECS), "read 2");
+        // A clock that went backwards (new context) refreshes too.
+        assert_eq!(read(1.0), "read 3");
+    }
 
     #[test]
     fn watcher_recovery_row_flags_errors() {

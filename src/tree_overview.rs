@@ -371,7 +371,10 @@ fn run_worker(
                         }
                     }
                 } else {
-                    let Ok(metadata) = fs::symlink_metadata(&path) else {
+                    // Stat relative to the open directory (`fstatat`, no
+                    // follow) rather than re-resolving the full path; like
+                    // `symlink_metadata`, a link reports itself.
+                    let Ok(metadata) = dir_entry.metadata() else {
                         state.inaccessible(path);
                         continue;
                     };
@@ -746,6 +749,25 @@ mod tests {
 
         assert_eq!(snapshot.progress.files, 2);
         assert_eq!(snapshot.progress.bytes, 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_files_count_the_link_not_its_target() {
+        let temp = TempDir::new();
+        let target = temp.file("outside/big.bin", &"x".repeat(4_096));
+        std::fs::create_dir(temp.path().join("scan")).unwrap();
+        temp.file("scan/small.txt", "abc");
+        std::os::unix::fs::symlink(&target, temp.path().join("scan/link")).unwrap();
+        let link_len = std::fs::symlink_metadata(temp.path().join("scan/link"))
+            .unwrap()
+            .len();
+
+        let run = spawn(temp.path().join("scan"), Arc::new(|| {}));
+        let snapshot = completed(&run);
+
+        assert_eq!(snapshot.progress.files, 2);
+        assert_eq!(snapshot.progress.bytes, 3 + link_len);
     }
 
     #[cfg(unix)]

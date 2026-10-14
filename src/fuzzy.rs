@@ -73,6 +73,14 @@ pub fn score(query: &str, candidate: &str) -> Option<MatchScore> {
             matched_ranges: Vec::new(),
         });
     }
+    // Long candidates (file contents in content search, up to 16 MB) only
+    // ever get the greedy alignment: score it in one pass instead of
+    // collecting the text into two `Vec<char>` copies (4 bytes per char each).
+    if candidate.len() > MAX_ALIGNMENT_CELLS / q.len()
+        && q.len().saturating_mul(candidate.chars().count()) > MAX_ALIGNMENT_CELLS
+    {
+        return greedy_score(&q, candidate);
+    }
     let cand: Vec<char> = candidate.chars().collect();
     let folded: Vec<char> = cand.iter().map(|&c| fold(c)).collect();
 
@@ -105,33 +113,64 @@ pub fn score(query: &str, candidate: &str) -> Option<MatchScore> {
         prev = Some(p);
     }
 
-    // Merge adjacent matched indices into half-open ranges.
+    Some(MatchScore {
+        score: total,
+        matched_ranges: merge_ranges(&matched),
+    })
+}
+
+/// The greedy (leftmost) alignment's score, computed in one streaming pass
+/// over `candidate` with the same bonuses and penalties as `score`.
+fn greedy_score(q: &[char], candidate: &str) -> Option<MatchScore> {
+    let mut matched = Vec::with_capacity(q.len());
+    let mut total = 0;
+    let mut before = None;
+    for (index, c) in candidate.chars().enumerate() {
+        let Some(&wanted) = q.get(matched.len()) else {
+            break;
+        };
+        if fold(c) == wanted {
+            total += char_bonus(before, c);
+            match matched.last() {
+                Some(&previous) => total += transition(previous, index),
+                None => total -= index as i32 * LEADING_PENALTY,
+            }
+            matched.push(index);
+        }
+        before = Some(c);
+    }
+    (matched.len() == q.len()).then(|| MatchScore {
+        score: total,
+        matched_ranges: merge_ranges(&matched),
+    })
+}
+
+/// Merge adjacent matched indices into half-open ranges.
+fn merge_ranges(matched: &[usize]) -> Vec<(usize, usize)> {
     let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for &p in &matched {
+    for &p in matched {
         match ranges.last_mut() {
             Some(last) if last.1 == p => last.1 = p + 1,
             _ => ranges.push((p, p + 1)),
         }
     }
-
-    Some(MatchScore {
-        score: total,
-        matched_ranges: ranges,
-    })
+    ranges
 }
 
 /// Score for matching a query char at candidate index `p`, ignoring gaps.
 fn position_bonus(cand: &[char], p: usize) -> i32 {
+    char_bonus(p.checked_sub(1).map(|before| cand[before]), cand[p])
+}
+
+/// Score for matching `c`, given the candidate char just before it (`None`
+/// at the start of the candidate).
+fn char_bonus(before: Option<char>, c: char) -> i32 {
     let mut bonus = MATCH_BASE;
-    if p == 0 {
-        bonus += START_BONUS;
-    } else {
-        let before = cand[p - 1];
-        if is_separator(before) {
-            bonus += BOUNDARY_BONUS;
-        } else if cand[p].is_uppercase() && before.is_lowercase() {
-            bonus += CAMEL_BONUS;
-        }
+    match before {
+        None => bonus += START_BONUS,
+        Some(before) if is_separator(before) => bonus += BOUNDARY_BONUS,
+        Some(before) if c.is_uppercase() && before.is_lowercase() => bonus += CAMEL_BONUS,
+        Some(_) => {}
     }
     bonus
 }
@@ -214,6 +253,31 @@ mod tests {
 
     fn sc(q: &str, c: &str) -> i32 {
         score(q, c).expect("should match").score
+    }
+
+    #[test]
+    fn long_candidates_score_the_greedy_alignment_in_one_pass() {
+        // Past MAX_ALIGNMENT_CELLS: greedy alignment, scored by streaming.
+        let long = format!("{}/Foo", "x".repeat(70_000));
+        let matched = score("fo", &long).unwrap();
+        // F after '/' (boundary) then a consecutive o, minus the lead-in.
+        assert_eq!(
+            matched.score,
+            -70_001 + (MATCH_BASE + BOUNDARY_BONUS) + MATCH_BASE + CONSECUTIVE_BONUS
+        );
+        assert_eq!(matched.matched_ranges, vec![(70_001, 70_003)]);
+        assert!(score("fz", &long).is_none());
+
+        // Where greedy and best alignment agree, both paths score the same.
+        for (q, c) in [
+            ("fb", "foo/bar"),
+            ("fb", "fooBar"),
+            ("ab", "a-x-b"),
+            ("ф", "Файл"),
+        ] {
+            let folded: Vec<char> = q.chars().map(fold).collect();
+            assert_eq!(greedy_score(&folded, c), score(q, c), "{q} in {c}");
+        }
     }
 
     #[test]

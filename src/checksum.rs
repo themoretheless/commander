@@ -85,24 +85,31 @@ fn verify_one(path: &Path) -> ChecksumRow {
             error: Some("symlinks are not hashed".to_string()),
         };
     }
-    let content_hash = crate::fs_util::content_hash(path);
-    let blake3_hex = match crate::verified_hash::file(path) {
-        Ok(hash) => Some(hex32(&hash)),
-        Err(error) => {
-            return ChecksumRow {
-                path: path.to_path_buf(),
-                content_hash,
-                blake3_hex: None,
-                error: Some(error.to_string()),
-            };
-        }
-    };
-    ChecksumRow {
-        path: path.to_path_buf(),
-        content_hash,
-        blake3_hex,
-        error: None,
+    // `content_hash` is the leading 8 bytes of the file's BLAKE3 digest (see
+    // `fs_util::content_hash`), so derive it from the verified hash rather than
+    // streaming the whole file a second time on the UI thread.
+    match crate::verified_hash::file(path) {
+        Ok(hash) => ChecksumRow {
+            path: path.to_path_buf(),
+            content_hash: Some(content_hash_of(&hash)),
+            blake3_hex: Some(hex32(&hash)),
+            error: None,
+        },
+        Err(error) => ChecksumRow {
+            path: path.to_path_buf(),
+            content_hash: None,
+            blake3_hex: None,
+            error: Some(error.to_string()),
+        },
     }
+}
+
+/// The 64-bit content hash [`crate::fs_util::content_hash`] reports, taken
+/// from an already computed BLAKE3 digest.
+fn content_hash_of(blake3: &[u8; 32]) -> u64 {
+    let mut prefix = [0_u8; 8];
+    prefix.copy_from_slice(&blake3[..8]);
+    u64::from_be_bytes(prefix)
 }
 
 fn hex32(bytes: &[u8; 32]) -> String {
@@ -128,5 +135,16 @@ mod tests {
         assert!(report.rows.iter().all(|row| row.error.is_none()));
         assert_eq!(report.rows[0].content_hash, report.rows[1].content_hash);
         assert_eq!(report.rows[0].blake3_hex, report.rows[1].blake3_hex);
+    }
+
+    #[test]
+    fn content_hash_matches_the_streaming_content_hash() {
+        let temp = TempDir::new();
+        let path = temp.file("a.bin", "some payload bytes");
+        let report = verify_paths([path.clone()]);
+        let row = &report.rows[0];
+        assert_eq!(row.error, None);
+        assert_eq!(row.content_hash, crate::fs_util::content_hash(&path));
+        assert!(row.content_hash.is_some());
     }
 }
