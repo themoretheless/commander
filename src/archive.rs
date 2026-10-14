@@ -236,9 +236,12 @@ fn visit_tar_gz_list(
     mut emit: impl FnMut(ArchiveMember) -> bool,
 ) -> Result<VisitSummary, String> {
     budget.archives += 1;
+    // Verbose listing so member sizes are known; `LC_ALL=C` keeps bsdtar's
+    // date columns in a fixed shape for `parse_tar_verbose_line`.
     let output = std::process::Command::new("tar")
-        .args(["-tzf"])
+        .args(["-tvzf"])
         .arg(archive_path)
+        .env("LC_ALL", "C")
         .output()
         .map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
     if !output.status.success() {
@@ -262,7 +265,14 @@ fn visit_tar_gz_list(
         }
         budget.members += 1;
         summary.declared_members += 1;
-        let trimmed = line.trim().trim_start_matches("./");
+        let Some((name, size)) = parse_tar_verbose_line(line.strip_suffix('\r').unwrap_or(line))
+        else {
+            summary.unreadable_members += 1;
+            continue;
+        };
+        // Only the `./` prefix is stripped: leading/trailing spaces are part
+        // of the member name and `tar` needs them to find it on extract.
+        let trimmed = name.trim_start_matches("./");
         if trimmed.is_empty() || trimmed == "." {
             continue;
         }
@@ -283,7 +293,7 @@ fn visit_tar_gz_list(
                 path
             },
             is_dir,
-            size: 0,
+            size: if is_dir { 0 } else { size },
             compressed_size: 0,
         };
         if !emit(member) {
@@ -292,6 +302,43 @@ fn visit_tar_gz_list(
         summary.emitted += 1;
     }
     Ok(summary)
+}
+
+/// Split one `tar -tv` line into the member name and its size. GNU tar
+/// prints `mode owner/group size date time name`; bsdtar (macOS, Windows)
+/// prints `mode links owner group size month day time-or-year name`. The
+/// name follows a single space, so leading spaces in it survive. Device
+/// entries show `major,minor` instead of a size and report 0.
+fn parse_tar_verbose_line(line: &str) -> Option<(&str, u64)> {
+    fn next_field(rest: &str) -> Option<(&str, &str)> {
+        let rest = rest.trim_start_matches(' ');
+        let end = rest.find(' ')?;
+        Some((&rest[..end], &rest[end..]))
+    }
+    let (mode, mut rest) = next_field(line)?;
+    let (second, after_second) = next_field(rest)?;
+    let (size_index, field_count) = if second.contains('/') { (2, 5) } else { (4, 8) };
+    let mut size = 0;
+    rest = after_second;
+    for index in 2..field_count {
+        let (field, after) = next_field(rest)?;
+        if index == size_index {
+            size = field.parse().unwrap_or(0);
+        }
+        rest = after;
+    }
+    let mut name = rest.strip_prefix(' ')?;
+    let link_marker = match mode.as_bytes().first() {
+        Some(b'l') => Some(" -> "),
+        Some(b'h') => Some(" link to "),
+        _ => None,
+    };
+    if let Some(marker) = link_marker
+        && let Some(at) = name.find(marker)
+    {
+        name = &name[..at];
+    }
+    Some((name, size))
 }
 
 fn read_member_text(
@@ -497,18 +544,36 @@ fn extract_tar_gz_members(
     if wanted.is_empty() {
         return Ok(report);
     }
-    let mut command = std::process::Command::new("tar");
-    command
+    // Member names go through stdin (`--null -T -`), not argv: "Extract all"
+    // on a large archive would otherwise exceed ARG_MAX and tar never runs.
+    let mut child = std::process::Command::new("tar")
         .arg("-xzf")
         .arg(archive_path)
         .arg("-C")
-        .arg(dest_dir);
-    for member in &wanted {
-        command.arg(member);
-    }
-    let output = command
-        .output()
+        .arg(dest_dir)
+        .args(["--null", "-T", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|error| format!("Could not extract {}: {error}", archive_path.display()))?;
+    let mut names = Vec::new();
+    for member in &wanted {
+        names.extend_from_slice(member.as_bytes());
+        names.push(0);
+    }
+    // Feed stdin from a helper thread so a chatty tar cannot deadlock on a
+    // full stderr pipe while we are still writing names.
+    let stdin = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(mut stdin) = stdin {
+            let _ = std::io::Write::write_all(&mut stdin, &names);
+        }
+    });
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Could not extract {}: {error}", archive_path.display()))?;
+    let _ = writer.join();
     if output.status.success() {
         report.extracted += wanted.len();
     } else {
@@ -745,5 +810,107 @@ mod tests {
 
         assert!(summary.cancelled);
         assert_eq!(summary.emitted, 0);
+    }
+
+    /// Build `<dir>/<name>.tgz` from `names` under `source` with system tar,
+    /// without a `./` prefix so members extract under their listed names.
+    #[cfg(unix)]
+    fn write_tar_gz(source: &Path, archive: &Path, names: &[&str]) {
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(archive)
+            .arg("-C")
+            .arg(source)
+            .args(names)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn verbose_tar_lines_parse_gnu_and_bsd_layouts() {
+        assert_eq!(
+            parse_tar_verbose_line("-rw-r--r-- root/root         5 2026-10-14 18:17 ./hl"),
+            Some(("./hl", 5))
+        );
+        assert_eq!(
+            parse_tar_verbose_line("-rw-r--r-- u/g 1 2026-10-14 18:16  sp "),
+            Some((" sp ", 1))
+        );
+        assert_eq!(
+            parse_tar_verbose_line("lrwxrwxrwx root/root 0 2026-10-14 18:17 sl -> f"),
+            Some(("sl", 0))
+        );
+        assert_eq!(
+            parse_tar_verbose_line("hrw-r--r-- root/root 0 2026-10-14 18:17 f link to hl"),
+            Some(("f", 0))
+        );
+        assert_eq!(
+            parse_tar_verbose_line("-rw-r--r--  0 user   staff    1234 Oct  4  2024 dir/a b.txt"),
+            Some(("dir/a b.txt", 1234))
+        );
+        assert_eq!(parse_tar_verbose_line("garbage"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_listing_keeps_member_sizes_and_edge_spaces() {
+        let temp = TempDir::new();
+        let source = temp.path().join("src");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("hello.txt"), b"hello").unwrap();
+        fs::write(source.join(" padded "), b"pad").unwrap();
+        let archive = temp.path().join("pack.tgz");
+        write_tar_gz(&source, &archive, &["hello.txt", " padded "]);
+        let cancelled = AtomicBool::new(false);
+
+        let listing = list_archive(archive.clone(), &cancelled).unwrap();
+
+        let hello = listing
+            .members
+            .iter()
+            .find(|member| member.path == Path::new("hello.txt"))
+            .unwrap();
+        assert_eq!(hello.size, 5);
+        let padded = listing
+            .members
+            .iter()
+            .find(|member| member.path == Path::new(" padded "))
+            .expect("edge spaces are part of the member name");
+        let indexes = [padded.index];
+        let dest = temp.path().join("out");
+        let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(fs::read(dest.join(" padded ")).unwrap(), b"pad");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_extract_all_does_not_overflow_argument_list() {
+        // ~3 MB of member paths: more than Linux's 2 MB ARG_MAX when the
+        // names were passed as tar arguments.
+        let temp = TempDir::new();
+        let source = temp.path().join("src");
+        let mut deep = PathBuf::new();
+        for level in 0..12 {
+            deep.push(format!("{level:02}{}", "d".repeat(200)));
+        }
+        fs::create_dir_all(source.join(&deep)).unwrap();
+        for index in 0..1_200 {
+            fs::write(source.join(&deep).join(format!("f{index}")), b"x").unwrap();
+        }
+        let archive = temp.path().join("many.tgz");
+        let top = deep.iter().next().unwrap().to_str().unwrap().to_string();
+        write_tar_gz(&source, &archive, &[&top]);
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(archive.clone(), &cancelled).unwrap();
+        let indexes: Vec<usize> = listing.members.iter().map(|member| member.index).collect();
+        let dest = temp.path().join("out");
+
+        let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.extracted, 1_200);
+        assert!(dest.join(&deep).join("f1199").is_file());
     }
 }
