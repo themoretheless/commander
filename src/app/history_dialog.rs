@@ -133,10 +133,41 @@ fn sheet_just_opened(previous_pass: Option<u64>, pass: u64) -> bool {
     previous_pass.is_none_or(|previous| previous.saturating_add(1) < pass)
 }
 
-/// Toast after a confirmed replay, naming what it applied.
-fn replay_message(is_undo: bool, description: &str) -> String {
-    let command = if is_undo { "Undo" } else { "Redo" };
-    format!("{command}: {description}")
+/// What a confirmed replay that returned `Ok` actually did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplayOutcome {
+    /// The replay ran to completion on this frame.
+    Completed,
+    /// The replay was queued as a background transfer; its result arrives
+    /// later through the transfer notices.
+    Started,
+    /// There was nothing left to replay, so nothing ran.
+    NothingRan,
+}
+
+/// Classify an `Ok` replay. Replay is refused while transfer work is
+/// unfinished, so unfinished work afterwards means this replay started it.
+const fn replay_outcome(had_action: bool, transfer_started: bool) -> ReplayOutcome {
+    if !had_action {
+        ReplayOutcome::NothingRan
+    } else if transfer_started {
+        ReplayOutcome::Started
+    } else {
+        ReplayOutcome::Completed
+    }
+}
+
+/// Toast after a confirmed replay. A started replay says it is under way
+/// rather than claiming it applied, since the transfer can still fail.
+fn replay_message(is_undo: bool, outcome: ReplayOutcome, description: &str) -> String {
+    match (outcome, is_undo) {
+        (ReplayOutcome::Completed, true) => format!("Undo: {description}"),
+        (ReplayOutcome::Completed, false) => format!("Redo: {description}"),
+        (ReplayOutcome::Started, true) => format!("Undoing: {description}"),
+        (ReplayOutcome::Started, false) => format!("Redoing: {description}"),
+        (ReplayOutcome::NothingRan, true) => "Nothing to undo".to_string(),
+        (ReplayOutcome::NothingRan, false) => "Nothing to redo".to_string(),
+    }
 }
 
 impl App {
@@ -281,6 +312,11 @@ impl App {
         }
         if confirm {
             let repaint = ctx.clone();
+            let had_action = if is_undo {
+                self.ws.preview_undo().is_some()
+            } else {
+                self.ws.preview_redo().is_some()
+            };
             let result = if is_undo {
                 self.ws.perform_undo(move || repaint.request_repaint())
             } else {
@@ -291,7 +327,10 @@ impl App {
                     if is_undo {
                         self.toasts.dismiss_undoable();
                     }
-                    let message = replay_message(is_undo, &state.preview.action.description());
+                    let outcome =
+                        replay_outcome(had_action, self.ws.has_unfinished_transfer_work());
+                    let message =
+                        replay_message(is_undo, outcome, &state.preview.action.description());
                     self.toast(ctx, crate::toasts::ToastKind::Info, message, false);
                     return;
                 }
@@ -314,7 +353,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{blocked_reason_width, render_replay_paths, replay_message, sheet_just_opened};
+    use super::{
+        ReplayOutcome, blocked_reason_width, render_replay_paths, replay_message, replay_outcome,
+        sheet_just_opened,
+    };
 
     #[test]
     fn sheet_counts_as_opened_after_a_gap_in_passes() {
@@ -326,12 +368,31 @@ mod tests {
     #[test]
     fn confirmed_replay_names_what_it_applied() {
         assert_eq!(
-            replay_message(true, "Moved (3 items)"),
+            replay_message(true, ReplayOutcome::Completed, "Moved (3 items)"),
             "Undo: Moved (3 items)"
         );
         assert_eq!(
-            replay_message(false, "Renamed (1 item)"),
+            replay_message(false, ReplayOutcome::Completed, "Renamed (1 item)"),
             "Redo: Renamed (1 item)"
+        );
+    }
+
+    #[test]
+    fn started_or_empty_replay_does_not_claim_it_applied() {
+        assert_eq!(replay_outcome(true, false), ReplayOutcome::Completed);
+        assert_eq!(replay_outcome(true, true), ReplayOutcome::Started);
+        assert_eq!(replay_outcome(false, false), ReplayOutcome::NothingRan);
+        assert_eq!(
+            replay_message(true, ReplayOutcome::Started, "Moved (3 items)"),
+            "Undoing: Moved (3 items)"
+        );
+        assert_eq!(
+            replay_message(false, ReplayOutcome::Started, "Moved (3 items)"),
+            "Redoing: Moved (3 items)"
+        );
+        assert_eq!(
+            replay_message(true, ReplayOutcome::NothingRan, "x"),
+            "Nothing to undo"
         );
     }
 
