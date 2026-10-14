@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const SCHEMA: u32 = 2;
@@ -95,19 +94,13 @@ struct Redactor {
 }
 
 impl Redactor {
+    /// The salt comes from the OS CSPRNG on every platform (there is no
+    /// /dev/urandom on Windows or in some sandboxes), so path tokens can never
+    /// fall back to a guessable time+pid seed.
     fn new() -> Self {
+        use rand::RngCore;
         let mut salt = [0_u8; 32];
-        let random =
-            std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut salt));
-        if random.is_err() {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos());
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(&nanos.to_le_bytes());
-            hasher.update(&std::process::id().to_le_bytes());
-            salt.copy_from_slice(hasher.finalize().as_bytes());
-        }
+        rand::thread_rng().fill_bytes(&mut salt);
         Self { salt }
     }
 
@@ -368,6 +361,14 @@ fn now_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redaction_salt_is_fresh_per_bundle() {
+        let (a, b) = (Redactor::new(), Redactor::new());
+        assert_ne!(a.salt, b.salt);
+        assert_ne!(a.salt, [0_u8; 32]);
+        assert_ne!(a.token("path", "/home/u"), b.token("path", "/home/u"));
+    }
     use crate::operation::{
         ClassifiedFailure, DurabilityProfile, FailureClass, IdempotencyKey, OperationId,
     };
