@@ -908,8 +908,11 @@ impl Workspace {
             }
             Command::CursorMove(delta) => {
                 let panel = self.active_panel();
-                let max = panel.filtered_count() as i32;
-                panel.set_cursor((panel.cursor() as i32 + delta).clamp(0, max) as usize);
+                // A vim count can be up to `i32::MAX`: step in `usize`,
+                // saturating, so a huge count lands on the last row.
+                let max = panel.filtered_count();
+                let step = isize::try_from(delta).unwrap_or(isize::MAX);
+                panel.set_cursor(panel.cursor().saturating_add_signed(step).min(max));
                 panel.set_scroll_to_cursor(true);
             }
             Command::ExtendSelectDown => {

@@ -1075,6 +1075,13 @@ fn cursor_move_jumps_by_a_signed_count_and_clamps() {
 
     ws.execute(Command::CursorMove(-100));
     assert_eq!(ws.left.cursor(), 0, "clamped to the first row");
+
+    // A ten-digit vim count must not overflow (debug panic, release wrap).
+    ws.execute(Command::CursorMove(3));
+    ws.execute(Command::CursorMove(i32::MAX));
+    assert_eq!(ws.left.cursor(), 10, "a huge count lands on the last entry");
+    ws.execute(Command::CursorMove(i32::MIN));
+    assert_eq!(ws.left.cursor(), 0, "a huge negative count lands on top");
 }
 
 #[test]
