@@ -179,6 +179,11 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Whether an open pane tool replaces `side`'s file list.
+fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bool {
+    tools.side == Some(side) && tools.any_open()
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _frame_latency =
@@ -1206,6 +1211,11 @@ impl App {
                             ui.style_mut().interaction.selectable_labels = false;
                             let tree_nav = self.render_global_tree(ui, &t);
                             if let Some(path) = tree_nav {
+                                // A pane tool over the active side would hide
+                                // the navigation; return that pane to its list.
+                                if pane_tool_covers(&self.ui.tools, self.ws.active) {
+                                    self.ui.tools = super::ui_state::PaneTools::default();
+                                }
                                 self.tree_expand_to_path(&path);
                                 self.ws.active_panel().navigate_to(path);
                             }
@@ -1367,15 +1377,17 @@ impl App {
         dragging: bool,
         metrics: crate::density::DensityMetrics,
     ) -> super::render::PanelRenderOutcome {
+        // A pane showing a tool never becomes active: keys would otherwise
+        // act on its hidden listing.
+        if pane_tool_covers(&self.ui.tools, side) {
+            self.show_pane_tool(ui);
+            return super::render::PanelRenderOutcome::default();
+        }
         if input_policy.allows_raw_input(
             ui.is_enabled(),
             ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()),
         ) {
             self.ws.active = side;
-        }
-        if self.ui.tools.side == Some(side) && self.ui.tools.any_open() {
-            self.show_pane_tool(ui);
-            return super::render::PanelRenderOutcome::default();
         }
         let t = self.colors;
         let is_active = self.ws.active == side;
@@ -1454,6 +1466,10 @@ impl App {
         response: &egui::Response,
         drop: &PaneDropContext,
     ) {
+        // A pane showing a tool has no visible folder to drop into.
+        if pane_tool_covers(&self.ui.tools, side) {
+            return;
+        }
         let accent = self.colors.accent;
         let panel = match side {
             ActivePanel::Left => &mut self.ws.left,
@@ -1725,6 +1741,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::pane_tool_covers;
     use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
@@ -1779,6 +1796,25 @@ mod tests {
             ModalOwnershipSnapshot::capture(prior_modal_open),
             current_modal_open,
         )
+    }
+
+    #[test]
+    fn only_the_pane_holding_an_open_tool_is_covered() {
+        use crate::workspace::ActivePanel;
+        let mut tools = crate::app::ui_state::PaneTools::default();
+        tools.replace_on(ActivePanel::Right);
+        assert!(
+            !pane_tool_covers(&tools, ActivePanel::Right),
+            "nothing open yet"
+        );
+        tools.diff = Some(crate::app::DiffState {
+            name_a: "a".into(),
+            name_b: "b".into(),
+            lines: Vec::new(),
+            message: None,
+        });
+        assert!(pane_tool_covers(&tools, ActivePanel::Right));
+        assert!(!pane_tool_covers(&tools, ActivePanel::Left));
     }
 
     #[test]
