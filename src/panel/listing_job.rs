@@ -159,6 +159,13 @@ impl ListingJobController {
         }
     }
 
+    /// Where the cursor should land once the pending listing publishes.
+    pub(super) fn pending_focus(&self) -> &PendingFocus {
+        self.ready
+            .as_ref()
+            .map_or(&self.focus, |ready| &ready.focus)
+    }
+
     pub(super) fn set_focus(&mut self, focus: PendingFocus) {
         self.focus = focus;
     }

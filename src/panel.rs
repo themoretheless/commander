@@ -775,14 +775,21 @@ impl PanelState {
                 scroll_anchor,
             } => {
                 self.set_scroll_anchor(scroll_anchor.min(self.filtered_count().saturating_sub(1)));
-                let cursor = cursor_path
-                    .and_then(|path| self.filtered_position(|entry| entry.path == path))
-                    .map(|index| index + 1)
-                    .unwrap_or_else(|| {
-                        self.scroll_anchor()
-                            .saturating_add(1)
-                            .min(self.filtered_count())
-                    });
+                // No remembered path means the cursor was on the `..` row;
+                // only a path that vanished falls back to the scroll anchor.
+                let cursor = match cursor_path {
+                    None => 0,
+                    Some(path) => self
+                        .filtered_position(|entry| entry.path == path)
+                        .map_or_else(
+                            || {
+                                self.scroll_anchor()
+                                    .saturating_add(1)
+                                    .min(self.filtered_count())
+                            },
+                            |index| index + 1,
+                        ),
+                };
                 self.set_cursor(cursor);
                 self.set_scroll_to_cursor(self.cursor() > 0);
             }
@@ -856,6 +863,9 @@ impl PanelState {
     /// Deep events (below the watched dir) only recompute directory
     /// sizes, debounced so event floods during transfers don't thrash.
     pub fn poll_fs_changes(&mut self) -> bool {
+        // Polled every frame: the filtered view can change with time alone
+        // (age facets), so keep the cursor on its entry first.
+        self.ensure_cursor_valid();
         let path = self.current_path.clone();
         let outcome = self.watcher.poll(&path);
         if outcome.sizes_dirty {
@@ -1032,7 +1042,26 @@ impl PanelState {
 
     /// Remember the current directory's view settings under its own path.
     fn stash_view_settings(&mut self) {
-        let settings = self.snapshot_view_settings();
+        let mut settings = self.snapshot_view_settings();
+        if self.listing.status() == DirStatus::Loading
+            && self.listing.binding() == self.current_path
+        {
+            // Leaving before the listing landed: keep the focus it was about
+            // to restore, not the empty placeholder's `..` row.
+            match self.listing_job.pending_focus() {
+                PendingFocus::None => {}
+                PendingFocus::Remembered {
+                    cursor_path,
+                    scroll_anchor,
+                } => {
+                    settings.cursor_path.clone_from(cursor_path);
+                    settings.scroll_anchor = *scroll_anchor;
+                }
+                PendingFocus::NamedChild(name) => {
+                    settings.cursor_path = Some(self.current_path.join(name));
+                }
+            }
+        }
         self.view.remember(&self.current_path, settings);
     }
 
@@ -1240,7 +1269,17 @@ impl PanelState {
 
     /// Clamp the cursor after any filter, facet, or ordering change. Cursor 0
     /// is the synthetic parent row; real rows occupy `1..=filtered_count()`.
+    ///
+    /// A cursor row that no longer shows its focused entry (rows above it
+    /// left the view, e.g. when an age facet expires them) follows that
+    /// entry by path, so operations do not stop on a stale cursor.
     pub fn ensure_cursor_valid(&mut self) {
+        let cursor = self.cursor();
+        if cursor > 0 && self.cursor_entry().is_none() {
+            let focused = self.focused_path();
+            self.restore_cursor_focus(focused, cursor);
+            return;
+        }
         let clamped = self.cursor().min(self.filtered_count());
         if self.cursor() != clamped {
             self.reveal_cursor(clamped);
@@ -2415,6 +2454,92 @@ mod tests {
         assert_eq!(p.filtered_get(p.cursor() - 1).unwrap().path, focused);
         assert_eq!(p.scroll_anchor(), 1);
         assert!(p.scroll_to_cursor());
+    }
+
+    #[test]
+    fn cursor_follows_its_entry_when_an_age_facet_expires_rows_above_it() {
+        let now = SystemTime::now();
+        let mut p = panel_with(vec![
+            entry("a.txt", false, 1),
+            entry("b.txt", false, 1),
+            entry("c.txt", false, 1),
+        ]);
+        let window = std::time::Duration::from_secs(1);
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.modified = Some(if e.name == "a.txt" {
+                    // Turns one day old (and leaves the facet) in `window`.
+                    now - std::time::Duration::from_secs(24 * 60 * 60) + window
+                } else {
+                    now
+                });
+            }
+        });
+        p.set_facets(FacetSet {
+            max_age_days: Some(1),
+            ..FacetSet::default()
+        });
+        assert_eq!(p.filtered_count(), 3, "a.txt is still young enough");
+        p.set_cursor(2);
+        assert_eq!(p.cursor_entry().unwrap().name, "b.txt");
+
+        std::thread::sleep(window + std::time::Duration::from_millis(100));
+        assert_eq!(p.filtered_count(), 2);
+        p.ensure_cursor_valid();
+        assert_eq!(p.cursor(), 1);
+        assert_eq!(p.cursor_entry().unwrap().name, "b.txt");
+    }
+
+    #[test]
+    fn remembered_parent_row_focus_is_restored_on_the_parent_row() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        let docs = tmp.dir("docs");
+        tmp.file("downloads/a.txt", "a");
+        tmp.file("downloads/b.txt", "b");
+
+        let mut p = PanelState::new(downloads.clone());
+        p.refresh();
+        p.set_cursor(0);
+        p.navigate_to(docs);
+        p.navigate_to(downloads);
+
+        assert_eq!(p.cursor(), 0, "the `..` row stays focused");
+    }
+
+    #[test]
+    fn leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        tmp.file("downloads/a.txt", "a");
+        let focused = tmp.file("downloads/b.txt", "b");
+        tmp.file("downloads/c.txt", "c");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        p.navigate_to(downloads.clone());
+        let cursor = p.filtered_position(|entry| entry.path == focused).unwrap() + 1;
+        p.set_cursor(cursor);
+        p.navigate_to(tmp.path().to_path_buf());
+
+        // Background listings that never get a worker: "downloads" stays
+        // loading while we leave it again.
+        let mut limits = crate::workload::SchedulerLimits::default();
+        limits.per_kind_running[0] = 0;
+        let runtime = crate::workload::WorkloadRuntime::new(limits);
+        p.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
+        p.set_notify(Arc::new(|| {}));
+        p.navigate_to(downloads.clone());
+        assert_eq!(p.listing.status(), DirStatus::Loading);
+        p.navigate_to(tmp.path().to_path_buf());
+
+        // Back on synchronous listing, the original focus is still there.
+        p.workload = None;
+        p.navigate_to(downloads);
+        assert_eq!(
+            p.cursor_entry().map(|entry| entry.path.clone()),
+            Some(focused)
+        );
     }
 
     #[test]
