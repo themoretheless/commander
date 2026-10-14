@@ -77,6 +77,21 @@ fn visible_rows(
 
 /// Filtered row the list must bring into view, if any. Cursor 0 is the ".."
 /// row, which is scrolled to directly, so it never forces the row window.
+/// Remember the folder a pane's list last showed and report whether it
+/// changed, so the list can start a newly entered folder at the top while
+/// keeping one scroll state per pane (a per-folder id would keep a stored
+/// offset for every folder ever visited).
+fn folder_changed(ctx: &egui::Context, panel_side: &str, path: &std::path::Path) -> bool {
+    let key = egui::Id::new(("file_list_folder", panel_side));
+    ctx.data_mut(|d| {
+        let changed = d.get_temp::<PathBuf>(key).as_deref() != Some(path);
+        if changed {
+            d.insert_temp(key, path.to_path_buf());
+        }
+        changed
+    })
+}
+
 fn cursor_row_to_reveal(cursor: usize, reveal: bool) -> Option<usize> {
     (reveal && cursor > 0).then(|| cursor - 1)
 }
@@ -171,11 +186,15 @@ impl App {
             .show_separator_line(false)
             .frame(Frame::NONE)
             .show(ui, |ui| Self::render_status_bar(ui, panel, t, compare));
-        egui::ScrollArea::vertical()
-            // Per folder, so a newly entered folder does not inherit the
-            // previous folder's pixel offset.
-            .id_salt(("file_list", panel_side, panel.current_path.clone()))
-            .auto_shrink([false; 2])
+        let mut scroll_area = egui::ScrollArea::vertical()
+            .id_salt(("file_list", panel_side))
+            .auto_shrink([false; 2]);
+        // A newly entered folder must not inherit the previous folder's
+        // pixel offset.
+        if folder_changed(ui.ctx(), panel_side, &panel.current_path) {
+            scroll_area = scroll_area.vertical_scroll_offset(0.0);
+        }
+        scroll_area
             .animated(!reduced_motion)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
             .show(ui, |ui| {
@@ -1068,7 +1087,22 @@ fn highlight_name_job(
 
 #[cfg(test)]
 mod tests {
-    use super::{cursor_row_to_reveal, map_ranges_to_display, name_char_budget, visible_rows};
+    use super::{
+        cursor_row_to_reveal, folder_changed, map_ranges_to_display, name_char_budget, visible_rows,
+    };
+
+    #[test]
+    fn entering_another_folder_is_detected_once_per_pane() {
+        let ctx = egui::Context::default();
+        let a = std::path::Path::new("/a");
+        let b = std::path::Path::new("/b");
+        assert!(folder_changed(&ctx, "left", a));
+        assert!(!folder_changed(&ctx, "left", a));
+        assert!(folder_changed(&ctx, "right", a));
+        assert!(folder_changed(&ctx, "left", b));
+        assert!(!folder_changed(&ctx, "left", b));
+        assert!(!folder_changed(&ctx, "right", a));
+    }
 
     #[test]
     fn row_window_is_measured_below_the_parent_row() {
