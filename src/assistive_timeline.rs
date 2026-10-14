@@ -28,6 +28,9 @@ pub struct AssistiveTimeline {
     last_emit_millis: u64,
     min_interval_millis: u64,
     last_phase: Option<(OperationId, OperationPhase)>,
+    /// Last announced pause; the queue dialog reports the pause every frame,
+    /// so identical repeats are dropped instead of flooding the history.
+    last_pause: Option<(Option<OperationId>, String)>,
     current: String,
 }
 
@@ -38,6 +41,7 @@ impl Default for AssistiveTimeline {
             last_emit_millis: 0,
             min_interval_millis: DEFAULT_MIN_INTERVAL_MILLIS,
             last_phase: None,
+            last_pause: None,
             current: String::new(),
         }
     }
@@ -65,13 +69,17 @@ impl AssistiveTimeline {
         {
             return;
         }
-        self.last_phase = Some((operation_id.clone(), phase));
-        self.push(
+        // Remember the phase only once it was actually announced: a phase
+        // change swallowed by the rate limit must be retried on the next call.
+        if self.push(
             TimelineKind::Phase,
-            Some(operation_id),
+            Some(operation_id.clone()),
             format!("{}: {}", phase.label(), detail.into()),
             now_millis,
-        );
+        ) {
+            self.last_phase = Some((operation_id, phase));
+            self.last_pause = None;
+        }
     }
 
     pub fn note_failure(
@@ -86,6 +94,7 @@ impl AssistiveTimeline {
             message.into(),
             now_millis,
         );
+        self.forget_state();
     }
 
     pub fn note_recovery(
@@ -100,6 +109,7 @@ impl AssistiveTimeline {
             message.into(),
             now_millis,
         );
+        self.forget_state();
     }
 
     pub fn note_pause(
@@ -108,27 +118,47 @@ impl AssistiveTimeline {
         message: impl Into<String>,
         now_millis: u64,
     ) {
-        self.push(
+        let message = message.into();
+        if self
+            .last_pause
+            .as_ref()
+            .is_some_and(|(id, prev)| *id == operation_id && *prev == message)
+        {
+            return;
+        }
+        if self.push(
             TimelineKind::Pause,
-            operation_id,
-            message.into(),
+            operation_id.clone(),
+            message.clone(),
             now_millis,
-        );
+        ) {
+            self.last_pause = Some((operation_id, message));
+            // The pause replaced the phase in `current`; the resumed phase
+            // must be announced again even if it is the same one.
+            self.last_phase = None;
+        }
     }
 
+    /// The announced state changed out of band; re-announce whatever comes next.
+    fn forget_state(&mut self) {
+        self.last_phase = None;
+        self.last_pause = None;
+    }
+
+    /// Returns whether the event was emitted (false when rate-limited).
     fn push(
         &mut self,
         kind: TimelineKind,
         operation_id: Option<OperationId>,
         message: String,
         now_millis: u64,
-    ) {
+    ) -> bool {
         let force = matches!(kind, TimelineKind::Failure | TimelineKind::Recovery);
         if !force
             && now_millis.saturating_sub(self.last_emit_millis) < self.min_interval_millis
             && !self.current.is_empty()
         {
-            return;
+            return false;
         }
         self.last_emit_millis = now_millis;
         self.current = message.clone();
@@ -141,6 +171,7 @@ impl AssistiveTimeline {
         while self.events.len() > MAX_EVENTS {
             self.events.pop_back();
         }
+        true
     }
 }
 
@@ -156,5 +187,40 @@ mod tests {
         assert_eq!(timeline.events().count(), 1);
         timeline.note_failure(Some(op), "disk full", 1150);
         assert_eq!(timeline.events().count(), 2);
+    }
+
+    #[test]
+    fn repeated_pause_is_announced_once() {
+        let mut timeline = AssistiveTimeline::default();
+        let op = OperationId("op".into());
+        for step in 0..10 {
+            timeline.note_pause(Some(op.clone()), "paused", 1000 + step * 1000);
+        }
+        assert_eq!(timeline.events().count(), 1);
+    }
+
+    #[test]
+    fn resume_after_pause_reannounces_same_phase() {
+        let mut timeline = AssistiveTimeline::default();
+        let op = OperationId("op".into());
+        timeline.note_phase(op.clone(), OperationPhase::Transfer, "copying", 1000);
+        timeline.note_pause(Some(op.clone()), "paused", 2000);
+        assert_eq!(timeline.current(), "paused");
+        timeline.note_phase(op.clone(), OperationPhase::Transfer, "copying", 3000);
+        assert_ne!(timeline.current(), "paused");
+        // Pausing again after the resume is a new event.
+        timeline.note_pause(Some(op), "paused", 4000);
+        assert_eq!(timeline.events().count(), 4);
+    }
+
+    #[test]
+    fn rate_limited_phase_change_is_retried() {
+        let mut timeline = AssistiveTimeline::default();
+        let op = OperationId("op".into());
+        timeline.note_phase(op.clone(), OperationPhase::Transfer, "copying", 1000);
+        timeline.note_phase(op.clone(), OperationPhase::Verify, "checking", 1100);
+        timeline.note_phase(op.clone(), OperationPhase::Verify, "checking", 2000);
+        assert_eq!(timeline.events().count(), 2);
+        assert!(timeline.current().contains("checking"));
     }
 }
