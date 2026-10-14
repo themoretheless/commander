@@ -2,6 +2,103 @@
 
 use super::*;
 
+/// One fixed-height card per replayed path, so only visible cards are laid
+/// out: undoing a move of thousands of items lists thousands of paths. Long
+/// paths are elided (full text on hover); a blocked path's reason follows
+/// its destination. Returns how many cards were laid out.
+fn render_replay_paths(
+    ui: &mut egui::Ui,
+    paths: &[crate::undo::ReplayPath],
+    t: &ThemeColors,
+) -> usize {
+    let font = egui::FontId::monospace(10.0);
+    let line_h = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let margin = Margin::symmetric(9, 7);
+    let card_h = line_h * 2.0 + f32::from(margin.top) + f32::from(margin.bottom) + 2.0;
+    let mut laid_out = 0;
+    egui::ScrollArea::vertical()
+        .max_height(330.0)
+        .auto_shrink([false, true])
+        .show_rows(ui, card_h, paths.len(), |ui, range| {
+            laid_out = range.len();
+            for path in &paths[range] {
+                let (status, status_color, reason) = match &path.eligibility {
+                    crate::undo::ReplayEligibility::Ready => ("READY", t.accent, None),
+                    crate::undo::ReplayEligibility::Blocked(reason) => {
+                        ("BLOCKED", t.accent_red, Some(reason.as_str()))
+                    }
+                };
+                let width = ui.available_width();
+                ui.allocate_ui(Vec2::new(width, card_h), |ui| {
+                    Frame::NONE
+                        .fill(t.bg_card)
+                        .inner_margin(margin)
+                        .show(ui, |ui| {
+                            ui.set_width(width - f32::from(margin.left + margin.right));
+                            ui.set_height(card_h - f32::from(margin.top + margin.bottom));
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(status)
+                                        .size(9.0)
+                                        .strong()
+                                        .color(status_color),
+                                );
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(path.from.display().to_string())
+                                                .font(font.clone())
+                                                .color(t.text_primary),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        if let Some(reason) = reason {
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(reason)
+                                                            .size(10.0)
+                                                            .color(t.accent_red),
+                                                    );
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(format!(
+                                                                "\u{00bb} {}",
+                                                                path.to.display()
+                                                            ))
+                                                            .font(font.clone())
+                                                            .color(t.text_secondary),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                },
+                                            );
+                                        } else {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!(
+                                                        "\u{00bb} {}",
+                                                        path.to.display()
+                                                    ))
+                                                    .font(font.clone())
+                                                    .color(t.text_secondary),
+                                                )
+                                                .truncate(),
+                                            );
+                                        }
+                                    });
+                                });
+                            });
+                        });
+                });
+            }
+        });
+    laid_out
+}
+
 impl App {
     pub(crate) fn push_history_notice(&mut self, ctx: &egui::Context, message: &str, error: bool) {
         self.toast(
@@ -86,57 +183,7 @@ impl App {
 
             ui.add_space(8.0);
             ui.separator();
-            egui::ScrollArea::vertical()
-                .max_height(330.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for path in &state.preview.paths {
-                        let (status, status_color, reason) = match &path.eligibility {
-                            crate::undo::ReplayEligibility::Ready => ("READY", t.accent, None),
-                            crate::undo::ReplayEligibility::Blocked(reason) => {
-                                ("BLOCKED", t.accent_red, Some(reason.as_str()))
-                            }
-                        };
-                        Frame::NONE
-                            .fill(t.bg_card)
-                            .inner_margin(Margin::symmetric(9, 7))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(status)
-                                            .size(9.0)
-                                            .strong()
-                                            .color(status_color),
-                                    );
-                                    ui.vertical(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(path.from.display().to_string())
-                                                .size(10.0)
-                                                .monospace()
-                                                .color(t.text_primary),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "\u{00bb} {}",
-                                                path.to.display()
-                                            ))
-                                            .size(10.0)
-                                            .monospace()
-                                            .color(t.text_secondary),
-                                        );
-                                        if let Some(reason) = reason {
-                                            ui.label(
-                                                egui::RichText::new(reason)
-                                                    .size(10.0)
-                                                    .color(t.accent_red),
-                                            );
-                                        }
-                                    });
-                                });
-                            });
-                        ui.add_space(4.0);
-                    }
-                });
+            let _ = render_replay_paths(ui, &state.preview.paths, &t);
 
             ui.separator();
             ui.add_space(7.0);
@@ -207,5 +254,36 @@ impl App {
             }
         }
         self.ui.modals.history_preview = Some(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_replay_paths;
+
+    #[test]
+    fn large_undo_preview_lays_out_only_visible_paths() {
+        let paths: Vec<_> = (0..5_000)
+            .map(|index| crate::undo::ReplayPath {
+                from: std::path::PathBuf::from(format!("/from/{index}")),
+                to: std::path::PathBuf::from(format!("/to/{index}")),
+                eligibility: if index % 2 == 0 {
+                    crate::undo::ReplayEligibility::Ready
+                } else {
+                    crate::undo::ReplayEligibility::Blocked("occupied".to_string())
+                },
+            })
+            .collect();
+        let ctx = egui::Context::default();
+        let t = crate::theme::ThemeColors::light();
+        let mut laid_out = 0;
+        crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+            laid_out = render_replay_paths(ui, &paths, &t);
+        }));
+        assert!(laid_out > 0);
+        assert!(
+            laid_out < 50,
+            "{laid_out} cards laid out for a 330 px viewport"
+        );
     }
 }
