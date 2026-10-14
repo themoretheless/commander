@@ -44,14 +44,14 @@ workspace delete/fileops/transfer queue), test-first.
 | PR | Items | Done |
 | --- | --- | --- |
 | P1 | 264 | 207 |
-| P2 | 34 | 31 |
+| P2 | 34 | 30 |
 | P3 | 38 | 28 |
-| P4 | 72 | 61 |
+| P4 | 72 | 60 |
 | P5 | 88 | 0 |
 | P6 | 398 | 0 |
 | P7 | 268 | 0 |
 | P8 | 209 | 0 |
-| **Total** | **1371** | **327** |
+| **Total** | **1371** | **325** |
 
 ## Items
 
@@ -281,7 +281,7 @@ workspace delete/fileops/transfer queue), test-first.
 | I-0222 | sw:app-surfaces-39 | safety | low | y | S | `src/app/activity.rs:607` show_transfer_details | Errors are zipped with failures by index, but native_copy.rs:150 pushes an error with no failure (macOS), shifting class labels onto the wrong rows. → Make native_copy push a matching ClassifiedFailure (or go through record_failure), or store the class on each error record instead of parallel Vecs. | P2 | done:d224a65 |
 | I-0223 | sw:app-dialogs-b-33 | safety | low | y | S | `src/app/developer_panel.rs:468` show_developer_panel | Encrypted bundle defaults to public recipient 'local-dev' with secret=recipient, yet UI says "Encrypted" → Disable the button or label 'dev-key only' when COMMANDER_SUPPORT_BUNDLE_SECRET is unset | P2 | done:8414a2e |
 | I-0224 | sw2:list-render-7 | safety | low? | y | S | `src/app/file_list.rs:301` render_file_list | Slice assumes first_visible<=last_visible; a non-finite/inverted clip rect (NaN height) yields first=total,last=1 and panics → Clamp: let last_visible = last_visible.max(first_visible); or skip rendering rows when viewport height is not finite | P2 | done:3b5304a |
-| I-0225 | sw2:surfaces-24 | safety | low? | y | S | `src/app/recovery_dialog.rs:104` operation_time | u64 timestamps near u64::MAX cast to small negative i64 and render as a 1969 date instead of 'Unknown time' → Use i64::try_from(seconds).ok().and_then(¦s¦ DateTime::from_timestamp(s, 0)) | P2 | done:636fbaa |
+| I-0225 | sw2:surfaces-24 | safety | low? | n | S | `src/app/recovery_dialog.rs:104` operation_time | u64 timestamps near u64::MAX cast to small negative i64 and render as a 1969 date instead of 'Unknown time' → Use i64::try_from(seconds).ok().and_then(¦s¦ DateTime::from_timestamp(s, 0)) | P2 | done:636fbaa |
 | I-0226 | sw:app-dialogs-b-55 | safety | med | y | M | `src/app/run_command_dialog.rs:338` show_run_command_dialog | Command stdout/stderr buffered unbounded and rendered as one huge label per frame. → Read pipes with a cap (~1 MiB) and mark truncated; render capped text. | P2 | done:a9d72c8 |
 | I-0227 | sw:media-index-54 | safety | high | y | S | `src/archive.rs:506` extract_tar_gz_members | Member names from the archive are passed as argv without '--'; a member named like --to-command=... is parsed as a tar option → Insert command.arg("--") before member names (or pass names via -T - on stdin with --null) | P2 | refuted |
 | I-0228 | sw:media-index-56 | safety | low? | y | S | `src/archive.rs:431` extract_zip_members | exists() follows links: a dangling symlink at the destination is written through, and the check/create is racy (clobber) → Open with OpenOptions::new().write(true).create_new(true) and count AlreadyExists as skipped_existing | P2 | done:0d46b84 |
@@ -405,7 +405,7 @@ workspace delete/fileops/transfer queue), test-first.
 | I-0346 | sw:core-utils-b-2 | perf | low? | y | M | `src/session.rs:152` Session::sanitized_paths | Startup stats both restored paths synchronously; a hung NFS/SMB hard mount could block the window from appearing → Restore paths lexically and let async listing report Unavailable, or probe is_dir on a worker with a timeout | P4 | done:36836c2 |
 | I-0347 | sw:core-utils-b-68 | perf | med | y | S | `src/textdiff.rs:34` diff_lines | No common prefix/suffix trimming: two 3000-line files differing in one line exceed 8M cells and are refused → Strip shared leading/trailing lines, run LCS on the middle, apply MAX_DIFF_CELLS to middle only, re-wrap as Equal | P4 | done:9701c67 |
 | I-0348 | sw:media-index-70 | perf | low | y | S | `src/tree_overview.rs:287` run_worker | dir_entry.metadata() is stat'ed for every directory although it is only used at depth 1 → Move dir_entry.metadata() inside the (stack.len()==1).then(..) closure | P4 | refuted |
-| I-0349 | sw:workspace-38 | perf | low? | y | M | `src/workspace.rs:1611` Workspace::pending_conflicts | Transfer confirmation recomputes rich conflicts (with disk stats) every frame while the dialog is open. → Compute rich conflicts once when staging/resolving and cache them on PendingTransfer. | P4 | done:a3d1198 |
+| I-0349 | sw:workspace-38 | perf | low? | n | M | `src/workspace.rs:1611` Workspace::pending_conflicts | Transfer confirmation recomputes rich conflicts (with disk stats) every frame while the dialog is open. → Compute rich conflicts once when staging/resolving and cache them on PendingTransfer. | P4 | refuted |
 | I-0350 | bl#409 | perf | low | y | M | `src/workspace.rs:2352` find_duplicates | Duplicate finder reads every hash-matched file twice (SipHash grouping, then BLAKE3 confirm). → Group directly by verified_hash::file (BLAKE3, cached) and drop the SipHash pass and confirm_dup_group re-read. | P4 | done:a3d1198 |
 | I-0351 | sw:app-dialogs-b-6 | err | low | y | S | `src/app/archive_dialog.rs:75` poll_archive | Per-member extract errors are all joined into one unbounded toast and inline label → Toast 'N members failed: <first error>'; keep the full list inline, capped or scrollable | P5 | open |
 | I-0352 | sw:app-dialogs-a-4 | err | low | y | S | `src/app/confirm_dialog.rs:455` show_confirm_dialog | Skip Existing when every item conflicts closes the dialog silently with no 'nothing copied' feedback. → Before dismiss_pending_op, toast Info 'All N item(s) already exist — nothing to copy'. | P5 | open |

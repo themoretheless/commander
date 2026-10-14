@@ -77,9 +77,6 @@ pub struct PendingTransfer {
     /// Conflict-free drag/drop preserves its immediate-run UX, but only after
     /// the background preflight has published a trustworthy size snapshot.
     pub start_when_ready: bool,
-    /// Rich conflict detail for the confirm dialog, stat'ed once per
-    /// conflict set instead of on every frame the dialog is open.
-    rich_conflicts: Box<std::sync::OnceLock<Vec<crate::conflict::Conflict>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1538,7 +1535,6 @@ impl Workspace {
             flat,
             space: TransferSpaceState::Pending { generation },
             start_when_ready: auto_start && !asks,
-            rich_conflicts: Box::default(),
         }));
     }
 
@@ -1645,15 +1641,13 @@ impl Workspace {
 
     /// Rich conflict list for the pending Copy/Move: source entries whose name
     /// already exists in the destination folder, with both sides' size/mtime.
-    /// The dialog calls this every frame, so the destination is stat'ed once
-    /// per conflict set; resolving a policy re-reads it fresh.
+    /// Read fresh on every call; the confirm dialog caches the result and
+    /// re-reads it on a short timer so destination changes still show.
     pub fn pending_conflicts(&self) -> Vec<crate::conflict::Conflict> {
         let Some(PendingOp::Transfer(tr)) = &self.pending_op else {
             return Vec::new();
         };
-        tr.rich_conflicts
-            .get_or_init(|| Self::read_pending_conflicts(tr))
-            .clone()
+        Self::read_pending_conflicts(tr)
     }
 
     fn read_pending_conflicts(tr: &PendingTransfer) -> Vec<crate::conflict::Conflict> {
@@ -1705,7 +1699,6 @@ impl Workspace {
             // for a proven space verdict.
             tr.start_when_ready = true;
             tr.conflicts = scan::find_conflicts(&tr.entries, &tr.target);
-            tr.rich_conflicts.take();
             tr.flat = scan::pending_flat_list();
             if tr.entries.is_empty() {
                 None

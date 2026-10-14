@@ -2676,7 +2676,6 @@ fn pending_transfer_overflow_logic() {
                 },
             },
             start_when_ready: false,
-            rich_conflicts: Box::default(),
         }
     };
     use CopyMethod::{Buffered, Native};
@@ -4196,7 +4195,7 @@ fn relation_policy_sees_dotfile_conflicts_the_destination_panel_hides() {
 }
 
 #[test]
-fn dialog_conflicts_are_read_once_but_resolution_reads_fresh() {
+fn conflict_detail_and_resolution_read_the_destination_fresh() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let source = l.file("a.txt", "a medium source");
     let existing = r.file("a.txt", "tiny");
@@ -4207,11 +4206,11 @@ fn dialog_conflicts_are_read_once_but_resolution_reads_fresh() {
     let shown = ws.pending_conflicts();
     assert_eq!(shown.len(), 1);
     assert_eq!(shown[0].dst_size, 4);
-    // The destination grows while the dialog is open: frames keep showing
-    // the detail read when it opened, without re-stating every frame...
+    // The destination grows while the dialog is open: the next read sees it
+    // (the dialog throttles these reads itself)...
     std::fs::write(&existing, "a much larger destination than the source").unwrap();
-    assert_eq!(ws.pending_conflicts(), shown);
-    // ...but Keep Larger decides on the destination as it is now.
+    assert_eq!(ws.pending_conflicts()[0].dst_size, 41);
+    // ...and Keep Larger decides on the destination as it is now.
     assert!(!ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::KeepLarger));
     assert_eq!(
         std::fs::read_to_string(existing).unwrap(),
