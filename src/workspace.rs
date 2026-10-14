@@ -79,7 +79,7 @@ pub struct PendingTransfer {
     pub start_when_ready: bool,
     /// Rich conflict detail for the confirm dialog, stat'ed once per
     /// conflict set instead of on every frame the dialog is open.
-    rich_conflicts: std::sync::OnceLock<Vec<crate::conflict::Conflict>>,
+    rich_conflicts: Box<std::sync::OnceLock<Vec<crate::conflict::Conflict>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1538,7 +1538,7 @@ impl Workspace {
             flat,
             space: TransferSpaceState::Pending { generation },
             start_when_ready: auto_start && !asks,
-            rich_conflicts: std::sync::OnceLock::new(),
+            rich_conflicts: Box::default(),
         }));
     }
 
@@ -1705,7 +1705,7 @@ impl Workspace {
             // for a proven space verdict.
             tr.start_when_ready = true;
             tr.conflicts = scan::find_conflicts(&tr.entries, &tr.target);
-            tr.rich_conflicts = std::sync::OnceLock::new();
+            tr.rich_conflicts.take();
             tr.flat = scan::pending_flat_list();
             if tr.entries.is_empty() {
                 None

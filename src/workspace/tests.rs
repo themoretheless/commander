@@ -2676,7 +2676,7 @@ fn pending_transfer_overflow_logic() {
                 },
             },
             start_when_ready: false,
-            rich_conflicts: std::sync::OnceLock::new(),
+            rich_conflicts: Box::default(),
         }
     };
     use CopyMethod::{Buffered, Native};
