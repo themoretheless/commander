@@ -150,7 +150,7 @@ pub fn generate(profile: &BenchmarkTreeProfile) -> Result<FixtureManifest, Fixtu
     profile.validate()?;
     let mut random = DeterministicRandom(profile.seed);
     let mut entries = Vec::with_capacity(profile.entries);
-    let mut total_bytes = 0_u64;
+    let mut sampled_total = 0_u128;
     for index in 0..profile.entries {
         let depth = choose_weighted(&mut random, &profile.depths, |value| value.weight).value;
         let fanout = choose_weighted(&mut random, &profile.fanouts, |value| value.weight).value;
@@ -168,15 +168,23 @@ pub fn generate(profile: &BenchmarkTreeProfile) -> Result<FixtureManifest, Fixtu
         };
         relative_path.push(format!("file-{index:06}{suffix}"));
 
-        let sampled_size = random.range(size_bucket.min_bytes, size_bucket.max_bytes);
-        let remaining = profile.max_total_bytes.saturating_sub(total_bytes);
-        let size_bytes = sampled_size.min(remaining);
-        total_bytes = total_bytes.saturating_add(size_bytes);
+        let size_bytes = random.range(size_bucket.min_bytes, size_bucket.max_bytes);
+        sampled_total = sampled_total.saturating_add(u128::from(size_bytes));
         entries.push(FixtureEntry {
             relative_path,
             size_bytes,
         });
     }
+    // Scale every entry down uniformly when the sample overshoots the budget,
+    // so the size mix keeps its shape instead of zeroing the tail entries.
+    if sampled_total > u128::from(profile.max_total_bytes) {
+        for entry in &mut entries {
+            let scaled =
+                u128::from(entry.size_bytes) * u128::from(profile.max_total_bytes) / sampled_total;
+            entry.size_bytes = u64::try_from(scaled).unwrap_or(u64::MAX);
+        }
+    }
+    let total_bytes = entries.iter().map(|entry| entry.size_bytes).sum();
     Ok(FixtureManifest {
         profile: profile.name.clone(),
         seed: profile.seed,
@@ -185,8 +193,16 @@ pub fn generate(profile: &BenchmarkTreeProfile) -> Result<FixtureManifest, Fixtu
     })
 }
 
+/// Writes the manifest's tree under `root`, which must be missing or empty so
+/// leftovers from an earlier manifest cannot inflate the benchmark tree.
 pub fn materialize(root: &Path, manifest: &FixtureManifest) -> Result<(), FixtureError> {
     std::fs::create_dir_all(root)?;
+    if std::fs::read_dir(root)?.next().is_some() {
+        return Err(FixtureError::Validation(format!(
+            "benchmark fixture root {} is not empty",
+            root.display()
+        )));
+    }
     for entry in &manifest.entries {
         let path = root.join(&entry.relative_path);
         if let Some(parent) = path.parent() {
@@ -311,6 +327,38 @@ mod tests {
                 .iter()
                 .any(|entry| entry.relative_path.components().count() > 1)
         );
+    }
+
+    #[test]
+    fn over_budget_sizes_scale_down_instead_of_zeroing_the_tail() {
+        let mut profile = small_profile();
+        profile.sizes = vec![WeightedSize {
+            min_bytes: 128,
+            max_bytes: 256,
+            weight: 1,
+        }];
+        let manifest = generate(&profile).unwrap();
+        assert!(manifest.total_bytes <= profile.max_total_bytes);
+        assert_eq!(
+            manifest.total_bytes,
+            manifest
+                .entries
+                .iter()
+                .map(|entry| entry.size_bytes)
+                .sum::<u64>()
+        );
+        assert!(manifest.entries.iter().all(|entry| entry.size_bytes > 0));
+    }
+
+    #[test]
+    fn materialize_rejects_a_non_empty_root() {
+        let temp = TempDir::new();
+        std::fs::write(temp.path().join("stale.bin"), b"old").unwrap();
+        let manifest = generate(&small_profile()).unwrap();
+        assert!(matches!(
+            materialize(temp.path(), &manifest),
+            Err(FixtureError::Validation(_))
+        ));
     }
 
     #[test]
