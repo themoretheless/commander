@@ -222,7 +222,7 @@ impl DragAnnouncementMemo {
 /// that subfolder without either pane showing it. Scanning the cache keys is
 /// far cheaper than the `read_dir` calls a full clear would trigger.
 fn invalidate_tree_children(
-    cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    cache: &mut super::tree::ChildCache,
     dir: &std::path::Path,
 ) {
     cache.retain(|(path, _), _| !path.starts_with(dir));
@@ -2304,10 +2304,10 @@ mod tests {
     #[test]
     fn tree_invalidation_drops_the_changed_folder_its_descendants_and_parent() {
         use std::path::PathBuf;
-        let mut cache = std::collections::HashMap::new();
+        let mut cache = super::super::tree::ChildCache::new();
         for path in ["/a", "/a/b", "/a/b/c", "/a/b/c/d", "/a/bc", "/a/z", "/x"] {
             for show_hidden in [false, true] {
-                cache.insert((PathBuf::from(path), show_hidden), Vec::new());
+                cache.insert((PathBuf::from(path), show_hidden), Vec::new().into());
             }
         }
         invalidate_tree_children(&mut cache, std::path::Path::new("/a/b"));

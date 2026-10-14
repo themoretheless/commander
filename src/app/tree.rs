@@ -6,18 +6,31 @@ fn child_cache_key(path: &std::path::Path, show_hidden: bool) -> (PathBuf, bool)
     (path.to_path_buf(), show_hidden)
 }
 
-fn cache_children(
-    cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
-    key: (PathBuf, bool),
-    children: Vec<PathBuf>,
-) {
+fn cache_children(cache: &mut ChildCache, key: (PathBuf, bool), children: TreeChildren) {
     if !cache.contains_key(&key) && cache.len() >= TREE_CHILD_CACHE_LIMIT {
         cache.clear();
     }
     cache.insert(key, children);
 }
 
-type ChildCache = std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>;
+/// Shared child list: rows clone the `Arc`, not every child path, per frame.
+pub(super) type TreeChildren = std::sync::Arc<[PathBuf]>;
+pub(super) type ChildCache = std::collections::HashMap<(PathBuf, bool), TreeChildren>;
+
+/// Child folders of `path`, read from disk only on a cache miss.
+fn cached_children(
+    cache: &mut ChildCache,
+    path: &std::path::Path,
+    show_hidden: bool,
+) -> TreeChildren {
+    let key = child_cache_key(path, show_hidden);
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
+    let children = TreeChildren::from(PanelState::subdirs(path, show_hidden));
+    cache_children(cache, key, children.clone());
+    children
+}
 
 /// A click on a tree row toggles its expansion and drops its cached child
 /// list, so expanding re-reads the folder (the cache is otherwise cleared
@@ -167,21 +180,42 @@ impl App {
         active_path: &std::path::Path,
         show_hidden: bool,
         expanded: &mut std::collections::HashSet<PathBuf>,
-        cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+        cache: &mut ChildCache,
     ) -> Option<PathBuf> {
+        let is_expanded = expanded.contains(path);
+        let row_h = 22.0;
+        let full_w = ui.available_width();
+        let (row_rect, row_resp) = ui.allocate_exact_size(Vec2::new(full_w, row_h), Sense::click());
+
+        // A row scrolled out of view keeps its layout slot but is neither
+        // painted nor clickable, and needs its children only to lay out
+        // an expanded subtree: no folder read or count for it.
+        if !ui.is_rect_visible(row_rect) {
+            if !is_expanded {
+                return None;
+            }
+            let subdirs = cached_children(cache, path, show_hidden);
+            let mut nav = None;
+            for child in subdirs.iter() {
+                if let Some(child_nav) = Self::render_tree_node_recursive(
+                    ui,
+                    child,
+                    depth + 1,
+                    t,
+                    active_path,
+                    show_hidden,
+                    expanded,
+                    cache,
+                ) {
+                    nav = Some(child_nav);
+                }
+            }
+            return nav;
+        }
+
         let mut nav = None;
         let is_current = active_path == path;
-        let is_expanded = expanded.contains(path);
-
-        // Get subdirs (cached)
-        let cache_key = child_cache_key(path, show_hidden);
-        let subdirs = if let Some(cached) = cache.get(&cache_key) {
-            cached.clone()
-        } else {
-            let dirs = PanelState::subdirs(path, show_hidden);
-            cache_children(cache, cache_key, dirs.clone());
-            dirs
-        };
+        let subdirs = cached_children(cache, path, show_hidden);
         let has_children = !subdirs.is_empty();
 
         let name = path
@@ -190,9 +224,6 @@ impl App {
             .unwrap_or_else(|| "/".to_string());
 
         let indent = depth as f32 * 16.0;
-        let row_h = 22.0;
-        let full_w = ui.available_width();
-        let (row_rect, row_resp) = ui.allocate_exact_size(Vec2::new(full_w, row_h), Sense::click());
 
         // Highlight current directory
         if is_current {
@@ -307,7 +338,7 @@ impl App {
 
         // Render children if expanded
         if is_expanded {
-            for child in &subdirs {
+            for child in subdirs.iter() {
                 if let Some(child_nav) = Self::render_tree_node_recursive(
                     ui,
                     child,
@@ -369,11 +400,66 @@ mod tests {
         cache_children(
             &mut cache,
             child_cache_key(&path, false),
-            vec![PathBuf::from("/outside/panes/stale")],
+            TreeChildren::from(vec![PathBuf::from("/outside/panes/stale")]),
         );
         toggle_tree_node(&mut expanded, &mut cache, &path, false, false);
         assert!(!cache.contains_key(&child_cache_key(&path, false)));
         assert!(expanded.is_empty());
+    }
+
+    #[test]
+    fn cached_children_are_shared_not_reread() {
+        let temp = crate::testutil::TempDir::new();
+        std::fs::create_dir(temp.path().join("sub")).expect("create sub");
+        let mut cache = ChildCache::new();
+        let first = cached_children(&mut cache, temp.path(), false);
+        assert_eq!(first.len(), 1);
+        std::fs::create_dir(temp.path().join("later")).expect("create later");
+        let second = cached_children(&mut cache, temp.path(), false);
+        assert!(std::sync::Arc::ptr_eq(&first, &second), "served from cache");
+        cache.clear();
+        assert_eq!(cached_children(&mut cache, temp.path(), false).len(), 2);
+    }
+
+    #[test]
+    fn offscreen_collapsed_rows_do_not_read_their_folder() {
+        let temp = crate::testutil::TempDir::new();
+        let root = temp.path().to_path_buf();
+        for index in 0..60 {
+            std::fs::create_dir(root.join(format!("d{index:02}"))).expect("create dir");
+        }
+        let mut expanded = std::collections::HashSet::from([root.clone()]);
+        let mut cache = ChildCache::new();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        let t = crate::theme::ThemeColors::for_preferences(
+            crate::theme::ThemeMode::Dark,
+            crate::accessibility::Preferences::default(),
+        );
+        crate::testutil::discard_egui_output(ctx.run_ui(input, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                App::render_tree_node_recursive(
+                    ui,
+                    &root,
+                    0,
+                    &t,
+                    &root,
+                    false,
+                    &mut expanded,
+                    &mut cache,
+                );
+            });
+        }));
+        assert!(cache.contains_key(&child_cache_key(&root, false)));
+        assert!(cache.contains_key(&child_cache_key(&root.join("d00"), false)));
+        // 61 rows of 22 px cannot fit in 200 px: the tail is never read.
+        assert!(!cache.contains_key(&child_cache_key(&root.join("d59"), false)));
     }
 
     #[test]
@@ -389,7 +475,7 @@ mod tests {
             cache_children(
                 &mut cache,
                 (PathBuf::from(format!("/tmp/{index}")), index % 2 == 0),
-                Vec::new(),
+                TreeChildren::from(Vec::new()),
             );
         }
 

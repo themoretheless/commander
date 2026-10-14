@@ -12,6 +12,35 @@ fn mark_failure_notice_seen(
     seen.insert(attempt_id)
 }
 
+/// Build a live failure notice only for an attempt not yet ingested: the
+/// active transfer stays finished-with-errors for many frames, and cloning
+/// its error lists each frame only for ingest to drop them is waste.
+fn unseen_failure_notice<T>(
+    seen: &std::collections::HashSet<crate::operation::TransferAttemptId>,
+    attempt_id: crate::operation::TransferAttemptId,
+    build: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    if seen.contains(&attempt_id) {
+        None
+    } else {
+        build()
+    }
+}
+
+/// Undo button label for the top of the undo stack, naming it by its
+/// inverse as the replay preview does, without building that preview (which
+/// clones every path pair and stats each one).
+fn undo_label_for(top: &crate::undo::Action) -> String {
+    use crate::undo::Action;
+    // `invert` keeps the item count; only Trash/RestoreTrash swap verbs.
+    let verb = match top {
+        Action::Trash { .. } => "Restored",
+        Action::RestoreTrash { .. } => "Deleted",
+        other => other.verb(),
+    };
+    undo_last_label(verb, top.item_count())
+}
+
 fn terminal_failure_notice(
     report: crate::workspace::TransferTerminalReport,
     created_at_millis: u64,
@@ -60,17 +89,19 @@ impl App {
 
     pub(crate) fn capture_operation_failures(&mut self, ctx: &egui::Context) {
         let failed = self.ws.active_transfer_view().and_then(|active| {
-            let progress = crate::lock_util::recover(&active.progress);
-            if !progress.finished || progress.errors.is_empty() {
-                return None;
-            }
-            Some(crate::operation_view::FailureNotice {
-                attempt_id: active.attempt_id,
-                operation_id: active.operation_id,
-                summary: active.submitted,
-                errors: progress.errors.clone(),
-                failures: progress.failures.clone(),
-                created_at_millis: (ctx.input(|input| input.time) * 1_000.0) as u64,
+            unseen_failure_notice(&self.failure_notice_seen, active.attempt_id, || {
+                let progress = crate::lock_util::recover(&active.progress);
+                if !progress.finished || progress.errors.is_empty() {
+                    return None;
+                }
+                Some(crate::operation_view::FailureNotice {
+                    attempt_id: active.attempt_id,
+                    operation_id: active.operation_id,
+                    summary: active.submitted,
+                    errors: progress.errors.clone(),
+                    failures: progress.failures.clone(),
+                    created_at_millis: (ctx.input(|input| input.time) * 1_000.0) as u64,
+                })
             })
         });
         if let Some(notice) = failed {
@@ -426,7 +457,7 @@ impl App {
             return;
         }
         let now = ui.input(|input| input.time);
-        let top = self.ws.top_undo_action().cloned();
+        let top = self.ws.top_undo_action();
         let mut jump = None;
         let mut undo = false;
         egui::ScrollArea::vertical()
@@ -452,9 +483,7 @@ impl App {
                             );
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if receipt.still_undoable(top.as_ref())
-                                && ui.small_button("Undo").clicked()
-                            {
+                            if receipt.still_undoable(top) && ui.small_button("Undo").clicked() {
                                 undo = true;
                                 jump = None;
                             }
@@ -477,7 +506,7 @@ impl App {
 
     fn show_operations_errors(&mut self, ui: &mut egui::Ui) {
         let t = self.colors;
-        let notices = self.operation_failures.notices().to_vec();
+        let notices = self.operation_failures.notices();
         if notices.is_empty() {
             ui.label(
                 egui::RichText::new("No unresolved operation errors")
@@ -488,10 +517,7 @@ impl App {
         }
         // Undo is global (the top of the undo stack), not tied to a notice,
         // so the button names the action it would revert.
-        let undo_label = self
-            .ws
-            .preview_undo()
-            .map(|preview| undo_last_label(preview.action.verb(), preview.action.item_count()));
+        let undo_label = self.ws.top_undo_action().map(undo_label_for);
         let mut view = None;
         let mut retry = None;
         let mut rollback = None;
@@ -500,7 +526,7 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("ops_errors")
             .show(ui, |ui| {
-            for notice in &notices {
+            for notice in notices {
                 ui.label(
                     egui::RichText::new(notice.summary.label())
                         .size(11.0)
@@ -616,7 +642,63 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{mark_failure_notice_seen, terminal_failure_notice, undo_last_label};
+    use super::{
+        mark_failure_notice_seen, terminal_failure_notice, undo_label_for, undo_last_label,
+        unseen_failure_notice,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn undo_label_matches_the_replay_preview_without_building_it() {
+        use crate::undo::Action;
+        let pair = (PathBuf::from("/a/x"), PathBuf::from("/b/x"));
+        let actions = [
+            Action::Move {
+                pairs: vec![pair.clone(), pair.clone()],
+            },
+            Action::BatchRename {
+                dir: PathBuf::from("/a"),
+                pairs: vec![("x".into(), "y".into())],
+            },
+            Action::Rename {
+                from: pair.0.clone(),
+                to: pair.1.clone(),
+            },
+            Action::Gather {
+                folder: PathBuf::from("/a/g"),
+                pairs: vec![pair.clone()],
+            },
+            Action::Ungather {
+                folder: PathBuf::from("/a/g"),
+                pairs: vec![pair.clone()],
+            },
+            Action::Trash { items: Vec::new() },
+            Action::RestoreTrash { items: Vec::new() },
+        ];
+        for action in &actions {
+            let inverse = crate::undo::invert(action).expect("every action inverts");
+            assert_eq!(
+                undo_label_for(action),
+                undo_last_label(inverse.verb(), inverse.item_count()),
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn seen_attempt_does_not_rebuild_its_failure_notice() {
+        let attempt = crate::operation::TransferAttemptId::new();
+        let mut seen = std::collections::HashSet::new();
+        assert_eq!(unseen_failure_notice(&seen, attempt, || Some(1)), Some(1));
+        seen.insert(attempt);
+        let mut built = false;
+        let notice = unseen_failure_notice(&seen, attempt, || {
+            built = true;
+            Some(2)
+        });
+        assert_eq!(notice, None);
+        assert!(!built, "errors must not be cloned for an ingested attempt");
+    }
 
     #[test]
     fn failure_notice_undo_names_the_action_it_reverts() {

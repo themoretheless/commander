@@ -9,6 +9,47 @@ use crate::cmdtemplate::{SegmentKind, expand, preview_segments};
 
 const TEMPLATES_SCROLL_ID: &str = "run_command_templates";
 
+/// Bytes of each output stream kept for display. `find /` and the like emit
+/// many megabytes; the rest is drained (so the child never blocks on a full
+/// pipe) but dropped, and the shown text says how much was cut.
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+
+/// Read `reader` to the end, keeping at most `cap` bytes. Returns the kept
+/// bytes and how many were discarded.
+fn read_capped(mut reader: impl std::io::Read, cap: usize) -> (Vec<u8>, u64) {
+    let mut kept = Vec::new();
+    let mut dropped = 0u64;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = cap.saturating_sub(kept.len()).min(n);
+                kept.extend_from_slice(&buf[..room]);
+                dropped = dropped.saturating_add((n - room) as u64);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    (kept, dropped)
+}
+
+/// Display text for one captured stream, noting any truncation.
+fn captured_text(bytes: &[u8], dropped: u64) -> String {
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    if dropped > 0 {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!(
+            "\u{2026} output truncated ({} not shown)",
+            format_size(dropped)
+        ));
+    }
+    text
+}
+
 /// Run `cmdline` through `sh -c` in `cwd`, publishing the child in `slot`
 /// while it runs so the UI can kill it. Output is collected like
 /// `Command::output` (stdin closed, stdout/stderr captured).
@@ -38,13 +79,10 @@ fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) ->
         Ok(child) => child,
         Err(error) => return failed(cmdline, error),
     };
-    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<(Vec<u8>, u64)> {
         std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
-            }
-            bytes
+            pipe.map(|pipe| read_capped(pipe, MAX_OUTPUT_BYTES))
+                .unwrap_or_default()
         })
     }
     let stdout = drain(child.stdout.take());
@@ -70,8 +108,8 @@ fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) ->
     match status {
         Ok(status) => CommandOutput {
             cmdline,
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            stdout: captured_text(&stdout.0, stdout.1),
+            stderr: captured_text(&stderr.0, stderr.1),
             exit_code: status.code(),
             error: None,
         },
@@ -495,6 +533,37 @@ mod tests {
             modified_str: String::new(),
             size_str: "1 B".to_string(),
         }
+    }
+
+    #[test]
+    fn captured_output_is_capped_and_marked_truncated() {
+        let input = vec![b'x'; 10];
+        let (kept, dropped) = read_capped(input.as_slice(), 4);
+        assert_eq!(kept, b"xxxx");
+        assert_eq!(dropped, 6);
+        let text = captured_text(&kept, dropped);
+        assert!(text.starts_with("xxxx\n"));
+        assert!(text.contains("output truncated"));
+
+        let (kept, dropped) = read_capped(&b"short"[..], 4096);
+        assert_eq!((kept.as_slice(), dropped), (&b"short"[..], 0));
+        assert_eq!(captured_text(&kept, dropped), "short");
+        let (kept, dropped) = read_capped(&b""[..], 0);
+        assert!(kept.is_empty() && dropped == 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn huge_command_output_is_bounded() {
+        let slot: CommandChildSlot = std::sync::Arc::default();
+        let output = run_shell(
+            format!("head -c {} /dev/zero", MAX_OUTPUT_BYTES * 3),
+            std::path::Path::new("/"),
+            &slot,
+        );
+        assert_eq!(output.exit_code, Some(0));
+        assert!(output.stdout.len() < MAX_OUTPUT_BYTES + 256);
+        assert!(output.stdout.contains("output truncated"));
     }
 
     fn output(exit_code: Option<i32>, error: Option<&str>) -> CommandOutput {

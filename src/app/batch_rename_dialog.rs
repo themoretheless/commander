@@ -19,7 +19,7 @@ fn clear_error_after_rule_change(
     }
 }
 
-struct ValidatedBatchRename {
+pub struct ValidatedBatchRename {
     rule: RenameRule,
     plans: Vec<RenamePlan>,
     will_change: usize,
@@ -64,6 +64,20 @@ impl ValidatedBatchRename {
     fn rule_for_submit(&self, submit_requested: bool) -> Option<RenameRule> {
         (submit_requested && self.applicable).then(|| self.rule.clone())
     }
+
+    /// The validation for `rule`, reusing `slot` while the rule is unchanged:
+    /// planning compiles the regex and checks every target, too much to redo
+    /// on every repaint of a large selection.
+    fn cached<'a>(
+        slot: &'a mut Option<Self>,
+        context: &BatchRenameContext,
+        rule: RenameRule,
+    ) -> &'a Self {
+        match slot {
+            Some(validation) if validation.rule == rule => validation,
+            slot => slot.insert(Self::build(context, rule)),
+        }
+    }
 }
 
 impl App {
@@ -86,6 +100,7 @@ impl App {
             num_pad: 2,
             error: None,
             scroll_nonce,
+            validation: None,
         });
         Self::mark_modal_opened(ctx, UiModal::BatchRename);
     }
@@ -186,7 +201,9 @@ impl App {
                 });
             });
 
-            let validation = ValidatedBatchRename::build(&state.context, state.rule());
+            let rule = state.rule();
+            let validation =
+                ValidatedBatchRename::cached(&mut state.validation, &state.context, rule);
             clear_error_after_rule_change(
                 &mut state.error,
                 &rule_before_controls,
@@ -198,12 +215,14 @@ impl App {
             ui.add_space(6.0);
 
             // ── Preview ─────────────────────────────────────────────
+            // Fixed-height rows, so only the visible ones are laid out.
+            const ROW_H: f32 = 18.0;
             egui::ScrollArea::vertical()
                 .id_salt((PREVIEW_SCROLL_ID, state.scroll_nonce))
                 .max_height(240.0)
                 .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for p in &validation.plans {
+                .show_rows(ui, ROW_H, validation.plans.len(), |ui, range| {
+                    for p in &validation.plans[range] {
                         let (color, mark) = match p.status {
                             PlanStatus::Ok => (t.accent, "→"),
                             PlanStatus::Unchanged => (t.text_muted, "="),
@@ -211,6 +230,7 @@ impl App {
                             PlanStatus::Collision => (t.accent_warning, "⚠"),
                         };
                         ui.horizontal(|ui| {
+                            ui.set_height(ROW_H);
                             ui.label(
                                 egui::RichText::new(&p.from)
                                     .size(12.0)
@@ -362,6 +382,38 @@ mod tests {
         clear_error_after_rule_change(&mut error, &rule, &rule);
 
         assert_eq!(error.as_deref(), Some("permission denied"));
+    }
+
+    #[test]
+    fn validation_is_rebuilt_only_when_the_rule_changes() {
+        let context = BatchRenameContext {
+            panel: ActivePanel::Left,
+            dir: PathBuf::from("/fixture"),
+            targets: vec!["a.txt".to_string(), "b.txt".to_string()],
+            existing: std::collections::HashSet::from(["a.txt".to_string(), "b.txt".to_string()]),
+        };
+        let rule = RenameRule {
+            prefix: "x-".to_string(),
+            ..RenameRule::default()
+        };
+        let mut slot = None;
+        let first = ValidatedBatchRename::cached(&mut slot, &context, rule.clone());
+        assert_eq!(first.will_change, 2);
+        // Mark the cached plan: an unchanged rule must hand it back as is.
+        if let Some(validation) = slot.as_mut() {
+            validation.will_change = usize::MAX;
+        }
+        let again = ValidatedBatchRename::cached(&mut slot, &context, rule);
+        assert_eq!(again.will_change, usize::MAX);
+
+        let edited = RenameRule {
+            find: "(".to_string(),
+            regex: true,
+            ..RenameRule::default()
+        };
+        let current = ValidatedBatchRename::cached(&mut slot, &context, edited.clone());
+        assert_eq!(current.rule, edited);
+        assert!(!current.applicable);
     }
 
     #[test]

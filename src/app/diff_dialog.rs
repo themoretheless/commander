@@ -29,6 +29,44 @@ fn read_text(path: &Path) -> Result<String, ()> {
     String::from_utf8(bytes).map_err(|_| ())
 }
 
+/// One unwrapped monospace row per line, so only the visible rows are laid
+/// out: an empty-vs-large diff can hold about two million lines. Returns how
+/// many lines were laid out.
+fn render_diff_lines(
+    ui: &mut egui::Ui,
+    lines: &[crate::textdiff::DiffLine],
+    t: &ThemeColors,
+) -> usize {
+    let font = egui::FontId::monospace(12.0);
+    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let mut laid_out = 0;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::ScrollArea::both()
+            .max_height(420.0)
+            .auto_shrink([false, false])
+            .show_rows(ui, row_h, lines.len(), |ui, range| {
+                laid_out = range.len();
+                for line in &lines[range] {
+                    let (mark, color) = match line.kind {
+                        DiffKind::Equal => (" ", t.text_muted),
+                        DiffKind::Insert => ("+", t.accent),
+                        DiffKind::Delete => ("-", t.accent_red),
+                    };
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{mark} {}", line.text))
+                                .font(font.clone())
+                                .color(color),
+                        )
+                        .extend(),
+                    );
+                }
+            });
+    });
+    laid_out
+}
+
 impl App {
     pub(crate) fn open_diff(&mut self, ctx: &egui::Context) {
         match self.ws.diff_targets() {
@@ -117,25 +155,7 @@ impl App {
                         .color(t.text_muted),
                 );
             } else {
-                egui::ScrollArea::vertical()
-                    .max_height(420.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        for line in &state.lines {
-                            let (mark, color) = match line.kind {
-                                DiffKind::Equal => (" ", t.text_muted),
-                                DiffKind::Insert => ("+", t.accent),
-                                DiffKind::Delete => ("-", t.accent_red),
-                            };
-                            ui.label(
-                                egui::RichText::new(format!("{mark} {}", line.text))
-                                    .monospace()
-                                    .size(12.0)
-                                    .color(color),
-                            );
-                        }
-                    });
+                let _ = render_diff_lines(ui, &state.lines, &t);
             }
 
             ui.add_space(10.0);
@@ -162,7 +182,28 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::read_text;
+    use super::{read_text, render_diff_lines};
+
+    #[test]
+    fn large_diff_lays_out_only_visible_lines() {
+        let lines: Vec<_> = (0..50_000)
+            .map(|index| crate::textdiff::DiffLine {
+                kind: crate::textdiff::DiffKind::Insert,
+                text: format!("line {index}"),
+            })
+            .collect();
+        let ctx = egui::Context::default();
+        let t = crate::theme::ThemeColors::light();
+        let mut laid_out = 0;
+        crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+            laid_out = render_diff_lines(ui, &lines, &t);
+        }));
+        assert!(laid_out > 0);
+        assert!(
+            laid_out < 100,
+            "{laid_out} lines laid out for a 420 px viewport"
+        );
+    }
 
     #[test]
     fn reads_regular_text_files() {

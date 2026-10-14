@@ -11,8 +11,39 @@ fn change_count_label(count: usize) -> String {
     }
 }
 
+/// What the live "N changes" preview depends on. The count scans every
+/// filtered entry against the parsed mask, so it is recomputed only when the
+/// mask text or the listing/selection behind it changes, not per repaint.
+#[derive(Clone, PartialEq)]
+struct MaskCountKey {
+    mask: String,
+    folder: PathBuf,
+    entries_gen: u64,
+    shown: usize,
+    selected: usize,
+}
+
+const MASK_COUNT_CACHE: &str = "mask_count_cache";
+
+fn cached_mask_count(
+    ctx: &egui::Context,
+    key: MaskCountKey,
+    count: impl FnOnce() -> usize,
+) -> usize {
+    let id = egui::Id::new(MASK_COUNT_CACHE);
+    if let Some((cached_key, cached)) = ctx.data(|d| d.get_temp::<(MaskCountKey, usize)>(id))
+        && cached_key == key
+    {
+        return cached;
+    }
+    let value = count();
+    ctx.data_mut(|d| d.insert_temp(id, (key, value)));
+    value
+}
+
 impl App {
     pub(crate) fn open_mask(&mut self, ctx: &egui::Context) {
+        ctx.data_mut(|d| d.remove::<(MaskCountKey, usize)>(egui::Id::new(MASK_COUNT_CACHE)));
         self.ui.modals.mask_input = Some(String::new());
         Self::mark_modal_opened(ctx, UiModal::Mask);
     }
@@ -53,7 +84,14 @@ impl App {
 
             // Count after TextEdit so the label and Enter action observe
             // the exact same buffer from this frame.
-            let count = active_panel.mask_match_count(buffer);
+            let key = MaskCountKey {
+                mask: buffer.clone(),
+                folder: active_panel.current_path.clone(),
+                entries_gen: active_panel.entries_gen(),
+                shown: active_panel.filtered_count(),
+                selected: active_panel.selected_count(),
+            };
+            let count = cached_mask_count(ui.ctx(), key, || active_panel.mask_match_count(buffer));
             let change_label = change_count_label(count);
             ui.add_space(4.0);
             ui.label(
@@ -107,6 +145,29 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_count_is_recomputed_only_when_its_inputs_change() {
+        let ctx = egui::Context::default();
+        let key = |mask: &str, selected| MaskCountKey {
+            mask: mask.to_string(),
+            folder: PathBuf::from("/fixture"),
+            entries_gen: 3,
+            shown: 10,
+            selected,
+        };
+        let mut scans = 0;
+        let mut count = |key| {
+            cached_mask_count(&ctx, key, || {
+                scans += 1;
+                scans
+            })
+        };
+        assert_eq!(count(key("*.rs", 0)), 1);
+        assert_eq!(count(key("*.rs", 0)), 1, "repaint reuses the count");
+        assert_eq!(count(key("*.md", 0)), 2);
+        assert_eq!(count(key("*.md", 1)), 3, "selection changed");
+    }
 
     #[test]
     fn preview_labels_selection_changes_not_pattern_matches() {

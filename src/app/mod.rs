@@ -76,7 +76,7 @@ pub struct App {
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
-    pub(crate) tree_children_cache: std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    pub(crate) tree_children_cache: tree::ChildCache,
     pub(crate) drag_announcement: update::DragAnnouncementMemo,
     pub(crate) tree_width: f32,
     /// Paint relative size occupancy bars behind file rows.
@@ -128,10 +128,14 @@ pub struct App {
         crate::compare::CompareMap,
         crate::compare::CompareMap,
     )>,
+    /// Data the confirm dialog derives from the pending operation once
+    /// instead of on every repaint of its flow animation.
+    pub(crate) confirm_cache: confirm_dialog::ConfirmCache,
     /// Startup instrumentation remains live through the first directory read.
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
     pub(crate) show_developer_panel: bool,
     pub(crate) developer_notice: Option<DeveloperNotice>,
+    pub(crate) developer_store_usage: developer_panel::StoreUsageCache,
     pub(crate) persistence_issue_seen: u64,
 }
 
@@ -356,6 +360,8 @@ pub struct ArchiveState {
     pub run: Option<crate::archive::ListingRun>,
     pub extract: Option<crate::archive::ExtractRun>,
     pub listing: Option<crate::archive::ArchiveListing>,
+    /// Filter matches for `listing`; reset whenever the listing is replaced.
+    pub member_filter: archive_dialog::MemberFilter,
     pub selected: std::collections::BTreeSet<usize>,
     pub status: Option<String>,
     pub error: Option<String>,
@@ -514,6 +520,8 @@ pub struct SyncState {
     pub error: Option<String>,
     /// When true, Apply only reports the planned actions without transferring.
     pub dry_run: bool,
+    /// Plan being built off the UI thread; Apply waits for it.
+    pub scan: Option<sync_dialog::PlanScan>,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in
@@ -535,6 +543,8 @@ pub struct BatchRenameState {
     pub error: Option<String>,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
+    /// Plan for the last rule shown; rebuilt only when the rule changes.
+    pub validation: Option<batch_rename_dialog::ValidatedBatchRename>,
 }
 
 impl BatchRenameState {
@@ -811,9 +821,11 @@ impl App {
             project_collections,
             command_templates: None,
             compare_cache: None,
+            confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: Some(startup),
             show_developer_panel: false,
             developer_notice: None,
+            developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: 0,
         };
         if let Some(trace) = &mut app.startup_trace {
@@ -893,9 +905,11 @@ impl App {
             project_collections: crate::collections::ProjectCollections::default(),
             command_templates: None,
             compare_cache: None,
+            confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: None,
             show_developer_panel: false,
             developer_notice: None,
+            developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: crate::persistence::issue_generation(),
         }
     }

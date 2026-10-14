@@ -2,6 +2,44 @@
 
 use super::*;
 
+/// Indexes of the archive members matching the filter text. A listing holds
+/// up to 100k members and the sheet repaints on pointer moves and spinners,
+/// so the lowercased paths are built once per listing and the matches only
+/// when the filter text changes.
+#[derive(Default)]
+pub struct MemberFilter {
+    lower_paths: Option<Vec<String>>,
+    needle: Option<String>,
+    visible: Vec<usize>,
+}
+
+impl MemberFilter {
+    fn visible(&mut self, listing: &crate::archive::ArchiveListing, filter: &str) -> &[usize] {
+        let needle = filter.trim().to_lowercase();
+        if self.needle.as_deref() != Some(needle.as_str()) {
+            self.visible = if needle.is_empty() {
+                (0..listing.members.len()).collect()
+            } else {
+                let lower = self.lower_paths.get_or_insert_with(|| {
+                    listing
+                        .members
+                        .iter()
+                        .map(|member| member.path.to_string_lossy().to_lowercase())
+                        .collect()
+                });
+                lower
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, path)| path.contains(&needle))
+                    .map(|(index, _)| index)
+                    .collect()
+            };
+            self.needle = Some(needle);
+        }
+        &self.visible
+    }
+}
+
 impl App {
     pub(crate) fn open_archive(&mut self, path: PathBuf, ctx: &egui::Context) {
         let repaint = ctx.clone();
@@ -16,6 +54,7 @@ impl App {
             run: Some(run),
             extract: None,
             listing: None,
+            member_filter: MemberFilter::default(),
             selected: std::collections::BTreeSet::new(),
             status: None,
             error: None,
@@ -41,6 +80,7 @@ impl App {
             match result {
                 Ok(listing) => {
                     state.listing = Some(listing);
+                    state.member_filter = MemberFilter::default();
                     state.error = None;
                 }
                 Err(error) => state.error = Some(error),
@@ -189,21 +229,7 @@ impl App {
                 }
 
                 if let Some(listing) = &state.listing {
-                    let needle = state.filter.trim().to_lowercase();
-                    let visible: Vec<usize> = listing
-                        .members
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, member)| {
-                            needle.is_empty()
-                                || member
-                                    .path
-                                    .to_string_lossy()
-                                    .to_lowercase()
-                                    .contains(&needle)
-                        })
-                        .map(|(index, _)| index)
-                        .collect();
+                    let visible = state.member_filter.visible(listing, &state.filter);
                     let declared_bytes = listing
                         .declared_uncompressed_bytes
                         .min(u128::from(u64::MAX)) as u64;
@@ -487,4 +513,54 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
         },
     )
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemberFilter;
+
+    fn listing(paths: &[&str]) -> crate::archive::ArchiveListing {
+        crate::archive::ArchiveListing {
+            kind: crate::archive::ArchiveKind::Zip,
+            members: paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| crate::archive::ArchiveMember {
+                    index,
+                    path: std::path::PathBuf::from(path),
+                    is_dir: false,
+                    size: 1,
+                    compressed_size: 1,
+                    tar_name: None,
+                })
+                .collect(),
+            declared_members: paths.len(),
+            declared_uncompressed_bytes: paths.len() as u128,
+            unsafe_members: 0,
+            unreadable_members: 0,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn member_filter_matches_case_insensitively_and_tracks_the_text() {
+        let listing = listing(&["src/Main.rs", "README.md", "src/lib.rs"]);
+        let mut filter = MemberFilter::default();
+        assert_eq!(filter.visible(&listing, ""), [0, 1, 2]);
+        assert_eq!(filter.visible(&listing, "  SRC "), [0, 2]);
+        assert_eq!(filter.visible(&listing, "main"), [0]);
+        assert_eq!(filter.visible(&listing, "nothing"), [] as [usize; 0]);
+        assert_eq!(filter.visible(&listing, ""), [0, 1, 2]);
+    }
+
+    #[test]
+    fn unchanged_filter_reuses_its_matches() {
+        let listing = listing(&["a.txt", "b.txt"]);
+        let mut filter = MemberFilter::default();
+        let first = filter.visible(&listing, "a").as_ptr();
+        // Same text, even with a different listing: no rescan until reset.
+        let other = self::listing(&["b.txt", "a.txt"]);
+        assert_eq!(filter.visible(&other, "a").as_ptr(), first);
+        assert_eq!(filter.visible(&other, "a"), [0]);
+    }
 }
