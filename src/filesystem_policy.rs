@@ -69,10 +69,21 @@ pub struct NormalizationPreview {
     pub collisions: Vec<Vec<String>>,
 }
 
+/// True for filesystems that treat composed and decomposed Unicode
+/// spellings as one name (APFS and HFS+). NTFS, FAT, exFAT and most SMB
+/// servers store and compare the code points as written.
+pub fn is_normalization_insensitive(filesystem: &str) -> bool {
+    matches!(
+        filesystem.to_ascii_lowercase().as_str(),
+        "apfs" | "hfs" | "hfs+" | "hfsplus"
+    )
+}
+
 pub fn preview_normalization<'a>(
     names: impl IntoIterator<Item = &'a str>,
     form: NormalizationForm,
     case_sensitive: bool,
+    normalization_insensitive: bool,
 ) -> NormalizationPreview {
     let mut preview = NormalizationPreview::default();
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -84,18 +95,19 @@ pub fn preview_normalization<'a>(
                 normalized: normalized.clone(),
             });
         }
-        // Case-insensitive targets (APFS, HFS+, NTFS, FAT, SMB) also treat
-        // composed and decomposed spellings as one name, so key them on NFC
-        // even when the policy preserves spelling, and fold final sigma the
-        // way those filesystems do (`to_lowercase` keeps word-final ς).
-        let key = if case_sensitive {
-            normalized
+        // APFS and HFS+ treat composed and decomposed spellings as one name,
+        // so key them on NFC even when the policy preserves spelling.
+        let key = if normalization_insensitive {
+            normalized.nfc().collect::<String>()
         } else {
             normalized
-                .nfc()
-                .collect::<String>()
-                .to_lowercase()
-                .replace('\u{3c2}', "\u{3c3}")
+        };
+        // Case-insensitive targets fold final sigma like sigma
+        // (`to_lowercase` keeps word-final ς).
+        let key = if case_sensitive {
+            key
+        } else {
+            key.to_lowercase().replace('\u{3c2}', "\u{3c3}")
         };
         groups.entry(key).or_default().push(name.to_string());
     }
@@ -301,6 +313,8 @@ pub struct CapabilityMatrix {
     pub generation: u64,
     pub backend: crate::volume_profile::BackendKind,
     pub case_sensitive: Option<bool>,
+    /// Composed and decomposed spellings name the same entry.
+    pub normalization_insensitive: bool,
     pub rows: Vec<CapabilityVerdict>,
 }
 
@@ -348,6 +362,7 @@ pub fn matrix_for_profile(
         generation: profile.generation,
         backend: profile.backend,
         case_sensitive: profile.case_sensitive,
+        normalization_insensitive: is_normalization_insensitive(&profile.filesystem),
         rows: vec![
             row(
                 Capability::Read,
@@ -505,6 +520,7 @@ mod tests {
             [decomposed, "Caf\u{e9}.txt", "README", "readme"],
             NormalizationForm::Nfc,
             false,
+            false,
         );
         assert_eq!(preview.changes[0].normalized, "Caf\u{e9}.txt");
         assert_eq!(preview.collisions.len(), 2);
@@ -520,18 +536,19 @@ mod tests {
 
     #[test]
     fn preserved_spelling_still_collides_composed_and_decomposed_twins() {
-        let preview = preview_normalization(
-            ["Cafe\u{301}.txt", "Caf\u{e9}.txt"],
-            NormalizationForm::Preserve,
-            false,
-        );
-        assert_eq!(preview.collisions.len(), 1);
-        let sensitive = preview_normalization(
-            ["Cafe\u{301}.txt", "Caf\u{e9}.txt"],
-            NormalizationForm::Preserve,
-            true,
-        );
+        let twins = ["Cafe\u{301}.txt", "Caf\u{e9}.txt"];
+        let apfs = preview_normalization(twins, NormalizationForm::Preserve, false, true);
+        assert_eq!(apfs.collisions.len(), 1);
+        let apfs_case_sensitive =
+            preview_normalization(twins, NormalizationForm::Preserve, true, true);
+        assert_eq!(apfs_case_sensitive.collisions.len(), 1);
+        let sensitive = preview_normalization(twins, NormalizationForm::Preserve, true, false);
         assert!(sensitive.collisions.is_empty());
+        // NTFS and FAT are case-insensitive but keep both spellings apart.
+        let ntfs = preview_normalization(twins, NormalizationForm::Preserve, false, false);
+        assert!(ntfs.collisions.is_empty());
+        assert!(is_normalization_insensitive("APFS"));
+        assert!(!is_normalization_insensitive("ntfs"));
     }
 
     #[test]
@@ -539,6 +556,7 @@ mod tests {
         let preview = preview_normalization(
             ["\u{3bf}\u{3c2}", "\u{3bf}\u{3c3}"],
             NormalizationForm::Preserve,
+            false,
             false,
         );
         assert_eq!(preview.collisions.len(), 1);
@@ -653,6 +671,7 @@ mod tests {
                 ["README", "readme"],
                 NormalizationForm::Nfc,
                 contract.case_sensitive,
+                matrix.normalization_insensitive,
             );
             assert_eq!(names.collisions.is_empty(), contract.case_sensitive);
             if fixture == FixtureKind::Disconnect {

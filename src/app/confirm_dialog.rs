@@ -784,6 +784,7 @@ impl App {
                     .capabilities
                     .case_sensitive
                     .unwrap_or(false),
+                transfer.filesystem.capabilities.normalization_insensitive,
             );
         }
         if collision != transfer.name_policy.collision {

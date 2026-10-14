@@ -375,6 +375,7 @@ fn filesystem_preflight(
             names.iter().copied(),
             name_policy.normalization,
             profile.case_sensitive.unwrap_or(false),
+            crate::filesystem_policy::is_normalization_insensitive(&profile.filesystem),
         ),
         portability: crate::filesystem_policy::audit_names(names.iter().copied()),
         capabilities: crate::filesystem_policy::matrix_for_profile(
