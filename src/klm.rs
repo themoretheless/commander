@@ -46,7 +46,7 @@ impl WorkflowFixture {
             .iter()
             .filter(|step| step.operator != Operator::R)
             .map(|step| step.repetitions)
-            .sum()
+            .fold(0, u32::saturating_add)
     }
 
     #[must_use]
@@ -63,7 +63,7 @@ impl WorkflowFixture {
                 };
                 per_operator.saturating_mul(u64::from(step.repetitions))
             })
-            .sum()
+            .fold(0, u64::saturating_add)
     }
 }
 
@@ -228,6 +228,28 @@ mod tests {
                 .iter()
                 .all(|workflow| workflow.estimated_duration_ms(&suite.model) > 0)
         );
+    }
+
+    #[test]
+    fn operator_totals_saturate_instead_of_overflowing() {
+        let mut workflow = ci_suite().unwrap().workflows.remove(0);
+        let model = ci_suite().unwrap().model;
+        for _ in 0..2 {
+            workflow.steps.push(OperatorStep {
+                operator: Operator::K,
+                repetitions: u32::MAX,
+                response_ms: None,
+                action: "absurd fixture".to_string(),
+            });
+            workflow.steps.push(OperatorStep {
+                operator: Operator::R,
+                repetitions: u32::MAX,
+                response_ms: Some(u64::MAX),
+                action: "absurd wait".to_string(),
+            });
+        }
+        assert_eq!(workflow.user_operators(), u32::MAX);
+        assert_eq!(workflow.estimated_duration_ms(&model), u64::MAX);
     }
 
     #[test]
