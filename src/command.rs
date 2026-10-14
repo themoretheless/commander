@@ -597,7 +597,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Select files differing from other panel", "", "selection differing changed modified other panel compare diff", Command::SelectDiffering),
     entry("Select files identical to other panel", "", "selection identical same equal other panel compare diff dedupe", Command::SelectIdentical),
     entry("Clear selection in all folders", "", "selection clear deselect none reset all folders", Command::ClearSelection),
-    entry("Activity", "Cmd+J", "activity operations queue progress history errors recovery", Command::ToggleQueuePanel),
+    entry("Operations panel", "Cmd+J", "activity operations queue progress history errors recovery", Command::ToggleQueuePanel),
     entry("Operation history", "", "command", Command::OpenReceipts),
     entry("Recovery center", "", "command", Command::OpenRecoveryCenter),
     entry("Select clutter files", "", "selection junk clutter ds_store thumbs desktop.ini cleanup cruft", Command::SelectJunk),

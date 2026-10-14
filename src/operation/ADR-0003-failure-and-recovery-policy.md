@@ -42,7 +42,7 @@ Additional rules apply:
 7. Capability diagnostics may contain explicit user-selected paths. Support
    bundles may not: paths, operation IDs, version keys, and failure text are
    replaced by per-bundle salted tokens or aggregates.
-8. Errors are never discarded because a dialog closes. The Operations Center,
+8. Errors are never discarded because a dialog closes. The Operations panel,
    journal, and redacted support bundle retain the appropriate projection.
 
 ## Consequences

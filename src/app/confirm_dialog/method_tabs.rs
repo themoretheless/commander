@@ -5,6 +5,20 @@
 
 use super::*;
 
+/// Hover text explaining what each copy method trades off.
+const fn method_tooltip(method: CopyMethod) -> &'static str {
+    match method {
+        CopyMethod::Native => {
+            "System copy, cloning files where the volume supports it; fastest. Falls back \
+             to Buffered when a bandwidth limit, resume or symlink policy needs it"
+        }
+        CopyMethod::Buffered => {
+            "Streams file contents through the app with byte-level progress; slower, but \
+             behaves the same on every volume"
+        }
+    }
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     colors: &ThemeColors,
@@ -27,7 +41,7 @@ pub fn show(
     painter.text(
         egui::pos2(row_rect.left() + 4.0, row_rect.center().y),
         egui::Align2::LEFT_CENTER,
-        format!("{title} — {count} item(s)"),
+        format!("{title} — {}", super::items_label(count)),
         egui::FontId::proportional(13.0),
         colors.text_primary,
     );
@@ -82,6 +96,15 @@ pub fn show(
             ui.id().with(("copy_method_tab", index)),
             Sense::click(),
         );
+        // Painter-only tab: expose it as a selectable item and show focus.
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                active,
+                label,
+            )
+        });
         if response.hovered() && !active {
             painter.rect_filled(
                 tab_rect,
@@ -89,10 +112,30 @@ pub fn show(
                 colors.bg_hover.linear_multiply(0.2),
             );
         }
+        if response.has_focus() {
+            painter.rect_stroke(
+                tab_rect.shrink(1.0),
+                CornerRadius::ZERO,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let response = response.on_hover_text(method_tooltip(method));
         if response.clicked() {
             selected = Some(method);
         }
     }
 
     selected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CopyMethod, method_tooltip};
+
+    #[test]
+    fn each_method_explains_its_tradeoff() {
+        assert!(method_tooltip(CopyMethod::Native).contains("fastest"));
+        assert!(method_tooltip(CopyMethod::Buffered).contains("progress"));
+    }
 }
