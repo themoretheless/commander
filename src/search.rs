@@ -1115,10 +1115,12 @@ pub fn time_bucket(hit: &SearchHit, pivot: TimePivot, now: SystemTime) -> TimeBu
     }
     // Count local calendar days, not 24-hour windows, so a file changed at
     // 23:00 yesterday is "Yesterday" at 08:00 today.
-    let local_date = |time: SystemTime| chrono::DateTime::<chrono::Local>::from(time).date_naive();
-    let days = local_date(now)
-        .signed_duration_since(local_date(value))
-        .num_days();
+    // chrono's `From<SystemTime>` panics outside its date range, so convert
+    // through the checked constructor; out-of-range times are simply old.
+    let (Some(now_date), Some(value_date)) = (local_date(now), local_date(value)) else {
+        return TimeBucket::Older;
+    };
+    let days = now_date.signed_duration_since(value_date).num_days();
     match days {
         ..=0 => TimeBucket::Today,
         1 => TimeBucket::Yesterday,
@@ -1127,6 +1129,26 @@ pub fn time_bucket(hit: &SearchHit, pivot: TimePivot, now: SystemTime) -> TimeBu
         31..=365 => TimeBucket::ThisYear,
         _ => TimeBucket::Older,
     }
+}
+
+fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
+    let (secs, nanos) = match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => (i64::try_from(after.as_secs()).ok()?, after.subsec_nanos()),
+        Err(error) => {
+            let before = error.duration();
+            let secs = i64::try_from(before.as_secs()).ok()?;
+            if before.subsec_nanos() == 0 {
+                (secs.checked_neg()?, 0)
+            } else {
+                (
+                    secs.checked_neg()?.checked_sub(1)?,
+                    1_000_000_000 - before.subsec_nanos(),
+                )
+            }
+        }
+    };
+    let utc = chrono::DateTime::from_timestamp(secs, nanos)?;
+    Some(utc.with_timezone(&chrono::Local).date_naive())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1477,7 +1499,14 @@ mod tests {
 
     #[test]
     fn time_pivot_has_stable_age_buckets() {
-        let now = SystemTime::now();
+        use chrono::TimeZone;
+        // A fixed local noon away from DST transitions keeps the day count
+        // independent of the time zone the test runs in.
+        let now: SystemTime = chrono::Local
+            .with_ymd_and_hms(2026, 1, 20, 12, 0, 0)
+            .single()
+            .unwrap()
+            .into();
         let mut hit = SearchHit {
             entry: file_entry(PathBuf::from("/x/a.txt"), 1),
             identity: FileIdentity::Path(PathBuf::from("/x/a.txt")),
@@ -1652,5 +1681,31 @@ mod tests {
         assert_eq!(bucket(at(2026, 6, 10, 1)), TimeBucket::Today);
         assert_eq!(bucket(at(2026, 6, 9, 23)), TimeBucket::Yesterday);
         assert_eq!(bucket(at(2026, 6, 8, 9)), TimeBucket::ThisWeek);
+    }
+
+    #[test]
+    fn time_bucket_handles_times_outside_chrono_range() {
+        let now = SystemTime::now();
+        let mut hit = SearchHit {
+            entry: file_entry(PathBuf::from("/x/a.txt"), 1),
+            identity: FileIdentity::Path(PathBuf::from("/x/a.txt")),
+            accessed: None,
+            explanation: MatchExplanation::default(),
+            location: SearchLocation::Native(PathBuf::from("/x/a.txt")),
+        };
+        hit.entry.modified = std::time::UNIX_EPOCH.checked_sub(Duration::from_millis(1_500));
+        assert_eq!(
+            time_bucket(&hit, TimePivot::Modified, now),
+            TimeBucket::Older
+        );
+        // Windows cannot represent times this far back; unix (64-bit
+        // time_t) can, and chrono cannot.
+        if let Some(ancient) = std::time::UNIX_EPOCH.checked_sub(Duration::from_secs(1 << 62)) {
+            hit.entry.modified = Some(ancient);
+            assert_eq!(
+                time_bucket(&hit, TimePivot::Modified, now),
+                TimeBucket::Older
+            );
+        }
     }
 }
