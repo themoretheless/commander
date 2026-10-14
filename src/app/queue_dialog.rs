@@ -85,6 +85,31 @@ fn with_accessible_label(response: egui::Response, label: &str) -> egui::Respons
     response
 }
 
+/// Status line for a running job whose transfer already finished but stays
+/// in the queue until its details are acknowledged.
+const fn finished_job_detail(has_errors: bool) -> &'static str {
+    if has_errors {
+        "Finished with errors; press OK above to continue"
+    } else {
+        "Finished; press OK above to continue"
+    }
+}
+
+/// Whether a pending job at `index` among `count` pending jobs can move
+/// `(earlier, later)`; the ends cannot move further.
+const fn pending_moves(index: usize, count: usize) -> (bool, bool) {
+    (index > 0, index + 1 < count)
+}
+
+/// Empty History tab text: an empty search means nothing has finished yet.
+fn history_empty_text(query: &str) -> &'static str {
+    if query.trim().is_empty() {
+        "No completed operations yet"
+    } else {
+        "No matching operations"
+    }
+}
+
 impl App {
     pub(crate) fn toggle_queue_panel(&mut self) {
         if self.show_operations_center && self.operations_tab == OperationsTab::Queue {
@@ -305,8 +330,12 @@ impl App {
         let rows = self.ws.queue_snapshot();
         let running = self.ws.active_transfer_view().map(|active| {
             let progress = crate::lock_util::recover(&active.progress);
-            (progress.phase, progress.pause_reason.clone())
+            let finished = progress
+                .finished
+                .then(|| !progress.errors.is_empty() || !progress.failures.is_empty());
+            (progress.phase, progress.pause_reason.clone(), finished)
         });
+        let running_finished = running.as_ref().is_some_and(|(_, _, done)| done.is_some());
         if rows.is_empty() {
             ui.label(
                 egui::RichText::new("Nothing queued")
@@ -326,6 +355,7 @@ impl App {
         let mut move_up = None;
         let mut move_down = None;
         let mut cancel = None;
+        let mut pending_index = 0;
         egui::ScrollArea::vertical()
             .id_salt("ops_queue")
             .auto_shrink([false, true])
@@ -355,7 +385,10 @@ impl App {
                             let detail = match row.state {
                                 JobState::Running => running.as_ref().map_or_else(
                                     || state_label.to_string(),
-                                    |(phase, pause_reason)| {
+                                    |(phase, pause_reason, finished)| {
+                                        if let Some(has_errors) = finished {
+                                            return finished_job_detail(*has_errors).to_string();
+                                        }
                                         pause_reason.as_ref().map_or_else(
                                             || format!("{} phase", phase.label()),
                                             |reason| {
@@ -377,15 +410,73 @@ impl App {
                             ui.label(egui::RichText::new(detail).size(9.0).color(state_color));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let icon = |ui: &mut egui::Ui, glyph: &str, hint: &str| {
-                                ui.add_sized([24.0, 24.0], egui::Button::new(glyph))
-                                    .on_hover_text(hint)
-                                    .clicked()
+                            // Glyph buttons get the action plus the job as
+                            // their accessible name.
+                            let icon = |ui: &mut egui::Ui,
+                                        enabled: bool,
+                                        glyph: &str,
+                                        action: &str,
+                                        hint: &str| {
+                                let response = ui.add_enabled_ui(enabled, |ui| {
+                                    ui.add_sized([24.0, 24.0], egui::Button::new(glyph))
+                                });
+                                with_accessible_label(
+                                    response.inner,
+                                    &row_action_label(action, &row.label),
+                                )
+                                .on_hover_text(hint)
+                                .clicked()
                             };
+                            match row.state {
+                                JobState::Pending => {
+                                    if pending_count > 1 {
+                                        let (earlier, later) =
+                                            pending_moves(pending_index, pending_count);
+                                        if icon(ui, later, "\u{25bc}", "Move later", "Move later") {
+                                            move_down = Some(row.id);
+                                        }
+                                        if icon(
+                                            ui,
+                                            earlier,
+                                            "\u{25b2}",
+                                            "Move earlier",
+                                            "Move earlier",
+                                        ) {
+                                            move_up = Some(row.id);
+                                        }
+                                        if icon(ui, earlier, "\u{23eb}", "Run next", "Run next") {
+                                            promote = Some(row.id);
+                                        }
+                                    }
+                                    pending_index += 1;
+                                    if icon(
+                                        ui,
+                                        true,
+                                        "\u{23f8}",
+                                        "Pause",
+                                        "Pause pending operation",
+                                    ) {
+                                        pause = Some(row.id);
+                                    }
+                                }
+                                JobState::Paused
+                                    if icon(ui, true, "\u{25b6}", "Resume", "Resume") =>
+                                {
+                                    resume = Some(row.id);
+                                }
+                                _ => {}
+                            }
+                            // Cancel is added last so Tab reaches the safe
+                            // actions first; a finished job waiting for OK
+                            // has nothing left to cancel.
+                            let finished = row.state == JobState::Running && running_finished;
                             if !row.state.is_terminal()
+                                && !finished
                                 && icon(
                                     ui,
+                                    true,
                                     "\u{00d7}",
+                                    "Cancel",
                                     if row.state == JobState::Running {
                                         crate::operation_view::CancellationAction::CancelCurrent
                                             .consequence()
@@ -396,28 +487,6 @@ impl App {
                                 )
                             {
                                 cancel = Some(row.id);
-                            }
-                            match row.state {
-                                JobState::Pending => {
-                                    if pending_count > 1 {
-                                        if icon(ui, "\u{25bc}", "Move later") {
-                                            move_down = Some(row.id);
-                                        }
-                                        if icon(ui, "\u{25b2}", "Move earlier") {
-                                            move_up = Some(row.id);
-                                        }
-                                        if icon(ui, "\u{23eb}", "Run next") {
-                                            promote = Some(row.id);
-                                        }
-                                    }
-                                    if icon(ui, "\u{23f8}", "Pause pending operation") {
-                                        pause = Some(row.id);
-                                    }
-                                }
-                                JobState::Paused if icon(ui, "\u{25b6}", "Resume") => {
-                                    resume = Some(row.id);
-                                }
-                                _ => {}
                             }
                         });
                     });
@@ -470,7 +539,7 @@ impl App {
             .collect::<Vec<_>>();
         if receipts.is_empty() {
             ui.label(
-                egui::RichText::new("No matching operations")
+                egui::RichText::new(history_empty_text(&self.operations_search))
                     .size(11.0)
                     .color(t.text_muted),
             );
@@ -503,11 +572,22 @@ impl App {
                             );
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if receipt.still_undoable(top) && ui.small_button("Undo").clicked() {
+                            if receipt.still_undoable(top)
+                                && with_accessible_label(
+                                    ui.small_button("Undo"),
+                                    &row_action_label("Undo", &receipt.label()),
+                                )
+                                .clicked()
+                            {
                                 undo = true;
                                 jump = None;
                             }
-                            if ui.small_button("Jump").clicked() {
+                            if with_accessible_label(
+                                ui.small_button("Jump"),
+                                &format!("Jump to {}", receipt.jump_to.display()),
+                            )
+                            .clicked()
+                            {
                                 jump = Some(receipt.jump_to.clone());
                             }
                         });
@@ -702,8 +782,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        OperationsTab, mark_failure_notice_seen, row_action_label, tab_for_new_failure,
-        terminal_failure_notice, undo_label_for, undo_last_label, unseen_failure_notice,
+        OperationsTab, finished_job_detail, history_empty_text, mark_failure_notice_seen,
+        pending_moves, row_action_label, tab_for_new_failure, terminal_failure_notice,
+        undo_label_for, undo_last_label, unseen_failure_notice,
     };
 
     #[test]
@@ -716,6 +797,26 @@ mod tests {
             tab_for_new_failure(false, OperationsTab::History),
             OperationsTab::Errors
         );
+    }
+
+    #[test]
+    fn queue_ends_cannot_move_further() {
+        assert_eq!(pending_moves(0, 3), (false, true));
+        assert_eq!(pending_moves(1, 3), (true, true));
+        assert_eq!(pending_moves(2, 3), (true, false));
+    }
+
+    #[test]
+    fn finished_job_does_not_read_as_running() {
+        assert!(finished_job_detail(true).starts_with("Finished with errors"));
+        assert!(!finished_job_detail(false).contains("phase"));
+    }
+
+    #[test]
+    fn empty_history_without_a_query_is_not_a_filter_miss() {
+        assert_eq!(history_empty_text(""), "No completed operations yet");
+        assert_eq!(history_empty_text("  "), "No completed operations yet");
+        assert_eq!(history_empty_text("copy"), "No matching operations");
     }
 
     #[test]
