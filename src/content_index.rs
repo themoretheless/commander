@@ -626,7 +626,9 @@ fn scan_index_within(
             progress.files_seen = progress.files_seen.saturating_add(1);
         }
         let mut content = None;
-        if !is_dir && !file_type.is_symlink() {
+        // Only regular files are read: opening a FIFO blocks the build thread
+        // forever, and devices or sockets have no indexable text.
+        if file_type.is_file() {
             if metadata.len() > MAX_FILE_BYTES {
                 skipped_large = skipped_large.saturating_add(1);
             } else if progress
@@ -821,12 +823,60 @@ fn normalize_exclusions(root: &Path, values: Vec<PathBuf>) -> Result<Vec<PathBuf
                 path.display()
             ));
         }
+        let path = on_disk_case(root, path);
         if seen.insert(path.clone()) {
             normalized.push(path);
         }
     }
     normalized.sort();
     Ok(normalized)
+}
+
+/// Rebuild each existing component of an exclusion from its on-disk name.
+/// Excluded subtrees are matched byte-exactly against scanned paths, so on a
+/// case-insensitive volume a typed `Target` must become the real `target`.
+/// Components that do not exist are kept as typed.
+fn on_disk_case(root: &Path, path: PathBuf) -> PathBuf {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return path;
+    };
+    let mut resolved = root.to_path_buf();
+    let mut exists = true;
+    for component in relative.components() {
+        let typed = component.as_os_str();
+        exists = exists && fs::symlink_metadata(resolved.join(typed)).is_ok();
+        let name = exists
+            .then(|| fs::read_dir(&resolved).ok())
+            .flatten()
+            .and_then(|entries| {
+                matching_entry_name(
+                    typed,
+                    entries.filter_map(|entry| entry.ok().map(|entry| entry.file_name())),
+                )
+            })
+            .unwrap_or_else(|| typed.to_os_string());
+        resolved.push(name);
+    }
+    resolved
+}
+
+/// The directory entry a typed name refers to: an exact match first, else
+/// the first entry equal ignoring case.
+fn matching_entry_name(
+    typed: &std::ffi::OsStr,
+    names: impl Iterator<Item = std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    let typed_lower = typed.to_string_lossy().to_lowercase();
+    let mut folded = None;
+    for name in names {
+        if name == typed {
+            return Some(name);
+        }
+        if folded.is_none() && name.to_string_lossy().to_lowercase() == typed_lower {
+            folded = Some(name);
+        }
+    }
+    folded
 }
 
 fn settings_path() -> PathBuf {
@@ -839,7 +889,9 @@ fn indexes_dir() -> PathBuf {
 
 fn index_path(root: &Path) -> PathBuf {
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in root.to_string_lossy().as_bytes() {
+    // Raw bytes, not a lossy string, so roots differing only in non-UTF-8
+    // bytes get distinct files. UTF-8 roots hash exactly as before.
+    for byte in root.as_os_str().as_encoded_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -1131,5 +1183,81 @@ mod tests {
             "{document_bytes} bytes"
         );
         assert_eq!(json_string_len("a\"b\\c\n"), 2 + 3 + 2 + 2 + 6);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_does_not_open_fifos() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let fifo = temp.path().join("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let root = temp.path().to_path_buf();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(scan(&root, Vec::new()));
+        });
+
+        let index = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("index build blocked on a FIFO");
+        let pipe = index
+            .documents
+            .iter()
+            .find(|document| document.path == fifo)
+            .unwrap();
+        assert!(pipe.content.is_none());
+        assert_eq!(index.content_indexed, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_file_name_keeps_non_utf8_roots_apart() {
+        use std::os::unix::ffi::OsStrExt;
+        let first = index_path(Path::new(std::ffi::OsStr::from_bytes(b"/data/\xff")));
+        let second = index_path(Path::new(std::ffi::OsStr::from_bytes(b"/data/\xfe")));
+        assert_ne!(first, second);
+
+        // UTF-8 roots keep the file name earlier builds wrote.
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in "/data/ü".as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        assert!(
+            index_path(Path::new("/data/ü"))
+                .ends_with(format!("content-v{SCHEMA_VERSION}-{hash:016x}.json"))
+        );
+    }
+
+    #[test]
+    fn exclusions_take_the_on_disk_name_case() {
+        let names = || {
+            ["Target", "target", "other"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+        };
+        assert_eq!(
+            matching_entry_name(std::ffi::OsStr::new("TARGET"), names()),
+            Some("Target".into())
+        );
+        assert_eq!(
+            matching_entry_name(std::ffi::OsStr::new("target"), names()),
+            Some("target".into())
+        );
+        assert_eq!(
+            matching_entry_name(std::ffi::OsStr::new("missing"), names()),
+            None
+        );
+
+        let temp = TempDir::new();
+        temp.dir("Build/Out");
+        let normalized =
+            normalize_exclusions(temp.path(), vec![PathBuf::from("Build/Out/new")]).unwrap();
+        assert_eq!(normalized, vec![temp.path().join("Build/Out/new")]);
     }
 }
