@@ -3,8 +3,96 @@
 use super::*;
 
 pub mod method_tabs;
-use crate::scan::FlatFileEntry;
+use crate::scan::{FlatFileEntry, FlatList};
 use crate::transfer::OverwritePolicy;
+use std::collections::HashSet;
+use std::sync::Arc;
+
+/// What the confirm dialog derives from the pending operation, kept across
+/// frames: the flow animation repaints continuously, and re-cloning the scan,
+/// re-reading conflict metadata or re-probing the volume each frame is waste.
+#[derive(Default)]
+pub struct ConfirmCache {
+    /// Finished scan, its file total, and the list it was read from (kept
+    /// alive so `Arc::ptr_eq` cannot match a reused allocation).
+    flat: Option<(FlatList, Arc<Vec<FlatFileEntry>>, u64)>,
+    /// Conflict detail keyed on (target, conflict names, entry count).
+    conflicts: Option<(ConflictKey, Arc<Vec<crate::conflict::Conflict>>)>,
+    profile: Option<(PathBuf, Arc<crate::volume_profile::VolumeProfile>)>,
+}
+
+type ConflictKey = (PathBuf, Vec<String>, usize);
+
+impl ConfirmCache {
+    /// The finished scan behind `source` and its file total, or `None` while
+    /// it is still running. A scan publishes exactly once per `FlatList`, so
+    /// it is copied out of the lock only on the first frame it is seen.
+    fn flat(&mut self, source: &FlatList) -> Option<(Arc<Vec<FlatFileEntry>>, u64)> {
+        if let Some((cached_source, flat, total)) = &self.flat
+            && Arc::ptr_eq(cached_source, source)
+        {
+            return Some((flat.clone(), *total));
+        }
+        let flat = Arc::new(crate::lock_util::recover(source).clone()?);
+        let total = flat_total(&flat);
+        self.flat = Some((source.clone(), flat.clone(), total));
+        Some((flat, total))
+    }
+
+    /// Per-conflict detail, re-read from disk only when the conflict set,
+    /// target or staged entries change (a resolve or restage).
+    fn conflicts(&mut self, ws: &Workspace) -> Arc<Vec<crate::conflict::Conflict>> {
+        let Some(PendingOp::Transfer(tr)) = &ws.pending_op else {
+            return Arc::default();
+        };
+        if let Some(((target, names, len), cached)) = &self.conflicts
+            && *target == tr.target
+            && *names == tr.conflicts
+            && *len == tr.entries.len()
+        {
+            return cached.clone();
+        }
+        let detail = Arc::new(ws.pending_conflicts());
+        self.conflicts = Some((
+            (tr.target.clone(), tr.conflicts.clone(), tr.entries.len()),
+            detail.clone(),
+        ));
+        detail
+    }
+
+    /// Volume profile of `target`, probed once per dialog rather than per
+    /// frame (each probe stats the path, which can stall on network mounts).
+    fn profile(&mut self, target: &std::path::Path) -> Arc<crate::volume_profile::VolumeProfile> {
+        if let Some((cached_target, profile)) = &self.profile
+            && cached_target == target
+        {
+            return profile.clone();
+        }
+        let profile = Arc::new(crate::volume_profile::profile(target));
+        self.profile = Some((target.to_path_buf(), profile.clone()));
+        profile
+    }
+}
+
+/// Total logical size of the files in a preview. Saturates: sparse files can
+/// report sizes whose sum exceeds `u64`.
+fn flat_total(flat: &[FlatFileEntry]) -> u64 {
+    flat.iter()
+        .filter(|f| !f.is_dir)
+        .fold(0, |total, f| total.saturating_add(f.size))
+}
+
+/// The copy/move flow animation moves one file every 80 ms but always
+/// finishes within `FLOW_MAX_SECS`, so long lists stop repainting quickly.
+const FLOW_SECS_PER_FILE: f64 = 0.08;
+const FLOW_MAX_SECS: f64 = 1.5;
+
+/// Rows already shown as transferred `elapsed` seconds into the animation.
+fn flow_transferred(elapsed: f64, len: usize) -> usize {
+    let per_file = (elapsed / FLOW_SECS_PER_FILE) as usize;
+    let capped = (len as f64 * (elapsed / FLOW_MAX_SECS)) as usize;
+    per_file.max(capped).min(len)
+}
 
 fn unavailable_space_message(failure: Option<&crate::ports::NativeFailure>) -> String {
     match failure {
@@ -107,6 +195,7 @@ impl App {
         let mutations_blocked = self.ws.mutations_blocked();
         let Some(op) = &self.ws.pending_op else {
             clear_pending_dialog_state(ctx);
+            self.confirm_cache = ConfirmCache::default();
             return;
         };
         let _latency =
@@ -172,18 +261,22 @@ impl App {
                     == crate::filesystem_policy::CapabilityState::Unavailable
         );
 
-        let flat_opt = crate::lock_util::recover(&flat_arc).clone();
+        let flat_opt = self.confirm_cache.flat(&flat_arc);
         let flat_ready = flat_opt.is_some();
-        let flat = flat_opt.unwrap_or_default();
-
-        // Rich per-conflict detail (size/mtime each side) for the resolver.
-        let rich_conflicts = self.ws.pending_conflicts();
+        let (flat, total) = flat_opt.unwrap_or_default();
 
         let has_conflicts = !conflicts.is_empty()
             && matches!(
                 &self.ws.pending_op,
                 Some(PendingOp::Transfer(transfer)) if transfer.policy == OverwritePolicy::Ask
             );
+        // Rich per-conflict detail (size/mtime each side) for the resolver.
+        let rich_conflicts = if has_conflicts {
+            self.confirm_cache.conflicts(&self.ws)
+        } else {
+            Arc::default()
+        };
+        let conflict_names: HashSet<&str> = conflicts.iter().map(String::as_str).collect();
         let is_delete = target.is_none();
         let win_title = format!("{} — {} item(s)", title, count);
         let screen = ctx.input(|i| i.viewport_rect());
@@ -234,7 +327,7 @@ impl App {
                     Self::render_flat_list(
                         ui,
                         &flat,
-                        &[],
+                        &HashSet::new(),
                         &t,
                         list_h,
                         "pending_op_files",
@@ -265,8 +358,7 @@ impl App {
                         *d.get_temp_mut_or_insert_with(anim_id, || ctx.input(|i| i.time))
                     });
                     let elapsed = ctx.input(|i| i.time) - start_time;
-                    // Transfer one file every 80ms, all done in ~N*80ms
-                    let transferred = ((elapsed / 0.08) as usize).min(flat.len());
+                    let transferred = flow_transferred(elapsed, flat.len());
 
                     // Request repaint while animation is running
                     if transferred < flat.len() {
@@ -280,7 +372,7 @@ impl App {
                         Self::render_flat_list(
                             &mut cols[0],
                             &flat,
-                            &conflicts,
+                            &conflict_names,
                             &t,
                             list_h,
                             "pending_src",
@@ -292,7 +384,7 @@ impl App {
                         Self::render_flat_list(
                             &mut cols[1],
                             &flat,
-                            &conflicts,
+                            &conflict_names,
                             &t,
                             list_h,
                             "pending_dst",
@@ -302,7 +394,6 @@ impl App {
                 }
 
                 // Total size (from flat list, files only)
-                let total: u64 = flat.iter().filter(|f| !f.is_dir).map(|f| f.size).sum();
                 if total > 0 {
                     ui.add_space(4.0);
                     ui.label(
@@ -386,7 +477,7 @@ impl App {
                             .id_salt("conflict_detail")
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
-                                for c in &rich_conflicts {
+                                for c in rich_conflicts.iter() {
                                     let src = if c.src_newer { "src newer" } else { "" };
                                     let dst = if c.dst_newer { "dst newer" } else { "" };
                                     ui.label(
@@ -949,7 +1040,7 @@ impl App {
         else {
             return;
         };
-        let profile = crate::volume_profile::profile(&target);
+        let profile = self.confirm_cache.profile(&target);
         let tuning = crate::transfer_tuning::snapshot(&profile);
         let current = crate::transfer_tuning::rule_for(&profile);
         let mut selected = current;
@@ -1036,7 +1127,7 @@ impl App {
     fn render_flat_list(
         ui: &mut egui::Ui,
         flat: &[FlatFileEntry],
-        conflicts: &[String],
+        conflicts: &HashSet<&str>,
         t: &ThemeColors,
         max_height: f32,
         id_salt: &str,
@@ -1098,11 +1189,11 @@ fn paint_flat_row(
     rect: egui::Rect,
     fe: &FlatFileEntry,
     row_idx: usize,
-    conflicts: &[String],
+    conflicts: &HashSet<&str>,
     t: &ThemeColors,
     mode: FlatListMode,
 ) {
-    let is_conflict = fe.depth == 0 && conflicts.contains(&fe.name);
+    let is_conflict = is_conflict_row(fe, conflicts);
     let moved_away = matches!(mode, FlatListMode::Source { transferred } if row_idx < transferred);
     match mode {
         FlatListMode::Destination { transferred } => {
@@ -1173,6 +1264,11 @@ fn paint_flat_row(
     }
 }
 
+/// Only top-level rows can collide with a destination name.
+fn is_conflict_row(fe: &FlatFileEntry, conflicts: &HashSet<&str>) -> bool {
+    fe.depth == 0 && conflicts.contains(fe.name.as_str())
+}
+
 fn bandwidth_label(limit: Option<u64>) -> String {
     limit.map_or_else(
         || "Unlimited".to_string(),
@@ -1198,12 +1294,79 @@ const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        CONFIRM_DRY_RUN, CONFLICT_DROPPED, OverwritePolicy, PENDING_FLOW_START,
-        clear_pending_dialog_state, collision_for_policy, conflict_policy_enabled,
-        dialog_enter_suppressed, dropped_items_note, dry_run_supported, focus_within_layer,
+        CONFIRM_DRY_RUN, CONFLICT_DROPPED, ConfirmCache, FLOW_MAX_SECS, OverwritePolicy,
+        PENDING_FLOW_START, clear_pending_dialog_state, collision_for_policy,
+        conflict_policy_enabled, dialog_enter_suppressed, dropped_items_note, dry_run_supported,
+        flat_total, flow_transferred, focus_within_layer, is_conflict_row,
         unavailable_size_message, unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
+    use crate::scan::FlatFileEntry;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    fn entry(name: &str, size: u64, is_dir: bool, depth: usize) -> FlatFileEntry {
+        FlatFileEntry {
+            name: name.to_string(),
+            size,
+            is_dir,
+            depth,
+        }
+    }
+
+    #[test]
+    fn preview_total_saturates_instead_of_overflowing() {
+        let flat = vec![
+            entry("sparse-a", u64::MAX, false, 0),
+            entry("sparse-b", 2, false, 0),
+            entry("dir", 7, true, 0),
+        ];
+        assert_eq!(flat_total(&flat), u64::MAX);
+        assert_eq!(
+            flat_total(&[entry("a", 3, false, 0), entry("d", 9, true, 0)]),
+            3
+        );
+        assert_eq!(flat_total(&[]), 0);
+    }
+
+    #[test]
+    fn flow_animation_finishes_within_the_cap_for_long_lists() {
+        // Short lists keep the 80 ms per file pace.
+        assert_eq!(flow_transferred(0.0, 5), 0);
+        assert_eq!(flow_transferred(0.17, 5), 2);
+        assert_eq!(flow_transferred(10.0, 5), 5);
+        // A 5000-file list is done at the cap, not after ~400 s.
+        assert_eq!(flow_transferred(FLOW_MAX_SECS, 5000), 5000);
+        assert!(flow_transferred(FLOW_MAX_SECS / 2.0, 5000) >= 2500);
+        assert_eq!(flow_transferred(-1.0, 10), 0);
+        assert_eq!(flow_transferred(f64::NAN, 10), 0);
+    }
+
+    #[test]
+    fn scan_is_copied_once_and_follows_a_restaged_list() {
+        let mut cache = ConfirmCache::default();
+        let source = crate::scan::pending_flat_list();
+        assert!(cache.flat(&source).is_none(), "scan still running");
+        *crate::lock_util::recover(&source) = Some(vec![entry("a", 4, false, 0)]);
+        let (first, total) = cache.flat(&source).expect("scan finished");
+        assert_eq!(total, 4);
+        let (second, _) = cache.flat(&source).expect("cached");
+        assert!(Arc::ptr_eq(&first, &second), "no per-frame copy");
+
+        let restaged = crate::scan::pending_flat_list();
+        *crate::lock_util::recover(&restaged) = Some(vec![entry("b", 9, false, 0)]);
+        let (third, total) = cache.flat(&restaged).expect("new scan");
+        assert_eq!(third[0].name, "b");
+        assert_eq!(total, 9);
+    }
+
+    #[test]
+    fn only_top_level_rows_are_marked_as_conflicts() {
+        let conflicts: HashSet<&str> = ["a.txt"].into_iter().collect();
+        assert!(is_conflict_row(&entry("a.txt", 1, false, 0), &conflicts));
+        assert!(!is_conflict_row(&entry("a.txt", 1, false, 1), &conflicts));
+        assert!(!is_conflict_row(&entry("b.txt", 1, false, 0), &conflicts));
+    }
 
     #[test]
     fn resolved_conflict_policy_is_reflected_in_the_collision_combo() {

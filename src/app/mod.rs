@@ -127,6 +127,9 @@ pub struct App {
         crate::compare::CompareMap,
         crate::compare::CompareMap,
     )>,
+    /// Data the confirm dialog derives from the pending operation once
+    /// instead of on every repaint of its flow animation.
+    pub(crate) confirm_cache: confirm_dialog::ConfirmCache,
     /// Startup instrumentation remains live through the first directory read.
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
     pub(crate) show_developer_panel: bool,
@@ -796,6 +799,7 @@ impl App {
             project_collections,
             command_templates: None,
             compare_cache: None,
+            confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: Some(startup),
             show_developer_panel: false,
             developer_notice: None,
@@ -877,6 +881,7 @@ impl App {
             project_collections: crate::collections::ProjectCollections::default(),
             command_templates: None,
             compare_cache: None,
+            confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: None,
             show_developer_panel: false,
             developer_notice: None,
