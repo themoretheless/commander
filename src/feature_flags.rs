@@ -82,7 +82,10 @@ impl Default for FeaturePolicy {
 struct FeatureStore {
     schema: u32,
     cohort: u64,
-    policies: BTreeMap<RiskyFeature, FeaturePolicy>,
+    /// Keyed by `RiskyFeature::key`. Plain strings so a store written by a
+    /// newer build with an extra feature still loads (and keeps that entry on
+    /// save) instead of failing to parse and failing every feature closed.
+    policies: BTreeMap<String, FeaturePolicy>,
 }
 
 impl FeatureStore {
@@ -99,7 +102,7 @@ impl FeatureStore {
     fn normalize(&mut self) {
         self.schema = SCHEMA;
         for feature in RiskyFeature::ALL {
-            let policy = self.policies.entry(feature).or_default();
+            let policy = self.policy_mut(feature);
             policy.rollout_percent = policy.rollout_percent.min(100);
         }
     }
@@ -113,8 +116,16 @@ impl FeatureStore {
         store
     }
 
+    fn policy(&self, feature: RiskyFeature) -> Option<&FeaturePolicy> {
+        self.policies.get(feature.key())
+    }
+
+    fn policy_mut(&mut self, feature: RiskyFeature) -> &mut FeaturePolicy {
+        self.policies.entry(feature.key().to_owned()).or_default()
+    }
+
     fn snapshot(&self, feature: RiskyFeature, environment_killed: bool) -> FeatureSnapshot {
-        let policy = self.policies.get(&feature).copied().unwrap_or_default();
+        let policy = self.policy(feature).copied().unwrap_or_default();
         let bucket = rollout_bucket(self.cohort, feature);
         FeatureSnapshot {
             feature,
@@ -305,7 +316,7 @@ fn apply_update(
         ));
     }
     let previous = state.store.clone();
-    change(state.store.policies.entry(feature).or_default());
+    change(state.store.policy_mut(feature));
     state.store.normalize();
     let store = state.store.clone();
     match save_at_with(persist, path, &store, &mut state.gate) {
@@ -437,12 +448,12 @@ mod tests {
         let mut store = FeatureStore::new(17);
         let feature = RiskyFeature::ContentIndex;
         let bucket = store.snapshot(feature, false).bucket;
-        store.policies.get_mut(&feature).unwrap().rollout_percent = bucket;
+        store.policy_mut(feature).rollout_percent = bucket;
         assert!(!store.snapshot(feature, false).enabled);
 
-        store.policies.get_mut(&feature).unwrap().rollout_percent = 100;
+        store.policy_mut(feature).rollout_percent = 100;
         assert!(store.snapshot(feature, false).enabled);
-        store.policies.get_mut(&feature).unwrap().killed = true;
+        store.policy_mut(feature).killed = true;
         assert!(!store.snapshot(feature, false).enabled);
         assert!(!store.snapshot(feature, true).enabled);
     }
@@ -452,18 +463,12 @@ mod tests {
         let temp = TempDir::new();
         let path = temp.path().join("features.json");
         let mut store = FeatureStore::new(99);
-        let policy = store
-            .policies
-            .get_mut(&RiskyFeature::ExternalProviders)
-            .unwrap();
+        let policy = store.policy_mut(RiskyFeature::ExternalProviders);
         policy.killed = true;
         policy.rollout_percent = 240;
         assert!(save_at(&path, &store));
         let loaded = load_at(&path);
-        let policy = loaded
-            .policies
-            .get(&RiskyFeature::ExternalProviders)
-            .unwrap();
+        let policy = loaded.policy(RiskyFeature::ExternalProviders).unwrap();
         assert!(policy.killed);
         assert_eq!(policy.rollout_percent, 100);
         assert_eq!(loaded.cohort, 99);
@@ -472,11 +477,7 @@ mod tests {
     #[test]
     fn effective_mask_matches_snapshots_for_every_feature() {
         let mut store = FeatureStore::new(31);
-        store
-            .policies
-            .get_mut(&RiskyFeature::ImagePreview)
-            .unwrap()
-            .killed = true;
+        store.policy_mut(RiskyFeature::ImagePreview).killed = true;
         let environment = RiskyFeature::ExternalProviders.bit();
         let mask = effective_mask(&store, environment);
         for feature in RiskyFeature::ALL {
@@ -503,6 +504,34 @@ mod tests {
             crate::persistence::LoadStatus::Missing
         );
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn unknown_feature_from_newer_build_is_kept_not_fatal() {
+        let temp = TempDir::new();
+        let path = temp.file(
+            "features.json",
+            r#"{"schema":1,"cohort":41,"policies":{"content_index":{"killed":true,"rollout_percent":0},"future_feature":{"killed":true,"rollout_percent":5}}}"#,
+        );
+
+        let loaded = load_at_with(&crate::persistence::FsPersist::default(), &path);
+
+        assert!(!loaded.blocked);
+        assert!(
+            !loaded
+                .store
+                .snapshot(RiskyFeature::ContentIndex, false)
+                .enabled
+        );
+        assert!(
+            loaded
+                .store
+                .snapshot(RiskyFeature::ImagePreview, false)
+                .enabled
+        );
+        let saved = temp.path().join("saved.json");
+        assert!(save_at(&saved, &loaded.store));
+        assert!(load_at(&saved).policies.contains_key("future_feature"));
     }
 
     #[test]
@@ -666,8 +695,7 @@ mod tests {
         assert!(
             committed
                 .store
-                .policies
-                .get(&RiskyFeature::ContentIndex)
+                .policy(RiskyFeature::ContentIndex)
                 .unwrap()
                 .killed
         );

@@ -350,10 +350,7 @@ impl Scheduler {
             }) {
                 record.token.cancel();
                 record.cancel_requested_tick.get_or_insert(tick);
-                if record.state == TaskState::Queued {
-                    record.state = TaskState::Cancelled;
-                    self.counters.cancelled = self.counters.cancelled.saturating_add(1);
-                }
+                retire_if_queued(record, &mut self.counters);
             }
         }
         let id = TaskId(self.next_id);
@@ -425,15 +422,7 @@ impl Scheduler {
         }
         record.token.cancel();
         record.cancel_requested_tick.get_or_insert(tick);
-        let was_queued = record.state == TaskState::Queued;
-        if was_queued {
-            record.state = TaskState::Cancelled;
-            self.counters.cancelled = self.counters.cancelled.saturating_add(1);
-        }
-        if was_queued {
-            self.cancellation_latencies_micros.push_back(0);
-            trim_samples(&mut self.cancellation_latencies_micros);
-        }
+        retire_if_queued(record, &mut self.counters);
         true
     }
 
@@ -554,6 +543,16 @@ impl Scheduler {
             .filter(|record| record.state == TaskState::Running)
             .map(|record| record.snapshot.estimated_bytes)
             .sum()
+    }
+}
+
+/// Cancels a task that never started. It records no latency sample: the
+/// tick and wall-clock percentiles both measure how fast *running* work
+/// honours cancellation, and instant queued cancels would drag them to zero.
+fn retire_if_queued(record: &mut TaskRecord, counters: &mut SchedulerStats) {
+    if record.state == TaskState::Queued {
+        record.state = TaskState::Cancelled;
+        counters.cancelled = counters.cancelled.saturating_add(1);
     }
 }
 
@@ -715,7 +714,7 @@ impl WorkloadHandle {
 pub struct WorkloadRuntime {
     state: Mutex<RuntimeState>,
     #[cfg(test)]
-    fail_next_spawn: AtomicBool,
+    failing_spawns: std::sync::atomic::AtomicUsize,
 }
 
 impl WorkloadRuntime {
@@ -728,7 +727,7 @@ impl WorkloadRuntime {
                 tick: 0,
             }),
             #[cfg(test)]
-            fail_next_spawn: AtomicBool::new(false),
+            failing_spawns: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -789,7 +788,11 @@ impl WorkloadRuntime {
                     return;
                 };
                 let Some(work) = state.pending.remove(&started.snapshot.id) else {
-                    state.scheduler.cancel_at(started.snapshot.id, tick);
+                    // Nothing to run: retire the Running record so its slot
+                    // is released (cancel_at alone leaves it Running).
+                    state
+                        .scheduler
+                        .complete_at(started.snapshot.id, tick, false);
                     continue;
                 };
                 (
@@ -805,22 +808,41 @@ impl WorkloadRuntime {
                 next.0.snapshot.id.0
             );
             #[cfg(test)]
-            if self.fail_next_spawn.swap(false, Ordering::AcqRel) {
-                drop(next);
-                self.finish(task_id, false);
-                continue;
-            }
-            let spawn = std::thread::Builder::new()
-                .name(thread_name)
-                .spawn(move || {
-                    let succeeded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        next.1.run(next.0.token);
-                    }))
+            let injected_failure = {
+                let left = self.failing_spawns.load(Ordering::Acquire);
+                self.failing_spawns
+                    .store(left.saturating_sub(1), Ordering::Release);
+                left > 0
+            };
+            #[cfg(not(test))]
+            let injected_failure = false;
+            let spawned = !injected_failure
+                && std::thread::Builder::new()
+                    .name(thread_name)
+                    .spawn(move || {
+                        let succeeded =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                next.1.run(next.0.token);
+                            }))
+                            .is_ok();
+                        runtime.finish(next.0.snapshot.id, succeeded);
+                    })
                     .is_ok();
-                    runtime.finish(next.0.snapshot.id, succeeded);
-                });
-            if spawn.is_err() {
-                self.finish(task_id, false);
+            if !spawned {
+                // The unspawned job was dropped above and abandoned as
+                // SpawnFailed. Retire it, but do not burn through the rest of
+                // the queue on a failing spawn: while other work is running,
+                // its completion pumps again; only an idle runtime retries now.
+                let others_running = {
+                    let mut state = crate::lock_util::recover(&self.state);
+                    state.tick = state.tick.saturating_add(1);
+                    let tick = state.tick;
+                    state.scheduler.complete_at(task_id, tick, false);
+                    state.scheduler.running_count() > 0
+                };
+                if others_running {
+                    return;
+                }
             }
         }
     }
@@ -872,7 +894,12 @@ impl WorkloadRuntime {
 
     #[cfg(test)]
     fn fail_next_spawn_for_test(&self) {
-        self.fail_next_spawn.store(true, Ordering::Release);
+        self.fail_spawns_for_test(1);
+    }
+
+    #[cfg(test)]
+    fn fail_spawns_for_test(&self, count: usize) {
+        self.failing_spawns.store(count, Ordering::Release);
     }
 
     pub fn stats(&self) -> SchedulerStats {
@@ -1053,7 +1080,9 @@ impl DeterministicWorkload {
                 return false;
             };
             let Some(work) = state.pending.remove(&started.snapshot.id) else {
-                state.scheduler.cancel_at(started.snapshot.id, tick);
+                state
+                    .scheduler
+                    .complete_at(started.snapshot.id, tick, false);
                 return false;
             };
             (started, work)
@@ -1188,7 +1217,9 @@ mod tests {
         assert_eq!(stats.cancellation_latency_p50_ticks, 4);
         assert_eq!(stats.cancellation_latency_p95_ticks, 4);
         assert_eq!(stats.cancellation_latency_p99_ticks, 4);
-        assert_eq!(stats.cancellation_latency_samples, 2);
+        // Only the running task's cancellation is a latency sample; the
+        // queued one was retired before it ever started.
+        assert_eq!(stats.cancellation_latency_samples, 1);
         assert!(stats.cancellation_latency_p50_micros <= stats.cancellation_latency_p95_micros);
         assert!(stats.cancellation_latency_p95_micros <= stats.cancellation_latency_p99_micros);
         assert!(stats.cancelled >= 2);
@@ -1355,5 +1386,90 @@ mod tests {
             Some(AbandonReason::Disconnected)
         );
         assert_eq!(runtime.stats().queued, 0);
+    }
+
+    #[test]
+    fn queued_cancels_and_supersession_record_no_latency_sample() {
+        let mut scheduler = Scheduler::new(SchedulerLimits::default());
+        let queued = scheduler
+            .submit_at(spec(TaskKind::Index, 1, Priority::Background), 1)
+            .unwrap();
+        assert!(scheduler.cancel_at(queued.id, 2));
+        scheduler
+            .submit_at(
+                spec(TaskKind::Search, 1, Priority::Interactive).replace_older_generation(),
+                3,
+            )
+            .unwrap();
+        scheduler
+            .submit_at(
+                spec(TaskKind::Search, 2, Priority::Interactive).replace_older_generation(),
+                4,
+            )
+            .unwrap();
+        let stats = scheduler.stats();
+        assert_eq!(stats.cancelled, 2);
+        assert_eq!(stats.cancellation_latency_samples, 0);
+    }
+
+    #[test]
+    fn started_task_without_work_releases_its_run_slot() {
+        let workload = DeterministicWorkload::new(SchedulerLimits::default());
+        {
+            let mut state = crate::lock_util::recover(&workload.backend.state);
+            state
+                .scheduler
+                .submit_at(spec(TaskKind::Index, 1, Priority::Background), 1)
+                .unwrap();
+        }
+        assert!(!workload.run_next());
+        assert_eq!(workload.stats().running, 0);
+
+        let runtime = WorkloadRuntime::new(SchedulerLimits::default());
+        {
+            let mut state = crate::lock_util::recover(&runtime.state);
+            state
+                .scheduler
+                .submit_at(spec(TaskKind::Index, 1, Priority::Background), 1)
+                .unwrap();
+        }
+        runtime.pump();
+        assert_eq!(runtime.stats().running, 0);
+    }
+
+    #[test]
+    fn spawn_failure_does_not_abandon_the_rest_of_the_queue_while_work_runs() {
+        let runtime = WorkloadRuntime::new(SchedulerLimits::default());
+        let abandoned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let mut state = crate::lock_util::recover(&runtime.state);
+            // A task already running elsewhere; its completion would re-pump.
+            state
+                .scheduler
+                .submit_at(spec(TaskKind::Transfer, 1, Priority::Critical), 1)
+                .unwrap();
+            state.scheduler.start_next_at(2).unwrap();
+            for _ in 0..2 {
+                let snapshot = state
+                    .scheduler
+                    .submit_at(spec(TaskKind::Index, 1, Priority::Background), 3)
+                    .unwrap();
+                let abandoned = Arc::clone(&abandoned);
+                state.pending.insert(
+                    snapshot.id,
+                    PendingWork::new(
+                        Box::new(|_| {}),
+                        Some(Box::new(move |_| {
+                            abandoned.fetch_add(1, Ordering::SeqCst);
+                        })),
+                    ),
+                );
+            }
+        }
+        runtime.fail_spawns_for_test(usize::MAX);
+        runtime.pump();
+
+        assert_eq!(abandoned.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.stats().queued, 1);
     }
 }

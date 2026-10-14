@@ -95,7 +95,6 @@ pub fn capture_display_topology() -> Vec<DisplayTopology> {
 
     unsafe {
         let screens: *mut Object = msg_send![class!(NSScreen), screens];
-        let main: *mut Object = msg_send![class!(NSScreen), mainScreen];
         if screens.is_null() {
             return Vec::new();
         }
@@ -109,7 +108,10 @@ pub fn capture_display_topology() -> Vec<DisplayTopology> {
             let frame: NSRect = msg_send![screen, frame];
             let visible: NSRect = msg_send![screen, visibleFrame];
             let backing_scale: f64 = msg_send![screen, backingScaleFactor];
-            let main_screen: bool = !main.is_null() && msg_send![screen, isEqual: main];
+            // `screens[0]` is the primary (menu-bar) display. `mainScreen`
+            // follows the key window, so it would make the topology and its
+            // attestation fingerprint change with focus.
+            let main_screen = index == 0;
             let description: *mut Object = msg_send![screen, deviceDescription];
             let screen_number_key: *mut Object = msg_send![
                 class!(NSString),

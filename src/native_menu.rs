@@ -11,13 +11,13 @@ use crate::ports::{
     ContextMenuTarget, ContextMenuViewPoint, ContextMenuViewRect,
 };
 use model::{
-    DynamicMenuEntries, MenuInvocation, MenuItemState, MenuNode, MenuSelection, build_invocation,
-    tracking_result,
+    DynamicMenuEntries, MenuInvocation, MenuItemState, MenuNode, MenuSelection, TagColor,
+    build_invocation, tracking_result,
 };
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, NO, Object, Sel, YES};
+use objc::runtime::{BOOL, Class, NO, Object, Sel, YES};
 use objc::{class, msg_send, sel, sel_impl};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -436,8 +436,39 @@ unsafe fn dynamic_entries(path: &Path) -> DynamicMenuEntries {
         open_with: unsafe { open_with_entries(path) },
         applied_tags: tags.clone().unwrap_or_default(),
         tags_available: tags.is_ok(),
+        color_tag_names: unsafe { color_tag_names() },
         share_services: unsafe { share_services(path) },
     }
+}
+
+/// Finder's localized names for the standard color tags, read from
+/// `NSWorkspace.fileLabels` (indexed by label number: 0 is "None").
+unsafe fn color_tag_names() -> BTreeMap<TagColor, String> {
+    const BY_LABEL_NUMBER: [(usize, TagColor); 7] = [
+        (1, TagColor::Gray),
+        (2, TagColor::Green),
+        (3, TagColor::Purple),
+        (4, TagColor::Blue),
+        (5, TagColor::Yellow),
+        (6, TagColor::Red),
+        (7, TagColor::Orange),
+    ];
+    let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+    let labels: *mut Object = msg_send![workspace, fileLabels];
+    if labels.is_null() {
+        return BTreeMap::new();
+    }
+    let count: usize = msg_send![labels, count];
+    BY_LABEL_NUMBER
+        .into_iter()
+        .filter(|(index, _)| *index < count)
+        .filter_map(|(index, color)| {
+            let label: *mut Object = msg_send![labels, objectAtIndex: index];
+            unsafe { string_from_nsstring(label) }
+                .filter(|name| !name.is_empty())
+                .map(|name| (color, name))
+        })
+        .collect()
 }
 
 fn next_invocation_id() -> u64 {
@@ -560,6 +591,34 @@ fn view_point_anchor(point: ContextMenuViewPoint, view_height: f64) -> Option<NS
     (converted.x.is_finite() && converted.y.is_finite()).then_some(converted)
 }
 
+/// The window a view-relative anchor belongs to. `keyWindow` is nil while
+/// Commander is inactive, yet `AppKit` still delivers right-clicks to its
+/// windows, so fall back to `mainWindow` and then the first visible window.
+unsafe fn anchor_window() -> *mut Object {
+    let application: *mut Object = unsafe { msg_send![class!(NSApplication), sharedApplication] };
+    let key: *mut Object = unsafe { msg_send![application, keyWindow] };
+    if !key.is_null() {
+        return key;
+    }
+    let main: *mut Object = unsafe { msg_send![application, mainWindow] };
+    if !main.is_null() {
+        return main;
+    }
+    let windows: *mut Object = unsafe { msg_send![application, windows] };
+    if windows.is_null() {
+        return std::ptr::null_mut();
+    }
+    let count: usize = unsafe { msg_send![windows, count] };
+    for index in 0..count {
+        let window: *mut Object = unsafe { msg_send![windows, objectAtIndex: index] };
+        let visible: BOOL = unsafe { msg_send![window, isVisible] };
+        if !window.is_null() && visible != NO {
+            return window;
+        }
+    }
+    std::ptr::null_mut()
+}
+
 unsafe fn global_anchor(anchor: ContextMenuAnchor) -> Option<NSPoint> {
     match anchor {
         ContextMenuAnchor::GlobalScreen(point) if point.x.is_finite() && point.y.is_finite() => {
@@ -572,8 +631,7 @@ unsafe fn global_anchor(anchor: ContextMenuAnchor) -> Option<NSPoint> {
         ContextMenuAnchor::ViewPoint(_) | ContextMenuAnchor::ViewRect(_) => {}
     }
 
-    let application: *mut Object = unsafe { msg_send![class!(NSApplication), sharedApplication] };
-    let window: *mut Object = unsafe { msg_send![application, keyWindow] };
+    let window = unsafe { anchor_window() };
     if window.is_null() {
         return None;
     }

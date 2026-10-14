@@ -307,6 +307,9 @@ pub fn edge_autoscroll_velocity(
     if pointer_y < top || pointer_y > bottom {
         return 0.0;
     }
+    // In a short viewport the two zones would overlap and the top one would
+    // win everywhere; split the height between them instead.
+    let edge_width = edge_width.min((bottom - top) / 2.0);
     if pointer_y < top + edge_width {
         let proximity = 1.0 - (pointer_y - top) / edge_width;
         return max_speed * proximity.clamp(0.0, 1.0).powi(2);
@@ -321,6 +324,16 @@ pub fn edge_autoscroll_velocity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_viewport_scrolls_toward_the_nearer_edge() {
+        // 40 lies in both unclamped zones (>= 30, < 44); it is nearer the
+        // bottom edge, so it must scroll down rather than let the top zone win.
+        assert!(edge_autoscroll_velocity(40.0, 0.0, 60.0, 44.0, 100.0) < 0.0);
+        assert!(edge_autoscroll_velocity(50.0, 0.0, 60.0, 44.0, 100.0) < 0.0);
+        assert!(edge_autoscroll_velocity(20.0, 0.0, 60.0, 44.0, 100.0) > 0.0);
+        assert!(edge_autoscroll_velocity(10.0, 0.0, 60.0, 44.0, 100.0) > 0.0);
+    }
 
     #[test]
     fn phases_are_ordered_and_named() {

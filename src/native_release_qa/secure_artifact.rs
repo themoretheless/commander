@@ -183,11 +183,16 @@ impl ArtifactDirectory {
             .create_new(true)
             .open(&temp)
             .map_err(|error| format!("could not create {}: {error}", temp.display()))?;
-        file.write_all(bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| format!("could not write {}: {error}", temp.display()))?;
-        std::fs::rename(&temp, &destination)
-            .map_err(|error| format!("could not publish {}: {error}", destination.display()))
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("could not write {}: {error}", temp.display()));
+        }
+        std::fs::rename(&temp, &destination).map_err(|error| {
+            let _ = std::fs::remove_file(&temp);
+            format!("could not publish {}: {error}", destination.display())
+        })
     }
 }
 
@@ -263,10 +268,7 @@ fn open_private_output_directory(root: &Path) -> Result<File, String> {
         )
     })?;
     let mut missing = vec![final_component.to_os_string()];
-    let mut existing = root
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let mut existing = relative_parent(root);
     let canonical_existing = loop {
         match std::fs::symlink_metadata(existing) {
             Ok(_) => {
@@ -292,12 +294,13 @@ fn open_private_output_directory(root: &Path) -> Result<File, String> {
                     )
                 })?;
                 missing.push(name.to_os_string());
-                existing = existing.parent().ok_or_else(|| {
-                    format!(
+                if existing.parent().is_none() {
+                    return Err(format!(
                         "native QA output has no existing ancestor: {}",
                         root.display()
-                    )
-                })?;
+                    ));
+                }
+                existing = relative_parent(existing);
             }
             Err(error) => {
                 return Err(format!(
@@ -350,6 +353,15 @@ fn open_private_output_directory(root: &Path) -> Result<File, String> {
         ));
     }
     Ok(directory)
+}
+
+/// The parent of `path`, with the empty parent of a bare relative name
+/// (`Path::new("qa").parent() == Some("")`) mapped to the working directory.
+#[cfg(unix)]
+fn relative_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 #[cfg(unix)]
@@ -431,5 +443,28 @@ mod tests {
         ));
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(victim_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_output_creates_several_missing_levels() {
+        let base = PathBuf::from(format!(
+            ".commander-native-qa-relative-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // Removes the relative tree even if an assertion below panics, so a
+        // failing run does not leave debris in the crate checkout.
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        let _cleanup = Cleanup(base.clone());
+        let root = base.join("run1");
+        ArtifactDirectory::prepare(&root).unwrap();
+        assert!(root.is_dir());
     }
 }
