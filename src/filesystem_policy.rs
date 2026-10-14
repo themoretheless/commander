@@ -84,10 +84,18 @@ pub fn preview_normalization<'a>(
                 normalized: normalized.clone(),
             });
         }
+        // Case-insensitive targets (APFS, HFS+, NTFS, FAT, SMB) also treat
+        // composed and decomposed spellings as one name, so key them on NFC
+        // even when the policy preserves spelling, and fold final sigma the
+        // way those filesystems do (`to_lowercase` keeps word-final ς).
         let key = if case_sensitive {
             normalized
         } else {
-            normalized.to_lowercase()
+            normalized
+                .nfc()
+                .collect::<String>()
+                .to_lowercase()
+                .replace('\u{3c2}', "\u{3c3}")
         };
         groups.entry(key).or_default().push(name.to_string());
     }
@@ -143,8 +151,8 @@ pub fn audit_name(name: &str) -> Vec<PortabilityIssue> {
 
     let windows = BTreeSet::from([PortabilityTarget::Windows, PortabilityTarget::Fat]);
     if name.chars().any(|character| {
-        character.is_control()
-            || matches!(character, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*')
+        // Only C0 controls are forbidden; Windows/FAT accept C1 (U+0080-9F).
+        character <= '\u{1f}' || matches!(character, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*')
     }) {
         issues.push(PortabilityIssue {
             name: name.to_string(),
@@ -161,8 +169,38 @@ pub fn audit_name(name: &str) -> Vec<PortabilityIssue> {
     }
     let stem = name.split('.').next().unwrap_or(name);
     let reserved = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CONIN$",
+        "CONOUT$",
+        "COM0",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "COM\u{b9}",
+        "COM\u{b2}",
+        "COM\u{b3}",
+        "LPT0",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+        "LPT\u{b9}",
+        "LPT\u{b2}",
+        "LPT\u{b3}",
     ];
     if reserved.iter().any(|item| stem.eq_ignore_ascii_case(item)) {
         issues.push(PortabilityIssue {
@@ -176,6 +214,15 @@ pub fn audit_name(name: &str) -> Vec<PortabilityIssue> {
             name: name.to_string(),
             targets: windows,
             reason: "exceeds the common 255 UTF-16-unit component limit".to_string(),
+        });
+    }
+    // ext4/XFS/Btrfs cap a component at 255 bytes, which non-ASCII names
+    // from APFS/HFS+ (limited in characters, not bytes) can exceed.
+    if name.len() > 255 {
+        issues.push(PortabilityIssue {
+            name: name.to_string(),
+            targets: BTreeSet::from([PortabilityTarget::Posix]),
+            reason: "exceeds the 255-byte POSIX component limit".to_string(),
         });
     }
     issues
@@ -469,6 +516,69 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.name == "CON.txt"));
         assert!(issues.iter().any(|issue| issue.name == "draft. "));
         assert!(!issues.iter().any(|issue| issue.name == "valid.txt"));
+    }
+
+    #[test]
+    fn preserved_spelling_still_collides_composed_and_decomposed_twins() {
+        let preview = preview_normalization(
+            ["Cafe\u{301}.txt", "Caf\u{e9}.txt"],
+            NormalizationForm::Preserve,
+            false,
+        );
+        assert_eq!(preview.collisions.len(), 1);
+        let sensitive = preview_normalization(
+            ["Cafe\u{301}.txt", "Caf\u{e9}.txt"],
+            NormalizationForm::Preserve,
+            true,
+        );
+        assert!(sensitive.collisions.is_empty());
+    }
+
+    #[test]
+    fn case_insensitive_collisions_fold_final_sigma() {
+        let preview = preview_normalization(
+            ["\u{3bf}\u{3c2}", "\u{3bf}\u{3c3}"],
+            NormalizationForm::Preserve,
+            false,
+        );
+        assert_eq!(preview.collisions.len(), 1);
+    }
+
+    #[test]
+    fn portability_audit_allows_c1_controls_on_windows() {
+        assert!(audit_name("report\u{85}.txt").is_empty());
+        assert!(!audit_name("report\u{1}.txt").is_empty());
+    }
+
+    #[test]
+    fn portability_audit_flags_every_reserved_device_name() {
+        for name in [
+            "COM0",
+            "lpt0.txt",
+            "COM\u{b9}",
+            "LPT\u{b3}.log",
+            "CONIN$",
+            "conout$.txt",
+        ] {
+            assert!(
+                audit_name(name)
+                    .iter()
+                    .any(|issue| issue.reason.contains("reserved Windows device")),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn portability_audit_flags_names_over_255_bytes_for_posix() {
+        // 90 CJK characters: 90 UTF-16 units but 270 UTF-8 bytes.
+        let name = "\u{6f22}".repeat(90);
+        let issues = audit_name(&name);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0].targets,
+            BTreeSet::from([PortabilityTarget::Posix])
+        );
     }
 
     #[test]
