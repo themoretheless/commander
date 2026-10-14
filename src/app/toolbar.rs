@@ -43,7 +43,6 @@ impl App {
     /// for view settings. File actions live on the key bar (F5..F8).
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = self.colors;
-        let actions = ToolbarCommands::capture(&self.ws);
         let active_path = self.ws.active_panel_ref().current_path.clone();
         Frame::NONE
             .fill(t.bg_toolbar)
@@ -83,6 +82,10 @@ impl App {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.menu_button(egui::RichText::new("\u{2026}").size(16.0), |ui| {
+                            // Only the open menu needs command availability;
+                            // building its context walks the selection, so
+                            // skip it on the frames where the menu is closed.
+                            let actions = ToolbarCommands::capture(&self.ws);
                             self.view_menu(ui, ctx, actions);
                         })
                         .response
