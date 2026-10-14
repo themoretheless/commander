@@ -83,6 +83,8 @@ impl RecoveryState {
         self.repair_plan = None;
         self.versions.clear();
         self.repair_loaded = false;
+        // Dropping the receiver discards a load for the previous selection.
+        self.repair_rx = None;
     }
 
     fn selected_in_inventory(&self) -> bool {
@@ -99,14 +101,53 @@ impl RecoveryState {
         if !self.selected_in_inventory() {
             return;
         }
-        let Some(operation_id) = self.selected.as_ref() else {
+        let Some(operation_id) = self.selected.clone() else {
             return;
         };
-        match crate::operation_journal::repair_plan(operation_id) {
+        // Both read journal and version manifests from disk, which stalls
+        // the UI thread on large journals.
+        self.spawn_repair_load(operation_id, |operation_id| RepairLoadResult {
+            plan: crate::operation_journal::repair_plan(&operation_id),
+            versions: crate::version_store::records_for(&operation_id),
+            operation_id,
+        });
+    }
+
+    fn spawn_repair_load(
+        &mut self,
+        operation_id: crate::operation::OperationId,
+        load: impl FnOnce(crate::operation::OperationId) -> RepairLoadResult + Send + 'static,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(load(operation_id));
+        });
+        self.repair_rx = Some(receiver);
+    }
+
+    /// Apply a finished repair-plan load; runs every frame.
+    pub(crate) fn poll_repair(&mut self) {
+        let Some(receiver) = &self.repair_rx else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.repair_rx = None;
+                self.error = Some("Repair plan load stopped unexpectedly".to_string());
+                return;
+            }
+        };
+        self.repair_rx = None;
+        if self.selected.as_ref() != Some(&result.operation_id) {
+            return;
+        }
+        match result.plan {
             Ok(plan) => self.repair_plan = Some(plan),
             Err(error) => self.error = Some(error),
         }
-        self.versions = crate::version_store::records_for(operation_id);
+        self.versions = result.versions;
     }
 }
 
@@ -386,11 +427,19 @@ fn show_repair(
     apply: &mut Option<crate::operation::OperationId>,
 ) {
     let Some(plan) = &state.repair_plan else {
-        ui.label(
-            egui::RichText::new("Repair plan is unavailable")
-                .size(11.0)
-                .color(t.accent_red),
-        );
+        if state.repair_rx.is_some() || !state.repair_loaded {
+            ui.label(
+                egui::RichText::new("Loading repair plan\u{2026}")
+                    .size(11.0)
+                    .color(t.text_muted),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("Repair plan is unavailable")
+                    .size(11.0)
+                    .color(t.accent_red),
+            );
+        }
         return;
     };
     let automatic = plan.remaining.iter().filter(|item| item.automatic).count();
@@ -502,7 +551,8 @@ impl App {
     /// Advance the background recovery scan; runs every frame.
     pub(crate) fn poll_recovery(&mut self, ctx: &egui::Context) {
         self.recovery.poll_scan();
-        if self.recovery.scanning {
+        self.recovery.poll_repair();
+        if self.recovery.scanning || self.recovery.repair_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
@@ -804,6 +854,8 @@ impl App {
                     ));
                     state.repair_plan = Some(plan);
                     state.repair_loaded = true;
+                    // A load still in flight predates the rollback.
+                    state.repair_rx = None;
                     state.start_scan(&self.ws);
                 }
                 Err(error) => state.error = Some(error),
@@ -947,6 +999,65 @@ mod tests {
             ]
         );
         assert_eq!(names(repair_rows(&plan, 1)), vec![("c".to_string(), false)]);
+    }
+
+    fn wait_for_repair(state: &mut RecoveryState) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while state.repair_rx.is_some() {
+            assert!(std::time::Instant::now() < deadline, "repair load hung");
+            state.poll_repair();
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn repair_plan_loads_in_the_background() {
+        let mut state = RecoveryState::default();
+        let id = record("op-a").id;
+        state.select(id.clone());
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        state.spawn_repair_load(id.clone(), move |operation_id| {
+            let _ = gate.recv();
+            RepairLoadResult {
+                plan: Ok(crate::operation_journal::RepairPlan {
+                    operation_id: Some(operation_id.clone()),
+                    ..Default::default()
+                }),
+                versions: Vec::new(),
+                operation_id,
+            }
+        });
+        // The loader is blocked; polling must not wait for it.
+        state.poll_repair();
+        assert!(state.repair_rx.is_some());
+        assert!(state.repair_plan.is_none());
+        release.send(()).unwrap();
+        wait_for_repair(&mut state);
+        assert_eq!(
+            state.repair_plan.and_then(|plan| plan.operation_id),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn a_repair_load_for_a_previous_selection_is_discarded() {
+        let mut state = RecoveryState::default();
+        state.select(record("op-a").id);
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        state.spawn_repair_load(record("op-a").id, move |operation_id| {
+            let _ = gate.recv();
+            RepairLoadResult {
+                plan: Err("stale".to_string()),
+                versions: Vec::new(),
+                operation_id,
+            }
+        });
+        state.select(record("op-b").id);
+        let _ = release.send(());
+        assert!(state.repair_rx.is_none());
+        state.poll_repair();
+        assert!(state.error.is_none());
+        assert!(state.repair_plan.is_none());
     }
 
     #[test]

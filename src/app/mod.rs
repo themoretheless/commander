@@ -628,6 +628,8 @@ pub struct RecoveryState {
     pub scanning: bool,
     pub repair_loaded: bool,
     pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
+    /// Pending background load of the selected operation's repair plan.
+    pub repair_rx: Option<std::sync::mpsc::Receiver<RepairLoadResult>>,
     /// Version-store usage line, read from the on-disk manifest once and
     /// dropped when a scan completes (scans follow rollback and cleanup).
     pub version_usage_label: Option<String>,
@@ -635,6 +637,12 @@ pub struct RecoveryState {
 
 pub struct RecoveryScanResult {
     pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
+}
+
+pub struct RepairLoadResult {
+    pub operation_id: crate::operation::OperationId,
+    pub plan: Result<crate::operation_journal::RepairPlan, String>,
+    pub versions: Vec<crate::version_store::VersionRecord>,
 }
 
 impl App {
