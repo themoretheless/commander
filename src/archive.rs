@@ -242,24 +242,68 @@ fn visit_tar_gz_list(
 ) -> Result<VisitSummary, String> {
     budget.archives += 1;
     // Verbose listing so member sizes are known; `LC_ALL=C` keeps bsdtar's
-    // date columns in a fixed shape for `parse_tar_verbose_line`.
-    let output = std::process::Command::new("tar")
+    // date columns in a fixed shape for `parse_tar_verbose_line`. The output
+    // is read incrementally so cancellation and the member budget stop a
+    // multi-GB archive early instead of waiting for tar to finish.
+    let mut child = std::process::Command::new("tar")
         .args(["-tvzf"])
         .arg(archive_path)
         .env("LC_ALL", "C")
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "Could not list {}: {}",
-            archive_path.display(),
-            stderr.trim()
-        ));
+    // Drain stderr on a helper thread so a chatty tar cannot block on a
+    // full stderr pipe while stdout is still being read.
+    let stderr = child.stderr.take();
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = Vec::new();
+        if let Some(mut stderr) = stderr {
+            let _ = stderr.read_to_end(&mut text);
+        }
+        text
+    });
+    // One line beyond the remaining budget is enough to mark truncation.
+    let max_lines = MAX_MEMBERS_PER_RUN
+        .saturating_sub(budget.members)
+        .saturating_add(1);
+    let collected = match child.stdout.take() {
+        Some(stdout) => {
+            collect_listing_lines(std::io::BufReader::new(stdout), max_lines, &cancelled)
+        }
+        None => Ok(ListingLines::default()),
+    };
+    let stopped_early = collected
+        .as_ref()
+        .map_or(true, |lines| lines.cancelled || lines.limited);
+    if stopped_early {
+        let _ = child.kill();
     }
-    let listing = String::from_utf8_lossy(&output.stdout);
+    let status = child.wait();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    let collected =
+        collected.map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
+    if collected.cancelled {
+        return Ok(VisitSummary {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
+    if !stopped_early {
+        let status = status
+            .map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr);
+            return Err(format!(
+                "Could not list {}: {}",
+                archive_path.display(),
+                stderr.trim()
+            ));
+        }
+    }
     let mut summary = VisitSummary::default();
-    for (index, line) in listing.lines().enumerate() {
+    for (index, line) in collected.lines.iter().map(String::as_str).enumerate() {
         if cancelled() {
             summary.cancelled = true;
             break;
@@ -282,10 +326,7 @@ fn visit_tar_gz_list(
             continue;
         }
         let path = PathBuf::from(trimmed);
-        if path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
+        if !is_enclosed_tar_path(&path) {
             summary.unsafe_members += 1;
             continue;
         }
@@ -308,6 +349,50 @@ fn visit_tar_gz_list(
         summary.emitted += 1;
     }
     Ok(summary)
+}
+
+/// Raw `tar -tv` output lines, read until EOF, cancellation or `max_lines`.
+#[derive(Debug, Default)]
+struct ListingLines {
+    lines: Vec<String>,
+    cancelled: bool,
+    /// `max_lines` was reached before EOF; the rest of the output was not read.
+    limited: bool,
+}
+
+fn collect_listing_lines(
+    mut reader: impl std::io::BufRead,
+    max_lines: usize,
+    cancelled: impl Fn() -> bool,
+) -> std::io::Result<ListingLines> {
+    let mut collected = ListingLines::default();
+    let mut buffer = Vec::new();
+    loop {
+        if cancelled() {
+            collected.cancelled = true;
+            return Ok(collected);
+        }
+        if collected.lines.len() >= max_lines {
+            collected.limited = true;
+            return Ok(collected);
+        }
+        buffer.clear();
+        if reader.read_until(b'\n', &mut buffer)? == 0 {
+            return Ok(collected);
+        }
+        let line = buffer.strip_suffix(b"\n").unwrap_or(&buffer);
+        collected
+            .lines
+            .push(String::from_utf8_lossy(line).into_owned());
+    }
+}
+
+/// A tar member name is safe to show and extract only when every component
+/// is a plain name: no `..`, no root or drive prefix (GNU tar lists absolute
+/// members with their leading `/`), matching ZIP's `enclosed_name`.
+fn is_enclosed_tar_path(path: &Path) -> bool {
+    path.components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 /// Split one `tar -tv` line into the member name and its size. GNU tar
@@ -481,10 +566,6 @@ fn extract_zip_members(
             }
             continue;
         }
-        if out_path.exists() {
-            report.skipped_existing += 1;
-            continue;
-        }
         if let Some(parent) = out_path.parent()
             && let Err(error) = fs::create_dir_all(parent)
         {
@@ -493,7 +574,22 @@ fn extract_zip_members(
                 .push(format!("Could not create {}: {error}", parent.display()));
             continue;
         }
-        match fs::File::create(&out_path) {
+        // `create_new` never clobbers and never writes through a symlink
+        // (even a dangling one) already at the destination, and it closes
+        // the race an `exists()` pre-check would leave open.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out_path)
+        {
+            // Windows reports an existing directory as access denied, so any
+            // entry already present there also counts as skipped.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    || fs::symlink_metadata(&out_path).is_ok() =>
+            {
+                report.skipped_existing += 1;
+            }
             Ok(mut out) => match std::io::copy(&mut entry, &mut out) {
                 Ok(_) => report.extracted += 1,
                 Err(error) => {
@@ -523,8 +619,15 @@ fn extract_tar_gz_members(
     let listing = list_archive(archive_path.to_path_buf(), cancelled)?;
     let mut report = ExtractReport::default();
     let mut wanted = Vec::new();
+    // Index once: "Extract all" passes every member, and a per-index scan of
+    // the listing would be quadratic on large archives.
+    let by_index: std::collections::HashMap<usize, &ArchiveMember> = listing
+        .members
+        .iter()
+        .map(|member| (member.index, member))
+        .collect();
     for &index in member_indexes {
-        let Some(member) = listing.members.iter().find(|member| member.index == index) else {
+        let Some(member) = by_index.get(&index).copied() else {
             report
                 .errors
                 .push(format!("Unknown archive member #{index}"));
@@ -821,6 +924,102 @@ mod tests {
 
         assert!(summary.cancelled);
         assert_eq!(summary.emitted, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_extract_does_not_write_through_dangling_symlink() {
+        let temp = TempDir::new();
+        let archive = temp.path().join("pack.zip");
+        write_zip(&archive, &[("readme.txt", b"hello")]);
+        let dest = temp.path().join("out");
+        fs::create_dir(&dest).unwrap();
+        let target = temp.path().join("elsewhere.txt");
+        std::os::unix::fs::symlink(&target, dest.join("readme.txt")).unwrap();
+        let cancelled = AtomicBool::new(false);
+
+        let report = extract_members(&archive, &dest, &[0], &cancelled).unwrap();
+
+        assert_eq!(report.extracted, 0);
+        assert_eq!(report.skipped_existing, 1);
+        assert!(!target.exists(), "extraction followed the dangling link");
+    }
+
+    #[test]
+    fn listing_lines_stop_at_limit_and_on_cancel() {
+        // An endless listing: without the incremental reader this never ends.
+        let endless = std::io::BufReader::new(std::io::repeat(b'\n'));
+        let limited = collect_listing_lines(endless, 3, || false).unwrap();
+        assert_eq!(limited.lines.len(), 3);
+        assert!(limited.limited && !limited.cancelled);
+
+        let calls = std::cell::Cell::new(0);
+        let endless = std::io::BufReader::new(std::io::repeat(b'\n'));
+        let cancelled = collect_listing_lines(endless, usize::MAX, || {
+            calls.set(calls.get() + 1);
+            calls.get() > 5
+        })
+        .unwrap();
+        assert!(cancelled.cancelled);
+        assert_eq!(cancelled.lines.len(), 5);
+
+        let finite = collect_listing_lines(&b"a\nb c\r\n"[..], 10, || false).unwrap();
+        assert_eq!(finite.lines, ["a", "b c\r"]);
+        assert!(!finite.limited && !finite.cancelled);
+    }
+
+    #[test]
+    fn tar_member_paths_must_be_plain_relative_names() {
+        assert!(is_enclosed_tar_path(Path::new("dir/file.txt")));
+        assert!(is_enclosed_tar_path(Path::new("dir/")));
+        assert!(!is_enclosed_tar_path(Path::new("/etc/passwd")));
+        assert!(!is_enclosed_tar_path(Path::new("a/../../b")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_listing_rejects_absolute_members() {
+        let temp = TempDir::new();
+        let source = temp.path().join("abs.txt");
+        fs::write(&source, b"abs").unwrap();
+        fs::write(temp.path().join("rel.txt"), b"rel").unwrap();
+        let archive = temp.path().join("abs.tgz");
+        let status = std::process::Command::new("tar")
+            .arg("-czPf")
+            .arg(&archive)
+            .arg(&source)
+            .arg("-C")
+            .arg(temp.path())
+            .arg("rel.txt")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let cancelled = AtomicBool::new(false);
+
+        let listing = list_archive(archive, &cancelled).unwrap();
+
+        assert_eq!(listing.unsafe_members, 1);
+        assert_eq!(listing.members.len(), 1);
+        assert_eq!(listing.members[0].path, Path::new("rel.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_extract_reports_unknown_member_indexes() {
+        let temp = TempDir::new();
+        let source = temp.path().join("src");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.txt"), b"a").unwrap();
+        let archive = temp.path().join("one.tgz");
+        write_tar_gz(&source, &archive, &["a.txt"]);
+        let dest = temp.path().join("out");
+        let cancelled = AtomicBool::new(false);
+
+        let report = extract_members(&archive, &dest, &[0, 7], &cancelled).unwrap();
+
+        assert_eq!(report.extracted, 1);
+        assert_eq!(report.errors, ["Unknown archive member #7"]);
+        assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"a");
     }
 
     /// Build `<dir>/<name>.tgz` from `names` under `source` with system tar,
