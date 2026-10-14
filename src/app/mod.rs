@@ -984,14 +984,9 @@ impl App {
         self.ws.confirm_pending_op(move || ctx2.request_repaint());
     }
 
+    /// Reveal `path` in the tree by expanding its ancestors; see
+    /// [`tree::expand_ancestors`].
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {
-        let mut p = path.to_path_buf();
-        loop {
-            self.tree_expanded.insert(p.clone());
-            match p.parent() {
-                Some(parent) if parent != p => p = parent.to_path_buf(),
-                _ => break,
-            }
-        }
+        tree::expand_ancestors(&mut self.tree_expanded, path);
     }
 }
