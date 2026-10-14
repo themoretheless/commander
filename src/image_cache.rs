@@ -79,10 +79,56 @@ struct CacheEntry {
     decoded_for: PreviewTarget,
 }
 
-/// A decoded image plus its GPU byte size, or `None` while still loading.
-type PendingLoad = Option<DecodedPreview>;
+/// A background-load slot: the cache generation that scheduled it, plus the
+/// decoded image once the worker finishes (`None` while still loading).
+#[derive(Debug)]
+struct PendingLoad {
+    generation: u64,
+    decoded: Option<DecodedPreview>,
+}
+
 /// Background-load slots shared with the worker threads, keyed by path.
 type PendingMap = Arc<Mutex<HashMap<PathBuf, PendingLoad>>>;
+
+/// Remove `path`'s slot only if `generation` still owns it. A stale worker
+/// (folder A -> B -> A) must not release the newer generation's slot for the
+/// same path. Returns whether the slot was released.
+fn release_pending(pending: &PendingMap, path: &Path, generation: u64) -> bool {
+    let mut pending = crate::lock_util::recover(pending);
+    if pending
+        .get(path)
+        .is_some_and(|slot| slot.generation == generation)
+    {
+        pending.remove(path);
+        true
+    } else {
+        false
+    }
+}
+
+/// Store a finished decode only into the slot `generation` scheduled.
+fn publish_pending(
+    pending: &PendingMap,
+    path: &Path,
+    generation: u64,
+    decoded: DecodedPreview,
+) -> bool {
+    let mut pending = crate::lock_util::recover(pending);
+    match pending.get_mut(path) {
+        Some(slot) if slot.generation == generation => {
+            slot.decoded = Some(decoded);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Worker slots left for new decodes. A decoder that outlived its timeout no
+/// longer has a pending slot but still holds a decoder permit, so the busier
+/// of the two counts bounds new work.
+fn free_preload_slots(pending: usize, active_decoders: usize) -> usize {
+    MAX_PRELOAD_WORKERS.saturating_sub(pending.max(active_decoders))
+}
 type FailedMap = Arc<Mutex<HashMap<PathBuf, FailedLoad>>>;
 
 /// A negative-cache entry. Capacity refusals expire on their own; real
@@ -1194,11 +1240,15 @@ impl ImageCache {
             let mut pending = crate::lock_util::recover(&self.pending);
             let completed: Vec<_> = pending
                 .iter()
-                .filter(|(_, value)| value.is_some())
+                .filter(|(_, slot)| slot.decoded.is_some())
                 .map(|(path, _)| path.clone())
                 .collect();
             for path in completed {
-                if let Some(Some(decoded)) = pending.remove(&path) {
+                if let Some(PendingLoad {
+                    decoded: Some(decoded),
+                    ..
+                }) = pending.remove(&path)
+                {
                     let name = path
                         .file_name()
                         .unwrap_or_default()
@@ -1222,8 +1272,10 @@ impl ImageCache {
         let target = self.preview_target;
         self.purge_expired_failures(Instant::now());
         let failed = crate::lock_util::recover(&self.failed).clone();
-        let mut available_slots =
-            MAX_PRELOAD_WORKERS.saturating_sub(crate::lock_util::recover(&self.pending).len());
+        let mut available_slots = free_preload_slots(
+            crate::lock_util::recover(&self.pending).len(),
+            ACTIVE_DECODERS.load(Ordering::Acquire),
+        );
         for path in paths {
             if self
                 .entries
@@ -1241,20 +1293,28 @@ impl ImageCache {
             if available_slots == 0 || failed.contains_key(path) {
                 continue;
             }
+            let active_generation = Arc::clone(&self.generation);
+            let generation = active_generation.load(Ordering::Acquire);
             {
                 let mut pending = crate::lock_util::recover(&self.pending);
                 if pending.contains_key(path) {
                     continue;
                 }
-                pending.insert(path.clone(), None);
+                pending.insert(
+                    path.clone(),
+                    PendingLoad {
+                        generation,
+                        decoded: None,
+                    },
+                );
             }
             let path_clone = path.clone();
             let pending_clone = Arc::clone(&self.pending);
             let failed_clone = Arc::clone(&self.failed);
-            let active_generation = Arc::clone(&self.generation);
-            let generation = active_generation.load(Ordering::Acquire);
             let ctx_clone = ctx.clone();
-            let task = crate::workload::submit(
+            let abandoned_path = path.clone();
+            let abandoned_pending = Arc::clone(&self.pending);
+            let task = crate::workload::submit_with_abandonment(
                 crate::workload::TaskSpec::new(
                     crate::workload::TaskKind::Preview,
                     dir.to_path_buf(),
@@ -1269,26 +1329,22 @@ impl ImageCache {
                             || active_generation.load(Ordering::Acquire) != generation
                     };
                     if cancelled() || !crate::io_budget::background_checkpoint(cancelled) {
-                        crate::lock_util::recover(&pending_clone).remove(&path_clone);
+                        release_pending(&pending_clone, &path_clone, generation);
                         return;
                     }
                     let result = load_image_with_timeout(&path_clone, target);
+                    if cancelled() {
+                        release_pending(&pending_clone, &path_clone, generation);
+                        return;
+                    }
                     match result {
                         Ok(decoded) => {
-                            let mut pending = crate::lock_util::recover(&pending_clone);
-                            if !cancelled() {
-                                pending.insert(path_clone.clone(), Some(decoded));
-                                drop(pending);
+                            if publish_pending(&pending_clone, &path_clone, generation, decoded) {
                                 ctx_clone.request_repaint();
-                            } else {
-                                pending.remove(&path_clone);
                             }
                         }
                         Err(error) => {
-                            let mut pending = crate::lock_util::recover(&pending_clone);
-                            if !cancelled() {
-                                pending.remove(&path_clone);
-                                drop(pending);
+                            if release_pending(&pending_clone, &path_clone, generation) {
                                 let failure =
                                     FailedLoad::new(classify_failure(&error), Instant::now());
                                 crate::lock_util::recover(&failed_clone)
@@ -1301,11 +1357,16 @@ impl ImageCache {
                         }
                     }
                 },
+                // A job dropped before it ran (spawn failure, superseded,
+                // backend gone) must not leave its slot stuck in Loading.
+                move |_reason| {
+                    release_pending(&abandoned_pending, &abandoned_path, generation);
+                },
             );
             if task.is_ok() {
                 available_slots -= 1;
             } else {
-                crate::lock_util::recover(&self.pending).remove(path);
+                release_pending(&self.pending, path, generation);
             }
         }
 
@@ -2542,7 +2603,13 @@ mod tests {
             path.clone(),
             super::FailedLoad::new(PreviewFailure::Decode, Instant::now()),
         );
-        crate::lock_util::recover(&cache.pending).insert(path.clone(), None);
+        crate::lock_util::recover(&cache.pending).insert(
+            path.clone(),
+            super::PendingLoad {
+                generation: 0,
+                decoded: None,
+            },
+        );
         assert_eq!(cache.stats().failed, 1);
         assert_eq!(cache.stats().pending, 1);
 
@@ -3043,5 +3110,49 @@ mod tests {
         assert!(!super::is_undecodable_standard_ext(std::path::Path::new(
             "photo.Png"
         )));
+    }
+
+    #[test]
+    fn stale_generation_cannot_release_or_fill_a_newer_slot() {
+        let pending: super::PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let path = PathBuf::from("same.png");
+        crate::lock_util::recover(&pending).insert(
+            path.clone(),
+            super::PendingLoad {
+                generation: 2,
+                decoded: None,
+            },
+        );
+        let decoded = || super::DecodedPreview {
+            image: egui::ColorImage::new([1, 1], vec![egui::Color32::BLACK]),
+            byte_size: 4,
+            decoded_for: PreviewTarget::DEFAULT,
+        };
+
+        assert!(!super::release_pending(&pending, &path, 1));
+        assert!(!super::publish_pending(&pending, &path, 1, decoded()));
+        assert!(
+            crate::lock_util::recover(&pending)
+                .get(&path)
+                .is_some_and(|slot| slot.generation == 2 && slot.decoded.is_none())
+        );
+
+        assert!(super::publish_pending(&pending, &path, 2, decoded()));
+        assert!(super::release_pending(&pending, &path, 2));
+        assert!(crate::lock_util::recover(&pending).is_empty());
+    }
+
+    #[test]
+    fn decoders_outliving_their_timeout_hold_preload_slots() {
+        assert_eq!(super::free_preload_slots(0, 0), super::MAX_PRELOAD_WORKERS);
+        assert_eq!(
+            super::free_preload_slots(1, 0),
+            super::MAX_PRELOAD_WORKERS - 1
+        );
+        assert_eq!(super::free_preload_slots(0, super::MAX_PRELOAD_WORKERS), 0);
+        assert_eq!(
+            super::free_preload_slots(1, 3),
+            super::MAX_PRELOAD_WORKERS - 3
+        );
     }
 }

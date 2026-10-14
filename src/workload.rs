@@ -935,6 +935,17 @@ pub fn submit(
     global_handle().submit(spec, work)
 }
 
+/// Like [`submit`], but `on_abandoned` runs if the job is dropped before it
+/// starts (cancelled, superseded, spawn failure), so callers can release
+/// bookkeeping they reserved for it.
+pub fn submit_with_abandonment(
+    spec: TaskSpec,
+    work: impl FnOnce(CancellationToken) + Send + 'static,
+    on_abandoned: impl FnOnce(AbandonReason) + Send + 'static,
+) -> Result<TaskHandle, AdmissionError> {
+    global_handle().submit_with_abandonment(spec, work, on_abandoned)
+}
+
 #[must_use]
 pub fn stats() -> SchedulerStats {
     global_handle().stats()
