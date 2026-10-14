@@ -6,6 +6,7 @@ use crate::panel::FileEntry;
 use crate::ports::SearchProvider;
 use crate::query::{MatchMode, Predicate, Query, QueryError};
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io::Read;
@@ -128,6 +129,8 @@ impl SearchHit {
 pub struct SearchSummary {
     pub scanned: usize,
     pub matched: usize,
+    /// Entries that could not be searched: binary or unreadable files,
+    /// folders the walk could not read, and archives that would not open.
     pub content_skipped: usize,
     pub elapsed: Duration,
     pub truncated: bool,
@@ -176,12 +179,27 @@ pub struct ProviderRequest {
     active: Arc<AtomicU64>,
     scheduler_cancel: crate::workload::CancellationToken,
     requires_content: bool,
+    /// Folders and archives a provider could not read; reported with
+    /// `content_skipped` so a partial walk does not look complete.
+    unsearched: Cell<usize>,
+    /// The per-search archive budget stopped archive scanning early.
+    archives_capped: Cell<bool>,
 }
 
 impl ProviderRequest {
     fn cancelled(&self) -> bool {
         self.scheduler_cancel.is_cancelled()
             || self.active.load(Ordering::Acquire) != self.generation
+    }
+
+    fn note_unsearched(&self) {
+        self.unsearched.set(self.unsearched.get().saturating_add(1));
+    }
+
+    fn note_archive_budget(&self, budget: &crate::archive::SearchBudget) {
+        if budget.truncated {
+            self.archives_capped.set(true);
+        }
     }
 }
 
@@ -229,14 +247,22 @@ impl SearchProvider for FilesystemProvider {
 
     fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
         let mut archive_budget = crate::archive::SearchBudget::default();
-        for item in jwalk::WalkDir::new(&self.root)
-            .skip_hidden(false)
-            .into_iter()
-            .flatten()
-        {
+        for item in jwalk::WalkDir::new(&self.root).skip_hidden(false) {
             if request.cancelled() {
                 break;
             }
+            let item = match item {
+                Ok(item) => item,
+                // A folder the walk could not read: its children are missing
+                // from the results, so count it instead of dropping it.
+                Err(_) => {
+                    request.note_unsearched();
+                    if !emit(None) {
+                        break;
+                    }
+                    continue;
+                }
+            };
             let path = item.path();
             if path == self.root {
                 continue;
@@ -274,6 +300,7 @@ impl SearchProvider for FilesystemProvider {
                 break;
             }
         }
+        request.note_archive_budget(&archive_budget);
     }
 }
 
@@ -357,8 +384,13 @@ impl ArchiveProvider {
                 keep_going
             },
         );
-        if result.is_err() && keep_going {
-            keep_going = emit(None);
+        if let Err(error) = result {
+            // A corrupt or encrypted archive: its members are not searched.
+            request.note_unsearched();
+            log::info!(target: "commander::search", "archive not searched: {error}");
+            if keep_going {
+                keep_going = emit(None);
+            }
         }
         keep_going && !request.cancelled()
     }
@@ -380,6 +412,7 @@ impl SearchProvider for ArchiveProvider {
     fn visit(&mut self, request: &ProviderRequest, emit: &mut dyn FnMut(ProviderRecord) -> bool) {
         let mut budget = crate::archive::SearchBudget::default();
         Self::visit_path(&self.archive, request, emit, &mut budget);
+        request.note_archive_budget(&budget);
     }
 }
 
@@ -434,6 +467,7 @@ impl SearchProvider for IndexedProvider {
                 break;
             }
         }
+        request.note_archive_budget(&archive_budget);
     }
 }
 
@@ -501,7 +535,9 @@ impl SearchEngine {
         self.active_generation.store(generation, Ordering::Release);
         let active = Arc::clone(&self.active_generation);
         let (sender, receiver) = mpsc::channel();
-        let task = crate::workload::submit(
+        let sender = Arc::new(std::sync::Mutex::new(Some(sender)));
+        let on_abandoned = abandonment_hook(Arc::clone(&sender), Arc::clone(&notify));
+        let task = crate::workload::submit_with_abandonment(
             crate::workload::TaskSpec::new(
                 crate::workload::TaskKind::Search,
                 provider_root,
@@ -511,12 +547,17 @@ impl SearchEngine {
             .estimated_bytes(MAX_CONTENT_BYTES)
             .replace_older_generation(),
             move |scheduler_cancel| {
+                let Some(sender) = crate::lock_util::recover(&sender).take() else {
+                    return;
+                };
                 run_worker(
                     ProviderRequest {
                         generation,
                         active,
                         scheduler_cancel,
                         requires_content: compiled.requires_content,
+                        unsearched: Cell::new(0),
+                        archives_capped: Cell::new(false),
                     },
                     compiled,
                     cap.max(1),
@@ -525,6 +566,7 @@ impl SearchEngine {
                     provider,
                 );
             },
+            on_abandoned,
         )
         .map_err(|error| QueryError {
             token: provider_id.to_string(),
@@ -546,6 +588,23 @@ impl SearchEngine {
     #[cfg(test)]
     fn active_generation(&self) -> u64 {
         self.active_generation.load(Ordering::Acquire)
+    }
+}
+
+type SharedSender = Arc<std::sync::Mutex<Option<mpsc::Sender<SearchEvent>>>>;
+
+/// Runs when the scheduler drops a queued search without starting it (root
+/// disconnected, worker spawn failed). Closing the channel first and then
+/// waking the UI lets Find see the run end and say so, instead of showing
+/// "Searching" until some unrelated input repaints it.
+fn abandonment_hook(
+    sender: SharedSender,
+    notify: Notify,
+) -> impl FnOnce(crate::workload::AbandonReason) + Send + 'static {
+    move |reason| {
+        drop(crate::lock_util::recover(&sender).take());
+        log::info!(target: "commander::search", "search abandoned before it started: {reason}");
+        notify();
     }
 }
 
@@ -985,6 +1044,9 @@ fn run_worker(
     if request.cancelled() {
         cancelled = true;
     }
+    content_skipped = content_skipped.saturating_add(request.unsearched.get());
+    // Archives left unscanned mean the results are incomplete, like a hit cap.
+    truncated |= request.archives_capped.get();
 
     if !batch.is_empty() && !cancelled {
         sort_new_hits(&mut batch);
@@ -1364,6 +1426,65 @@ mod tests {
         assert_eq!(summary.matched, 80);
     }
 
+    fn name_search(root: &Path, expression: &str) -> SearchSummary {
+        let engine = SearchEngine::default();
+        let run = engine
+            .start(
+                root.to_path_buf(),
+                Query::parse(expression, MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+        collect_run(&run).1
+    }
+
+    #[test]
+    fn unreadable_folders_are_counted_not_dropped() {
+        let tmp = TempDir::new();
+        // The walk cannot read a root that does not exist; it reports an
+        // error item, which used to vanish in `.flatten()`.
+        let summary = name_search(&tmp.path().join("missing"), "anything");
+        assert_eq!(summary.content_skipped, 1);
+    }
+
+    #[test]
+    fn archives_that_will_not_open_are_counted() {
+        let tmp = TempDir::new();
+        tmp.file("broken.zip", "not a zip archive");
+        let summary = name_search(tmp.path(), "nothing-matches-this");
+        assert_eq!(summary.content_skipped, 1);
+    }
+
+    #[test]
+    fn exhausted_archive_budget_marks_the_results_capped() {
+        let tmp = TempDir::new();
+        for index in 0..=crate::archive::MAX_ARCHIVES_PER_SEARCH {
+            tmp.file(&format!("archive-{index:04}.zip"), "x");
+        }
+        let summary = name_search(tmp.path(), "nothing-matches-this");
+        assert!(summary.truncated);
+        assert_eq!(summary.matched, 0);
+    }
+
+    #[test]
+    fn abandoned_search_closes_its_channel_and_wakes_the_ui() {
+        let (sender, receiver) = mpsc::channel::<SearchEvent>();
+        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&woken);
+        let hook = abandonment_hook(
+            Arc::new(std::sync::Mutex::new(Some(sender))),
+            Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+
+        hook(crate::workload::AbandonReason::SpawnFailed);
+
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+        assert_eq!(receiver.try_recv().unwrap_err(), TryRecvError::Disconnected);
+    }
+
     #[test]
     fn stale_worker_reports_cancellation_before_scanning() {
         let tmp = TempDir::new();
@@ -1376,6 +1497,8 @@ mod tests {
                 active,
                 scheduler_cancel: crate::workload::CancellationToken::new(),
                 requires_content: false,
+                unsearched: Cell::new(0),
+                archives_capped: Cell::new(false),
             },
             CompiledQuery::new(Query::default()).unwrap(),
             100,
