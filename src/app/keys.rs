@@ -245,6 +245,10 @@ impl App {
     }
 
     fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
+        if super::update::switch_into_covered_pane(&self.ui.tools, self.ws.active, command) {
+            self.push_key_feedback(ctx, super::update::SWITCH_INTO_COVERED_PANE);
+            return;
+        }
         if !crate::command::requires_context(command) {
             self.ws.execute(command);
             return;

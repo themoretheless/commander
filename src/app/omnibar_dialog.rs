@@ -482,7 +482,16 @@ impl App {
             Some(OmniAction::Run(label, cmd)) => {
                 self.palette_tick += 1;
                 self.palette_usage.record(label, self.palette_tick);
-                self.ws.execute(cmd);
+                if super::update::switch_into_covered_pane(&self.ui.tools, self.ws.active, cmd) {
+                    self.toast(
+                        ctx,
+                        crate::toasts::ToastKind::Info,
+                        super::update::SWITCH_INTO_COVERED_PANE,
+                        false,
+                    );
+                } else {
+                    self.ws.execute(cmd);
+                }
             }
             Some(OmniAction::Search(query)) => {
                 self.open_find(ctx);

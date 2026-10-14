@@ -184,6 +184,19 @@ fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bo
     tools.side == Some(side) && tools.any_open()
 }
 
+/// Whether `command` would make a tool-covered pane active, where file
+/// commands (F5/F6/F8/Enter) would act on its hidden listing.
+pub(super) fn switch_into_covered_pane(
+    tools: &super::ui_state::PaneTools,
+    active: ActivePanel,
+    command: crate::command::Command,
+) -> bool {
+    command == crate::command::Command::SwitchPanel && pane_tool_covers(tools, active.other())
+}
+
+/// Feedback when a panel switch is refused because a tool covers the pane.
+pub(super) const SWITCH_INTO_COVERED_PANE: &str = "Close the pane tool to switch to that pane";
+
 /// Whether `action` is the Trash undo recorded for exactly these delete
 /// results: every trashed item, with the version preserved for it.
 fn trash_undo_matches(
@@ -985,6 +998,7 @@ impl App {
         }
         if let Some(command) = run
             && ui.is_enabled()
+            && !switch_into_covered_pane(&self.ui.tools, self.ws.active, command)
         {
             self.ws.execute(command);
         }
@@ -1910,6 +1924,37 @@ mod tests {
         });
         assert!(pane_tool_covers(&tools, ActivePanel::Right));
         assert!(!pane_tool_covers(&tools, ActivePanel::Left));
+    }
+
+    #[test]
+    fn switching_into_a_tool_covered_pane_is_refused() {
+        use super::switch_into_covered_pane;
+        use crate::command::Command;
+        use crate::workspace::ActivePanel;
+        let mut tools = crate::app::ui_state::PaneTools::default();
+        tools.replace_on(ActivePanel::Right);
+        tools.diff = Some(crate::app::DiffState {
+            name_a: "a".into(),
+            name_b: "b".into(),
+            lines: Vec::new(),
+            message: None,
+        });
+        assert!(switch_into_covered_pane(
+            &tools,
+            ActivePanel::Left,
+            Command::SwitchPanel
+        ));
+        // Leaving the covered pane, or any other command, is fine.
+        assert!(!switch_into_covered_pane(
+            &tools,
+            ActivePanel::Right,
+            Command::SwitchPanel
+        ));
+        assert!(!switch_into_covered_pane(
+            &tools,
+            ActivePanel::Left,
+            Command::CursorDown
+        ));
     }
 
     #[test]
