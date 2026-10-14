@@ -93,6 +93,15 @@ pub enum DirectoryRead {
     Incomplete(DirStatus),
 }
 
+/// Provenance of a watcher-driven re-list: a gap recovery reconciles.
+const fn watcher_provenance(recovered_gap: bool) -> crate::change_provenance::ChangeProvenance {
+    if recovered_gap {
+        crate::change_provenance::ChangeProvenance::Reconciliation
+    } else {
+        crate::change_provenance::ChangeProvenance::ExternalWatcher
+    }
+}
+
 /// Classify a directory read for UI messaging. `is_empty` is whether the
 /// listing came back with zero entries.
 #[cfg(test)]
@@ -840,6 +849,11 @@ impl PanelState {
                 .acknowledge_snapshot(ready.ticket, &listing_binding);
             self.refresh_sizes(ready.forced_sizes);
             self.apply_pending_focus(ready.focus);
+            if let Some(recovered_gap) = ready.watcher_gap {
+                self.change_provenance
+                    .record(watcher_provenance(recovered_gap));
+                crate::watcher_health::record_listing_reconciliation(recovered_gap);
+            }
         } else if let Some(ticket) = ready.ticket.as_ref() {
             self.watcher.defer_snapshot(Some(ticket));
             let _ = ready.focus;
@@ -960,20 +974,14 @@ impl PanelState {
             self.sizes.mark_dirty();
         }
         if let Some(ticket) = outcome.ticket {
-            let source = if outcome.recovered_gap {
-                crate::change_provenance::ChangeProvenance::Reconciliation
-            } else {
-                crate::change_provenance::ChangeProvenance::ExternalWatcher
-            };
+            let source = watcher_provenance(outcome.recovered_gap);
             if self.can_async_list() {
                 let show_hidden = self.view.show_hidden();
-                self.listing_job.reconcile(path, show_hidden, ticket);
-                let applied = self.poll_listing_results();
-                if applied {
-                    self.change_provenance.record(source);
-                    crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
-                }
-                return applied;
+                self.listing_job
+                    .reconcile(path, show_hidden, ticket, outcome.recovered_gap);
+                // The result usually lands on a later poll; whichever poll
+                // applies it records the watcher provenance it carries.
+                return self.poll_listing_results();
             }
             if self.reload_entries() {
                 let listing_binding = self.listing.binding().to_path_buf();
