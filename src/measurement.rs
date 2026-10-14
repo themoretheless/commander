@@ -286,18 +286,45 @@ pub struct RegressionExplanation {
 }
 
 impl RegressionExplanation {
-    fn actionable(&self) -> bool {
-        let complete = [
-            self.owner.as_str(),
-            self.reason.as_str(),
-            self.tracking_issue.as_str(),
-            self.expires_on.as_str(),
+    /// Why this explanation cannot waive a regression on `today`, or `None`
+    /// when it is complete and unexpired.
+    fn problem(&self, today: chrono::NaiveDate) -> Option<String> {
+        let missing: Vec<&str> = [
+            ("owner", self.owner.as_str()),
+            ("reason", self.reason.as_str()),
+            ("tracking_issue", self.tracking_issue.as_str()),
+            ("expires_on", self.expires_on.as_str()),
         ]
         .into_iter()
-        .all(|value| !value.trim().is_empty());
-        complete
-            && chrono::NaiveDate::parse_from_str(&self.expires_on, "%Y-%m-%d")
-                .is_ok_and(|expiry| expiry >= chrono::Local::now().date_naive())
+        .filter(|(_, value)| value.trim().is_empty())
+        .map(|(field, _)| field)
+        .collect();
+        if !missing.is_empty() {
+            return Some(format!("is missing {}", missing.join(", ")));
+        }
+        match chrono::NaiveDate::parse_from_str(&self.expires_on, "%Y-%m-%d") {
+            Err(_) => Some(format!(
+                "has an invalid expires_on {:?} (expected YYYY-MM-DD)",
+                self.expires_on
+            )),
+            Ok(expiry) if expiry < today => Some(format!("expired on {}", self.expires_on)),
+            Ok(_) => None,
+        }
+    }
+}
+
+/// The violation detail for a regression over `regression_limit`: names why
+/// the metric's explanations (if any) did not waive it.
+fn unexplained_regression_detail(
+    p95_ms: f64,
+    regression_limit: f64,
+    problems: &[String],
+) -> String {
+    let base = format!("p95 {p95_ms:.2} ms exceeds regression limit {regression_limit:.2} ms");
+    if problems.is_empty() {
+        format!("{base} without an owner and issue")
+    } else {
+        format!("{base}; regression explanation {}", problems.join("; "))
     }
 }
 
@@ -439,18 +466,20 @@ pub fn evaluate_performance_gate(
         }
         let regression_limit =
             budget.baseline_p95_ms * (1.0 + budget.allowed_regression_percent / 100.0);
-        let explained = budgets
+        let today = chrono::Local::now().date_naive();
+        let verdicts: Vec<Option<String>> = budgets
             .regression_explanations
             .iter()
-            .any(|explanation| explanation.metric == budget.metric && explanation.actionable());
+            .filter(|explanation| explanation.metric == budget.metric)
+            .map(|explanation| explanation.problem(today))
+            .collect();
+        let explained = verdicts.iter().any(Option::is_none);
+        let problems: Vec<String> = verdicts.into_iter().flatten().collect();
         if latency.p95_ms > regression_limit && !explained {
             violations.push(GateViolation {
                 metric: Some(budget.metric),
                 kind: GateViolationKind::UnexplainedRegression,
-                detail: format!(
-                    "p95 {:.2} ms exceeds regression limit {:.2} ms without an owner and issue",
-                    latency.p95_ms, regression_limit
-                ),
+                detail: unexplained_regression_detail(latency.p95_ms, regression_limit, &problems),
             });
         }
     }
@@ -544,6 +573,40 @@ mod tests {
             expires_on: "2999-08-01".to_string(),
         });
         assert!(evaluate_performance_gate(&budgets, &report).is_empty());
+    }
+
+    #[test]
+    fn regression_explanation_problem_names_missing_invalid_and_expired() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        let explanation = |owner: &str, expires_on: &str| RegressionExplanation {
+            metric: MetricName::StartupTotal,
+            owner: owner.to_string(),
+            reason: "Known".to_string(),
+            tracking_issue: "#1".to_string(),
+            expires_on: expires_on.to_string(),
+        };
+        assert_eq!(explanation("perf", "2026-10-14").problem(today), None);
+        assert_eq!(
+            explanation(" ", "2026-10-14").problem(today).unwrap(),
+            "is missing owner"
+        );
+        assert_eq!(
+            explanation("perf", "2026-10-13").problem(today).unwrap(),
+            "expired on 2026-10-13"
+        );
+        assert!(
+            explanation("perf", "soon")
+                .problem(today)
+                .unwrap()
+                .starts_with("has an invalid expires_on")
+        );
+        assert_eq!(
+            unexplained_regression_detail(2.0, 1.0, &["expired on 2026-10-13".to_string()]),
+            "p95 2.00 ms exceeds regression limit 1.00 ms; regression explanation expired on 2026-10-13"
+        );
+        assert!(
+            unexplained_regression_detail(2.0, 1.0, &[]).ends_with("without an owner and issue")
+        );
     }
 
     #[test]
