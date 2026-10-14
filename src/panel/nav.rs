@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::PanelState;
 use super::listing_job::PendingFocus;
@@ -12,7 +12,10 @@ impl PanelState {
         // The jump trail truncates any forward tail and collapses a repeat of
         // the current directory, so every navigation entry point records here.
         self.history.push(path.clone());
-        record_visit(&path);
+        // The visit is recorded once the listing resolves (off the UI thread
+        // for async listings): a stale bookmark/omnibar path that turns out
+        // to be gone is not offered again in Recent; Back prunes it.
+        self.pending_visit = Some(path.clone());
         self.load_remembered_path(path);
     }
 
@@ -26,14 +29,20 @@ impl PanelState {
         if let Some(parent) = self.current_path.parent().map(|p| p.to_path_buf()) {
             self.navigate_to(parent);
             if let Some(name) = child {
-                // Prefer the child-name landing over any remembered parent focus.
-                if self.can_async_list() && self.listing_job.is_awaiting() {
-                    self.listing_job.set_focus(PendingFocus::NamedChild(name));
-                } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
-                    self.set_cursor(idx + 1);
-                    self.set_scroll_to_cursor(true);
-                }
+                self.focus_child(name);
             }
+        }
+    }
+
+    /// Put the cursor on the entry called `name` right after a navigation,
+    /// preferring it over any remembered focus. While the listing is still
+    /// loading in the background, the landing is deferred until it publishes.
+    pub fn focus_child(&mut self, name: String) {
+        if self.can_async_list() && self.listing_job.is_awaiting() {
+            self.listing_job.set_focus(PendingFocus::NamedChild(name));
+        } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
+            self.set_cursor(idx + 1);
+            self.set_scroll_to_cursor(true);
         }
     }
 
@@ -49,9 +58,12 @@ impl PanelState {
         // Walk the existing trail without recording a new jump. Directories
         // can disappear after being visited, so prune dead entries on sight.
         self.stash_view_settings();
+        // Pruning can leave a repeat of the current directory adjacent to it
+        // (`[A, B, A]` with `B` deleted); skip it so Back/Forward moves.
+        let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .back_pruning(Path::is_dir)
+            .back_pruning(|p| p != current && p.is_dir())
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);
@@ -61,9 +73,12 @@ impl PanelState {
 
     pub fn go_forward(&mut self) {
         self.stash_view_settings();
+        // Pruning can leave a repeat of the current directory adjacent to it
+        // (`[A, B, A]` with `B` deleted); skip it so Back/Forward moves.
+        let current = self.current_path.clone();
         if let Some(path) = self
             .history
-            .forward_pruning(Path::is_dir)
+            .forward_pruning(|p| p != current && p.is_dir())
             .map(|p| p.to_path_buf())
         {
             record_visit(&path);

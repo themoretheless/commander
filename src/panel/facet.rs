@@ -6,6 +6,7 @@
 use std::time::{Duration, SystemTime};
 
 use super::FileEntry;
+use crate::selection_summary::{Kind, kind_of};
 
 const DAY_SECS: u64 = 24 * 60 * 60;
 
@@ -88,44 +89,25 @@ pub fn filter_is_active(search_query: &str, facets: &FacetSet) -> bool {
     !search_query.trim().is_empty() || !facets.is_empty()
 }
 
+/// The [`Kind`] a chip selects.
+const fn chip_kind(kind: KindFacet) -> Kind {
+    match kind {
+        KindFacet::Folders => Kind::Folder,
+        KindFacet::Images => Kind::Image,
+        KindFacet::Docs => Kind::Document,
+        KindFacet::Archives => Kind::Archive,
+        KindFacet::Code => Kind::Code,
+    }
+}
+
 /// Whether `entry` passes all active facets, relative to `now`. Pure.
 pub fn facet_matches(entry: &FileEntry, facets: &FacetSet, now: SystemTime) -> bool {
     if let Some(kind) = facets.kind {
-        let ok = match kind {
-            KindFacet::Folders => entry.is_dir,
-            KindFacet::Images => entry.is_image(),
-            KindFacet::Docs => matches!(
-                entry.extension.as_str(),
-                "pdf" | "txt" | "md" | "rtf" | "doc" | "docx" | "pages" | "odt" | "tex"
-            ),
-            KindFacet::Archives => matches!(
-                entry.extension.as_str(),
-                "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "xz" | "zst"
-            ),
-            KindFacet::Code => matches!(
-                entry.extension.as_str(),
-                "rs" | "py"
-                    | "js"
-                    | "ts"
-                    | "jsx"
-                    | "tsx"
-                    | "c"
-                    | "cpp"
-                    | "h"
-                    | "hpp"
-                    | "go"
-                    | "java"
-                    | "kt"
-                    | "swift"
-                    | "rb"
-                    | "php"
-                    | "sh"
-                    | "toml"
-                    | "json"
-                    | "yaml"
-                    | "yml"
-            ),
-        };
+        // Classified by the same table saved queries use (`type:` predicates
+        // built by `query::from_panel_filter`), so a saved filter matches
+        // exactly what the chip shows. Folders are only ever `Folder`, so a
+        // folder named `backup.zip` never passes the Archives chip.
+        let ok = kind_of(entry) == chip_kind(kind);
         if !ok {
             return false;
         }
@@ -190,6 +172,72 @@ mod tests {
                 facets.age_passes(modified, before),
                 facets.age_passes(modified, at)
             );
+        }
+    }
+
+    fn entry(name: &str, is_dir: bool) -> FileEntry {
+        let extension = if is_dir {
+            String::new()
+        } else {
+            std::path::Path::new(name)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+        };
+        FileEntry {
+            name: name.to_string(),
+            name_lower: name.to_lowercase(),
+            path: std::path::PathBuf::from(format!("/t/{name}")),
+            identity: super::super::ListingIdentity::Unavailable,
+            is_dir,
+            size: 1,
+            extension,
+            modified: None,
+            modified_str: String::new(),
+            size_str: String::new(),
+        }
+    }
+
+    fn chip(kind: KindFacet) -> FacetSet {
+        FacetSet {
+            kind: Some(kind),
+            ..FacetSet::default()
+        }
+    }
+
+    #[test]
+    fn kind_chips_agree_with_saved_query_kinds() {
+        let now = UNIX_EPOCH;
+        for (name, kind, expected) in [
+            ("sheet.xlsx", KindFacet::Docs, true),
+            ("data.csv", KindFacet::Docs, true),
+            ("deck.pptx", KindFacet::Docs, true),
+            ("page.html", KindFacet::Code, true),
+            ("disk.dmg", KindFacet::Archives, true),
+            ("clip.mp4", KindFacet::Images, false),
+            ("pic.png", KindFacet::Images, true),
+        ] {
+            let e = entry(name, false);
+            assert_eq!(facet_matches(&e, &chip(kind), now), expected, "{name}");
+            let saved = crate::query::from_panel_filter("", &chip(kind));
+            assert_eq!(saved.matches(&e, now), expected, "{name} (saved)");
+        }
+    }
+
+    #[test]
+    fn folders_named_like_files_fail_file_kind_chips() {
+        let now = UNIX_EPOCH;
+        for (name, kind) in [
+            ("backup.zip", KindFacet::Archives),
+            ("photos.jpg", KindFacet::Images),
+            ("three.js", KindFacet::Code),
+            ("notes.md", KindFacet::Docs),
+        ] {
+            let mut e = entry(name, true);
+            // Even with an extension recorded, a folder is a folder.
+            e.extension = name.rsplit('.').next().unwrap().to_string();
+            assert!(!facet_matches(&e, &chip(kind), now), "{name}");
+            assert!(facet_matches(&e, &chip(KindFacet::Folders), now));
         }
     }
 

@@ -107,6 +107,22 @@ impl ListingJobController {
         for in_flight in &mut self.in_flight {
             in_flight.cancel_once();
         }
+        // A plain re-read of the folder still being loaded (refresh, watcher)
+        // keeps where navigation wanted the cursor to land.
+        let focus = match focus {
+            PendingFocus::None
+                if self
+                    .desired
+                    .as_ref()
+                    .is_some_and(|desired| desired.path == path) =>
+            {
+                match self.ready.take() {
+                    Some(ready) => ready.focus,
+                    None => std::mem::replace(&mut self.focus, PendingFocus::None),
+                }
+            }
+            focus => focus,
+        };
         let binding = ListingBinding {
             path,
             show_hidden,
@@ -118,6 +134,36 @@ impl ListingJobController {
         self.ready = None;
         self.awaiting = true;
         binding
+    }
+
+    /// A watcher-driven re-list of `path`. The watcher repeats its ticket
+    /// every poll until a snapshot acknowledges it, so while a read of the
+    /// same binding is still running (or its result is not yet published)
+    /// this leaves that read, its ticket and its pending focus alone:
+    /// restarting would cancel slow reads every frame. A change that raced
+    /// the running read keeps the watcher's generation ahead of the old
+    /// ticket, so the next poll re-lists once this result lands.
+    pub(super) fn reconcile(
+        &mut self,
+        path: PathBuf,
+        show_hidden: bool,
+        ticket: ReconciliationTicket,
+    ) {
+        let pending_same = (self.awaiting || self.ready.is_some())
+            && self
+                .desired
+                .as_ref()
+                .is_some_and(|desired| desired.path == path && desired.show_hidden == show_hidden);
+        if !pending_same {
+            self.request(path, show_hidden, Some(ticket), PendingFocus::None);
+        }
+    }
+
+    /// Where the cursor should land once the pending listing publishes.
+    pub(super) fn pending_focus(&self) -> &PendingFocus {
+        self.ready
+            .as_ref()
+            .map_or(&self.focus, |ready| &ready.focus)
     }
 
     pub(super) fn set_focus(&mut self, focus: PendingFocus) {
@@ -319,6 +365,55 @@ mod tests {
             Some(Path::new("/var"))
         );
         assert!(job.is_awaiting());
+    }
+
+    fn named(focus: &PendingFocus) -> Option<&str> {
+        match focus {
+            PendingFocus::NamedChild(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn plain_rerequest_of_pending_folder_keeps_its_focus() {
+        let mut job = ListingJobController::default();
+        job.request(
+            PathBuf::from("/parent"),
+            false,
+            None,
+            PendingFocus::NamedChild("child".into()),
+        );
+        job.request(PathBuf::from("/parent"), false, None, PendingFocus::None);
+        assert_eq!(named(&job.focus), Some("child"));
+
+        // A different folder starts clean.
+        job.request(PathBuf::from("/other"), false, None, PendingFocus::None);
+        assert!(matches!(job.focus, PendingFocus::None));
+    }
+
+    #[test]
+    fn repeated_watcher_ticket_leaves_the_pending_read_running() {
+        let mut watcher = super::super::watcher::DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/parent"));
+        let ticket = watcher.snapshot_ticket().unwrap();
+
+        let mut job = ListingJobController::default();
+        let first = job.request(
+            PathBuf::from("/parent"),
+            false,
+            Some(ticket.clone()),
+            PendingFocus::NamedChild("child".into()),
+        );
+        // The watcher hands out the same unacknowledged ticket every frame.
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone());
+        job.reconcile(PathBuf::from("/parent"), false, ticket.clone());
+        assert_eq!(job.desired_binding(), Some(&first));
+        assert_eq!(named(&job.focus), Some("child"));
+        assert_eq!(job.ticket.as_ref(), Some(&ticket));
+
+        // Hidden-file toggles are a different binding and do re-list.
+        job.reconcile(PathBuf::from("/parent"), true, ticket);
+        assert_ne!(job.desired_binding(), Some(&first));
     }
 
     #[test]

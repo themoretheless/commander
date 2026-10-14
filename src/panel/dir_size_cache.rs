@@ -560,12 +560,137 @@ pub(super) fn publish_cached_size_if_current(
     true
 }
 
+/// The device a directory lives on, for staying on one filesystem.
+#[cfg(unix)]
+fn device_of(metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.dev())
+}
+
+#[cfg(not(unix))]
+const fn device_of(_metadata: &fs::Metadata) -> Option<u64> {
+    None
+}
+
+/// Identity of a file with more than one hard link, so the walk counts its
+/// bytes once however many links point at it.
+#[cfg(unix)]
+fn shared_inode(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.nlink() > 1).then(|| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+const fn shared_inode(_metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Whether a folder that is itself a mount point holds real files worth
+/// walking. Pseudo filesystems (`/proc`, `/sys`, `/dev` on macOS) report
+/// absurd sizes, and remote or FUSE mounts are slow to walk, so those count
+/// 0; local disks, partitions and subvolumes (a separate `/home`, an APFS
+/// Data-volume firmlink, a drive under `/media`) are measured.
+#[cfg(target_os = "linux")]
+fn mount_is_measurable(path: &Path) -> bool {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return true;
+    };
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: `c_path` is NUL-terminated and `stats` is a writable statfs.
+    if unsafe { libc::statfs(c_path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return true;
+    }
+    // SAFETY: statfs returned 0, so the struct is initialized.
+    let magic = unsafe { stats.assume_init() }.f_type as u64 as u32;
+    !matches!(
+        magic,
+        // Pseudo filesystems (`linux/magic.h`).
+        0x9FA0 // proc
+            | 0x6265_6572 // sysfs
+            | 0x1CD1 // devpts
+            | 0x0027_E0EB // cgroup
+            | 0x6367_7270 // cgroup2
+            | 0x6462_6720 // debugfs
+            | 0x7472_6163 // tracefs
+            | 0x7363_6673 // securityfs
+            | 0xCAFE_4A11 // bpf
+            | 0x6165_676C // pstore
+            | 0x6265_6570 // configfs
+            | 0xDE5E_81E4 // efivarfs
+            | 0x6573_5543 // fusectl
+            | 0x4249_4E4D // binfmt_misc
+            | 0x0187 // autofs
+            | 0x1980_0202 // mqueue
+            | 0x9584_58F6 // hugetlbfs
+            | 0xF97C_FF8C // selinuxfs
+            | 0x6E73_6673 // nsfs
+            // Remote and FUSE filesystems.
+            | 0x6969 // nfs
+            | 0x517B // smb
+            | 0xFF53_4D42 // cifs
+            | 0xFE53_4D42 // smb2
+            | 0x6573_5546 // fuse
+            | 0x0102_1997 // 9p
+            | 0x00C3_6400 // ceph
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn mount_is_measurable(path: &Path) -> bool {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return true;
+    };
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: `c_path` is NUL-terminated and `stats` is a writable statfs.
+    if unsafe { libc::statfs(c_path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return true;
+    }
+    // SAFETY: statfs returned 0, so the struct is initialized.
+    let stats = unsafe { stats.assume_init() };
+    if stats.f_flags & libc::MNT_LOCAL as u32 == 0 {
+        return false;
+    }
+    // SAFETY: f_fstypename is a NUL-terminated C string filled by statfs.
+    let name = unsafe { CStr::from_ptr(stats.f_fstypename.as_ptr()) }.to_string_lossy();
+    !matches!(name.as_ref(), "devfs" | "autofs" | "fdesc" | "nullfs")
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const fn mount_is_measurable(_path: &Path) -> bool {
+    true
+}
+
+/// Recursive byte total of `path`, like `du -x`: the walk stays on the
+/// folder's own filesystem and does not descend into other mounts below it,
+/// and a hard-linked file counts once. A folder that is itself a mount point
+/// is measured in full when it is a local disk; a pseudo, remote or FUSE
+/// mount (e.g. `/proc` listed in `/`) is not walked and counts 0.
 pub(super) fn dir_size_recursive_until(
     path: &Path,
     is_cancelled: impl Fn() -> bool,
 ) -> Option<u64> {
     let mut pending = vec![path.to_path_buf()];
     let mut total = 0u64;
+    let device = fs::metadata(path).ok().as_ref().and_then(device_of);
+    let parent_device = path
+        .parent()
+        .and_then(|parent| fs::metadata(parent).ok())
+        .as_ref()
+        .and_then(device_of);
+    if device.is_some()
+        && parent_device.is_some()
+        && device != parent_device
+        && !mount_is_measurable(path)
+    {
+        pending.clear();
+    }
+    let mut seen_inodes = HashSet::new();
 
     while let Some(directory) = pending.pop() {
         if is_cancelled() {
@@ -585,8 +710,14 @@ pub(super) fn dir_size_recursive_until(
                 continue;
             };
             if file_type.is_dir() {
-                pending.push(entry.path());
-            } else if let Ok(metadata) = fs::symlink_metadata(entry.path()) {
+                let other_device = device.is_some()
+                    && entry.metadata().ok().as_ref().and_then(device_of) != device;
+                if !other_device {
+                    pending.push(entry.path());
+                }
+            } else if let Ok(metadata) = fs::symlink_metadata(entry.path())
+                && shared_inode(&metadata).is_none_or(|inode| seen_inodes.insert(inode))
+            {
                 total = total.saturating_add(metadata.len());
             }
         }

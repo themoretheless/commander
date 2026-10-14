@@ -1113,7 +1113,10 @@ mod tests {
 
         let outcome = controller.finish().expect("typed panic outcome");
         assert!(outcome.indeterminate);
-        assert!(!outcome.refresh_required());
+        // The item may have reached the Trash before the panic: the panels
+        // must re-list even though nothing was confirmed trashed.
+        assert_eq!(outcome.trashed, 0);
+        assert!(outcome.refresh_required());
         assert!(!controller.is_active());
     }
 
