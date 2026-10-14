@@ -413,6 +413,9 @@ pub struct PanelState {
     workload: Option<crate::workload::WorkloadHandle>,
     /// Why the most recent listing refresh landed (path-free, research J007).
     pub change_provenance: crate::change_provenance::RowProvenance,
+    /// A navigation target whose Recent entry waits for its listing: it is
+    /// recorded when the read resolves, and dropped when the folder is gone.
+    pending_visit: Option<PathBuf>,
 }
 
 impl PanelState {
@@ -445,6 +448,7 @@ impl PanelState {
             listing_job: ListingJobController::default(),
             workload: None,
             change_provenance: crate::change_provenance::RowProvenance::default(),
+            pending_visit: None,
         }
     }
 
@@ -852,6 +856,12 @@ impl PanelState {
     fn apply_directory_read(&mut self, read: DirectoryRead) -> bool {
         let binding = self.current_path.clone();
         let binding_changed = self.listing.binding() != binding;
+        if self.pending_visit.as_ref() == Some(&binding) {
+            self.pending_visit = None;
+            if !matches!(read, DirectoryRead::Incomplete(DirStatus::Gone)) {
+                record_visit(&binding);
+            }
+        }
         match read {
             DirectoryRead::Complete(entries) => {
                 self.publish_complete_listing(entries, self.view.config());
@@ -984,7 +994,11 @@ impl PanelState {
         let entries = match fs::read_dir(path) {
             Ok(entries) => entries,
             Err(error) => {
-                let status = if error.kind() == std::io::ErrorKind::NotFound {
+                // A path that names a file is no folder to show, like a gone one.
+                let status = if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) {
                     DirStatus::Gone
                 } else {
                     DirStatus::Denied
@@ -2467,6 +2481,35 @@ mod tests {
         panel.refresh();
         panel.navigate_to(missing.clone());
         assert!(!visited_paths().contains(&missing));
+
+        let file = temp.file("plain.txt", "x");
+        panel.navigate_to(file.clone());
+        assert!(!visited_paths().contains(&file));
+    }
+
+    #[test]
+    fn async_navigation_records_the_visit_when_the_listing_lands() {
+        let temp = TempDir::new();
+        let target = temp.dir("visit-after-listing");
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+
+        // A background listing that never gets a worker: navigation does not
+        // stat the folder on the UI thread, so nothing is recorded yet.
+        let mut limits = crate::workload::SchedulerLimits::default();
+        limits.per_kind_running[0] = 0;
+        let runtime = crate::workload::WorkloadRuntime::new(limits);
+        panel.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
+        panel.set_notify(Arc::new(|| {}));
+        panel.navigate_to(target.clone());
+        assert_eq!(panel.listing.status(), DirStatus::Loading);
+        assert!(!visited_paths().contains(&target));
+
+        // Once the read resolves, the visit lands in Recent.
+        panel.workload = None;
+        panel.refresh();
+        assert!(visited_paths().contains(&target));
+        assert_eq!(panel.pending_visit, None);
     }
 
     #[test]

@@ -12,11 +12,10 @@ impl PanelState {
         // The jump trail truncates any forward tail and collapses a repeat of
         // the current directory, so every navigation entry point records here.
         self.history.push(path.clone());
-        // A stale bookmark/omnibar path that no longer exists is not a visit
-        // worth offering again in Recent; Back prunes it from the trail.
-        if !is_missing_directory(&path) {
-            record_visit(&path);
-        }
+        // The visit is recorded once the listing resolves (off the UI thread
+        // for async listings): a stale bookmark/omnibar path that turns out
+        // to be gone is not offered again in Recent; Back prunes it.
+        self.pending_visit = Some(path.clone());
         self.load_remembered_path(path);
     }
 
@@ -85,14 +84,5 @@ impl PanelState {
             record_visit(&path);
             self.load_remembered_path(path);
         }
-    }
-}
-
-/// Whether `path` is known not to be a directory: it is gone or names a
-/// non-directory. Unreadable (denied) locations still count as visits.
-fn is_missing_directory(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(meta) => !meta.is_dir(),
-        Err(err) => err.kind() == std::io::ErrorKind::NotFound,
     }
 }
