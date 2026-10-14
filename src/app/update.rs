@@ -1454,7 +1454,7 @@ impl App {
             self.show_tree = !self.show_tree;
             if self.show_tree {
                 let path = self.ws.active_panel().current_path.clone();
-                self.tree_expand_to_path(&path);
+                self.tree_reveal_path(&path);
             }
         }
 

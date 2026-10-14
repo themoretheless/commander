@@ -29,6 +29,12 @@ fn terminal_failure_notice(
     })
 }
 
+/// Label for the failure notice's Undo button: the action undo would revert.
+fn undo_last_label(verb: &str, items: usize) -> String {
+    let noun = if items == 1 { "item" } else { "items" };
+    format!("Undo last: {verb} {items} {noun}")
+}
+
 impl App {
     pub(crate) fn toggle_queue_panel(&mut self) {
         if self.show_operations_center && self.operations_tab == OperationsTab::Queue {
@@ -270,6 +276,7 @@ impl App {
         let mut move_down = None;
         let mut cancel = None;
         egui::ScrollArea::vertical()
+            .id_salt("ops_queue")
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 for row in &rows {
@@ -422,42 +429,45 @@ impl App {
         let top = self.ws.top_undo_action().cloned();
         let mut jump = None;
         let mut undo = false;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for receipt in &receipts {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(receipt.label())
-                                .size(11.0)
-                                .strong()
-                                .color(t.text_primary),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}  \u{00b7}  {}",
-                                crate::receipts::format_elapsed(now, receipt.timestamp),
-                                receipt.jump_to.display()
-                            ))
-                            .size(9.0)
-                            .color(t.text_muted),
-                        );
+        egui::ScrollArea::vertical()
+            .id_salt("ops_history")
+            .show(ui, |ui| {
+                for receipt in &receipts {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(receipt.label())
+                                    .size(11.0)
+                                    .strong()
+                                    .color(t.text_primary),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}  \u{00b7}  {}",
+                                    crate::receipts::format_elapsed(now, receipt.timestamp),
+                                    receipt.jump_to.display()
+                                ))
+                                .size(9.0)
+                                .color(t.text_muted),
+                            );
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if receipt.still_undoable(top.as_ref())
+                                && ui.small_button("Undo").clicked()
+                            {
+                                undo = true;
+                                jump = None;
+                            }
+                            if ui.small_button("Jump").clicked() {
+                                jump = Some(receipt.jump_to.clone());
+                            }
+                        });
                     });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if receipt.still_undoable(top.as_ref()) && ui.small_button("Undo").clicked()
-                        {
-                            undo = true;
-                            jump = None;
-                        }
-                        if ui.small_button("Jump").clicked() {
-                            jump = Some(receipt.jump_to.clone());
-                        }
-                    });
-                });
-                ui.add_space(5.0);
-                ui.separator();
-                ui.add_space(5.0);
-            }
-        });
+                    ui.add_space(5.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+                }
+            });
         if undo {
             self.ws.execute(crate::command::Command::Undo);
         } else if let Some(path) = jump {
@@ -476,13 +486,20 @@ impl App {
             );
             return;
         }
-        let can_undo = self.ws.preview_undo().is_some();
+        // Undo is global (the top of the undo stack), not tied to a notice,
+        // so the button names the action it would revert.
+        let undo_label = self
+            .ws
+            .preview_undo()
+            .map(|preview| undo_last_label(preview.action.verb(), preview.action.item_count()));
         let mut view = None;
         let mut retry = None;
         let mut rollback = None;
         let mut dismiss = None;
         let mut undo = false;
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("ops_errors")
+            .show(ui, |ui| {
             for notice in &notices {
                 ui.label(
                     egui::RichText::new(notice.summary.label())
@@ -510,7 +527,13 @@ impl App {
                         retry = Some(notice.operation_id.clone());
                     }
                     if ui
-                        .add_enabled(can_undo, egui::Button::new("Undo").small())
+                        .add_enabled(
+                            undo_label.is_some(),
+                            egui::Button::new(undo_label.as_deref().unwrap_or("Undo")).small(),
+                        )
+                        .on_hover_text(
+                            "Reverts the most recent completed action, which may not be this operation",
+                        )
                         .on_disabled_hover_text("No reversible completed action")
                         .clicked()
                     {
@@ -593,7 +616,13 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{mark_failure_notice_seen, terminal_failure_notice};
+    use super::{mark_failure_notice_seen, terminal_failure_notice, undo_last_label};
+
+    #[test]
+    fn failure_notice_undo_names_the_action_it_reverts() {
+        assert_eq!(undo_last_label("Moved", 3), "Undo last: Moved 3 items");
+        assert_eq!(undo_last_label("Renamed", 1), "Undo last: Renamed 1 item");
+    }
 
     #[test]
     fn auto_retired_terminal_report_becomes_a_complete_failure_notice() {

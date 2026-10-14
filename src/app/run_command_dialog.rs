@@ -9,6 +9,88 @@ use crate::cmdtemplate::{SegmentKind, expand, preview_segments};
 
 const TEMPLATES_SCROLL_ID: &str = "run_command_templates";
 
+/// Run `cmdline` through `sh -c` in `cwd`, publishing the child in `slot`
+/// while it runs so the UI can kill it. Output is collected like
+/// `Command::output` (stdin closed, stdout/stderr captured).
+fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) -> CommandOutput {
+    use std::io::Read;
+    use std::process::Stdio;
+    let failed = |cmdline: String, error: std::io::Error| CommandOutput {
+        cmdline,
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: None,
+        error: Some(error.to_string()),
+    };
+    let mut command = std::process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&cmdline)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Own process group, so Stop can kill everything the shell forked
+    // (pipelines, `a; b`, make jobs), not just `sh` itself.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return failed(cmdline, error),
+    };
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    *crate::lock_util::recover(slot) = Some(child);
+    // Poll instead of `wait()` so the lock is free for a concurrent kill.
+    let status = loop {
+        let polled = crate::lock_util::recover(slot)
+            .as_mut()
+            .map(std::process::Child::try_wait);
+        match polled {
+            Some(Ok(None)) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Some(Ok(Some(status))) => break Ok(status),
+            Some(Err(error)) => break Err(error),
+            None => break Err(std::io::Error::other("command handle lost")),
+        }
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    // Every pipe holder is gone; retire the handle so a late Stop never
+    // signals a process group id that may since have been reused.
+    crate::lock_util::recover(slot).take();
+    match status {
+        Ok(status) => CommandOutput {
+            cmdline,
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            exit_code: status.code(),
+            error: None,
+        },
+        Err(error) => failed(cmdline, error),
+    }
+}
+
+/// Toast text/kind for a finished command. No exit code without an error
+/// means the process was killed by a signal (or Stop), which is a failure.
+fn command_outcome(output: &CommandOutput) -> (String, crate::toasts::ToastKind) {
+    use crate::toasts::ToastKind;
+    match (&output.error, output.exit_code) {
+        (Some(error), _) => (error.clone(), ToastKind::Error),
+        (None, Some(0)) => ("Command finished".to_string(), ToastKind::Info),
+        (None, Some(code)) => (format!("Command exited {code}"), ToastKind::Error),
+        (None, None) => ("Command terminated by signal".to_string(), ToastKind::Error),
+    }
+}
+
 impl App {
     pub(crate) fn open_run_command(&mut self, ctx: &egui::Context) {
         let dir = self.ws.active_panel_ref().current_path.clone();
@@ -68,6 +150,7 @@ impl App {
 
         let mut run: Option<String> = None; // expanded command line to execute
         let mut cancel = false;
+        let mut stop = false;
         let mut fill: Option<String> = None; // template raw chosen from the list
         let mut save_template: Option<String> = None; // raw line to persist
 
@@ -196,6 +279,17 @@ impl App {
                                 .size(11.0)
                                 .color(t.text_muted),
                         );
+                        if ui
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Secondary,
+                                egui::RichText::new("Stop").size(12.0),
+                            ))
+                            .on_hover_text("Kill the running command")
+                            .clicked()
+                        {
+                            stop = true;
+                        }
                     });
                 }
                 if let Some(output) = &state.output {
@@ -203,7 +297,7 @@ impl App {
                     let exit = output
                         .exit_code
                         .map(|code| format!("exit {code}"))
-                        .unwrap_or_else(|| "no exit code".to_string());
+                        .unwrap_or_else(|| "terminated by signal".to_string());
                     let header = if let Some(error) = &output.error {
                         format!("Failed · {error}")
                     } else if output.cmdline.trim().is_empty() {
@@ -211,9 +305,7 @@ impl App {
                     } else {
                         format!("Finished · {exit} · {}", output.cmdline.trim())
                     };
-                    let header_color = if output.error.is_some()
-                        || output.exit_code.is_some_and(|code| code != 0)
-                    {
+                    let header_color = if output.error.is_some() || output.exit_code != Some(0) {
                         t.accent_red
                     } else {
                         t.text_secondary
@@ -260,7 +352,19 @@ impl App {
             });
 
         if cancel {
+            // Dropping the run kills a command that is still going.
             self.ui.modals.run_command = None;
+            return;
+        }
+        if stop
+            && let Some(run) = self
+                .ui
+                .modals
+                .run_command
+                .as_ref()
+                .and_then(|state| state.run.as_ref())
+        {
+            run.stop();
             return;
         }
         if let Some(raw) = fill
@@ -326,33 +430,15 @@ impl App {
             let cwd = opening.dir().to_path_buf();
             let (sender, receiver) = std::sync::mpsc::channel();
             let repaint = ctx.clone();
+            let child = CommandChildSlot::default();
+            let worker_child = child.clone();
             std::thread::spawn(move || {
-                let output = match std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&cmdline)
-                    .current_dir(&cwd)
-                    .output()
-                {
-                    Ok(output) => CommandOutput {
-                        cmdline,
-                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                        exit_code: output.status.code(),
-                        error: None,
-                    },
-                    Err(error) => CommandOutput {
-                        cmdline,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        exit_code: None,
-                        error: Some(error.to_string()),
-                    },
-                };
+                let output = run_shell(cmdline, &cwd, &worker_child);
                 let _ = sender.send(output);
                 repaint.request_repaint();
             });
             if let Some(state) = self.ui.modals.run_command.as_mut() {
-                state.run = Some(CommandOutputRun { receiver });
+                state.run = Some(CommandOutputRun { receiver, child });
                 state.output = None;
             }
             self.toast(
@@ -383,19 +469,7 @@ impl App {
             && let Some(state) = self.ui.modals.run_command.as_mut()
         {
             state.run = None;
-            let (text, kind) = if let Some(error) = &output.error {
-                (error.clone(), crate::toasts::ToastKind::Error)
-            } else if output.exit_code.is_some_and(|code| code != 0) {
-                (
-                    format!("Command exited {}", output.exit_code.unwrap_or_default()),
-                    crate::toasts::ToastKind::Error,
-                )
-            } else {
-                (
-                    "Command finished".to_string(),
-                    crate::toasts::ToastKind::Info,
-                )
-            };
+            let (text, kind) = command_outcome(&output);
             state.output = Some(output);
             self.toast_at(now, kind, text, false);
         }
@@ -421,6 +495,67 @@ mod tests {
             modified_str: String::new(),
             size_str: "1 B".to_string(),
         }
+    }
+
+    fn output(exit_code: Option<i32>, error: Option<&str>) -> CommandOutput {
+        CommandOutput {
+            cmdline: "true".to_string(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code,
+            error: error.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn signal_terminated_command_is_reported_as_failure() {
+        use crate::toasts::ToastKind;
+        assert!(matches!(
+            command_outcome(&output(Some(0), None)),
+            (_, ToastKind::Info)
+        ));
+        assert!(matches!(
+            command_outcome(&output(Some(2), None)),
+            (_, ToastKind::Error)
+        ));
+        let (text, kind) = command_outcome(&output(None, None));
+        assert!(matches!(kind, ToastKind::Error));
+        assert!(text.contains("signal"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn running_command_can_be_stopped() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let child = CommandChildSlot::default();
+        let worker_child = child.clone();
+        std::thread::spawn(move || {
+            let cwd = std::env::temp_dir();
+            // Not `exec`: the shell forks `sleep` as a grandchild that holds
+            // the output pipes, so killing only `sh` would hang here.
+            let _ = sender.send(run_shell("sleep 30; true".to_string(), &cwd, &worker_child));
+        });
+        let run = CommandOutputRun { receiver, child };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::lock_util::recover(&run.child).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "command never started"
+            );
+            std::thread::yield_now();
+        }
+        let stopped_at = std::time::Instant::now();
+        run.stop();
+        let output = run
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("stopped command reports back");
+        assert!(
+            stopped_at.elapsed() < std::time::Duration::from_secs(2),
+            "stop must end the whole command promptly"
+        );
+        assert_eq!(output.exit_code, None);
+        assert_eq!(output.error, None);
     }
 
     #[test]

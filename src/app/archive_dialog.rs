@@ -80,6 +80,8 @@ impl App {
                     self.ws.right.refresh();
                 }
                 Err(error) => {
+                    // Drop the "Extracting…" line so it is not left beside the error.
+                    state.status = None;
                     state.error = Some(error.clone());
                     self.toast_at(now, crate::toasts::ToastKind::Error, error, false);
                 }

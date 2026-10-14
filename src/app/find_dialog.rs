@@ -7,6 +7,13 @@ use std::time::SystemTime;
 
 const AUTO_RUN_DELAY: f64 = 0.25;
 
+/// Fixed height of one search result row. `show_rows` positions rows on this
+/// stride, so every row is allocated exactly this tall: a time-bucket header
+/// (or its gap) plus the 22px result line, or a 4px gap plus the line.
+const fn result_row_height(pivot_active: bool) -> f32 {
+    if pivot_active { 40.0 } else { 26.0 }
+}
+
 const fn index_phase_label(phase: crate::content_index::IndexPhase) -> &'static str {
     match phase {
         crate::content_index::IndexPhase::Disabled => "Off",
@@ -664,73 +671,90 @@ impl App {
                         });
                     }
                     let pivot = state.time_pivot;
+                    let row_height = result_row_height(pivot != crate::search::TimePivot::None);
                     let root = state.root.clone();
                     let open_explanation = state.explanation_open.clone();
                     egui::ScrollArea::vertical()
                         .id_salt("search-results")
                         .auto_shrink([false, false])
                         .max_height((ui.available_height() - 90.0).max(140.0))
-                        .show_rows(ui, 42.0, indices.len(), |ui, rows| {
+                        .show_rows(ui, row_height, indices.len(), |ui, rows| {
                             for row in rows {
-                                let index = indices[row];
-                                let hit = &state.results[index];
-                                let identity = hit.identity.clone();
-                                let path = hit.reveal_path().to_path_buf();
-                                let relative = hit.relative_to(&root).display().to_string();
-                                let size = if hit.entry.is_dir {
-                                    String::new()
-                                } else {
-                                    format_size(hit.entry.size)
-                                };
-                                let explanation = hit.explanation.summary();
-                                if pivot != crate::search::TimePivot::None {
-                                    let bucket = crate::search::time_bucket(hit, pivot, clock);
-                                    let previous = row.checked_sub(1).map(|prior_row| {
-                                        crate::search::time_bucket(
-                                            &state.results[indices[prior_row]],
-                                            pivot,
-                                            clock,
-                                        )
-                                    });
-                                    if previous != Some(bucket) {
-                                        ui.label(
-                                            egui::RichText::new(bucket.label())
-                                                .size(10.0)
-                                                .strong()
-                                                .color(t.text_muted),
-                                        );
-                                    } else {
-                                        ui.add_space(12.0);
-                                    }
-                                } else {
-                                    ui.add_space(4.0);
-                                }
-                                ui.horizontal(|ui| {
-                                    let response = ui.add_sized(
-                                        [ui.available_width() - 92.0, 22.0],
-                                        egui::Label::new(
-                                            egui::RichText::new(relative)
-                                                .size(12.0)
-                                                .color(t.text_secondary),
-                                        )
-                                        .truncate()
-                                        .sense(Sense::click()),
-                                    );
-                                    if response.clicked() {
-                                        reveal = Some(path);
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(size).size(10.0).color(t.text_muted),
-                                    );
-                                    if ui.small_button("?").on_hover_text(&explanation).clicked() {
-                                        explanation_change =
-                                            Some(if open_explanation.as_ref() == Some(&identity) {
-                                                None
-                                            } else {
-                                                Some(identity)
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ui.available_width(), row_height),
+                                    Layout::top_down(Align::Min),
+                                    |ui| {
+                                        ui.set_min_height(row_height);
+                                        let index = indices[row];
+                                        let hit = &state.results[index];
+                                        let identity = hit.identity.clone();
+                                        let path = hit.reveal_path().to_path_buf();
+                                        let relative = hit.relative_to(&root).display().to_string();
+                                        let size = if hit.entry.is_dir {
+                                            String::new()
+                                        } else {
+                                            format_size(hit.entry.size)
+                                        };
+                                        let explanation = hit.explanation.summary();
+                                        if pivot != crate::search::TimePivot::None {
+                                            let bucket =
+                                                crate::search::time_bucket(hit, pivot, clock);
+                                            let previous = row.checked_sub(1).map(|prior_row| {
+                                                crate::search::time_bucket(
+                                                    &state.results[indices[prior_row]],
+                                                    pivot,
+                                                    clock,
+                                                )
                                             });
-                                    }
-                                });
+                                            if previous != Some(bucket) {
+                                                ui.label(
+                                                    egui::RichText::new(bucket.label())
+                                                        .size(10.0)
+                                                        .strong()
+                                                        .color(t.text_muted),
+                                                );
+                                            } else {
+                                                ui.add_space(12.0);
+                                            }
+                                        } else {
+                                            ui.add_space(4.0);
+                                        }
+                                        ui.horizontal(|ui| {
+                                            let response = ui.add_sized(
+                                                [ui.available_width() - 92.0, 22.0],
+                                                egui::Label::new(
+                                                    egui::RichText::new(relative)
+                                                        .size(12.0)
+                                                        .color(t.text_secondary),
+                                                )
+                                                .truncate()
+                                                .sense(Sense::click()),
+                                            );
+                                            if response.clicked() {
+                                                reveal = Some(path);
+                                            }
+                                            ui.label(
+                                                egui::RichText::new(size)
+                                                    .size(10.0)
+                                                    .color(t.text_muted),
+                                            );
+                                            if ui
+                                                .small_button("?")
+                                                .on_hover_text(&explanation)
+                                                .clicked()
+                                            {
+                                                explanation_change = Some(
+                                                    if open_explanation.as_ref() == Some(&identity)
+                                                    {
+                                                        None
+                                                    } else {
+                                                        Some(identity)
+                                                    },
+                                                );
+                                            }
+                                        });
+                                    },
+                                );
                             }
                         });
 
@@ -928,5 +952,18 @@ impl App {
                 self.toast(ctx, kind, message, false);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::result_row_height;
+
+    #[test]
+    fn result_rows_are_allocated_at_the_show_rows_stride() {
+        // Header line (or 12px gap) + 22px row fits the pivot height; a
+        // 4px gap + 22px row is exactly the plain height.
+        assert!(result_row_height(true) >= 12.0 + 22.0);
+        assert_eq!(result_row_height(false), 4.0 + 22.0);
     }
 }

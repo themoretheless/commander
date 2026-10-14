@@ -17,6 +17,47 @@ fn cache_children(
     cache.insert(key, children);
 }
 
+type ChildCache = std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>;
+
+/// A click on a tree row toggles its expansion and drops its cached child
+/// list, so expanding re-reads the folder (the cache is otherwise cleared
+/// only by pane listing changes, which never cover folders outside both
+/// panes).
+fn toggle_tree_node(
+    expanded: &mut std::collections::HashSet<PathBuf>,
+    cache: &mut ChildCache,
+    path: &std::path::Path,
+    show_hidden: bool,
+    has_children: bool,
+) {
+    cache.remove(&child_cache_key(path, show_hidden));
+    if has_children && !expanded.remove(path) {
+        expanded.insert(path.to_path_buf());
+    }
+}
+
+/// Expand every ancestor of `path` so its row is visible. `path` itself
+/// keeps its state: a tree click has just toggled it, and re-expanding it
+/// here would make collapsing impossible.
+pub(super) fn expand_ancestors(
+    expanded: &mut std::collections::HashSet<PathBuf>,
+    path: &std::path::Path,
+) {
+    for ancestor in path.ancestors().skip(1) {
+        expanded.insert(ancestor.to_path_buf());
+    }
+}
+
+/// Reveal `path` and open it too: used when the tree is shown, so the
+/// current folder's subfolders are visible as before.
+pub(super) fn expand_through(
+    expanded: &mut std::collections::HashSet<PathBuf>,
+    path: &std::path::Path,
+) {
+    expand_ancestors(expanded, path);
+    expanded.insert(path.to_path_buf());
+}
+
 impl App {
     /// Render the global tree sidebar. Returns Some(path) if user clicked a folder.
     pub(crate) fn render_global_tree(
@@ -260,13 +301,7 @@ impl App {
 
         // Handle clicks
         if row_resp.clicked() {
-            if has_children {
-                if is_expanded {
-                    expanded.remove(path);
-                } else {
-                    expanded.insert(path.to_path_buf());
-                }
-            }
+            toggle_tree_node(expanded, cache, path, show_hidden, has_children);
             nav = Some(path.to_path_buf());
         }
 
@@ -295,6 +330,51 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clicking_an_expanded_node_collapses_it_and_it_stays_collapsed() {
+        let path = PathBuf::from("/a/b");
+        let mut expanded = std::collections::HashSet::from([
+            PathBuf::from("/"),
+            PathBuf::from("/a"),
+            path.clone(),
+        ]);
+        let mut cache = ChildCache::new();
+        toggle_tree_node(&mut expanded, &mut cache, &path, false, true);
+        // The caller then reveals the navigated path.
+        expand_ancestors(&mut expanded, &path);
+        assert!(!expanded.contains(&path));
+        assert!(expanded.contains(&PathBuf::from("/a")));
+
+        toggle_tree_node(&mut expanded, &mut cache, &path, false, true);
+        expand_ancestors(&mut expanded, &path);
+        assert!(expanded.contains(&path));
+    }
+
+    #[test]
+    fn showing_the_tree_opens_the_current_folder() {
+        let path = PathBuf::from("/a/b");
+        let mut expanded = std::collections::HashSet::new();
+        expand_through(&mut expanded, &path);
+        assert!(expanded.contains(&path));
+        assert!(expanded.contains(&PathBuf::from("/a")));
+        assert!(expanded.contains(&PathBuf::from("/")));
+    }
+
+    #[test]
+    fn clicking_a_node_rereads_its_children() {
+        let path = PathBuf::from("/outside/panes");
+        let mut expanded = std::collections::HashSet::new();
+        let mut cache = ChildCache::new();
+        cache_children(
+            &mut cache,
+            child_cache_key(&path, false),
+            vec![PathBuf::from("/outside/panes/stale")],
+        );
+        toggle_tree_node(&mut expanded, &mut cache, &path, false, false);
+        assert!(!cache.contains_key(&child_cache_key(&path, false)));
+        assert!(expanded.is_empty());
+    }
 
     #[test]
     fn hidden_policy_is_part_of_the_tree_child_cache_key() {

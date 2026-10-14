@@ -8,12 +8,25 @@ use std::path::Path;
 /// Largest file we will read into memory for a diff.
 const DIFF_SIZE_CAP: u64 = 2 * 1024 * 1024;
 
+/// Read a regular file as UTF-8, never more than `DIFF_SIZE_CAP` bytes.
+/// FIFOs and devices are rejected (they would block or stream forever on the
+/// UI thread), and the read itself is bounded in case the file grows.
 fn read_text(path: &Path) -> Result<String, ()> {
+    use std::io::Read;
     let meta = std::fs::metadata(path).map_err(|_| ())?;
-    if meta.len() > DIFF_SIZE_CAP {
+    if !meta.is_file() || meta.len() > DIFF_SIZE_CAP {
         return Err(());
     }
-    std::fs::read_to_string(path).map_err(|_| ())
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|_| ())?
+        .take(DIFF_SIZE_CAP + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ())?;
+    if bytes.len() as u64 > DIFF_SIZE_CAP {
+        return Err(());
+    }
+    String::from_utf8(bytes).map_err(|_| ())
 }
 
 impl App {
@@ -144,5 +157,26 @@ impl App {
         if close {
             self.ui.tools.diff = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_text;
+
+    #[test]
+    fn reads_regular_text_files() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.file("a.txt", "one\ntwo\n");
+        assert_eq!(read_text(&path), Ok("one\ntwo\n".to_string()));
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert_eq!(read_text(&path), Err(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_devices_instead_of_streaming_them() {
+        // A device reports length 0, so only the file-type check stops it.
+        assert_eq!(read_text(std::path::Path::new("/dev/null")), Err(()));
     }
 }
