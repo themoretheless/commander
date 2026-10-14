@@ -71,6 +71,16 @@ impl RecoveryState {
         self.requested = Some(operation_id);
     }
 
+    /// A click in the operation list. Re-clicking the selected operation
+    /// keeps its tab and loaded repair plan.
+    fn pick(&mut self, operation_id: crate::operation::OperationId) {
+        if self.selected.as_ref() == Some(&operation_id) {
+            self.requested = None;
+            return;
+        }
+        self.select(operation_id);
+    }
+
     pub(crate) fn select(&mut self, operation_id: crate::operation::OperationId) {
         self.requested = None;
         self.selected = Some(operation_id);
@@ -187,6 +197,76 @@ fn cached_version_usage(
     }
 }
 
+/// Header summary. Only recoverable records count as interrupted; the
+/// inventory also keeps settled operations whose cleanup data remains.
+fn recovery_summary(
+    operations: &[crate::operation_journal::OperationRecord],
+    orphans: usize,
+) -> String {
+    let plural = |count: usize| if count == 1 { "" } else { "s" };
+    let interrupted = operations
+        .iter()
+        .filter(|record| record.status.recoverable())
+        .count();
+    let settled = operations.len() - interrupted;
+    let mut summary = format!("{interrupted} interrupted operation{}", plural(interrupted));
+    if settled > 0 {
+        summary.push_str(&format!(
+            "  \u{00b7}  {settled} with leftover recovery data"
+        ));
+    }
+    summary.push_str(&format!(
+        "  \u{00b7}  {orphans} staging item{}",
+        plural(orphans)
+    ));
+    summary
+}
+
+/// Why Resume is unavailable for `record`, shown as the disabled hover text.
+fn resume_block_reason(
+    record: &crate::operation_journal::OperationRecord,
+    scanning: bool,
+    transfer_busy: bool,
+) -> Option<&'static str> {
+    if scanning {
+        Some("Wait for the recovery scan to finish")
+    } else if !record.status.recoverable() {
+        Some("Nothing left to resume")
+    } else if transfer_busy {
+        Some("Wait for the transfer queue to finish")
+    } else {
+        None
+    }
+}
+
+fn resume_message(count: usize) -> String {
+    match count {
+        0 => "Finalizing verified operation".to_string(),
+        1 => "Resuming 1 item".to_string(),
+        count => format!("Resuming {count} items"),
+    }
+}
+
+fn rollback_outcome(completed: usize, remaining: usize) -> RecoveryOutcome {
+    let mut message = format!(
+        "Rollback completed {completed} step{}",
+        if completed == 1 { "" } else { "s" }
+    );
+    match remaining {
+        0 => {}
+        1 => message.push_str("; 1 item needs review"),
+        remaining => message.push_str(&format!("; {remaining} items need review")),
+    }
+    RecoveryOutcome {
+        message,
+        needs_review: remaining > 0,
+    }
+}
+
+fn clean_orphan_label(path: &std::path::Path) -> String {
+    format!("Delete leftover staging data at {}", path.display())
+}
+
 fn short_id(id: &str) -> String {
     id.chars().take(18).collect()
 }
@@ -272,7 +352,7 @@ fn show_operation_list(
                     .selected(active)
                     .corner_radius(CornerRadius::ZERO),
                 );
-                if response.clicked() {
+                if response.clicked() && !active {
                     *selected = Some(record.id.clone());
                 }
                 response.on_hover_text(format!("{}\n{}", record.id.0, record.target.display()));
@@ -488,6 +568,15 @@ fn show_repair(
         .size(11.0)
         .color(t.text_secondary),
     );
+    if manual > 0 {
+        ui.label(
+            egui::RichText::new(
+                "Rollback leaves MANUAL items alone: follow each item's note and fix the file yourself.",
+            )
+            .size(10.0)
+            .color(t.accent_warning),
+        );
+    }
     ui.add_space(6.0);
     egui::ScrollArea::vertical()
         .max_height(285.0)
@@ -588,6 +677,13 @@ impl App {
     pub(crate) fn poll_recovery(&mut self, ctx: &egui::Context) {
         self.recovery.poll_scan();
         self.recovery.poll_repair();
+        if self.recovery.rescan_after_resume
+            && !self.recovery.scanning
+            && !self.ws.has_unfinished_transfer_work()
+        {
+            self.recovery.rescan_after_resume = false;
+            self.recovery.start_scan(&self.ws);
+        }
         if self.recovery.scanning || self.recovery.repair_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -621,11 +717,18 @@ impl App {
                 }
             },
         );
+        let transfer_busy = self.ws.has_unfinished_transfer_work();
         let selected_record = state
             .selected
             .as_ref()
             .and_then(|id| state.operations.iter().find(|record| &record.id == id));
 
+        // In the narrow bottom placement the panel is short; scroll the whole
+        // body so the details and rollback button stay reachable.
+        egui::ScrollArea::vertical()
+            .id_salt("recovery_center_body")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
         ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
@@ -636,12 +739,9 @@ impl App {
                                 .color(t.text_primary),
                         );
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} interrupted operation{}  \u{00b7}  {} staging item{}",
-                                state.operations.len(),
-                                if state.operations.len() == 1 { "" } else { "s" },
+                            egui::RichText::new(recovery_summary(
+                                &state.operations,
                                 state.orphans.len(),
-                                if state.orphans.len() == 1 { "" } else { "s" }
                             ))
                             .size(10.0)
                             .color(t.text_muted),
@@ -655,11 +755,18 @@ impl App {
                         }
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
+                        let response = ui
                             .add_enabled(!state.scanning, egui::Button::new("\u{21bb}"))
-                            .on_hover_text("Refresh")
-                            .clicked()
-                        {
+                            .on_hover_text("Refresh");
+                        // The glyph alone is not a usable accessible name.
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                !state.scanning,
+                                "Refresh",
+                            )
+                        });
+                        if response.clicked() {
                             refresh = true;
                         }
                     });
@@ -690,9 +797,13 @@ impl App {
                 }
                 if let Some(outcome) = &state.outcome {
                     ui.label(
-                        egui::RichText::new(outcome)
+                        egui::RichText::new(&outcome.message)
                             .size(11.0)
-                            .color(t.accent),
+                            .color(if outcome.needs_review {
+                                t.accent_warning
+                            } else {
+                                t.accent
+                            }),
                     );
                     ui.add_space(5.0);
                 }
@@ -730,11 +841,19 @@ impl App {
                                         ui.with_layout(
                                             Layout::right_to_left(Align::Center),
                                             |ui| {
+                                                let blocked = resume_block_reason(
+                                                    record,
+                                                    state.scanning,
+                                                    transfer_busy,
+                                                );
                                                 if ui
                                                     .add_enabled(
-                                                        !state.scanning,
+                                                        blocked.is_none(),
                                                         egui::Button::new("Resume")
                                                             .corner_radius(CornerRadius::ZERO),
+                                                    )
+                                                    .on_disabled_hover_text(
+                                                        blocked.unwrap_or_default(),
                                                     )
                                                     .clicked()
                                                 {
@@ -784,7 +903,7 @@ impl App {
                                 egui::RichText::new(if state.scanning {
                                     "Scanning staging paths..."
                                 } else {
-                                    "No unreferenced staging paths"
+                                    "No leftover temporary files from interrupted operations"
                                 })
                                     .size(11.0)
                                     .color(t.text_muted),
@@ -808,8 +927,10 @@ impl App {
                                                     );
                                                     ui.label(
                                                         egui::RichText::new(format!(
-                                                            "{} bytes  \u{00b7}  identity verified at scan",
-                                                            orphan.identity.size
+                                                            "{}  \u{00b7}  identity verified at scan",
+                                                            crate::panel::format_size(
+                                                                orphan.identity.size
+                                                            )
                                                         ))
                                                         .size(9.0)
                                                         .color(t.text_muted),
@@ -818,7 +939,7 @@ impl App {
                                                 ui.with_layout(
                                                     Layout::right_to_left(Align::Center),
                                                     |ui| {
-                                                        if ui
+                                                        let response = ui
                                                             .add_enabled(
                                                                 !state.scanning,
                                                                 egui::Button::new("Clean")
@@ -826,8 +947,19 @@ impl App {
                                                                         CornerRadius::ZERO,
                                                                     ),
                                                             )
-                                                            .clicked()
-                                                        {
+                                                            .on_hover_text(
+                                                                "Permanently delete this leftover staging data",
+                                                            );
+                                                        // Name the path: every row's button reads "Clean".
+                                                        let label = clean_orphan_label(&orphan.path);
+                                                        response.widget_info(|| {
+                                                            egui::WidgetInfo::labeled(
+                                                                egui::WidgetType::Button,
+                                                                !state.scanning,
+                                                                &label,
+                                                            )
+                                                        });
+                                                        if response.clicked() {
                                                             clean_orphan = Some(index);
                                                         }
                                                     },
@@ -841,13 +973,16 @@ impl App {
                     }
                 }
             });
+            });
 
         state.section = section;
         state.detail = detail;
         if let Some(operation_id) = selected {
-            state.select(operation_id);
+            state.pick(operation_id);
         }
         if refresh {
+            // A manual refresh starts over; the last result no longer applies.
+            state.outcome = None;
             state.start_scan(&self.ws);
         }
         if let Some(index) = clean_orphan
@@ -855,10 +990,19 @@ impl App {
         {
             match self.ws.clean_recovery_orphan(&orphan) {
                 Ok(()) => {
-                    state.outcome = Some(format!("Cleaned {}", orphan.path.display()));
+                    state.outcome = Some(RecoveryOutcome {
+                        message: format!(
+                            "Deleted leftover staging data at {}",
+                            orphan.path.display()
+                        ),
+                        needs_review: false,
+                    });
                     state.start_scan(&self.ws);
                 }
-                Err(error) => state.error = Some(error),
+                Err(error) => {
+                    state.outcome = None;
+                    state.error = Some(error);
+                }
             }
         }
         if let Some(operation_id) = rollback {
@@ -882,20 +1026,18 @@ impl App {
                         .right
                         .change_provenance
                         .record(crate::change_provenance::ChangeProvenance::Recovery);
-                    state.outcome = Some(format!(
-                        "Rollback completed {} step{}; {} item{} need review",
-                        plan.completed.len(),
-                        if plan.completed.len() == 1 { "" } else { "s" },
-                        plan.remaining.len(),
-                        if plan.remaining.len() == 1 { "" } else { "s" }
-                    ));
+                    state.outcome =
+                        Some(rollback_outcome(plan.completed.len(), plan.remaining.len()));
                     state.repair_plan = Some(plan);
                     state.repair_loaded = true;
                     // A load still in flight predates the rollback.
                     state.repair_rx = None;
                     state.start_scan(&self.ws);
                 }
-                Err(error) => state.error = Some(error),
+                Err(error) => {
+                    state.outcome = None;
+                    state.error = Some(error);
+                }
             }
         }
         if let Some(operation_id) = resume {
@@ -905,11 +1047,8 @@ impl App {
                 .resume_recovery(&operation_id, move || repaint.request_repaint())
             {
                 Ok(count) => {
-                    let message = if count == 0 {
-                        "Finalizing verified operation".to_string()
-                    } else {
-                        format!("Resuming {count} manifest entries")
-                    };
+                    let message = resume_message(count);
+                    state.rescan_after_resume = true;
                     let now_millis = (ctx.input(|input| input.time) * 1_000.0) as u64;
                     self.assistive_timeline.note_recovery(
                         Some(operation_id.clone()),
@@ -918,7 +1057,10 @@ impl App {
                     );
                     self.push_recovery_toast(ctx, message, false);
                 }
-                Err(error) => state.error = Some(error),
+                Err(error) => {
+                    state.outcome = None;
+                    state.error = Some(error);
+                }
             }
         }
         if state.detail == RecoveryDetail::Repair && !state.repair_loaded {
@@ -1145,6 +1287,85 @@ mod tests {
         state.error = Some("Rollback of op-a failed".to_string());
         state.select(record("op-b").id);
         assert_eq!(state.error, None);
+    }
+
+    #[test]
+    fn reclicking_the_selected_operation_keeps_its_repair_plan() {
+        let mut state = RecoveryState::default();
+        state.select(record("op-a").id);
+        state.detail = RecoveryDetail::Repair;
+        state.repair_plan = Some(crate::operation_journal::RepairPlan::default());
+        state.repair_loaded = true;
+        state.pick(record("op-a").id);
+        assert_eq!(state.detail, RecoveryDetail::Repair);
+        assert!(state.repair_plan.is_some());
+        state.pick(record("op-b").id);
+        assert_eq!(state.detail, RecoveryDetail::Inspect);
+        assert!(state.repair_plan.is_none());
+    }
+
+    #[test]
+    fn the_summary_counts_only_recoverable_operations_as_interrupted() {
+        use crate::operation_journal::OperationStatus;
+        let mut completed = record("op-done");
+        completed.status = OperationStatus::Completed;
+        assert_eq!(
+            recovery_summary(&[record("op-a"), completed], 1),
+            "1 interrupted operation  \u{00b7}  1 with leftover recovery data  \u{00b7}  1 staging item"
+        );
+        assert_eq!(
+            recovery_summary(&[record("op-a"), record("op-b")], 0),
+            "2 interrupted operations  \u{00b7}  0 staging items"
+        );
+    }
+
+    #[test]
+    fn resume_is_blocked_for_settled_operations_and_a_busy_queue() {
+        use crate::operation_journal::OperationStatus;
+        let failed = record("op-a");
+        assert_eq!(resume_block_reason(&failed, false, false), None);
+        assert!(resume_block_reason(&failed, true, false).is_some());
+        assert_eq!(
+            resume_block_reason(&failed, false, true),
+            Some("Wait for the transfer queue to finish")
+        );
+        for status in [OperationStatus::Completed, OperationStatus::RolledBack] {
+            let mut settled = record("op-b");
+            settled.status = status;
+            assert_eq!(
+                resume_block_reason(&settled, false, false),
+                Some("Nothing left to resume")
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_messages_use_plain_words_and_correct_plurals() {
+        assert_eq!(resume_message(0), "Finalizing verified operation");
+        assert_eq!(resume_message(1), "Resuming 1 item");
+        assert_eq!(resume_message(3), "Resuming 3 items");
+        assert_eq!(
+            rollback_outcome(2, 0),
+            RecoveryOutcome {
+                message: "Rollback completed 2 steps".to_string(),
+                needs_review: false,
+            }
+        );
+        assert_eq!(
+            rollback_outcome(1, 1),
+            RecoveryOutcome {
+                message: "Rollback completed 1 step; 1 item needs review".to_string(),
+                needs_review: true,
+            }
+        );
+        assert_eq!(
+            rollback_outcome(0, 4).message,
+            "Rollback completed 0 steps; 4 items need review"
+        );
+        assert_eq!(
+            clean_orphan_label(std::path::Path::new("/t/.stage")),
+            "Delete leftover staging data at /t/.stage"
+        );
     }
 
     #[test]
