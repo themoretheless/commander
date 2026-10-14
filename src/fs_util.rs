@@ -538,7 +538,9 @@ mod tests {
         assert_eq!(duplicate(&dir).unwrap(), tmp.path().join("v1.2 copy 2"));
     }
 
-    #[cfg(unix)]
+    // APFS and HFS+ refuse names that are not valid UTF-8 (EILSEQ), so the
+    // case cannot arise on macOS.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn duplicate_keeps_non_utf8_name_bytes() {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};

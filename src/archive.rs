@@ -555,36 +555,36 @@ fn extract_tar_gz_members(
     if wanted.is_empty() {
         return Ok(report);
     }
-    // Member names go through stdin (`--null -T -`), not argv: "Extract all"
-    // on a large archive would otherwise exceed ARG_MAX and tar never runs.
-    let mut child = std::process::Command::new("tar")
-        .arg("-xzf")
-        .arg(archive_path)
-        .arg("-C")
-        .arg(dest_dir)
-        .args(["--null", "-T", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Could not extract {}: {error}", archive_path.display()))?;
+    // Member names go through a NUL-separated list file (`--null -T`), not
+    // argv: "Extract all" on a large archive would otherwise exceed ARG_MAX
+    // and tar never runs. A file rather than stdin because bsdtar (macOS,
+    // Windows) does not read `-T -` from stdin when extracting.
     let mut names = Vec::new();
     for member in &wanted {
         names.extend_from_slice(member.as_bytes());
         names.push(0);
     }
-    // Feed stdin from a helper thread so a chatty tar cannot deadlock on a
-    // full stderr pipe while we are still writing names.
-    let stdin = child.stdin.take();
-    let writer = std::thread::spawn(move || {
-        if let Some(mut stdin) = stdin {
-            let _ = std::io::Write::write_all(&mut stdin, &names);
-        }
-    });
-    let output = child
-        .wait_with_output()
+    static LIST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let list_path = std::env::temp_dir().join(format!(
+        "commander-tar-names-{}-{}",
+        std::process::id(),
+        LIST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    fs::write(&list_path, &names)
         .map_err(|error| format!("Could not extract {}: {error}", archive_path.display()))?;
-    let _ = writer.join();
+    let output = std::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(archive_path)
+        .arg("-C")
+        .arg(dest_dir)
+        .arg("--null")
+        .arg("-T")
+        .arg(&list_path)
+        .stdin(std::process::Stdio::null())
+        .output();
+    let _ = fs::remove_file(&list_path);
+    let output =
+        output.map_err(|error| format!("Could not extract {}: {error}", archive_path.display()))?;
     if output.status.success() {
         report.extracted += wanted.len();
     } else {
@@ -929,15 +929,16 @@ mod tests {
     #[test]
     fn tar_extract_all_does_not_overflow_argument_list() {
         // ~3 MB of member paths: more than Linux's 2 MB ARG_MAX when the
-        // names were passed as tar arguments.
+        // names were passed as tar arguments. Each path stays well under
+        // macOS's 1024-byte PATH_MAX.
         let temp = TempDir::new();
         let source = temp.path().join("src");
         let mut deep = PathBuf::new();
-        for level in 0..12 {
+        for level in 0..3 {
             deep.push(format!("{level:02}{}", "d".repeat(200)));
         }
         fs::create_dir_all(source.join(&deep)).unwrap();
-        for index in 0..1_200 {
+        for index in 0..5_000 {
             fs::write(source.join(&deep).join(format!("f{index}")), b"x").unwrap();
         }
         let archive = temp.path().join("many.tgz");
@@ -951,7 +952,7 @@ mod tests {
         let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
 
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert_eq!(report.extracted, 1_200);
-        assert!(dest.join(&deep).join("f1199").is_file());
+        assert_eq!(report.extracted, 5_000);
+        assert!(dest.join(&deep).join("f4999").is_file());
     }
 }
