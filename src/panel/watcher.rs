@@ -65,9 +65,29 @@ pub(super) struct WatchPoll {
 
 struct WatcherCallback {
     binding: WatchBinding,
+    /// The binding path as the backend may report it: macOS `FSEvents`
+    /// canonicalizes watched paths (`/tmp` -> `/private/tmp`). `None` when
+    /// it equals the binding path.
+    canonical: Option<PathBuf>,
     sender: mpsc::Sender<WatchMessage>,
     wake_scheduled: Arc<AtomicBool>,
     wake: Option<Notify>,
+}
+
+/// Whether a backend error invalidates the subscription itself (the watched
+/// directory, the backend or its limits), as opposed to a per-path error
+/// below it, such as a `PollWatcher` scan racing a deleted child. Only the
+/// former tears the watcher down; the latter just forces a re-list.
+fn error_needs_restart(error: &notify::Error, is_root: impl Fn(&Path) -> bool) -> bool {
+    match error.kind {
+        notify::ErrorKind::Io(_) | notify::ErrorKind::PathNotFound => {
+            error.paths.is_empty() || error.paths.iter().any(|path| is_root(path))
+        }
+        notify::ErrorKind::Generic(_)
+        | notify::ErrorKind::WatchNotFound
+        | notify::ErrorKind::InvalidConfig(_)
+        | notify::ErrorKind::MaxFilesWatch => true,
+    }
 }
 
 impl WatcherCallback {
@@ -89,13 +109,22 @@ impl WatcherCallback {
         }
     }
 
+    fn is_root(&self, path: &Path) -> bool {
+        path == self.binding.path || self.canonical.as_deref() == Some(path)
+    }
+
     fn into_handler(self) -> Box<dyn FnMut(Result<notify::Event, notify::Error>) + Send + 'static> {
         Box::new(move |result| {
             let event = match result {
                 Ok(event) => event,
-                Err(_) => {
+                Err(error) => {
                     crate::watcher_health::record_backend_error();
-                    self.send(WatchMessageKind::BackendError);
+                    let kind = if error_needs_restart(&error, |path| self.is_root(path)) {
+                        WatchMessageKind::BackendError
+                    } else {
+                        WatchMessageKind::Gap
+                    };
+                    self.send(kind);
                     return;
                 }
             };
@@ -109,8 +138,7 @@ impl WatcherCallback {
 
             let mut direct = event.paths.is_empty();
             for path in &event.paths {
-                if path == &self.binding.path || path.parent() == Some(self.binding.path.as_path())
-                {
+                if self.is_root(path) || path.parent().is_some_and(|parent| self.is_root(parent)) {
                     direct = true;
                 }
             }
@@ -236,10 +264,14 @@ impl DirectoryWatcherState {
         ];
         let attempt_count =
             usize::from(policy.backend == crate::watcher_policy::WatcherBackend::Native) + 1;
+        let canonical = std::fs::canonicalize(path)
+            .ok()
+            .filter(|canonical| canonical != path);
 
         for &(backend, depth, fallback) in attempts.iter().take(attempt_count) {
             let callback = WatcherCallback {
                 binding: binding.clone(),
+                canonical: canonical.clone(),
                 sender: self.sender.clone(),
                 wake_scheduled: Arc::clone(&self.wake_scheduled),
                 wake: self.notify.clone(),
@@ -575,6 +607,64 @@ mod tests {
 
         watcher.acknowledge_snapshot(gap.ticket, Path::new("/watched"));
         assert!(!watcher.poll(Path::new("/watched")).recovered_gap);
+    }
+
+    fn test_callback(
+        root: &str,
+        canonical: Option<&str>,
+    ) -> (
+        Box<dyn FnMut(Result<notify::Event, notify::Error>) + Send>,
+        mpsc::Receiver<WatchMessage>,
+    ) {
+        let (sender, receiver) = mpsc::channel();
+        let callback = WatcherCallback {
+            binding: WatchBinding {
+                path: PathBuf::from(root),
+                epoch: 1,
+            },
+            canonical: canonical.map(PathBuf::from),
+            sender,
+            wake_scheduled: Arc::new(AtomicBool::new(false)),
+            wake: None,
+        };
+        (callback.into_handler(), receiver)
+    }
+
+    #[test]
+    fn events_reported_under_the_canonical_path_are_direct() {
+        let (mut handler, receiver) = test_callback("/tmp/work", Some("/private/tmp/work"));
+        handler(Ok(notify::Event::new(notify::EventKind::Any)
+            .add_path(PathBuf::from("/private/tmp/work/new.txt"))));
+        let message = receiver.try_recv().unwrap();
+        assert!(matches!(
+            message.kind,
+            WatchMessageKind::Changed { direct: true, .. }
+        ));
+    }
+
+    #[test]
+    fn per_path_backend_errors_reconcile_without_restarting() {
+        let (mut handler, receiver) = test_callback("/watched", None);
+        let child_error = notify::Error::io(std::io::Error::other("scan race"))
+            .add_path(PathBuf::from("/watched/gone.txt"));
+        handler(Err(child_error));
+        assert!(matches!(
+            receiver.try_recv().unwrap().kind,
+            WatchMessageKind::Gap
+        ));
+
+        let root_error = notify::Error::path_not_found().add_path(PathBuf::from("/watched"));
+        handler(Err(root_error));
+        assert!(matches!(
+            receiver.try_recv().unwrap().kind,
+            WatchMessageKind::BackendError
+        ));
+
+        handler(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)));
+        assert!(matches!(
+            receiver.try_recv().unwrap().kind,
+            WatchMessageKind::BackendError
+        ));
     }
 
     #[test]
