@@ -3288,6 +3288,29 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recursive_size_measures_a_local_mount_point_root() {
+        use std::os::unix::fs::MetadataExt;
+        let shm = Path::new("/dev/shm");
+        let (Ok(shm_meta), Ok(dev_meta)) = (std::fs::metadata(shm), std::fs::metadata("/dev"))
+        else {
+            return; // no /dev/shm here
+        };
+        if shm_meta.dev() == dev_meta.dev() {
+            return; // /dev/shm is not its own mount
+        }
+        let file = shm.join(format!("commander-size-test-{}", std::process::id()));
+        if std::fs::write(&file, vec![0u8; 4096]).is_err() {
+            return; // not writable in this sandbox
+        }
+        // `/dev/shm` is a tmpfs mount on another device than `/dev`: a local
+        // mount-point row is measured in full, not reported as 0 B.
+        let size = dir_size_recursive_until(shm, || false);
+        let _ = std::fs::remove_file(&file);
+        assert!(size.is_some_and(|size| size >= 4096), "got {size:?}");
+    }
+
     #[test]
     fn shuffled_duplicate_batch_deduplicates_before_top_k() {
         let key = |name: &str| VolumePathKey {
