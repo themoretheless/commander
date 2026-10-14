@@ -113,6 +113,21 @@ impl WatcherCallback {
         path == self.binding.path || self.canonical.as_deref() == Some(path)
     }
 
+    /// Rewrite a path the backend reported under the canonical form onto the
+    /// binding's own form, so the listing, size-cache invalidation and every
+    /// later use compare against the paths the panel actually shows.
+    fn to_binding_form(&self, path: PathBuf) -> PathBuf {
+        match self
+            .canonical
+            .as_deref()
+            .and_then(|canonical| path.strip_prefix(canonical).ok())
+        {
+            Some(rest) if rest.as_os_str().is_empty() => self.binding.path.clone(),
+            Some(rest) => self.binding.path.join(rest),
+            None => path,
+        }
+    }
+
     fn into_handler(self) -> Box<dyn FnMut(Result<notify::Event, notify::Error>) + Send + 'static> {
         Box::new(move |result| {
             let event = match result {
@@ -136,21 +151,22 @@ impl WatcherCallback {
                 return;
             }
 
-            let mut direct = event.paths.is_empty();
-            for path in &event.paths {
-                if self.is_root(path) || path.parent().is_some_and(|parent| self.is_root(parent)) {
-                    direct = true;
-                }
-            }
+            let paths: Vec<PathBuf> = event
+                .paths
+                .into_iter()
+                .map(|path| self.to_binding_form(path))
+                .collect();
+            let root = self.binding.path.as_path();
+            let direct = paths.is_empty()
+                || paths
+                    .iter()
+                    .any(|path| path == root || path.parent() == Some(root));
             if direct {
                 crate::watcher_health::record_direct_event();
             } else {
                 crate::watcher_health::record_deep_event();
             }
-            self.send(WatchMessageKind::Changed {
-                paths: event.paths,
-                direct,
-            });
+            self.send(WatchMessageKind::Changed { paths, direct });
         })
     }
 }
@@ -639,6 +655,19 @@ mod tests {
             message.kind,
             WatchMessageKind::Changed { direct: true, .. }
         ));
+
+        // Deep changes come back in the binding's form, so size-cache keys
+        // built from `/tmp/work/...` are invalidated.
+        handler(Ok(notify::Event::new(notify::EventKind::Any)
+            .add_path(PathBuf::from("/private/tmp/work/sub/deep/file.txt"))));
+        let message = receiver.try_recv().unwrap();
+        match message.kind {
+            WatchMessageKind::Changed { paths, direct } => {
+                assert!(!direct);
+                assert_eq!(paths, vec![PathBuf::from("/tmp/work/sub/deep/file.txt")]);
+            }
+            _ => panic!("expected a change"),
+        }
     }
 
     #[test]
