@@ -22,15 +22,19 @@ fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) ->
         exit_code: None,
         error: Some(error.to_string()),
     };
-    let mut child = match std::process::Command::new("sh")
+    let mut command = std::process::Command::new("sh");
+    command
         .arg("-c")
         .arg(&cmdline)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    // Own process group, so Stop can kill everything the shell forked
+    // (pipelines, `a; b`, make jobs), not just `sh` itself.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => return failed(cmdline, error),
     };
@@ -60,6 +64,9 @@ fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) ->
     };
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
+    // Every pipe holder is gone; retire the handle so a late Stop never
+    // signals a process group id that may since have been reused.
+    crate::lock_util::recover(slot).take();
     match status {
         Ok(status) => CommandOutput {
             cmdline,
@@ -524,7 +531,9 @@ mod tests {
         let worker_child = child.clone();
         std::thread::spawn(move || {
             let cwd = std::env::temp_dir();
-            let _ = sender.send(run_shell("exec sleep 30".to_string(), &cwd, &worker_child));
+            // Not `exec`: the shell forks `sleep` as a grandchild that holds
+            // the output pipes, so killing only `sh` would hang here.
+            let _ = sender.send(run_shell("sleep 30; true".to_string(), &cwd, &worker_child));
         });
         let run = CommandOutputRun { receiver, child };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -535,11 +544,16 @@ mod tests {
             );
             std::thread::yield_now();
         }
+        let stopped_at = std::time::Instant::now();
         run.stop();
         let output = run
             .receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("stopped command reports back");
+        assert!(
+            stopped_at.elapsed() < std::time::Duration::from_secs(2),
+            "stop must end the whole command promptly"
+        );
         assert_eq!(output.exit_code, None);
         assert_eq!(output.error, None);
     }

@@ -252,6 +252,17 @@ pub type CommandChildSlot = std::sync::Arc<std::sync::Mutex<Option<std::process:
 impl CommandOutputRun {
     pub fn stop(&self) {
         if let Some(child) = crate::lock_util::recover(&self.child).as_mut() {
+            // The shell leads its own process group (see `run_shell`); kill
+            // the whole group so forked pipeline stages and `a; b` steps stop
+            // too and release the output pipes. The slot is cleared once the
+            // pipes are drained, so the group id is still ours here.
+            #[cfg(unix)]
+            if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+                // SAFETY: plain syscall; a negative pid targets the group.
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
+                }
+            }
             // std never signals a child it has already reaped, so this is
             // safe after normal completion too.
             let _ = child.kill();
