@@ -222,10 +222,7 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     // path keeps this linear; rescanning for ready pairs was quadratic on a long
     // chain such as renumbering `f1..fN` up by one. Cycles (including
     // case-only self-cycles) have no head and are left for the temp pass below.
-    for head in 0..n {
-        if blocker[head].is_some() {
-            continue;
-        }
+    for head in (0..n).filter(|&i| blocker[i].is_none()) {
         let mut node = Some(head);
         while let Some(cur) = node {
             emitted[cur] = true;
