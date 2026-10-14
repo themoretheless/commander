@@ -517,6 +517,8 @@ pub struct SyncState {
     pub error: Option<String>,
     /// When true, Apply only reports the planned actions without transferring.
     pub dry_run: bool,
+    /// Plan being built off the UI thread; Apply waits for it.
+    pub scan: Option<sync_dialog::PlanScan>,
 }
 
 /// UI state for the batch-rename studio. The transform itself lives in
