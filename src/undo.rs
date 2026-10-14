@@ -159,8 +159,21 @@ fn action_pairs(action: &Action) -> Vec<(PathBuf, PathBuf)> {
     }
 }
 
-fn path_is_taken(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok()
+/// `Ok(true)` when an entry occupies `path`, `Ok(false)` when nothing does,
+/// and a blocking reason when it cannot be inspected (access denied, a stale
+/// network mount), so the preview never calls an unreachable entry missing.
+fn path_is_taken(path: &Path) -> Result<bool, String> {
+    use std::io::ErrorKind;
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            Ok(false)
+        }
+        Err(error) => Err(format!(
+            "Cannot inspect {}: {error}; check access or reconnect the volume",
+            path.display()
+        )),
+    }
 }
 
 fn same_entry(left: &Path, right: &Path) -> bool {
@@ -198,7 +211,7 @@ pub fn preview(action: &Action) -> ReplayPreview {
         Action::Gather { folder, .. } => Some(folder.as_path()),
         _ => None,
     };
-    let gather_folder_conflict = created_parent.is_some_and(path_is_taken);
+    let gather_folder = created_parent.map(path_is_taken).unwrap_or(Ok(false));
     // A Move or Ungather replays as one transfer into one folder, so every
     // pair must share it (an Ungather of a cross-folder Gather does not).
     let move_parent = match action {
@@ -212,29 +225,42 @@ pub fn preview(action: &Action) -> ReplayPreview {
     let paths = pairs
         .into_iter()
         .map(|(from, to)| {
-            let blocked = if !path_is_taken(&from) {
-                Some("Source no longer exists".to_string())
-            } else if target_counts.get(&to).copied().unwrap_or_default() > 1 {
-                Some("Multiple entries target the same path".to_string())
-            } else if gather_folder_conflict {
-                Some("Gather folder already exists".to_string())
-            } else if matches!(action, Action::Move { .. } | Action::Ungather { .. })
-                && (to.parent() != move_parent.as_deref() || from.file_name() != to.file_name())
-            {
-                Some("Move replay no longer has one faithful destination".to_string())
-            } else if to
-                .parent()
-                .is_some_and(|parent| !parent.is_dir() && Some(parent) != created_parent)
-            {
-                Some("Destination folder no longer exists".to_string())
-            } else if path_is_taken(&to)
-                && !sources.contains(&to)
-                && !sources.iter().any(|source| same_entry(source, &to))
-            {
-                Some("Destination is occupied by another entry".to_string())
-            } else {
-                None
-            };
+            let blocked = (|| {
+                match path_is_taken(&from) {
+                    Ok(true) => {}
+                    Ok(false) => return Some("Source no longer exists".to_string()),
+                    Err(reason) => return Some(reason),
+                }
+                if target_counts.get(&to).copied().unwrap_or_default() > 1 {
+                    return Some("Multiple entries target the same path".to_string());
+                }
+                match &gather_folder {
+                    Ok(false) => {}
+                    Ok(true) => return Some("Gather folder already exists".to_string()),
+                    Err(reason) => return Some(reason.clone()),
+                }
+                if matches!(action, Action::Move { .. } | Action::Ungather { .. })
+                    && (to.parent() != move_parent.as_deref() || from.file_name() != to.file_name())
+                {
+                    return Some("Move replay no longer has one faithful destination".to_string());
+                }
+                if to
+                    .parent()
+                    .is_some_and(|parent| !parent.is_dir() && Some(parent) != created_parent)
+                {
+                    return Some("Destination folder no longer exists".to_string());
+                }
+                match path_is_taken(&to) {
+                    Err(reason) => Some(reason),
+                    Ok(true)
+                        if !sources.contains(&to)
+                            && !sources.iter().any(|source| same_entry(source, &to)) =>
+                    {
+                        Some("Destination is occupied by another entry".to_string())
+                    }
+                    Ok(_) => None,
+                }
+            })();
             ReplayPath {
                 from,
                 to,
@@ -274,17 +300,22 @@ fn preview_trash(items: &[TrashedItem], restoring: bool) -> ReplayPreview {
         .iter()
         .map(|item| {
             let blocked = if restoring {
-                if !path_is_taken(&item.version.stored) {
-                    Some("Preserved version no longer exists".to_string())
-                } else if path_is_taken(&item.version.original) {
-                    Some("Restore destination is occupied".to_string())
-                } else {
-                    None
+                match (
+                    path_is_taken(&item.version.stored),
+                    path_is_taken(&item.version.original),
+                ) {
+                    (Err(reason), _) => Some(reason),
+                    (Ok(false), _) => Some("Preserved version no longer exists".to_string()),
+                    (Ok(true), Err(reason)) => Some(reason),
+                    (Ok(true), Ok(true)) => Some("Restore destination is occupied".to_string()),
+                    (Ok(true), Ok(false)) => None,
                 }
-            } else if !path_is_taken(&item.path) {
-                Some("Source no longer exists".to_string())
             } else {
-                None
+                match path_is_taken(&item.path) {
+                    Ok(true) => None,
+                    Ok(false) => Some("Source no longer exists".to_string()),
+                    Err(reason) => Some(reason),
+                }
             };
             ReplayPath {
                 from: if restoring {
@@ -702,6 +733,29 @@ mod tests {
             preview.paths[0].eligibility,
             ReplayEligibility::Blocked("Source no longer exists".to_string())
         );
+    }
+
+    #[test]
+    fn preview_reports_an_uninspectable_source_instead_of_missing() {
+        let temp = TempDir::new();
+        // An interior NUL makes the lookup fail with something other than
+        // NotFound, standing in for EACCES/ESTALE without needing privileges.
+        let unreadable = temp.path().join("bad\0name.txt");
+        let action = Action::Rename {
+            from: unreadable.clone(),
+            to: temp.path().join("target.txt"),
+        };
+        let preview = preview(&action);
+        let ReplayEligibility::Blocked(reason) = &preview.paths[0].eligibility else {
+            panic!("uninspectable source must block: {preview:?}");
+        };
+        assert!(
+            reason.starts_with(&format!("Cannot inspect {}: ", unreadable.display())),
+            "{reason}"
+        );
+        // A path under a regular file is simply absent.
+        let file = temp.file("plain.txt", "x");
+        assert_eq!(path_is_taken(&file.join("child")), Ok(false));
     }
 
     #[test]
