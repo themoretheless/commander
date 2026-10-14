@@ -94,6 +94,15 @@ fn path_submit(
     None
 }
 
+/// "1 saved search", "N saved searches".
+fn saved_searches_label(count: usize) -> String {
+    if count == 1 {
+        "1 saved search".to_string()
+    } else {
+        format!("{count} saved searches")
+    }
+}
+
 /// The clipboard style each copy-path command uses.
 const fn copy_style(command: crate::command::Command) -> Option<crate::clipboard::PathStyle> {
     use crate::clipboard::PathStyle;
@@ -210,7 +219,12 @@ impl App {
                     ctx.request_repaint_after(delay);
                 }
             }
-            _ => state.probe = None,
+            _ => {
+                // Leaving Path mode drops a deferred Enter, so retyping the
+                // same path later needs a fresh Enter to navigate.
+                state.probe = None;
+                state.pending_go = None;
+            }
         }
 
         // Rows for the current mode.
@@ -731,7 +745,7 @@ impl App {
             Command::BeginSync => format!("{active_path} <-> {inactive_path}"),
             Command::FindDuplicates | Command::DiskTreemap | Command::BeginFind => active_path,
             Command::OpenSavedSearch => match self.smart_folders.as_ref() {
-                Some(store) => format!("{} saved searches", store.items.len()),
+                Some(store) => saved_searches_label(store.items.len()),
                 None => "saved searches".to_string(),
             },
             Command::OpenProjectCollections => "multi-root project views".to_string(),
@@ -858,8 +872,15 @@ fn picked_count(panel: &PanelState) -> usize {
 mod tests {
     use super::{
         OmnibarMode, command_rows_shown, copy_preview, copy_style, home_relative_display,
-        input_accessible_label, path_submit, picked_count, step_selection,
+        input_accessible_label, path_submit, picked_count, saved_searches_label, step_selection,
     };
+
+    #[test]
+    fn saved_search_count_agrees_with_its_noun() {
+        assert_eq!(saved_searches_label(0), "0 saved searches");
+        assert_eq!(saved_searches_label(1), "1 saved search");
+        assert_eq!(saved_searches_label(2), "2 saved searches");
+    }
 
     #[test]
     fn only_commands_that_get_rows_are_ranked() {
