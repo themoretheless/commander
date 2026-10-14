@@ -622,6 +622,8 @@ fn extract_tar_gz_members(
     let listing = list_archive(archive_path.to_path_buf(), cancelled)?;
     let mut report = ExtractReport::default();
     let mut wanted = Vec::new();
+    // Where each wanted member lands, to count what a failed run still wrote.
+    let mut wanted_outputs = Vec::new();
     // Index once: "Extract all" passes every member, and a per-index scan of
     // the listing would be quadratic on large archives.
     let by_index: std::collections::HashMap<usize, &ArchiveMember> = listing
@@ -647,10 +649,12 @@ fn extract_tar_gz_members(
             }
             continue;
         }
-        if dest_dir.join(&member.path).exists() {
+        let out = dest_dir.join(&member.path);
+        if out.exists() {
             report.skipped_existing += 1;
             continue;
         }
+        wanted_outputs.push(out);
         wanted.push(
             member
                 .tar_name
@@ -694,6 +698,12 @@ fn extract_tar_gz_members(
     if output.status.success() {
         report.extracted += wanted.len();
     } else {
+        // tar keeps going past a failed member, so some files may have
+        // landed; none existed before this run, so whatever exists now did.
+        report.extracted += wanted_outputs
+            .iter()
+            .filter(|out| fs::symlink_metadata(out).is_ok())
+            .count();
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
         report.errors.push(format!(
@@ -1095,6 +1105,36 @@ mod tests {
         let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(fs::read(dest.join(" padded ")).unwrap(), b"pad");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_tar_extract_still_counts_the_members_it_wrote() {
+        let temp = TempDir::new();
+        let source = temp.path().join("src");
+        fs::create_dir_all(source.join("sub")).unwrap();
+        fs::write(source.join("a.txt"), b"a").unwrap();
+        fs::write(source.join("sub/b.txt"), b"b").unwrap();
+        let archive = temp.path().join("pack.tgz");
+        write_tar_gz(&source, &archive, &["a.txt", "sub/b.txt"]);
+        let dest = temp.path().join("out");
+        fs::create_dir(&dest).unwrap();
+        // A file where `sub/` must go makes tar fail for b.txt only.
+        fs::write(dest.join("sub"), b"in the way").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(archive.clone(), &cancelled).unwrap();
+        let indexes = listing
+            .members
+            .iter()
+            .filter(|member| !member.is_dir)
+            .map(|member| member.index)
+            .collect::<Vec<_>>();
+
+        let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
+
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert_eq!(report.extracted, 1);
+        assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"a");
     }
 
     #[cfg(unix)]
