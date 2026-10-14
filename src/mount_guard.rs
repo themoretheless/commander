@@ -44,6 +44,22 @@ pub enum MountAvailability {
     Replaced,
 }
 
+/// Run `probe` on a helper thread and wait at most `timeout` for it. A probe
+/// that has not answered in time counts as disconnected; its thread is left
+/// to finish (or hang) on its own.
+fn probe_bounded(
+    probe: impl FnOnce() -> MountAvailability + Send + 'static,
+    timeout: Duration,
+) -> MountAvailability {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(probe());
+    });
+    receiver
+        .recv_timeout(timeout)
+        .unwrap_or(MountAvailability::Disconnected)
+}
+
 impl MountGuard {
     pub fn capture(path: &Path, policy: ReconnectPolicy) -> Self {
         let profile = crate::volume_profile::profile(path);
@@ -76,8 +92,52 @@ impl MountGuard {
         }
     }
 
-    pub fn wait_until_available(&self, mut on_wait: impl FnMut() -> bool) -> std::io::Result<()> {
-        self.wait_with(|| self.check(), &mut on_wait)
+    /// One availability probe that gives up after a poll interval. A probe
+    /// still running (a hung hard-mounted share) counts as disconnected, so
+    /// callers can go on to the bounded reconnect wait instead of blocking.
+    pub fn check_bounded(&self) -> MountAvailability {
+        let guard = self.clone();
+        probe_bounded(move || guard.check(), self.policy.poll_interval())
+    }
+
+    pub fn wait_until_available(&self, on_wait: impl FnMut() -> bool) -> std::io::Result<()> {
+        let guard = self.clone();
+        self.wait_bounded(move || guard.check(), on_wait)
+    }
+
+    /// Run each availability probe on a helper thread and give it one poll
+    /// interval: on a hung hard-mounted share `exists()`/`statfs` can block
+    /// indefinitely, which would otherwise stall the timeout and cancel
+    /// checks. A probe still running counts as disconnected, and no second
+    /// probe is started until it returns, so a hung mount leaks one thread.
+    pub(crate) fn wait_bounded(
+        &self,
+        probe: impl Fn() -> MountAvailability + Send + Clone + 'static,
+        on_wait: impl FnMut() -> bool,
+    ) -> std::io::Result<()> {
+        let mut pending: Option<std::sync::mpsc::Receiver<MountAvailability>> = None;
+        let interval = self.policy.poll_interval();
+        let check = || {
+            let receiver = pending.take().unwrap_or_else(|| {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let probe = probe.clone();
+                std::thread::spawn(move || {
+                    let _ = sender.send(probe());
+                });
+                receiver
+            });
+            match receiver.recv_timeout(interval) {
+                Ok(availability) => availability,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    pending = Some(receiver);
+                    MountAvailability::Disconnected
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    MountAvailability::Disconnected
+                }
+            }
+        };
+        self.wait_with(check, on_wait)
     }
 
     fn wait_with(
@@ -160,5 +220,58 @@ mod tests {
             .wait_with(|| MountAvailability::Replaced, || true)
             .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::StaleNetworkFileHandle);
+    }
+
+    #[test]
+    fn a_hung_availability_probe_still_times_out() {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = guard(ReconnectPolicy {
+                timeout_ms: 50,
+                poll_interval_ms: 5,
+            })
+            .wait_bounded(
+                || {
+                    std::thread::sleep(Duration::from_secs(3_600));
+                    MountAvailability::Available
+                },
+                || true,
+            );
+            let _ = done.send(result.map_err(|error| error.kind()));
+        });
+
+        let result = finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("hung probe blocked the reconnect wait");
+
+        assert_eq!(result, Err(std::io::ErrorKind::TimedOut));
+    }
+
+    #[test]
+    fn a_hung_single_probe_counts_as_disconnected() {
+        let started = Instant::now();
+        let availability = probe_bounded(
+            || {
+                std::thread::sleep(Duration::from_secs(3_600));
+                MountAvailability::Available
+            },
+            Duration::from_millis(20),
+        );
+        assert_eq!(availability, MountAvailability::Disconnected);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            probe_bounded(|| MountAvailability::Replaced, Duration::from_secs(5)),
+            MountAvailability::Replaced
+        );
+    }
+
+    #[test]
+    fn bounded_wait_returns_once_the_probe_reports_available() {
+        guard(ReconnectPolicy {
+            timeout_ms: 1_000,
+            poll_interval_ms: 200,
+        })
+        .wait_bounded(|| MountAvailability::Available, || true)
+        .unwrap();
     }
 }

@@ -15,6 +15,9 @@ const MAX_IN_FLIGHT_PROBES: usize = 2;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeStatus {
     Waiting,
+    /// Every probe lane is still busy with an older (possibly hung) check;
+    /// the current input is submitted as soon as one frees up.
+    Busy,
     Checking,
     Valid,
     Error(DirInputError),
@@ -25,6 +28,7 @@ impl ProbeStatus {
     pub(crate) fn message(&self) -> String {
         match self {
             Self::Waiting => "Waiting to check folder".to_string(),
+            Self::Busy => "Previous folder check still running\u{2026}".to_string(),
             Self::Checking => "Checking folder\u{2026}".to_string(),
             Self::Valid => "\u{2713} folder".to_string(),
             Self::Error(error) => error.to_string(),
@@ -170,7 +174,7 @@ impl PathProbeController {
         notify: Arc<dyn Fn() + Send + Sync>,
     ) {
         self.poll_terminals();
-        if self.status != ProbeStatus::Waiting {
+        if !matches!(self.status, ProbeStatus::Waiting | ProbeStatus::Busy) {
             return;
         }
         if now < self.edited_at + PATH_PROBE_DEBOUNCE.as_secs_f64() {
@@ -188,6 +192,9 @@ impl PathProbeController {
             return;
         }
         if self.in_flight.len() >= MAX_IN_FLIGHT_PROBES {
+            // Say why nothing happens instead of "Waiting" forever when the
+            // lanes are stuck on a hung mount.
+            self.status = ProbeStatus::Busy;
             return;
         }
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -259,7 +266,9 @@ impl PathProbeController {
                 let remaining = (self.edited_at + PATH_PROBE_DEBOUNCE.as_secs_f64() - now).max(0.0);
                 Some(Duration::from_secs_f64(remaining))
             }
-            ProbeStatus::Checking | ProbeStatus::Waiting => Some(PATH_PROBE_POLL),
+            ProbeStatus::Checking | ProbeStatus::Waiting | ProbeStatus::Busy => {
+                Some(PATH_PROBE_POLL)
+            }
             ProbeStatus::Valid | ProbeStatus::Error(_) | ProbeStatus::WorkerFailed(_) => None,
         }
     }
@@ -480,6 +489,7 @@ mod tests {
         }
         controller.drive(1.0, &workload, probe.clone(), silent_notify());
         assert_eq!(controller.in_flight.len(), MAX_IN_FLIGHT_PROBES);
+        assert_eq!(controller.status(), &ProbeStatus::Busy);
         assert_eq!(controller.repaint_after(1.0), Some(PATH_PROBE_POLL));
         assert!(matches!(
             calls.recv_timeout(Duration::from_millis(50)),

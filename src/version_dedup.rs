@@ -13,6 +13,52 @@ pub struct ContentBlob {
     pub size: u64,
     pub refs: u32,
     pub exemplar: PathBuf,
+    /// Physical copies (hard-link groups) of this content, keyed by copy id,
+    /// with how many referencing files share each one. A file that could not
+    /// be linked to the exemplar starts its own copy. Empty in records written
+    /// before copies were tracked, where every reference shares copy 0.
+    #[serde(default)]
+    pub copies: BTreeMap<u32, u32>,
+    /// The copy the exemplar belongs to.
+    #[serde(default)]
+    pub exemplar_copy: u32,
+}
+
+impl ContentBlob {
+    fn bytes_on_disk(&self) -> u64 {
+        let copies = self.copies.len().max(1) as u64;
+        self.size.saturating_mul(copies)
+    }
+
+    /// Fill in the single shared copy implied by records that predate copy
+    /// tracking.
+    fn normalize_copies(&mut self) {
+        if self.copies.is_empty() && self.refs > 0 {
+            self.copies.insert(self.exemplar_copy, self.refs);
+        }
+    }
+
+    fn next_copy_id(&self) -> u32 {
+        self.copies
+            .keys()
+            .next_back()
+            .map_or(0, |last| last.saturating_add(1))
+            .max(self.exemplar_copy.saturating_add(1))
+    }
+
+    /// Drop one reference held through `copy`. Returns true when no
+    /// references remain.
+    fn release(&mut self, copy: u32) -> bool {
+        self.normalize_copies();
+        if let Some(count) = self.copies.get_mut(&copy) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.copies.remove(&copy);
+            }
+        }
+        self.refs = self.refs.saturating_sub(1);
+        self.refs == 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +66,9 @@ pub struct PayloadFile {
     pub relative: PathBuf,
     pub digest: String,
     pub size: u64,
+    /// The blob copy (hard-link group) this file belongs to.
+    #[serde(default)]
+    pub copy: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,7 +111,7 @@ pub fn usage_of(
     quota: VersionStoreQuota,
 ) -> VersionStoreUsage {
     VersionStoreUsage {
-        bytes_used: blobs.values().map(|b| b.size).sum(),
+        bytes_used: blobs.values().map(ContentBlob::bytes_on_disk).sum(),
         bytes_quota: quota.max_bytes,
         unique_blobs: blobs.len(),
         records: record_count,
@@ -97,10 +146,9 @@ pub fn release_payload_refs(
         return;
     };
     for file in files {
-        let drop = blobs.get_mut(&file.digest).is_some_and(|blob| {
-            blob.refs = blob.refs.saturating_sub(1);
-            blob.refs == 0
-        });
+        let drop = blobs
+            .get_mut(&file.digest)
+            .is_some_and(|blob| blob.release(file.copy));
         if drop {
             blobs.remove(&file.digest);
         }
@@ -120,13 +168,24 @@ pub fn register_payload_dedup(
             .strip_prefix(stored)
             .map_or_else(|_| PathBuf::from("."), Path::to_path_buf);
         let (digest, size) = hash_file_chunked(&absolute)?;
-        if let Some(blob) = blobs.get(&digest) {
-            if blob.exemplar != absolute {
-                let _ = hardlink_replace(&blob.exemplar, &absolute);
-            }
-            if let Some(blob) = blobs.get_mut(&digest) {
-                blob.refs = blob.refs.saturating_add(1);
-            }
+        let copy = if let Some(blob) = blobs.get_mut(&digest) {
+            blob.normalize_copies();
+            let copy = match hardlink_replace(&blob.exemplar, &absolute) {
+                LinkOutcome::Linked => blob.exemplar_copy,
+                LinkOutcome::NotLinked => blob.next_copy_id(),
+                // The exemplar's record was pruned: surviving references
+                // still share its inode, so this file is a new physical copy
+                // and becomes the exemplar later duplicates link to.
+                LinkOutcome::ExemplarMissing => {
+                    let copy = blob.next_copy_id();
+                    blob.exemplar.clone_from(&absolute);
+                    blob.exemplar_copy = copy;
+                    copy
+                }
+            };
+            *blob.copies.entry(copy).or_insert(0) += 1;
+            blob.refs = blob.refs.saturating_add(1);
+            copy
         } else {
             blobs.insert(
                 digest.clone(),
@@ -134,35 +193,81 @@ pub fn register_payload_dedup(
                     size,
                     refs: 1,
                     exemplar: absolute.clone(),
+                    copies: BTreeMap::from([(0, 1)]),
+                    exemplar_copy: 0,
                 },
             );
-        }
+            0
+        };
         files.push(PayloadFile {
             relative,
             digest,
             size,
+            copy,
         });
     }
     payload_files.insert(key.to_string(), files);
     Ok(())
 }
 
-fn hardlink_replace(exemplar: &Path, target: &Path) -> Result<(), String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkOutcome {
+    Linked,
+    NotLinked,
+    ExemplarMissing,
+}
+
+fn hardlink_replace(exemplar: &Path, target: &Path) -> LinkOutcome {
     if exemplar == target {
-        return Ok(());
+        return LinkOutcome::Linked;
     }
-    let Ok(meta) = fs::symlink_metadata(exemplar) else {
-        return Ok(());
+    let meta = match fs::symlink_metadata(exemplar) {
+        Ok(meta) if meta.is_file() => meta,
+        Ok(_) => return LinkOutcome::ExemplarMissing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return LinkOutcome::ExemplarMissing;
+        }
+        Err(_) => return LinkOutcome::NotLinked,
     };
-    if !meta.is_file() || meta.file_type().is_symlink() {
-        return Ok(());
+    let Ok(own) = fs::symlink_metadata(target) else {
+        return LinkOutcome::NotLinked;
+    };
+    // Already the exemplar's inode: renaming a link onto another link to the
+    // same inode is a no-op that would leave the temporary link behind.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if own.dev() == meta.dev() && own.ino() == meta.ino() {
+            return LinkOutcome::Linked;
+        }
     }
-    let tmp = target.with_extension("commander-dedup-tmp");
-    let _ = fs::remove_file(&tmp);
-    if fs::hard_link(exemplar, &tmp).is_ok() && fs::rename(&tmp, target).is_err() {
+    // A hard link shares the inode's mode, so restoring this version would
+    // apply the exemplar's permissions; keep a separate copy instead.
+    if own.permissions() != meta.permissions() {
+        return LinkOutcome::NotLinked;
+    }
+    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+        return LinkOutcome::NotLinked;
+    };
+    // A unique hidden name, never pre-deleted, so a real payload file that
+    // happens to share it cannot be removed.
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".dedup-{:016x}", rand::random::<u64>()));
+    let tmp = parent.join(tmp_name);
+    if fs::hard_link(exemplar, &tmp).is_err() {
+        return LinkOutcome::NotLinked;
+    }
+    if fs::rename(&tmp, target).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return LinkOutcome::NotLinked;
+    }
+    // Belt and braces for platforms without the inode check above: a rename
+    // between two links to one inode succeeds without removing the source.
+    if fs::symlink_metadata(&tmp).is_ok() {
         let _ = fs::remove_file(&tmp);
     }
-    Ok(())
+    LinkOutcome::Linked
 }
 
 fn collect_regular_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -212,11 +317,14 @@ pub fn quota_overflow_keys(
     payload_files: &BTreeMap<String, Vec<PayloadFile>>,
     quota: VersionStoreQuota,
 ) -> Vec<String> {
-    let mut used: u64 = blobs.values().map(|b| b.size).sum();
+    let mut used: u64 = blobs.values().map(ContentBlob::bytes_on_disk).sum();
     if used <= quota.max_bytes {
         return Vec::new();
     }
     let mut refs = blobs.clone();
+    for blob in refs.values_mut() {
+        blob.normalize_copies();
+    }
     let mut remaining = oldest_first.len();
     let mut expired = Vec::new();
     for key in oldest_first {
@@ -226,9 +334,11 @@ pub fn quota_overflow_keys(
         if let Some(files) = payload_files.get(key) {
             for file in files {
                 if let Some(blob) = refs.get_mut(&file.digest) {
-                    blob.refs = blob.refs.saturating_sub(1);
-                    if blob.refs == 0 {
-                        used = used.saturating_sub(blob.size);
+                    let before = blob.bytes_on_disk();
+                    let drop = blob.release(file.copy);
+                    let after = if drop { 0 } else { blob.bytes_on_disk() };
+                    used = used.saturating_sub(before - after);
+                    if drop {
                         refs.remove(&file.digest);
                     }
                 }
@@ -256,5 +366,149 @@ mod tests {
         register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs.values().next().unwrap().refs, 2);
+    }
+
+    fn usage(blobs: &BTreeMap<String, ContentBlob>) -> u64 {
+        usage_of(blobs, 0, VersionStoreQuota::default()).bytes_used
+    }
+
+    #[test]
+    fn dedup_never_deletes_a_payload_file_named_like_its_temp() {
+        let temp = TempDir::new();
+        let a = temp.file("one/a.bin", "same");
+        let b = temp.file("two/a.bin", "same");
+        let bystander = temp.file("two/a.commander-dedup-tmp", "keep me");
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&a, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
+        assert_eq!(fs::read_to_string(bystander).unwrap(), "keep me");
+        assert_eq!(fs::read_to_string(b).unwrap(), "same");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dedup_keeps_a_separate_copy_when_permissions_differ() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new();
+        let public = temp.file("one/a.bin", "same");
+        let private = temp.file("two/a.bin", "same");
+        fs::set_permissions(&public, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&public, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&private, "2", &mut blobs, &mut files).unwrap();
+
+        let mode = fs::metadata(&private).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Two physical copies count twice toward the quota.
+        assert_eq!(usage(&blobs), 8);
+        release_payload_refs(&mut blobs, &mut files, "2");
+        assert_eq!(usage(&blobs), 4);
+    }
+
+    #[test]
+    fn duplicates_after_the_exemplar_is_pruned_are_counted_and_relinked() {
+        let temp = TempDir::new();
+        let a = temp.file("one/a.bin", "same");
+        let b = temp.file("two/a.bin", "same");
+        let c = temp.file("three/a.bin", "same");
+        let d = temp.file("four/a.bin", "same");
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&a, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
+        release_payload_refs(&mut blobs, &mut files, "1");
+        fs::remove_file(&a).unwrap();
+
+        register_payload_dedup(&c, "3", &mut blobs, &mut files).unwrap();
+        // b's inode and c are two physical copies.
+        assert_eq!(usage(&blobs), 8);
+        assert_eq!(blobs.values().next().unwrap().exemplar, c);
+
+        register_payload_dedup(&d, "4", &mut blobs, &mut files).unwrap();
+        assert_eq!(usage(&blobs), 8, "d links to the new exemplar");
+    }
+
+    /// Store a, b (linked to a), prune a, then store c (new exemplar) and d
+    /// (linked to c): b's inode and the c/d inode are two physical copies.
+    fn pruned_exemplar_store(
+        temp: &TempDir,
+    ) -> (
+        BTreeMap<String, ContentBlob>,
+        BTreeMap<String, Vec<PayloadFile>>,
+    ) {
+        let a = temp.file("one/a.bin", "same");
+        let b = temp.file("two/a.bin", "same");
+        let c = temp.file("three/a.bin", "same");
+        let d = temp.file("four/a.bin", "same");
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&a, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
+        release_payload_refs(&mut blobs, &mut files, "1");
+        fs::remove_file(&a).unwrap();
+        register_payload_dedup(&c, "3", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&d, "4", &mut blobs, &mut files).unwrap();
+        (blobs, files)
+    }
+
+    #[test]
+    fn releasing_the_old_link_group_drops_its_copy() {
+        let temp = TempDir::new();
+        let (mut blobs, mut files) = pruned_exemplar_store(&temp);
+        release_payload_refs(&mut blobs, &mut files, "2");
+        assert_eq!(usage(&blobs), 4, "only the c/d inode remains");
+        release_payload_refs(&mut blobs, &mut files, "3");
+        assert_eq!(usage(&blobs), 4, "d still holds the c/d inode");
+        release_payload_refs(&mut blobs, &mut files, "4");
+        assert_eq!(usage(&blobs), 0);
+    }
+
+    #[test]
+    fn releasing_the_new_exemplar_keeps_both_copies_counted() {
+        let temp = TempDir::new();
+        let (mut blobs, mut files) = pruned_exemplar_store(&temp);
+        release_payload_refs(&mut blobs, &mut files, "3");
+        assert_eq!(usage(&blobs), 8, "b's inode and d's inode both remain");
+        release_payload_refs(&mut blobs, &mut files, "4");
+        assert_eq!(usage(&blobs), 4, "only b's inode remains");
+        release_payload_refs(&mut blobs, &mut files, "2");
+        assert_eq!(usage(&blobs), 0);
+    }
+
+    #[test]
+    fn quota_overflow_frees_a_copy_only_when_its_group_empties() {
+        let temp = TempDir::new();
+        let (blobs, files) = pruned_exemplar_store(&temp);
+        let quota = VersionStoreQuota { max_bytes: 4 };
+        let order = ["3", "2", "4"].map(String::from);
+        // Dropping c frees nothing (d shares its inode); dropping b frees
+        // b's copy and brings usage to 4.
+        assert_eq!(
+            quota_overflow_keys(&order, &blobs, &files, quota),
+            vec!["3".to_string(), "2".to_string()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dedup_of_an_existing_hard_link_leaves_no_temp_link() {
+        let temp = TempDir::new();
+        let a = temp.file("one/a.bin", "same");
+        let dir = a.parent().unwrap().parent().unwrap().join("two");
+        fs::create_dir_all(&dir).unwrap();
+        fs::hard_link(&a, dir.join("a.bin")).unwrap();
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        register_payload_dedup(&a, "1", &mut blobs, &mut files).unwrap();
+        register_payload_dedup(&dir, "2", &mut blobs, &mut files).unwrap();
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("a.bin")]);
+        assert_eq!(usage(&blobs), 4);
     }
 }

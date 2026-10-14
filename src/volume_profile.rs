@@ -138,9 +138,13 @@ fn same_contract(left: &VolumeProfile, right: &VolumeProfile) -> bool {
         && left.capabilities == right.capabilities
 }
 
+/// Nearest ancestor (or `path` itself) that resolves. A dangling symlink
+/// counts as missing so every later probe, all of which follow links, sees
+/// the same object: otherwise its volume id fell back to a hash of the
+/// first path component, shared by every dangling path.
 fn nearest_existing(path: &Path) -> PathBuf {
     let mut candidate = path;
-    while std::fs::symlink_metadata(candidate).is_err() {
+    while std::fs::metadata(candidate).is_err() {
         let Some(parent) = candidate.parent() else {
             break;
         };
@@ -309,14 +313,54 @@ fn native_mount(path: &Path) -> Option<NativeMount> {
     // SAFETY: as above, for statvfs.
     let read_only = unsafe { libc::statvfs(c_path.as_ptr(), vfs.as_mut_ptr()) } == 0
         && unsafe { vfs.assume_init() }.f_flag & libc::ST_RDONLY != 0;
-    let (filesystem, local) = linux_filesystem(magic);
+    let (mut filesystem, mut local) = linux_filesystem(magic);
+    if filesystem == "fuse" {
+        // One magic covers every FUSE mount; the mount table tells a local
+        // block-device driver (ntfs-3g, exfat-fuse: `fuseblk`) from sshfs
+        // and other network filesystems.
+        use std::os::unix::fs::MetadataExt;
+        let fstype = std::fs::metadata(path).ok().and_then(|metadata| {
+            let dev = metadata.dev();
+            let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+            mountinfo_fstype(&mountinfo, libc::major(dev), libc::minor(dev))
+        });
+        if fstype.as_deref() == Some("fuseblk") {
+            (filesystem, local) = ("fuseblk", true);
+        }
+    }
     Some(NativeMount {
         filesystem: filesystem.to_string(),
         mount_point: mount_root(path),
         local,
         read_only,
-        case_sensitive: None,
+        case_sensitive: linux_case_sensitive(filesystem),
     })
+}
+
+/// Filesystem type of the mount with device `major:minor` in a
+/// `/proc/self/mountinfo` listing. The last match wins (stacked mounts).
+#[cfg(target_os = "linux")]
+fn mountinfo_fstype(mountinfo: &str, major: u32, minor: u32) -> Option<String> {
+    let device = format!("{major}:{minor}");
+    mountinfo
+        .lines()
+        .rev()
+        .filter(|line| line.split(' ').nth(2) == Some(device.as_str()))
+        .find_map(|line| {
+            let (_, after) = line.split_once(" - ")?;
+            after.split(' ').next().map(str::to_string)
+        })
+}
+
+/// Whether names differ by case on a Linux filesystem. `None` where it
+/// depends on mount options or the server (e.g. NFS, FUSE, 9p).
+#[cfg(target_os = "linux")]
+fn linux_case_sensitive(filesystem: &str) -> Option<bool> {
+    match filesystem {
+        "msdos" | "exfat" | "ntfs" | "smb" | "cifs" | "smb2" => Some(false),
+        "ext4" | "btrfs" | "xfs" | "f2fs" | "zfs" | "tmpfs" | "overlay" => Some(true),
+        _ => None,
+    }
 }
 
 /// Name and locality for a Linux `statfs` magic number (`linux/magic.h`).
@@ -468,6 +512,56 @@ mod tests {
         assert!(mount.mount_point.is_absolute());
         assert_eq!(linux_filesystem(0x6969), ("nfs", false));
         assert_eq!(linux_filesystem(0xEF53), ("ext4", true));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_case_sensitivity_follows_the_filesystem() {
+        assert_eq!(linux_case_sensitive("ext4"), Some(true));
+        assert_eq!(linux_case_sensitive("exfat"), Some(false));
+        assert_eq!(linux_case_sensitive("cifs"), Some(false));
+        assert_eq!(linux_case_sensitive("nfs"), None);
+        let temp = TempDir::new();
+        let mount = native_mount(temp.path()).unwrap();
+        assert_eq!(
+            mount.case_sensitive,
+            linux_case_sensitive(&mount.filesystem)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_identifies_fuseblk_by_device() {
+        let mountinfo = "\
+36 28 8:1 / / rw,relatime - ext4 /dev/sda1 rw
+41 36 0:52 / /media/me/USB rw,nosuid - fuseblk /dev/sdb1 rw,user_id=0
+42 36 0:53 / /home/me/remote rw - fuse.sshfs me@host: rw";
+        assert_eq!(
+            mountinfo_fstype(mountinfo, 0, 52).as_deref(),
+            Some("fuseblk")
+        );
+        assert_eq!(
+            mountinfo_fstype(mountinfo, 0, 53).as_deref(),
+            Some("fuse.sshfs")
+        );
+        assert_eq!(mountinfo_fstype(mountinfo, 9, 9), None);
+        // A local fuseblk under /media is a removable drive, not a remote.
+        assert_eq!(
+            classify(Some(true), "fuseblk", Path::new("/media/me/USB")),
+            BackendKind::Removable
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_profiles_like_its_parent_folder() {
+        let temp = TempDir::new();
+        let link = temp.path().join("dangling");
+        std::os::unix::fs::symlink(temp.path().join("missing"), &link).unwrap();
+        let parent = profile(temp.path());
+        let dangling = profile(&link);
+        assert_eq!(dangling.volume_id, parent.volume_id);
+        assert_eq!(dangling.mount_point, parent.mount_point);
     }
 
     #[test]

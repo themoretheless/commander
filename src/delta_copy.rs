@@ -180,8 +180,19 @@ pub fn copy_file(
     request: DeltaRequest<'_>,
     checkpoint: &mut dyn FnMut(u64, [u8; 32]) -> std::io::Result<()>,
 ) -> std::io::Result<DeltaStats> {
-    let result = copy_file_inner(&request, checkpoint);
+    // Once a checkpoint naming the staging file is published, the executor
+    // owns it: a reconnect retry resumes from it, and the executor removes it
+    // itself when the checkpoint turns out unusable. Deleting it here would
+    // force every disconnect to restart the delta copy from scratch.
+    let mut published = false;
+    let mut tracked = |offset, digest| {
+        checkpoint(offset, digest)?;
+        published = true;
+        Ok(())
+    };
+    let result = copy_file_inner(&request, &mut tracked);
     if let Err(error) = &result
+        && !published
         && error.kind() != std::io::ErrorKind::AlreadyExists
         && error.kind() != std::io::ErrorKind::Interrupted
     {
@@ -253,11 +264,15 @@ fn copy_file_inner(
             &mut checkpoints,
         )?,
     };
+    let staging = std::fs::OpenOptions::new().write(true).open(destination)?;
+    checkpoints.sync(&staging, destination, source_size, true)?;
+    drop(staging);
+    // Permissions last and best-effort, as in the buffered copy: a read-only
+    // source mode must not lock us out of the final sync above, and remote
+    // filesystems that reject chmod should not fail a complete transfer.
     if let Ok(metadata) = source.metadata() {
-        std::fs::set_permissions(destination, metadata.permissions())?;
+        let _ = std::fs::set_permissions(destination, metadata.permissions());
     }
-    let destination = std::fs::OpenOptions::new().write(true).open(destination)?;
-    checkpoints.sync(&destination, request.destination, source_size, true)?;
     Ok(stats)
 }
 
@@ -314,7 +329,9 @@ fn copy_fixed(
             checkpoints.sync(&destination, destination_path, stats.logical_bytes, false)?;
             return Err(interrupted());
         }
-        let read = source.read(&mut source_buffer)?;
+        // Fill whole blocks: a short read (SMB/NFS) would leave
+        // `logical_bytes` unaligned and make later checkpoints unresumable.
+        let read = read_up_to(&mut source, &mut source_buffer)?;
         if read == 0 {
             break;
         }
@@ -705,5 +722,108 @@ mod tests {
         assert_eq!(std::fs::read(destination).unwrap(), source_bytes);
         assert!(stats.reused_bytes > CDC_AVG_CHUNK as u64, "{stats:?}");
         assert!(stats.source_bytes < stats.logical_bytes, "{stats:?}");
+    }
+
+    #[test]
+    fn failed_delta_keeps_staging_once_a_checkpoint_was_published() {
+        let temp = TempDir::new();
+        let basis = temp.file("basis-drop.bin", "basis");
+        let source = temp.file("source-drop.bin", "source");
+        let destination = temp.path().join("staging-drop.bin");
+        let mut calls = 0;
+
+        let error = copy_file(
+            DeltaRequest {
+                source: &source,
+                basis: &basis,
+                destination: &destination,
+                mode: DeltaMode::Fixed,
+                state: &state(6),
+                base_bytes: 0,
+                allow_clone_seed: true,
+                resume_offset: None,
+            },
+            &mut |_, _| {
+                calls += 1;
+                if calls == 1 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset))
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        assert!(destination.exists(), "checkpointed staging must survive");
+    }
+
+    #[test]
+    fn failed_delta_removes_staging_without_a_checkpoint() {
+        let temp = TempDir::new();
+        let basis = temp.file("basis-early.bin", "basis");
+        let source = temp.file("source-early.bin", "source");
+        let destination = temp.path().join("staging-early.bin");
+
+        copy_file(
+            DeltaRequest {
+                source: &source,
+                basis: &basis,
+                destination: &destination,
+                mode: DeltaMode::Fixed,
+                state: &state(6),
+                base_bytes: 0,
+                allow_clone_seed: true,
+                resume_offset: None,
+            },
+            &mut |_, _| Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+        )
+        .unwrap_err();
+
+        assert!(!destination.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delta_copy_of_a_read_only_source_completes() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new();
+        let basis = temp.file("basis-ro.bin", "basis");
+        let source = temp.file("source-ro.bin", "source");
+        let destination = temp.path().join("staging-ro.bin");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let mut modes_at_checkpoint = Vec::new();
+
+        copy_file(
+            DeltaRequest {
+                source: &source,
+                basis: &basis,
+                destination: &destination,
+                mode: DeltaMode::Fixed,
+                state: &state(6),
+                base_bytes: 0,
+                allow_clone_seed: true,
+                resume_offset: None,
+            },
+            &mut |_, _| {
+                let mode = std::fs::metadata(&destination)
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                modes_at_checkpoint.push(mode & 0o777);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        // The final sync reopens staging for writing, so it must happen while
+        // staging is still writable (root would mask an EACCES otherwise).
+        assert!(modes_at_checkpoint.iter().all(|mode| mode & 0o200 != 0));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"source");
+        let mode = std::fs::metadata(&destination)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o444);
     }
 }
