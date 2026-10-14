@@ -3258,6 +3258,36 @@ mod tests {
         assert_eq!(checks.load(AtomicOrdering::SeqCst), 3);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recursive_size_counts_hard_linked_files_once() {
+        let tmp = TempDir::new();
+        let data = tmp.file("data.bin", &"x".repeat(1000));
+        tmp.dir("sub");
+        std::fs::hard_link(&data, tmp.path().join("link.bin")).unwrap();
+        std::fs::hard_link(&data, tmp.path().join("sub/link.bin")).unwrap();
+        tmp.file("other.bin", "12345");
+
+        assert_eq!(dir_size_recursive_until(tmp.path(), || false), Some(1005));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recursive_size_does_not_walk_into_another_filesystem() {
+        use std::os::unix::fs::MetadataExt;
+        let proc_dev = std::fs::metadata("/proc").map(|m| m.dev());
+        let root_dev = std::fs::metadata("/").map(|m| m.dev());
+        if !matches!((proc_dev, root_dev), (Ok(p), Ok(r)) if p != r) {
+            return; // no separate procfs mount to test against
+        }
+        // `/proc` listed in `/` is a mount point: sizing it must not walk
+        // procfs (whose `kcore` alone reports ~128 TB).
+        assert_eq!(
+            dir_size_recursive_until(Path::new("/proc"), || false),
+            Some(0)
+        );
+    }
+
     #[test]
     fn shuffled_duplicate_batch_deduplicates_before_top_k() {
         let key = |name: &str| VolumePathKey {

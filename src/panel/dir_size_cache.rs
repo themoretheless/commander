@@ -560,12 +560,51 @@ pub(super) fn publish_cached_size_if_current(
     true
 }
 
+/// The device a directory lives on, for staying on one filesystem.
+#[cfg(unix)]
+fn device_of(metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.dev())
+}
+
+#[cfg(not(unix))]
+const fn device_of(_metadata: &fs::Metadata) -> Option<u64> {
+    None
+}
+
+/// Identity of a file with more than one hard link, so the walk counts its
+/// bytes once however many links point at it.
+#[cfg(unix)]
+fn shared_inode(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.nlink() > 1).then(|| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+const fn shared_inode(_metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Recursive byte total of `path`, like `du -x`: the walk stays on the
+/// folder's filesystem (a mount point row, e.g. `/proc` listed in `/`, or a
+/// share under `/mnt`, is not walked and counts 0), and a hard-linked file
+/// counts once.
 pub(super) fn dir_size_recursive_until(
     path: &Path,
     is_cancelled: impl Fn() -> bool,
 ) -> Option<u64> {
     let mut pending = vec![path.to_path_buf()];
     let mut total = 0u64;
+    let device = fs::metadata(path).ok().as_ref().and_then(device_of);
+    let parent_device = path
+        .parent()
+        .and_then(|parent| fs::metadata(parent).ok())
+        .as_ref()
+        .and_then(device_of);
+    if device.is_some() && parent_device.is_some() && device != parent_device {
+        pending.clear();
+    }
+    let mut seen_inodes = HashSet::new();
 
     while let Some(directory) = pending.pop() {
         if is_cancelled() {
@@ -585,8 +624,14 @@ pub(super) fn dir_size_recursive_until(
                 continue;
             };
             if file_type.is_dir() {
-                pending.push(entry.path());
-            } else if let Ok(metadata) = fs::symlink_metadata(entry.path()) {
+                let other_device = device.is_some()
+                    && entry.metadata().ok().as_ref().and_then(device_of) != device;
+                if !other_device {
+                    pending.push(entry.path());
+                }
+            } else if let Ok(metadata) = fs::symlink_metadata(entry.path())
+                && shared_inode(&metadata).is_none_or(|inode| seen_inodes.insert(inode))
+            {
                 total = total.saturating_add(metadata.len());
             }
         }

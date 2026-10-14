@@ -196,7 +196,10 @@ impl SizeIndex {
         let mut largest: Option<(usize, u64)> = None;
         let mut oldest: Option<(usize, SystemTime)> = None;
         for (index, entry) in entries.iter().enumerate() {
-            let size = if entry.is_dir {
+            let size = if entry.is_dir && entry.is_symlink() {
+                // Never measured (see `schedule`) and not part of the total.
+                0
+            } else if entry.is_dir {
                 directory_count += 1;
                 match snapshot.size_of(&entry.path) {
                     Some(size) => {
@@ -292,6 +295,12 @@ impl SizeIndex {
                 continue;
             }
             need_count.push(entry.path.clone());
+            // A folder symlink shows its target's type, but its target is
+            // not part of this folder: walking it (a link to `/` or a big
+            // tree) would inflate sizes and totals, so it gets no size.
+            if entry.is_symlink() {
+                continue;
+            }
 
             let dir_mtime = entry.modified;
             let cache_key = VolumePathKey::observe(&entry.path);
@@ -588,6 +597,48 @@ mod tests {
             &index.revision,
         ));
         assert_eq!(index.snapshot().size_of(Path::new("/old/dir")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folder_symlinks_are_not_size_walked_or_totalled() {
+        let tmp = crate::testutil::TempDir::new();
+        let real = tmp.dir("real");
+        tmp.file("real/a.bin", "12345");
+        std::os::unix::fs::symlink("real", tmp.path().join("link")).unwrap();
+        let crate::panel::DirectoryRead::Complete(mut entries) =
+            crate::panel::PanelState::read_dir(tmp.path(), true)
+        else {
+            panic!("listing should be complete");
+        };
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let link = entries.iter().find(|e| e.name == "link").unwrap();
+        assert!(link.is_dir && link.is_symlink());
+
+        let index = SizeIndex::new(tmp.path().to_path_buf());
+        let filtered: Arc<[usize]> = (0..entries.len()).collect::<Vec<_>>().into();
+        index.schedule(
+            &SizeScanInput {
+                path: tmp.path(),
+                entries: &entries,
+                filtered,
+                scroll_anchor: 0,
+                page_rows: 10,
+                notify: None,
+            },
+            true,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while index.snapshot().size_of(&real).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "real folder never sized"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Both were scheduled together; the link was never queued for a walk.
+        assert_eq!(index.snapshot().size_of(&link.path), None);
+        assert_eq!(index.folder_overview(1, &entries).total, Some(5));
     }
 
     #[test]
