@@ -4313,3 +4313,39 @@ fn profile_applied_message_names_missing_folders() {
     assert!(message.contains("/gone/left"), "{message}");
     assert!(message.contains("missing"), "{message}");
 }
+
+#[test]
+fn recovery_on_a_history_only_stop_names_the_stop_not_an_operation() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.latch_history_failure(None, crate::undo::HistoryError::TimelineRejected);
+
+    let operation_id = crate::operation::OperationId("op-real".to_string());
+    let error = ws.resume_recovery(&operation_id, || {}).unwrap_err();
+    assert!(error.contains("History settlement failed"), "{error}");
+    assert!(!error.contains("belongs to operation"), "{error}");
+}
+
+#[test]
+fn sync_reports_sources_that_vanished_after_the_plan() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let gone = l.file("gone.txt", "L");
+    let mut ws = workspace(&l, &r);
+    let actions = ws.build_sync_actions(crate::sync::SyncPolicy::MirrorLeftToRight);
+    assert!(!actions.is_empty());
+    std::fs::remove_file(&gone).unwrap();
+    ws.drain_ui_requests();
+
+    apply_sync(&mut ws, &actions);
+
+    let requests = ws.drain_ui_requests();
+    assert!(
+        requests.iter().any(|request| matches!(
+            request,
+            UiRequest::Notice { message, error: true }
+                if message.starts_with("Sync skipped")
+                    && message.contains(&gone.display().to_string())
+        )),
+        "{requests:?}"
+    );
+}

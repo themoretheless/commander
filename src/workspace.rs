@@ -1411,9 +1411,12 @@ impl Workspace {
         if let Some(state) = &self.safe_state
             && &state.operation_id != operation_id
         {
+            // A stop latched outside any operation (a history invariant)
+            // carries a fresh id no operation matches: name the stop itself,
+            // not an operation number the user has never seen.
             return Err(format!(
-                "Safe-state review belongs to operation {}",
-                state.operation_id.0
+                "Another safe-state stop is under review ({}). Acknowledge it in the safe-state dialog first, then retry.",
+                state.reason
             ));
         }
         Ok(())
@@ -2400,22 +2403,21 @@ impl Workspace {
         }
         // Without the new folder's identity a failed move could not prove
         // the folder is ours to clean up: back out now, like a replay does.
-        let rollback_cleanup_identity = match crate::path_identity::PathIdentity::observe_deep(
-            &folder,
-        ) {
-            Ok(identity) => identity,
-            Err(error) => {
-                let _ = std::fs::remove_dir(&folder);
-                self.emit_ui_request(UiRequest::Notice {
+        let rollback_cleanup_identity =
+            match crate::path_identity::PathIdentity::observe_deep(&folder) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    let _ = std::fs::remove_dir(&folder);
+                    self.emit_ui_request(UiRequest::Notice {
                     message: format!(
                         "Could not gather into {}: the new folder could not be verified ({error})",
                         folder.display()
                     ),
                     error: true,
                 });
-                return;
-            }
-        };
+                    return;
+                }
+            };
         // Record the folder lifecycle separately from an ordinary Move so undo
         // can remove it and redo can recreate it.
         let undo = crate::undo::Action::Gather {
@@ -2581,14 +2583,18 @@ impl Workspace {
             self.left.refresh();
             self.right.refresh();
         }
-        if let Some(action) = trash_undo_action(&outcome) {
-            match self.undo.record(action) {
-                Ok(()) => {}
-                Err(error) => {
-                    // History refusal must not hide a completed Trash mutation.
-                    let _ = error;
-                }
-            }
+        if let Some(action) = trash_undo_action(&outcome)
+            && let Err(error) = self.undo.record(action)
+        {
+            // History refusal must not hide a completed Trash mutation, nor
+            // latch a safe state: the items are in the Trash, only Cmd+Z
+            // cannot bring them back.
+            self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Moved to Trash, but undo history could not record it ({error}). Restore the items from the Trash if needed."
+                ),
+                error: true,
+            });
         }
         Some(outcome)
     }
@@ -2754,23 +2760,36 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) {
         use crate::sync::SyncDirection;
-        let load = Self::sync_source_entry;
         let mut to_right = Vec::new();
         let mut to_left = Vec::new();
+        // Sources that vanished between plan and commit.
+        let mut missing: Vec<&Path> = Vec::new();
         for a in actions {
-            match a.direction {
-                SyncDirection::ToRight => {
-                    if let Some(e) = a.source_path().and_then(load) {
-                        to_right.push(e);
-                    }
-                }
-                SyncDirection::ToLeft => {
-                    if let Some(e) = a.source_path().and_then(load) {
-                        to_left.push(e);
-                    }
-                }
-                SyncDirection::Skip => {}
+            let side = match a.direction {
+                SyncDirection::ToRight => &mut to_right,
+                SyncDirection::ToLeft => &mut to_left,
+                SyncDirection::Skip => continue,
+            };
+            let Some(source) = a.source_path() else {
+                continue;
+            };
+            match Self::sync_source_entry(source) {
+                Some(entry) => side.push(entry),
+                None => missing.push(source),
             }
+        }
+        if let Some(first) = missing.first() {
+            let more = match missing.len() {
+                1 => String::new(),
+                count => format!(" and {} more", count - 1),
+            };
+            self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Sync skipped {}{more}: it no longer exists. Compare again to refresh the plan.",
+                    first.display()
+                ),
+                error: true,
+            });
         }
         // Enqueue both passes; the queue runs them in order (the second starts
         // when the first finishes), so a two-way sync needs no special casing.
