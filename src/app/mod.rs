@@ -77,6 +77,7 @@ pub struct App {
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    pub(crate) drag_announcement: update::DragAnnouncementMemo,
     pub(crate) tree_width: f32,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
@@ -628,10 +629,23 @@ pub struct RecoveryState {
     pub scanning: bool,
     pub repair_loaded: bool,
     pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
+    /// Pending background load of the selected operation's repair plan.
+    pub repair_rx: Option<std::sync::mpsc::Receiver<RepairLoadResult>>,
+    /// Version-store usage line and when it was read from the on-disk
+    /// manifest. Dropped when a scan completes (scans follow rollback and
+    /// cleanup) and re-read after `VERSION_USAGE_REFRESH` so versions saved
+    /// by a running transfer show up.
+    pub version_usage_label: Option<(std::time::Instant, String)>,
 }
 
 pub struct RecoveryScanResult {
     pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
+}
+
+pub struct RepairLoadResult {
+    pub operation_id: crate::operation::OperationId,
+    pub plan: Result<crate::operation_journal::RepairPlan, String>,
+    pub versions: Vec<crate::version_store::VersionRecord>,
 }
 
 impl App {
@@ -764,6 +778,7 @@ impl App {
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
@@ -851,6 +866,7 @@ impl App {
             show_tree: seed.show_tree,
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
             show_size_bars: true,
             show_compare: false,

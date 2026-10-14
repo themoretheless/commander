@@ -179,6 +179,60 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Drag-overlay verdict for the hovered target and Alt state. Computing it
+/// stats the target and probes its volume, so the overlay reuses it while the
+/// pointer stays on the same folder instead of re-probing every frame. It is
+/// cleared whenever no drag is in progress, so each drag starts fresh.
+#[derive(Default)]
+pub struct DragAnnouncementMemo {
+    cached: Option<(
+        Option<PathBuf>,
+        bool,
+        crate::operation_view::DragAnnouncement,
+    )>,
+}
+
+impl DragAnnouncementMemo {
+    fn get_or_compute(
+        &mut self,
+        target: Option<&PathBuf>,
+        alt: bool,
+        compute: impl FnOnce() -> crate::operation_view::DragAnnouncement,
+    ) -> crate::operation_view::DragAnnouncement {
+        if let Some((cached_target, cached_alt, announcement)) = &self.cached
+            && cached_target.as_ref() == target
+            && *cached_alt == alt
+        {
+            return announcement.clone();
+        }
+        let announcement = compute();
+        self.cached = Some((target.cloned(), alt, announcement.clone()));
+        announcement
+    }
+
+    fn clear(&mut self) {
+        self.cached = None;
+    }
+}
+
+/// Drop the cached tree children of `dir`, of its descendants and of its
+/// parent, for both hidden-file modes, so the tree re-reads only the folders
+/// a pane change can have altered. Descendants are included because an
+/// operation dropped onto a subfolder row (or a refresh after one) changes
+/// that subfolder without either pane showing it. Scanning the cache keys is
+/// far cheaper than the `read_dir` calls a full clear would trigger.
+fn invalidate_tree_children(
+    cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    dir: &std::path::Path,
+) {
+    cache.retain(|(path, _), _| !path.starts_with(dir));
+    if let Some(parent) = dir.parent() {
+        for show_hidden in [false, true] {
+            cache.remove(&(parent.to_path_buf(), show_hidden));
+        }
+    }
+}
+
 /// Whether an open pane tool replaces `side`'s file list.
 fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bool {
     tools.side == Some(side) && tools.any_open()
@@ -574,10 +628,18 @@ impl App {
             trace.finish();
         }
 
-        let listing_changed = self.ws.left.poll_listing() | self.ws.right.poll_listing();
-        let fs_changed = self.ws.left.poll_fs_changes() | self.ws.right.poll_fs_changes();
-        if listing_changed || fs_changed {
-            self.tree_children_cache.clear();
+        let left_listing = self.ws.left.poll_listing();
+        let right_listing = self.ws.right.poll_listing();
+        let left_fs = self.ws.left.poll_fs_changes();
+        let right_fs = self.ws.right.poll_fs_changes();
+        // A pane change can only alter the tree rows for that pane's folder,
+        // its subfolders and its parent; clearing everything made the tree re-read every
+        // visible folder synchronously on each watcher refresh.
+        if left_listing || left_fs {
+            invalidate_tree_children(&mut self.tree_children_cache, &self.ws.left.current_path);
+        }
+        if right_listing || right_fs {
+            invalidate_tree_children(&mut self.tree_children_cache, &self.ws.right.current_path);
         }
         if !self.ws.left.watcher_active() || !self.ws.right.watcher_active() {
             ctx.request_repaint_after(crate::panel::WATCHER_RETRY_BACKOFF);
@@ -1602,6 +1664,7 @@ impl App {
     fn show_drag_overlay(&mut self, ctx: &egui::Context) {
         let t = self.colors;
         let Some(session) = self.ws.drag_session() else {
+            self.drag_announcement.clear();
             return;
         };
         let drag_entries = session.entries;
@@ -1615,7 +1678,14 @@ impl App {
             } else {
                 format!("{} items", count)
             };
-            let announcement = if let Some(target) = session.target {
+            let alt = ctx.input(|input| input.modifiers.alt);
+            let target = session.target;
+            let announcement = self.drag_announcement.get_or_compute(target, alt, || {
+                let Some(target) = target else {
+                    return crate::operation_view::DragAnnouncement::rejected(
+                        "highlight a destination folder",
+                    );
+                };
                 if !target.is_dir() {
                     crate::operation_view::DragAnnouncement::rejected("destination is not a folder")
                 } else if crate::volume_profile::profile(target).read_only {
@@ -1630,16 +1700,14 @@ impl App {
                         "a folder cannot be moved into itself",
                     )
                 } else {
-                    let effect = if ctx.input(|input| input.modifiers.alt) {
+                    let effect = if alt {
                         crate::operation_view::DragEffect::Copy
                     } else {
                         crate::operation_view::DragEffect::Move
                     };
                     crate::operation_view::DragAnnouncement::valid(target.clone(), effect)
                 }
-            } else {
-                crate::operation_view::DragAnnouncement::rejected("highlight a destination folder")
-            };
+            });
             let target_label = announcement.text();
             let target_color = if matches!(
                 announcement,
@@ -1848,13 +1916,15 @@ impl App {
 mod tests {
     use super::pane_tool_covers;
     use super::{
+        DragAnnouncementMemo, invalidate_tree_children, newest_undoable_toast, trash_undo_matches,
+    };
+    use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
     use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
-    use super::{newest_undoable_toast, trash_undo_matches};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -2229,5 +2299,72 @@ mod tests {
         // User dragged the sidebar.
         assert_eq!(resized_tree_width(220.0, 400.0, 260.0), 260.0);
         assert_eq!(resized_tree_width(300.0, 200.0, 150.0), 150.0);
+    }
+
+    #[test]
+    fn tree_invalidation_drops_the_changed_folder_its_descendants_and_parent() {
+        use std::path::PathBuf;
+        let mut cache = std::collections::HashMap::new();
+        for path in ["/a", "/a/b", "/a/b/c", "/a/b/c/d", "/a/bc", "/a/z", "/x"] {
+            for show_hidden in [false, true] {
+                cache.insert((PathBuf::from(path), show_hidden), Vec::new());
+            }
+        }
+        invalidate_tree_children(&mut cache, std::path::Path::new("/a/b"));
+        let mut kept: Vec<_> = cache
+            .keys()
+            .map(|(path, hidden)| (path.display().to_string(), *hidden))
+            .collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            vec![
+                ("/a/bc".to_string(), false),
+                ("/a/bc".to_string(), true),
+                ("/a/z".to_string(), false),
+                ("/a/z".to_string(), true),
+                ("/x".to_string(), false),
+                ("/x".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn drag_announcement_is_recomputed_only_when_target_or_alt_changes() {
+        use crate::operation_view::{DragAnnouncement, DragEffect};
+        use std::path::PathBuf;
+        let mut memo = DragAnnouncementMemo::default();
+        let calls = std::cell::Cell::new(0);
+        let a = PathBuf::from("/a");
+        let b = PathBuf::from("/b");
+        let ask = |memo: &mut DragAnnouncementMemo, target: Option<&PathBuf>, alt| {
+            memo.get_or_compute(target, alt, || {
+                calls.set(calls.get() + 1);
+                DragAnnouncement::valid(
+                    target.cloned().unwrap_or_default(),
+                    if alt {
+                        DragEffect::Copy
+                    } else {
+                        DragEffect::Move
+                    },
+                )
+            })
+        };
+        let first = ask(&mut memo, Some(&a), false);
+        assert_eq!(ask(&mut memo, Some(&a), false), first);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            ask(&mut memo, Some(&a), true),
+            DragAnnouncement::valid(a.clone(), DragEffect::Copy)
+        );
+        assert_eq!(
+            ask(&mut memo, Some(&b), true),
+            DragAnnouncement::valid(b.clone(), DragEffect::Copy)
+        );
+        ask(&mut memo, None, true);
+        assert_eq!(calls.get(), 4);
+        memo.clear();
+        ask(&mut memo, None, true);
+        assert_eq!(calls.get(), 5);
     }
 }
