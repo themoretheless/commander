@@ -162,8 +162,19 @@ impl WatcherCallback {
                 Err(error) => {
                     crate::watcher_health::record_backend_error();
                     let kind = if error_needs_restart(&error, |path| self.is_root(path)) {
+                        log::warn!(
+                            target: "commander::watcher",
+                            "watcher for {} failed and restarts: {error}",
+                            self.binding.path.display()
+                        );
                         WatchMessageKind::BackendError
                     } else {
+                        // Per-path noise (a scan racing a deletion): re-list.
+                        log::debug!(
+                            target: "commander::watcher",
+                            "watcher error below {}, re-listing: {error}",
+                            self.binding.path.display()
+                        );
                         WatchMessageKind::Gap
                     };
                     self.send(kind);
@@ -344,12 +355,27 @@ impl DirectoryWatcherState {
                 )
                 .map(DirectoryWatcher::Polling),
             };
-            let Ok(mut watcher) = watcher else {
-                crate::watcher_health::record_start_failure();
-                continue;
+            let mut watcher = match watcher {
+                Ok(watcher) => watcher,
+                Err(error) => {
+                    crate::watcher_health::record_start_failure();
+                    log::warn!(
+                        target: "commander::watcher",
+                        "cannot start the {backend:?} watcher for {}: {error}",
+                        path.display()
+                    );
+                    continue;
+                }
             };
-            if watcher.watch(path, depth).is_err() {
+            if let Err(error) = watcher.watch(path, depth) {
                 crate::watcher_health::record_watch_failure();
+                // inotify's ENOSPC here means fs.inotify.max_user_watches
+                // is exhausted; the next attempt falls back to polling.
+                log::warn!(
+                    target: "commander::watcher",
+                    "cannot watch {} ({backend:?}, {depth:?}): {error}",
+                    path.display()
+                );
                 continue;
             }
 
