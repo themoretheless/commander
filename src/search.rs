@@ -297,6 +297,8 @@ impl ArchiveProvider {
         };
         let modified = metadata.modified().ok();
         let accessed = metadata.accessed().ok();
+        // Every member shows the archive's own mtime; format it once.
+        let modified_str = modified.map_or_else(|| "-".to_string(), format_modified);
         let mut keep_going = true;
         let result = crate::archive::visit_members(
             archive_path,
@@ -317,13 +319,6 @@ impl ArchiveProvider {
                     .extension()
                     .map(|extension| extension.to_string_lossy().to_lowercase())
                     .unwrap_or_default();
-                let modified_str = modified.map_or_else(
-                    || "-".to_string(),
-                    |time| {
-                        let value: chrono::DateTime<chrono::Local> = time.into();
-                        value.format("%d %b %y  %H:%M").to_string()
-                    },
-                );
                 let entry = FileEntry {
                     name_lower: name.to_lowercase(),
                     name,
@@ -337,7 +332,7 @@ impl ArchiveProvider {
                     },
                     extension,
                     modified,
-                    modified_str,
+                    modified_str: modified_str.clone(),
                     size_str: if member.member.is_dir {
                         "...".to_string()
                     } else {
@@ -1139,6 +1134,19 @@ pub fn time_bucket(hit: &SearchHit, pivot: TimePivot, now: SystemTime) -> TimeBu
 }
 
 fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
+    local_datetime(time).map(|local| local.date_naive())
+}
+
+/// Listing-style "modified" text for `time`, or "-" when chrono cannot
+/// represent it (an mtime past ~year 262k): `From<SystemTime>` panics there.
+pub fn format_modified(time: SystemTime) -> String {
+    local_datetime(time).map_or_else(
+        || "-".to_string(),
+        |local| local.format("%d %b %y  %H:%M").to_string(),
+    )
+}
+
+fn local_datetime(time: SystemTime) -> Option<chrono::DateTime<chrono::Local>> {
     let (secs, nanos) = match time.duration_since(std::time::UNIX_EPOCH) {
         Ok(after) => (i64::try_from(after.as_secs()).ok()?, after.subsec_nanos()),
         Err(error) => {
@@ -1155,7 +1163,7 @@ fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
         }
     };
     let utc = chrono::DateTime::from_timestamp(secs, nanos)?;
-    Some(utc.with_timezone(&chrono::Local).date_naive())
+    Some(utc.with_timezone(&chrono::Local))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1224,6 +1232,17 @@ mod tests {
             modified: None,
             modified_str: "-".into(),
             size_str: crate::panel::format_size(size),
+        }
+    }
+
+    #[test]
+    fn modified_text_falls_back_for_times_chrono_cannot_hold() {
+        let epoch = format_modified(std::time::UNIX_EPOCH);
+        assert_ne!(epoch, "-");
+        // ~278k years: past chrono's range. Skipped where SystemTime itself
+        // cannot hold it (Windows FILETIME).
+        if let Some(far) = std::time::UNIX_EPOCH.checked_add(Duration::from_secs(1 << 43)) {
+            assert_eq!(format_modified(far), "-");
         }
     }
 

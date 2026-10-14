@@ -52,16 +52,8 @@ impl IndexedDocument {
             .extension()
             .map(|value| value.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        let modified = self
-            .modified_secs
-            .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds));
-        let modified_str = modified.map_or_else(
-            || "-".to_string(),
-            |time| {
-                let value: chrono::DateTime<chrono::Local> = time.into();
-                value.format("%d %b %y  %H:%M").to_string()
-            },
-        );
+        let modified = self.modified_secs.and_then(epoch_secs);
+        let modified_str = modified.map_or_else(|| "-".to_string(), crate::search::format_modified);
         Some(FileEntry {
             name_lower: name.to_lowercase(),
             name,
@@ -81,9 +73,14 @@ impl IndexedDocument {
     }
 
     pub fn accessed(&self) -> Option<SystemTime> {
-        self.accessed_secs
-            .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+        self.accessed_secs.and_then(epoch_secs)
     }
+}
+
+/// `UNIX_EPOCH + seconds`, or `None` when a corrupt or hand-edited index
+/// stores a value `SystemTime` cannot hold (the plain `+` panics there).
+fn epoch_secs(seconds: u64) -> Option<SystemTime> {
+    std::time::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -550,9 +547,21 @@ fn scan_index(
         idle,
         cancelled,
         scheduler_cancel,
-        MAX_DOCUMENT_JSON_BYTES,
+        ScanBudget {
+            json_bytes: MAX_DOCUMENT_JSON_BYTES,
+            content_bytes: MAX_CONTENT_BYTES,
+        },
         report,
     )
+}
+
+/// Size caps for one build; tests shrink them to reach the limits cheaply.
+#[derive(Clone, Copy)]
+struct ScanBudget {
+    /// Serialized size of all documents (see `MAX_DOCUMENT_JSON_BYTES`).
+    json_bytes: usize,
+    /// Decoded text kept across all documents (see `MAX_CONTENT_BYTES`).
+    content_bytes: usize,
 }
 
 fn scan_index_within(
@@ -561,13 +570,13 @@ fn scan_index_within(
     idle: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     scheduler_cancel: Option<crate::workload::CancellationToken>,
-    json_budget: usize,
+    budget: ScanBudget,
     mut report: impl FnMut(&BuildProgress) -> bool,
 ) -> Result<RootIndex, String> {
     wait_for_idle(&idle, &cancelled, scheduler_cancel.as_ref())?;
     let root_entries = fs::read_dir(&root)
         .map_err(|error| format!("Could not read index root {}: {error}", root.display()))?;
-    let mut stack: Vec<ReadDir> = vec![root_entries];
+    let mut stack = vec![DirCursor::Open(root_entries)];
     let mut documents = Vec::new();
     let mut progress = BuildProgress::default();
     let mut skipped_binary = 0usize;
@@ -585,7 +594,7 @@ fn scan_index_within(
         }) {
             return Err("Index build cancelled".to_string());
         }
-        let Some(next) = entries.next() else {
+        let Some(next) = entries.next_entry() else {
             stack.pop();
             continue;
         };
@@ -605,12 +614,7 @@ fn scan_index_within(
             skipped_unreadable = skipped_unreadable.saturating_add(1);
             continue;
         };
-        let metadata = if file_type.is_symlink() {
-            fs::symlink_metadata(&path)
-        } else {
-            dir_entry.metadata()
-        };
-        let Ok(metadata) = metadata else {
+        let Ok(metadata) = dir_entry.metadata(file_type) else {
             skipped_unreadable = skipped_unreadable.saturating_add(1);
             continue;
         };
@@ -633,12 +637,21 @@ fn scan_index_within(
                 skipped_large = skipped_large.saturating_add(1);
             } else if progress
                 .content_bytes
-                .saturating_add(metadata.len() as usize)
-                > MAX_CONTENT_BYTES
+                .saturating_add(usize::try_from(metadata.len()).unwrap_or(usize::MAX))
+                > budget.content_bytes
             {
                 skipped_quota = skipped_quota.saturating_add(1);
             } else {
                 match read_indexable_text(&path, metadata.len()) {
+                    // Lossy decoding turns each invalid byte into a 3-byte
+                    // U+FFFD, so the text can outgrow the on-disk size that
+                    // passed the check above.
+                    Ok(Some(text))
+                        if progress.content_bytes.saturating_add(text.len())
+                            > budget.content_bytes =>
+                    {
+                        skipped_quota = skipped_quota.saturating_add(1);
+                    }
                     Ok(Some(text)) => {
                         progress.content_bytes = progress.content_bytes.saturating_add(text.len());
                         progress.content_indexed = progress.content_indexed.saturating_add(1);
@@ -651,7 +664,7 @@ fn scan_index_within(
         }
         let document_bytes =
             DOCUMENT_JSON_OVERHEAD.saturating_add(json_string_len(&path.to_string_lossy()));
-        if json_bytes.saturating_add(document_bytes) > json_budget {
+        if json_bytes.saturating_add(document_bytes) > budget.json_bytes {
             truncated = true;
             break;
         }
@@ -659,7 +672,7 @@ fn scan_index_within(
         if json_bytes
             .saturating_add(document_bytes)
             .saturating_add(content_json_bytes)
-            > json_budget
+            > budget.json_bytes
             && let Some(text) = content.take()
         {
             // Keep the document's metadata; its text no longer fits the file.
@@ -685,7 +698,7 @@ fn scan_index_within(
         progress.indexed = documents.len();
 
         if is_dir {
-            match fs::read_dir(&path) {
+            match DirCursor::open(&path, stack.len()) {
                 Ok(entries) => stack.push(entries),
                 Err(_) => skipped_unreadable = skipped_unreadable.saturating_add(1),
             }
@@ -716,6 +729,73 @@ fn scan_index_within(
         excluded_roots,
         truncated,
     })
+}
+
+/// Open directory levels the scan keeps as live `ReadDir` handles. Deeper
+/// levels are read fully and closed before descending, so a pathologically
+/// deep tree cannot exhaust file descriptors (one per open level) and turn
+/// every directory below into "unreadable".
+const MAX_OPEN_DIRS: usize = 64;
+
+/// One directory level of the scan stack.
+enum DirCursor {
+    Open(ReadDir),
+    Buffered(std::vec::IntoIter<std::io::Result<CursorEntry>>),
+}
+
+impl DirCursor {
+    fn open(path: &Path, depth: usize) -> std::io::Result<Self> {
+        let entries = fs::read_dir(path)?;
+        if depth < MAX_OPEN_DIRS {
+            return Ok(Self::Open(entries));
+        }
+        // `DirEntry` keeps its directory handle alive, so only owned
+        // values are buffered.
+        let buffered: Vec<_> = entries
+            .map(|entry| {
+                entry.map(|entry| CursorEntry::Buffered(entry.path(), entry.file_type().ok()))
+            })
+            .collect();
+        Ok(Self::Buffered(buffered.into_iter()))
+    }
+
+    fn next_entry(&mut self) -> Option<std::io::Result<CursorEntry>> {
+        match self {
+            Self::Open(entries) => entries.next().map(|entry| entry.map(CursorEntry::Open)),
+            Self::Buffered(entries) => entries.next(),
+        }
+    }
+}
+
+enum CursorEntry {
+    Open(fs::DirEntry),
+    Buffered(PathBuf, Option<fs::FileType>),
+}
+
+impl CursorEntry {
+    fn path(&self) -> PathBuf {
+        match self {
+            Self::Open(entry) => entry.path(),
+            Self::Buffered(path, _) => path.clone(),
+        }
+    }
+
+    fn file_type(&self) -> std::io::Result<fs::FileType> {
+        match self {
+            Self::Open(entry) => entry.file_type(),
+            Self::Buffered(_, file_type) => {
+                file_type.ok_or_else(|| std::io::Error::other("file type unavailable"))
+            }
+        }
+    }
+
+    /// Metadata of the entry itself, never of a symlink's target.
+    fn metadata(&self, file_type: fs::FileType) -> std::io::Result<fs::Metadata> {
+        match self {
+            Self::Open(entry) if !file_type.is_symlink() => entry.metadata(),
+            _ => fs::symlink_metadata(self.path()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1150,7 +1230,10 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicBool::new(false)),
             None,
-            budget,
+            ScanBudget {
+                json_bytes: budget,
+                content_bytes: MAX_CONTENT_BYTES,
+            },
             |_| true,
         )
         .unwrap();
@@ -1159,6 +1242,94 @@ mod tests {
         assert!(!index.documents.is_empty());
         let documents_json = serde_json::to_vec_pretty(&index.documents).unwrap();
         assert!(documents_json.len() <= budget);
+    }
+
+    #[test]
+    fn content_quota_counts_decoded_text_not_file_size() {
+        let temp = TempDir::new();
+        // 10 invalid bytes decode to 10 three-byte U+FFFD characters.
+        std::fs::write(temp.path().join("latin1.txt"), [0xffu8; 10]).unwrap();
+        let index = scan_index_within(
+            temp.path().to_path_buf(),
+            Vec::new(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            ScanBudget {
+                json_bytes: MAX_DOCUMENT_JSON_BYTES,
+                content_bytes: 20,
+            },
+            |_| true,
+        )
+        .unwrap();
+
+        assert_eq!(index.skipped_quota, 1);
+        assert_eq!(index.content_indexed, 0);
+        assert_eq!(index.content_bytes, 0);
+        assert!(index.documents[0].content.is_none());
+    }
+
+    #[test]
+    fn scan_descends_below_the_open_directory_limit() {
+        let temp = TempDir::new();
+        let mut deep = PathBuf::new();
+        for level in 0..MAX_OPEN_DIRS + 6 {
+            deep.push(format!("d{level}"));
+        }
+        temp.file(&deep.join("leaf.txt").to_string_lossy(), "deep words");
+        temp.file(
+            &deep.parent().unwrap().join("side.txt").to_string_lossy(),
+            "side",
+        );
+
+        let index = scan(temp.path(), Vec::new());
+
+        assert_eq!(index.skipped_unreadable, 0);
+        assert_eq!(index.directories_seen, MAX_OPEN_DIRS + 6);
+        assert_eq!(index.content_indexed, 2);
+        assert!(index.documents.iter().any(|document| {
+            document.path == temp.path().join(&deep).join("leaf.txt")
+                && document.content.as_deref() == Some("deep words")
+        }));
+    }
+
+    #[test]
+    fn corrupt_index_times_do_not_panic() {
+        let document = IndexedDocument {
+            path: PathBuf::from("/data/file.txt"),
+            is_dir: false,
+            size: 1,
+            modified_secs: Some(u64::MAX),
+            accessed_secs: Some(u64::MAX),
+            volume: None,
+            file_id: None,
+            content: None,
+        };
+        let entry = document.entry().unwrap();
+        assert_eq!(entry.modified, None);
+        assert_eq!(entry.modified_str, "-");
+        assert_eq!(document.accessed(), None);
+
+        // Past chrono's ~year 262k limit (still a valid SystemTime on Unix).
+        let far = IndexedDocument {
+            modified_secs: Some(1 << 43),
+            ..document.clone()
+        };
+        assert_eq!(far.entry().unwrap().modified_str, "-");
+
+        let normal = IndexedDocument {
+            modified_secs: Some(0),
+            accessed_secs: Some(60),
+            ..document
+        };
+        assert_eq!(
+            normal.entry().unwrap().modified,
+            Some(std::time::UNIX_EPOCH)
+        );
+        assert_eq!(
+            normal.accessed(),
+            Some(std::time::UNIX_EPOCH + Duration::from_secs(60))
+        );
     }
 
     #[test]
