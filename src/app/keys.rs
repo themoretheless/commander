@@ -32,19 +32,24 @@ struct ChordStep {
     claimed: char,
     /// The numeric type-ahead buffer was used as a count.
     clear_type_ahead: bool,
+    /// A pending leader cancelled without completing a chord or a motion:
+    /// it was the first letter of a search, so it goes back to type-ahead.
+    replay: Option<char>,
 }
 
 /// Resolve chord keys given the pending leader and the live (unexpired)
 /// type-ahead buffer. A second key that completes no chord cancels the
-/// chord and is handled as a fresh key, so `g j` still moves down. A new
-/// `g`/`s` chord only starts outside a type-ahead search, so those letters
-/// stay ordinary characters mid-search.
+/// chord and is handled as a fresh key, so `g j` still moves down. Any other
+/// key replays the leader into type-ahead, so typing "src" searches "src".
+/// A new `g`/`s` chord only starts outside a type-ahead search, so those
+/// letters stay ordinary characters mid-search.
 fn resolve_chord(pending: Option<char>, keys: ChordKeys, type_ahead: Option<&str>) -> ChordStep {
     let mut step = ChordStep {
         pending: None,
         command: None,
         claimed: '\0',
         clear_type_ahead: false,
+        replay: None,
     };
     match (pending, keys.g, keys.s) {
         (Some('g'), true, _) => {
@@ -58,6 +63,15 @@ fn resolve_chord(pending: Option<char>, keys: ChordKeys, type_ahead: Option<&str
             return step;
         }
         _ => {}
+    }
+    if let Some(leader) = pending
+        && !keys.j
+        && !keys.k
+    {
+        // Not a chord: the leader and this key are both search text (a `g`
+        // or `s` here is a letter, not a new leader).
+        step.replay = Some(leader);
+        return step;
     }
     if type_ahead.is_none() {
         if keys.g {
@@ -101,6 +115,17 @@ fn strip_consumed(typed: &str, consumed: &[char]) -> String {
 
 /// Whether the type-ahead buffer should move the cursor. A purely numeric
 /// buffer is a pending count for `j`/`k` (`5j`), so it must not jump first.
+/// The text a frame adds to type-ahead: the typed text minus consumed keys,
+/// led by a replayed chord leader. A leader is only replayed when the frame
+/// really typed something, so a cancelling arrow or Escape drops it.
+fn frame_type_ahead_text(typed: &str, consumed: &[char], replay: Option<char>) -> String {
+    let rest = strip_consumed(typed, consumed);
+    match replay {
+        Some(leader) if !rest.is_empty() => format!("{leader}{rest}"),
+        _ => rest,
+    }
+}
+
 fn type_ahead_jumps(buffer: &str) -> bool {
     !buffer.chars().all(|c| c.is_ascii_digit())
 }
@@ -167,11 +192,11 @@ impl App {
             self.ui.chord = None;
             return;
         }
-        let claimed = self.handle_chords(ctx);
+        let (claimed, replay) = self.handle_chords(ctx);
         if claimed != '\0' {
             consumed.push(claimed);
         }
-        self.handle_type_ahead(ctx, &consumed);
+        self.handle_type_ahead(ctx, &consumed, replay);
     }
 
     pub(crate) fn ui_contract(&self, ctx: &egui::Context) -> UiContract {
@@ -235,8 +260,9 @@ impl App {
     /// to type-ahead as ordinary characters instead of hijacking it.
     ///
     /// Returns the character (if any) claimed this frame, so
-    /// [`Self::handle_type_ahead`] can leave it out of its own buffer.
-    fn handle_chords(&mut self, ctx: &egui::Context) -> char {
+    /// [`Self::handle_type_ahead`] can leave it out of its own buffer, and a
+    /// cancelled leader it should put back in front of the typed text.
+    fn handle_chords(&mut self, ctx: &egui::Context) -> (char, Option<char>) {
         const CHORD_IDLE: f64 = 1.0;
         let now = ctx.input(|i| i.time);
         if let Some((_, started)) = self.ui.chord
@@ -262,10 +288,12 @@ impl App {
         // Frames without a key press (a key release, a mouse move) keep a
         // pending leader instead of cancelling it.
         if !any_press {
-            return '\0';
+            return ('\0', None);
         }
         if !plain {
-            return '\0';
+            // A modified key (Shift+R typing "R") cancels the chord; the
+            // leader was the start of a search.
+            return ('\0', self.ui.chord.take().map(|(leader, _)| leader));
         }
 
         let type_ahead = self
@@ -282,7 +310,7 @@ impl App {
         if let Some(command) = step.command {
             self.ws.execute(command);
         }
-        step.claimed
+        (step.claimed, step.replay)
     }
 
     /// Type-to-jump: printable characters build a short-lived buffer that
@@ -292,7 +320,8 @@ impl App {
     /// space/period that ran a command) is also excluded, so a bare
     /// `g`/`s`/`j`/`k` used as a chord doesn't also start/extend a search.
     /// A purely numeric buffer is a pending `j`/`k` count and does not jump.
-    fn handle_type_ahead(&mut self, ctx: &egui::Context, consumed: &[char]) {
+    /// `replay` is a cancelled chord leader that starts the typed text.
+    fn handle_type_ahead(&mut self, ctx: &egui::Context, consumed: &[char], replay: Option<char>) {
         let (typed, now) = ctx.input(|i| {
             let typed: String = i
                 .events
@@ -304,7 +333,7 @@ impl App {
                 .collect();
             (typed, i.time)
         });
-        let typed = strip_consumed(&typed, consumed);
+        let typed = frame_type_ahead_text(&typed, consumed, replay);
 
         // Expire a stale buffer.
         if let Some((_, last)) = &self.ui.type_ahead
@@ -481,6 +510,29 @@ mod tests {
         let counted = resolve_chord(None, keys("k"), Some("5"));
         assert_eq!(counted.command, Some(Command::CursorMove(-5)));
         assert!(counted.clear_type_ahead);
+    }
+
+    #[test]
+    fn a_cancelled_leader_starts_the_search() {
+        // "src" with an empty buffer: `s` waits as a leader, `r` cancels it.
+        let first = resolve_chord(None, keys("s"), None);
+        assert_eq!(first.pending, Some('s'));
+        let second = resolve_chord(first.pending, keys(""), None);
+        assert_eq!(second.pending, None);
+        assert_eq!(second.command, None);
+        assert_eq!(second.claimed, '\0');
+        assert_eq!(second.replay, Some('s'));
+        assert_eq!(frame_type_ahead_text("r", &[], second.replay), "sr");
+        // A different leader is a letter too: "gs" searches "gs".
+        let other = resolve_chord(Some('g'), keys("s"), None);
+        assert_eq!(other.pending, None);
+        assert_eq!(other.claimed, '\0');
+        assert_eq!(other.replay, Some('g'));
+        assert_eq!(frame_type_ahead_text("s", &[], other.replay), "gs");
+        // A key that types nothing (an arrow) drops the leader.
+        assert_eq!(frame_type_ahead_text("", &[], Some('s')), "");
+        // `g j` stays a motion, with nothing replayed.
+        assert_eq!(resolve_chord(Some('g'), keys("j"), None).replay, None);
     }
 
     #[test]
