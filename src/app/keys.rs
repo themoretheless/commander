@@ -12,6 +12,10 @@ use crate::command::{Command, KeyCode, KeyPress, map_keys};
 /// Seconds of idle after which the type-ahead buffer expires.
 const TYPE_AHEAD_IDLE: f64 = 1.5;
 
+/// Seconds a purely numeric buffer waits for a `j`/`k` before it is taken
+/// as a name ("2024") and jumps.
+const COUNT_WINDOW: f64 = 0.6;
+
 /// The plain chord keys pressed this frame.
 #[derive(Clone, Copy, Default)]
 struct ChordKeys {
@@ -128,6 +132,13 @@ fn frame_type_ahead_text(typed: &str, consumed: &[char], replay: Option<char>) -
 
 fn type_ahead_jumps(buffer: &str) -> bool {
     !buffer.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Whether a numeric buffer, idle for `age` seconds with no `j`/`k`, should
+/// now jump as a name. `jumped` is set once it has, so later frames (and
+/// cursor moves the user makes meanwhile) are left alone.
+fn numeric_jump_due(buffer: &str, age: f64, jumped: bool) -> bool {
+    !jumped && !buffer.is_empty() && !type_ahead_jumps(buffer) && age >= COUNT_WINDOW
 }
 
 /// Whether a key press with these modifiers may route to a binding. Bindings
@@ -319,8 +330,9 @@ impl App {
     /// `consumed` (the chord key from [`Self::handle_chords`], and the
     /// space/period that ran a command) is also excluded, so a bare
     /// `g`/`s`/`j`/`k` used as a chord doesn't also start/extend a search.
-    /// A purely numeric buffer is a pending `j`/`k` count and does not jump.
-    /// `replay` is a cancelled chord leader that starts the typed text.
+    /// A purely numeric buffer is a pending `j`/`k` count: it jumps only
+    /// once [`COUNT_WINDOW`] passes without a motion, so "2024" still finds a
+    /// folder of that name. `replay` is a cancelled chord leader that starts the typed text.
     fn handle_type_ahead(&mut self, ctx: &egui::Context, consumed: &[char], replay: Option<char>) {
         let (typed, now) = ctx.input(|i| {
             let typed: String = i
@@ -342,8 +354,17 @@ impl App {
             self.ui.type_ahead = None;
         }
         if typed.is_empty() {
+            // A numeric buffer that no `j`/`k` claimed is a name after all.
+            if let Some((buffer, last)) = &self.ui.type_ahead
+                && numeric_jump_due(buffer, now - last, self.ui.type_ahead_jumped)
+            {
+                let buffer = buffer.clone();
+                self.ui.type_ahead_jumped = true;
+                self.ws.active_panel().type_ahead(&buffer);
+            }
             return;
         }
+        self.ui.type_ahead_jumped = false;
         let buffer = match &mut self.ui.type_ahead {
             Some((b, t)) => {
                 b.push_str(&typed);
@@ -357,6 +378,9 @@ impl App {
         };
         if type_ahead_jumps(&buffer) {
             self.ws.active_panel().type_ahead(&buffer);
+        } else {
+            // Wake up to jump once the count window passes without a motion.
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(COUNT_WINDOW));
         }
     }
 
@@ -549,6 +573,16 @@ mod tests {
         assert!(!type_ahead_jumps("12"));
         assert!(type_ahead_jumps("5a"));
         assert!(type_ahead_jumps("src"));
+    }
+
+    #[test]
+    fn a_numeric_buffer_jumps_as_a_name_once_no_motion_follows() {
+        assert!(!numeric_jump_due("2024", COUNT_WINDOW / 2.0, false));
+        assert!(numeric_jump_due("2024", COUNT_WINDOW, false));
+        assert!(!numeric_jump_due("2024", COUNT_WINDOW * 2.0, true));
+        // Text buffers already jumped as they were typed.
+        assert!(!numeric_jump_due("src", COUNT_WINDOW, false));
+        assert!(!numeric_jump_due("", COUNT_WINDOW, false));
     }
 
     fn presses_for(key: egui::Key, modifiers: egui::Modifiers) -> Vec<KeyPress> {
