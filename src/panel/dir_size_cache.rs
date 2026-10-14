@@ -22,6 +22,34 @@ impl VolumePathKey {
             generation: profile.generation,
         }
     }
+
+    /// Key for a folder listed directly in a panel folder whose volume is
+    /// `parent`, without re-observing it. `observe` costs two stats per call,
+    /// once per subfolder on the UI thread. A child on the parent's volume
+    /// shares its volume id and generation; one that may be a mount point
+    /// (another device, or no captured identity) is observed as before.
+    pub(super) fn for_listed_child(
+        path: &Path,
+        identity: &ListingIdentity,
+        parent: &crate::volume_profile::VolumeProfile,
+    ) -> Self {
+        // Off Unix the volume id is derived from the path's prefix, which a
+        // child always shares with its parent.
+        let same_volume = !cfg!(unix)
+            || matches!(
+                identity,
+                ListingIdentity::Captured(identity) if identity.volume == Some(parent.volume_id)
+            );
+        if same_volume {
+            Self {
+                path: path.to_path_buf(),
+                volume_id: parent.volume_id,
+                generation: parent.generation,
+            }
+        } else {
+            Self::observe(path)
+        }
+    }
 }
 
 /// On-disk entry: mount identity plus mtime and measured size.
@@ -681,8 +709,12 @@ const fn mount_is_measurable(_path: &Path) -> bool {
 /// and a hard-linked file counts once. A folder that is itself a mount point
 /// is measured in full when it is a local disk; a pseudo, remote or FUSE
 /// mount (e.g. `/proc` listed in `/`) is not walked and counts 0.
+///
+/// A `background` walk (sizes the user is not looking at) yields briefly
+/// before each folder while foreground listing/preview I/O is active.
 pub(super) fn dir_size_recursive_until(
     path: &Path,
+    background: bool,
     is_cancelled: impl Fn() -> bool,
 ) -> Option<u64> {
     let mut pending = vec![path.to_path_buf()];
@@ -706,6 +738,9 @@ pub(super) fn dir_size_recursive_until(
         if is_cancelled() {
             return None;
         }
+        if background && !crate::io_budget::background_checkpoint(&is_cancelled) {
+            return None;
+        }
         let Ok(entries) = fs::read_dir(directory) else {
             continue;
         };
@@ -725,7 +760,10 @@ pub(super) fn dir_size_recursive_until(
                 if !other_device {
                     pending.push(entry.path());
                 }
-            } else if let Ok(metadata) = fs::symlink_metadata(entry.path())
+            // `DirEntry::metadata` does not follow symlinks (like
+            // `symlink_metadata`) and stats relative to the open directory
+            // instead of building and re-resolving the full path per file.
+            } else if let Ok(metadata) = entry.metadata()
                 && shared_inode(&metadata).is_none_or(|inode| seen_inodes.insert(inode))
             {
                 total = total.saturating_add(metadata.len());

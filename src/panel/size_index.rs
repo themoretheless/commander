@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Instant, SystemTime};
 
@@ -82,7 +82,13 @@ pub(super) struct SizeIndex {
     display_max_cache: Mutex<Option<DisplayMaxCache>>,
     binding: PathBuf,
     dirty: bool,
+    /// Whether something since the last scan may have changed child counts
+    /// (a watcher event or refresh). A dirty flag kept only to retry walks
+    /// held back by the cooldown does not re-read every subfolder's count.
+    recount: bool,
     last_recompute: Option<Instant>,
+    /// A delayed wake for the pending debounce is already scheduled.
+    debounce_wake: Arc<AtomicBool>,
     #[cfg(test)]
     overview_computations: AtomicU64,
 }
@@ -99,7 +105,9 @@ impl SizeIndex {
             display_max_cache: Mutex::new(None),
             binding: path,
             dirty: false,
+            recount: false,
             last_recompute: None,
+            debounce_wake: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             overview_computations: AtomicU64::new(0),
         }
@@ -120,17 +128,20 @@ impl SizeIndex {
         lock_recover(&self.counts).clear();
         self.binding = path.to_path_buf();
         self.dirty = false;
+        self.recount = false;
         self.last_recompute = None;
         self.revision.fetch_add(1, Ordering::Release);
     }
 
     pub(super) const fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.recount = true;
     }
 
     pub(super) fn refresh(&mut self, input: SizeScanInput<'_>, forced: bool) {
         self.bind(input.path);
-        self.dirty = self.schedule(&input, forced);
+        self.dirty = self.schedule(&input, forced, true);
+        self.recount = false;
         self.last_recompute = Some(Instant::now());
     }
 
@@ -138,15 +149,44 @@ impl SizeIndex {
         if !self.dirty {
             return;
         }
-        let due = self
+        let remaining = self
             .last_recompute
-            .is_none_or(|last| last.elapsed() >= SIZES_DEBOUNCE);
-        if due {
-            self.last_recompute = Some(Instant::now());
-            self.dirty = self.schedule(&input, false);
-            crate::watcher_health::record_size_reconciliation();
-        } else if let Some(wake) = input.notify {
-            wake();
+            .and_then(|last| SIZES_DEBOUNCE.checked_sub(last.elapsed()))
+            .filter(|remaining| !remaining.is_zero());
+        if let Some(remaining) = remaining {
+            // Not due yet: wake once when it is, rather than repainting
+            // every frame until then.
+            if let Some(wake) = input.notify {
+                self.schedule_debounce_wake(remaining, wake);
+            }
+            return;
+        }
+        self.last_recompute = Some(Instant::now());
+        let recount = std::mem::take(&mut self.recount);
+        self.dirty = self.schedule(&input, false, recount);
+        crate::watcher_health::record_size_reconciliation();
+    }
+
+    fn schedule_debounce_wake(&self, delay: std::time::Duration, wake: Notify) {
+        if self.debounce_wake.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let pending = Arc::clone(&self.debounce_wake);
+        let fallback = Arc::clone(&wake);
+        let spawned = std::thread::Builder::new()
+            .name("commander-size-debounce".to_string())
+            .spawn(move || {
+                std::thread::sleep(delay);
+                pending.store(false, Ordering::Release);
+                wake();
+            });
+        if let Err(error) = spawned {
+            self.debounce_wake.store(false, Ordering::Release);
+            log::warn!(
+                target: "commander::sizes",
+                "failed to spawn size debounce wake thread: {error}"
+            );
+            fallback();
         }
     }
 
@@ -271,7 +311,21 @@ impl SizeIndex {
         value
     }
 
-    fn schedule(&self, input: &SizeScanInput<'_>, forced: bool) -> bool {
+    /// Subfolders whose child count should be (re)read. Without `recount`
+    /// (a retry of walks held back by the cooldown) counts already known
+    /// stay as they are.
+    fn dirs_needing_count(&self, entries: &[FileEntry], recount: bool) -> Vec<PathBuf> {
+        let dirs = entries.iter().filter(|entry| entry.is_dir);
+        if recount {
+            return dirs.map(|entry| entry.path.clone()).collect();
+        }
+        let counts = lock_recover(&self.counts);
+        dirs.filter(|entry| !counts.contains_key(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    fn schedule(&self, input: &SizeScanInput<'_>, forced: bool, recount: bool) -> bool {
         let retained_paths: HashSet<PathBuf> = input
             .entries
             .iter()
@@ -286,15 +340,15 @@ impl SizeIndex {
             &self.revision,
         );
 
-        let mut need_count = Vec::new();
+        let need_count = self.dirs_needing_count(input.entries, recount);
         let mut need_size = Vec::new();
         let mut retry = false;
+        let profile = crate::volume_profile::profile(input.path);
 
         for entry in input.entries {
             if !entry.is_dir {
                 continue;
             }
-            need_count.push(entry.path.clone());
             // A folder symlink shows its target's type, but its target is
             // not part of this folder: walking it (a link to `/` or a big
             // tree) would inflate sizes and totals, so it gets no size.
@@ -303,7 +357,7 @@ impl SizeIndex {
             }
 
             let dir_mtime = entry.modified;
-            let cache_key = VolumePathKey::observe(&entry.path);
+            let cache_key = VolumePathKey::for_listed_child(&entry.path, &entry.identity, &profile);
             if let Some(mtime) = dir_mtime
                 && publish_cached_size_if_current(
                     &self.scan_epoch,
@@ -370,18 +424,23 @@ impl SizeIndex {
         let (visible_sizes, background_sizes): (Vec<_>, Vec<_>) = need_size
             .into_iter()
             .partition(|(path, _, _)| visible_paths.contains(path));
-        let worker_cap = crate::volume_profile::profile(input.path)
-            .capabilities
-            .max_concurrency
-            .clamp(1, 4);
+        let has_counts = !visible_counts.is_empty() || !background_counts.is_empty();
+        let has_sizes = !visible_sizes.is_empty() || !background_sizes.is_empty();
+        if !has_counts && !has_sizes {
+            return retry;
+        }
+        let Some(pool) = fs_pool(&profile) else {
+            // No worker threads: sizes and counts stay unknown this time.
+            return retry;
+        };
 
-        if !visible_counts.is_empty() || !background_counts.is_empty() {
+        if has_counts {
             let counts = Arc::clone(&self.counts);
             let current = Arc::clone(&self.scan_epoch);
             let epoch = Arc::clone(&scan_epoch);
             let revision = Arc::clone(&self.revision);
             let wake = input.notify.clone();
-            fs_pool(worker_cap).spawn_fifo(move || {
+            pool.spawn_fifo(move || {
                 use rayon::prelude::*;
                 fn count(path: &PathBuf, epoch: &ScanEpoch) -> Option<(PathBuf, usize)> {
                     if epoch.is_cancelled() {
@@ -432,24 +491,25 @@ impl SizeIndex {
             });
         }
 
-        if !visible_sizes.is_empty() || !background_sizes.is_empty() {
+        if has_sizes {
             let sizes = Arc::clone(&self.sizes);
             let current = Arc::clone(&self.scan_epoch);
             let epoch = Arc::clone(&scan_epoch);
             let revision = Arc::clone(&self.revision);
             let wake = input.notify.clone();
-            fs_pool(worker_cap).spawn_fifo(move || {
+            pool.spawn_fifo(move || {
                 use rayon::prelude::*;
                 fn measure(
                     (path, modified, cache_key): &(PathBuf, Option<SystemTime>, VolumePathKey),
                     scan_epoch: &Arc<ScanEpoch>,
+                    background: bool,
                 ) -> Option<DirMeasurement> {
                     if scan_epoch.is_cancelled() {
                         return None;
                     }
                     let path_epoch = capture_path_epoch(cache_key);
                     let started = Instant::now();
-                    let size = dir_size_recursive_until(path, || {
+                    let size = dir_size_recursive_until(path, background, || {
                         scan_epoch.is_cancelled() || path_epoch.is_cancelled()
                     })?;
                     let completed_at = Instant::now();
@@ -464,47 +524,55 @@ impl SizeIndex {
                     })
                 }
 
-                let visible_results: Vec<_> = visible_sizes
-                    .iter()
-                    .filter_map(|item| measure(item, &epoch))
-                    .collect();
-                let visible_outcome = publish_dir_measurements_if_current(
-                    &current,
-                    &epoch,
-                    &sizes,
-                    &visible_results,
-                    &revision,
-                );
-                if visible_outcome.cache_changed {
-                    flush_cache();
-                }
-                if visible_outcome.published > 0
-                    && let Some(wake) = &wake
-                {
-                    wake();
-                }
-                if epoch.is_cancelled() {
-                    return;
-                }
+                // Visible folders are measured in parallel and each shows
+                // as soon as its walk finishes, so one huge folder does not
+                // hold back the sizes of the others on screen.
+                let cache_changed = AtomicBool::new(false);
+                visible_sizes.par_iter().for_each(|item| {
+                    let Some(result) = measure(item, &epoch, false) else {
+                        return;
+                    };
+                    let outcome = publish_dir_measurements_if_current(
+                        &current,
+                        &epoch,
+                        &sizes,
+                        std::slice::from_ref(&result),
+                        &revision,
+                    );
+                    if outcome.cache_changed {
+                        cache_changed.store(true, Ordering::Relaxed);
+                    }
+                    if outcome.published > 0
+                        && let Some(wake) = &wake
+                    {
+                        wake();
+                    }
+                });
 
-                let background_results: Vec<_> = background_sizes
-                    .par_iter()
-                    .filter_map(|item| measure(item, &epoch))
-                    .collect();
-                let background_outcome = publish_dir_measurements_if_current(
-                    &current,
-                    &epoch,
-                    &sizes,
-                    &background_results,
-                    &revision,
-                );
-                if background_outcome.cache_changed {
-                    flush_cache();
+                if !epoch.is_cancelled() {
+                    let background_results: Vec<_> = background_sizes
+                        .par_iter()
+                        .filter_map(|item| measure(item, &epoch, true))
+                        .collect();
+                    let background_outcome = publish_dir_measurements_if_current(
+                        &current,
+                        &epoch,
+                        &sizes,
+                        &background_results,
+                        &revision,
+                    );
+                    if background_outcome.cache_changed {
+                        cache_changed.store(true, Ordering::Relaxed);
+                    }
+                    if background_outcome.published > 0
+                        && let Some(wake) = &wake
+                    {
+                        wake();
+                    }
                 }
-                if background_outcome.published > 0
-                    && let Some(wake) = &wake
-                {
-                    wake();
+                // One rewrite of the persisted cache per scan.
+                if cache_changed.into_inner() {
+                    flush_cache();
                 }
             });
         }
@@ -537,23 +605,45 @@ impl SizeIndex {
     }
 }
 
-fn build_fs_pool(workers: usize) -> rayon::ThreadPool {
+/// A worker pool, or `None` when the OS refuses to start its threads (sizes
+/// and counts then stay unknown rather than panicking the UI thread). A job
+/// that panics is logged and ends there instead of aborting the process.
+fn build_fs_pool(workers: usize, label: &'static str) -> Option<rayon::ThreadPool> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
-        .thread_name(move |index| format!("fs-worker-{workers}-{index}"))
+        .thread_name(move |index| format!("fs-{label}-{index}"))
+        .panic_handler(move |_| {
+            log::error!(target: "commander::sizes", "a {label} size/count job panicked");
+        })
         .build()
-        .expect("filesystem worker pool")
+        .map_err(|error| {
+            log::warn!(
+                target: "commander::sizes",
+                "cannot start the {label} filesystem worker pool: {error}"
+            );
+        })
+        .ok()
 }
 
-fn fs_pool(workers: usize) -> &'static rayon::ThreadPool {
-    static SERIAL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    static BALANCED: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    static FAST: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    match workers {
-        1 => SERIAL.get_or_init(|| build_fs_pool(1)),
-        2 => BALANCED.get_or_init(|| build_fs_pool(2)),
-        _ => FAST.get_or_init(|| build_fs_pool(4)),
-    }
+/// Size/count pools by volume class. Remote volumes get their own pool, so a
+/// walk hung on a dead share never pins the workers that local slow and
+/// removable disks rely on.
+fn fs_pool(profile: &crate::volume_profile::VolumeProfile) -> Option<&'static rayon::ThreadPool> {
+    static SERIAL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    static BALANCED: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    static REMOTE: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    static FAST: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    let workers = profile.capabilities.max_concurrency.clamp(1, 4);
+    let pool = if profile.backend == crate::volume_profile::BackendKind::Remote {
+        REMOTE.get_or_init(|| build_fs_pool(workers.min(2), "remote"))
+    } else {
+        match workers {
+            1 => SERIAL.get_or_init(|| build_fs_pool(1, "serial")),
+            2 => BALANCED.get_or_init(|| build_fs_pool(2, "balanced")),
+            _ => FAST.get_or_init(|| build_fs_pool(4, "fast")),
+        }
+    };
+    pool.as_ref()
 }
 
 #[cfg(test)]
@@ -627,6 +717,7 @@ mod tests {
                 notify: None,
             },
             true,
+            true,
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while index.snapshot().size_of(&real).is_none() {
@@ -659,5 +750,136 @@ mod tests {
         let changed = index.folder_overview(2, &entries);
         assert_eq!(changed.total, Some(84));
         assert_eq!(index.overview_computations(), 3);
+    }
+
+    fn profile_for(
+        backend: crate::volume_profile::BackendKind,
+        workers: usize,
+    ) -> crate::volume_profile::VolumeProfile {
+        crate::volume_profile::VolumeProfile {
+            volume_id: 1,
+            generation: 1,
+            backend,
+            filesystem: String::new(),
+            mount_point: PathBuf::from("/"),
+            read_only: false,
+            case_sensitive: None,
+            capabilities: crate::volume_profile::VolumeCapabilities {
+                atomic_rename: true,
+                clone: false,
+                sparse: false,
+                resumable: true,
+                delta: false,
+                max_concurrency: workers,
+            },
+            reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn remote_volumes_get_their_own_size_pool() {
+        use crate::volume_profile::BackendKind;
+        let remote = fs_pool(&profile_for(BackendKind::Remote, 2)).unwrap();
+        let removable = fs_pool(&profile_for(BackendKind::Removable, 2)).unwrap();
+        let slow = fs_pool(&profile_for(BackendKind::LocalSlow, 2)).unwrap();
+        assert!(!std::ptr::eq(remote, removable));
+        assert!(std::ptr::eq(removable, slow));
+        assert_eq!(remote.current_num_threads(), 2);
+    }
+
+    #[test]
+    fn a_panicking_size_job_does_not_take_down_the_pool() {
+        let pool = build_fs_pool(1, "panic-test").unwrap();
+        pool.spawn_fifo(|| panic!("size job failure"));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        pool.spawn_fifo(move || {
+            let _ = sender.send(());
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the pool keeps running jobs after a panic");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listed_child_keys_match_observed_keys() {
+        let tmp = crate::testutil::TempDir::new();
+        tmp.dir("sub");
+        let crate::panel::DirectoryRead::Complete(entries) =
+            crate::panel::PanelState::read_dir(tmp.path(), true)
+        else {
+            panic!("listing should be complete");
+        };
+        let sub = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let parent = crate::volume_profile::profile(tmp.path());
+        assert_eq!(
+            VolumePathKey::for_listed_child(&sub.path, &sub.identity, &parent),
+            VolumePathKey::observe(&sub.path)
+        );
+
+        // A child on another device (a mount point) is observed, not derived.
+        let mut elsewhere = parent.clone();
+        elsewhere.volume_id = parent.volume_id.wrapping_add(1);
+        elsewhere.generation = u64::MAX;
+        let key = VolumePathKey::for_listed_child(&sub.path, &sub.identity, &elsewhere);
+        assert_eq!(key, VolumePathKey::observe(&sub.path));
+        // Without a captured identity the folder is observed too.
+        let key = VolumePathKey::for_listed_child(
+            &sub.path,
+            &crate::panel::ListingIdentity::Unavailable,
+            &elsewhere,
+        );
+        assert_ne!(key.generation, u64::MAX);
+    }
+
+    #[test]
+    fn cooldown_retries_do_not_recount_known_folders() {
+        let index = SizeIndex::new(PathBuf::from("/root"));
+        let known = PathBuf::from("/root/known");
+        let fresh = PathBuf::from("/root/fresh");
+        let entries = vec![
+            entry(&known, true, 0),
+            entry(&fresh, true, 0),
+            entry(Path::new("/root/file"), false, 3),
+        ];
+        index.insert_for_test(known.clone(), 1, 4);
+
+        assert_eq!(
+            index.dirs_needing_count(&entries, false),
+            vec![fresh.clone()]
+        );
+        assert_eq!(index.dirs_needing_count(&entries, true), vec![known, fresh]);
+    }
+
+    #[test]
+    fn debounced_sizes_wake_once_instead_of_every_frame() {
+        let mut index = SizeIndex::new(PathBuf::from("/root"));
+        index.mark_dirty();
+        index.last_recompute = Some(Instant::now());
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&wakes);
+        let notify: Notify = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let filtered: Arc<[usize]> = Arc::from(Vec::new());
+        for _ in 0..20 {
+            index.poll(SizeScanInput {
+                path: Path::new("/root"),
+                entries: &[],
+                filtered: Arc::clone(&filtered),
+                scroll_anchor: 0,
+                page_rows: 10,
+                notify: Some(Arc::clone(&notify)),
+            });
+        }
+        assert_eq!(wakes.load(Ordering::SeqCst), 0, "no wake per frame");
+        assert!(index.dirty, "still waiting for the debounce");
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while wakes.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the delayed wake never came");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
     }
 }

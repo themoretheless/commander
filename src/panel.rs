@@ -3388,12 +3388,36 @@ mod tests {
         tmp.file("c.bin", "789");
         let checks = std::sync::atomic::AtomicUsize::new(0);
 
-        let result = dir_size_recursive_until(tmp.path(), || {
+        let result = dir_size_recursive_until(tmp.path(), false, || {
             checks.fetch_add(1, AtomicOrdering::SeqCst) >= 2
         });
 
         assert_eq!(result, None);
         assert_eq!(checks.load(AtomicOrdering::SeqCst), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_size_counts_file_symlinks_not_their_targets() {
+        let outside = TempDir::new();
+        let target = outside.file("big.bin", &"x".repeat(4000));
+        let tmp = TempDir::new();
+        tmp.file("small.bin", "12345");
+        std::os::unix::fs::symlink(&target, tmp.path().join("link.bin")).unwrap();
+        let link_len = std::fs::symlink_metadata(tmp.path().join("link.bin"))
+            .unwrap()
+            .len();
+
+        let expected = Some(5 + link_len);
+        assert_eq!(
+            dir_size_recursive_until(tmp.path(), false, || false),
+            expected
+        );
+        // A background walk measures the same tree.
+        assert_eq!(
+            dir_size_recursive_until(tmp.path(), true, || false),
+            expected
+        );
     }
 
     #[cfg(unix)]
@@ -3406,7 +3430,10 @@ mod tests {
         std::fs::hard_link(&data, tmp.path().join("sub/link.bin")).unwrap();
         tmp.file("other.bin", "12345");
 
-        assert_eq!(dir_size_recursive_until(tmp.path(), || false), Some(1005));
+        assert_eq!(
+            dir_size_recursive_until(tmp.path(), false, || false),
+            Some(1005)
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -3421,7 +3448,7 @@ mod tests {
         // `/proc` listed in `/` is a mount point: sizing it must not walk
         // procfs (whose `kcore` alone reports ~128 TB).
         assert_eq!(
-            dir_size_recursive_until(Path::new("/proc"), || false),
+            dir_size_recursive_until(Path::new("/proc"), false, || false),
             Some(0)
         );
     }
@@ -3444,7 +3471,7 @@ mod tests {
         }
         // `/dev/shm` is a tmpfs mount on another device than `/dev`: a local
         // mount-point row is measured in full, not reported as 0 B.
-        let size = dir_size_recursive_until(shm, || false);
+        let size = dir_size_recursive_until(shm, false, || false);
         let _ = std::fs::remove_file(&file);
         assert!(size.is_some_and(|size| size >= 4096), "got {size:?}");
     }
