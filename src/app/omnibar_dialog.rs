@@ -30,6 +30,37 @@ enum OmniAction {
     Shell(String),
 }
 
+/// Show `path` with the home folder abbreviated to `~`. Component-aware, so
+/// a sibling such as `/home/user2` is never turned into `~2`.
+fn home_relative_display(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// Move the selection one step, skipping rows that cannot run, and never
+/// rest on a disabled row. `enabled` has one flag per row.
+fn step_selection(enabled: &[bool], selected: usize, up: bool, down: bool) -> usize {
+    let Some(last) = enabled.len().checked_sub(1) else {
+        return 0;
+    };
+    let mut selected = selected.min(last);
+    if down && let Some(next) = (selected + 1..=last).find(|&row| enabled[row]) {
+        selected = next;
+    }
+    if up && let Some(previous) = (0..selected).rev().find(|&row| enabled[row]) {
+        selected = previous;
+    }
+    if !enabled[selected]
+        && let Some(first) = enabled.iter().position(|&row| row)
+    {
+        selected = first;
+    }
+    selected
+}
+
 impl App {
     pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
         self.open_omnibar(ctx, String::new());
@@ -47,17 +78,10 @@ impl App {
 
     /// Cmd+L: the omnibar pre-filled with the active folder as a path.
     pub(crate) fn open_path(&mut self, ctx: &egui::Context) {
-        let mut current = self
-            .ws
-            .active_panel_ref()
-            .current_path
-            .display()
-            .to_string();
-        if let Some(home) = dirs::home_dir().map(|h| h.display().to_string())
-            && let Some(rest) = current.strip_prefix(&home)
-        {
-            current = format!("~{rest}");
-        }
+        let mut current = home_relative_display(
+            &self.ws.active_panel_ref().current_path,
+            dirs::home_dir().as_deref(),
+        );
         if !current.ends_with('/') {
             current.push('/');
         }
@@ -177,23 +201,8 @@ impl App {
                 i.key_pressed(egui::Key::Enter),
             )
         });
-        if rows.is_empty() {
-            state.selected = 0;
-        } else {
-            if down {
-                state.selected = (state.selected + 1).min(rows.len() - 1);
-            }
-            if up {
-                state.selected = state.selected.saturating_sub(1);
-            }
-            state.selected = state.selected.min(rows.len() - 1);
-            // Never rest on a row that cannot run.
-            if !row_enabled(&rows[state.selected])
-                && let Some(next) = rows.iter().position(row_enabled)
-            {
-                state.selected = next;
-            }
-        }
+        let enabled: Vec<bool> = rows.iter().map(row_enabled).collect();
+        state.selected = step_selection(&enabled, state.selected, up, down);
         let selected = state.selected;
         let validated_path = state.probe.as_ref().and_then(|p| {
             let exact = p.input().to_string();
@@ -475,6 +484,20 @@ impl App {
         }
         match action {
             None => {}
+            Some(OmniAction::Go(path)) if !path.is_dir() => {
+                // A recent/pinned folder may have been deleted since it was
+                // recorded; navigating would land in a Gone state and
+                // re-record the dead path as a fresh visit.
+                let (mut recent, stats) = crate::panel::visit_snapshot();
+                recent.retain(|visited| *visited != path);
+                crate::panel::restore_visit_snapshot(&recent, &stats);
+                self.toast(
+                    ctx,
+                    crate::toasts::ToastKind::Error,
+                    format!("Folder no longer exists: {}", path.display()),
+                    false,
+                );
+            }
             Some(OmniAction::Go(path)) => match opening_panel {
                 ActivePanel::Left => self.ws.left.navigate_to(path),
                 ActivePanel::Right => self.ws.right.navigate_to(path),
@@ -639,5 +662,41 @@ impl App {
             job.append(ch.encode_utf8(&mut buf), 0.0, fmt(color));
         }
         job
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{home_relative_display, step_selection};
+    use std::path::{MAIN_SEPARATOR, Path};
+
+    #[test]
+    fn home_abbreviation_is_component_aware() {
+        let home = Path::new("/home/user");
+        assert_eq!(
+            home_relative_display(Path::new("/home/user2"), Some(home)),
+            "/home/user2"
+        );
+        assert_eq!(home_relative_display(home, Some(home)), "~");
+        assert_eq!(
+            home_relative_display(&home.join("docs"), Some(home)),
+            format!("~{MAIN_SEPARATOR}docs")
+        );
+        assert_eq!(
+            home_relative_display(Path::new("/srv"), None),
+            Path::new("/srv").display().to_string()
+        );
+    }
+
+    #[test]
+    fn arrows_skip_disabled_rows_in_the_direction_of_travel() {
+        let enabled = [true, false, true, false];
+        assert_eq!(step_selection(&enabled, 0, false, true), 2);
+        assert_eq!(step_selection(&enabled, 2, true, false), 0);
+        // Nothing enabled below: stay put.
+        assert_eq!(step_selection(&enabled, 2, false, true), 2);
+        // Resting on a disabled row falls back to the first enabled one.
+        assert_eq!(step_selection(&enabled, 3, false, false), 0);
+        assert_eq!(step_selection(&[], 3, true, true), 0);
     }
 }
