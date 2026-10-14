@@ -180,6 +180,7 @@ fn clear_pending_dialog_state(ctx: &egui::Context) {
         d.remove::<f64>(egui::Id::new(PENDING_FLOW_START));
         d.remove::<bool>(egui::Id::new(CONFIRM_DRY_RUN));
         d.remove::<usize>(egui::Id::new(CONFLICT_DROPPED));
+        d.remove::<bool>(egui::Id::new(CONFIRM_FOCUSED));
     });
 }
 
@@ -203,6 +204,41 @@ fn dialog_enter_suppressed(ctx: &egui::Context, layer: egui::LayerId) -> bool {
             response.layer_id != layer && response.layer_id.order == egui::Order::Foreground
         });
     focus_within_layer(ctx, layer) || focus_in_popup || egui::Popup::is_any_open(ctx)
+}
+
+/// Set once the primary button took keyboard focus for this dialog, so the
+/// sheet is announced on open but later focus moves are left alone.
+const CONFIRM_FOCUSED: &str = "confirm_primary_focused";
+
+/// Focus the primary button the first frame it can take focus, unless the
+/// user already moved focus into the dialog (e.g. while the scan ran).
+const fn should_focus_primary(already_focused: bool, enabled: bool, focus_in_dialog: bool) -> bool {
+    !already_focused && enabled && !focus_in_dialog
+}
+
+/// Why the primary button is disabled, for its hover text; the first
+/// failing gate wins. `None` when it is enabled.
+fn primary_blocker(
+    flat_ready: bool,
+    resource_ready: bool,
+    overflow: bool,
+    preflight_blocked: bool,
+    mutation_block: Option<String>,
+    dry_run: bool,
+) -> Option<String> {
+    if !flat_ready {
+        Some("Still scanning the selected items".to_string())
+    } else if !resource_ready {
+        Some("Waiting for the size and free-space check".to_string())
+    } else if overflow {
+        Some("Not enough free space at the destination".to_string())
+    } else if preflight_blocked {
+        Some("The destination does not allow writing".to_string())
+    } else if dry_run {
+        None
+    } else {
+        mutation_block
+    }
 }
 
 /// Entries a conflict button already dropped from the pending transfer
@@ -368,6 +404,7 @@ impl App {
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::Confirmation);
         let mutations_blocked = self.ws.mutations_blocked();
+        let mutation_block = self.ws.mutation_block_reason("confirming this operation");
         let reduced_motion = self.accessibility_preferences.reduced_motion;
         let Some(op) = &self.ws.pending_op else {
             clear_pending_dialog_state(ctx);
@@ -847,19 +884,40 @@ impl App {
                     }
                     if !has_conflicts {
                         ui.add_space(8.0);
-                        if ui
-                            .add_enabled(
-                                primary_enabled,
-                                egui::Button::new(
-                                    egui::RichText::new(primary_label)
-                                        .size(13.0)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(action_color)
-                                .corner_radius(CornerRadius::ZERO),
+                        let primary = ui.add_enabled(
+                            primary_enabled,
+                            egui::Button::new(
+                                egui::RichText::new(primary_label)
+                                    .size(13.0)
+                                    .color(Color32::WHITE),
                             )
-                            .clicked()
-                        {
+                            .fill(action_color)
+                            .corner_radius(CornerRadius::ZERO),
+                        );
+                        let primary = match primary_blocker(
+                            flat_ready,
+                            resource_ready,
+                            overflow,
+                            preflight_blocked,
+                            mutation_block.clone(),
+                            dry_run && supports_dry_run,
+                        ) {
+                            Some(reason) => primary.on_disabled_hover_text(reason),
+                            None => primary,
+                        };
+                        // Focus the primary button once so the sheet is
+                        // announced; Enter on it confirms exactly as before.
+                        let focused_id = egui::Id::new(CONFIRM_FOCUSED);
+                        let already = ctx.data(|d| d.get_temp::<bool>(focused_id).is_some());
+                        if should_focus_primary(
+                            already,
+                            primary_enabled,
+                            focus_within_layer(ctx, ui.layer_id()),
+                        ) {
+                            primary.request_focus();
+                            ctx.data_mut(|d| d.insert_temp(focused_id, true));
+                        }
+                        if primary.clicked() {
                             if dry_run && supports_dry_run {
                                 self.dry_run_pending_op(ctx, title, count, total);
                             } else {
@@ -1572,14 +1630,15 @@ const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        CONFIRM_DRY_RUN, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache, FLOW_MAX_SECS,
-        FlatListMode, OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state,
-        collision_for_policy, conflict_banner, conflict_policy_enabled, conflict_row_text,
-        delete_not_started_message, dialog_enter_suppressed, dialog_heading, dropped_items_note,
-        dry_run_supported, durability_controls, elided_name, flat_list_header,
+        CONFIRM_DRY_RUN, CONFIRM_FOCUSED, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache,
+        FLOW_MAX_SECS, FlatListMode, OverwritePolicy, PENDING_FLOW_START,
+        clear_pending_dialog_state, collision_for_policy, conflict_banner, conflict_policy_enabled,
+        conflict_row_text, delete_not_started_message, dialog_enter_suppressed, dialog_heading,
+        dropped_items_note, dry_run_supported, durability_controls, elided_name, flat_list_header,
         flat_row_accessible_label, flat_total, flow_rows, flow_transferred, focus_within_layer,
         is_conflict_row, normalization_note, not_enough_space_message, nothing_left_message,
-        source_header, unavailable_size_message, unavailable_space_message,
+        primary_blocker, should_focus_primary, source_header, unavailable_size_message,
+        unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1740,12 +1799,14 @@ mod tests {
             d.insert_temp(egui::Id::new(PENDING_FLOW_START), 1.0f64);
             d.insert_temp(egui::Id::new(CONFIRM_DRY_RUN), true);
             d.insert_temp(egui::Id::new(CONFLICT_DROPPED), 2usize);
+            d.insert_temp(egui::Id::new(CONFIRM_FOCUSED), true);
         });
         clear_pending_dialog_state(&ctx);
         ctx.data(|d| {
             assert_eq!(d.get_temp::<usize>(egui::Id::new(CONFLICT_DROPPED)), None);
             assert_eq!(d.get_temp::<f64>(egui::Id::new(PENDING_FLOW_START)), None);
             assert_eq!(d.get_temp::<bool>(egui::Id::new(CONFIRM_DRY_RUN)), None);
+            assert_eq!(d.get_temp::<bool>(egui::Id::new(CONFIRM_FOCUSED)), None);
         });
     }
 
@@ -1980,6 +2041,41 @@ mod tests {
         assert_eq!(
             durability_controls(false, DurabilityProfile::Versioned),
             (true, true)
+        );
+    }
+
+    #[test]
+    fn primary_button_takes_focus_once_when_it_can() {
+        assert!(should_focus_primary(false, true, false));
+        assert!(!should_focus_primary(true, true, false), "only once");
+        assert!(
+            !should_focus_primary(false, false, false),
+            "disabled while scanning"
+        );
+        assert!(
+            !should_focus_primary(false, true, true),
+            "user already moved focus"
+        );
+    }
+
+    #[test]
+    fn disabled_primary_names_the_first_blocker() {
+        let blocked = Some("Wait for the current Trash operation".to_string());
+        assert_eq!(
+            primary_blocker(false, false, true, true, blocked.clone(), false).as_deref(),
+            Some("Still scanning the selected items")
+        );
+        assert_eq!(
+            primary_blocker(true, true, true, false, None, false).as_deref(),
+            Some("Not enough free space at the destination")
+        );
+        assert_eq!(
+            primary_blocker(true, true, false, false, blocked.clone(), false),
+            blocked
+        );
+        assert_eq!(
+            primary_blocker(true, true, false, false, blocked, true),
+            None
         );
     }
 }
