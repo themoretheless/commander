@@ -356,9 +356,12 @@ fn read_preview_bytes(
         if cancelled() || !crate::io_budget::background_checkpoint(cancelled) {
             return Err(PreviewError::Cancelled);
         }
-        let count = reader
-            .read(&mut chunk)
-            .map_err(|_| PreviewError::Unreadable)?;
+        let count = match reader.read(&mut chunk) {
+            Ok(count) => count,
+            // A signal interrupting read() is not a file error; retry it.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(PreviewError::Unreadable),
+        };
         if count == 0 {
             break;
         }
@@ -396,8 +399,9 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         &self,
         identity: &crate::panel::PreviewIdentity,
     ) -> Result<TextPreviewFingerprint, PreviewError> {
-        let metadata =
-            std::fs::symlink_metadata(&identity.path).map_err(|_| PreviewError::Unreadable)?;
+        // Follow symlinks: the file is opened through the link, so the path
+        // fingerprint must describe the same target as the handle's fstat.
+        let metadata = std::fs::metadata(&identity.path).map_err(|_| PreviewError::Unreadable)?;
         TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
     }
 
@@ -491,7 +495,10 @@ fn decode_text_bytes(mut bytes: Vec<u8>) -> Result<Arc<str>, PreviewError> {
         .iter()
         .filter(|byte| {
             let byte = **byte;
-            (byte < 0x20 && !matches!(byte, b'\n' | b'\r' | b'\t' | 0x08 | 0x0c)) || byte == 0x7f
+            // ESC is allowed so saved ANSI-colored output (ls --color, logs)
+            // still previews as text.
+            (byte < 0x20 && !matches!(byte, b'\n' | b'\r' | b'\t' | 0x08 | 0x0c | 0x1b))
+                || byte == 0x7f
         })
         .count();
     if !bytes.is_empty() && controls.saturating_mul(20) > bytes.len() {
@@ -2881,5 +2888,65 @@ mod tests {
             (after.change_seconds, after.change_nanoseconds)
         );
         assert_ne!(before, after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_text_file_fingerprints_and_reads_its_target() {
+        let temp = TempDir::new();
+        let target = temp.file("target.txt", "linked text");
+        let link = temp.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let metadata = std::fs::metadata(&link).unwrap();
+        let request = PreviewIdentity {
+            path: link,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        let provider = FsTextPreviewProvider::default();
+
+        let expected = super::TextPreviewProvider::fingerprint(&provider, &request).unwrap();
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &request, &expected, &|| false)
+                .unwrap()
+                .as_ref(),
+            "linked text"
+        );
+    }
+
+    #[test]
+    fn ansi_colored_text_is_not_rejected_as_binary() {
+        let listing = "\x1b[01;34mdir\x1b[0m\n".repeat(8);
+        assert_eq!(
+            decode_text_bytes(listing.clone().into_bytes())
+                .unwrap()
+                .as_ref(),
+            listing
+        );
+    }
+
+    #[test]
+    fn interrupted_reads_are_retried() {
+        struct InterruptOnce {
+            interrupted: bool,
+            data: std::io::Cursor<Vec<u8>>,
+        }
+        impl std::io::Read for InterruptOnce {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                self.data.read(buf)
+            }
+        }
+        let mut reader = InterruptOnce {
+            interrupted: false,
+            data: std::io::Cursor::new(b"hello".to_vec()),
+        };
+        assert_eq!(
+            super::read_preview_bytes(&mut reader, 5, &|| false, None).unwrap(),
+            b"hello"
+        );
     }
 }
