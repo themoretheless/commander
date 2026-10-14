@@ -526,19 +526,22 @@ pub fn space_verdict(
 }
 
 /// Compress a file or directory into "<name>.zip" next to it.
-/// Runs `ditto` in the background; returns once the process is spawned.
+/// Runs `ditto` in the background; returns once the process is spawned, and
+/// a reaper thread collects it and logs a failed exit (disk full, permission
+/// denied) with `ditto`'s stderr.
 /// An existing archive is never replaced: like Finder, the name counts up
 /// ("name 2.zip", "name 3.zip", ...) because `ditto` would overwrite it.
 pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
     let archive = zip_archive_path(path)?;
-    std::process::Command::new("ditto")
-        .arg("-c")
-        .arg("-k")
-        .arg("--sequesterRsrc")
-        .arg(path)
-        .arg(&archive)
-        .spawn()
-        .map(|_| ())
+    crate::native_effect::spawn_reaped_logging_failure(
+        std::process::Command::new("ditto")
+            .arg("-c")
+            .arg("-k")
+            .arg("--sequesterRsrc")
+            .arg(path)
+            .arg(&archive),
+        format!("Compressing {} to {}", path.display(), archive.display()),
+    )
 }
 
 fn zip_archive_path(path: &Path) -> std::io::Result<PathBuf> {
