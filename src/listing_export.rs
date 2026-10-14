@@ -13,11 +13,11 @@ pub enum ListingFormat {
 }
 
 impl ListingFormat {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
-            ListingFormat::Text => "text",
-            ListingFormat::Csv => "CSV",
-            ListingFormat::Markdown => "Markdown",
+            Self::Text => "text",
+            Self::Csv => "CSV",
+            Self::Markdown => "Markdown",
         }
     }
 }

@@ -220,7 +220,7 @@ fn choose_weighted<'a, T>(
 struct DeterministicRandom(u64);
 
 impl DeterministicRandom {
-    fn next(&mut self) -> u64 {
+    const fn next(&mut self) -> u64 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -228,7 +228,7 @@ impl DeterministicRandom {
         self.0
     }
 
-    fn range(&mut self, minimum: u64, maximum: u64) -> u64 {
+    const fn range(&mut self, minimum: u64, maximum: u64) -> u64 {
         if minimum == maximum {
             return minimum;
         }

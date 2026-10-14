@@ -38,6 +38,7 @@ pub struct VolumeDiagnostic {
 }
 
 impl VolumeDiagnostic {
+    #[must_use]
     pub fn decision(&self, capability: &str) -> Option<&CapabilityDecision> {
         self.decisions
             .iter()
@@ -53,6 +54,7 @@ pub struct CapabilityDiagnostic {
     pub volumes: Vec<VolumeDiagnostic>,
 }
 
+#[must_use]
 pub fn collect(paths: &[PathBuf]) -> CapabilityDiagnostic {
     CapabilityDiagnostic {
         schema: SCHEMA,
@@ -77,6 +79,7 @@ fn path_is_readable(path: &Path) -> bool {
     }
 }
 
+#[must_use]
 pub fn for_profile(
     requested_path: PathBuf,
     profile: crate::volume_profile::VolumeProfile,

@@ -168,12 +168,12 @@ fn store_path() -> PathBuf {
     crate::fs_util::config_dir().join("bookmarks.json")
 }
 
-pub(crate) struct LoadedBookmarks {
+pub struct LoadedBookmarks {
     pub store: Bookmarks,
     pub gate: crate::persistence::StoreGate,
 }
 
-pub(crate) fn load_with(persist: &dyn crate::persistence::Persist) -> LoadedBookmarks {
+pub fn load_with(persist: &dyn crate::persistence::Persist) -> LoadedBookmarks {
     load_at(persist, &store_path())
 }
 
@@ -203,7 +203,7 @@ fn load_at(persist: &dyn crate::persistence::Persist, path: &Path) -> LoadedBook
     }
 }
 
-pub(crate) fn save_with(
+pub fn save_with(
     persist: &dyn crate::persistence::Persist,
     store: &Bookmarks,
     gate: &mut crate::persistence::StoreGate,

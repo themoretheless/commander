@@ -665,7 +665,7 @@ fn scan_index(
 }
 
 #[cfg(test)]
-pub(crate) fn build_test_index(root: &Path) -> RootIndex {
+pub fn build_test_index(root: &Path) -> RootIndex {
     scan_index(
         root.to_path_buf(),
         Vec::new(),
@@ -720,6 +720,8 @@ fn system_time_secs(time: Option<SystemTime>) -> Option<u64> {
         .map(|duration| duration.as_secs())
 }
 
+// The body is cfg-dependent: const on non-unix, but `MetadataExt` is not const.
+#[allow(clippy::missing_const_for_fn)]
 fn native_identity(metadata: &fs::Metadata) -> (Option<u64>, Option<u64>) {
     #[cfg(unix)]
     {

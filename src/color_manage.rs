@@ -36,7 +36,12 @@ pub struct ColorManagedFrame {
 }
 
 impl ColorManagedFrame {
-    pub fn display_referred(width: u32, height: u32, space: ColorSpaceHint, hdr: bool) -> Self {
+    pub const fn display_referred(
+        width: u32,
+        height: u32,
+        space: ColorSpaceHint,
+        hdr: bool,
+    ) -> Self {
         Self {
             width,
             height,

@@ -1,4 +1,4 @@
-//! Fixed-block and FastCDC delta copy into an isolated staging file.
+//! Fixed-block and `FastCDC` delta copy into an isolated staging file.
 
 use crate::transfer::TransferState;
 use crate::transfer_tuning::{FastPath, TuningSnapshot};
@@ -26,7 +26,7 @@ pub enum DeltaMode {
 }
 
 impl DeltaMode {
-    pub fn fast_path(self) -> FastPath {
+    pub const fn fast_path(self) -> FastPath {
         match self {
             Self::Fixed => FastPath::DeltaFixed,
             Self::ContentDefined => FastPath::DeltaCdc,
@@ -474,7 +474,7 @@ fn interrupted() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
 }
 
-fn next_checkpoint(offset: u64) -> u64 {
+const fn next_checkpoint(offset: u64) -> u64 {
     offset.saturating_add(CHECKPOINT_INTERVAL)
 }
 

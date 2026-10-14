@@ -1,4 +1,4 @@
-//! Desktop adapters for Linux and Windows. macOS uses the AppKit adapters in
+//! Desktop adapters for Linux and Windows. macOS uses the `AppKit` adapters in
 //! `native_effect` and `native_menu`; these cover the same ports with
 //! cross-platform primitives. The context menu is drawn by egui instead.
 

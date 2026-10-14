@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-pub(crate) const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
+pub const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
 const MAX_DECODED_IMAGE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_PRELOAD_WORKERS: usize = 4;
@@ -83,7 +83,7 @@ type PendingMap = Arc<Mutex<HashMap<PathBuf, PendingLoad>>>;
 type FailedMap = Arc<Mutex<HashMap<PathBuf, PreviewFailure>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PreviewError {
+pub enum PreviewError {
     TooLarge,
     NotRegular,
     Unreadable,
@@ -120,7 +120,7 @@ impl PreviewError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum TextPreviewPoll {
+pub enum TextPreviewPoll {
     Current,
     Loading,
     Ready(Arc<str>),
@@ -128,7 +128,7 @@ pub(crate) enum TextPreviewPoll {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextPreviewLoadState {
+pub enum TextPreviewLoadState {
     Idle,
     Debouncing,
     Waiting,
@@ -926,7 +926,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PreviewFailure {
+pub enum PreviewFailure {
     TooLarge,
     Unreadable,
     Unsupported,
@@ -949,14 +949,14 @@ impl PreviewFailure {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ProviderTally {
+pub struct ProviderTally {
     pub attempts: u64,
     pub successes: u64,
     pub failures: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PreviewProviderStats {
+pub struct PreviewProviderStats {
     pub image_io: ProviderTally,
     pub standard: ProviderTally,
     pub video: ProviderTally,
@@ -1041,7 +1041,7 @@ fn preview_provider_stats() -> PreviewProviderStats {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PreviewLoadState {
+pub enum PreviewLoadState {
     Disabled,
     Loading,
     Failed(PreviewFailure),
@@ -1049,7 +1049,7 @@ pub(crate) enum PreviewLoadState {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ImageCacheStats {
+pub struct ImageCacheStats {
     pub entries: usize,
     pub bytes: usize,
     pub pending: usize,
@@ -1867,7 +1867,7 @@ unsafe extern "C" {}
 #[link(name = "CoreMedia", kind = "framework")]
 unsafe extern "C" {}
 
-/// Extract first frame from video via AVFoundation's AVAssetImageGenerator.
+/// Extract first frame from video via `AVFoundation`'s `AVAssetImageGenerator`.
 #[cfg(target_os = "macos")]
 fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
     use objc::runtime::Object;
@@ -2424,7 +2424,7 @@ mod tests {
     }
 
     /// Tiny JPEG with EXIF Orientation tag = 6 (90° CW). Built by hand so the
-    /// test stays fixture-free and runs on Linux CI without ImageIO.
+    /// test stays fixture-free and runs on Linux CI without `ImageIO`.
     fn oriented_jpeg_2x1_rotate90() -> Vec<u8> {
         let pixels = image::RgbImage::from_fn(2, 1, |x, _| {
             if x == 0 {

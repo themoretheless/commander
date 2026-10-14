@@ -31,7 +31,7 @@ impl ProjectCollection {
         }
     }
 
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         !self.name.is_empty() && !self.roots.is_empty()
     }
 }

@@ -31,13 +31,13 @@ pub struct RowProvenance {
 }
 
 impl RowProvenance {
-    pub fn mark(mut self, source: ChangeProvenance) -> Self {
+    pub const fn mark(mut self, source: ChangeProvenance) -> Self {
         self.generation = self.generation.saturating_add(1);
         self.source = source;
         self
     }
 
-    pub fn record(&mut self, source: ChangeProvenance) {
+    pub const fn record(&mut self, source: ChangeProvenance) {
         *self = self.mark(source);
     }
 }

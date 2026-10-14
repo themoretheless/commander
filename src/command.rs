@@ -174,7 +174,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn mutates_filesystem(self) -> bool {
+    pub const fn mutates_filesystem(self) -> bool {
         matches!(
             self,
             Self::RequestCopy
@@ -348,7 +348,7 @@ impl CommandPredicate {
 }
 
 /// Return the reusable policy fragments attached to a command.
-pub fn predicates(command: Command) -> &'static [CommandPredicate] {
+pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
     use Command::*;
     use CommandPredicate as P;
 
@@ -440,7 +440,7 @@ pub fn predicates(command: Command) -> &'static [CommandPredicate] {
 /// Return whether availability for `command` depends on workspace state.
 /// Unconditional commands can bypass the comparatively expensive context
 /// snapshot on keyboard hot paths.
-pub fn requires_context(command: Command) -> bool {
+pub const fn requires_context(command: Command) -> bool {
     !predicates(command).is_empty()
 }
 
@@ -829,7 +829,7 @@ pub struct KeyPress {
     pub shift: bool,
 }
 
-pub fn map_key(press: KeyPress) -> Option<Command> {
+pub const fn map_key(press: KeyPress) -> Option<Command> {
     use KeyCode::*;
     match press.code {
         Tab => Some(Command::SwitchPanel),

@@ -33,7 +33,7 @@ pub struct EncryptedBundleManifest {
 }
 
 impl EncryptedBundleManifest {
-    pub fn expired(&self, now_secs: u64) -> bool {
+    pub const fn expired(&self, now_secs: u64) -> bool {
         now_secs >= self.expires_at_secs
     }
 
