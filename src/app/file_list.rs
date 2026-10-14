@@ -129,14 +129,21 @@ fn selection_summary_with(
             (
                 count + 1,
                 size.saturating_add(sizes.display_size(entry)),
-                pending || (entry.is_dir && sizes.size_of(&entry.path).is_none()),
+                // Folder symlinks are never walked (as in folder_overview),
+                // so they count as 0 B rather than as still measuring.
+                pending
+                    || (entry.is_dir
+                        && !entry.is_symlink()
+                        && sizes.size_of(&entry.path).is_none()),
             )
         })
 }
 
 /// The selection's size for the footer. While a selected folder is still
 /// being measured the total is a lower bound, shown as "≥ X…" (or "…"
-/// before anything is known), like the folder total's "…".
+/// before anything is known), like the folder total's "…". A folder the
+/// walk guard skipped as too expensive stays unmeasured until a forced scan,
+/// so it also shows as this lower bound.
 fn selection_size_label(bytes: u64, pending: bool) -> String {
     match (pending, bytes) {
         (false, _) => format_size(bytes),
@@ -1225,6 +1232,22 @@ mod tests {
         assert_eq!(selection_size_label(3, true), "\u{2265} 3 B\u{2026}");
         assert_eq!(selection_size_label(0, true), "\u{2026}");
         assert_eq!(selection_size_label(3, false), "3 B");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_folder_symlink_is_not_left_measuring() {
+        let temp = crate::testutil::TempDir::new();
+        std::fs::write(temp.path().join("a.txt"), "aaa").expect("write a");
+        std::fs::create_dir(temp.path().join("real")).expect("mkdir");
+        std::os::unix::fs::symlink("real", temp.path().join("link")).expect("symlink");
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.toggle_select(temp.path().join("a.txt"));
+        panel.toggle_select(temp.path().join("link"));
+        let unmeasured = crate::panel::SizeSnapshot::default();
+        // The link is never walked, so the total is final, not pending.
+        assert_eq!(selection_summary_with(&panel, &unmeasured), (2, 3, false));
     }
 
     #[test]
