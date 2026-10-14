@@ -236,6 +236,24 @@ fn collision_for_policy(
     }
 }
 
+/// Toast for a conflict policy that left nothing to transfer (Skip Existing
+/// when every item already exists), so the dialog does not just vanish.
+fn nothing_left_message(title: &str, dropped: usize) -> String {
+    let verb = title.to_lowercase();
+    match dropped {
+        1 => format!("Nothing to {verb}: the item already exists at the destination"),
+        n => format!("Nothing to {verb}: all {n} items already exist at the destination"),
+    }
+}
+
+/// Why Move to Trash did not start although the dialog allowed it: a
+/// transfer or another mutation began while the sheet was open.
+fn delete_not_started_message(block_reason: Option<String>) -> String {
+    block_reason.unwrap_or_else(|| {
+        "Wait for the transfer queue to finish before moving items to Trash".to_string()
+    })
+}
+
 fn unavailable_size_message(failure: &crate::ports::NativeFailure) -> String {
     format!(
         "Transfer size could not be verified: {}. Confirmation is unavailable.",
@@ -688,10 +706,16 @@ impl App {
                                 Some(PendingOp::Transfer(tr)) if tr.overflows()
                             );
                             if !still_overflows {
-                                self.confirm_pending_op(ctx);
+                                self.confirm_or_explain(ctx);
                             }
                         } else {
                             // Nothing left to transfer (everything skipped).
+                            self.toast(
+                                ctx,
+                                crate::toasts::ToastKind::Info,
+                                nothing_left_message(title, before),
+                                false,
+                            );
                             self.dismiss_pending_op(ctx);
                         }
                     }
@@ -757,7 +781,7 @@ impl App {
                             if dry_run && supports_dry_run {
                                 self.dry_run_pending_op(ctx, title, count, total);
                             } else {
-                                self.confirm_pending_op(ctx);
+                                self.confirm_or_explain(ctx);
                             }
                         }
                     }
@@ -777,7 +801,7 @@ impl App {
                     if dry_run && supports_dry_run {
                         self.dry_run_pending_op(ctx, title, count, total);
                     } else {
-                        self.confirm_pending_op(ctx);
+                        self.confirm_or_explain(ctx);
                     }
                 }
             });
@@ -813,6 +837,18 @@ impl App {
             false,
         );
         self.dismiss_pending_op(ctx);
+    }
+
+    /// Confirm the pending operation; when a Delete could not start (a
+    /// transfer or another mutation began while the sheet was open), say why
+    /// instead of leaving the button doing nothing.
+    fn confirm_or_explain(&mut self, ctx: &egui::Context) {
+        self.confirm_pending_op(ctx);
+        if matches!(self.ws.pending_op, Some(PendingOp::Delete { .. })) {
+            let message =
+                delete_not_started_message(self.ws.mutation_block_reason("moving items to Trash"));
+            self.toast(ctx, crate::toasts::ToastKind::Info, message, false);
+        }
     }
 
     /// Close the dialog and reset its per-dialog egui state.
@@ -1352,9 +1388,9 @@ mod tests {
     use super::{
         CONFIRM_DRY_RUN, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache, FLOW_MAX_SECS,
         OverwritePolicy, PENDING_FLOW_START, clear_pending_dialog_state, collision_for_policy,
-        conflict_policy_enabled, dialog_enter_suppressed, dropped_items_note, dry_run_supported,
-        flat_total, flow_transferred, focus_within_layer, is_conflict_row,
-        unavailable_size_message, unavailable_space_message,
+        conflict_policy_enabled, delete_not_started_message, dialog_enter_suppressed,
+        dropped_items_note, dry_run_supported, flat_total, flow_transferred, focus_within_layer,
+        is_conflict_row, nothing_left_message, unavailable_size_message, unavailable_space_message,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1583,5 +1619,26 @@ mod tests {
         let message = unavailable_size_message(&failure);
         assert!(message.contains("could not be verified"));
         assert!(message.contains("Confirmation is unavailable"));
+    }
+
+    #[test]
+    fn fully_skipped_transfer_says_nothing_was_copied() {
+        assert_eq!(
+            nothing_left_message("Copy", 3),
+            "Nothing to copy: all 3 items already exist at the destination"
+        );
+        assert_eq!(
+            nothing_left_message("Move", 1),
+            "Nothing to move: the item already exists at the destination"
+        );
+    }
+
+    #[test]
+    fn blocked_trash_names_the_blocker() {
+        assert!(delete_not_started_message(None).contains("transfer queue"));
+        assert_eq!(
+            delete_not_started_message(Some("Safe-state review is required".into())),
+            "Safe-state review is required"
+        );
     }
 }
