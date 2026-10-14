@@ -4,9 +4,12 @@ use super::{FileEntry, SortColumn, SortOrder, ViewConfig};
 
 /// Natural ("human") ordering: runs of digits compare by numeric value, so
 /// "file2" sorts before "file10". Inputs are expected pre-lowercased.
+///
+/// Works on UTF-8 bytes so sorting a listing does not allocate per
+/// comparison: digits are ASCII and never occur inside a multi-byte
+/// character, and byte order within UTF-8 matches code point order.
 pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
+    let (a, b) = (a.as_bytes(), b.as_bytes());
     let (mut i, mut j) = (0usize, 0usize);
     // Leading-zero count only breaks a tie once the rest of the names compare
     // equal, so "a01b" still sorts before "a1c".
@@ -24,10 +27,7 @@ pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
             }
             let va = strip_leading_zeros(&a[si..i]);
             let vb = strip_leading_zeros(&b[sj..j]);
-            let ordering = va
-                .len()
-                .cmp(&vb.len())
-                .then_with(|| va.iter().cmp(vb.iter()));
+            let ordering = va.len().cmp(&vb.len()).then_with(|| va.cmp(vb));
             if ordering != Ordering::Equal {
                 return ordering;
             }
@@ -44,12 +44,13 @@ pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
             }
         }
     }
+    // One side is exhausted: the longer remainder sorts last.
     (a.len() - i).cmp(&(b.len() - j)).then(zero_tiebreak)
 }
 
-fn strip_leading_zeros(run: &[char]) -> &[char] {
+fn strip_leading_zeros(run: &[u8]) -> &[u8] {
     let mut first = 0;
-    while first + 1 < run.len() && run[first] == '0' {
+    while first + 1 < run.len() && run[first] == b'0' {
         first += 1;
     }
     &run[first..]
@@ -103,5 +104,20 @@ mod tests {
         assert_eq!(natural_cmp("a01b", "a1c"), Ordering::Less);
         assert_eq!(natural_cmp("a1c", "a01b"), Ordering::Greater);
         assert_eq!(natural_cmp("a01b", "a1b"), Ordering::Greater);
+    }
+
+    #[test]
+    fn natural_order_of_non_ascii_names_follows_code_points() {
+        // Byte-wise comparison must agree with comparing characters.
+        assert_eq!(natural_cmp("é", "z"), Ordering::Greater);
+        assert_eq!(natural_cmp("z", "é"), Ordering::Less);
+        assert_eq!(natural_cmp("ä", "é"), Ordering::Less);
+        assert_eq!(natural_cmp("日本2", "日本10"), Ordering::Less);
+        assert_eq!(natural_cmp("é2", "é"), Ordering::Greater);
+        assert_eq!(natural_cmp("a", "ab"), Ordering::Less);
+        assert_eq!(natural_cmp("1é", "1a"), Ordering::Greater);
+        let mut names = vec!["ü10", "ü9", "u10", "日1", "a"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, ["a", "u10", "ü9", "ü10", "日1"]);
     }
 }

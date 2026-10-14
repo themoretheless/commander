@@ -44,20 +44,31 @@ pub enum MountAvailability {
     Replaced,
 }
 
+/// Run `work` on a helper thread and wait at most `timeout` for its answer.
+/// `None` when it has not answered in time (or no thread could be spawned);
+/// a late thread is left to finish (or hang on a dead mount) on its own, so
+/// callers that probe the same path repeatedly should remember hung ones.
+pub fn run_bounded<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    timeout: Duration,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("commander-bounded-probe".to_string())
+        .spawn(move || {
+            let _ = sender.send(work());
+        })
+        .ok()?;
+    receiver.recv_timeout(timeout).ok()
+}
+
 /// Run `probe` on a helper thread and wait at most `timeout` for it. A probe
-/// that has not answered in time counts as disconnected; its thread is left
-/// to finish (or hang) on its own.
+/// that has not answered in time counts as disconnected.
 fn probe_bounded(
     probe: impl FnOnce() -> MountAvailability + Send + 'static,
     timeout: Duration,
 ) -> MountAvailability {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(probe());
-    });
-    receiver
-        .recv_timeout(timeout)
-        .unwrap_or(MountAvailability::Disconnected)
+    run_bounded(probe, timeout).unwrap_or(MountAvailability::Disconnected)
 }
 
 impl MountGuard {

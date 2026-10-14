@@ -148,13 +148,9 @@ impl FileEntry {
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let modified = meta.modified().ok();
-        let modified_str = match modified {
-            Some(time) => {
-                let datetime: chrono::DateTime<chrono::Local> = time.into();
-                datetime.format("%d %b %y  %H:%M").to_string()
-            }
-            None => "–".to_string(),
-        };
+        let modified_str = modified
+            .and_then(format_modified)
+            .unwrap_or_else(|| "–".to_string());
         let size_str = if is_dir {
             "…".to_string()
         } else {
@@ -236,6 +232,40 @@ impl FileEntry {
     }
 }
 
+/// Listing date for a modification time, or `None` when chrono cannot
+/// represent it. `From<SystemTime>` panics past chrono's ~262,000-year range,
+/// which tmpfs/btrfs/NFS can store (e.g. from a crafted archive); such a row
+/// shows an unknown date instead of aborting the listing.
+fn format_modified(time: SystemTime) -> Option<String> {
+    let utc = match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(after.as_secs()).ok()?,
+            after.subsec_nanos(),
+        )?,
+        Err(before) => {
+            let before = before.duration();
+            let secs = i64::try_from(before.as_secs()).ok()?.checked_neg()?;
+            match before.subsec_nanos() {
+                0 => chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)?,
+                nanos => chrono::DateTime::<chrono::Utc>::from_timestamp(
+                    secs.checked_sub(1)?,
+                    1_000_000_000 - nanos,
+                )?,
+            }
+        }
+    };
+    // Converting to local time adds the zone offset, which panics at the
+    // very edge of the range: keep a day of headroom on both sides.
+    let day = chrono::TimeDelta::days(1);
+    utc.checked_add_signed(day)?;
+    utc.checked_sub_signed(day)?;
+    Some(
+        utc.with_timezone(&chrono::Local)
+            .format("%d %b %y  %H:%M")
+            .to_string(),
+    )
+}
+
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{} B", bytes);
@@ -254,32 +284,39 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Glob match supporting `*` (any run) and `?` (one char). Inputs are
-/// expected lowercased; matching is greedy with backtracking.
+/// expected lowercased; matching is greedy with backtracking. Positions are
+/// byte offsets into the inputs, so the mask preview (re-run per entry every
+/// frame) does not allocate.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
+    let next = |s: &str, at: usize| s[at..].chars().next();
     let (mut pi, mut ti) = (0usize, 0usize);
     let (mut star, mut mark) = (None, 0usize);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
+    while let Some(tc) = next(text, ti) {
+        match next(pattern, pi) {
+            Some(pc) if pc == '?' || pc == tc => {
+                pi += pc.len_utf8();
+                ti += tc.len_utf8();
+            }
+            Some('*') => {
+                star = Some(pi);
+                mark = ti;
+                pi += 1;
+            }
+            _ => {
+                let Some(s) = star else {
+                    return false;
+                };
+                pi = s + 1;
+                // Re-anchor one character further along the text.
+                mark += next(text, mark).map_or(1, char::len_utf8);
+                ti = mark;
+            }
         }
     }
-    while pi < p.len() && p[pi] == '*' {
+    while next(pattern, pi) == Some('*') {
         pi += 1;
     }
-    pi == p.len()
+    pi == pattern.len()
 }
 
 /// Parse a select-by-mask line into `(term, is_subtract)` pairs. Terms are
@@ -801,7 +838,7 @@ impl PanelState {
             let listing_binding = self.listing.binding().to_path_buf();
             self.watcher
                 .acknowledge_snapshot(ready.ticket, &listing_binding);
-            self.refresh_sizes(true);
+            self.refresh_sizes(ready.forced_sizes);
             self.apply_pending_focus(ready.focus);
         } else if let Some(ticket) = ready.ticket.as_ref() {
             self.watcher.defer_snapshot(Some(ticket));
@@ -942,7 +979,8 @@ impl PanelState {
                 let listing_binding = self.listing.binding().to_path_buf();
                 self.watcher
                     .acknowledge_snapshot(Some(ticket), &listing_binding);
-                self.refresh_sizes(true);
+                // Watcher-driven: expensive folders are not re-walked.
+                self.refresh_sizes(false);
                 self.change_provenance.record(source);
                 crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 return true;
@@ -1740,6 +1778,27 @@ mod tests {
             panel.drag.entries(),
             [PathBuf::from("/test/a.txt"), PathBuf::from("/test/b.txt")]
         );
+    }
+
+    #[test]
+    fn modified_dates_outside_chronos_range_show_as_unknown() {
+        use std::time::Duration;
+        let epoch = SystemTime::UNIX_EPOCH;
+        assert!(format_modified(epoch + Duration::from_secs(86_400 * 365)).is_some());
+        // Before the epoch, including a fractional second.
+        assert!(format_modified(epoch - Duration::from_millis(1_500)).is_some());
+        // A million years out: storable on Unix filesystems, beyond chrono.
+        // (Windows' `SystemTime` cannot hold it, so there is nothing to test.)
+        for far in [
+            epoch.checked_add(Duration::from_secs(1 << 45)),
+            epoch.checked_sub(Duration::from_secs(1 << 45)),
+            epoch.checked_add(Duration::from_secs(i64::MAX as u64)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert_eq!(format_modified(far), None);
+        }
     }
 
     #[test]
@@ -3004,6 +3063,15 @@ mod tests {
         assert!(!glob_match("a?c", "ac"));
         assert!(!glob_match("*.rs", "main.txt"));
         assert!(glob_match("*", "anything"));
+        // Multi-byte names: `?` is one character, and a failed match after a
+        // star re-anchors on a character boundary.
+        assert!(glob_match("caf?.txt", "café.txt"));
+        assert!(glob_match("*é*", "résumé.pdf"));
+        assert!(glob_match("*ü.txt", "üüü.txt"));
+        assert!(!glob_match("?", "éé"));
+        assert!(glob_match("**a", "a"));
+        assert!(glob_match("", ""));
+        assert!(!glob_match("", "a"));
     }
 
     #[test]
@@ -3203,6 +3271,33 @@ mod tests {
     }
 
     #[test]
+    fn batched_invalidation_matches_per_path_invalidation() {
+        let tmp = TempDir::new();
+        let keys: Vec<VolumePathKey> = ["x", "x/deep", "x/deep/below", "y", "y/sub", "z"]
+            .into_iter()
+            .map(|name| VolumePathKey::observe(&tmp.dir(name)))
+            .collect();
+        let now = SystemTime::now();
+        {
+            let _boundary = lock_recover(scan_commit_boundary());
+            let mut cache = lock_recover(dir_size_cache());
+            for key in &keys {
+                cache.insert(key.clone(), (now, 1));
+            }
+        }
+
+        let changed_x = tmp.path().join("x/deep/file.txt");
+        let changed_y = tmp.path().join("y");
+        invalidate_size_cache_many([changed_x.as_path(), changed_y.as_path()]);
+
+        let cache = lock_recover(dir_size_cache());
+        let kept: Vec<bool> = keys.iter().map(|key| cache.contains_key(key)).collect();
+        // Ancestors of each change go; a folder below a change and an
+        // unrelated sibling stay.
+        assert_eq!(kept, [false, false, true, false, true, true]);
+    }
+
+    #[test]
     fn directory_cache_key_rejects_an_old_mount_generation() {
         let path = PathBuf::from("/fixture/folder");
         let first = VolumePathKey {
@@ -3294,12 +3389,36 @@ mod tests {
         tmp.file("c.bin", "789");
         let checks = std::sync::atomic::AtomicUsize::new(0);
 
-        let result = dir_size_recursive_until(tmp.path(), || {
+        let result = dir_size_recursive_until(tmp.path(), false, || {
             checks.fetch_add(1, AtomicOrdering::SeqCst) >= 2
         });
 
         assert_eq!(result, None);
         assert_eq!(checks.load(AtomicOrdering::SeqCst), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_size_counts_file_symlinks_not_their_targets() {
+        let outside = TempDir::new();
+        let target = outside.file("big.bin", &"x".repeat(4000));
+        let tmp = TempDir::new();
+        tmp.file("small.bin", "12345");
+        std::os::unix::fs::symlink(&target, tmp.path().join("link.bin")).unwrap();
+        let link_len = std::fs::symlink_metadata(tmp.path().join("link.bin"))
+            .unwrap()
+            .len();
+
+        let expected = Some(5 + link_len);
+        assert_eq!(
+            dir_size_recursive_until(tmp.path(), false, || false),
+            expected
+        );
+        // A background walk measures the same tree.
+        assert_eq!(
+            dir_size_recursive_until(tmp.path(), true, || false),
+            expected
+        );
     }
 
     #[cfg(unix)]
@@ -3312,7 +3431,10 @@ mod tests {
         std::fs::hard_link(&data, tmp.path().join("sub/link.bin")).unwrap();
         tmp.file("other.bin", "12345");
 
-        assert_eq!(dir_size_recursive_until(tmp.path(), || false), Some(1005));
+        assert_eq!(
+            dir_size_recursive_until(tmp.path(), false, || false),
+            Some(1005)
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -3327,7 +3449,7 @@ mod tests {
         // `/proc` listed in `/` is a mount point: sizing it must not walk
         // procfs (whose `kcore` alone reports ~128 TB).
         assert_eq!(
-            dir_size_recursive_until(Path::new("/proc"), || false),
+            dir_size_recursive_until(Path::new("/proc"), false, || false),
             Some(0)
         );
     }
@@ -3350,7 +3472,7 @@ mod tests {
         }
         // `/dev/shm` is a tmpfs mount on another device than `/dev`: a local
         // mount-point row is measured in full, not reported as 0 B.
-        let size = dir_size_recursive_until(shm, || false);
+        let size = dir_size_recursive_until(shm, false, || false);
         let _ = std::fs::remove_file(&file);
         assert!(size.is_some_and(|size| size >= 4096), "got {size:?}");
     }
@@ -3530,6 +3652,37 @@ mod tests {
                 .map(|key| key.path.clone())
                 .collect::<std::collections::BTreeSet<_>>(),
             (94..100).map(|index| key("incoming", index).path).collect()
+        );
+    }
+
+    #[test]
+    fn corrupt_persisted_mtime_is_dropped_without_panicking() {
+        let entry = |path: &str, mtime_secs: u64, mtime_nanos: u32| PersistedCacheEntry {
+            key: VolumePathKey {
+                path: PathBuf::from(path),
+                volume_id: 1,
+                generation: 1,
+            },
+            mtime_secs,
+            mtime_nanos,
+            size: 7,
+        };
+        let persisted = PersistedCache {
+            schema: 1,
+            entries: vec![
+                // Carrying the nanos into the seconds would overflow them.
+                entry("/corrupt/carry", u64::MAX, 1_000_000_000),
+                entry("/corrupt/nanos", 5, u32::MAX),
+                entry("/valid", 5, 999_999_999),
+            ],
+        };
+        let json = serde_json::to_vec(&persisted).unwrap();
+
+        let cache = load_cache_from_reader_with_bounds(json.as_slice(), 8, 6).unwrap();
+
+        assert_eq!(
+            cache.keys().map(|key| key.path.clone()).collect::<Vec<_>>(),
+            vec![PathBuf::from("/valid")]
         );
     }
 
