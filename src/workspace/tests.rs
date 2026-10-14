@@ -3908,3 +3908,269 @@ fn selection_gathered_across_folders_feeds_one_transfer() {
     assert_eq!(ws.left.selected_elsewhere_count(), 0);
     assert!(ws.left.selection_is_empty());
 }
+
+#[test]
+fn repeat_last_is_gated_like_the_command_it_replays() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("a.txt", "x");
+    let mut ws = workspace(&left, &right);
+    ws.execute(Command::BeginSync);
+    assert!(matches!(
+        ws.drain_ui_requests().as_slice(),
+        [UiRequest::Sync]
+    ));
+
+    // Blocked mutations stay blocked when replayed with `.`.
+    ws.safe_state = Some(crate::operation::SafeState {
+        operation_id: crate::operation::OperationId("review".to_string()),
+        reason: "review required".to_string(),
+        paths: Vec::new(),
+        failures: Vec::new(),
+    });
+    ws.execute(Command::RepeatLast);
+    assert!(ws.drain_ui_requests().is_empty());
+    ws.safe_state = None;
+
+    // So do commands whose context no longer applies.
+    ws.left.set_cursor(1);
+    ws.execute(Command::CopyPath);
+    assert_eq!(ws.drain_ui_requests().len(), 1);
+    ws.left.set_cursor(0);
+    let context = ws.command_context();
+    assert!(!crate::command::availability(Command::CopyPath, &context).enabled);
+    ws.execute(Command::RepeatLast);
+    assert!(ws.drain_ui_requests().is_empty());
+}
+
+#[test]
+fn preview_stays_open_while_the_cursor_passes_over_a_folder() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "alpha");
+    l.dir("folder");
+    l.file("z.txt", "zulu");
+    let mut ws = workspace(&l, &r);
+    let row = |ws: &Workspace, name: &str| {
+        ws.left
+            .filtered_entries()
+            .iter()
+            .position(|entry| entry.name == name)
+            .unwrap()
+            + 1
+    };
+
+    ws.left.set_cursor(row(&ws, "a.txt"));
+    ws.execute(Command::TogglePreview);
+    assert!(ws.right.preview.is_some());
+
+    ws.left.set_cursor(row(&ws, "folder"));
+    ws.sync_preview();
+    assert!(
+        ws.right.preview.is_some(),
+        "preview mode survives a folder row"
+    );
+    // The declined row is remembered, so later frames do not retry it.
+    assert!(
+        ws.preview_declined
+            .as_ref()
+            .is_some_and(|declined| declined.path == l.path().join("folder"))
+    );
+    ws.sync_preview();
+
+    ws.left.set_cursor(row(&ws, "z.txt"));
+    ws.sync_preview();
+    match &ws.right.preview {
+        Some(PreviewContent::Pending(identity)) => {
+            assert_eq!(identity.path, l.path().join("z.txt"));
+        }
+        other => panic!("expected the preview to follow again, got {other:?}"),
+    }
+    assert!(ws.preview_declined.is_none());
+}
+
+#[test]
+fn opening_a_preview_from_the_preview_side_moves_it_instead_of_doubling() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "alpha");
+    r.file("b.txt", "beta");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+    ws.execute(Command::TogglePreview);
+    assert!(ws.right.preview.is_some());
+
+    // Tab into the pane showing the preview, then preview from there.
+    ws.execute(Command::SwitchPanel);
+    ws.right.set_cursor(1);
+    ws.execute(Command::TogglePreview);
+    assert!(ws.left.preview.is_some());
+    assert!(ws.right.preview.is_none(), "only one side previews");
+
+    // Same for the Get-Info card.
+    ws.execute(Command::SwitchPanel);
+    ws.left.set_cursor(1);
+    ws.execute(Command::ToggleInfo);
+    assert!(matches!(ws.right.preview, Some(PreviewContent::Info(_))));
+    assert!(ws.left.preview.is_none(), "only one side shows info");
+}
+
+#[test]
+fn reveal_lands_on_the_file_when_the_listing_is_asynchronous() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("deep");
+    for n in 0..50 {
+        l.file(&format!("deep/f{n:02}.txt"), "x");
+    }
+    let target = l.path().join("deep/f42.txt");
+    let mut ws = workspace(&l, &r);
+    let runtime =
+        crate::workload::WorkloadRuntime::new(crate::workload::SchedulerLimits::default());
+    ws.left
+        .set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
+    ws.left.set_notify(Arc::new(|| {}));
+
+    ws.reveal(&target);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.filtered_count() == 0 {
+        assert!(std::time::Instant::now() < deadline, "listing never landed");
+        ws.left.poll_listing();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(target)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_sources_keep_symlinks_lexical() {
+    let l = TempDir::new();
+    l.dir("folder");
+    let link = l.path().join("link");
+    std::os::unix::fs::symlink("folder", &link).unwrap();
+
+    let entry = Workspace::sync_source_entry(&link).unwrap();
+    assert!(!entry.is_dir, "the link is synced as a link, not a folder");
+    assert!(entry.is_symlink());
+}
+
+#[test]
+fn undo_of_a_cross_folder_gather_is_refused_instead_of_misplacing_items() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let sub = l.dir("sub");
+    let top = l.file("top.txt", "t");
+    let inner = l.file("sub/inner.txt", "i");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(top);
+    ws.left.navigate_to(sub.clone());
+    ws.left.select_path(inner);
+
+    ws.gather_into_folder(|| {});
+    drain_transfers(&mut ws);
+    let folder = std::fs::read_dir(&sub)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_dir())
+        .expect("gather folder");
+    assert!(folder.join("top.txt").is_file());
+    assert!(folder.join("inner.txt").is_file());
+
+    // One undo transfer cannot return items to two different folders.
+    assert!(ws.perform_undo(|| {}).is_err());
+    drain_transfers(&mut ws);
+    assert!(!sub.join("top.txt").exists(), "top.txt is not misplaced");
+    assert!(folder.join("top.txt").is_file());
+    assert!(folder.join("inner.txt").is_file());
+}
+
+fn versioned_workspace_with_two_trashed(
+    left: &TempDir,
+    right: &TempDir,
+    trash: Arc<ScriptedTrashPort>,
+) -> (Workspace, PathBuf, PathBuf) {
+    let first = left.file("first.txt", "one");
+    let second = left.file("second.txt", "two");
+    let mut ws = Workspace::with_versioned_delete_ports(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        trash,
+        Arc::new(TestFreeSpacePort),
+    );
+    ws.left.refresh();
+    ws.right.refresh();
+    ws.left.select_all();
+    ws.request_delete();
+    assert!(ws.confirm_pending_op(|| {}));
+    assert_eq!(ws.finish_delete().expect("delete outcome").trashed, 2);
+    (ws, first, second)
+}
+
+#[test]
+fn partially_failed_trash_redo_refreshes_and_latches_safe_state() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed, // redo: first
+        crate::ports::TrashItemOutcome::Failed(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "scripted".to_string(),
+        }),
+    ]));
+    let (mut ws, first, second) = versioned_workspace_with_two_trashed(&left, &right, trash);
+    ws.perform_undo(|| {}).expect("restore both");
+    assert!(first.is_file() && second.is_file());
+
+    assert!(ws.perform_redo(|| {}).is_err());
+    assert!(!first.exists(), "the first item was trashed again");
+    assert!(
+        !ws.left.entries().iter().any(|entry| entry.path == first),
+        "listing reflects the partial redo"
+    );
+    assert!(ws.safe_state.is_some(), "partial replay needs review");
+}
+
+#[test]
+fn relation_policy_sees_dotfile_conflicts_the_destination_panel_hides() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file(".env", "small");
+    let existing = r.file(".env", "the larger existing destination");
+    r.file("visible.txt", "listed");
+    let mut ws = workspace(&l, &r);
+    assert_eq!(ws.left.toggle_hidden(), panel::ViewApplyOutcome::Applied);
+    assert!(!ws.right.show_hidden(), "destination hides dotfiles");
+    ws.left.select_path(source.clone());
+    ws.request_copy();
+
+    assert_eq!(ws.pending_conflicts().len(), 1);
+    // Keep Larger keeps the larger destination: nothing is left to copy.
+    assert!(!ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::KeepLarger));
+    assert_eq!(
+        std::fs::read_to_string(existing).unwrap(),
+        "the larger existing destination"
+    );
+}
+
+#[test]
+fn resolving_conflicts_recomputes_the_filesystem_preflight() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("CON.txt", "reserved on Windows");
+    l.file("ok.txt", "fine");
+    r.file("CON.txt", "existing");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_all();
+    ws.request_copy();
+    let portable = |ws: &Workspace| match &ws.pending_op {
+        Some(PendingOp::Transfer(tr)) => tr
+            .filesystem
+            .portability
+            .iter()
+            .any(|issue| issue.name == "CON.txt"),
+        _ => panic!("pending copy"),
+    };
+    assert!(portable(&ws), "audit covers the reserved name");
+
+    assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
+    assert!(!portable(&ws), "skipped entries leave the audit");
+}

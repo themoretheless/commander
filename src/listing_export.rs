@@ -93,7 +93,7 @@ fn md_escape(s: &str) -> Cow<'_, str> {
 /// with visible escape sequences. The backslash goes first so the mapping stays
 /// unambiguous. Returns the input unchanged (and unallocated) when it holds none
 /// of those characters.
-fn escape_controls(s: &str) -> Cow<'_, str> {
+pub fn escape_controls(s: &str) -> Cow<'_, str> {
     if !s.contains(['\\', '\n', '\r', '\t']) {
         return Cow::Borrowed(s);
     }

@@ -50,17 +50,28 @@ impl RecoveryState {
                 self.orphans.clear();
             }
         }
-        if self
-            .selected
-            .as_ref()
-            .is_none_or(|selected| !self.operations.iter().any(|record| &record.id == selected))
+        // An explicitly requested operation that is missing from the
+        // inventory stays selected so the panel can say it no longer needs
+        // recovery, rather than silently showing another operation's detail.
+        // A stale selection (resolved since it was picked) falls back to the
+        // first operation.
+        let requested = self.requested.take();
+        if !self.selected_in_inventory() && (self.selected.is_none() || self.selected != requested)
         {
             self.selected = self.operations.first().map(|record| record.id.clone());
         }
         self.refresh_selected();
     }
 
+    /// Select an operation the user opened directly; unlike a list click,
+    /// it stays selected through the next scan even if that scan omits it.
+    pub(crate) fn request(&mut self, operation_id: crate::operation::OperationId) {
+        self.select(operation_id.clone());
+        self.requested = Some(operation_id);
+    }
+
     pub(crate) fn select(&mut self, operation_id: crate::operation::OperationId) {
+        self.requested = None;
         self.selected = Some(operation_id);
         self.detail = RecoveryDetail::Inspect;
         self.outcome = None;
@@ -73,11 +84,20 @@ impl RecoveryState {
         self.repair_loaded = false;
     }
 
+    fn selected_in_inventory(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(|selected| self.operations.iter().any(|record| &record.id == selected))
+    }
+
     fn load_repair(&mut self) {
         if self.repair_loaded {
             return;
         }
         self.repair_loaded = true;
+        if !self.selected_in_inventory() {
+            return;
+        }
         let Some(operation_id) = self.selected.as_ref() else {
             return;
         };
@@ -576,7 +596,13 @@ impl App {
                                     }
                                 } else {
                                     ui.label(
-                                        egui::RichText::new("Select an operation to inspect")
+                                        egui::RichText::new(if state.selected.is_none() {
+                                            "Select an operation to inspect"
+                                        } else if state.scanning {
+                                            "Scanning operations..."
+                                        } else {
+                                            "Operation no longer needs recovery"
+                                        })
                                             .size(11.0)
                                             .color(t.text_muted),
                                     );
@@ -727,5 +753,98 @@ impl App {
             state.load_repair();
         }
         self.recovery = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deliver(
+        state: &mut RecoveryState,
+        operations: Vec<crate::operation_journal::OperationRecord>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(RecoveryScanResult {
+                inventory: Ok(crate::operation_journal::RecoveryInventory {
+                    operations,
+                    orphans: Vec::new(),
+                }),
+            })
+            .unwrap();
+        state.scanning = true;
+        state.scan_rx = Some(receiver);
+        state.poll_scan();
+    }
+
+    #[test]
+    fn a_requested_operation_missing_from_the_scan_stays_selected() {
+        let requested = crate::operation::OperationId("op-gone".to_string());
+        let mut state = RecoveryState::default();
+        state.request(requested.clone());
+        state.detail = RecoveryDetail::Repair;
+        deliver(&mut state, Vec::new());
+
+        assert_eq!(state.selected, Some(requested));
+        assert!(!state.selected_in_inventory());
+        state.load_repair();
+        assert!(state.repair_plan.is_none());
+        assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn no_request_and_an_empty_scan_selects_nothing() {
+        let mut state = RecoveryState::default();
+        deliver(&mut state, Vec::new());
+        assert_eq!(state.selected, None);
+    }
+
+    fn record(id: &str) -> crate::operation_journal::OperationRecord {
+        crate::operation_journal::OperationRecord {
+            id: crate::operation::OperationId(id.to_string()),
+            group_id: None,
+            kind: TransferKind::Copy,
+            target: std::path::PathBuf::from("/target"),
+            policy: crate::transfer::OverwritePolicy::OverwriteAll,
+            method: crate::transfer::CopyMethod::Native,
+            durability: crate::operation::DurabilityProfile::Verified,
+            version_retention: crate::operation::VersionRetentionPolicy::default(),
+            name_policy: crate::filesystem_policy::NamePolicy::default(),
+            symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            post_success: None,
+            rollback_cleanup: None,
+            rollback_cleanup_identity: None,
+            rollback_cleanup_quarantine: None,
+            status: crate::operation_journal::OperationStatus::Failed,
+            created_at_secs: 1,
+            updated_at_secs: 1,
+            steps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_stale_selection_falls_back_to_the_first_operation() {
+        // Picked from the list, then resolved (rolled back) before a rescan.
+        let mut state = RecoveryState::default();
+        state.select(crate::operation::OperationId("op-resolved".to_string()));
+        deliver(&mut state, vec![record("op-a"), record("op-b")]);
+        assert_eq!(state.selected, Some(record("op-a").id));
+
+        // A request is honoured by one scan only; a later rescan that no
+        // longer lists it moves on.
+        state.request(crate::operation::OperationId("op-gone".to_string()));
+        deliver(&mut state, vec![record("op-b")]);
+        assert_eq!(
+            state.selected.as_ref().map(|id| id.0.as_str()),
+            Some("op-gone")
+        );
+        deliver(&mut state, vec![record("op-b")]);
+        assert_eq!(state.selected, Some(record("op-b").id));
+
+        // A listed selection is kept.
+        state.select(record("op-b").id);
+        deliver(&mut state, vec![record("op-a"), record("op-b")]);
+        assert_eq!(state.selected, Some(record("op-b").id));
     }
 }

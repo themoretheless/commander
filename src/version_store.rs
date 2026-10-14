@@ -23,9 +23,19 @@ fn test_versions_dir_slot() -> &'static Mutex<Option<PathBuf>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+/// Serializes tests that redirect the process-wide versions directory, so
+/// concurrent tests never read each other's manifests.
+#[cfg(test)]
+fn test_versions_dir_serial() -> &'static Mutex<()> {
+    static SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
+    SERIAL.get_or_init(|| Mutex::new(()))
+}
+
 #[cfg(test)]
 pub struct TestVersionsDirGuard {
     previous: Option<PathBuf>,
+    // Released after `drop` restores the previous directory.
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(test)]
@@ -37,8 +47,12 @@ impl Drop for TestVersionsDirGuard {
 
 #[cfg(test)]
 pub fn use_test_versions_dir(path: PathBuf) -> TestVersionsDirGuard {
+    let serial = crate::lock_util::recover(test_versions_dir_serial());
     let previous = crate::lock_util::recover(test_versions_dir_slot()).replace(path);
-    TestVersionsDirGuard { previous }
+    TestVersionsDirGuard {
+        previous,
+        _serial: serial,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

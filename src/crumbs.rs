@@ -11,22 +11,29 @@ pub struct Crumb {
     pub full_path: PathBuf,
 }
 
-/// Split a path into ancestor segments, root first. The root is labelled "/";
-/// each deeper segment carries the full path up to and including it.
+/// Split a path into ancestor segments, root first. The root is labelled as
+/// written (`/`, or `C:\` on Windows); each deeper segment carries the full
+/// path up to and including it. A relative path stops at its first component
+/// instead of producing an empty crumb.
 pub fn crumbs(path: &Path) -> Vec<Crumb> {
     let mut out = Vec::new();
     let mut current = path.to_path_buf();
     loop {
-        let label = current
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string());
+        let label = current.file_name().map_or_else(
+            || match current.to_string_lossy() {
+                text if text.is_empty() => "/".to_string(),
+                text => text.into_owned(),
+            },
+            |n| n.to_string_lossy().to_string(),
+        );
         out.push(Crumb {
             label,
             full_path: current.clone(),
         });
         match current.parent() {
-            Some(parent) if parent != current => current = parent.to_path_buf(),
+            Some(parent) if parent != current && !parent.as_os_str().is_empty() => {
+                current = parent.to_path_buf();
+            }
             _ => break,
         }
     }
@@ -111,6 +118,16 @@ mod tests {
         let c = crumbs(Path::new("/"));
         assert_eq!(labels(&c), vec!["/"]);
         assert_eq!(c[0].full_path, PathBuf::from("/"));
+    }
+
+    #[test]
+    fn relative_paths_never_yield_empty_or_fake_root_crumbs() {
+        let c = crumbs(Path::new("a/b"));
+        assert_eq!(labels(&c), vec!["a", "b"]);
+        assert_eq!(c[0].full_path, PathBuf::from("a"));
+        let c = crumbs(Path::new("."));
+        assert_eq!(labels(&c), vec!["."]);
+        assert_eq!(c[0].full_path, PathBuf::from("."));
     }
 
     #[test]

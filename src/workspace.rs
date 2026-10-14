@@ -227,8 +227,17 @@ pub struct DeleteOutcome {
 }
 
 impl DeleteOutcome {
-    pub const fn refresh_required(&self) -> bool {
+    /// Whether the panels must re-list: something was trashed, or the worker
+    /// died mid-item, so a trash may have committed without a report.
+    pub fn refresh_required(&self) -> bool {
         self.trashed > 0
+            || (self.indeterminate
+                && self.items.iter().any(|item| {
+                    matches!(
+                        item.outcome,
+                        crate::ports::TrashItemOutcome::Indeterminate(_)
+                    )
+                }))
     }
 }
 
@@ -337,6 +346,10 @@ pub struct Workspace {
     command_capabilities: std::cell::RefCell<Option<CommandCapabilityCache>>,
     pub nav_lock: bool,
     last_command: Option<Command>,
+    /// The cursor entry the preview pane last found nothing to show for (a
+    /// folder, or an image the provider declines), so `sync_preview` does
+    /// not retry `make_preview` on every frame while the cursor rests there.
+    preview_declined: Option<panel::PreviewIdentity>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -375,6 +388,7 @@ fn filesystem_preflight(
             names.iter().copied(),
             name_policy.normalization,
             profile.case_sensitive.unwrap_or(false),
+            crate::filesystem_policy::is_normalization_insensitive(&profile.filesystem),
         ),
         portability: crate::filesystem_policy::audit_names(names.iter().copied()),
         capabilities: crate::filesystem_policy::matrix_for_profile(
@@ -532,6 +546,7 @@ impl Workspace {
             command_capabilities: std::cell::RefCell::new(None),
             nav_lock: false,
             last_command: None,
+            preview_declined: None,
         }
     }
 
@@ -813,10 +828,20 @@ impl Workspace {
             return;
         }
         let cmd = if matches!(cmd, Command::RepeatLast) {
-            match self.last_command {
-                Some(previous) => previous,
-                None => return,
+            let Some(previous) = self.last_command else {
+                return;
+            };
+            // Key paths gate the command they name, and `RepeatLast` itself
+            // has no predicates: re-apply both gates to what it replays.
+            if self.mutation_commits_blocked() && previous.mutates_filesystem() {
+                return;
             }
+            if crate::command::requires_context(previous)
+                && !crate::command::availability(previous, &self.command_context()).enabled
+            {
+                return;
+            }
+            previous
         } else {
             if !matches!(
                 cmd,
@@ -993,6 +1018,11 @@ impl Workspace {
                         let panel = self.active_panel_ref();
                         panel.cursor_entry().and_then(panel::make_preview)
                     };
+                    if preview.is_some() {
+                        // Opened from the pane that was showing one (after
+                        // Tab): only one side previews at a time.
+                        self.active_panel().preview = None;
+                    }
                     self.inactive_panel_mut().preview = preview;
                 }
             }
@@ -1612,27 +1642,21 @@ impl Workspace {
         let Some(PendingOp::Transfer(tr)) = &self.pending_op else {
             return Vec::new();
         };
-        // Prefer an already-loaded destination panel. A drop into a subfolder
-        // that neither panel displays still needs rich conflict metadata, so
-        // fall back to the known conflicting names on disk.
-        let disk_dest;
-        let dest: &[FileEntry] = if self.left.current_path == tr.target {
-            self.left.entries()
-        } else if self.right.current_path == tr.target {
-            self.right.entries()
-        } else {
-            disk_dest = tr
-                .conflicts
-                .iter()
-                .filter_map(|name| {
-                    let path = tr.target.join(name);
-                    let meta = std::fs::symlink_metadata(&path).ok()?;
-                    FileEntry::from_meta(path, &meta)
-                })
-                .collect::<Vec<_>>();
-            &disk_dest
-        };
-        crate::conflict::detect(&tr.entries, dest)
+        // Read the known conflicting names from disk rather than a panel
+        // listing: a destination panel hiding dotfiles would miss them, so a
+        // relation policy (keep newer/larger) could not exclude them and the
+        // copy would overwrite them unconditionally. It is also the only
+        // source for a drop into a subfolder neither panel displays.
+        let dest = tr
+            .conflicts
+            .iter()
+            .filter_map(|name| {
+                let path = tr.target.join(name);
+                let meta = std::fs::symlink_metadata(&path).ok()?;
+                FileEntry::from_meta(path, &meta)
+            })
+            .collect::<Vec<_>>();
+        crate::conflict::detect(&tr.entries, &dest)
     }
 
     /// Apply a relation policy to the pending Copy: filter its entries to the
@@ -1640,6 +1664,7 @@ impl Workspace {
     /// `true` if anything remains to transfer.
     pub fn resolve_pending_conflicts(&mut self, policy: crate::conflict::RelationPolicy) -> bool {
         let conflicts = self.pending_conflicts();
+        let name_policy = self.name_policy;
         let resolved = {
             let Some(PendingOp::Transfer(tr)) = &mut self.pending_op else {
                 return false;
@@ -1647,6 +1672,9 @@ impl Workspace {
             let res = crate::conflict::resolve(&tr.entries, &conflicts, policy);
             let keep: std::collections::HashSet<PathBuf> = res.keep.into_iter().collect();
             tr.entries.retain(|entry| keep.contains(&entry.path));
+            // The normalization/portability audit describes the entries that
+            // will actually transfer.
+            tr.filesystem = filesystem_preflight(&tr.entries, &tr.target, name_policy);
             tr.expectations.clear();
             tr.policy = match res.decision {
                 crate::conflict::Decision::Overwrite => OverwritePolicy::OverwriteAll,
@@ -2071,14 +2099,19 @@ impl Workspace {
                 }
                 std::fs::create_dir(&folder)
                     .map_err(|error| format!("Could not recreate {}: {error}", folder.display()))?;
-                self.enqueue_silent_move(
+                if let Err(error) = self.enqueue_silent_move(
                     entries,
                     folder.clone(),
                     None,
                     Some(folder.clone()),
                     transfer_queue::HistoryIntent::replay(reservation),
                     notify,
-                )?;
+                ) {
+                    // Nothing was queued: do not leave the fresh, still empty
+                    // folder behind (`remove_dir` refuses a non-empty one).
+                    let _ = std::fs::remove_dir(&folder);
+                    return Err(error);
+                }
                 Ok(ActionExecution::Started)
             }
             crate::undo::Action::Ungather { folder, pairs } => {
@@ -2108,13 +2141,16 @@ impl Workspace {
             crate::undo::Action::RestoreTrash { items } => {
                 let _ = reservation;
                 let _ = notify;
+                let mut restored = Vec::new();
                 for item in &items {
-                    crate::version_store::restore(&item.version).map_err(|error| {
-                        format!(
+                    if let Err(error) = crate::version_store::restore(&item.version) {
+                        let error = format!(
                             "Could not restore {}: {error}",
                             item.version.original.display()
-                        )
-                    })?;
+                        );
+                        return Err(self.stop_partial_trash_replay("Trash undo", &restored, error));
+                    }
+                    restored.push(item.version.original.clone());
                 }
                 self.left.refresh();
                 self.right.refresh();
@@ -2123,39 +2159,70 @@ impl Workspace {
             crate::undo::Action::Trash { items } => {
                 let _ = reservation;
                 let _ = notify;
+                let mut trashed = Vec::new();
                 for item in &items {
-                    let expected = crate::path_identity::PathIdentity::observe(&item.path)
-                        .map_err(|error| {
-                            format!(
-                                "Could not inspect {} for Trash redo: {error}",
-                                item.path.display()
-                            )
-                        })?;
-                    if !expected.exists {
-                        return Err(format!(
-                            "Trash redo source no longer exists: {}",
-                            item.path.display()
-                        ));
+                    if let Err(error) = self.retrash_one(&item.path) {
+                        return Err(self.stop_partial_trash_replay("Trash redo", &trashed, error));
                     }
-                    let target = crate::ports::TrashTarget {
-                        path: item.path.clone(),
-                        expected,
-                    };
-                    match self.deletes.trash_one(&target) {
-                        crate::ports::TrashItemOutcome::Trashed => {}
-                        other => {
-                            return Err(format!(
-                                "Could not re-trash {}: {other:?}",
-                                item.path.display()
-                            ));
-                        }
-                    }
+                    trashed.push(item.path.clone());
                 }
                 self.left.refresh();
                 self.right.refresh();
                 Ok(ActionExecution::Completed)
             }
         }
+    }
+
+    /// Move one item back to the Trash for a Trash redo.
+    fn retrash_one(&self, path: &Path) -> Result<(), String> {
+        let expected = crate::path_identity::PathIdentity::observe(path).map_err(|error| {
+            format!(
+                "Could not inspect {} for Trash redo: {error}",
+                path.display()
+            )
+        })?;
+        if !expected.exists {
+            return Err(format!(
+                "Trash redo source no longer exists: {}",
+                path.display()
+            ));
+        }
+        let target = crate::ports::TrashTarget {
+            path: path.to_path_buf(),
+            expected,
+        };
+        match self.deletes.trash_one(&target) {
+            crate::ports::TrashItemOutcome::Trashed => Ok(()),
+            other => Err(format!("Could not re-trash {}: {other:?}", path.display())),
+        }
+    }
+
+    /// A Trash undo/redo failed on one item. When earlier items already
+    /// changed, the history entry no longer describes the filesystem: show
+    /// the change and stop further mutations until it is reviewed, rather
+    /// than reporting a plain abort over stale listings. Returns `error`.
+    fn stop_partial_trash_replay(
+        &mut self,
+        replay: &str,
+        changed: &[PathBuf],
+        error: String,
+    ) -> String {
+        if changed.is_empty() {
+            return error;
+        }
+        self.left.refresh();
+        self.right.refresh();
+        self.latch_safe_state(|| {
+            crate::operation::SafeState::integrity(
+                crate::operation::OperationId::new(),
+                format!(
+                    "{replay} stopped after {} of its items: {error}",
+                    changed.len()
+                ),
+                changed.to_vec(),
+            )
+        });
+        error
     }
 
     fn entries_for_paths(sources: &[PathBuf]) -> Result<Vec<FileEntry>, String> {
@@ -2474,11 +2541,9 @@ impl Workspace {
         let name = path.file_name().map(|n| n.to_string_lossy().to_string());
         let panel = self.active_panel();
         panel.navigate_to(parent);
-        if let Some(name) = name
-            && let Some(idx) = panel.filtered_entries().iter().position(|e| e.name == name)
-        {
-            panel.set_cursor(idx + 1);
-            panel.set_scroll_to_cursor(true);
+        if let Some(name) = name {
+            // Lands once a background listing publishes, like Go Up.
+            panel.focus_child(name);
         }
     }
 
@@ -2584,6 +2649,14 @@ impl Workspace {
         Ok(assessment)
     }
 
+    /// A sync source as the copy engine must see it: the lexical entry, so
+    /// a symlink (even to a folder) is the link itself and the symlink
+    /// policy applies to it, as for every other transfer source.
+    fn sync_source_entry(path: &Path) -> Option<FileEntry> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        FileEntry::from_meta(path.to_path_buf(), &meta)
+    }
+
     fn enqueue_sync_between(
         &mut self,
         actions: &[crate::sync::SyncAction],
@@ -2592,10 +2665,7 @@ impl Workspace {
         notify: impl Fn() + Send + 'static,
     ) {
         use crate::sync::SyncDirection;
-        let load = |path: &Path| {
-            let meta = std::fs::metadata(path).ok()?;
-            FileEntry::from_meta(path.to_path_buf(), &meta)
-        };
+        let load = Self::sync_source_entry;
         let mut to_right = Vec::new();
         let mut to_left = Vec::new();
         for a in actions {
@@ -2702,10 +2772,24 @@ impl Workspace {
             Some(PreviewContent::Info(_)) => return,
             None => false,
         };
-        if shown_matches {
+        if shown_matches
+            || self
+                .preview_declined
+                .as_ref()
+                .is_some_and(|declined| declined.matches_entry(entry))
+        {
             return;
         }
-        target.preview = panel::make_preview(entry);
+        // A folder (or an image the preview provider declines) has nothing to
+        // show: keep the pane open on the last preview rather than assigning
+        // `None`, which would end preview mode as soon as the cursor passed
+        // over a folder.
+        if let Some(preview) = panel::make_preview(entry) {
+            target.preview = Some(preview);
+            self.preview_declined = None;
+        } else {
+            self.preview_declined = Some(panel::PreviewIdentity::from_entry(entry));
+        }
     }
 
     /// Toggle the Get-Info inspector for the cursor entry, shown in the
@@ -2731,6 +2815,8 @@ impl Workspace {
             None
         };
         let card = panel::make_info(&entry, dir_size, children);
+        // Only one side shows a preview/info pane at a time.
+        self.active_panel().preview = None;
         self.inactive_panel_mut().preview = Some(PreviewContent::Info(card));
     }
 

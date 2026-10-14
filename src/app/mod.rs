@@ -242,6 +242,38 @@ pub struct RunCommandState {
 
 pub struct CommandOutputRun {
     pub receiver: std::sync::mpsc::Receiver<CommandOutput>,
+    /// The running process, shared with its worker so Stop (or closing the
+    /// bar, via `Drop`) can kill it instead of leaving it running unseen.
+    pub child: CommandChildSlot,
+}
+
+pub type CommandChildSlot = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
+
+impl CommandOutputRun {
+    pub fn stop(&self) {
+        if let Some(child) = crate::lock_util::recover(&self.child).as_mut() {
+            // The shell leads its own process group (see `run_shell`); kill
+            // the whole group so forked pipeline stages and `a; b` steps stop
+            // too and release the output pipes. The slot is cleared once the
+            // pipes are drained, so the group id is still ours here.
+            #[cfg(unix)]
+            if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+                // SAFETY: plain syscall; a negative pid targets the group.
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
+                }
+            }
+            // std never signals a child it has already reaped, so this is
+            // safe after normal completion too.
+            let _ = child.kill();
+        }
+    }
+}
+
+impl Drop for CommandOutputRun {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -586,6 +618,9 @@ pub struct RecoveryState {
     pub operations: Vec<crate::operation_journal::OperationRecord>,
     pub orphans: Vec<crate::operation_journal::OrphanStaging>,
     pub selected: Option<crate::operation::OperationId>,
+    /// An operation explicitly opened (from a toast or the queue) whose scan
+    /// is still pending; it stays selected even if that scan omits it.
+    pub requested: Option<crate::operation::OperationId>,
     pub repair_plan: Option<crate::operation_journal::RepairPlan>,
     pub versions: Vec<crate::version_store::VersionRecord>,
     pub error: Option<String>,
@@ -963,14 +998,15 @@ impl App {
         self.ws.confirm_pending_op(move || ctx2.request_repaint());
     }
 
+    /// Reveal `path` in the tree by expanding its ancestors; see
+    /// [`tree::expand_ancestors`].
     pub(crate) fn tree_expand_to_path(&mut self, path: &std::path::Path) {
-        let mut p = path.to_path_buf();
-        loop {
-            self.tree_expanded.insert(p.clone());
-            match p.parent() {
-                Some(parent) if parent != p => p = parent.to_path_buf(),
-                _ => break,
-            }
-        }
+        tree::expand_ancestors(&mut self.tree_expanded, path);
+    }
+
+    /// Reveal `path` and expand it as well, for showing the tree on the
+    /// current folder (a click must not do this; see `tree_expand_to_path`).
+    pub(crate) fn tree_reveal_path(&mut self, path: &std::path::Path) {
+        tree::expand_through(&mut self.tree_expanded, path);
     }
 }

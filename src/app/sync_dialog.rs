@@ -138,7 +138,11 @@ impl App {
                 ui.add_space(6.0);
 
                 // ── Per-row plan ────────────────────────────────────
-                if state.actions.is_empty() {
+                if plan_shows_panels_match(
+                    state.actions.is_empty(),
+                    state.error.is_some(),
+                    state.stamp.is_some(),
+                ) {
                     ui.label(
                         egui::RichText::new("Both panels already match.")
                             .size(12.0)
@@ -382,6 +386,8 @@ impl App {
                     format!("Dry run: {pending} planned action(s), nothing changed"),
                     false,
                 );
+                // A preview keeps the reviewed plan open so Sync can follow.
+                self.ui.tools.sync = Some(state);
                 return;
             }
             {
@@ -436,6 +442,12 @@ impl App {
     }
 }
 
+/// An empty plan means "already in sync" only when a plan was actually
+/// built; a failed build also leaves no actions but must show just its error.
+const fn plan_shows_panels_match(no_actions: bool, has_error: bool, has_stamp: bool) -> bool {
+    no_actions && !has_error && has_stamp
+}
+
 fn configure_marker(state: &mut SyncState) -> Option<String> {
     if !state.marker_enabled {
         state.guard.health_marker = None;
@@ -467,5 +479,18 @@ const fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
         SyncStatus::TypeConflict => t.accent_red,
         SyncStatus::Differing | SyncStatus::CaseConflict => t.accent_warning,
         _ => t.accent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_shows_panels_match;
+
+    #[test]
+    fn failed_plan_is_not_reported_as_already_matching() {
+        assert!(plan_shows_panels_match(true, false, true));
+        assert!(!plan_shows_panels_match(true, true, false));
+        assert!(!plan_shows_panels_match(true, false, false));
+        assert!(!plan_shows_panels_match(false, false, true));
     }
 }

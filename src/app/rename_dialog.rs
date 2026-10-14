@@ -4,6 +4,19 @@
 
 use super::*;
 
+/// Committing `buffer` would leave the name as it is. The untrimmed buffer is
+/// checked too: for a name with edge spaces (" Foo.txt") the trimmed buffer
+/// differs from the name, and committing it unedited would strip the spaces.
+fn rename_is_noop(buffer: &str, old_name: &str) -> bool {
+    buffer == old_name || buffer.trim() == old_name
+}
+
+/// The name is not valid UTF-8, so the editor holds a lossy copy and any
+/// committed edit writes U+FFFD in place of the original bytes.
+fn name_is_lossy(path: &std::path::Path) -> bool {
+    path.file_name().is_some_and(|name| name.to_str().is_none())
+}
+
 impl App {
     pub(crate) fn open_rename(&mut self, path: std::path::PathBuf, ctx: &egui::Context) {
         let name = path
@@ -56,7 +69,7 @@ impl App {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            state.error = if state.buffer.trim() == old_name {
+            state.error = if rename_is_noop(&state.buffer, &old_name) {
                 None
             } else {
                 crate::pathname::validate_new_name(&state.buffer, &state.siblings)
@@ -64,6 +77,17 @@ impl App {
                     .map(|error| error.to_string())
             };
             let valid = state.error.is_none();
+
+            if name_is_lossy(&state.path) {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This name has bytes that are not valid UTF-8; renaming replaces them with \u{fffd}.",
+                    )
+                    .size(11.0)
+                    .color(t.accent_warning),
+                );
+            }
 
             if let Some(err) = &state.error {
                 ui.add_space(4.0);
@@ -123,9 +147,13 @@ impl App {
                 (
                     s.path.clone(),
                     s.buffer.clone(),
-                    s.buffer.trim() != old_name,
+                    !rename_is_noop(&s.buffer, &old_name),
                 )
             };
+            if !changed {
+                self.ui.modals.renaming = None;
+                return;
+            }
             match self.ws.commit_rename(&path, &buffer) {
                 Ok(()) => {
                     self.ui.modals.renaming = None;
@@ -157,5 +185,31 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{name_is_lossy, rename_is_noop};
+
+    #[test]
+    fn unedited_name_with_edge_spaces_is_a_noop() {
+        assert!(rename_is_noop(" Foo.txt", " Foo.txt"));
+        assert!(rename_is_noop("Foo.txt ", "Foo.txt"));
+        assert!(!rename_is_noop("Bar.txt", "Foo.txt"));
+        assert!(!rename_is_noop("Foo.txt", " Foo.txt"));
+    }
+
+    #[test]
+    fn utf8_names_are_not_lossy() {
+        assert!(!name_is_lossy(std::path::Path::new("/tmp/caf\u{e9}.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_names_are_flagged_as_lossy() {
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::OsStr::from_bytes(b"bad\xffname");
+        assert!(name_is_lossy(&std::path::Path::new("/tmp").join(name)));
     }
 }

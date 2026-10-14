@@ -13,6 +13,9 @@ const MAX_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_PRELOAD_WORKERS: usize = 4;
 const MAX_PREVIEW_TARGET_DIMENSION: u32 = 4_096;
 const DECODE_TIMEOUT: Duration = Duration::from_secs(12);
+/// How long a capacity refusal (busy decoders, power pressure) is shown
+/// before the next preload pass tries the image again.
+const TRANSIENT_FAILURE_RETRY: Duration = Duration::from_secs(2);
 const MAX_TEXT_PREVIEW_CACHE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_CACHE_ENTRIES: usize = 16;
 const TEXT_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(75);
@@ -76,11 +79,78 @@ struct CacheEntry {
     decoded_for: PreviewTarget,
 }
 
-/// A decoded image plus its GPU byte size, or `None` while still loading.
-type PendingLoad = Option<DecodedPreview>;
+/// A background-load slot: the cache generation that scheduled it, plus the
+/// decoded image once the worker finishes (`None` while still loading).
+#[derive(Debug)]
+struct PendingLoad {
+    generation: u64,
+    decoded: Option<DecodedPreview>,
+}
+
 /// Background-load slots shared with the worker threads, keyed by path.
 type PendingMap = Arc<Mutex<HashMap<PathBuf, PendingLoad>>>;
-type FailedMap = Arc<Mutex<HashMap<PathBuf, PreviewFailure>>>;
+
+/// Remove `path`'s slot only if `generation` still owns it. A stale worker
+/// (folder A -> B -> A) must not release the newer generation's slot for the
+/// same path. Returns whether the slot was released.
+fn release_pending(pending: &PendingMap, path: &Path, generation: u64) -> bool {
+    let mut pending = crate::lock_util::recover(pending);
+    if pending
+        .get(path)
+        .is_some_and(|slot| slot.generation == generation)
+    {
+        pending.remove(path);
+        true
+    } else {
+        false
+    }
+}
+
+/// Store a finished decode only into the slot `generation` scheduled.
+fn publish_pending(
+    pending: &PendingMap,
+    path: &Path,
+    generation: u64,
+    decoded: DecodedPreview,
+) -> bool {
+    let mut pending = crate::lock_util::recover(pending);
+    match pending.get_mut(path) {
+        Some(slot) if slot.generation == generation => {
+            slot.decoded = Some(decoded);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Worker slots left for new decodes. A decoder that outlived its timeout no
+/// longer has a pending slot but still holds a decoder permit, so the busier
+/// of the two counts bounds new work.
+fn free_preload_slots(pending: usize, active_decoders: usize) -> usize {
+    MAX_PRELOAD_WORKERS.saturating_sub(pending.max(active_decoders))
+}
+type FailedMap = Arc<Mutex<HashMap<PathBuf, FailedLoad>>>;
+
+/// A negative-cache entry. Capacity refusals expire on their own; real
+/// decode failures stay until the user retries or the folder changes.
+#[derive(Clone, Copy, Debug)]
+struct FailedLoad {
+    failure: PreviewFailure,
+    retry_at: Option<Instant>,
+}
+
+impl FailedLoad {
+    fn new(failure: PreviewFailure, now: Instant) -> Self {
+        Self {
+            failure,
+            retry_at: (failure == PreviewFailure::Busy).then(|| now + TRANSIENT_FAILURE_RETRY),
+        }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        self.retry_at.is_some_and(|retry_at| now >= retry_at)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewError {
@@ -356,9 +426,12 @@ fn read_preview_bytes(
         if cancelled() || !crate::io_budget::background_checkpoint(cancelled) {
             return Err(PreviewError::Cancelled);
         }
-        let count = reader
-            .read(&mut chunk)
-            .map_err(|_| PreviewError::Unreadable)?;
+        let count = match reader.read(&mut chunk) {
+            Ok(count) => count,
+            // A signal interrupting read() is not a file error; retry it.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(PreviewError::Unreadable),
+        };
         if count == 0 {
             break;
         }
@@ -396,8 +469,9 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         &self,
         identity: &crate::panel::PreviewIdentity,
     ) -> Result<TextPreviewFingerprint, PreviewError> {
-        let metadata =
-            std::fs::symlink_metadata(&identity.path).map_err(|_| PreviewError::Unreadable)?;
+        // Follow symlinks: the file is opened through the link, so the path
+        // fingerprint must describe the same target as the handle's fstat.
+        let metadata = std::fs::metadata(&identity.path).map_err(|_| PreviewError::Unreadable)?;
         TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
     }
 
@@ -491,7 +565,10 @@ fn decode_text_bytes(mut bytes: Vec<u8>) -> Result<Arc<str>, PreviewError> {
         .iter()
         .filter(|byte| {
             let byte = **byte;
-            (byte < 0x20 && !matches!(byte, b'\n' | b'\r' | b'\t' | 0x08 | 0x0c)) || byte == 0x7f
+            // ESC is allowed so saved ANSI-colored output (ls --color, logs)
+            // still previews as text.
+            (byte < 0x20 && !matches!(byte, b'\n' | b'\r' | b'\t' | 0x08 | 0x0c | 0x1b))
+                || byte == 0x7f
         })
         .count();
     if !bytes.is_empty() && controls.saturating_mul(20) > bytes.len() {
@@ -1163,11 +1240,15 @@ impl ImageCache {
             let mut pending = crate::lock_util::recover(&self.pending);
             let completed: Vec<_> = pending
                 .iter()
-                .filter(|(_, value)| value.is_some())
+                .filter(|(_, slot)| slot.decoded.is_some())
                 .map(|(path, _)| path.clone())
                 .collect();
             for path in completed {
-                if let Some(Some(decoded)) = pending.remove(&path) {
+                if let Some(PendingLoad {
+                    decoded: Some(decoded),
+                    ..
+                }) = pending.remove(&path)
+                {
                     let name = path
                         .file_name()
                         .unwrap_or_default()
@@ -1189,9 +1270,12 @@ impl ImageCache {
         }
 
         let target = self.preview_target;
+        self.purge_expired_failures(Instant::now());
         let failed = crate::lock_util::recover(&self.failed).clone();
-        let mut available_slots =
-            MAX_PRELOAD_WORKERS.saturating_sub(crate::lock_util::recover(&self.pending).len());
+        let mut available_slots = free_preload_slots(
+            crate::lock_util::recover(&self.pending).len(),
+            ACTIVE_DECODERS.load(Ordering::Acquire),
+        );
         for path in paths {
             if self
                 .entries
@@ -1209,20 +1293,28 @@ impl ImageCache {
             if available_slots == 0 || failed.contains_key(path) {
                 continue;
             }
+            let active_generation = Arc::clone(&self.generation);
+            let generation = active_generation.load(Ordering::Acquire);
             {
                 let mut pending = crate::lock_util::recover(&self.pending);
                 if pending.contains_key(path) {
                     continue;
                 }
-                pending.insert(path.clone(), None);
+                pending.insert(
+                    path.clone(),
+                    PendingLoad {
+                        generation,
+                        decoded: None,
+                    },
+                );
             }
             let path_clone = path.clone();
             let pending_clone = Arc::clone(&self.pending);
             let failed_clone = Arc::clone(&self.failed);
-            let active_generation = Arc::clone(&self.generation);
-            let generation = active_generation.load(Ordering::Acquire);
             let ctx_clone = ctx.clone();
-            let task = crate::workload::submit(
+            let abandoned_path = path.clone();
+            let abandoned_pending = Arc::clone(&self.pending);
+            let task = crate::workload::submit_with_abandonment(
                 crate::workload::TaskSpec::new(
                     crate::workload::TaskKind::Preview,
                     dir.to_path_buf(),
@@ -1237,38 +1329,44 @@ impl ImageCache {
                             || active_generation.load(Ordering::Acquire) != generation
                     };
                     if cancelled() || !crate::io_budget::background_checkpoint(cancelled) {
-                        crate::lock_util::recover(&pending_clone).remove(&path_clone);
+                        release_pending(&pending_clone, &path_clone, generation);
                         return;
                     }
                     let result = load_image_with_timeout(&path_clone, target);
+                    if cancelled() {
+                        release_pending(&pending_clone, &path_clone, generation);
+                        return;
+                    }
                     match result {
                         Ok(decoded) => {
-                            let mut pending = crate::lock_util::recover(&pending_clone);
-                            if !cancelled() {
-                                pending.insert(path_clone.clone(), Some(decoded));
-                                drop(pending);
+                            if publish_pending(&pending_clone, &path_clone, generation, decoded) {
                                 ctx_clone.request_repaint();
-                            } else {
-                                pending.remove(&path_clone);
                             }
                         }
                         Err(error) => {
-                            let mut pending = crate::lock_util::recover(&pending_clone);
-                            if !cancelled() {
-                                pending.remove(&path_clone);
-                                drop(pending);
+                            if release_pending(&pending_clone, &path_clone, generation) {
+                                let failure =
+                                    FailedLoad::new(classify_failure(&error), Instant::now());
                                 crate::lock_util::recover(&failed_clone)
-                                    .insert(path_clone, classify_failure(&error));
+                                    .insert(path_clone, failure);
+                                if failure.retry_at.is_some() {
+                                    ctx_clone.request_repaint_after(TRANSIENT_FAILURE_RETRY);
+                                }
                                 ctx_clone.request_repaint();
                             }
                         }
                     }
                 },
+                // A job dropped before it ran (spawn failure, superseded,
+                // backend gone) must not leave its slot stuck in Loading.
+                move |_reason| {
+                    release_pending(&abandoned_pending, &abandoned_path, generation);
+                },
             );
             if task.is_ok() {
                 available_slots -= 1;
             } else {
-                crate::lock_util::recover(&self.pending).remove(path);
+                release_pending(&self.pending, path, generation);
             }
         }
 
@@ -1312,14 +1410,19 @@ impl ImageCache {
         if !crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ImagePreview) {
             return PreviewLoadState::Disabled;
         }
-        if let Some(failure) = crate::lock_util::recover(&self.failed).get(path).copied() {
-            return PreviewLoadState::Failed(failure);
+        if let Some(failed) = crate::lock_util::recover(&self.failed).get(path).copied() {
+            return PreviewLoadState::Failed(failed.failure);
         }
         if crate::lock_util::recover(&self.pending).contains_key(path) {
             PreviewLoadState::Loading
         } else {
             PreviewLoadState::Idle
         }
+    }
+
+    /// Drop capacity refusals whose retry delay has passed.
+    fn purge_expired_failures(&self, now: Instant) {
+        crate::lock_util::recover(&self.failed).retain(|_, failed| !failed.expired(now));
     }
 
     /// Clear a negative cache entry so the next preload pass can try again.
@@ -1346,10 +1449,17 @@ impl ImageCache {
 
 fn classify_failure(error: &str) -> PreviewFailure {
     let normalized = error.to_ascii_lowercase();
-    if normalized.contains("still busy") || normalized.contains("decoder capacity") {
+    if normalized.contains("still busy")
+        || normalized.contains("decoder capacity")
+        || normalized.contains("could not start")
+        || normalized.contains("deferred")
+    {
         PreviewFailure::Busy
     } else if normalized.contains("timed out") || normalized.contains("time budget") {
         PreviewFailure::TimedOut
+    } else if normalized.contains("zero dimensions") {
+        // An empty image is damaged, not over the dimension limit.
+        PreviewFailure::Decode
     } else if normalized.contains("too large")
         || normalized.contains("allocation")
         || normalized.contains("memory")
@@ -1374,62 +1484,28 @@ fn classify_failure(error: &str) -> PreviewFailure {
     }
 }
 
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv"];
+
+/// Case-insensitive extension check without allocating during scans.
+fn has_extension_in(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            extensions
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+}
+
 #[cfg(target_os = "macos")]
 fn is_video_ext(path: &Path) -> bool {
-    // Byte-level case-insensitive check avoids string allocation during scans
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.as_bytes()),
-        Some(
-            b"mp4"
-                | b"mov"
-                | b"avi"
-                | b"mkv"
-                | b"webm"
-                | b"m4v"
-                | b"wmv"
-                | b"flv"
-                | b"MP4"
-                | b"MOV"
-                | b"AVI"
-                | b"MKV"
-                | b"WEBM"
-                | b"M4V"
-                | b"WMV"
-                | b"FLV"
-        )
-    )
+    has_extension_in(path, VIDEO_EXTENSIONS)
 }
 
 /// Extensions the standard `image` crate path cannot decode. Early-reject so
 /// callers classify as Unsupported even when platform error strings differ.
 fn is_undecodable_standard_ext(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.as_bytes()),
-        Some(
-            b"svg"
-                | b"mkv"
-                | b"webm"
-                | b"mp4"
-                | b"mov"
-                | b"avi"
-                | b"m4v"
-                | b"wmv"
-                | b"flv"
-                | b"SVG"
-                | b"MKV"
-                | b"WEBM"
-                | b"MP4"
-                | b"MOV"
-                | b"AVI"
-                | b"M4V"
-                | b"WMV"
-                | b"FLV"
-        )
-    )
+    has_extension_in(path, &["svg"]) || has_extension_in(path, VIDEO_EXTENSIONS)
 }
 
 /// Allocate a zeroed RGBA buffer without integer wrap or an aborting reserve.
@@ -1579,9 +1655,17 @@ fn load_image_with_timeout(path: &Path, target: PreviewTarget) -> Result<Decoded
     });
     match &result {
         Ok(_) => crate::decoder_breaker::record_success(&path_buf),
+        Err(error) if !counts_against_decoder(error) => {}
         Err(_) => crate::decoder_breaker::record_failure(&path_buf),
     }
     result
+}
+
+/// Capacity refusals say nothing about the format, so they must not trip the
+/// per-format breaker. Timeouts still count: a decoder that hangs keeps its
+/// permit, and the breaker is what stops one format from pinning them all.
+fn counts_against_decoder(error: &str) -> bool {
+    classify_failure(error) != PreviewFailure::Busy
 }
 
 fn load_image_from_disk(path: &Path, target: PreviewTarget) -> Result<DecodedPreview, String> {
@@ -1671,6 +1755,20 @@ fn load_via_image_crate(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     })
 }
 
+/// Bitmap color space for CoreGraphics draws. egui treats texture bytes as
+/// sRGB, so drawing into an explicit sRGB space makes CoreGraphics convert
+/// wide-gamut (Display P3) sources instead of passing device values through.
+#[cfg(target_os = "macos")]
+unsafe fn create_srgb_color_space() -> *mut objc::runtime::Object {
+    unsafe extern "C" {
+        static kCGColorSpaceSRGB: *const std::ffi::c_void;
+        fn CGColorSpaceCreateWithName(name: *const std::ffi::c_void) -> *mut objc::runtime::Object;
+    }
+    // SAFETY: kCGColorSpaceSRGB is an immutable CoreGraphics constant and the
+    // caller releases the returned color space with CGColorSpaceRelease.
+    unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) }
+}
+
 /// Load image via macOS CoreGraphics/ImageIO.
 /// Supports: DNG, CR2, NEF, ARW, ORF, RAF, RW2, HEIC, TIFF, and all standard formats.
 #[cfg(target_os = "macos")]
@@ -1704,6 +1802,7 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
                 url: *mut Object,
                 options: *mut Object,
             ) -> CGImageSourceRef;
+            fn CGImageSourceGetPrimaryImageIndex(source: CGImageSourceRef) -> usize;
             fn CGImageSourceCreateThumbnailAtIndex(
                 source: CGImageSourceRef,
                 index: usize,
@@ -1711,7 +1810,6 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
             ) -> *mut Object;
             fn CGImageGetWidth(image: *mut Object) -> usize;
             fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGColorSpaceCreateDeviceRGB() -> *mut Object;
             fn CGBitmapContextCreate(
                 data: *mut u8,
                 width: usize,
@@ -1772,7 +1870,9 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
         let _: () = msg_send![options, setObject: yes forKey: transform_key];
         let _: () = msg_send![options, setObject: max_size forKey: size_key];
 
-        let cg_image = CGImageSourceCreateThumbnailAtIndex(source, 0, options);
+        // HEIF containers may store the primary image at a non-zero index.
+        let primary_index = CGImageSourceGetPrimaryImageIndex(source);
+        let cg_image = CGImageSourceCreateThumbnailAtIndex(source, primary_index, options);
         if cg_image.is_null() {
             CFRelease(source);
             let _: () = msg_send![pool, drain];
@@ -1798,12 +1898,12 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
                 return Err(error);
             }
         };
-        let color_space = CGColorSpaceCreateDeviceRGB();
+        let color_space = create_srgb_color_space();
         if color_space.is_null() {
             CGImageRelease(cg_image);
             CFRelease(source);
             let _: () = msg_send![pool, drain];
-            return Err("CGColorSpaceCreateDeviceRGB failed".into());
+            return Err("sRGB color space could not be created".into());
         }
         // kCGImageAlphaPremultipliedLast = 1
         let bitmap_info: u32 = 1;
@@ -1959,7 +2059,6 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         unsafe extern "C" {
             fn CGImageGetWidth(image: *mut Object) -> usize;
             fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGColorSpaceCreateDeviceRGB() -> *mut Object;
             fn CGBitmapContextCreate(
                 data: *mut u8,
                 width: usize,
@@ -1999,11 +2098,11 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
                 return Err(error);
             }
         };
-        let color_space = CGColorSpaceCreateDeviceRGB();
+        let color_space = create_srgb_color_space();
         if color_space.is_null() {
             CGImageRelease(cg_image);
             let _: () = msg_send![pool, drain];
-            return Err("CGColorSpaceCreateDeviceRGB failed for video".into());
+            return Err("sRGB color space could not be created for video".into());
         }
         let bitmap_info: u32 = 1; // kCGImageAlphaPremultipliedLast
         let cg_ctx = CGBitmapContextCreate(
@@ -2515,8 +2614,17 @@ mod tests {
     fn retry_clears_negative_and_pending_cache_entries() {
         let mut cache = ImageCache::new();
         let path = std::path::PathBuf::from("broken.png");
-        crate::lock_util::recover(&cache.failed).insert(path.clone(), PreviewFailure::Decode);
-        crate::lock_util::recover(&cache.pending).insert(path.clone(), None);
+        crate::lock_util::recover(&cache.failed).insert(
+            path.clone(),
+            super::FailedLoad::new(PreviewFailure::Decode, Instant::now()),
+        );
+        crate::lock_util::recover(&cache.pending).insert(
+            path.clone(),
+            super::PendingLoad {
+                generation: 0,
+                decoded: None,
+            },
+        );
         assert_eq!(cache.stats().failed, 1);
         assert_eq!(cache.stats().pending, 1);
 
@@ -2881,5 +2989,185 @@ mod tests {
             (after.change_seconds, after.change_nanoseconds)
         );
         assert_ne!(before, after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_text_file_fingerprints_and_reads_its_target() {
+        let temp = TempDir::new();
+        let target = temp.file("target.txt", "linked text");
+        let link = temp.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let metadata = std::fs::metadata(&link).unwrap();
+        let request = PreviewIdentity {
+            path: link,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        let provider = FsTextPreviewProvider::default();
+
+        let expected = super::TextPreviewProvider::fingerprint(&provider, &request).unwrap();
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &request, &expected, &|| false)
+                .unwrap()
+                .as_ref(),
+            "linked text"
+        );
+    }
+
+    #[test]
+    fn ansi_colored_text_is_not_rejected_as_binary() {
+        let listing = "\x1b[01;34mdir\x1b[0m\n".repeat(8);
+        assert_eq!(
+            decode_text_bytes(listing.clone().into_bytes())
+                .unwrap()
+                .as_ref(),
+            listing
+        );
+    }
+
+    #[test]
+    fn interrupted_reads_are_retried() {
+        struct InterruptOnce {
+            interrupted: bool,
+            data: std::io::Cursor<Vec<u8>>,
+        }
+        impl std::io::Read for InterruptOnce {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                self.data.read(buf)
+            }
+        }
+        let mut reader = InterruptOnce {
+            interrupted: false,
+            data: std::io::Cursor::new(b"hello".to_vec()),
+        };
+        assert_eq!(
+            super::read_preview_bytes(&mut reader, 5, &|| false, None).unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn empty_and_capacity_errors_get_accurate_failure_kinds() {
+        assert_eq!(
+            classify_failure("image has zero dimensions"),
+            PreviewFailure::Decode
+        );
+        assert_eq!(
+            classify_failure("ImageIO: video frame has zero dimensions; standard decoder: x"),
+            PreviewFailure::Decode
+        );
+        assert_eq!(
+            classify_failure("image dimensions exceed the preview limit"),
+            PreviewFailure::TooLarge
+        );
+        assert_eq!(
+            classify_failure("preview deferred under battery/thermal pressure"),
+            PreviewFailure::Busy
+        );
+        assert_eq!(
+            classify_failure("preview provider thread could not start: EAGAIN"),
+            PreviewFailure::Busy
+        );
+    }
+
+    #[test]
+    fn capacity_refusals_do_not_trip_the_decoder_breaker() {
+        assert!(!super::counts_against_decoder(
+            "preview providers are still busy after an earlier timeout"
+        ));
+        assert!(!super::counts_against_decoder(
+            "preview deferred under battery/thermal pressure"
+        ));
+        assert!(super::counts_against_decoder("preview provider timed out"));
+        assert!(super::counts_against_decoder("invalid checksum"));
+    }
+
+    #[test]
+    fn busy_failures_expire_but_decode_failures_stay() {
+        let cache = ImageCache::new();
+        let now = Instant::now();
+        let busy = PathBuf::from("busy.png");
+        let broken = PathBuf::from("broken.png");
+        {
+            let mut failed = crate::lock_util::recover(&cache.failed);
+            failed.insert(
+                busy.clone(),
+                super::FailedLoad::new(PreviewFailure::Busy, now),
+            );
+            failed.insert(
+                broken.clone(),
+                super::FailedLoad::new(PreviewFailure::Decode, now),
+            );
+        }
+
+        cache.purge_expired_failures(now);
+        assert_eq!(cache.stats().failed, 2);
+
+        cache.purge_expired_failures(now + super::TRANSIENT_FAILURE_RETRY);
+        let failed = crate::lock_util::recover(&cache.failed);
+        assert!(!failed.contains_key(&busy));
+        assert!(failed.contains_key(&broken));
+    }
+
+    #[test]
+    fn mixed_case_video_extensions_are_recognized() {
+        assert!(super::is_undecodable_standard_ext(std::path::Path::new(
+            "clip.Mov"
+        )));
+        assert!(super::is_undecodable_standard_ext(std::path::Path::new(
+            "logo.Svg"
+        )));
+        assert!(!super::is_undecodable_standard_ext(std::path::Path::new(
+            "photo.Png"
+        )));
+    }
+
+    #[test]
+    fn stale_generation_cannot_release_or_fill_a_newer_slot() {
+        let pending: super::PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let path = PathBuf::from("same.png");
+        crate::lock_util::recover(&pending).insert(
+            path.clone(),
+            super::PendingLoad {
+                generation: 2,
+                decoded: None,
+            },
+        );
+        let decoded = || super::DecodedPreview {
+            image: egui::ColorImage::new([1, 1], vec![egui::Color32::BLACK]),
+            byte_size: 4,
+            decoded_for: PreviewTarget::DEFAULT,
+        };
+
+        assert!(!super::release_pending(&pending, &path, 1));
+        assert!(!super::publish_pending(&pending, &path, 1, decoded()));
+        assert!(
+            crate::lock_util::recover(&pending)
+                .get(&path)
+                .is_some_and(|slot| slot.generation == 2 && slot.decoded.is_none())
+        );
+
+        assert!(super::publish_pending(&pending, &path, 2, decoded()));
+        assert!(super::release_pending(&pending, &path, 2));
+        assert!(crate::lock_util::recover(&pending).is_empty());
+    }
+
+    #[test]
+    fn decoders_outliving_their_timeout_hold_preload_slots() {
+        assert_eq!(super::free_preload_slots(0, 0), super::MAX_PRELOAD_WORKERS);
+        assert_eq!(
+            super::free_preload_slots(1, 0),
+            super::MAX_PRELOAD_WORKERS - 1
+        );
+        assert_eq!(super::free_preload_slots(0, super::MAX_PRELOAD_WORKERS), 0);
+        assert_eq!(
+            super::free_preload_slots(1, 3),
+            super::MAX_PRELOAD_WORKERS - 3
+        );
     }
 }

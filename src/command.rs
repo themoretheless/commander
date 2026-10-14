@@ -757,10 +757,13 @@ fn metadata_score(query: &str, item: &CommandEntry) -> Option<i32> {
     all_tokens_match.then_some(42 + tokens.len() as i32)
 }
 
+/// Shortcut text with separators removed (`Cmd+Shift+R` and `cmd shift r`
+/// both become `cmdshiftr`). Punctuation keys are kept, so `Cmd+[` and
+/// `Cmd+]` stay distinct from a bare `cmd` and `.` remains searchable.
 fn shortcut_search_text(input: &str) -> String {
     input
         .chars()
-        .filter(|c| c.is_alphanumeric())
+        .filter(|&c| c != '+' && !c.is_whitespace())
         .flat_map(char::to_lowercase)
         .collect()
 }
@@ -852,7 +855,8 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         Digit(n) if press.command && press.shift => Some(Command::AssignSlot(n)),
         Digit(n) if press.command => Some(Command::JumpSlot(n)),
         Space => Some(Command::ToggleSelect),
-        Period => Some(Command::RepeatLast),
+        // Only a bare `.` repeats; Cmd+. is a system/cancel chord elsewhere.
+        Period if !press.command => Some(Command::RepeatLast),
         F2 => Some(Command::BeginRename),
         R if press.command && press.shift => Some(Command::BeginBatchRename),
         R if press.command => Some(Command::BeginRename),
@@ -1275,6 +1279,35 @@ mod tests {
             filter_commands("cmd shift d")[0].command,
             Command::CycleDensity
         );
+    }
+
+    #[test]
+    fn shortcut_punctuation_is_part_of_the_match() {
+        // A bare modifier is not an exact match for Back/Forward.
+        let back = CATALOG
+            .iter()
+            .find(|entry| entry.command == Command::JumpBack)
+            .unwrap();
+        assert!(metadata_score("cmd", back).unwrap() < 90);
+        assert_eq!(metadata_score("cmd+[", back), Some(90));
+        let repeat = CATALOG
+            .iter()
+            .find(|entry| entry.command == Command::RepeatLast)
+            .unwrap();
+        assert_eq!(metadata_score(".", repeat), Some(90));
+        assert_eq!(filter_commands("cmd [")[0].command, Command::JumpBack);
+        assert_eq!(filter_commands("cmd ]")[0].command, Command::JumpForward);
+    }
+
+    #[test]
+    fn modified_period_does_not_repeat_last_command() {
+        assert_eq!(map_key(press(KeyCode::Period)), Some(Command::RepeatLast));
+        let cmd_period = KeyPress {
+            code: KeyCode::Period,
+            command: true,
+            shift: false,
+        };
+        assert_eq!(map_key(cmd_period), None);
     }
 
     #[test]

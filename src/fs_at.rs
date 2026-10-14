@@ -395,8 +395,12 @@ pub fn rename_sibling(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
             rename_noreplace(from, to)
         };
     }
+    // Shallow bind: the no-follow directory open is the proof we need. A
+    // deep observe would walk the whole destination folder and fail with
+    // WouldBlock whenever anything else writes into it mid-walk (or on any
+    // unreadable subfolder), aborting an otherwise fine placement.
     let provider = crate::ports::NativeFileSystemProvider;
-    let bound = BoundDirectory::bind(&provider, from_parent)?;
+    let bound = BoundDirectory::open(from_parent)?;
     provider.apply_at(
         &bound,
         &crate::ports::RelativeFileSystemEffect::Rename {
@@ -492,6 +496,25 @@ mod tests {
         rename_sibling(&from, &to, false).unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), b"payload");
         assert!(!from.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_sibling_ignores_unreadable_subfolders_of_the_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let locked = temp.dir("locked");
+        temp.file("locked/inner.txt", "x");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let from = temp.file("staged", "payload");
+        let to = temp.path().join("final");
+
+        let result = rename_sibling(&from, &to, false);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        result.unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"payload");
     }
 
     #[cfg(unix)]

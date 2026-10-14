@@ -55,7 +55,7 @@ pub fn file(path: &Path) -> std::io::Result<VerifiedHash> {
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; HASH_BUFFER_SIZE];
     loop {
-        let read = source.read(&mut buffer)?;
+        let read = read_retrying(&mut source, &mut buffer)?;
         if read == 0 {
             break;
         }
@@ -81,13 +81,32 @@ pub fn prefix(path: &Path, offset: u64) -> std::io::Result<VerifiedHash> {
 }
 
 pub fn prefix_into(path: &Path, offset: u64, hasher: &mut blake3::Hasher) -> std::io::Result<()> {
-    let mut file = std::io::BufReader::with_capacity(HASH_BUFFER_SIZE, std::fs::File::open(path)?);
+    let file = std::io::BufReader::with_capacity(HASH_BUFFER_SIZE, std::fs::File::open(path)?);
+    prefix_from_reader(file, offset, hasher)
+}
+
+/// Read, retrying when a signal interrupts the call (`EINTR`, e.g. on
+/// `intr` NFS mounts) instead of failing the whole verification.
+fn read_retrying(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match reader.read(buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
+}
+
+fn prefix_from_reader(
+    mut file: impl Read,
+    offset: u64,
+    hasher: &mut blake3::Hasher,
+) -> std::io::Result<()> {
     let mut remaining = offset;
     let mut buffer = vec![0_u8; HASH_BUFFER_SIZE];
     while remaining > 0 {
         let limit = usize::try_from(remaining.min(buffer.len() as u64))
             .expect("bounded prefix chunk fits usize");
-        let read = file.read(&mut buffer[..limit])?;
+        let read = read_retrying(&mut file, &mut buffer[..limit])?;
         if read == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -181,6 +200,38 @@ fn contains(key: &CacheKey) -> bool {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    /// Yields `bytes`, failing every other read with `Interrupted`.
+    struct InterruptingReader {
+        bytes: &'static [u8],
+        interrupt_next: bool,
+    }
+
+    impl Read for InterruptingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.interrupt_next = !self.interrupt_next;
+            if !self.interrupt_next {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            let count = buffer.len().min(self.bytes.len()).min(3);
+            buffer[..count].copy_from_slice(&self.bytes[..count]);
+            self.bytes = &self.bytes[count..];
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn prefix_hash_retries_interrupted_reads() {
+        let mut hasher = blake3::Hasher::new();
+        let reader = InterruptingReader {
+            bytes: b"checkpoint prefix",
+            interrupt_next: true,
+        };
+
+        prefix_from_reader(reader, 10, &mut hasher).unwrap();
+
+        assert_eq!(hasher.finalize(), blake3::hash(b"checkpoint"));
+    }
 
     #[test]
     fn repeated_hash_uses_the_stable_identity_cache() {

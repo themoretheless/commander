@@ -173,6 +173,8 @@ pub struct UiState {
     pub(crate) tools: PaneTools,
     /// Type-ahead buffer and the input time of its last keystroke.
     pub(crate) type_ahead: Option<(String, f64)>,
+    /// The numeric type-ahead buffer has already jumped as a name.
+    pub(crate) type_ahead_jumped: bool,
     /// Pending vim-style chord leader and the input time it was pressed.
     pub(crate) chord: Option<(char, f64)>,
     /// Input time a modifier key started being held (key bar reveal).
@@ -196,6 +198,7 @@ impl Default for UiState {
             modals: ModalStore::default(),
             tools: PaneTools::default(),
             type_ahead: None,
+            type_ahead_jumped: false,
             chord: None,
             modifier_held_since: None,
             focus_mode: false,

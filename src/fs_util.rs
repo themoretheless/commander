@@ -140,9 +140,11 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
             copy_symlink(&source, &destination)?;
         } else if file_type.is_dir() {
             copy_dir_all(&source, &destination)?;
-        } else {
+        } else if file_type.is_file() {
             std::fs::copy(source, destination)?;
         }
+        // FIFOs, sockets and devices are skipped: opening a FIFO blocks
+        // until a writer appears, and the others cannot be byte-copied.
     }
     Ok(())
 }
@@ -245,22 +247,28 @@ pub fn first_available(mut candidate: impl FnMut(usize) -> PathBuf) -> PathBuf {
 
 /// The first free Finder-style "copy" name next to `path`:
 /// "name copy.ext", then "name copy 2.ext", ...
+/// A directory keeps its whole name as the stem ("v1.2 copy", not
+/// "v1 copy.2"), and names are built as `OsString` so non-UTF-8 bytes survive.
 pub fn available_copy_name(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or(Path::new("/"));
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let ext = path
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    let is_dir = std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
+    let (stem, ext) = if is_dir {
+        (path.file_name().unwrap_or_default(), None)
+    } else {
+        (path.file_stem().unwrap_or_default(), path.extension())
+    };
     first_available(|i| {
+        let mut name = stem.to_os_string();
         if i == 0 {
-            parent.join(format!("{stem} copy{ext}"))
+            name.push(" copy");
         } else {
-            parent.join(format!("{stem} copy {}{ext}", i + 1))
+            name.push(format!(" copy {}", i + 1));
         }
+        if let Some(ext) = ext {
+            name.push(".");
+            name.push(ext);
+        }
+        parent.join(name)
     })
 }
 
@@ -273,8 +281,13 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
         copy_symlink(path, &dest)?;
     } else if file_type.is_dir() {
         copy_dir_all(path, &dest)?;
-    } else {
+    } else if file_type.is_file() {
         std::fs::copy(path, &dest)?;
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "only files, folders and links can be duplicated",
+        ));
     }
     Ok(dest)
 }
@@ -347,15 +360,10 @@ pub fn space_verdict(
 
 /// Compress a file or directory into "<name>.zip" next to it.
 /// Runs `ditto` in the background; returns once the process is spawned.
+/// An existing archive is never replaced: like Finder, the name counts up
+/// ("name 2.zip", "name 3.zip", ...) because `ditto` would overwrite it.
 pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
-    let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path has no file name",
-        ));
-    };
-    let parent = path.parent().unwrap_or(Path::new("/"));
-    let archive = parent.join(format!("{}.zip", name));
+    let archive = zip_archive_path(path)?;
     std::process::Command::new("ditto")
         .arg("-c")
         .arg("-k")
@@ -364,6 +372,24 @@ pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {
         .arg(&archive)
         .spawn()
         .map(|_| ())
+}
+
+fn zip_archive_path(path: &Path) -> std::io::Result<PathBuf> {
+    let Some(name) = path.file_name() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path has no file name",
+        ));
+    };
+    let parent = path.parent().unwrap_or(Path::new("/"));
+    Ok(first_available(|i| {
+        let mut archive = name.to_os_string();
+        if i > 0 {
+            archive.push(format!(" {}", i + 1));
+        }
+        archive.push(".zip");
+        parent.join(archive)
+    }))
 }
 
 /// Whether two regular files have the same verified BLAKE3 content hash.
@@ -376,20 +402,16 @@ pub fn files_equal(a: &Path, b: &Path) -> bool {
 /// Content hash of a file, streamed in chunks so large files are not loaded
 /// whole. Returns `None` if the file cannot be read. Non-cryptographic (good
 /// enough to confirm byte-identity for duplicate detection after a size match).
+/// The first 8 bytes of BLAKE3, so the value printed in checksum reports is
+/// stable across Rust releases (`DefaultHasher` is not); `io::copy` retries
+/// reads interrupted by a signal instead of dropping the file.
 pub fn content_hash(path: &Path) -> Option<u64> {
-    use std::hash::Hasher;
-    use std::io::Read;
     let mut file = std::fs::File::open(path).ok()?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = file.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        hasher.write(&buf[..n]);
-    }
-    Some(hasher.finish())
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    let digest = hasher.finalize();
+    let prefix: [u8; 8] = digest.as_bytes()[..8].try_into().ok()?;
+    Some(u64::from_be_bytes(prefix))
 }
 
 #[cfg(test)]
@@ -497,6 +519,81 @@ mod tests {
 
         let second = duplicate(&f).unwrap();
         assert_eq!(second, tmp.path().join("doc copy 2.txt"));
+    }
+
+    #[test]
+    fn content_hash_is_a_stable_blake3_prefix() {
+        let tmp = TempDir::new();
+        let a = tmp.file("a.bin", "hello world");
+        let expected = &blake3::hash(b"hello world").to_hex()[..16];
+        assert_eq!(format!("{:016x}", content_hash(&a).unwrap()), expected);
+    }
+
+    #[test]
+    fn duplicate_keeps_dotted_folder_names_whole() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("v1.2");
+
+        assert_eq!(duplicate(&dir).unwrap(), tmp.path().join("v1.2 copy"));
+        assert_eq!(duplicate(&dir).unwrap(), tmp.path().join("v1.2 copy 2"));
+    }
+
+    // APFS and HFS+ refuse names that are not valid UTF-8 (EILSEQ), so the
+    // case cannot arise on macOS.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn duplicate_keeps_non_utf8_name_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let tmp = TempDir::new();
+        let file = tmp.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9.txt"));
+        std::fs::write(&file, "x").unwrap();
+
+        let copy = duplicate(&file).unwrap();
+
+        assert_eq!(
+            copy.file_name().unwrap().to_os_string().into_vec(),
+            b"caf\xe9 copy.txt".to_vec()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_skips_fifos_inside_folders() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("pipes");
+        tmp.file("pipes/data.txt", "x");
+        let fifo = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+            dir.join("queue").as_os_str(),
+        ))
+        .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(duplicate(&dir).map_err(|error| error.to_string()));
+        });
+
+        let copy = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("duplicate blocked on a FIFO")
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(copy.join("data.txt")).unwrap(), "x");
+        assert!(!path_is_taken(&copy.join("queue")));
+    }
+
+    #[test]
+    fn zip_archive_name_counts_up_instead_of_replacing() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("photos");
+        assert_eq!(
+            zip_archive_path(&dir).unwrap(),
+            tmp.path().join("photos.zip")
+        );
+        tmp.file("photos.zip", "old");
+        assert_eq!(
+            zip_archive_path(&dir).unwrap(),
+            tmp.path().join("photos 2.zip")
+        );
     }
 
     #[test]

@@ -8,6 +8,9 @@ pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let (mut i, mut j) = (0usize, 0usize);
+    // Leading-zero count only breaks a tie once the rest of the names compare
+    // equal, so "a01b" still sorts before "a1c".
+    let mut zero_tiebreak = Ordering::Equal;
     while i < a.len() && j < b.len() {
         let (ca, cb) = (a[i], b[j]);
         if ca.is_ascii_digit() && cb.is_ascii_digit() {
@@ -24,10 +27,12 @@ pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
             let ordering = va
                 .len()
                 .cmp(&vb.len())
-                .then_with(|| va.iter().cmp(vb.iter()))
-                .then_with(|| (i - si).cmp(&(j - sj)));
+                .then_with(|| va.iter().cmp(vb.iter()));
             if ordering != Ordering::Equal {
                 return ordering;
+            }
+            if zero_tiebreak == Ordering::Equal {
+                zero_tiebreak = (i - si).cmp(&(j - sj));
             }
         } else {
             match ca.cmp(&cb) {
@@ -39,7 +44,7 @@ pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
             }
         }
     }
-    (a.len() - i).cmp(&(b.len() - j))
+    (a.len() - i).cmp(&(b.len() - j)).then(zero_tiebreak)
 }
 
 fn strip_leading_zeros(run: &[char]) -> &[char] {
@@ -94,5 +99,9 @@ mod tests {
         assert_eq!(natural_cmp("a", "a"), Ordering::Equal);
         assert_eq!(natural_cmp("img9", "img09"), Ordering::Less);
         assert_eq!(natural_cmp("v1.2", "v1.10"), Ordering::Less);
+        // The zero-count tie-break never overrides a later difference.
+        assert_eq!(natural_cmp("a01b", "a1c"), Ordering::Less);
+        assert_eq!(natural_cmp("a1c", "a01b"), Ordering::Greater);
+        assert_eq!(natural_cmp("a01b", "a1b"), Ordering::Greater);
     }
 }

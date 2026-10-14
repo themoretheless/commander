@@ -41,6 +41,29 @@ fn render_text_preview(
             });
             ui.add(egui::Separator::default().spacing(4.0));
 
+            // `PreviewContent::Text` owns its body, so show it whenever it is
+            // present. The cache's single text slot may since have been
+            // cancelled or retargeted by the other pane, which would otherwise
+            // leave this pane on a spinner forever.
+            if let Some(content) = content {
+                egui::ScrollArea::both()
+                    .id_salt(format!("text_preview_{}", panel_side))
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.style_mut().interaction.selectable_labels = true;
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(content)
+                                    .size(12.0)
+                                    .font(egui::FontId::monospace(12.0))
+                                    .color(t.text_secondary),
+                            )
+                            .wrap(),
+                        );
+                    });
+                return;
+            }
+
             match load_state {
                 crate::image_cache::TextPreviewLoadState::Idle
                 | crate::image_cache::TextPreviewLoadState::Debouncing
@@ -93,25 +116,8 @@ fn render_text_preview(
                         });
                     });
                 }
-                crate::image_cache::TextPreviewLoadState::Ready => {
-                    if let Some(content) = content {
-                        egui::ScrollArea::both()
-                            .id_salt(format!("text_preview_{}", panel_side))
-                            .auto_shrink([false; 2])
-                            .show(ui, |ui| {
-                                ui.style_mut().interaction.selectable_labels = true;
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(content)
-                                            .size(12.0)
-                                            .font(egui::FontId::monospace(12.0))
-                                            .color(t.text_secondary),
-                                    )
-                                    .wrap(),
-                                );
-                            });
-                    }
-                }
+                // Ready without content: the body is about to be published.
+                crate::image_cache::TextPreviewLoadState::Ready => {}
             }
         });
 }
@@ -612,27 +618,37 @@ impl App {
                                 preview_extent.y,
                                 ui.ctx().pixels_per_point(),
                             );
+                            let close_button = |ui: &mut egui::Ui| {
+                                ui.small_button("\u{00d7}")
+                                    .on_hover_text("Close preview")
+                                    .clicked()
+                            };
                             if let Some(texture) = image_cache.get(&path) {
                                 let tex_size = texture.size_vec2();
+                                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                    close_preview |= close_button(ui);
+                                });
+                                let image_extent = ui.available_size();
                                 ui.centered_and_justified(|ui| {
-                                    let scale = (preview_extent.x / tex_size.x)
-                                        .min(preview_extent.y / tex_size.y)
+                                    let scale = (image_extent.x / tex_size.x)
+                                        .min(image_extent.y / tex_size.y)
                                         .min(1.0);
                                     let display_size =
                                         egui::vec2(tex_size.x * scale, tex_size.y * scale);
-                                    let resp = ui.add(egui::Image::from_texture(
-                                        egui::load::SizedTexture::new(texture.id(), display_size),
-                                    ));
+                                    // Images only sense hover by default; the
+                                    // click-to-close needs an explicit sense.
+                                    let resp = ui.add(
+                                        egui::Image::from_texture(egui::load::SizedTexture::new(
+                                            texture.id(),
+                                            display_size,
+                                        ))
+                                        .sense(Sense::click()),
+                                    );
                                     if resp.clicked() {
                                         close_preview = true;
                                     }
                                 });
                             } else {
-                                let close_button = |ui: &mut egui::Ui| {
-                                    ui.small_button("\u{00d7}")
-                                        .on_hover_text("Close preview")
-                                        .clicked()
-                                };
                                 match image_cache.load_state(&path) {
                                     crate::image_cache::PreviewLoadState::Disabled => {
                                         ui.centered_and_justified(|ui| {

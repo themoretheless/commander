@@ -32,6 +32,7 @@ pub fn native_qa_renderer_check()
             ],
             applied_tags: BTreeSet::from(["Blue".to_string()]),
             tags_available: true,
+            color_tag_names: std::collections::BTreeMap::new(),
             share_services: vec![
                 ("AirDrop".to_string(), "com.apple.share.AirDrop".to_string()),
                 ("Mail".to_string(), "com.apple.share.Mail".to_string()),

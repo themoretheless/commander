@@ -4,7 +4,7 @@
 //! policy. Reused by the confirmation dialog.
 
 use crate::panel::FileEntry;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// One name collision between a source and a same-named destination entry.
@@ -23,26 +23,37 @@ pub struct Conflict {
 }
 
 /// Source entries whose (case-insensitive) name already exists in `dest`.
+/// The destination entry judged against is the exact-name one when present,
+/// else the unique case-insensitive match. When several case variants exist
+/// (`Foo` and `FOO` on a case-sensitive volume) and none is exact, the source
+/// is judged against all of them, so KeepNewer/KeepLarger only replace when it
+/// beats every variant rather than whichever one a map happened to keep.
 pub fn detect(sources: &[FileEntry], dest: &[FileEntry]) -> Vec<Conflict> {
-    let dmap: std::collections::HashMap<&str, &FileEntry> =
-        dest.iter().map(|e| (e.name_lower.as_str(), e)).collect();
+    let exact: HashMap<&str, &FileEntry> = dest.iter().map(|e| (e.name.as_str(), e)).collect();
+    let mut folded: HashMap<&str, Vec<&FileEntry>> = HashMap::new();
+    for e in dest {
+        folded.entry(e.name_lower.as_str()).or_default().push(e);
+    }
     sources
         .iter()
         .filter_map(|s| {
-            let d = dmap.get(s.name_lower.as_str())?;
-            let (src_newer, dst_newer) = match (s.modified, d.modified) {
-                (Some(a), Some(b)) => (a > b, b > a),
-                _ => (false, false),
+            let targets = match exact.get(s.name.as_str()) {
+                Some(d) => std::slice::from_ref(d),
+                None => folded.get(s.name_lower.as_str())?.as_slice(),
             };
+            let newer_than =
+                |d: &&FileEntry| matches!((s.modified, d.modified), (Some(a), Some(b)) if a > b);
+            let older_than =
+                |d: &&FileEntry| matches!((s.modified, d.modified), (Some(a), Some(b)) if b > a);
             Some(Conflict {
                 name: s.name.clone(),
                 src_path: s.path.clone(),
                 src_size: s.size,
-                dst_size: d.size,
+                dst_size: targets.iter().map(|d| d.size).max().unwrap_or(0),
                 src_is_dir: s.is_dir,
-                dst_is_dir: d.is_dir,
-                src_newer,
-                dst_newer,
+                dst_is_dir: targets.iter().any(|d| d.is_dir),
+                src_newer: targets.iter().all(newer_than),
+                dst_newer: targets.iter().any(older_than),
             })
         })
         .collect()
@@ -163,6 +174,27 @@ mod tests {
         assert_eq!(c.name, "Photo.JPG");
         assert_eq!((c.src_size, c.dst_size), (10, 99));
         assert!(c.src_newer && !c.dst_newer); // 200 > 100
+    }
+
+    #[test]
+    fn detect_judges_case_variants_against_the_right_file() {
+        // Case-sensitive destination holding both variants: the exact name
+        // decides, whichever order the listing came in.
+        let older_small = dst("Foo", 1, Some(100));
+        let newer_large = dst("foo", 99, Some(900));
+        for dest in [
+            [older_small.clone(), newer_large.clone()],
+            [newer_large.clone(), older_small.clone()],
+        ] {
+            let conflicts = detect(&[entry("Foo", 10, Some(500))], &dest);
+            assert_eq!(conflicts.len(), 1);
+            assert_eq!(conflicts[0].dst_size, 1);
+            assert!(conflicts[0].src_newer);
+        }
+        // No exact variant: the source must beat every variant to win.
+        let conflicts = detect(&[entry("FOO", 10, Some(500))], &[older_small, newer_large]);
+        assert_eq!(conflicts[0].dst_size, 99);
+        assert!(!conflicts[0].src_newer && conflicts[0].dst_newer);
     }
 
     #[test]

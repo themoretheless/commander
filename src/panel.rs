@@ -178,6 +178,16 @@ impl FileEntry {
         })
     }
 
+    /// Whether the listing captured this row as a symlink (its display
+    /// fields describe the link's target).
+    pub fn is_symlink(&self) -> bool {
+        matches!(
+            &self.identity,
+            ListingIdentity::Captured(identity)
+                if identity.kind == Some(crate::path_identity::PathKind::Symlink)
+        )
+    }
+
     pub fn is_image(&self) -> bool {
         self.is_static_image() || self.is_video()
     }
@@ -228,14 +238,19 @@ impl FileEntry {
 
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        return format!("{} B", bytes);
     }
+    // The unit is chosen after rounding to the printed precision, so a value
+    // just under a boundary reads "1.0 MB" rather than "1024.0 KB".
+    let kb = bytes as f64 / 1024.0;
+    if (kb * 10.0).round() < 10240.0 {
+        return format!("{:.1} KB", kb);
+    }
+    let mb = kb / 1024.0;
+    if (mb * 10.0).round() < 10240.0 {
+        return format!("{:.1} MB", mb);
+    }
+    format!("{:.2} GB", mb / 1024.0)
 }
 
 /// Glob match supporting `*` (any run) and `?` (one char). Inputs are
@@ -273,13 +288,15 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 pub fn parse_mask(mask: &str) -> Vec<(String, bool)> {
     mask.split(',')
         .map(str::trim)
-        .filter(|t| !t.is_empty())
         .map(
             |t| match t.strip_prefix('!').or_else(|| t.strip_prefix('-')) {
                 Some(rest) => (rest.trim().to_lowercase(), true),
                 None => (t.to_lowercase(), false),
             },
         )
+        // A bare `!`/`-` leaves an empty term, which would match every
+        // extension-less entry; drop it like an empty positive term.
+        .filter(|(t, _)| !t.is_empty())
         .collect()
 }
 
@@ -309,6 +326,25 @@ fn mask_verdict(terms: &[(String, bool)], entry: &FileEntry) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Drop entries that sit inside another picked folder: picking `X` in its
+/// parent and `X/a` inside it must act on `X` once, not on both (a copy
+/// would duplicate `a` or conflict with itself). Folder symlinks are not
+/// containers here: acting on the link does not act on its target's rows.
+fn drop_nested_picks(entries: Vec<FileEntry>) -> Vec<FileEntry> {
+    let folders: HashSet<PathBuf> = entries
+        .iter()
+        .filter(|entry| entry.is_dir && !entry.is_symlink())
+        .map(|entry| entry.path.clone())
+        .collect();
+    if folders.is_empty() {
+        return entries;
+    }
+    entries
+        .into_iter()
+        .filter(|entry| !entry.path.ancestors().skip(1).any(|a| folders.contains(a)))
+        .collect()
 }
 
 /// Size used for the occupancy bar: a file's own size, or a directory's
@@ -377,6 +413,9 @@ pub struct PanelState {
     workload: Option<crate::workload::WorkloadHandle>,
     /// Why the most recent listing refresh landed (path-free, research J007).
     pub change_provenance: crate::change_provenance::RowProvenance,
+    /// A navigation target whose Recent entry waits for its listing: it is
+    /// recorded when the read resolves, and dropped when the folder is gone.
+    pending_visit: Option<PathBuf>,
 }
 
 impl PanelState {
@@ -409,6 +448,7 @@ impl PanelState {
             listing_job: ListingJobController::default(),
             workload: None,
             change_provenance: crate::change_provenance::RowProvenance::default(),
+            pending_visit: None,
         }
     }
 
@@ -519,8 +559,20 @@ impl PanelState {
                 paths
             })
             .filter_map(|path| {
-                let meta = fs::symlink_metadata(path).ok()?;
-                FileEntry::from_meta(path.clone(), &meta)
+                // Like `read_dir`: a symlink shows its target's type (a link
+                // to a folder is a folder row) but keeps the link's identity.
+                let lexical = fs::symlink_metadata(path).ok()?;
+                let followed = lexical
+                    .file_type()
+                    .is_symlink()
+                    .then(|| fs::metadata(path).ok())
+                    .flatten();
+                let mut entry =
+                    FileEntry::from_meta(path.clone(), followed.as_ref().unwrap_or(&lexical))?;
+                entry.identity = ListingIdentity::Captured(
+                    crate::path_identity::PathIdentity::from_metadata(path.clone(), &lexical),
+                );
+                Some(entry)
             })
             .collect()
     }
@@ -533,7 +585,7 @@ impl PanelState {
         }
         let mut entries = self.selected_entries();
         entries.extend(self.selected_elsewhere_entries());
-        Ok(entries)
+        Ok(drop_nested_picks(entries))
     }
 
     pub fn replace_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
@@ -768,14 +820,21 @@ impl PanelState {
                 scroll_anchor,
             } => {
                 self.set_scroll_anchor(scroll_anchor.min(self.filtered_count().saturating_sub(1)));
-                let cursor = cursor_path
-                    .and_then(|path| self.filtered_position(|entry| entry.path == path))
-                    .map(|index| index + 1)
-                    .unwrap_or_else(|| {
-                        self.scroll_anchor()
-                            .saturating_add(1)
-                            .min(self.filtered_count())
-                    });
+                // No remembered path means the cursor was on the `..` row;
+                // only a path that vanished falls back to the scroll anchor.
+                let cursor = match cursor_path {
+                    None => 0,
+                    Some(path) => self
+                        .filtered_position(|entry| entry.path == path)
+                        .map_or_else(
+                            || {
+                                self.scroll_anchor()
+                                    .saturating_add(1)
+                                    .min(self.filtered_count())
+                            },
+                            |index| index + 1,
+                        ),
+                };
                 self.set_cursor(cursor);
                 self.set_scroll_to_cursor(self.cursor() > 0);
             }
@@ -797,6 +856,12 @@ impl PanelState {
     fn apply_directory_read(&mut self, read: DirectoryRead) -> bool {
         let binding = self.current_path.clone();
         let binding_changed = self.listing.binding() != binding;
+        if self.pending_visit.as_ref() == Some(&binding) {
+            self.pending_visit = None;
+            if !matches!(read, DirectoryRead::Incomplete(DirStatus::Gone)) {
+                record_visit(&binding);
+            }
+        }
         match read {
             DirectoryRead::Complete(entries) => {
                 self.publish_complete_listing(entries, self.view.config());
@@ -849,6 +914,9 @@ impl PanelState {
     /// Deep events (below the watched dir) only recompute directory
     /// sizes, debounced so event floods during transfers don't thrash.
     pub fn poll_fs_changes(&mut self) -> bool {
+        // Polled every frame: the filtered view can change with time alone
+        // (age facets), so keep the cursor on its entry first.
+        self.ensure_cursor_valid();
         let path = self.current_path.clone();
         let outcome = self.watcher.poll(&path);
         if outcome.sizes_dirty {
@@ -862,8 +930,7 @@ impl PanelState {
             };
             if self.can_async_list() {
                 let show_hidden = self.view.show_hidden();
-                self.listing_job
-                    .request(path, show_hidden, Some(ticket), PendingFocus::None);
+                self.listing_job.reconcile(path, show_hidden, ticket);
                 let applied = self.poll_listing_results();
                 if applied {
                     self.change_provenance.record(source);
@@ -927,7 +994,11 @@ impl PanelState {
         let entries = match fs::read_dir(path) {
             Ok(entries) => entries,
             Err(error) => {
-                let status = if error.kind() == std::io::ErrorKind::NotFound {
+                // A path that names a file is no folder to show, like a gone one.
+                let status = if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) {
                     DirStatus::Gone
                 } else {
                     DirStatus::Denied
@@ -935,7 +1006,17 @@ impl PanelState {
                 return DirectoryRead::Incomplete(status);
             }
         };
+        Self::read_dir_entries(entries, show_hidden)
+    }
 
+    /// Build rows from a directory iterator. A child that vanished between
+    /// readdir and stat is simply not listed: it is gone, not unreadable,
+    /// so it must not turn the whole read into a partial one.
+    fn read_dir_entries(
+        entries: impl Iterator<Item = std::io::Result<fs::DirEntry>>,
+        show_hidden: bool,
+    ) -> DirectoryRead {
+        let vanished = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
         let mut result = Vec::new();
         let mut complete = true;
         for entry in entries {
@@ -956,14 +1037,16 @@ impl PanelState {
             }
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
-                Err(_) => {
-                    complete = false;
+                Err(error) => {
+                    complete &= vanished(&error);
                     continue;
                 }
             };
-            let lexical = entry
-                .metadata()
-                .map_err(|error| crate::ports::NativeFailure::from_io(&error));
+            let lexical = match entry.metadata() {
+                Ok(metadata) => Ok(metadata),
+                Err(error) if vanished(&error) => continue,
+                Err(error) => Err(crate::ports::NativeFailure::from_io(&error)),
+            };
             let followed = file_type
                 .is_symlink()
                 .then(|| fs::metadata(&path).ok())
@@ -1026,7 +1109,26 @@ impl PanelState {
 
     /// Remember the current directory's view settings under its own path.
     fn stash_view_settings(&mut self) {
-        let settings = self.snapshot_view_settings();
+        let mut settings = self.snapshot_view_settings();
+        if self.listing.status() == DirStatus::Loading
+            && self.listing.binding() == self.current_path
+        {
+            // Leaving before the listing landed: keep the focus it was about
+            // to restore, not the empty placeholder's `..` row.
+            match self.listing_job.pending_focus() {
+                PendingFocus::None => {}
+                PendingFocus::Remembered {
+                    cursor_path,
+                    scroll_anchor,
+                } => {
+                    settings.cursor_path.clone_from(cursor_path);
+                    settings.scroll_anchor = *scroll_anchor;
+                }
+                PendingFocus::NamedChild(name) => {
+                    settings.cursor_path = Some(self.current_path.join(name));
+                }
+            }
+        }
         self.view.remember(&self.current_path, settings);
     }
 
@@ -1083,15 +1185,12 @@ impl PanelState {
     /// (`.DS_Store`, `.localized`, `Thumbs.db`, `desktop.ini`, the custom-icon
     /// `Icon\r`). Folders are never matched. Returns how many were added.
     pub fn select_junk(&mut self) -> usize {
-        const JUNK_NAMES: &[&str] = &[
-            ".DS_Store",
-            ".localized",
-            "Thumbs.db",
-            "desktop.ini",
-            "Icon\r",
-        ];
+        // Lowercased: case-insensitive volumes carry variants such as
+        // `thumbs.db` or `Desktop.ini`. `Icon\r` stays an exact match.
+        const JUNK_NAMES_LOWER: &[&str] = &[".ds_store", ".localized", "thumbs.db", "desktop.ini"];
         self.select_filtered_where(|entry| {
-            !entry.is_dir && JUNK_NAMES.contains(&entry.name.as_str())
+            !entry.is_dir
+                && (entry.name == "Icon\r" || JUNK_NAMES_LOWER.contains(&entry.name_lower.as_str()))
         })
     }
 
@@ -1237,7 +1336,17 @@ impl PanelState {
 
     /// Clamp the cursor after any filter, facet, or ordering change. Cursor 0
     /// is the synthetic parent row; real rows occupy `1..=filtered_count()`.
+    ///
+    /// A cursor row that no longer shows its focused entry (rows above it
+    /// left the view, e.g. when an age facet expires them) follows that
+    /// entry by path, so operations do not stop on a stale cursor.
     pub fn ensure_cursor_valid(&mut self) {
+        let cursor = self.cursor();
+        if cursor > 0 && self.cursor_entry().is_none() {
+            let focused = self.focused_path();
+            self.restore_cursor_focus(focused, cursor);
+            return;
+        }
         let clamped = self.cursor().min(self.filtered_count());
         if self.cursor() != clamped {
             self.reveal_cursor(clamped);
@@ -1438,7 +1547,13 @@ impl PanelState {
         };
         let mut dirs: Vec<PathBuf> = rd
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            // Folder symlinks are folders here, as in the file list; the
+            // tree expands lazily, so following them cannot loop.
+            .filter(|e| match e.file_type() {
+                Ok(t) if t.is_symlink() => e.path().is_dir(),
+                Ok(t) => t.is_dir(),
+                Err(_) => false,
+            })
             .map(|e| e.path())
             .filter(|p| {
                 show_hidden
@@ -1484,6 +1599,81 @@ mod tests {
                 format_size(size)
             },
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_vanishing_between_readdir_and_stat_is_not_a_partial_read() {
+        let temp = TempDir::new();
+        temp.file("kept.txt", "k");
+        let gone = temp.file("gone.txt", "g");
+        // The first `next` buffers this small directory's names; the file
+        // then disappears before its metadata is read.
+        let mut entries = fs::read_dir(temp.path()).unwrap().peekable();
+        let _ = entries.peek();
+        fs::remove_file(gone).unwrap();
+
+        let DirectoryRead::Complete(rows) = PanelState::read_dir_entries(entries, true) else {
+            panic!("a vanished child must not make the read partial");
+        };
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, vec!["kept.txt"]);
+    }
+
+    #[test]
+    fn picked_entries_drop_rows_inside_a_picked_folder() {
+        let tmp = TempDir::new();
+        let folder = tmp.dir("folder");
+        let inner = tmp.file("folder/inner.txt", "a");
+        let other = tmp.file("other.txt", "b");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        p.toggle_select(folder.clone());
+        p.toggle_select(other.clone());
+        p.navigate_to(folder.clone());
+        p.toggle_select(inner);
+
+        let mut picked: Vec<PathBuf> = p
+            .picked_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        picked.sort();
+        assert_eq!(picked, vec![folder, other]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_subdirs_include_folder_symlinks() {
+        let temp = TempDir::new();
+        let target = temp.dir("target");
+        temp.file("file.txt", "f");
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        std::os::unix::fs::symlink("file.txt", temp.path().join("file-link")).unwrap();
+
+        assert_eq!(PanelState::subdirs(temp.path(), false), vec![link, target]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selection_elsewhere_reads_folder_symlinks_like_the_listing() {
+        let temp = TempDir::new();
+        let target = temp.dir("target");
+        let link = temp.path().join("folder-link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+
+        let mut p = PanelState::new(temp.path().to_path_buf());
+        p.refresh();
+        p.toggle_select(link.clone());
+        p.navigate_to(target);
+
+        let picked = p.picked_entries().unwrap();
+        let entry = picked.iter().find(|entry| entry.path == link).unwrap();
+        assert!(entry.is_dir, "a folder link is a folder row");
+        assert!(entry.is_symlink(), "identity stays the link itself");
     }
 
     #[cfg(unix)]
@@ -1558,6 +1748,10 @@ mod tests {
         assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
         assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.00 GB");
+        // Just below a boundary rounds up into the next unit.
+        assert_eq!(format_size(1024 * 1024 - 1), "1.0 MB");
+        assert_eq!(format_size(1024 * 1024 * 1024 - 1), "1.00 GB");
+        assert_eq!(format_size(1024 * 1024 - 52), "1023.9 KB");
     }
 
     #[test]
@@ -1693,6 +1887,19 @@ mod tests {
         assert!(names.contains(".DS_Store"));
         assert!(names.contains("Thumbs.db"));
         assert!(!names.contains("photo.jpg"));
+    }
+
+    #[test]
+    fn select_junk_matches_case_variants() {
+        let mut p = panel_with(vec![
+            entry("thumbs.db", false, 10),
+            entry("Desktop.ini", false, 10),
+            entry("notes.txt", false, 20),
+        ]);
+        assert_eq!(p.select_junk(), 2);
+        let names = selected_names(&p);
+        assert!(names.contains("thumbs.db"));
+        assert!(names.contains("Desktop.ini"));
     }
 
     fn selected_names(p: &PanelState) -> std::collections::HashSet<String> {
@@ -2245,6 +2452,67 @@ mod tests {
     }
 
     #[test]
+    fn history_back_skips_a_repeat_of_the_current_directory() {
+        let temp = TempDir::new();
+        let a = temp.dir("a");
+        let removed = temp.dir("removed");
+
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.navigate_to(a.clone()); // [root, a]
+        panel.navigate_to(removed.clone()); // [root, a, removed]
+        panel.navigate_to(a.clone()); // [root, a, removed, a]
+        std::fs::remove_dir(&removed).unwrap();
+
+        // Pruning `removed` leaves `a` next to itself; Back moves on to root
+        // instead of "reloading" the directory already shown.
+        panel.go_back();
+        assert_eq!(panel.current_path, temp.path());
+        panel.go_forward();
+        assert_eq!(panel.current_path, a);
+        assert!(!panel.can_go_forward());
+    }
+
+    #[test]
+    fn navigating_to_a_missing_directory_is_not_a_recent_visit() {
+        let temp = TempDir::new();
+        let missing = temp.path().join("never-created");
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.navigate_to(missing.clone());
+        assert!(!visited_paths().contains(&missing));
+
+        let file = temp.file("plain.txt", "x");
+        panel.navigate_to(file.clone());
+        assert!(!visited_paths().contains(&file));
+    }
+
+    #[test]
+    fn async_navigation_records_the_visit_when_the_listing_lands() {
+        let temp = TempDir::new();
+        let target = temp.dir("visit-after-listing");
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+
+        // A background listing that never gets a worker: navigation does not
+        // stat the folder on the UI thread, so nothing is recorded yet.
+        let mut limits = crate::workload::SchedulerLimits::default();
+        limits.per_kind_running[0] = 0;
+        let runtime = crate::workload::WorkloadRuntime::new(limits);
+        panel.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
+        panel.set_notify(Arc::new(|| {}));
+        panel.navigate_to(target.clone());
+        assert_eq!(panel.listing.status(), DirStatus::Loading);
+        assert!(!visited_paths().contains(&target));
+
+        // Once the read resolves, the visit lands in Recent.
+        panel.workload = None;
+        panel.refresh();
+        assert!(visited_paths().contains(&target));
+        assert_eq!(panel.pending_visit, None);
+    }
+
+    #[test]
     fn history_jump_back_twice_then_forward_and_truncate() {
         let tmp = TempDir::new();
         let a = tmp.dir("a");
@@ -2366,6 +2634,93 @@ mod tests {
     }
 
     #[test]
+    fn cursor_follows_its_entry_when_an_age_facet_expires_rows_above_it() {
+        let now = SystemTime::now();
+        let mut p = panel_with(vec![
+            entry("a.txt", false, 1),
+            entry("b.txt", false, 1),
+            entry("c.txt", false, 1),
+        ]);
+        let window = std::time::Duration::from_secs(1);
+        p.mutate_entries_for_test(|entries| {
+            for e in entries {
+                e.modified = Some(if e.name == "a.txt" {
+                    // Turns one day old (and leaves the facet) in `window`.
+                    now - std::time::Duration::from_secs(24 * 60 * 60) + window
+                } else {
+                    now
+                });
+            }
+        });
+        p.set_facets(FacetSet {
+            max_age_days: Some(1),
+            ..FacetSet::default()
+        });
+        assert_eq!(p.filtered_count(), 3, "a.txt is still young enough");
+        p.set_cursor(2);
+        assert_eq!(p.cursor_entry().unwrap().name, "b.txt");
+
+        std::thread::sleep(window + std::time::Duration::from_millis(100));
+        assert_eq!(p.filtered_count(), 2);
+        // The per-frame hook re-resolves the cursor with no fs event at all.
+        let _ = p.poll_fs_changes();
+        assert_eq!(p.cursor(), 1);
+        assert_eq!(p.cursor_entry().unwrap().name, "b.txt");
+    }
+
+    #[test]
+    fn remembered_parent_row_focus_is_restored_on_the_parent_row() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        let docs = tmp.dir("docs");
+        tmp.file("downloads/a.txt", "a");
+        tmp.file("downloads/b.txt", "b");
+
+        let mut p = PanelState::new(downloads.clone());
+        p.refresh();
+        p.set_cursor(0);
+        p.navigate_to(docs);
+        p.navigate_to(downloads);
+
+        assert_eq!(p.cursor(), 0, "the `..` row stays focused");
+    }
+
+    #[test]
+    fn leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        tmp.file("downloads/a.txt", "a");
+        let focused = tmp.file("downloads/b.txt", "b");
+        tmp.file("downloads/c.txt", "c");
+
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        p.navigate_to(downloads.clone());
+        let cursor = p.filtered_position(|entry| entry.path == focused).unwrap() + 1;
+        p.set_cursor(cursor);
+        p.navigate_to(tmp.path().to_path_buf());
+
+        // Background listings that never get a worker: "downloads" stays
+        // loading while we leave it again.
+        let mut limits = crate::workload::SchedulerLimits::default();
+        limits.per_kind_running[0] = 0;
+        let runtime = crate::workload::WorkloadRuntime::new(limits);
+        p.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
+        p.set_notify(Arc::new(|| {}));
+        p.navigate_to(downloads.clone());
+        assert_eq!(p.listing.status(), DirStatus::Loading);
+        p.navigate_to(tmp.path().to_path_buf());
+
+        // Back on synchronous listing, the original focus is still there.
+        p.workload = None;
+        p.navigate_to(downloads);
+        assert_eq!(
+            p.cursor_entry().map(|entry| entry.path.clone()),
+            Some(focused)
+        );
+    }
+
+    #[test]
     fn missing_remembered_cursor_falls_back_to_scroll_anchor() {
         let tmp = TempDir::new();
         let downloads = tmp.dir("downloads");
@@ -2451,6 +2806,19 @@ mod tests {
                 PathBuf::from("/a"),
             ]
         );
+    }
+
+    #[test]
+    fn recording_visits_prunes_stats_for_paths_off_the_list() {
+        let mut v: Vec<PathBuf> = Vec::new();
+        let mut stats = VisitStats::default();
+        for name in ["/a", "/b", "/c", "/d"] {
+            visit::record_visit_into(&mut v, &mut stats, Path::new(name), 3);
+        }
+        assert_eq!(v.len(), 3);
+        assert_eq!(stats.uses.len(), 3);
+        assert!(!stats.uses.contains_key(Path::new("/a")));
+        assert_eq!(stats.uses[Path::new("/d")].count, 1);
     }
 
     #[test]
@@ -2649,6 +3017,9 @@ mod tests {
                 ("tmp".to_string(), true),
             ]
         );
+        // A bare subtraction marker is not an (empty) term.
+        assert!(parse_mask("-").is_empty());
+        assert_eq!(parse_mask("*.jpg, !"), vec![("*.jpg".to_string(), false)]);
     }
 
     #[test]
@@ -2929,6 +3300,59 @@ mod tests {
 
         assert_eq!(result, None);
         assert_eq!(checks.load(AtomicOrdering::SeqCst), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_size_counts_hard_linked_files_once() {
+        let tmp = TempDir::new();
+        let data = tmp.file("data.bin", &"x".repeat(1000));
+        tmp.dir("sub");
+        std::fs::hard_link(&data, tmp.path().join("link.bin")).unwrap();
+        std::fs::hard_link(&data, tmp.path().join("sub/link.bin")).unwrap();
+        tmp.file("other.bin", "12345");
+
+        assert_eq!(dir_size_recursive_until(tmp.path(), || false), Some(1005));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recursive_size_does_not_walk_into_another_filesystem() {
+        use std::os::unix::fs::MetadataExt;
+        let proc_dev = std::fs::metadata("/proc").map(|m| m.dev());
+        let root_dev = std::fs::metadata("/").map(|m| m.dev());
+        if !matches!((proc_dev, root_dev), (Ok(p), Ok(r)) if p != r) {
+            return; // no separate procfs mount to test against
+        }
+        // `/proc` listed in `/` is a mount point: sizing it must not walk
+        // procfs (whose `kcore` alone reports ~128 TB).
+        assert_eq!(
+            dir_size_recursive_until(Path::new("/proc"), || false),
+            Some(0)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recursive_size_measures_a_local_mount_point_root() {
+        use std::os::unix::fs::MetadataExt;
+        let shm = Path::new("/dev/shm");
+        let (Ok(shm_meta), Ok(dev_meta)) = (std::fs::metadata(shm), std::fs::metadata("/dev"))
+        else {
+            return; // no /dev/shm here
+        };
+        if shm_meta.dev() == dev_meta.dev() {
+            return; // /dev/shm is not its own mount
+        }
+        let file = shm.join(format!("commander-size-test-{}", std::process::id()));
+        if std::fs::write(&file, vec![0u8; 4096]).is_err() {
+            return; // not writable in this sandbox
+        }
+        // `/dev/shm` is a tmpfs mount on another device than `/dev`: a local
+        // mount-point row is measured in full, not reported as 0 B.
+        let size = dir_size_recursive_until(shm, || false);
+        let _ = std::fs::remove_file(&file);
+        assert!(size.is_some_and(|size| size >= 4096), "got {size:?}");
     }
 
     #[test]

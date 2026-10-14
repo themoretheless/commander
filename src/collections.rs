@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub const VIEW_CAP: usize = 5_000;
+const STORE_NAME: &str = "Project collections";
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,9 +80,39 @@ pub fn load() -> ProjectCollections {
 }
 
 fn load_from(path: &Path) -> ProjectCollections {
-    ProjectCollections {
-        items: crate::persistence::load_item_store(path, "Project collections"),
+    let loaded: Vec<ProjectCollection> = crate::persistence::load_item_store(path, STORE_NAME);
+    // Re-admit each item through `new` so a hand-edited file cannot smuggle in
+    // untrimmed names, duplicate roots or empty sets. Same-name entries are
+    // merged into the first one (its name and root order win, the later
+    // entries' extra roots are appended) so no root is silently dropped.
+    // Entries that cannot be kept at all are reported as a recovery.
+    let mut collections = ProjectCollections::default();
+    let mut rejected = 0usize;
+    for item in loaded {
+        let item = ProjectCollection::new(item.name, item.roots);
+        if !item.is_valid() {
+            rejected = rejected.saturating_add(1);
+            continue;
+        }
+        if let Some(existing) = collections
+            .items
+            .iter_mut()
+            .find(|existing| existing.name.eq_ignore_ascii_case(&item.name))
+        {
+            let roots = std::mem::take(&mut existing.roots);
+            *existing = ProjectCollection::new(
+                std::mem::take(&mut existing.name),
+                roots.into_iter().chain(item.roots),
+            );
+        } else {
+            collections.items.push(item);
+        }
     }
+    if rejected > 0 {
+        crate::persistence::record_recovery(STORE_NAME, collections.items.len(), rejected);
+        crate::persistence::mark_lossy_load(path);
+    }
+    collections
 }
 
 pub fn save(collections: &ProjectCollections) -> bool {
@@ -89,9 +120,7 @@ pub fn save(collections: &ProjectCollections) -> bool {
 }
 
 fn save_to(path: &Path, collections: &ProjectCollections) -> bool {
-    serde_json::to_string_pretty(collections)
-        .ok()
-        .is_some_and(|json| crate::fs_util::write_atomic(path, &json))
+    crate::persistence::save_item_store(path, STORE_NAME, collections)
 }
 
 #[derive(Clone, Debug)]
@@ -240,6 +269,91 @@ mod tests {
 
         assert!(save_to(&path, &collections));
         assert_eq!(load_from(&path), collections);
+    }
+
+    #[test]
+    fn load_normalizes_hand_edited_collections() {
+        let temp = TempDir::new();
+        let path = temp.file(
+            "collections.json",
+            r#"{"items":[
+                {"name":"  Work ","roots":["/a","/a","/b"]},
+                {"name":"work","roots":["/c"]},
+                {"name":"   ","roots":["/d"]},
+                {"name":"Empty","roots":[]}
+            ]}"#,
+        );
+        let loaded = load_from(&path);
+        assert_eq!(
+            loaded.items,
+            vec![ProjectCollection {
+                name: "Work".into(),
+                roots: vec![
+                    PathBuf::from("/a"),
+                    PathBuf::from("/b"),
+                    PathBuf::from("/c")
+                ],
+            }]
+        );
+    }
+
+    fn unreadable_backups(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains(".unreadable-"))
+            .collect()
+    }
+
+    #[test]
+    fn save_keeps_a_store_that_lost_entries_while_normalizing() {
+        let temp = TempDir::new();
+        let original = r#"{"items":[{"name":"   ","roots":["/d"]},{"name":"A","roots":["/a"]}]}"#;
+        let path = temp.file("collections.json", original);
+        let collections = load_from(&path);
+        assert_eq!(collections.items.len(), 1);
+        assert!(save_to(&path, &collections));
+
+        let backups = unreadable_backups(temp.path());
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), original);
+        // Only the first save after the lossy load sets the file aside.
+        assert!(save_to(&path, &collections));
+        assert_eq!(unreadable_backups(temp.path()).len(), 1);
+    }
+
+    #[test]
+    fn save_keeps_a_store_that_was_unreadable_at_load_even_if_readable_now() {
+        let temp = TempDir::new();
+        let path = temp.path().join("collections.json");
+        // Simulate a transient read failure at load time.
+        crate::persistence::mark_lossy_load(&path);
+        let original = r#"{"items":[{"name":"A","roots":["/a"]}]}"#;
+        std::fs::write(&path, original).unwrap();
+        assert!(save_to(&path, &ProjectCollections::default()));
+
+        let backups = unreadable_backups(temp.path());
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn save_keeps_an_unreadable_store_instead_of_overwriting_it() {
+        let temp = TempDir::new();
+        let path = temp.file("collections.json", "{ not json");
+        let mut collections = load_from(&path);
+        assert!(collections.items.is_empty());
+        assert!(collections.add(ProjectCollection::new("New", [PathBuf::from("/n")])));
+        assert!(save_to(&path, &collections));
+
+        assert_eq!(load_from(&path), collections);
+        let backups: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains(".unreadable-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), "{ not json");
     }
 
     #[test]

@@ -99,9 +99,16 @@ fn normalize_root(path: &Path) -> String {
 pub fn label_for(path: &Path) -> TrustLabel {
     let needle = normalize_root(path);
     let store = crate::lock_util::recover(cache());
+    best_label(&store.roots, &needle)
+}
+
+/// Component-wise prefix match, so a label on `/` (or `C:\`) covers its
+/// descendants and the platform separator is respected.
+fn best_label(roots: &BTreeMap<String, TrustLabel>, needle: &str) -> TrustLabel {
+    let needle = Path::new(needle);
     let mut best: Option<(usize, TrustLabel)> = None;
-    for (root, label) in &store.roots {
-        if needle == *root || needle.starts_with(&format!("{root}/")) {
+    for (root, label) in roots {
+        if needle.starts_with(Path::new(root)) {
             let len = root.len();
             if best.as_ref().is_none_or(|(cur, _)| len >= *cur) {
                 best = Some((len, *label));
@@ -177,5 +184,21 @@ mod tests {
         set_label(&root, TrustLabel::Trusted);
         assert_eq!(label_for(&child), TrustLabel::Trusted);
         reset_for_test();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_root_label_covers_descendants() {
+        let roots = BTreeMap::from([
+            ("/".to_string(), TrustLabel::Untrusted),
+            ("/srv/app".to_string(), TrustLabel::Restricted),
+        ]);
+        assert_eq!(best_label(&roots, "/home/user"), TrustLabel::Untrusted);
+        assert_eq!(best_label(&roots, "/"), TrustLabel::Untrusted);
+        assert_eq!(best_label(&roots, "/srv/app/x"), TrustLabel::Restricted);
+        assert_eq!(
+            best_label(&roots, "/srv/application"),
+            TrustLabel::Untrusted
+        );
     }
 }

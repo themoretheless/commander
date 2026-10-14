@@ -658,31 +658,56 @@ fn wait_for_mount(
     wait_override: Option<&(dyn Fn() -> std::io::Result<()> + Send + Sync)>,
     notify: &impl Fn(),
 ) -> Result<(), MountWaitError> {
+    let probe_guard = guard.clone();
+    wait_for_mount_probed(
+        guard,
+        move || probe_guard.check(),
+        label,
+        progress,
+        scheduler_cancel,
+        wait_override,
+        notify,
+    )
+}
+
+/// Every probe, including the first, goes through the bounded reconnect wait
+/// so a hung hard-mounted share cannot block the worker past the timeout or
+/// a cancel. The pause reason is published once the first probe fails.
+fn wait_for_mount_probed(
+    guard: &crate::mount_guard::MountGuard,
+    probe: impl Fn() -> crate::mount_guard::MountAvailability + Send + Clone + 'static,
+    label: &str,
+    progress: &TransferState,
+    scheduler_cancel: &crate::workload::CancellationToken,
+    wait_override: Option<&(dyn Fn() -> std::io::Result<()> + Send + Sync)>,
+    notify: &impl Fn(),
+) -> Result<(), MountWaitError> {
     let result = if let Some(wait) = wait_override {
         wait()
-    } else if guard.check() == crate::mount_guard::MountAvailability::Available {
-        Ok(())
     } else {
-        {
-            let mut state = crate::lock_util::recover(progress);
-            let reason = crate::operation_view::PauseReason::MountDisconnected {
-                label: label.to_string(),
-                timeout_secs: guard.policy.timeout_ms / 1_000,
-            };
-            state.waiting_reason = Some(reason.label());
-            state.pause_reason = Some(reason);
-        }
-        notify();
-        let result = guard.wait_until_available(|| {
+        let mut paused = false;
+        let result = guard.wait_bounded(probe, || {
+            if !paused {
+                paused = true;
+                let mut state = crate::lock_util::recover(progress);
+                let reason = crate::operation_view::PauseReason::MountDisconnected {
+                    label: label.to_string(),
+                    timeout_secs: guard.policy.timeout_ms / 1_000,
+                };
+                state.waiting_reason = Some(reason.label());
+                state.pause_reason = Some(reason);
+            }
             notify();
             !interruption_requested(scheduler_cancel, progress)
         });
-        {
-            let mut state = crate::lock_util::recover(progress);
-            state.waiting_reason = None;
-            state.pause_reason = None;
+        if paused {
+            {
+                let mut state = crate::lock_util::recover(progress);
+                state.waiting_reason = None;
+                state.pause_reason = None;
+            }
+            notify();
         }
-        notify();
         result
     };
 
@@ -1080,6 +1105,88 @@ use sparse::{copy_file_sparse, is_sparse_file};
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    fn hung_mount_guard() -> crate::mount_guard::MountGuard {
+        crate::mount_guard::MountGuard {
+            volume_id: 1,
+            generation: 1,
+            mount_point: PathBuf::from("/fixture"),
+            policy: crate::mount_guard::ReconnectPolicy {
+                timeout_ms: 50,
+                poll_interval_ms: 5,
+            },
+        }
+    }
+
+    fn hung_probe() -> crate::mount_guard::MountAvailability {
+        std::thread::sleep(std::time::Duration::from_secs(3_600));
+        crate::mount_guard::MountAvailability::Available
+    }
+
+    #[test]
+    fn wait_for_mount_times_out_when_the_first_probe_hangs() {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+            let paused = std::sync::atomic::AtomicBool::new(false);
+            let result = wait_for_mount_probed(
+                &hung_mount_guard(),
+                hung_probe,
+                "Source volume",
+                &progress,
+                &crate::workload::CancellationToken::new(),
+                None,
+                &|| {
+                    if crate::lock_util::recover(&progress).pause_reason.is_some() {
+                        paused.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                },
+            );
+            let cleared = crate::lock_util::recover(&progress).pause_reason.is_none();
+            let outcome = match result {
+                Err(MountWaitError::Unavailable(error)) => Some(error.kind()),
+                _ => None,
+            };
+            let _ = done.send((
+                outcome,
+                paused.load(std::sync::atomic::Ordering::SeqCst),
+                cleared,
+            ));
+        });
+
+        let (outcome, paused, cleared) = finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a hung first probe blocked wait_for_mount");
+
+        assert_eq!(outcome, Some(std::io::ErrorKind::TimedOut));
+        assert!(paused, "the pause reason was never published");
+        assert!(cleared, "the pause reason outlived the wait");
+    }
+
+    #[test]
+    fn wait_for_mount_honours_cancel_while_the_probe_hangs() {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+            let mut guard = hung_mount_guard();
+            guard.policy.timeout_ms = 3_600_000;
+            let result = wait_for_mount_probed(
+                &guard,
+                hung_probe,
+                "Destination volume",
+                &progress,
+                &crate::workload::CancellationToken::new(),
+                None,
+                &|| crate::lock_util::recover(&progress).cancelled = true,
+            );
+            let _ = done.send(matches!(result, Err(MountWaitError::Interrupted)));
+        });
+
+        let interrupted = finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a hung probe blocked cancel");
+        assert!(interrupted);
+    }
     use std::io::{Seek, SeekFrom, Write};
     use std::sync::atomic::Ordering;
 
