@@ -623,7 +623,23 @@ impl std::fmt::Display for AbandonReason {
 pub type AbandonmentCallback = Box<dyn FnOnce(AbandonReason) + Send + 'static>;
 
 fn invoke_abandonment(callback: AbandonmentCallback, reason: AbandonReason) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(reason)));
+    if let Err(payload) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(reason)))
+    {
+        log::error!(
+            target: "commander::workload",
+            "{}",
+            caught_panic_message(&format!("abandonment callback ({reason})"), payload.as_ref())
+        );
+    }
+}
+
+/// App-log line for a panic the runtime caught, naming what panicked.
+fn caught_panic_message(what: &str, payload: &(dyn std::any::Any + Send)) -> String {
+    format!(
+        "{what} panicked: {}",
+        crate::logging::panic_payload_text(payload)
+    )
 }
 
 struct PendingWork {
@@ -837,6 +853,7 @@ impl WorkloadRuntime {
                 next.0.snapshot.kind.thread_label(),
                 next.0.snapshot.id.0
             );
+            let task_label = thread_name.clone();
             #[cfg(test)]
             let injected_failure = {
                 let left = self.failing_spawns.load(Ordering::Acquire);
@@ -847,17 +864,32 @@ impl WorkloadRuntime {
             #[cfg(not(test))]
             let injected_failure = false;
             let spawned = !injected_failure
-                && std::thread::Builder::new()
-                    .name(thread_name)
-                    .spawn(move || {
-                        let succeeded =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                next.1.run(next.0.token);
-                            }))
-                            .is_ok();
-                        runtime.finish(next.0.snapshot.id, succeeded);
-                    })
-                    .is_ok();
+                && {
+                    let worker_name = thread_name.clone();
+                    match std::thread::Builder::new().name(thread_name).spawn(move || {
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        next.1.run(next.0.token);
+                    }));
+                    if let Err(payload) = &outcome {
+                        log::error!(
+                            target: "commander::workload",
+                            "{}",
+                            caught_panic_message(&format!("task {worker_name}"), payload.as_ref())
+                        );
+                    }
+                    runtime.finish(next.0.snapshot.id, outcome.is_ok());
+                }) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        log::warn!(
+                            target: "commander::workload",
+                            "could not start worker thread for task {}: {error}; the task was abandoned",
+                            task_label
+                        );
+                        false
+                    }
+                }
+                };
             if !spawned {
                 // The unspawned job was dropped above and abandoned as
                 // SpawnFailed. Retire it, but do not burn through the rest of
@@ -1138,6 +1170,15 @@ impl DeterministicWorkload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caught_panic_message_names_task_and_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("index out of range"));
+        assert_eq!(
+            caught_panic_message("task work-list-7", payload.as_ref()),
+            "task work-list-7 panicked: index out of range"
+        );
+    }
 
     fn spec(kind: TaskKind, generation: u64, priority: Priority) -> TaskSpec {
         TaskSpec::new(kind, "/project", generation)
