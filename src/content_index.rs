@@ -16,6 +16,15 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 pub const MAX_DOCUMENTS: usize = 200_000;
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_CONTENT_BYTES: usize = 32 * 1024 * 1024;
+/// Largest index file the loader accepts.
+const MAX_INDEX_FILE_BYTES: usize = 64 * 1024 * 1024;
+/// Serialized-size budget for documents; the rest of the file cap covers the
+/// envelope, root, counters and exclusion list. A build that would exceed it
+/// is truncated so every index that saves can also be loaded back.
+const MAX_DOCUMENT_JSON_BYTES: usize = MAX_INDEX_FILE_BYTES - 4 * 1024 * 1024;
+/// Upper bound on one pretty-printed document's JSON apart from its path and
+/// content strings: field names, indentation, and u64-sized numbers.
+const DOCUMENT_JSON_OVERHEAD: usize = 384;
 
 pub const fn schema_version() -> u32 {
     SCHEMA_VERSION
@@ -533,6 +542,26 @@ fn scan_index(
     idle: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     scheduler_cancel: Option<crate::workload::CancellationToken>,
+    report: impl FnMut(&BuildProgress) -> bool,
+) -> Result<RootIndex, String> {
+    scan_index_within(
+        root,
+        excluded_roots,
+        idle,
+        cancelled,
+        scheduler_cancel,
+        MAX_DOCUMENT_JSON_BYTES,
+        report,
+    )
+}
+
+fn scan_index_within(
+    root: PathBuf,
+    excluded_roots: Vec<PathBuf>,
+    idle: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+    scheduler_cancel: Option<crate::workload::CancellationToken>,
+    json_budget: usize,
     mut report: impl FnMut(&BuildProgress) -> bool,
 ) -> Result<RootIndex, String> {
     wait_for_idle(&idle, &cancelled, scheduler_cancel.as_ref())?;
@@ -546,6 +575,7 @@ fn scan_index(
     let mut skipped_unreadable = 0usize;
     let mut skipped_quota = 0usize;
     let mut truncated = false;
+    let mut json_bytes = 0usize;
     let mut last_progress = Instant::now();
 
     while let Some(entries) = stack.last_mut() {
@@ -596,7 +626,9 @@ fn scan_index(
             progress.files_seen = progress.files_seen.saturating_add(1);
         }
         let mut content = None;
-        if !is_dir && !file_type.is_symlink() {
+        // Only regular files are read: opening a FIFO blocks the build thread
+        // forever, and devices or sockets have no indexable text.
+        if file_type.is_file() {
             if metadata.len() > MAX_FILE_BYTES {
                 skipped_large = skipped_large.saturating_add(1);
             } else if progress
@@ -616,6 +648,28 @@ fn scan_index(
                     Err(_) => skipped_unreadable = skipped_unreadable.saturating_add(1),
                 }
             }
+        }
+        let document_bytes =
+            DOCUMENT_JSON_OVERHEAD.saturating_add(json_string_len(&path.to_string_lossy()));
+        if json_bytes.saturating_add(document_bytes) > json_budget {
+            truncated = true;
+            break;
+        }
+        let content_json_bytes = content.as_deref().map_or(0, json_string_len);
+        if json_bytes
+            .saturating_add(document_bytes)
+            .saturating_add(content_json_bytes)
+            > json_budget
+            && let Some(text) = content.take()
+        {
+            // Keep the document's metadata; its text no longer fits the file.
+            progress.content_bytes = progress.content_bytes.saturating_sub(text.len());
+            progress.content_indexed = progress.content_indexed.saturating_sub(1);
+            skipped_quota = skipped_quota.saturating_add(1);
+        }
+        json_bytes = json_bytes.saturating_add(document_bytes);
+        if content.is_some() {
+            json_bytes = json_bytes.saturating_add(content_json_bytes);
         }
         let (volume, file_id) = native_identity(&metadata);
         documents.push(IndexedDocument {
@@ -713,6 +767,19 @@ fn read_indexable_text(path: &Path, size: u64) -> std::io::Result<Option<String>
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
+/// Upper bound on a string's length once JSON-escaped and quoted.
+fn json_string_len(value: &str) -> usize {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum::<usize>()
+        .saturating_add(2)
+}
+
 fn system_time_secs(time: Option<SystemTime>) -> Option<u64> {
     time?
         .duration_since(std::time::UNIX_EPOCH)
@@ -756,12 +823,60 @@ fn normalize_exclusions(root: &Path, values: Vec<PathBuf>) -> Result<Vec<PathBuf
                 path.display()
             ));
         }
+        let path = on_disk_case(root, path);
         if seen.insert(path.clone()) {
             normalized.push(path);
         }
     }
     normalized.sort();
     Ok(normalized)
+}
+
+/// Rebuild each existing component of an exclusion from its on-disk name.
+/// Excluded subtrees are matched byte-exactly against scanned paths, so on a
+/// case-insensitive volume a typed `Target` must become the real `target`.
+/// Components that do not exist are kept as typed.
+fn on_disk_case(root: &Path, path: PathBuf) -> PathBuf {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return path;
+    };
+    let mut resolved = root.to_path_buf();
+    let mut exists = true;
+    for component in relative.components() {
+        let typed = component.as_os_str();
+        exists = exists && fs::symlink_metadata(resolved.join(typed)).is_ok();
+        let name = exists
+            .then(|| fs::read_dir(&resolved).ok())
+            .flatten()
+            .and_then(|entries| {
+                matching_entry_name(
+                    typed,
+                    entries.filter_map(|entry| entry.ok().map(|entry| entry.file_name())),
+                )
+            })
+            .unwrap_or_else(|| typed.to_os_string());
+        resolved.push(name);
+    }
+    resolved
+}
+
+/// The directory entry a typed name refers to: an exact match first, else
+/// the first entry equal ignoring case.
+fn matching_entry_name(
+    typed: &std::ffi::OsStr,
+    names: impl Iterator<Item = std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    let typed_lower = typed.to_string_lossy().to_lowercase();
+    let mut folded = None;
+    for name in names {
+        if name == typed {
+            return Some(name);
+        }
+        if folded.is_none() && name.to_string_lossy().to_lowercase() == typed_lower {
+            folded = Some(name);
+        }
+    }
+    folded
 }
 
 fn settings_path() -> PathBuf {
@@ -774,7 +889,9 @@ fn indexes_dir() -> PathBuf {
 
 fn index_path(root: &Path) -> PathBuf {
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in root.to_string_lossy().as_bytes() {
+    // Raw bytes, not a lossy string, so roots differing only in non-UTF-8
+    // bytes get distinct files. UTF-8 roots hash exactly as before.
+    for byte in root.as_os_str().as_encoded_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -795,7 +912,7 @@ fn save_settings_to(path: &Path, settings: &SettingsStore) -> bool {
 }
 
 const INDEX_STORE: crate::persistence::StoreSpec =
-    crate::persistence::StoreSpec::new("commander.content_index", 1, 64 * 1024 * 1024)
+    crate::persistence::StoreSpec::new("commander.content_index", 1, MAX_INDEX_FILE_BYTES)
         .allow_legacy_schema_marker();
 
 fn load_index_from(path: &Path, expected_root: &Path) -> Result<Option<RootIndex>, String> {
@@ -817,6 +934,26 @@ fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
     let persist = crate::persistence::FsPersist::default();
     let mut gate =
         crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+    if !matches!(
+        gate.status(),
+        crate::persistence::LoadStatus::Missing
+            | crate::persistence::LoadStatus::Legacy
+            | crate::persistence::LoadStatus::Current
+    ) {
+        // The index is a derived cache: a file this build cannot read must
+        // not block every rebuild forever, so drop it and write a fresh one.
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not replace unreadable content index {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+        gate = crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+    }
     match crate::persistence::save_enveloped_streaming(
         &persist,
         path,
@@ -978,5 +1115,149 @@ mod tests {
         assert_eq!(stats.queued, 0);
         assert_eq!(stats.cancelled, 1);
         assert!(!runtime.run_next());
+    }
+
+    #[test]
+    fn rebuild_replaces_a_corrupt_or_oversized_index_file() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let index = scan(temp.path(), Vec::new());
+        let path = temp.path().join("index.json");
+
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert!(load_index_from(&path, temp.path()).is_err());
+        save_index_to(&path, &index).unwrap();
+        assert!(load_index_from(&path, temp.path()).unwrap().is_some());
+
+        let oversized = std::fs::File::create(&path).unwrap();
+        oversized.set_len(MAX_INDEX_FILE_BYTES as u64 + 1).unwrap();
+        drop(oversized);
+        assert!(load_index_from(&path, temp.path()).is_err());
+        save_index_to(&path, &index).unwrap();
+        assert!(load_index_from(&path, temp.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn build_truncates_before_the_serialized_index_exceeds_its_budget() {
+        let temp = TempDir::new();
+        for number in 0..40 {
+            temp.file(&format!("file-{number:02}.txt"), &"\"quoted\" ".repeat(20));
+        }
+        let budget = 8 * 1024;
+        let index = scan_index_within(
+            temp.path().to_path_buf(),
+            Vec::new(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            budget,
+            |_| true,
+        )
+        .unwrap();
+
+        assert!(index.truncated);
+        assert!(!index.documents.is_empty());
+        let documents_json = serde_json::to_vec_pretty(&index.documents).unwrap();
+        assert!(documents_json.len() <= budget);
+    }
+
+    #[test]
+    fn document_overhead_bounds_the_largest_metadata() {
+        let document = IndexedDocument {
+            path: PathBuf::new(),
+            is_dir: false,
+            size: u64::MAX,
+            modified_secs: Some(u64::MAX),
+            accessed_secs: Some(u64::MAX),
+            volume: Some(u64::MAX),
+            file_id: Some(u64::MAX),
+            content: Some(String::new()),
+        };
+        // Nested as the envelope nests it: { payload: { documents: [doc] } }.
+        let nested = serde_json::json!({ "payload": { "documents": [document] } });
+        let bare = serde_json::json!({ "payload": { "documents": [] } });
+        let document_bytes = serde_json::to_vec_pretty(&nested).unwrap().len()
+            - serde_json::to_vec_pretty(&bare).unwrap().len();
+        assert!(
+            document_bytes <= DOCUMENT_JSON_OVERHEAD + 2 * json_string_len(""),
+            "{document_bytes} bytes"
+        );
+        assert_eq!(json_string_len("a\"b\\c\n"), 2 + 3 + 2 + 2 + 6);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_does_not_open_fifos() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let fifo = temp.path().join("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let root = temp.path().to_path_buf();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(scan(&root, Vec::new()));
+        });
+
+        let index = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("index build blocked on a FIFO");
+        let pipe = index
+            .documents
+            .iter()
+            .find(|document| document.path == fifo)
+            .unwrap();
+        assert!(pipe.content.is_none());
+        assert_eq!(index.content_indexed, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_file_name_keeps_non_utf8_roots_apart() {
+        use std::os::unix::ffi::OsStrExt;
+        let first = index_path(Path::new(std::ffi::OsStr::from_bytes(b"/data/\xff")));
+        let second = index_path(Path::new(std::ffi::OsStr::from_bytes(b"/data/\xfe")));
+        assert_ne!(first, second);
+
+        // UTF-8 roots keep the file name earlier builds wrote.
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in "/data/ü".as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        assert!(
+            index_path(Path::new("/data/ü"))
+                .ends_with(format!("content-v{SCHEMA_VERSION}-{hash:016x}.json"))
+        );
+    }
+
+    #[test]
+    fn exclusions_take_the_on_disk_name_case() {
+        let names = || {
+            ["Target", "target", "other"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+        };
+        assert_eq!(
+            matching_entry_name(std::ffi::OsStr::new("TARGET"), names()),
+            Some("Target".into())
+        );
+        assert_eq!(
+            matching_entry_name(std::ffi::OsStr::new("target"), names()),
+            Some("target".into())
+        );
+        assert_eq!(
+            matching_entry_name(std::ffi::OsStr::new("missing"), names()),
+            None
+        );
+
+        let temp = TempDir::new();
+        temp.dir("Build/Out");
+        let normalized =
+            normalize_exclusions(temp.path(), vec![PathBuf::from("Build/Out/new")]).unwrap();
+        assert_eq!(normalized, vec![temp.path().join("Build/Out/new")]);
     }
 }

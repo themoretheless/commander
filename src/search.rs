@@ -675,7 +675,14 @@ impl CompiledQuery {
         })
     }
 
-    fn evaluate_metadata(&self, entry: &FileEntry, now: SystemTime) -> Option<MatchExplanation> {
+    /// `root` is the search root: `path:` matches the path below it, as the
+    /// Find list shows it, so terms in the root itself do not match every hit.
+    fn evaluate_metadata(
+        &self,
+        entry: &FileEntry,
+        root: &Path,
+        now: SystemTime,
+    ) -> Option<MatchExplanation> {
         let mut explanation = MatchExplanation::default();
         for predicate in &self.predicates {
             match predicate {
@@ -690,7 +697,11 @@ impl CompiledQuery {
                     });
                 }
                 CompiledPredicate::Path(matcher) => {
-                    let path = entry.path.to_string_lossy();
+                    let path = entry
+                        .path
+                        .strip_prefix(root)
+                        .unwrap_or(&entry.path)
+                        .to_string_lossy();
                     let matched = matcher.evaluate(&path)?;
                     explanation.total_score += matched.score;
                     explanation.components.push(MatchComponent {
@@ -731,10 +742,10 @@ impl CompiledQuery {
         }
         match source {
             CandidateContent::OnDisk => {
-                let Ok(file) = std::fs::File::open(&entry.path) else {
+                let Some((file, size)) = open_regular_file(&entry.path) else {
                     return ContentVerdict::Skipped;
                 };
-                let mut bytes = Vec::with_capacity(entry.size.min(MAX_CONTENT_BYTES) as usize);
+                let mut bytes = Vec::with_capacity(size.min(MAX_CONTENT_BYTES) as usize);
                 if file
                     .take(MAX_CONTENT_BYTES)
                     .read_to_end(&mut bytes)
@@ -746,7 +757,9 @@ impl CompiledQuery {
                     return ContentVerdict::Skipped;
                 }
                 let content = String::from_utf8_lossy(&bytes);
-                self.evaluate_content_text(&content, entry.size > MAX_CONTENT_BYTES, explanation)
+                // The opened file's size, not the listing's: for a symlink
+                // the listing holds the link's own (lstat) length.
+                self.evaluate_content_text(&content, size > MAX_CONTENT_BYTES, explanation)
             }
             CandidateContent::Indexed { index, document } => {
                 let Some(content) = index
@@ -795,6 +808,31 @@ impl CompiledQuery {
     }
 }
 
+/// Open `path` for a content read only if it is a regular file, returning the
+/// handle and its size. FIFOs, sockets and devices are refused: opening a
+/// FIFO for reading blocks until a writer appears, which would hang the
+/// search worker. The path is stat-ed first so devices are never opened;
+/// unix then opens non-blocking (and without acquiring a controlling tty) and
+/// re-checks the type on the handle itself.
+fn open_regular_file(path: &Path) -> Option<(std::fs::File, u64)> {
+    // Refuse devices, FIFOs and sockets before opening: opening a tty, serial
+    // or tape device can have side effects. The fstat below covers the race
+    // where the path is swapped after this check.
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+    }
+    let file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    metadata.is_file().then_some((file, metadata.len()))
+}
+
 enum ContentVerdict {
     Matched,
     NotMatched,
@@ -820,6 +858,7 @@ fn run_worker(
     let mut cancelled = false;
     let mut channel_open = true;
     let mut last_progress = Instant::now();
+    let root = provider.root().to_path_buf();
 
     provider.visit(&request, &mut |record| {
         if request.cancelled() {
@@ -846,7 +885,7 @@ fn run_worker(
             content,
             location,
         } = candidate;
-        let Some(mut explanation) = query.evaluate_metadata(&entry, now) else {
+        let Some(mut explanation) = query.evaluate_metadata(&entry, &root, now) else {
             channel_open = maybe_send_progress(
                 generation,
                 scanned,
@@ -883,6 +922,12 @@ fn run_worker(
             }
             ContentVerdict::Matched => {}
         }
+        // Only a match beyond the cap proves the results are truncated; a
+        // walk that ends with exactly `cap` matches is complete.
+        if matched >= cap {
+            truncated = true;
+            return false;
+        }
         batch.push(SearchHit {
             entry,
             identity,
@@ -906,10 +951,6 @@ fn run_worker(
                 return false;
             }
             notify();
-        }
-        if matched >= cap {
-            truncated = true;
-            return false;
         }
         channel_open = maybe_send_progress(
             generation,
@@ -1076,17 +1117,45 @@ pub fn time_bucket(hit: &SearchHit, pivot: TimePivot, now: SystemTime) -> TimeBu
     let Some(value) = value else {
         return TimeBucket::Unknown;
     };
-    let Ok(age) = now.duration_since(value) else {
+    if value > now {
         return TimeBucket::Today;
+    }
+    // Count local calendar days, not 24-hour windows, so a file changed at
+    // 23:00 yesterday is "Yesterday" at 08:00 today.
+    // chrono's `From<SystemTime>` panics outside its date range, so convert
+    // through the checked constructor; out-of-range times are simply old.
+    let (Some(now_date), Some(value_date)) = (local_date(now), local_date(value)) else {
+        return TimeBucket::Older;
     };
-    match age.as_secs() / 86_400 {
-        0 => TimeBucket::Today,
+    let days = now_date.signed_duration_since(value_date).num_days();
+    match days {
+        ..=0 => TimeBucket::Today,
         1 => TimeBucket::Yesterday,
         2..=6 => TimeBucket::ThisWeek,
         7..=30 => TimeBucket::ThisMonth,
         31..=365 => TimeBucket::ThisYear,
         _ => TimeBucket::Older,
     }
+}
+
+fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
+    let (secs, nanos) = match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => (i64::try_from(after.as_secs()).ok()?, after.subsec_nanos()),
+        Err(error) => {
+            let before = error.duration();
+            let secs = i64::try_from(before.as_secs()).ok()?;
+            if before.subsec_nanos() == 0 {
+                (secs.checked_neg()?, 0)
+            } else {
+                (
+                    secs.checked_neg()?.checked_sub(1)?,
+                    1_000_000_000 - before.subsec_nanos(),
+                )
+            }
+        }
+    };
+    let utc = chrono::DateTime::from_timestamp(secs, nanos)?;
+    Some(utc.with_timezone(&chrono::Local).date_naive())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1390,7 +1459,7 @@ mod tests {
         .into_iter()
         .filter_map(|name| {
             let entry = file_entry(PathBuf::from(format!("/fixture/{name}")), 1);
-            let explanation = compiled.evaluate_metadata(&entry, now)?;
+            let explanation = compiled.evaluate_metadata(&entry, Path::new("/fixture"), now)?;
             Some(SearchHit {
                 entry,
                 identity: FileIdentity::Path(PathBuf::from(name)),
@@ -1437,7 +1506,14 @@ mod tests {
 
     #[test]
     fn time_pivot_has_stable_age_buckets() {
-        let now = SystemTime::now();
+        use chrono::TimeZone;
+        // A fixed local noon away from DST transitions keeps the day count
+        // independent of the time zone the test runs in.
+        let now: SystemTime = chrono::Local
+            .with_ymd_and_hms(2026, 1, 20, 12, 0, 0)
+            .single()
+            .unwrap()
+            .into();
         let mut hit = SearchHit {
             entry: file_entry(PathBuf::from("/x/a.txt"), 1),
             identity: FileIdentity::Path(PathBuf::from("/x/a.txt")),
@@ -1486,11 +1562,163 @@ mod tests {
                         64
                     },
                 );
-                matched += usize::from(query.evaluate_metadata(&entry, now).is_some());
+                matched += usize::from(
+                    query
+                        .evaluate_metadata(&entry, Path::new("/"), now)
+                        .is_some(),
+                );
             }
             eprintln!(
                 "search-bench {label}: {count} entries, {matched} matches, {:?}",
                 started.elapsed()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_search_skips_fifos_without_blocking() {
+        let tmp = TempDir::new();
+        tmp.file("notes.txt", "needle");
+        let status = std::process::Command::new("mkfifo")
+            .arg(tmp.path().join("pipe"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let engine = SearchEngine::default();
+        let run = engine
+            .start(
+                tmp.path().to_path_buf(),
+                Query::parse("content:needle", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.name, "notes.txt");
+        assert_eq!(summary.content_skipped, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_partial_note_uses_the_symlink_target_size() {
+        let tmp = TempDir::new();
+        let target = tmp.path().join("big.txt");
+        let mut text = vec![b'a'; MAX_CONTENT_BYTES as usize + 1];
+        text[..6].copy_from_slice(b"needle");
+        std::fs::write(&target, text).unwrap();
+        let link = tmp.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let lexical = std::fs::symlink_metadata(&link).unwrap();
+        let entry = FileEntry::from_meta(link, &lexical).unwrap();
+        assert!(entry.size < MAX_CONTENT_BYTES);
+
+        let query =
+            CompiledQuery::new(Query::parse("content:needle", MatchMode::Exact).unwrap()).unwrap();
+        let mut explanation = MatchExplanation::default();
+        assert!(matches!(
+            query.evaluate_content(&entry, &CandidateContent::OnDisk, &mut explanation),
+            ContentVerdict::Matched
+        ));
+        assert!(explanation.summary().contains("first 16MB"));
+    }
+
+    #[test]
+    fn path_predicate_ignores_the_search_root() {
+        let compiled =
+            CompiledQuery::new(Query::parse("path:home", MatchMode::Exact).unwrap()).unwrap();
+        let now = SystemTime::now();
+        let root = Path::new("/home/user");
+        let outside = file_entry(PathBuf::from("/home/user/docs/a.txt"), 1);
+        let inside = file_entry(PathBuf::from("/home/user/home/b.txt"), 1);
+        assert!(compiled.evaluate_metadata(&outside, root, now).is_none());
+        let explanation = compiled.evaluate_metadata(&inside, root, now).unwrap();
+        assert_eq!(explanation.components[0].matched_ranges, vec![(0, 4)]);
+    }
+
+    #[test]
+    fn exactly_cap_matches_is_not_truncated() {
+        let tmp = TempDir::new();
+        tmp.file("match-1.txt", "x");
+        tmp.file("match-2.txt", "x");
+        let engine = SearchEngine::default();
+        let query = || Query::parse("match", MatchMode::Exact).unwrap();
+
+        let run = engine
+            .start(tmp.path().to_path_buf(), query(), 2, Arc::new(|| {}))
+            .unwrap();
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(hits.len(), 2);
+        assert!(!summary.truncated);
+
+        tmp.file("match-3.txt", "x");
+        let run = engine
+            .start(tmp.path().to_path_buf(), query(), 2, Arc::new(|| {}))
+            .unwrap();
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(summary.matched, 2);
+        assert!(summary.truncated);
+    }
+
+    #[test]
+    fn time_buckets_follow_local_calendar_days() {
+        use chrono::TimeZone;
+        let at = |y, m, d, h| -> SystemTime {
+            chrono::Local
+                .with_ymd_and_hms(y, m, d, h, 0, 0)
+                .single()
+                .unwrap()
+                .into()
+        };
+        let now = at(2026, 6, 10, 8);
+        let mut hit = SearchHit {
+            entry: file_entry(PathBuf::from("/x/a.txt"), 1),
+            identity: FileIdentity::Path(PathBuf::from("/x/a.txt")),
+            accessed: None,
+            explanation: MatchExplanation::default(),
+            location: SearchLocation::Native(PathBuf::from("/x/a.txt")),
+        };
+        let mut bucket = |value| {
+            hit.entry.modified = Some(value);
+            time_bucket(&hit, TimePivot::Modified, now)
+        };
+        assert_eq!(bucket(at(2026, 6, 10, 1)), TimeBucket::Today);
+        assert_eq!(bucket(at(2026, 6, 9, 23)), TimeBucket::Yesterday);
+        assert_eq!(bucket(at(2026, 6, 8, 9)), TimeBucket::ThisWeek);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_refuses_devices_and_directories() {
+        assert!(open_regular_file(Path::new("/dev/null")).is_none());
+        assert!(open_regular_file(Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn time_bucket_handles_times_outside_chrono_range() {
+        let now = SystemTime::now();
+        let mut hit = SearchHit {
+            entry: file_entry(PathBuf::from("/x/a.txt"), 1),
+            identity: FileIdentity::Path(PathBuf::from("/x/a.txt")),
+            accessed: None,
+            explanation: MatchExplanation::default(),
+            location: SearchLocation::Native(PathBuf::from("/x/a.txt")),
+        };
+        hit.entry.modified = std::time::UNIX_EPOCH.checked_sub(Duration::from_millis(1_500));
+        assert_eq!(
+            time_bucket(&hit, TimePivot::Modified, now),
+            TimeBucket::Older
+        );
+        // Windows cannot represent times this far back; unix (64-bit
+        // time_t) can, and chrono cannot.
+        if let Some(ancient) = std::time::UNIX_EPOCH.checked_sub(Duration::from_secs(1 << 62)) {
+            hit.entry.modified = Some(ancient);
+            assert_eq!(
+                time_bucket(&hit, TimePivot::Modified, now),
+                TimeBucket::Older
             );
         }
     }

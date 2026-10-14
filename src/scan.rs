@@ -608,8 +608,11 @@ fn flatten_entry(
                 // symlinks: a symlinked directory is shown as a leaf, never
                 // recursed into. That keeps the preview bounded (no escaping the
                 // subtree, no cycles) and matches how the copy treats links.
-                let child_is_dir = child.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                let child_size = if child_is_dir {
+                let child_type = child.file_type().ok();
+                let child_is_dir = child_type.is_some_and(|t| t.is_dir());
+                // A link is copied as a link, so like capture_source it has
+                // no size of its own (lstat would report the target text).
+                let child_size = if child_is_dir || child_type.is_some_and(|t| t.is_symlink()) {
                     0
                 } else {
                     child.metadata().map(|m| m.len()).unwrap_or(0)
@@ -692,6 +695,21 @@ mod tests {
                 ("c.txt".to_string(), 2, false, 3),
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn flatten_reports_zero_size_for_symlink_children() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("folder");
+        tmp.file("folder/data.txt", "12345");
+        std::os::unix::fs::symlink("a-rather-long-link-target", dir.join("link")).unwrap();
+
+        let flat = flatten_entries(&[entry_for(&dir)]);
+        let link = flat.iter().find(|f| f.name == "link").unwrap();
+        assert_eq!(link.size, 0);
+        assert!(!link.is_dir);
+        assert_eq!(flat.iter().find(|f| f.name == "data.txt").unwrap().size, 5);
     }
 
     #[test]
