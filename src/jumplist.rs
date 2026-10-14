@@ -92,14 +92,16 @@ impl JumpList {
 
     /// Step backward to the next entry accepted by `keep`, pruning rejected
     /// entries as they are encountered. The currently focused entry is never
-    /// tested or removed.
+    /// tested or removed. An entry equal to the focused one (left adjacent by
+    /// earlier pruning, as in `[A, dead, A]`) is pruned too, so a step always
+    /// lands somewhere else.
     pub fn back_pruning(&mut self, mut keep: impl FnMut(&Path) -> bool) -> Option<&Path> {
         while let Some(current) = self.cursor {
             if current == 0 {
                 return None;
             }
             let candidate = current - 1;
-            if keep(&self.trail[candidate]) {
+            if self.trail[candidate] != self.trail[current] && keep(&self.trail[candidate]) {
                 self.cursor = Some(candidate);
                 return self.current();
             }
@@ -113,14 +115,15 @@ impl JumpList {
 
     /// Step forward to the next entry accepted by `keep`, pruning rejected
     /// entries as they are encountered. The cursor remains on the original
-    /// entry while rejected forward entries are removed.
+    /// entry while rejected forward entries, and entries equal to it, are
+    /// removed.
     pub fn forward_pruning(&mut self, mut keep: impl FnMut(&Path) -> bool) -> Option<&Path> {
         while let Some(current) = self.cursor {
             let candidate = current + 1;
             if candidate >= self.trail.len() {
                 return None;
             }
-            if keep(&self.trail[candidate]) {
+            if self.trail[candidate] != self.trail[current] && keep(&self.trail[candidate]) {
                 self.cursor = Some(candidate);
                 return self.current();
             }
@@ -190,6 +193,30 @@ mod tests {
             Some(Path::new("/e"))
         );
         assert_eq!(trail(&jumps), vec!["/a", "/c", "/e"]);
+    }
+
+    #[test]
+    fn pruning_skips_entries_equal_to_the_current_one() {
+        let mut jumps = JumpList::new();
+        for path in ["/start", "/a", "/dead", "/a"] {
+            jumps.push(path);
+        }
+        let alive = |path: &Path| path != Path::new("/dead");
+        assert_eq!(jumps.back_pruning(alive), Some(Path::new("/start")));
+        assert_eq!(trail(&jumps), vec!["/start", "/a"]);
+
+        let mut jumps = JumpList::new();
+        for path in ["/a", "/dead", "/a", "/end"] {
+            jumps.push(path);
+        }
+        // Step back to the first "/a" without pruning, then forward over the
+        // dead entry: the second "/a" must not count as a move.
+        jumps.back();
+        jumps.back();
+        jumps.back();
+        assert_eq!(cur(&jumps).as_deref(), Some("/a"));
+        assert_eq!(jumps.forward_pruning(alive), Some(Path::new("/end")));
+        assert_eq!(trail(&jumps), vec!["/a", "/end"]);
     }
 
     #[test]
