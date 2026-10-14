@@ -121,7 +121,11 @@ const fn operation_kind(kind: TransferKind) -> &'static str {
 }
 
 fn operation_time(seconds: u64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(seconds as i64, 0)
+    // A corrupt journal can hold any u64; casting would wrap huge values to
+    // negative seconds and show a 1969 date.
+    i64::try_from(seconds)
+        .ok()
+        .and_then(|seconds| chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0))
         .map(|time| {
             time.with_timezone(&chrono::Local)
                 .format("%b %e, %H:%M")
@@ -791,6 +795,13 @@ mod tests {
         state.load_repair();
         assert!(state.repair_plan.is_none());
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn operation_time_rejects_timestamps_beyond_i64() {
+        assert_eq!(operation_time(u64::MAX), "Unknown time");
+        assert_eq!(operation_time(i64::MAX as u64 + 1), "Unknown time");
+        assert_ne!(operation_time(0), "Unknown time");
     }
 
     #[test]
