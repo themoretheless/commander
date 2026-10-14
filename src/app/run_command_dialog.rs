@@ -118,11 +118,13 @@ fn run_shell(cmdline: String, cwd: &std::path::Path, slot: &CommandChildSlot) ->
 }
 
 /// A missing command surfaces as exit 127 from `sh`, so a spawn failure is
-/// almost always the folder: name it, or the bare OS text reads as if the
-/// command itself were missing.
+/// usually the folder or the shell itself: name the folder, and suggest
+/// checking it only when it is really gone.
 fn spawn_error_message(cwd: &std::path::Path, error: &std::io::Error) -> String {
     let mut message = format!("Could not run in {}: {error}", cwd.display());
-    if error.kind() == std::io::ErrorKind::NotFound {
+    // NotFound may also mean the shell itself is missing; only blame the
+    // folder when it really is gone.
+    if error.kind() == std::io::ErrorKind::NotFound && !cwd.is_dir() {
         message.push_str(". Check that the folder still exists");
     }
     message
@@ -646,6 +648,15 @@ mod tests {
         let message = spawn_error_message(std::path::Path::new("/gone/dir"), &error);
         assert!(message.starts_with("Could not run in /gone/dir: "));
         assert!(message.contains("folder still exists"));
+    }
+
+    #[test]
+    fn missing_shell_does_not_blame_an_existing_folder() {
+        let error = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let dir = std::env::temp_dir();
+        let message = spawn_error_message(&dir, &error);
+        assert!(message.starts_with("Could not run in "));
+        assert!(!message.contains("folder still exists"), "{message}");
     }
 
     #[cfg(unix)]
