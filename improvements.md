@@ -47,11 +47,11 @@ workspace delete/fileops/transfer queue), test-first.
 | P2 | 34 | 30 |
 | P3 | 38 | 28 |
 | P4 | 72 | 60 |
-| P5 | 88 | 74 |
+| P5 | 88 | 73 |
 | P6 | 398 | 149 |
 | P7 | 268 | 0 |
 | P8 | 209 | 0 |
-| **Total** | **1371** | **548** |
+| **Total** | **1371** | **547** |
 
 ## Items
 
@@ -448,7 +448,7 @@ workspace delete/fileops/transfer queue), test-first.
 | I-0389 | sw2:uncovered-7 | err | low | y | S | `src/native_release_qa/identity.rs:99` capture_subject | Hashing failure reason (open/read error) is dropped; evidence only says "subject binary digest is invalid" → Propagate the error text into evidence (e.g., a binary_identity_error field or reasons entry) | P5 | done:61db203 |
 | I-0390 | sw2:uncovered-6 | err | low | y | S | `src/native_release_qa/identity.rs:134` current_binary_digest | csops/codesign/reopen errors are discarded; evidence then claims identity mismatch when codesign was merely unavailable → Return the error string and record it in QaSubject (or evidence reasons) instead of collapsing to false | P5 | done:61db203 |
 | I-0391 | sw2:uncovered-3 | err | low | y | S | `src/native_release_qa/secure_artifact.rs:134` ArtifactDirectory::write_atomic (unix) | Unix write/remove errors never name the artifact or directory (non-unix variants do), so a failure gives no file to inspect → Include self.path(name).display() in each unix error message (write_atomic and remove_stale line 94) | P5 | done:61db203 |
-| I-0392 | sw:panel-11 | err | low | y | S | `src/panel.rs:869` PanelState::poll_fs_changes | Async watcher reloads rarely apply in the same call, so provenance and reconciliation metrics are dropped. → Store the provenance source in the listing job (next to ticket) and record it in poll_listing_results when applied. | P5 | done:4b02c82 |
+| I-0392 | sw:panel-11 | err | low | n | S | `src/panel.rs:869` PanelState::poll_fs_changes | Async watcher reloads rarely apply in the same call, so provenance and reconciliation metrics are dropped. → Store the provenance source in the listing job (next to ticket) and record it in poll_listing_results when applied. | P5 | done:4b02c82 |
 | I-0393 | sw2:panel-core-2 | err | low | y | M | `src/panel.rs:931` PanelState::read_dir | Every non-NotFound read_dir error (ENOTDIR, EIO, EMFILE, NFS timeout) is shown as 'No permission to read this folder' → Add DirStatus::Unreadable for non-NotFound/non-PermissionDenied kinds; update file_list.rs empty state and update.rs messages | P5 | deferred |
 | I-0394 | au#T45 | err | low | y | M | `src/panel/dir_size_cache.rs:574` dir_size_recursive_until | Unreadable subdirs/entries are skipped silently; the undercounted folder size is shown and cached as exact → Track an incomplete flag; skip caching (modified=None) for incomplete walks and optionally prefix the size with '>=' | P5 | done:257b55d |
 | I-0395 | sw:panel-57 | err | low | y | S | `src/panel/dir_size_cache.rs:833` flush_cache | Size-cache persistence failures (disk full, permissions) and create_dir_all errors are silently ignored → On Err from save_json_atomic, log::warn once (e.g. AtomicBool guard) with path and error | P5 | done:a223469 |
