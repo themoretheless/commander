@@ -17,7 +17,7 @@ pub enum DurabilityProfile {
 impl DurabilityProfile {
     pub const ALL: [Self; 3] = [Self::Fast, Self::Verified, Self::Versioned];
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Fast => "Fast",
             Self::Verified => "Verified",
@@ -25,7 +25,7 @@ impl DurabilityProfile {
         }
     }
 
-    pub fn verifies(self) -> bool {
+    pub const fn verifies(self) -> bool {
         matches!(self, Self::Verified | Self::Versioned)
     }
 
@@ -46,7 +46,7 @@ pub enum VersionRetentionPolicy {
 impl VersionRetentionPolicy {
     pub const ALL: [Self; 4] = [Self::Compact, Self::Recent, Self::Archive, Self::Forever];
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Compact => "Compact",
             Self::Recent => "Recent",
@@ -55,7 +55,7 @@ impl VersionRetentionPolicy {
         }
     }
 
-    pub fn consequence(self) -> &'static str {
+    pub const fn consequence(self) -> &'static str {
         match self {
             Self::Compact => "Keep 3 versions per path for up to 30 days",
             Self::Recent => "Keep 10 versions per path for up to 90 days",
@@ -114,7 +114,7 @@ pub enum FailureClass {
 }
 
 impl FailureClass {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Retryable => "Retryable",
             Self::Blocked => "Blocked",

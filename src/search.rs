@@ -171,7 +171,7 @@ impl Drop for SearchRun {
     }
 }
 
-pub(crate) struct ProviderRequest {
+pub struct ProviderRequest {
     generation: u64,
     active: Arc<AtomicU64>,
     scheduler_cancel: crate::workload::CancellationToken,
@@ -194,7 +194,7 @@ enum CandidateContent {
     Inline(Option<Arc<str>>),
 }
 
-pub(crate) struct SearchCandidate {
+pub struct SearchCandidate {
     entry: FileEntry,
     identity: FileIdentity,
     accessed: Option<SystemTime>,
@@ -202,14 +202,14 @@ pub(crate) struct SearchCandidate {
     location: SearchLocation,
 }
 
-pub(crate) type ProviderRecord = Option<SearchCandidate>;
+pub type ProviderRecord = Option<SearchCandidate>;
 
 struct FilesystemProvider {
     root: PathBuf,
 }
 
 impl FilesystemProvider {
-    fn new(root: PathBuf) -> Self {
+    const fn new(root: PathBuf) -> Self {
         Self { root }
     }
 }
@@ -617,7 +617,7 @@ impl TextMatcher {
 
     fn evaluate(&self, candidate: &str) -> Option<TextMatch> {
         match self {
-            TextMatcher::Exact { original, regex } => {
+            Self::Exact { original, regex } => {
                 let found = regex.find(candidate)?;
                 let ranges = vec![byte_range_to_char_range(
                     candidate,
@@ -631,24 +631,20 @@ impl TextMatcher {
                     detail: format!("literal {original:?}"),
                 })
             }
-            TextMatcher::Fuzzy(value) => {
-                crate::fuzzy::score(value, candidate).map(|matched| TextMatch {
-                    score: matched.score,
-                    matched_ranges: matched.matched_ranges,
-                    detail: format!("fuzzy {value:?}"),
-                })
-            }
-            TextMatcher::Regex { original, regex } => {
-                regex.find(candidate).map(|found| TextMatch {
-                    score: 100,
-                    matched_ranges: vec![byte_range_to_char_range(
-                        candidate,
-                        found.start(),
-                        found.end(),
-                    )],
-                    detail: format!("regex {original:?}"),
-                })
-            }
+            Self::Fuzzy(value) => crate::fuzzy::score(value, candidate).map(|matched| TextMatch {
+                score: matched.score,
+                matched_ranges: matched.matched_ranges,
+                detail: format!("fuzzy {value:?}"),
+            }),
+            Self::Regex { original, regex } => regex.find(candidate).map(|found| TextMatch {
+                score: 100,
+                matched_ranges: vec![byte_range_to_char_range(
+                    candidate,
+                    found.start(),
+                    found.end(),
+                )],
+                detail: format!("regex {original:?}"),
+            }),
         }
     }
 }
@@ -1038,7 +1034,7 @@ pub enum TimePivot {
 impl TimePivot {
     pub const ALL: [Self; 3] = [Self::None, Self::Modified, Self::Accessed];
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::None => "List",
             Self::Modified => "Modified",
@@ -1059,7 +1055,7 @@ pub enum TimeBucket {
 }
 
 impl TimeBucket {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Today => "Today",
             Self::Yesterday => "Yesterday",

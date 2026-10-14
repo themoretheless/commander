@@ -61,39 +61,39 @@ fn bump(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn record_event() {
+pub fn record_event() {
     bump(&counters().events);
 }
 
-pub(crate) fn record_direct_event() {
+pub fn record_direct_event() {
     bump(&counters().direct_events);
 }
 
-pub(crate) fn record_deep_event() {
+pub fn record_deep_event() {
     bump(&counters().deep_events);
 }
 
-pub(crate) fn record_rescan_signal() {
+pub fn record_rescan_signal() {
     bump(&counters().rescan_signals);
 }
 
-pub(crate) fn record_backend_error() {
+pub fn record_backend_error() {
     bump(&counters().backend_errors);
 }
 
-pub(crate) fn record_start_failure() {
+pub fn record_start_failure() {
     bump(&counters().start_failures);
 }
 
-pub(crate) fn record_watch_failure() {
+pub fn record_watch_failure() {
     bump(&counters().watch_failures);
 }
 
-pub(crate) fn record_reconnect() {
+pub fn record_reconnect() {
     bump(&counters().reconnects);
 }
 
-pub(crate) fn record_listing_reconciliation(recovered_gap: bool) {
+pub fn record_listing_reconciliation(recovered_gap: bool) {
     let counters = counters();
     bump(&counters.listing_reconciliations);
     if recovered_gap {
@@ -101,11 +101,11 @@ pub(crate) fn record_listing_reconciliation(recovered_gap: bool) {
     }
 }
 
-pub(crate) fn record_size_reconciliation() {
+pub fn record_size_reconciliation() {
     bump(&counters().size_reconciliations);
 }
 
-pub(crate) fn record_event_batch(coalesced: bool) {
+pub fn record_event_batch(coalesced: bool) {
     if coalesced {
         bump(&counters().coalesced_events);
     } else {
@@ -113,7 +113,7 @@ pub(crate) fn record_event_batch(coalesced: bool) {
     }
 }
 
-pub(crate) fn record_watcher_start(
+pub fn record_watcher_start(
     backend: crate::watcher_policy::WatcherBackend,
     depth: crate::watcher_policy::WatchDepth,
     fallback: bool,

@@ -19,7 +19,7 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::LocalFast => "Local fast",
             Self::LocalSlow => "Local",
@@ -29,7 +29,7 @@ impl BackendKind {
         }
     }
 
-    pub fn is_slow_link(self) -> bool {
+    pub const fn is_slow_link(self) -> bool {
         matches!(self, Self::LocalSlow | Self::Removable | Self::Remote)
     }
 }
@@ -156,7 +156,7 @@ fn native_volume_id(path: &Path) -> Option<u64> {
 }
 
 #[cfg(not(unix))]
-fn native_volume_id(_path: &Path) -> Option<u64> {
+const fn native_volume_id(_path: &Path) -> Option<u64> {
     None
 }
 
@@ -322,7 +322,7 @@ fn native_mount(path: &Path) -> Option<NativeMount> {
 /// Name and locality for a Linux `statfs` magic number (`linux/magic.h`).
 /// Unrecognised filesystems are treated as local but not fast.
 #[cfg(target_os = "linux")]
-fn linux_filesystem(magic: u32) -> (&'static str, bool) {
+const fn linux_filesystem(magic: u32) -> (&'static str, bool) {
     match magic {
         0xEF53 => ("ext4", true),
         0x9123_683E => ("btrfs", true),
@@ -348,7 +348,7 @@ fn linux_filesystem(magic: u32) -> (&'static str, bool) {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn native_mount(_path: &Path) -> Option<NativeMount> {
+const fn native_mount(_path: &Path) -> Option<NativeMount> {
     None
 }
 

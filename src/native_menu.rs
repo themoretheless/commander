@@ -3,7 +3,7 @@ mod model;
 mod qa;
 
 #[cfg(feature = "visual-qa")]
-pub(crate) use qa::native_qa_renderer_check;
+pub use qa::native_qa_renderer_check;
 
 use crate::ports::{
     ContextMenuAction, ContextMenuAnchor, ContextMenuCommand, ContextMenuFailure,
@@ -63,7 +63,7 @@ impl OwnedObject {
         })
     }
 
-    fn as_ptr(&self) -> *mut Object {
+    const fn as_ptr(&self) -> *mut Object {
         self.object
     }
 
@@ -228,7 +228,7 @@ fn ensure_class() -> bool {
             }
         }
 
-        extern "C" fn action_noop(_: &Object, _: Sel, _: *mut Object) {}
+        const extern "C" fn action_noop(_: &Object, _: Sel, _: *mut Object) {}
 
         unsafe {
             type Action = extern "C" fn(&Object, Sel, *mut Object);

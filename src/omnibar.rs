@@ -3,7 +3,7 @@
 //! UI-independent so the routing contract is unit-tested.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OmnibarMode<'a> {
+pub enum OmnibarMode<'a> {
     /// Plain text: recent folders, pinned folders, and commands together.
     Jump(&'a str),
     /// `>`: commands only.
@@ -44,7 +44,7 @@ impl<'a> OmnibarMode<'a> {
 }
 
 /// Hint row shown under an empty omnibar.
-pub(crate) const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  / or ~ path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
+pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  / or ~ path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
 
 #[cfg(test)]
 mod tests {

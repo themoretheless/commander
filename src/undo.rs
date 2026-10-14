@@ -5,7 +5,7 @@
 
 mod center;
 
-pub(crate) use center::{HistoryError, ReplayDirection, ReplayPlan, ReplayReservation, UndoCenter};
+pub use center::{HistoryError, ReplayDirection, ReplayPlan, ReplayReservation, UndoCenter};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -54,24 +54,24 @@ pub struct TrashedItem {
 
 impl Action {
     /// How many files the action touched (for status/toast text).
-    pub fn item_count(&self) -> usize {
+    pub const fn item_count(&self) -> usize {
         match self {
-            Action::Move { pairs } => pairs.len(),
-            Action::BatchRename { pairs, .. } => pairs.len(),
-            Action::Rename { .. } => 1,
-            Action::Gather { pairs, .. } | Action::Ungather { pairs, .. } => pairs.len(),
-            Action::Trash { items } | Action::RestoreTrash { items } => items.len(),
+            Self::Move { pairs } => pairs.len(),
+            Self::BatchRename { pairs, .. } => pairs.len(),
+            Self::Rename { .. } => 1,
+            Self::Gather { pairs, .. } | Self::Ungather { pairs, .. } => pairs.len(),
+            Self::Trash { items } | Self::RestoreTrash { items } => items.len(),
         }
     }
 
     /// Past-tense verb for the action, for toast/status text.
-    pub fn verb(&self) -> &'static str {
+    pub const fn verb(&self) -> &'static str {
         match self {
-            Action::Move { .. } => "Moved",
-            Action::BatchRename { .. } | Action::Rename { .. } => "Renamed",
-            Action::Gather { .. } | Action::Ungather { .. } => "Gathered",
-            Action::Trash { .. } => "Deleted",
-            Action::RestoreTrash { .. } => "Restored",
+            Self::Move { .. } => "Moved",
+            Self::BatchRename { .. } | Self::Rename { .. } => "Renamed",
+            Self::Gather { .. } | Self::Ungather { .. } => "Gathered",
+            Self::Trash { .. } => "Deleted",
+            Self::RestoreTrash { .. } => "Restored",
         }
     }
 
@@ -79,18 +79,18 @@ impl Action {
     /// directory the action's targets ended up in.
     pub fn jump_to(&self) -> Option<PathBuf> {
         match self {
-            Action::Move { pairs } => pairs
+            Self::Move { pairs } => pairs
                 .first()
                 .and_then(|(_, to)| to.parent())
                 .map(PathBuf::from),
-            Action::BatchRename { dir, .. } => Some(dir.clone()),
-            Action::Rename { to, .. } => to.parent().map(PathBuf::from),
-            Action::Gather { folder, .. } => Some(folder.clone()),
-            Action::Ungather { pairs, .. } => pairs
+            Self::BatchRename { dir, .. } => Some(dir.clone()),
+            Self::Rename { to, .. } => to.parent().map(PathBuf::from),
+            Self::Gather { folder, .. } => Some(folder.clone()),
+            Self::Ungather { pairs, .. } => pairs
                 .first()
                 .and_then(|(_, to)| to.parent())
                 .map(PathBuf::from),
-            Action::Trash { items } | Action::RestoreTrash { items } => items
+            Self::Trash { items } | Self::RestoreTrash { items } => items
                 .first()
                 .and_then(|item| item.path.parent())
                 .map(PathBuf::from),
@@ -351,7 +351,7 @@ pub struct RedoInvalidation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct HistoryEntryId(u64);
+pub struct HistoryEntryId(u64);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HistoryEntry {
@@ -367,7 +367,7 @@ struct UndoStack {
 }
 
 impl UndoStack {
-    fn can_undo(&self) -> bool {
+    const fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
@@ -380,7 +380,7 @@ impl UndoStack {
         self.undo.last()
     }
 
-    fn can_redo(&self) -> bool {
+    const fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
 
@@ -409,7 +409,7 @@ impl UndoStack {
         });
     }
 
-    fn redo_invalidation(&self) -> Option<&RedoInvalidation> {
+    const fn redo_invalidation(&self) -> Option<&RedoInvalidation> {
         self.redo_invalidation.as_ref()
     }
 

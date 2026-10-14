@@ -37,9 +37,9 @@ impl RenameStep {
     /// The `(source, destination)` names this step renames, forward.
     fn endpoints(&self) -> (&str, &str) {
         match self {
-            RenameStep::Direct { from, to } => (from, to),
-            RenameStep::ToTemp { from, tmp } => (from, tmp),
-            RenameStep::FromTemp { tmp, to } => (tmp, to),
+            Self::Direct { from, to } => (from, to),
+            Self::ToTemp { from, tmp } => (from, tmp),
+            Self::FromTemp { tmp, to } => (tmp, to),
         }
     }
 }

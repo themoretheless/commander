@@ -9,7 +9,7 @@ const STORE: crate::persistence::StoreSpec =
     crate::persistence::StoreSpec::new("commander.session", 1, 8 * 1024 * 1024);
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
-pub(crate) struct PersistedLeftView {
+pub struct PersistedLeftView {
     #[serde(rename = "left_sort_col")]
     sort_column: SortColumn,
     #[serde(rename = "left_sort_order")]
@@ -51,7 +51,7 @@ impl From<crate::panel::ViewConfig> for PersistedLeftView {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
-pub(crate) struct PersistedRightView {
+pub struct PersistedRightView {
     #[serde(rename = "right_sort_col")]
     sort_column: SortColumn,
     #[serde(rename = "right_sort_order")]
@@ -141,7 +141,7 @@ pub struct Session {
 
 /// Serde default for booleans that should restore as `true` (the live
 /// default) when a key is absent from an older session file.
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -183,12 +183,12 @@ fn session_path() -> PathBuf {
     crate::fs_util::config_dir().join("session.json")
 }
 
-pub(crate) struct LoadedSession {
+pub struct LoadedSession {
     pub value: Option<Session>,
     pub gate: crate::persistence::StoreGate,
 }
 
-pub(crate) fn load_with(persist: &dyn crate::persistence::Persist) -> LoadedSession {
+pub fn load_with(persist: &dyn crate::persistence::Persist) -> LoadedSession {
     load_at(persist, &session_path())
 }
 
@@ -203,7 +203,7 @@ fn load_at(persist: &dyn crate::persistence::Persist, path: &Path) -> LoadedSess
     }
 }
 
-pub(crate) fn save_with(
+pub fn save_with(
     persist: &dyn crate::persistence::Persist,
     session: &Session,
     gate: &mut crate::persistence::StoreGate,

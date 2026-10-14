@@ -12,9 +12,9 @@ const ATTESTATION_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 #[cfg(any(test, feature = "visual-qa"))]
 const FUTURE_CLOCK_TOLERANCE: Duration = Duration::from_secs(5 * 60);
 
-/// Place a full menu content rectangle inside one NSScreen visibleFrame.
+/// Place a full menu content rectangle inside one `NSScreen` visibleFrame.
 ///
-/// `anchor` is AppKit global-screen top-left. Menu content grows toward lower
+/// `anchor` is `AppKit` global-screen top-left. Menu content grows toward lower
 /// y, so the returned rectangle spans `[top_left.y - height, top_left.y]`.
 pub fn place_popup(
     anchor: ScreenPoint,

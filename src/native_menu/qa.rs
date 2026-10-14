@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn native_qa_renderer_check()
+pub fn native_qa_renderer_check()
 -> Result<crate::native_release_qa::NativeMenuRendererEvidence, String> {
     if !is_main_thread() {
         return Err("native menu renderer inspection requires the main thread".to_string());

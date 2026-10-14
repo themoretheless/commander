@@ -30,7 +30,7 @@ pub enum FastPath {
 }
 
 impl FastPath {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Rename => "rename",
             Self::Clone => "clone",
@@ -126,7 +126,7 @@ fn snapshot_from(profile: &VolumeProfile, samples: Vec<Sample>) -> TuningSnapsho
     }
 }
 
-fn assumed_latency(backend: BackendKind) -> f64 {
+const fn assumed_latency(backend: BackendKind) -> f64 {
     match backend {
         BackendKind::LocalFast => 1.0,
         BackendKind::LocalSlow => 8.0,
@@ -143,7 +143,7 @@ pub struct QuietHours {
 }
 
 impl QuietHours {
-    pub fn valid(self) -> bool {
+    pub const fn valid(self) -> bool {
         self.start_hour < 24 && self.end_hour < 24 && self.start_hour != self.end_hour
     }
 
@@ -201,7 +201,7 @@ impl Default for RuleStore {
     }
 }
 
-fn rule_schema() -> u32 {
+const fn rule_schema() -> u32 {
     RULE_SCHEMA
 }
 

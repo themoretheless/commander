@@ -26,7 +26,7 @@ impl OperationPhase {
         Self::Finalize,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Scan => "Scan",
             Self::Plan => "Plan",
@@ -88,7 +88,7 @@ pub enum CancellationAction {
 }
 
 impl CancellationAction {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::StopAfterCurrentFile => "Stop after current file",
             Self::CancelPending => "Cancel pending",
@@ -97,7 +97,7 @@ impl CancellationAction {
         }
     }
 
-    pub fn consequence(self) -> &'static str {
+    pub const fn consequence(self) -> &'static str {
         match self {
             Self::StopAfterCurrentFile => {
                 "Finishes the current file, then keeps a recoverable checkpoint"
@@ -236,7 +236,7 @@ impl FailureInbox {
         &self.notices
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.notices.is_empty()
     }
 }
@@ -248,7 +248,7 @@ pub enum DragEffect {
 }
 
 impl DragEffect {
-    fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Move => "Move",
             Self::Copy => "Copy",
@@ -268,7 +268,7 @@ pub enum DragAnnouncement {
 }
 
 impl DragAnnouncement {
-    pub fn valid(destination: PathBuf, effect: DragEffect) -> Self {
+    pub const fn valid(destination: PathBuf, effect: DragEffect) -> Self {
         Self::Valid {
             destination,
             effect,

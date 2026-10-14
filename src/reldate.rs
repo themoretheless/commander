@@ -77,7 +77,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
 
-    /// A SystemTime `secs` after the epoch (deterministic, timezone-free).
+    /// A `SystemTime` `secs` after the epoch (deterministic, timezone-free).
     fn at(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
     }

@@ -60,7 +60,7 @@ pub(super) fn detect_capabilities(topology: &[DisplayTopology]) -> NativeCapabil
 }
 
 #[cfg(all(not(target_os = "macos"), feature = "visual-qa"))]
-pub(super) fn detect_capabilities(_topology: &[DisplayTopology]) -> NativeCapabilities {
+pub(super) const fn detect_capabilities(_topology: &[DisplayTopology]) -> NativeCapabilities {
     NativeCapabilities {
         window_server: CapabilityState::Unavailable,
         accessibility: CapabilityState::Unavailable,
@@ -150,6 +150,6 @@ pub fn capture_display_topology() -> Vec<DisplayTopology> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn capture_display_topology() -> Vec<DisplayTopology> {
+pub const fn capture_display_topology() -> Vec<DisplayTopology> {
     Vec::new()
 }

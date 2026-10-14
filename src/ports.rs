@@ -28,6 +28,7 @@ pub struct NativeFailure {
 }
 
 impl NativeFailure {
+    #[must_use]
     pub fn from_io(error: &std::io::Error) -> Self {
         use std::io::ErrorKind;
         let kind = match error.kind() {
@@ -78,6 +79,7 @@ pub enum OpenRequest {
 }
 
 impl OpenRequest {
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             Self::OpenPath(path)
@@ -119,6 +121,7 @@ pub enum TrashBatchItem {
 }
 
 impl TrashBatchItem {
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             Self::Ready(target) => &target.path,
@@ -219,7 +222,7 @@ pub struct ContextMenuViewRect {
     pub min_y: f64,
     pub max_x: f64,
     pub max_y: f64,
-    /// Native AppKit points represented by one egui coordinate unit.
+    /// Native `AppKit` points represented by one egui coordinate unit.
     pub native_points_per_ui_point: f64,
 }
 
@@ -259,6 +262,7 @@ pub enum ContextMenuAction {
 }
 
 impl ContextMenuAction {
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             Self::Duplicate(target) | Self::Compress(target) => &target.path,
@@ -266,13 +270,15 @@ impl ContextMenuAction {
         }
     }
 
-    pub fn target(&self) -> &ContextMenuTarget {
+    #[must_use]
+    pub const fn target(&self) -> &ContextMenuTarget {
         match self {
             Self::Duplicate(target) | Self::Compress(target) => target,
             Self::ToggleTag { target, .. } | Self::Share { target, .. } => target,
         }
     }
 
+    #[must_use]
     pub const fn command(&self) -> ContextMenuCommand {
         match self {
             Self::Duplicate(_) => ContextMenuCommand::Duplicate,
@@ -300,10 +306,10 @@ pub enum ContextMenuResult {
 }
 
 /// Main-thread desktop context-menu boundary. It intentionally has no
-/// `Send`/`Sync` bounds: AppKit adapters are owned and invoked by the UI thread.
+/// `Send`/`Sync` bounds: `AppKit` adapters are owned and invoked by the UI thread.
 pub trait ContextMenuPort {
     /// Capture presentation identity in the event frame, before the render
-    /// barrier or dynamic AppKit provider discovery can move the pointer.
+    /// barrier or dynamic `AppKit` provider discovery can move the pointer.
     fn prepare_context_menu(
         &self,
         target: ContextMenuTarget,
@@ -329,7 +335,7 @@ pub trait ContextMenuPort {
     ///
     /// Objective-C callbacks are presentation adapters: they may select an
     /// action, but must not mutate the filesystem, launch a service, or touch
-    /// another native capability while AppKit is tracking the menu.
+    /// another native capability while `AppKit` is tracking the menu.
     fn perform_deferred_action(&self, action: &ContextMenuAction) -> ContextMenuResult {
         ContextMenuResult::Failed(ContextMenuFailure::Action {
             command: action.command(),
@@ -538,6 +544,7 @@ impl Hasher for VerifiedBlake3Hasher {
     }
 }
 
+#[must_use]
 pub fn default_hasher() -> &'static dyn Hasher {
     static HASHER: VerifiedBlake3Hasher = VerifiedBlake3Hasher;
     &HASHER

@@ -20,7 +20,7 @@ impl Default for ReconnectPolicy {
 }
 
 impl ReconnectPolicy {
-    fn timeout(self) -> Duration {
+    const fn timeout(self) -> Duration {
         Duration::from_millis(self.timeout_ms)
     }
 

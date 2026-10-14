@@ -26,7 +26,7 @@ pub struct Toast {
 
 impl Toast {
     pub fn new(message: impl Into<String>, kind: ToastKind, undoable: bool, now: f64) -> Self {
-        Toast {
+        Self {
             id: 0,
             message: message.into(),
             kind,
@@ -36,7 +36,7 @@ impl Toast {
         }
     }
 
-    pub fn id(&self) -> u64 {
+    pub const fn id(&self) -> u64 {
         self.id
     }
 }
@@ -99,7 +99,7 @@ impl ToastQueue {
         &self.toasts
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.toasts.is_empty()
     }
 }

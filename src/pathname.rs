@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DirInputError {
+pub enum DirInputError {
     Empty,
     Missing,
     NotDirectory,
@@ -31,7 +31,7 @@ impl fmt::Display for DirInputError {
 impl std::error::Error for DirInputError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NewNameError {
+pub enum NewNameError {
     Empty,
     ContainsSlash,
     ContainsNul,
@@ -54,7 +54,7 @@ impl fmt::Display for NewNameError {
 impl std::error::Error for NewNameError {}
 
 /// Parse go-to-path input without touching the filesystem or canonicalizing it.
-pub(crate) fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputError> {
+pub fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(DirInputError::Empty);
@@ -75,11 +75,11 @@ pub(crate) fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirIn
     Ok(expanded)
 }
 
-pub(crate) trait DirectoryProbePort: Send + Sync {
+pub trait DirectoryProbePort: Send + Sync {
     fn probe(&self, path: &Path) -> Result<(), DirInputError>;
 }
 
-pub(crate) struct FsDirectoryProbe;
+pub struct FsDirectoryProbe;
 
 impl DirectoryProbePort for FsDirectoryProbe {
     fn probe(&self, path: &Path) -> Result<(), DirInputError> {
@@ -103,7 +103,7 @@ impl DirectoryProbePort for FsDirectoryProbe {
 /// `siblings` must exclude the entry being renamed. The commit path performs
 /// the same validation against a fresh directory listing before its atomic
 /// no-replace rename.
-pub(crate) fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), NewNameError> {
+pub fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), NewNameError> {
     let name = name.trim();
     if name.is_empty() {
         return Err(NewNameError::Empty);
