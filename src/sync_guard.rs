@@ -179,29 +179,39 @@ pub fn settings_fingerprint(policy: SyncPolicy, guard: &GuardPolicy, filter: &st
 pub fn assess(actions: &[SyncAction], guard: &GuardPolicy) -> Assessment {
     let mut assessment = Assessment::default();
     for action in actions {
-        if !matches!(action.direction, SyncDirection::Skip) {
+        let planned = !matches!(action.direction, SyncDirection::Skip);
+        if planned {
             assessment.planned_actions += 1;
-            match action.status {
-                SyncStatus::LeftOnly | SyncStatus::RightOnly => assessment.additions += 1,
-                SyncStatus::Identical
-                | SyncStatus::DirectoryPair
-                | SyncStatus::TypeConflict
-                | SyncStatus::CaseConflict => {}
-                SyncStatus::LeftNewer | SyncStatus::RightNewer | SyncStatus::Differing => {
+        }
+        match action.status {
+            SyncStatus::LeftOnly | SyncStatus::RightOnly => {
+                if planned {
+                    assessment.additions += 1;
+                }
+            }
+            // Existing file pairs form the breaker's denominator; a planned
+            // copy over one of them, including a user-forced copy over an
+            // identical file, overwrites it.
+            SyncStatus::LeftNewer
+            | SyncStatus::RightNewer
+            | SyncStatus::Differing
+            | SyncStatus::Identical => {
+                assessment.existing_pairs += 1;
+                if planned {
                     assessment.changed_existing += 1;
                 }
             }
-        }
-        if matches!(
-            action.status,
-            SyncStatus::LeftNewer
-                | SyncStatus::RightNewer
-                | SyncStatus::Differing
-                | SyncStatus::Identical
-                | SyncStatus::DirectoryPair
-                | SyncStatus::TypeConflict
-        ) {
-            assessment.existing_pairs += 1;
+            // A forced case-conflict copy may land on a case variant, so it
+            // counts as an overwrite of an existing entry.
+            SyncStatus::CaseConflict => {
+                if planned {
+                    assessment.existing_pairs += 1;
+                    assessment.changed_existing += 1;
+                }
+            }
+            // Folder pairs and type conflicts are never copied, so they would
+            // only dilute the change fraction.
+            SyncStatus::DirectoryPair | SyncStatus::TypeConflict => {}
         }
     }
     assessment.change_fraction = if assessment.existing_pairs == 0 {
@@ -313,8 +323,18 @@ fn read_entries(root: &Path, show_hidden: bool) -> Result<Vec<FileEntry>, String
         {
             continue;
         }
-        let metadata = std::fs::metadata(&path)
-            .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+        // A dangling symlink is listed as the link itself, and an entry
+        // deleted since read_dir is simply absent; neither blocks the plan.
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return Err(format!("Could not inspect {}: {error}", path.display()));
+                }
+            },
+        };
         if let Some(entry) = FileEntry::from_meta(path, &metadata) {
             entries.push(entry);
         }
@@ -406,6 +426,65 @@ mod tests {
         assert_eq!(assessment.changed_existing, 2);
         assert_eq!(assessment.additions, 1);
         assert!(assessment.circuit_breaker.is_some());
+    }
+
+    #[test]
+    fn forced_identical_and_case_conflict_copies_count_as_overwrites() {
+        let guard = GuardPolicy {
+            minimum_changed: 2,
+            max_change_fraction: 0.5,
+            ..Default::default()
+        };
+        let actions = vec![
+            action(SyncStatus::Identical, SyncDirection::ToRight),
+            action(SyncStatus::CaseConflict, SyncDirection::ToRight),
+            action(SyncStatus::Identical, SyncDirection::Skip),
+        ];
+        let assessment = assess(&actions, &guard);
+        assert_eq!(assessment.planned_actions, 2);
+        assert_eq!(assessment.changed_existing, 2);
+        assert!(assessment.circuit_breaker.is_some());
+    }
+
+    #[test]
+    fn folder_pairs_do_not_dilute_the_change_fraction() {
+        let guard = GuardPolicy {
+            minimum_changed: 2,
+            max_change_fraction: 0.5,
+            ..Default::default()
+        };
+        let mut actions = vec![
+            action(SyncStatus::LeftNewer, SyncDirection::ToRight),
+            action(SyncStatus::LeftNewer, SyncDirection::ToRight),
+            action(SyncStatus::Identical, SyncDirection::Skip),
+        ];
+        for _ in 0..10 {
+            actions.push(action(SyncStatus::DirectoryPair, SyncDirection::Skip));
+            actions.push(action(SyncStatus::TypeConflict, SyncDirection::Skip));
+        }
+        let assessment = assess(&actions, &guard);
+        assert_eq!(assessment.existing_pairs, 3);
+        assert!(assessment.circuit_breaker.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_does_not_block_the_plan() {
+        let left = crate::testutil::TempDir::new();
+        let right = crate::testutil::TempDir::new();
+        left.file("real.txt", "data");
+        std::os::unix::fs::symlink(left.path().join("missing"), left.path().join("dangling"))
+            .unwrap();
+        let (actions, _) = build_plan(
+            left.path(),
+            right.path(),
+            false,
+            false,
+            SyncPolicy::MirrorLeftToRight,
+        )
+        .unwrap();
+        assert!(actions.iter().any(|a| a.name == "real.txt"));
+        assert!(actions.iter().any(|a| a.name == "dangling"));
     }
 
     #[test]
