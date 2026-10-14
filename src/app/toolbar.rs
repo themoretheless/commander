@@ -230,10 +230,53 @@ impl App {
     }
 
     fn set_ui_scale(&mut self, ctx: &egui::Context, scale: f32) {
-        self.ui_scale = crate::accessibility::sanitize_text_scale(scale);
-        if (self.ui_scale - 1.0).abs() < 0.03 {
-            self.ui_scale = 1.0;
-        }
+        self.ui_scale = normalized_ui_scale(scale);
         ctx.set_zoom_factor(self.ui_scale);
+    }
+
+    /// Adopt a zoom changed outside the Text size slider (egui's built-in
+    /// Cmd/Ctrl +/- keys), so the slider and the saved session follow it.
+    /// Runs at frame start, after egui applied any pending zoom change.
+    pub(crate) fn sync_ui_scale_with_zoom(&mut self, ctx: &egui::Context) {
+        if let Some(scale) = zoom_to_adopt(self.ui_scale, ctx.zoom_factor()) {
+            self.set_ui_scale(ctx, scale);
+        }
+    }
+}
+
+/// The text scale clamped to the supported range, snapping near-1.0 to 1.0.
+fn normalized_ui_scale(scale: f32) -> f32 {
+    let scale = crate::accessibility::sanitize_text_scale(scale);
+    if (scale - 1.0).abs() < 0.03 {
+        1.0
+    } else {
+        scale
+    }
+}
+
+/// The live zoom factor when it no longer matches the stored text scale.
+fn zoom_to_adopt(ui_scale: f32, zoom: f32) -> Option<f32> {
+    ((zoom - ui_scale).abs() > 1e-3).then_some(zoom)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_ui_scale, zoom_to_adopt};
+
+    #[test]
+    fn keyboard_zoom_is_adopted_into_the_stored_scale() {
+        assert_eq!(zoom_to_adopt(1.0, 1.1), Some(1.1));
+        assert_eq!(zoom_to_adopt(1.25, 1.25), None);
+        // Out-of-range keyboard zoom is clamped back to the slider range.
+        assert_eq!(zoom_to_adopt(1.0, 3.0).map(normalized_ui_scale), Some(2.0));
+        assert_eq!(normalized_ui_scale(1.02), 1.0);
+    }
+
+    #[test]
+    fn adopted_zoom_matches_egui_after_a_keyboard_zoom_pass() {
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(1.5);
+        crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |_| {}));
+        assert_eq!(zoom_to_adopt(1.0, ctx.zoom_factor()), Some(1.5));
     }
 }
