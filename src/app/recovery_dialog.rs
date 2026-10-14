@@ -76,6 +76,9 @@ impl RecoveryState {
         self.selected = Some(operation_id);
         self.detail = RecoveryDetail::Inspect;
         self.outcome = None;
+        // An error from the previous operation's load, rollback or resume
+        // does not describe this one.
+        self.error = None;
         self.refresh_selected();
     }
 
@@ -147,7 +150,14 @@ impl RecoveryState {
             Ok(plan) => self.repair_plan = Some(plan),
             Err(error) => self.error = Some(error),
         }
-        self.versions = result.versions;
+        match result.versions {
+            Ok(versions) => self.versions = versions,
+            Err(error) => {
+                self.versions.clear();
+                // A plan error explains more; keep it if both failed.
+                self.error.get_or_insert(error);
+            }
+        }
     }
 }
 
@@ -1072,7 +1082,7 @@ mod tests {
                     operation_id: Some(operation_id.clone()),
                     ..Default::default()
                 }),
-                versions: Vec::new(),
+                versions: Ok(Vec::new()),
                 operation_id,
             }
         });
@@ -1097,7 +1107,7 @@ mod tests {
             let _ = gate.recv();
             RepairLoadResult {
                 plan: Err("stale".to_string()),
-                versions: Vec::new(),
+                versions: Ok(Vec::new()),
                 operation_id,
             }
         });
@@ -1107,6 +1117,34 @@ mod tests {
         state.poll_repair();
         assert!(state.error.is_none());
         assert!(state.repair_plan.is_none());
+    }
+
+    #[test]
+    fn an_unreadable_version_manifest_is_reported_not_shown_as_no_versions() {
+        let mut state = RecoveryState::default();
+        let id = record("op-a").id;
+        state.select(id.clone());
+        state.spawn_repair_load(id, |operation_id| RepairLoadResult {
+            plan: Ok(crate::operation_journal::RepairPlan::default()),
+            versions: Err("Version manifest is unreadable".to_string()),
+            operation_id,
+        });
+        wait_for_repair(&mut state);
+        assert!(state.repair_plan.is_some());
+        assert!(state.versions.is_empty());
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Version manifest is unreadable")
+        );
+    }
+
+    #[test]
+    fn selecting_another_operation_clears_the_previous_error() {
+        let mut state = RecoveryState::default();
+        state.select(record("op-a").id);
+        state.error = Some("Rollback of op-a failed".to_string());
+        state.select(record("op-b").id);
+        assert_eq!(state.error, None);
     }
 
     #[test]

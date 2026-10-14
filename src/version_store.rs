@@ -657,18 +657,24 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
     Ok(())
 }
 
-pub fn records_for(operation_id: &OperationId) -> Vec<VersionRecord> {
+/// The operation's preserved versions, or an error when the manifest is
+/// unreadable or incompatible, so callers can say versions are hidden
+/// instead of showing none.
+pub fn records_for(operation_id: &OperationId) -> Result<Vec<VersionRecord>, String> {
     let root = versions_dir();
     let loaded = load_manifest_with(manifest_persist(), &root);
     if loaded.blocked {
-        return Vec::new();
+        return Err(format!(
+            "Version manifest in {} is unreadable or incompatible; preserved versions are hidden",
+            root.display()
+        ));
     }
-    loaded
+    Ok(loaded
         .manifest
         .records
         .into_iter()
         .filter(|record| &record.operation_id == operation_id)
-        .collect()
+        .collect())
 }
 
 pub fn records() -> Vec<VersionRecord> {

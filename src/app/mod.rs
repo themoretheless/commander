@@ -655,7 +655,7 @@ pub struct RecoveryScanResult {
 pub struct RepairLoadResult {
     pub operation_id: crate::operation::OperationId,
     pub plan: Result<crate::operation_journal::RepairPlan, String>,
-    pub versions: Vec<crate::version_store::VersionRecord>,
+    pub versions: Result<Vec<crate::version_store::VersionRecord>, String>,
 }
 
 impl App {
