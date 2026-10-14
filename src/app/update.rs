@@ -180,6 +180,20 @@ fn clipped_label(text: &str, max_chars: usize) -> String {
 }
 
 /// Whether an open pane tool replaces `side`'s file list.
+/// Drop the cached tree children of `dir` and of its parent, for both
+/// hidden-file modes, so the tree re-reads only the folders a pane change
+/// can have altered.
+fn invalidate_tree_children(
+    cache: &mut std::collections::HashMap<(PathBuf, bool), Vec<PathBuf>>,
+    dir: &std::path::Path,
+) {
+    for path in std::iter::once(dir).chain(dir.parent()) {
+        for show_hidden in [false, true] {
+            cache.remove(&(path.to_path_buf(), show_hidden));
+        }
+    }
+}
+
 fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bool {
     tools.side == Some(side) && tools.any_open()
 }
@@ -574,10 +588,18 @@ impl App {
             trace.finish();
         }
 
-        let listing_changed = self.ws.left.poll_listing() | self.ws.right.poll_listing();
-        let fs_changed = self.ws.left.poll_fs_changes() | self.ws.right.poll_fs_changes();
-        if listing_changed || fs_changed {
-            self.tree_children_cache.clear();
+        let left_listing = self.ws.left.poll_listing();
+        let right_listing = self.ws.right.poll_listing();
+        let left_fs = self.ws.left.poll_fs_changes();
+        let right_fs = self.ws.right.poll_fs_changes();
+        // A pane change can only alter the tree rows for that pane's folder
+        // (and its parent); clearing everything made the tree re-read every
+        // visible folder synchronously on each watcher refresh.
+        if left_listing || left_fs {
+            invalidate_tree_children(&mut self.tree_children_cache, &self.ws.left.current_path);
+        }
+        if right_listing || right_fs {
+            invalidate_tree_children(&mut self.tree_children_cache, &self.ws.right.current_path);
         }
         if !self.ws.left.watcher_active() || !self.ws.right.watcher_active() {
             ctx.request_repaint_after(crate::panel::WATCHER_RETRY_BACKOFF);
@@ -1854,7 +1876,7 @@ mod tests {
     use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
-    use super::{newest_undoable_toast, trash_undo_matches};
+    use super::{invalidate_tree_children, newest_undoable_toast, trash_undo_matches};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -2229,5 +2251,31 @@ mod tests {
         // User dragged the sidebar.
         assert_eq!(resized_tree_width(220.0, 400.0, 260.0), 260.0);
         assert_eq!(resized_tree_width(300.0, 200.0, 150.0), 150.0);
+    }
+
+    #[test]
+    fn tree_invalidation_drops_only_the_changed_folder_and_its_parent() {
+        use std::path::PathBuf;
+        let mut cache = std::collections::HashMap::new();
+        for path in ["/a", "/a/b", "/a/b/c", "/x"] {
+            for show_hidden in [false, true] {
+                cache.insert((PathBuf::from(path), show_hidden), Vec::new());
+            }
+        }
+        invalidate_tree_children(&mut cache, std::path::Path::new("/a/b"));
+        let mut kept: Vec<_> = cache
+            .keys()
+            .map(|(path, hidden)| (path.display().to_string(), *hidden))
+            .collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            vec![
+                ("/a/b/c".to_string(), false),
+                ("/a/b/c".to_string(), true),
+                ("/x".to_string(), false),
+                ("/x".to_string(), true),
+            ]
+        );
     }
 }
