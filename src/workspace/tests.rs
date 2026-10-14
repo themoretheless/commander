@@ -4241,3 +4241,75 @@ fn resolving_conflicts_recomputes_the_filesystem_preflight() {
     assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
     assert!(!portable(&ws), "skipped entries leave the audit");
 }
+
+#[test]
+fn browse_archive_on_the_parent_row_explains_what_to_highlight() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("notes.txt", "x");
+    let mut ws = workspace(&left, &right);
+    ws.left.set_cursor(0); // the `..` row has no entry
+    ws.drain_ui_requests();
+
+    ws.execute(Command::BrowseArchive);
+
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Highlight a ZIP or tar.gz archive first".to_string(),
+            error: true,
+        }]
+    );
+}
+
+#[test]
+fn gather_into_folder_reports_when_the_folder_cannot_be_created() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let base = l.dir("work");
+    std::fs::write(base.join("IMG_1.jpg"), "a").unwrap();
+    let mut ws = Workspace::new(base.clone(), r.path().to_path_buf());
+    ws.left.refresh();
+    ws.left.select_path(base.join("IMG_1.jpg"));
+    ws.drain_ui_requests();
+    // The folder vanished under the listing: the new subfolder cannot be made.
+    std::fs::remove_dir_all(&base).unwrap();
+
+    ws.gather_into_folder(|| {});
+
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [UiRequest::Notice { message, error: true }]
+                if message.starts_with("Could not create folder")
+                    && message.contains(&base.display().to_string())
+        ),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn link_report_message_shows_the_first_failure() {
+    assert_eq!(
+        link_report_message("symlink(s)", 2, &[]),
+        "Created 2 symlink(s)"
+    );
+    let one = vec!["Could not symlink /d/a -> /s/a: File exists (os error 17)".to_string()];
+    assert_eq!(
+        link_report_message("symlink(s)", 0, &one),
+        "Created 0 symlink(s); Could not symlink /d/a -> /s/a: File exists (os error 17)"
+    );
+    let three = vec![one[0].clone(), "b".to_string(), "c".to_string()];
+    assert!(link_report_message("hard link(s)", 1, &three).ends_with("(os error 17) (+2 more)"));
+}
+
+#[test]
+fn profile_applied_message_names_missing_folders() {
+    assert_eq!(
+        profile_applied_message("default", &[]),
+        "Applied workspace profile \"default\""
+    );
+    let gone = PathBuf::from("/gone/left");
+    let message = profile_applied_message("default", &[&gone]);
+    assert!(message.contains("/gone/left"), "{message}");
+    assert!(message.contains("missing"), "{message}");
+}

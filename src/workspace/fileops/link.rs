@@ -52,7 +52,10 @@ fn create_links(workspace: &mut Workspace, kind: LinkKind) -> LinkReport {
             LinkKind::Symbolic => create_symlink(&entry.path, &link_path),
             LinkKind::Hard => {
                 if entry.is_dir {
-                    Err("Hard links require a regular file".to_string())
+                    Err(format!(
+                        "Could not hard-link {}: hard links require a regular file",
+                        entry.name
+                    ))
                 } else {
                     std::fs::hard_link(&entry.path, &link_path)
                         .map_err(|error| format!("Could not hard-link {}: {error}", entry.name))

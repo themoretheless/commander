@@ -365,6 +365,32 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
         .collect()
 }
 
+/// Toast for a link command: the count, plus the first failure's own text
+/// (path and OS error) so the user can see why, not just how many failed.
+fn link_report_message(noun: &str, created: usize, errors: &[String]) -> String {
+    match errors {
+        [] => format!("Created {created} {noun}"),
+        [only] => format!("Created {created} {noun}; {only}"),
+        [first, rest @ ..] => format!("Created {created} {noun}; {first} (+{} more)", rest.len()),
+    }
+}
+
+/// Toast for applying a workspace profile, naming saved folders that no
+/// longer exist (those sides were left where they were).
+fn profile_applied_message(name: &str, missing: &[&PathBuf]) -> String {
+    if missing.is_empty() {
+        return format!("Applied workspace profile \"{name}\"");
+    }
+    let folders = missing
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Applied workspace profile \"{name}\", but a saved folder is missing (that side was left as is): {folders}. Save the profile again to update it."
+    )
+}
+
 /// Keep only the move placements that landed under their original name, so undo
 /// reverses them faithfully. A `KeepBoth` conflict lands at "name copy.ext"; a
 /// move there cannot be undone by relocating the file under the original name
@@ -1163,15 +1189,16 @@ impl Workspace {
             }
             Command::RepeatLast => {}
             Command::BrowseArchive => {
-                if let Some(entry) = self.active_panel_ref().cursor_entry().cloned() {
-                    if crate::archive::is_supported(&entry.path) {
+                // The `..` row (or an empty folder) has no entry: it is not
+                // an archive either, so it gets the same hint.
+                match self.active_panel_ref().cursor_entry().cloned() {
+                    Some(entry) if crate::archive::is_supported(&entry.path) => {
                         self.emit_ui_request(UiRequest::Archive(entry.path));
-                    } else {
-                        self.emit_ui_request(UiRequest::Notice {
-                            message: "Highlight a ZIP or tar.gz archive first".to_string(),
-                            error: true,
-                        });
                     }
+                    _ => self.emit_ui_request(UiRequest::Notice {
+                        message: "Highlight a ZIP or tar.gz archive first".to_string(),
+                        error: true,
+                    }),
                 }
             }
             Command::SetTrustTrusted => self.set_active_trust(crate::trust::TrustLabel::Trusted),
@@ -1226,20 +1253,27 @@ impl Workspace {
             });
             return;
         };
+        // A side whose saved folder is gone keeps its folder and filter: the
+        // filter was written for that folder's contents.
+        let mut missing = Vec::new();
         if profile.left_root.is_dir() {
             self.left.navigate_to(profile.left_root.clone());
+            self.left.set_search_query(profile.left_filter.clone());
+        } else {
+            missing.push(&profile.left_root);
         }
         if profile.right_root.is_dir() {
             self.right.navigate_to(profile.right_root.clone());
+            self.right.set_search_query(profile.right_filter.clone());
+        } else {
+            missing.push(&profile.right_root);
         }
-        self.left.set_search_query(profile.left_filter.clone());
-        self.right.set_search_query(profile.right_filter.clone());
         self.durability_profile = profile.durability;
         self.name_policy = profile.name_policy;
         self.symlink_policy = profile.symlink_policy;
         self.emit_ui_request(UiRequest::Notice {
-            message: format!("Applied workspace profile \"{}\"", profile.name),
-            error: false,
+            message: profile_applied_message(&profile.name, &missing),
+            error: !missing.is_empty(),
         });
     }
 
@@ -1274,15 +1308,7 @@ impl Workspace {
 
     fn create_symlinks(&mut self) {
         let report = fileops::create_symlinks(self);
-        let message = if report.errors.is_empty() {
-            format!("Created {} symlink(s)", report.created)
-        } else {
-            format!(
-                "Created {} symlink(s); {} issue(s)",
-                report.created,
-                report.errors.len()
-            )
-        };
+        let message = link_report_message("symlink(s)", report.created, &report.errors);
         self.emit_ui_request(UiRequest::Notice {
             message,
             error: !report.errors.is_empty() && report.created == 0,
@@ -1291,15 +1317,7 @@ impl Workspace {
 
     fn create_hardlinks(&mut self) {
         let report = fileops::create_hardlinks(self);
-        let message = if report.errors.is_empty() {
-            format!("Created {} hard link(s)", report.created)
-        } else {
-            format!(
-                "Created {} hard link(s); {} issue(s)",
-                report.created,
-                report.errors.len()
-            )
-        };
+        let message = link_report_message("hard link(s)", report.created, &report.errors);
         self.emit_ui_request(UiRequest::Notice {
             message,
             error: !report.errors.is_empty() && report.created == 0,
@@ -2370,20 +2388,43 @@ impl Workspace {
                 base.join(format!("{name} {}", i + 1))
             }
         });
-        if std::fs::create_dir(&folder).is_err() {
+        if let Err(error) = std::fs::create_dir(&folder) {
+            self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Could not create folder {}: {error}. Check that this folder is writable.",
+                    folder.display()
+                ),
+                error: true,
+            });
             return;
         }
+        // Without the new folder's identity a failed move could not prove
+        // the folder is ours to clean up: back out now, like a replay does.
+        let rollback_cleanup_identity = match crate::path_identity::PathIdentity::observe_deep(
+            &folder,
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = std::fs::remove_dir(&folder);
+                self.emit_ui_request(UiRequest::Notice {
+                    message: format!(
+                        "Could not gather into {}: the new folder could not be verified ({error})",
+                        folder.display()
+                    ),
+                    error: true,
+                });
+                return;
+            }
+        };
         // Record the folder lifecycle separately from an ordinary Move so undo
         // can remove it and redo can recreate it.
         let undo = crate::undo::Action::Gather {
             folder: folder.clone(),
             pairs: move_pairs(&entries, &folder),
         };
-        let rollback_cleanup_identity =
-            crate::path_identity::PathIdentity::observe_deep(&folder).ok();
         let spec = TransferSpec {
             rollback_cleanup: Some(folder.clone()),
-            rollback_cleanup_identity,
+            rollback_cleanup_identity: Some(rollback_cleanup_identity),
             ..self.queued_spec(TransferKind::Move, entries, folder)
         };
         self.enqueue_only(spec, Some(undo));
