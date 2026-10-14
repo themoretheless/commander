@@ -16,6 +16,15 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 pub const MAX_DOCUMENTS: usize = 200_000;
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_CONTENT_BYTES: usize = 32 * 1024 * 1024;
+/// Largest index file the loader accepts.
+const MAX_INDEX_FILE_BYTES: usize = 64 * 1024 * 1024;
+/// Serialized-size budget for documents; the rest of the file cap covers the
+/// envelope, root, counters and exclusion list. A build that would exceed it
+/// is truncated so every index that saves can also be loaded back.
+const MAX_DOCUMENT_JSON_BYTES: usize = MAX_INDEX_FILE_BYTES - 4 * 1024 * 1024;
+/// Upper bound on one pretty-printed document's JSON apart from its path and
+/// content strings: field names, indentation, and u64-sized numbers.
+const DOCUMENT_JSON_OVERHEAD: usize = 384;
 
 pub const fn schema_version() -> u32 {
     SCHEMA_VERSION
@@ -533,6 +542,26 @@ fn scan_index(
     idle: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     scheduler_cancel: Option<crate::workload::CancellationToken>,
+    report: impl FnMut(&BuildProgress) -> bool,
+) -> Result<RootIndex, String> {
+    scan_index_within(
+        root,
+        excluded_roots,
+        idle,
+        cancelled,
+        scheduler_cancel,
+        MAX_DOCUMENT_JSON_BYTES,
+        report,
+    )
+}
+
+fn scan_index_within(
+    root: PathBuf,
+    excluded_roots: Vec<PathBuf>,
+    idle: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+    scheduler_cancel: Option<crate::workload::CancellationToken>,
+    json_budget: usize,
     mut report: impl FnMut(&BuildProgress) -> bool,
 ) -> Result<RootIndex, String> {
     wait_for_idle(&idle, &cancelled, scheduler_cancel.as_ref())?;
@@ -546,6 +575,7 @@ fn scan_index(
     let mut skipped_unreadable = 0usize;
     let mut skipped_quota = 0usize;
     let mut truncated = false;
+    let mut json_bytes = 0usize;
     let mut last_progress = Instant::now();
 
     while let Some(entries) = stack.last_mut() {
@@ -616,6 +646,28 @@ fn scan_index(
                     Err(_) => skipped_unreadable = skipped_unreadable.saturating_add(1),
                 }
             }
+        }
+        let document_bytes =
+            DOCUMENT_JSON_OVERHEAD.saturating_add(json_string_len(&path.to_string_lossy()));
+        if json_bytes.saturating_add(document_bytes) > json_budget {
+            truncated = true;
+            break;
+        }
+        let content_json_bytes = content.as_deref().map_or(0, json_string_len);
+        if json_bytes
+            .saturating_add(document_bytes)
+            .saturating_add(content_json_bytes)
+            > json_budget
+            && let Some(text) = content.take()
+        {
+            // Keep the document's metadata; its text no longer fits the file.
+            progress.content_bytes = progress.content_bytes.saturating_sub(text.len());
+            progress.content_indexed = progress.content_indexed.saturating_sub(1);
+            skipped_quota = skipped_quota.saturating_add(1);
+        }
+        json_bytes = json_bytes.saturating_add(document_bytes);
+        if content.is_some() {
+            json_bytes = json_bytes.saturating_add(content_json_bytes);
         }
         let (volume, file_id) = native_identity(&metadata);
         documents.push(IndexedDocument {
@@ -713,6 +765,19 @@ fn read_indexable_text(path: &Path, size: u64) -> std::io::Result<Option<String>
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
+/// Upper bound on a string's length once JSON-escaped and quoted.
+fn json_string_len(value: &str) -> usize {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum::<usize>()
+        .saturating_add(2)
+}
+
 fn system_time_secs(time: Option<SystemTime>) -> Option<u64> {
     time?
         .duration_since(std::time::UNIX_EPOCH)
@@ -795,7 +860,7 @@ fn save_settings_to(path: &Path, settings: &SettingsStore) -> bool {
 }
 
 const INDEX_STORE: crate::persistence::StoreSpec =
-    crate::persistence::StoreSpec::new("commander.content_index", 1, 64 * 1024 * 1024)
+    crate::persistence::StoreSpec::new("commander.content_index", 1, MAX_INDEX_FILE_BYTES)
         .allow_legacy_schema_marker();
 
 fn load_index_from(path: &Path, expected_root: &Path) -> Result<Option<RootIndex>, String> {
@@ -817,6 +882,26 @@ fn save_index_to(path: &Path, index: &RootIndex) -> Result<(), String> {
     let persist = crate::persistence::FsPersist::default();
     let mut gate =
         crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+    if !matches!(
+        gate.status(),
+        crate::persistence::LoadStatus::Missing
+            | crate::persistence::LoadStatus::Legacy
+            | crate::persistence::LoadStatus::Current
+    ) {
+        // The index is a derived cache: a file this build cannot read must
+        // not block every rebuild forever, so drop it and write a fresh one.
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not replace unreadable content index {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+        gate = crate::persistence::load_enveloped::<RootIndex>(&persist, path, INDEX_STORE).gate;
+    }
     match crate::persistence::save_enveloped_streaming(
         &persist,
         path,
@@ -978,5 +1063,73 @@ mod tests {
         assert_eq!(stats.queued, 0);
         assert_eq!(stats.cancelled, 1);
         assert!(!runtime.run_next());
+    }
+
+    #[test]
+    fn rebuild_replaces_a_corrupt_or_oversized_index_file() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let index = scan(temp.path(), Vec::new());
+        let path = temp.path().join("index.json");
+
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert!(load_index_from(&path, temp.path()).is_err());
+        save_index_to(&path, &index).unwrap();
+        assert!(load_index_from(&path, temp.path()).unwrap().is_some());
+
+        let oversized = std::fs::File::create(&path).unwrap();
+        oversized.set_len(MAX_INDEX_FILE_BYTES as u64 + 1).unwrap();
+        drop(oversized);
+        assert!(load_index_from(&path, temp.path()).is_err());
+        save_index_to(&path, &index).unwrap();
+        assert!(load_index_from(&path, temp.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn build_truncates_before_the_serialized_index_exceeds_its_budget() {
+        let temp = TempDir::new();
+        for number in 0..40 {
+            temp.file(&format!("file-{number:02}.txt"), &"\"quoted\" ".repeat(20));
+        }
+        let budget = 8 * 1024;
+        let index = scan_index_within(
+            temp.path().to_path_buf(),
+            Vec::new(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            budget,
+            |_| true,
+        )
+        .unwrap();
+
+        assert!(index.truncated);
+        assert!(!index.documents.is_empty());
+        let documents_json = serde_json::to_vec_pretty(&index.documents).unwrap();
+        assert!(documents_json.len() <= budget);
+    }
+
+    #[test]
+    fn document_overhead_bounds_the_largest_metadata() {
+        let document = IndexedDocument {
+            path: PathBuf::new(),
+            is_dir: false,
+            size: u64::MAX,
+            modified_secs: Some(u64::MAX),
+            accessed_secs: Some(u64::MAX),
+            volume: Some(u64::MAX),
+            file_id: Some(u64::MAX),
+            content: Some(String::new()),
+        };
+        // Nested as the envelope nests it: { payload: { documents: [doc] } }.
+        let nested = serde_json::json!({ "payload": { "documents": [document] } });
+        let bare = serde_json::json!({ "payload": { "documents": [] } });
+        let document_bytes = serde_json::to_vec_pretty(&nested).unwrap().len()
+            - serde_json::to_vec_pretty(&bare).unwrap().len();
+        assert!(
+            document_bytes <= DOCUMENT_JSON_OVERHEAD + 2 * json_string_len(""),
+            "{document_bytes} bytes"
+        );
+        assert_eq!(json_string_len("a\"b\\c\n"), 2 + 3 + 2 + 2 + 6);
     }
 }
