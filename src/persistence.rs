@@ -1050,7 +1050,27 @@ pub fn save_json_atomic<T: Serialize>(
 /// Save a lenient item store through the shared durable JSON boundary while
 /// retaining the simple boolean contract used by dialog callers. Failures are
 /// also published to persistence health diagnostics under `store`.
-pub fn save_item_store<T: Serialize>(path: &Path, store: &'static str, value: &T) -> bool {
+///
+/// A lenient load turns an unreadable or partly invalid file into an empty or
+/// trimmed store, so before replacing a file that does not fully decode as `T`
+/// it is moved aside to a `.<name>.unreadable-<ms>.json` sibling; the save is
+/// refused when that move fails, so the original is never silently lost.
+pub fn save_item_store<T: Serialize + DeserializeOwned>(
+    path: &Path,
+    store: &'static str,
+    value: &T,
+) -> bool {
+    if let Err(source) = set_aside_undecodable::<T>(path) {
+        record_save_failure(
+            store,
+            &PreCommitError::Io {
+                stage: SaveStage::ValidatePath,
+                source,
+                cleanup: None,
+            },
+        );
+        return false;
+    }
     match save_json_atomic(path, value) {
         Ok(_) => true,
         Err(error) => {
@@ -1058,6 +1078,27 @@ pub fn save_item_store<T: Serialize>(path: &Path, store: &'static str, value: &T
             false
         }
     }
+}
+
+fn set_aside_undecodable<T: DeserializeOwned>(path: &Path) -> io::Result<()> {
+    let intact = match read_target(path) {
+        Ok(None) => return Ok(()),
+        Ok(Some(json)) => serde_json::from_str::<T>(&json).is_ok(),
+        Err(_) => false,
+    };
+    if intact {
+        return Ok(());
+    }
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "store path has no file name")
+    })?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let mut backup = OsString::from(".");
+    backup.push(file_name);
+    backup.push(format!(".unreadable-{millis}.json"));
+    std::fs::rename(path, path.with_file_name(backup))
 }
 
 pub fn commit_bytes_atomic(

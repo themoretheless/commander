@@ -4,7 +4,9 @@
 
 use crate::query::Query;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const STORE_NAME: &str = "Saved searches";
 
 /// A named, persisted search.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -42,15 +44,25 @@ fn store_path() -> PathBuf {
 
 /// Load the saved searches, or an empty set if absent/corrupt.
 pub fn load() -> SmartFolders {
+    load_from(&store_path())
+}
+
+fn load_from(path: &Path) -> SmartFolders {
     SmartFolders {
-        items: crate::persistence::load_item_store(&store_path(), "Saved searches"),
+        items: crate::persistence::load_item_store(path, STORE_NAME),
     }
 }
 
 /// Save the searches atomically (temp file + rename). Returns `false` if
 /// serialization or the atomic write failed, so the caller can surface it.
+/// A store that loaded as empty/partial because it was unreadable is moved
+/// aside before being replaced (see [`crate::persistence::save_item_store`]).
 pub fn save(store: &SmartFolders) -> bool {
-    crate::persistence::save_item_store(&store_path(), "Saved searches", store)
+    save_to(&store_path(), store)
+}
+
+fn save_to(path: &Path, store: &SmartFolders) -> bool {
+    crate::persistence::save_item_store(path, STORE_NAME, store)
 }
 
 #[cfg(test)]
@@ -110,6 +122,48 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         let back: Definition = serde_json::from_str(&json).unwrap();
         assert_eq!(d, back);
+    }
+
+    #[test]
+    fn save_preserves_a_partly_unreadable_store() {
+        let temp = crate::testutil::TempDir::new();
+        let mut stored = SmartFolders::default();
+        stored.add(def("Logs", "/a"));
+        let mut value = serde_json::to_value(&stored).unwrap();
+        value["items"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "name": 7 }));
+        let original = value.to_string();
+        let path = temp.file("smart_folders.json", &original);
+
+        let mut loaded = load_from(&path);
+        assert_eq!(loaded, stored, "the valid search still loads");
+        loaded.add(def("Photos", "/b"));
+        assert!(save_to(&path, &loaded));
+        assert_eq!(load_from(&path), loaded);
+
+        let backup = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|p| p.to_string_lossy().contains(".unreadable-"))
+            .expect("original moved aside");
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), original);
+
+        // A clean store is replaced in place without another backup.
+        assert!(save_to(&path, &loaded));
+        let backups = std::fs::read_dir(temp.path())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".unreadable-")
+            })
+            .count();
+        assert_eq!(backups, 1);
     }
 
     #[test]

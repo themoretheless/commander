@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub const VIEW_CAP: usize = 5_000;
+const STORE_NAME: &str = "Project collections";
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,9 +80,14 @@ pub fn load() -> ProjectCollections {
 }
 
 fn load_from(path: &Path) -> ProjectCollections {
-    ProjectCollections {
-        items: crate::persistence::load_item_store(path, "Project collections"),
+    let loaded: Vec<ProjectCollection> = crate::persistence::load_item_store(path, STORE_NAME);
+    // Re-admit each item through `new`/`add` so a hand-edited file cannot
+    // smuggle in untrimmed or duplicate names, duplicate roots or empty sets.
+    let mut collections = ProjectCollections::default();
+    for item in loaded {
+        collections.add(ProjectCollection::new(item.name, item.roots));
     }
+    collections
 }
 
 pub fn save(collections: &ProjectCollections) -> bool {
@@ -89,9 +95,7 @@ pub fn save(collections: &ProjectCollections) -> bool {
 }
 
 fn save_to(path: &Path, collections: &ProjectCollections) -> bool {
-    serde_json::to_string_pretty(collections)
-        .ok()
-        .is_some_and(|json| crate::fs_util::write_atomic(path, &json))
+    crate::persistence::save_item_store(path, STORE_NAME, collections)
 }
 
 #[derive(Clone, Debug)]
@@ -240,6 +244,47 @@ mod tests {
 
         assert!(save_to(&path, &collections));
         assert_eq!(load_from(&path), collections);
+    }
+
+    #[test]
+    fn load_normalizes_hand_edited_collections() {
+        let temp = TempDir::new();
+        let path = temp.file(
+            "collections.json",
+            r#"{"items":[
+                {"name":"  Work ","roots":["/a","/a","/b"]},
+                {"name":"work","roots":["/c"]},
+                {"name":"   ","roots":["/d"]},
+                {"name":"Empty","roots":[]}
+            ]}"#,
+        );
+        let loaded = load_from(&path);
+        assert_eq!(
+            loaded.items,
+            vec![ProjectCollection {
+                name: "work".into(),
+                roots: vec![PathBuf::from("/c")],
+            }]
+        );
+    }
+
+    #[test]
+    fn save_keeps_an_unreadable_store_instead_of_overwriting_it() {
+        let temp = TempDir::new();
+        let path = temp.file("collections.json", "{ not json");
+        let mut collections = load_from(&path);
+        assert!(collections.items.is_empty());
+        assert!(collections.add(ProjectCollection::new("New", [PathBuf::from("/n")])));
+        assert!(save_to(&path, &collections));
+
+        assert_eq!(load_from(&path), collections);
+        let backups: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains(".unreadable-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), "{ not json");
     }
 
     #[test]
