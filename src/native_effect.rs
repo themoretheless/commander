@@ -319,8 +319,17 @@ fn run_bounded<T: Send + 'static>(
     let spawn = std::thread::Builder::new()
         .name("fs-probe".to_string())
         .spawn(move || {
+            // Released on return and on unwind, so a panicking probe does not
+            // leave its key marked busy for the rest of the process.
+            struct Release(ProbeKey);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    crate::lock_util::recover(in_flight_probes()).remove(&self.0);
+                }
+            }
+            let release = Release(worker_key);
             let outcome = work();
-            crate::lock_util::recover(in_flight_probes()).remove(&worker_key);
+            drop(release);
             let _ = sender.send(outcome);
         });
     if let Err(error) = spawn {
@@ -485,6 +494,16 @@ mod tests {
                 other => panic!("unexpected {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_panicking_probe_releases_its_key() {
+        let key = ProbeKey::FreeSpace("/test/panicking-probe".into());
+        let first: Result<u8, _> = run_bounded(key.clone(), Duration::from_secs(5), || {
+            panic!("probe failed")
+        });
+        assert_eq!(first, Err(BoundedFailure::Disconnected));
+        assert_eq!(run_bounded(key, Duration::from_secs(5), || 4), Ok(4));
     }
 
     #[cfg(unix)]
