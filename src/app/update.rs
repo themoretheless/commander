@@ -59,7 +59,7 @@ fn perform_open(
     })
 }
 
-fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'static str {
+const fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'static str {
     match status {
         crate::panel::DirStatus::Denied => "folder access was denied",
         crate::panel::DirStatus::Gone => "the folder is no longer available",
@@ -96,11 +96,11 @@ struct ModalOwnershipSnapshot {
 }
 
 impl ModalOwnershipSnapshot {
-    fn capture(prior_open: bool) -> Self {
+    const fn capture(prior_open: bool) -> Self {
         Self { prior_open }
     }
 
-    fn trap_active_after(self, current_open: bool) -> bool {
+    const fn trap_active_after(self, current_open: bool) -> bool {
         crate::accessibility::modal_trap_active(self.prior_open, current_open)
     }
 }
@@ -112,7 +112,7 @@ struct FrameInputPolicy {
 }
 
 impl FrameInputPolicy {
-    fn resolve(
+    const fn resolve(
         containing_ui_enabled: bool,
         modal_ownership: ModalOwnershipSnapshot,
         modal_is_open: bool,
@@ -124,36 +124,36 @@ impl FrameInputPolicy {
         }
     }
 
-    fn trapped(self) -> bool {
+    const fn trapped(self) -> bool {
         self.trapped
     }
 
-    fn background_enabled(self) -> bool {
+    const fn background_enabled(self) -> bool {
         self.background_enabled
     }
 
-    fn allows_raw_input(self, containing_ui_enabled: bool, requested: bool) -> bool {
+    const fn allows_raw_input(self, containing_ui_enabled: bool, requested: bool) -> bool {
         self.background_enabled && containing_ui_enabled && requested
     }
 
-    fn allows_drop_target(self, containing_ui_enabled: bool, requested: bool) -> bool {
+    const fn allows_drop_target(self, containing_ui_enabled: bool, requested: bool) -> bool {
         self.allows_raw_input(containing_ui_enabled, requested)
     }
 
-    fn allows_drop_execution(self, pointer_released: bool) -> bool {
+    const fn allows_drop_execution(self, pointer_released: bool) -> bool {
         self.background_enabled && pointer_released
     }
 
-    fn allows_divider_reset(self, containing_ui_enabled: bool, double_clicked: bool) -> bool {
+    const fn allows_divider_reset(self, containing_ui_enabled: bool, double_clicked: bool) -> bool {
         self.allows_raw_input(containing_ui_enabled, double_clicked)
     }
 
-    fn clear_stale_drag(self) -> bool {
+    const fn clear_stale_drag(self) -> bool {
         self.trapped
     }
 }
 
-fn any_modal_surface_open(confirmation_open: bool, app_modal_open: bool) -> bool {
+const fn any_modal_surface_open(confirmation_open: bool, app_modal_open: bool) -> bool {
     confirmation_open || app_modal_open
 }
 

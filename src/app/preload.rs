@@ -73,7 +73,7 @@ enum PreviewPane {
     Right,
 }
 
-fn preview_mut(ws: &mut Workspace, pane: PreviewPane) -> &mut Option<PreviewContent> {
+const fn preview_mut(ws: &mut Workspace, pane: PreviewPane) -> &mut Option<PreviewContent> {
     match pane {
         PreviewPane::Left => &mut ws.left.preview,
         PreviewPane::Right => &mut ws.right.preview,

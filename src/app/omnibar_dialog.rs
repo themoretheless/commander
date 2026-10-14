@@ -7,7 +7,7 @@ use crate::omnibar::OmnibarMode;
 
 /// Open omnibar state. The path probe exists only while the input is a path,
 /// so folder validation stays off the UI thread exactly as before.
-pub(crate) struct OmnibarState {
+pub struct OmnibarState {
     pub(crate) input: String,
     pub(crate) opening_panel: ActivePanel,
     pub(crate) selected: usize,

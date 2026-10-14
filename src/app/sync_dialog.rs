@@ -447,7 +447,7 @@ fn configure_marker(state: &mut SyncState) -> Option<String> {
     state.guard.set_marker(&state.marker_input).err()
 }
 
-fn status_label(status: SyncStatus) -> &'static str {
+const fn status_label(status: SyncStatus) -> &'static str {
     match status {
         SyncStatus::LeftOnly => "left only",
         SyncStatus::RightOnly => "right only",
@@ -461,7 +461,7 @@ fn status_label(status: SyncStatus) -> &'static str {
     }
 }
 
-fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
+const fn status_color(status: SyncStatus, t: ThemeColors) -> Color32 {
     match status {
         SyncStatus::Identical | SyncStatus::DirectoryPair => t.text_muted,
         SyncStatus::TypeConflict => t.accent_red,

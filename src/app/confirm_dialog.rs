@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(crate) mod method_tabs;
+pub mod method_tabs;
 use crate::scan::FlatFileEntry;
 use crate::transfer::OverwritePolicy;
 
@@ -1044,7 +1044,7 @@ fn bandwidth_label(limit: Option<u64>) -> String {
     )
 }
 
-fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) -> &'static str {
+const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) -> &'static str {
     match hours {
         None => "No quiet hours",
         Some(crate::transfer_tuning::QuietHours {

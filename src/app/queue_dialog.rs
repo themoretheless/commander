@@ -39,7 +39,7 @@ impl App {
         }
     }
 
-    pub(crate) fn open_operation_history(&mut self) {
+    pub(crate) const fn open_operation_history(&mut self) {
         self.show_operations_center = true;
         self.operations_tab = OperationsTab::History;
     }

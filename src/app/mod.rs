@@ -12,7 +12,7 @@ mod diff_dialog;
 mod duplicates_dialog;
 mod file_list;
 mod find_dialog;
-pub(crate) mod glyphs;
+pub mod glyphs;
 mod history_dialog;
 mod keys;
 mod mask_dialog;
@@ -40,11 +40,11 @@ use std::rc::Rc;
 
 use crate::panel::{PanelState, SortColumn, format_size};
 use crate::theme::{ThemeColors, ThemeMode, apply_theme};
-pub(crate) use crate::transfer::{CopyMethod, TransferKind};
-pub(crate) use crate::ui_request::{UiModal, UiRequest};
-pub(crate) use crate::workspace::{ActivePanel, PendingOp, Workspace};
+pub use crate::transfer::{CopyMethod, TransferKind};
+pub use crate::ui_request::{UiModal, UiRequest};
+pub use crate::workspace::{ActivePanel, PendingOp, Workspace};
 
-pub(crate) struct AppServices {
+pub struct AppServices {
     pub(crate) context_menu: Rc<dyn crate::ports::ContextMenuPort>,
     pub(crate) clipboard: Rc<dyn crate::ports::ClipboardPort>,
     pub(crate) opener: Rc<dyn crate::ports::OpenerPort>,
@@ -118,7 +118,7 @@ pub struct App {
     /// Saved command templates, loaded lazily on first use.
     pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
     /// Cached cross-panel compare maps and the panel generations they were built
-    /// from, so compare mode does not rebuild two HashMaps (cloning every
+    /// from, so compare mode does not rebuild two `HashMaps` (cloning every
     /// `name_lower`) on every painted frame. `(right_gen, left_gen, left_map,
     /// right_map)`: `left_map` indexes the right panel and vice versa.
     pub(crate) compare_cache: Option<(
@@ -135,7 +135,7 @@ pub struct App {
 }
 
 #[cfg(feature = "visual-qa")]
-pub(crate) struct VisualQaSeed {
+pub struct VisualQaSeed {
     pub left: PathBuf,
     pub right: PathBuf,
     pub ui_scale: f32,
@@ -146,7 +146,7 @@ pub(crate) struct VisualQaSeed {
 
 /// The frame every dialog and sheet draws: panel fill, `margin` points of
 /// padding and a one-point border.
-pub(crate) fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
+pub fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
     Frame::NONE
         .fill(t.bg_panel)
         .inner_margin(Margin::same(margin))
@@ -155,7 +155,7 @@ pub(crate) fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
 
 /// A fixed-size, untitled sheet centered on the window. `id` names the
 /// window for egui and assistive technology; it is not drawn.
-pub(crate) fn sheet_window(
+pub fn sheet_window(
     id: impl Into<egui::WidgetText>,
     t: ThemeColors,
     margin: i8,
@@ -170,7 +170,7 @@ pub(crate) fn sheet_window(
 
 /// Fixed fill/text pairings for dialog buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ButtonRole {
+pub enum ButtonRole {
     /// The dialog's main action (accent fill, white text).
     Primary,
     /// Cancel and neutral actions.
@@ -182,7 +182,7 @@ pub(crate) enum ButtonRole {
 }
 
 impl ButtonRole {
-    fn colors(self, t: ThemeColors) -> (Color32, Color32) {
+    const fn colors(self, t: ThemeColors) -> (Color32, Color32) {
         match self {
             Self::Primary => (t.accent, Color32::WHITE),
             Self::Secondary => (t.bg_card, t.text_primary),
@@ -193,7 +193,7 @@ impl ButtonRole {
 }
 
 /// A dialog button styled for `role`; callers keep sizing their own text.
-pub(crate) fn dialog_button<'a>(
+pub fn dialog_button<'a>(
     t: ThemeColors,
     role: ButtonRole,
     text: egui::RichText,
@@ -204,7 +204,7 @@ pub(crate) fn dialog_button<'a>(
         .corner_radius(CornerRadius::ZERO)
 }
 
-pub(crate) struct DeveloperNotice {
+pub struct DeveloperNotice {
     pub message: String,
     pub path: Option<PathBuf>,
     pub error: bool,
@@ -229,7 +229,7 @@ impl DeveloperNotice {
 }
 
 /// UI state for the run-command / open-with bar.
-pub(crate) struct RunCommandState {
+pub struct RunCommandState {
     /// The editable command line (placeholders expand against the selection).
     pub line: String,
     /// Separates egui scroll memory from earlier openings of this dialog.
@@ -240,12 +240,12 @@ pub(crate) struct RunCommandState {
     pub output: Option<CommandOutput>,
 }
 
-pub(crate) struct CommandOutputRun {
+pub struct CommandOutputRun {
     pub receiver: std::sync::mpsc::Receiver<CommandOutput>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct CommandOutput {
+pub struct CommandOutput {
     pub cmdline: String,
     pub stdout: String,
     pub stderr: String,
@@ -254,7 +254,7 @@ pub(crate) struct CommandOutput {
 }
 
 #[derive(Clone)]
-pub(crate) struct RunCommandOpeningContext {
+pub struct RunCommandOpeningContext {
     pub active_panel: ActivePanel,
     pub selection: Vec<crate::panel::FileEntry>,
     pub left_dir: PathBuf,
@@ -301,13 +301,13 @@ impl RunCommandOpeningContext {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum DiskUsageMode {
+pub enum DiskUsageMode {
     #[default]
     Map,
     Tree,
 }
 
-pub(crate) struct DiskUsageState {
+pub struct DiskUsageState {
     pub initial: crate::workspace::TreemapSnapshot,
     pub mode: DiskUsageMode,
     pub run: Option<crate::tree_overview::OverviewRun>,
@@ -317,7 +317,7 @@ pub(crate) struct DiskUsageState {
     pub error: Option<String>,
 }
 
-pub(crate) struct ArchiveState {
+pub struct ArchiveState {
     pub path: PathBuf,
     pub filter: String,
     pub run: Option<crate::archive::ListingRun>,
@@ -330,7 +330,7 @@ pub(crate) struct ArchiveState {
 
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
 /// this holds the editable fields, the search root, and the results.
-pub(crate) struct FindState {
+pub struct FindState {
     pub expression: String,
     pub mode: crate::query::MatchMode,
     pub root: PathBuf,
@@ -360,7 +360,7 @@ pub(crate) struct FindState {
     pub save_name: String,
 }
 
-pub(crate) struct CollectionsDialogState {
+pub struct CollectionsDialogState {
     pub name: String,
     pub include_left: bool,
     pub include_right: bool,
@@ -431,7 +431,7 @@ impl FindState {
 
     /// Reconstruct the editable fields from a saved smart-folder definition.
     pub(crate) fn from_definition(def: &crate::smart_folder::Definition) -> Self {
-        FindState {
+        Self {
             expression: def.query.to_expression(),
             mode: def.query.mode,
             root: def.root.clone(),
@@ -445,7 +445,7 @@ impl FindState {
 /// UI state for the read-only diff sheet. The diff itself lives in
 /// `crate::textdiff`; this holds the two names and the computed lines (or a
 /// message when the pair cannot be diffed as text).
-pub(crate) struct DiffState {
+pub struct DiffState {
     pub name_a: String,
     pub name_b: String,
     pub lines: Vec<crate::textdiff::DiffLine>,
@@ -454,7 +454,7 @@ pub(crate) struct DiffState {
 
 /// UI state for the duplicate-finder sheet. Grouping lives in `crate::dedup`;
 /// this holds the groups, the per-group keep choice, and the policy.
-pub(crate) struct DupState {
+pub struct DupState {
     pub groups: Vec<crate::dedup::DupGroup>,
     /// Index (into each group's `files`) of the file to keep.
     pub keep: Vec<usize>,
@@ -463,7 +463,7 @@ pub(crate) struct DupState {
 
 /// UI state for the directory-synchronise sheet. The diff lives in
 /// `crate::sync`; this holds the chosen policy and the editable action rows.
-pub(crate) struct SyncState {
+pub struct SyncState {
     pub policy: crate::sync::SyncPolicy,
     pub durability: crate::operation::DurabilityProfile,
     pub version_retention: crate::operation::VersionRetentionPolicy,
@@ -485,7 +485,7 @@ pub(crate) struct SyncState {
 
 /// UI state for the batch-rename studio. The transform itself lives in
 /// `crate::rename`; this only holds the editable rule fields.
-pub(crate) struct BatchRenameState {
+pub struct BatchRenameState {
     pub context: crate::workspace::BatchRenameContext,
     pub find: String,
     pub replace: String,
@@ -524,7 +524,7 @@ impl BatchRenameState {
 }
 
 /// UI state for the rename editor.
-pub(crate) struct RenameState {
+pub struct RenameState {
     pub path: PathBuf,
     pub siblings: Vec<String>,
     pub buffer: String,
@@ -532,33 +532,33 @@ pub(crate) struct RenameState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HistoryReplayMode {
+pub enum HistoryReplayMode {
     Undo,
     Redo,
 }
 
-pub(crate) struct HistoryPreviewState {
+pub struct HistoryPreviewState {
     pub mode: HistoryReplayMode,
     pub preview: crate::undo::ReplayPreview,
     pub error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum RecoverySection {
+pub enum RecoverySection {
     #[default]
     Operations,
     Staging,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum RecoveryDetail {
+pub enum RecoveryDetail {
     #[default]
     Inspect,
     Repair,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum OperationsTab {
+pub enum OperationsTab {
     #[default]
     Queue,
     History,
@@ -569,7 +569,7 @@ pub(crate) enum OperationsTab {
 impl OperationsTab {
     pub(crate) const ALL: [Self; 4] = [Self::Queue, Self::History, Self::Errors, Self::Recovery];
 
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Queue => "Queue",
             Self::History => "History",
@@ -580,7 +580,7 @@ impl OperationsTab {
 }
 
 #[derive(Default)]
-pub(crate) struct RecoveryState {
+pub struct RecoveryState {
     pub section: RecoverySection,
     pub detail: RecoveryDetail,
     pub operations: Vec<crate::operation_journal::OperationRecord>,
@@ -595,7 +595,7 @@ pub(crate) struct RecoveryState {
     pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
 }
 
-pub(crate) struct RecoveryScanResult {
+pub struct RecoveryScanResult {
     pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
 }
 
@@ -710,7 +710,7 @@ impl App {
         let project_collections = crate::collections::load();
         startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
         crate::version_store::set_store_quota(crate::operation::VersionStoreQuota::default());
-        let mut app = App {
+        let mut app = Self {
             ws,
             ui: ui_state::UiState::default(),
             context_menu,
@@ -872,7 +872,7 @@ impl App {
             .push(crate::toasts::Toast::new(message, kind, undoable, now));
     }
 
-    pub(crate) fn issue_transient_nonce(&mut self) -> u64 {
+    pub(crate) const fn issue_transient_nonce(&mut self) -> u64 {
         self.ui.transient_nonce = self
             .ui
             .transient_nonce
