@@ -293,7 +293,7 @@ pub fn duplicate(path: &Path) -> std::io::Result<PathBuf> {
 /// concurrent creator moves on to the next free name.
 const DUPLICATE_NAME_ATTEMPTS: usize = 16;
 
-/// Claim the name exclusively (create_new file, create_dir, symlink) before
+/// Claim the name exclusively (`create_new` file, `create_dir`, symlink) before
 /// writing, so an entry created between the name probe and the copy is never
 /// overwritten: losing that race retries with the next free name.
 fn duplicate_to_first_free(
