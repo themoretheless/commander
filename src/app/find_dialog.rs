@@ -77,6 +77,10 @@ pub(super) fn format_index_exclusions(root: &std::path::Path, exclusions: &[Path
 /// Why a search cannot start in `root`: a saved search or history entry can
 /// name a folder that was since moved or deleted, and walking it would just
 /// report zero results.
+///
+/// This stats the root on the UI thread. It runs once per (debounced) search
+/// start, and a single `metadata` call is accepted there even though a hung
+/// network mount could stall it; the walk itself stays on the worker.
 fn search_root_error(root: &std::path::Path) -> Option<String> {
     match std::fs::metadata(root) {
         Ok(metadata) if metadata.is_dir() => None,
@@ -264,6 +268,18 @@ impl App {
         let root = state.root.clone();
         if let Some(error) = search_root_error(&root) {
             if let Some(state) = self.ui.modals.find.as_mut() {
+                // The old hits, counters and status belong to a different
+                // root; showing them next to this error would contradict it.
+                state.results.clear();
+                state.stable_order.clear();
+                state.last_query = None;
+                state.ran = false;
+                state.scanned = 0;
+                state.matched = 0;
+                state.elapsed = std::time::Duration::ZERO;
+                state.truncated = false;
+                state.content_skipped = 0;
+                state.explanation_open = None;
                 state.error = Some(error);
                 state.pending_rerun = false;
             }
@@ -280,6 +296,9 @@ impl App {
             Vec::new()
         };
         let index_status = self.content_index.status(&root);
+        // A refused index build is reported even though the search still runs
+        // (as a plain walk), so starting the search must not hide it.
+        let mut index_refusal = None;
         if index_status.enabled
             && matches!(
                 index_status.phase,
@@ -290,9 +309,15 @@ impl App {
             if self.content_index.start_build(
                 root.clone(),
                 std::sync::Arc::new(move || repaint.request_repaint()),
-            ) && let Some(state) = self.ui.modals.find.as_mut()
-            {
-                state.index_rerun_after_build = true;
+            ) {
+                if let Some(state) = self.ui.modals.find.as_mut() {
+                    state.index_rerun_after_build = true;
+                }
+            } else {
+                index_refusal = Some(index_build_refusal(
+                    true,
+                    self.content_index.status(&root).last_error,
+                ));
             }
         }
         let index = self
@@ -339,7 +364,7 @@ impl App {
             state.elapsed = std::time::Duration::ZERO;
             state.truncated = false;
             state.content_skipped = 0;
-            state.error = None;
+            state.error = index_refusal;
             state.pending_rerun = false;
             state.explanation_open = None;
         }
@@ -913,7 +938,11 @@ impl App {
                             }
                         });
 
-                    if state.ran && !state.searching && state.results.is_empty() {
+                    if state.ran
+                        && !state.searching
+                        && state.results.is_empty()
+                        && state.error.is_none()
+                    {
                         ui.label(
                             egui::RichText::new(format!(
                                 "No files match in {}. Try a broader query, another match \
@@ -971,6 +1000,7 @@ impl App {
         if let Some((expression, mode, root, summary)) = history_record {
             self.search_history.record(expression, mode, root, &summary);
         }
+        let mut index_refusal = None;
         if let Some(enabled) = index_enabled_change {
             if self.content_index.set_enabled(index_root.clone(), enabled) {
                 if enabled {
@@ -984,8 +1014,10 @@ impl App {
                     });
                     if let Some(state) = self.ui.modals.find.as_mut() {
                         state.index_rerun_after_build = started;
-                        state.error = refusal;
                     }
+                    // Applied after mark_find_edited below, which clears the
+                    // error for the edit this toggle also counts as.
+                    index_refusal = refusal;
                 } else if let Some(state) = self.ui.modals.find.as_mut() {
                     state.index_rerun_after_build = false;
                     state.error = None;
@@ -1102,6 +1134,11 @@ impl App {
         }
         if edited {
             self.mark_find_edited(ctx);
+        }
+        if let Some(refusal) = index_refusal
+            && let Some(state) = self.ui.modals.find.as_mut()
+        {
+            state.error = Some(refusal);
         }
         if run_now {
             self.begin_find_search(ctx);
