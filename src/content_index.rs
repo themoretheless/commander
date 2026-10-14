@@ -300,7 +300,7 @@ impl ContentIndex {
         if !self.is_enabled(&root) {
             return false;
         }
-        if !crate::provider_runtime::activate_builtin(
+        if let Err(reason) = crate::provider_runtime::activate_builtin_explained(
             "content-index",
             &crate::provider_runtime::ActivationRequest {
                 capability: crate::provider_runtime::ProviderCapability::IndexBuild,
@@ -309,10 +309,8 @@ impl ContentIndex {
                 bytes: None,
             },
         ) {
-            self.load_errors.insert(
-                root,
-                "Content index provider activation exceeded its startup budget".to_string(),
-            );
+            self.load_errors
+                .insert(root, format!("Content index could not start: {reason}"));
             return false;
         }
         let exclusions = self.exclusions(&root);

@@ -483,7 +483,7 @@ impl SearchEngine {
         } else {
             crate::provider_runtime::ProviderCapability::SearchLive
         };
-        if !crate::provider_runtime::activate_builtin(
+        if let Err(reason) = crate::provider_runtime::activate_builtin_explained(
             provider_id,
             &crate::provider_runtime::ActivationRequest {
                 capability,
@@ -494,8 +494,7 @@ impl SearchEngine {
         ) {
             return Err(QueryError {
                 token: provider_id.to_string(),
-                message: "provider startup budget or capability policy refused activation"
-                    .to_string(),
+                message: format!("{provider_label} search could not start: {reason}"),
             });
         }
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
