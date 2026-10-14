@@ -141,16 +141,18 @@ impl ClassifiedFailure {
             | ErrorKind::ConnectionAborted
             | ErrorKind::ConnectionReset
             | ErrorKind::ConnectionRefused => FailureClass::Retryable,
-            ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem | ErrorKind::NotFound => {
-                FailureClass::Blocked
-            }
+            // A full disk is an external condition: the failed write stays in
+            // hidden staging, so the step can resume once space is freed.
+            ErrorKind::PermissionDenied
+            | ErrorKind::ReadOnlyFilesystem
+            | ErrorKind::NotFound
+            | ErrorKind::StorageFull => FailureClass::Blocked,
             ErrorKind::AlreadyExists | ErrorKind::InvalidInput | ErrorKind::InvalidFilename => {
                 FailureClass::UserDecision
             }
             ErrorKind::UnexpectedEof
             | ErrorKind::WriteZero
             | ErrorKind::InvalidData
-            | ErrorKind::StorageFull
             | ErrorKind::Other => FailureClass::IntegrityUncertain,
             _ => FailureClass::Blocked,
         };
@@ -304,6 +306,16 @@ mod tests {
         );
         assert_eq!(retry.class, FailureClass::Retryable);
         assert_eq!(decision.class, FailureClass::UserDecision);
+    }
+
+    #[test]
+    fn full_disk_is_blocked_not_integrity_uncertain() {
+        let full = ClassifiedFailure::io(
+            None,
+            "copy failed",
+            &std::io::Error::from(std::io::ErrorKind::StorageFull),
+        );
+        assert_eq!(full.class, FailureClass::Blocked);
     }
 
     #[test]
