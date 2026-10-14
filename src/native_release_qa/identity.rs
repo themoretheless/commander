@@ -79,38 +79,63 @@ pub(super) fn capture_subject() -> QaSubject {
     } else {
         "git"
     };
-    let checkout_commit = Command::new(git)
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|value| value.trim().to_string());
-    let checkout_clean = Command::new(git)
-        .arg("-C")
-        .arg(root)
-        .args(["status", "--porcelain=v1", "--untracked-files=all"])
-        .output()
-        .ok()
-        .is_some_and(|output| output.status.success() && output.stdout.is_empty());
-    let (binary_blake3, binary_identity_verified) =
-        current_binary_digest().unwrap_or_else(|_| ("unavailable".to_string(), false));
+    let checkout_commit =
+        run_git(git, root, &["rev-parse", "--verify", "HEAD"]).and_then(|stdout| {
+            String::from_utf8(stdout)
+                .map(|value| value.trim().to_string())
+                .map_err(|_| "git rev-parse printed a non-UTF-8 commit".to_string())
+        });
+    let checkout_clean = run_git(
+        git,
+        root,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )
+    .map(|stdout| stdout.is_empty());
+    let worktree_problems = build_checkout_problems(
+        &commit,
+        build_clean,
+        checkout_commit.as_deref().map_err(String::as_str),
+        checkout_clean.as_ref().copied().map_err(String::as_str),
+    );
+    let (binary_blake3, identity) = match current_binary_digest() {
+        Ok((digest, identity)) => (digest, identity),
+        Err(error) => ("unavailable".to_string(), Err(error)),
+    };
     QaSubject {
-        worktree_clean: exact_build_checkout(
-            &commit,
-            build_clean,
-            checkout_commit.as_deref(),
-            checkout_clean,
-        ),
+        worktree_clean: worktree_problems.is_empty(),
+        worktree_problems,
         commit,
         binary_blake3,
-        binary_identity_verified,
+        binary_identity_verified: identity.as_ref().is_ok_and(|verified| *verified),
+        binary_identity_error: identity.err(),
     }
 }
 
-fn current_binary_digest() -> Result<(String, bool), String> {
+/// Stdout of a successful `git -C root <args>`, or why git failed: not
+/// installed, not a repository, or a non-zero exit with its stderr.
+fn run_git(git: &str, root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = Command::new(git)
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("could not run {git}: {error}"))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(format!(
+            "git {} failed ({}): {}",
+            args.first().copied().unwrap_or_default(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+/// The digest of the running executable and whether its on-disk identity
+/// matches the loaded process; the inner error says why that could not be
+/// checked (codesign unavailable, unsigned build), which is not a mismatch.
+fn current_binary_digest() -> Result<(String, Result<bool, String>), String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not locate the current executable: {error}"))?;
     let mut options = OpenOptions::new();
@@ -131,7 +156,7 @@ fn current_binary_digest() -> Result<(String, bool), String> {
         }
         hasher.update(&buffer[..read]);
     }
-    let identity_verified = loaded_executable_matches(&executable, &file).unwrap_or(false);
+    let identity_verified = loaded_executable_matches(&executable, &file);
     Ok((hasher.finalize().to_hex().to_string(), identity_verified))
 }
 
@@ -161,8 +186,8 @@ fn loaded_executable_matches(executable: &Path, opened: &File) -> Result<bool, S
 }
 
 #[cfg(not(target_os = "macos"))]
-const fn loaded_executable_matches(_executable: &Path, _opened: &File) -> Result<bool, String> {
-    Ok(false)
+fn loaded_executable_matches(_executable: &Path, _opened: &File) -> Result<bool, String> {
+    Err("executable identity can only be verified on macOS".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -250,13 +275,31 @@ fn same_file_version(left: &std::fs::Metadata, right: &std::fs::Metadata) -> boo
         && left.mtime_nsec() == right.mtime_nsec()
 }
 
-fn exact_build_checkout(
+/// Each reason the binary is not an exact build of a clean checkout; empty
+/// when it is. A git failure is reported as such, not as a dirty tree.
+fn build_checkout_problems(
     build_commit: &str,
     build_clean: bool,
-    checkout_commit: Option<&str>,
-    checkout_clean: bool,
-) -> bool {
-    build_clean && checkout_clean && checkout_commit == Some(build_commit)
+    checkout_commit: Result<&str, &str>,
+    checkout_clean: Result<bool, &str>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !build_clean {
+        problems.push("binary was built from a checkout with uncommitted changes".to_string());
+    }
+    match checkout_commit {
+        Ok(commit) if commit == build_commit => {}
+        Ok(commit) => problems.push(format!(
+            "checkout is at {commit} but the binary was built from {build_commit}"
+        )),
+        Err(error) => problems.push(format!("checkout commit is unknown: {error}")),
+    }
+    match checkout_clean {
+        Ok(true) => {}
+        Ok(false) => problems.push("checkout has uncommitted or untracked changes".to_string()),
+        Err(error) => problems.push(format!("checkout status is unknown: {error}")),
+    }
+    problems
 }
 
 #[cfg(test)]
@@ -298,18 +341,54 @@ mod tests {
     #[test]
     fn build_identity_rejects_spoofed_or_stale_checkout_state() {
         let commit = "a".repeat(40);
-        assert!(exact_build_checkout(&commit, true, Some(&commit), true));
-        assert!(!exact_build_checkout(
-            &commit,
-            true,
-            Some(&"b".repeat(40)),
-            true
-        ));
+        assert!(build_checkout_problems(&commit, true, Ok(&commit), Ok(true)).is_empty());
+        assert!(!build_checkout_problems(&commit, true, Ok(&"b".repeat(40)), Ok(true)).is_empty());
         // A dirty-build binary remains blocked after its source edit is
         // reverted and runtime git becomes clean.
-        assert!(!exact_build_checkout(&commit, false, Some(&commit), true));
-        assert!(!exact_build_checkout(&commit, true, Some(&commit), false));
-        assert!(!exact_build_checkout(&commit, true, None, true));
+        assert!(!build_checkout_problems(&commit, false, Ok(&commit), Ok(true)).is_empty());
+        assert!(!build_checkout_problems(&commit, true, Ok(&commit), Ok(false)).is_empty());
+        assert!(!build_checkout_problems(&commit, true, Err("no git"), Ok(true)).is_empty());
+    }
+
+    #[test]
+    fn build_identity_problems_name_their_cause() {
+        let commit = "a".repeat(40);
+        let only = |problems: Vec<String>| {
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            problems.into_iter().next().unwrap()
+        };
+        assert!(
+            only(build_checkout_problems(
+                &commit,
+                false,
+                Ok(&commit),
+                Ok(true)
+            ))
+            .contains("binary was built from a checkout with uncommitted changes")
+        );
+        assert!(
+            only(build_checkout_problems(
+                &commit,
+                true,
+                Ok(&commit),
+                Ok(false)
+            ))
+            .contains("checkout has uncommitted")
+        );
+        let mismatch = only(build_checkout_problems(
+            &commit,
+            true,
+            Ok(&"b".repeat(40)),
+            Ok(true),
+        ));
+        assert!(mismatch.contains(&"b".repeat(40)), "{mismatch}");
+        let no_git = only(build_checkout_problems(
+            &commit,
+            true,
+            Err("could not run git: not found"),
+            Ok(true),
+        ));
+        assert!(no_git.contains("could not run git"), "{no_git}");
     }
 
     #[cfg(target_os = "macos")]
