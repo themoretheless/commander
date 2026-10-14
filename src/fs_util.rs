@@ -310,6 +310,23 @@ fn duplicate_to_first_free(
     let mut last_error = None;
     for _ in 0..DUPLICATE_NAME_ATTEMPTS {
         let dest = next_name();
+        // On APFS, clonefile both claims the name atomically (EEXIST means
+        // another creator won it) and makes an instant copy-on-write clone.
+        // A placeholder followed by fs::copy would defeat the clone, because
+        // std's fclonefileat refuses an existing destination and falls back to
+        // a full byte copy.
+        #[cfg(target_vendor = "apple")]
+        if file_type.is_file() {
+            match clone_to_new(path, &dest) {
+                Ok(true) => return Ok(dest),
+                Ok(false) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let claimed = if file_type.is_symlink() {
             copy_symlink(path, &dest)
         } else if file_type.is_dir() {
@@ -342,6 +359,30 @@ fn duplicate_to_first_free(
         return Ok(dest);
     }
     Err(last_error.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+}
+
+/// Clone `src` to the new name `dest` with `clonefile`, which fails with
+/// EEXIST instead of replacing an existing entry. `Ok(false)` means the volume
+/// cannot clone (ENOTSUP/EXDEV) and the caller should byte-copy instead.
+#[cfg(target_vendor = "apple")]
+fn clone_to_new(src: &Path, dest: &Path) -> std::io::Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    let to_c = |p: &Path| {
+        std::ffi::CString::new(p.as_os_str().as_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    };
+    let (src_c, dest_c) = (to_c(src)?, to_c(dest)?);
+    // SAFETY: both pointers are valid NUL-terminated paths for the call.
+    if unsafe { libc::clonefile(src_c.as_ptr(), dest_c.as_ptr(), 0) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(code) if code == libc::ENOTSUP || code == libc::EOPNOTSUPP || code == libc::EXDEV => {
+            Ok(false)
+        }
+        _ => Err(error),
+    }
 }
 
 /// How a planned transfer consumes space on the target volume, which decides
