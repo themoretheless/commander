@@ -1124,7 +1124,7 @@ impl App {
                         }
 
                         if entry.is_dir {
-                            Self::paint_folder_icon(ui, item_count);
+                            Self::paint_folder_icon(ui, item_count, t.folder);
                         } else {
                             ui.add_space(3.0);
                             let (red, green, blue) = crate::file_color::kind_color(
@@ -1502,7 +1502,7 @@ impl App {
             });
     }
 
-    pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {
+    pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>, color: Color32) {
         let size = Vec2::new(24.0, 18.0);
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         let p = ui.painter();
@@ -1511,7 +1511,6 @@ impl App {
         let w = size.x;
         let h = size.y;
 
-        let color = Color32::from_rgb(200, 175, 100);
         let s = Stroke::new(1.2_f32, color);
 
         let tab_w = w * 0.35;

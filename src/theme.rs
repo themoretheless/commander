@@ -24,6 +24,9 @@ pub struct ThemeColors {
     pub accent_purple: Color32,
     /// Conflicts, pending moves and other "attention" highlights.
     pub accent_warning: Color32,
+    /// Folder icon outline and its item count: at least 4.5:1 on the panel
+    /// and hover backgrounds, so the count reads as text.
+    pub folder: Color32,
 
     pub border: Color32,
 }
@@ -64,6 +67,7 @@ impl ThemeColors {
             accent_red: Color32::from_rgb(182, 50, 45),
             accent_purple: Color32::from_rgb(117, 77, 158),
             accent_warning: Color32::from_rgb(162, 101, 10),
+            folder: Color32::from_rgb(128, 96, 24),
             border: Color32::from_rgb(217, 212, 206),
         }
     }
@@ -85,6 +89,7 @@ impl ThemeColors {
             accent_red: Color32::from_rgb(202, 69, 61),
             accent_purple: Color32::from_rgb(140, 100, 183),
             accent_warning: Color32::from_rgb(191, 123, 31),
+            folder: Color32::from_rgb(200, 175, 100),
             border: Color32::from_rgb(52, 48, 44),
         }
     }
@@ -104,6 +109,7 @@ impl ThemeColors {
             accent_red: Color32::from_rgb(170, 0, 25),
             accent_purple: Color32::from_rgb(100, 20, 145),
             accent_warning: Color32::from_rgb(105, 65, 0),
+            folder: Color32::from_rgb(100, 72, 0),
             border: Color32::from_rgb(0, 0, 0),
         }
     }
@@ -125,6 +131,7 @@ impl ThemeColors {
             accent_red: Color32::from_rgb(220, 55, 55),
             accent_purple: Color32::from_rgb(162, 86, 194),
             accent_warning: Color32::from_rgb(154, 111, 0),
+            folder: Color32::from_rgb(230, 200, 100),
             border: Color32::from_rgb(235, 235, 235),
         }
     }
@@ -320,6 +327,20 @@ mod tests {
             semantic_snapshot(ThemeColors::high_contrast_dark()),
             "focus=#FFFFFF selection=#A256C2 diff=#9A6F00 disabled=#B9B9B9"
         );
+    }
+
+    #[test]
+    fn folder_icons_read_on_every_theme() {
+        for colors in [
+            ThemeColors::light(),
+            ThemeColors::dark(),
+            ThemeColors::high_contrast_light(),
+            ThemeColors::high_contrast_dark(),
+        ] {
+            for surface in [colors.bg_panel, colors.bg_hover] {
+                assert!(contrast(colors.folder, surface) >= 4.5);
+            }
+        }
     }
 
     #[test]
