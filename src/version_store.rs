@@ -1049,7 +1049,8 @@ fn copy_path_tracked(
 ) -> Result<CopyPathReceipt, CopyPathFailure> {
     enum Task {
         Copy(PathBuf, PathBuf),
-        SetPermissions(PathBuf, fs::Permissions),
+        /// Runs after the directory's children: creating them bumps its mtime.
+        FinishDirectory(PathBuf, fs::Metadata),
     }
 
     let root_destination = destination.to_path_buf();
@@ -1058,8 +1059,11 @@ fn copy_path_tracked(
     let result = (|| {
         while let Some(task) = tasks.pop() {
             match task {
-                Task::SetPermissions(path, permissions) => {
-                    fs::set_permissions(path, permissions)?;
+                Task::FinishDirectory(path, metadata) => {
+                    #[cfg(unix)]
+                    let _ = fs::File::open(&path)
+                        .and_then(|directory| directory.set_times(copied_times(&metadata)));
+                    fs::set_permissions(path, metadata.permissions())?;
                 }
                 Task::Copy(source, destination) => {
                     let metadata = fs::symlink_metadata(&source)?;
@@ -1076,10 +1080,7 @@ fn copy_path_tracked(
                         if destination == root_destination {
                             destination_identity = PathIdentity::observe(&destination).ok();
                         }
-                        tasks.push(Task::SetPermissions(
-                            destination.clone(),
-                            metadata.permissions(),
-                        ));
+                        tasks.push(Task::FinishDirectory(destination.clone(), metadata));
                         let mut children = fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
                         children.sort_by_key(|entry| entry.file_name());
                         for entry in children.into_iter().rev() {
@@ -1090,6 +1091,14 @@ fn copy_path_tracked(
                         }
                         continue;
                     }
+                    // Opening a FIFO or device would block or read a stream;
+                    // only regular files can be preserved as content.
+                    if !metadata.is_file() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("unsupported special file {}", source.display()),
+                        ));
+                    }
                     let mut options = fs::OpenOptions::new();
                     options.write(true).create_new(true);
                     let mut input = fs::File::open(&source)?;
@@ -1098,6 +1107,9 @@ fn copy_path_tracked(
                         destination_identity = PathIdentity::observe(&destination).ok();
                     }
                     std::io::copy(&mut input, &mut output)?;
+                    // Best effort: a filesystem without settable times still
+                    // preserves the content.
+                    let _ = output.set_times(copied_times(&metadata));
                     output.sync_all()?;
                     fs::set_permissions(destination, metadata.permissions())?;
                 }
@@ -1114,6 +1126,19 @@ fn copy_path_tracked(
             destination_identity: destination_identity.map(Box::new),
         }),
     }
+}
+
+/// The source's modified and accessed times, so a preserved or restored
+/// version keeps the original timestamps instead of the copy time.
+fn copied_times(metadata: &fs::Metadata) -> fs::FileTimes {
+    let mut times = fs::FileTimes::new();
+    if let Ok(modified) = metadata.modified() {
+        times = times.set_modified(modified);
+    }
+    if let Ok(accessed) = metadata.accessed() {
+        times = times.set_accessed(accessed);
+    }
+    times
 }
 
 #[cfg(test)]
@@ -1180,12 +1205,46 @@ fn directory_names(path: &Path) -> Option<Vec<std::ffi::OsString>> {
 fn remove_path(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            make_directories_removable(path);
             fs::remove_dir_all(path)
         }
         Ok(_) => fs::remove_file(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// Versions keep their directories' modes, so a preserved read-only folder
+/// (0o555) would refuse unlinking its entries. Give every real directory in
+/// the tree owner rwx first; symlinks are never followed.
+fn make_directories_removable(root: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            let Ok(metadata) = fs::symlink_metadata(&directory) else {
+                continue;
+            };
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                continue;
+            }
+            let mode = metadata.permissions().mode();
+            if mode & 0o700 != 0o700 {
+                let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(mode | 0o700));
+            }
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    pending.push(entry.path());
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = root;
 }
 
 #[cfg(test)]
@@ -1270,6 +1329,105 @@ mod tests {
         copy_path(&source, &destination).unwrap();
 
         assert!(paths_equal(&source, &destination));
+    }
+
+    #[test]
+    fn preserved_and_restored_versions_keep_the_source_modified_time() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let folder = temp.dir("folder");
+        let file = temp.file("folder/file.txt", "dated");
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        let stamp = |path: &Path| {
+            fs::OpenOptions::new()
+                .read(true)
+                .open(path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        stamp(&file);
+        #[cfg(unix)]
+        stamp(&folder);
+        let operation = OperationId("keep-mtime".to_string());
+        let record = preserve_at(
+            &versions,
+            &folder,
+            &operation,
+            operation.step_key(0, &folder),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        let mtime = |path: &Path| fs::metadata(path).unwrap().modified().unwrap();
+        assert_eq!(mtime(&record.stored.join("file.txt")), modified);
+
+        fs::remove_dir_all(&folder).unwrap();
+        restore_at(&versions, &record).unwrap();
+
+        assert_eq!(mtime(&file), modified);
+        #[cfg(unix)]
+        {
+            assert_eq!(mtime(&record.stored), modified);
+            assert_eq!(mtime(&folder), modified);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_copy_refuses_a_fifo_instead_of_blocking_on_it() {
+        let temp = TempDir::new();
+        let source = temp.dir("source");
+        let status = std::process::Command::new("mkfifo")
+            .arg(source.join("pipe"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let destination = temp.path().join("destination");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(copy_path(&source, &destination));
+        });
+
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("copying a FIFO must not block");
+
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("special file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discard_removes_a_version_of_a_read_only_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let folder = temp.dir("folder");
+        temp.file("folder/locked/file.txt", "kept read-only");
+        let locked = folder.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let operation = OperationId("read-only-folder".to_string());
+        let record = preserve_at(
+            &versions,
+            &folder,
+            &operation,
+            operation.step_key(0, &folder),
+            VersionRetentionPolicy::Recent,
+        );
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let record = record.unwrap().unwrap();
+        let stored_locked = record.stored.join("locked");
+        assert_eq!(
+            fs::metadata(&stored_locked).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+
+        discard_record_at(&versions, &record).unwrap();
+
+        assert!(!record.stored.exists());
     }
 
     #[cfg(unix)]
