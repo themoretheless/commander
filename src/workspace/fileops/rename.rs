@@ -71,6 +71,9 @@ pub fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecut
         },
         None => false,
     };
+    // A different name bound to the same file (a hard link) is an occupied
+    // name, not a case-only change of this one.
+    let same_file = same_file && same_name_ignoring_case(from, to);
     if dest_meta.is_some() && !same_file {
         return Err(RenameExecutionError::unchanged("Name already in use"));
     }
@@ -98,6 +101,21 @@ pub fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecut
             )),
         },
     }
+}
+
+/// Whether the two final names differ at most in case (or Unicode
+/// normalization), as a case-insensitive volume would resolve them.
+fn same_name_ignoring_case(from: &Path, to: &Path) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    let fold = |path: &Path| {
+        path.file_name().map(|name| {
+            name.to_string_lossy()
+                .nfc()
+                .collect::<String>()
+                .to_lowercase()
+        })
+    };
+    fold(from) == fold(to)
 }
 
 pub fn latch_rename_execution_error(workspace: &mut Workspace, error: &RenameExecutionError) {

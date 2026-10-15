@@ -3839,6 +3839,22 @@ fn case_only_rename_rolls_back_when_the_target_name_is_still_occupied() {
 }
 
 #[test]
+fn rename_onto_a_hard_link_of_the_same_file_is_a_collision() {
+    let tmp = TempDir::new();
+    let from = tmp.file("first.txt", "x");
+    let to = tmp.path().join("second.txt");
+    std::fs::hard_link(&from, &to).unwrap();
+
+    let error = fileops::rename_path_no_clobber(&from, &to).unwrap_err();
+
+    assert_eq!(error.message, "Name already in use");
+    assert!(!error.integrity_uncertain);
+    assert!(from.is_file());
+    assert!(to.is_file());
+    assert_eq!(fileops::dir_names(tmp.path()).len(), 2);
+}
+
+#[test]
 fn drop_prefers_source_panel_target() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let file = l.file("a.txt", "x");
