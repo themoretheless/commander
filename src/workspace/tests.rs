@@ -6145,3 +6145,26 @@ fn command_context_reports_whether_the_cursor_row_is_selected() {
     assert!(ws.command_context().cursor_selected);
     assert!(ws.action_bar_command_context().cursor_selected);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn case_variant_without_an_on_disk_clash_is_not_a_conflict() {
+    // Case-sensitive destination: `a.txt` does not clash with an existing
+    // `A.txt`, so SkipAll must still copy it.
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let lower = l.file("a.txt", "lower");
+    l.file("A.txt", "upper");
+    r.file("A.txt", "existing");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_all();
+    ws.request_copy();
+
+    let names: Vec<String> = ws.pending_conflicts().into_iter().map(|c| c.name).collect();
+    assert_eq!(names, vec!["A.txt".to_string()]);
+    assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
+    let Some(PendingOp::Transfer(tr)) = &ws.pending_op else {
+        panic!("pending copy");
+    };
+    let kept: Vec<&PathBuf> = tr.entries.iter().map(|e| &e.path).collect();
+    assert_eq!(kept, vec![&lower]);
+}

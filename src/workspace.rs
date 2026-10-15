@@ -1981,7 +1981,14 @@ impl Workspace {
                 FileEntry::from_meta(path, &meta)
             })
             .collect::<Vec<_>>();
-        crate::conflict::detect(&tr.entries, &dest)
+        // `detect` folds case, but only names the on-disk check found taken
+        // really clash: on a case-sensitive volume `a.txt` beside an
+        // existing `A.txt` is a fresh name, and SkipAll must not drop it.
+        let mut conflicts = crate::conflict::detect(&tr.entries, &dest);
+        let taken: std::collections::HashSet<&str> =
+            tr.conflicts.iter().map(String::as_str).collect();
+        conflicts.retain(|conflict| taken.contains(conflict.name.as_str()));
+        conflicts
     }
 
     /// Apply a relation policy to the pending Copy: filter its entries to the
