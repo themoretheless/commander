@@ -331,4 +331,72 @@ mod tests {
         assert_eq!(&*old, &[0]);
         assert!(!Arc::ptr_eq(&fresh, &old));
     }
+
+    #[test]
+    fn begin_loading_retires_rows_once_per_binding() {
+        let mut listing = ListingState::new(PathBuf::from("/old"));
+        listing.replace_for_test(vec![entry("alpha", UNIX_EPOCH)]);
+        let listed = listing.revision();
+
+        assert!(listing.begin_loading(PathBuf::from("/new")));
+        assert_eq!(listing.binding(), Path::new("/new"));
+        assert!(listing.entries().is_empty());
+        assert_eq!(listing.status(), DirStatus::Loading);
+        assert_eq!(listing.revision().value(), listed.value() + 1);
+
+        // Asking again while it still loads changes nothing.
+        let loading = listing.revision();
+        assert!(!listing.begin_loading(PathBuf::from("/new")));
+        assert_eq!(listing.revision(), loading);
+    }
+
+    #[test]
+    fn begin_loading_the_listed_binding_clears_its_rows() {
+        let binding = PathBuf::from("/test");
+        let mut listing = ListingState::new(binding.clone());
+        listing.replace_for_test(vec![entry("alpha", UNIX_EPOCH)]);
+        let warm = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
+        let listed = listing.revision();
+
+        assert!(listing.begin_loading(binding));
+        assert!(listing.entries().is_empty());
+        assert_eq!(listing.status(), DirStatus::Loading);
+        assert_ne!(listing.revision(), listed);
+        let loading = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
+        assert!(loading.is_empty());
+        assert!(!Arc::ptr_eq(&warm, &loading));
+    }
+
+    #[test]
+    fn repeating_an_incomplete_status_does_not_bump_the_revision() {
+        let binding = PathBuf::from("/test");
+        let mut listing = ListingState::new(binding.clone());
+        listing.replace_for_test(vec![entry("alpha", UNIX_EPOCH)]);
+
+        assert!(!listing.mark_incomplete(binding.clone(), DirStatus::Denied));
+        let denied = listing.revision();
+        assert!(!listing.mark_incomplete(binding.clone(), DirStatus::Denied));
+        assert_eq!(listing.revision(), denied);
+        // A different status for the same binding is a change.
+        assert!(!listing.mark_incomplete(binding, DirStatus::Gone));
+        assert_eq!(listing.revision().value(), denied.value() + 1);
+    }
+
+    #[test]
+    fn facet_change_invalidates_a_warm_filter_snapshot() {
+        let mut folder = entry("box", UNIX_EPOCH);
+        folder.is_dir = true;
+        let mut listing = ListingState::default();
+        listing.replace_for_test(vec![entry("alpha", UNIX_EPOCH), folder]);
+        let all = listing.filtered_snapshot_at("", FacetSet::default(), UNIX_EPOCH);
+        assert_eq!(&*all, &[0, 1]);
+
+        let folders = FacetSet {
+            kind: Some(super::super::KindFacet::Folders),
+            ..FacetSet::default()
+        };
+        let only_folders = listing.filtered_snapshot_at("", folders, UNIX_EPOCH);
+        assert!(!Arc::ptr_eq(&all, &only_folders));
+        assert_eq!(&*only_folders, &[1]);
+    }
 }

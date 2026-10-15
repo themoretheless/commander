@@ -4629,4 +4629,57 @@ mod tests {
         assert!(!still.is_video() && still.is_image() && still.is_static_image());
         assert!(!text.is_video() && !text.is_image());
     }
+
+    /// Hand-driven background listings for `p`: the worker runs only when
+    /// the test says so.
+    fn deterministic_listings(p: &mut PanelState) -> crate::workload::DeterministicWorkload {
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        p.set_workload(workload.handle());
+        p.set_notify(Arc::new(|| {}));
+        workload
+    }
+
+    #[test]
+    fn async_go_up_lands_on_the_child_once_the_listing_publishes() {
+        let tmp = TempDir::new();
+        tmp.dir("aaa");
+        let mid = tmp.dir("mmm");
+        tmp.dir("zzz");
+        let mut p = PanelState::new(mid);
+        p.refresh();
+        let workload = deterministic_listings(&mut p);
+
+        p.go_up();
+        assert_eq!(p.listing.status(), DirStatus::Loading);
+        assert_eq!(p.cursor(), 0, "nothing to land on yet");
+
+        assert!(workload.run_next());
+        assert!(p.poll_listing());
+        assert_eq!(p.cursor_entry().unwrap().name, "mmm");
+        assert!(p.scroll_to_cursor());
+    }
+
+    #[test]
+    fn listing_read_under_the_old_hidden_setting_is_not_applied() {
+        let tmp = TempDir::new();
+        tmp.file("visible.txt", "v");
+        let hidden = tmp.file(".hidden.txt", "h");
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        let workload = deterministic_listings(&mut p);
+
+        // A background re-read starts with hidden files off, then the user
+        // shows them before it lands.
+        p.refresh();
+        assert_eq!(p.toggle_hidden(), ViewApplyOutcome::Applied);
+        assert!(p.entries().iter().any(|entry| entry.path == hidden));
+        let revision = p.entries_gen();
+
+        assert!(workload.run_next());
+        assert!(!p.poll_listing(), "the stale read is dropped");
+        assert!(p.entries().iter().any(|entry| entry.path == hidden));
+        assert_eq!(p.entries_gen(), revision);
+    }
 }
