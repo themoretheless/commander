@@ -151,6 +151,24 @@ mod tests {
     }
 
     #[test]
+    fn a_new_confirmation_survives_a_full_stack_of_errors() {
+        let mut q = ToastQueue::default();
+        for n in 0..MAX_TOASTS {
+            q.push(Toast::new(
+                format!("error {n}"),
+                ToastKind::Error,
+                false,
+                0.0,
+            ));
+        }
+        q.push(toast("Copied", 1.0));
+        let messages: Vec<_> = q.active().iter().map(|t| t.message.as_str()).collect();
+        assert_eq!(messages.len(), MAX_TOASTS);
+        assert_eq!(messages.last(), Some(&"Copied"));
+        assert!(!messages.contains(&"error 0"), "{messages:?}");
+    }
+
+    #[test]
     fn identical_consecutive_message_coalesces_and_resets_timer() {
         let mut q = ToastQueue::default();
         q.push(toast("Moved 8 items", 0.0));
