@@ -156,10 +156,18 @@ pub fn commit_rename(workspace: &mut Workspace, old: &Path, new_name: &str) -> R
         return Ok(()); // nothing to do
     }
     let new_name = new_name.trim();
-    let siblings = rename_siblings(old);
     let case_insensitive = old
         .parent()
         .is_some_and(crate::pathname::volume_is_case_insensitive);
+    // Only a case-insensitive volume needs the sibling listing (to catch a
+    // case-folded collision); elsewhere rename_path_no_clobber probes the one
+    // target name on disk, which is the authoritative exact-collision check,
+    // so a big folder is not read on the UI thread for every rename.
+    let siblings = if case_insensitive {
+        rename_siblings(old)
+    } else {
+        Vec::new()
+    };
     crate::pathname::validate_new_name_on_volume(new_name, &siblings, case_insensitive)
         .map_err(|error| error.to_string())?;
     let dest = old
