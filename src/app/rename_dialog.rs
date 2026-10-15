@@ -36,6 +36,8 @@ const COMMIT_ERROR: &str = "rename_commit_error";
 /// from the pane listing when the editor opens (a folder symlink counts as a
 /// folder), so the first frame needs no stat on the UI thread.
 const RENAME_IS_DIR: &str = "rename_is_dir";
+/// Temp-memory key: whether the renamed entry's volume folds name case.
+const RENAME_CASE_INSENSITIVE: &str = "rename_case_insensitive";
 
 /// The error line under the field: live validation first, else the failed
 /// commit's error while the buffer is still the one that was committed.
@@ -62,6 +64,9 @@ impl App {
             .flat_map(|panel| panel.entries())
             .find(|entry| entry.path == path)
             .is_some_and(|entry| entry.is_dir);
+        let case_insensitive = path
+            .parent()
+            .is_some_and(crate::pathname::volume_is_case_insensitive);
         self.ui.modals.renaming = Some(RenameState {
             siblings: crate::workspace::Workspace::rename_siblings(&path),
             path,
@@ -71,6 +76,7 @@ impl App {
         ctx.data_mut(|data| {
             data.remove::<(String, String)>(egui::Id::new(COMMIT_ERROR));
             data.insert_temp(egui::Id::new(RENAME_IS_DIR), is_dir);
+            data.insert_temp(egui::Id::new(RENAME_CASE_INSENSITIVE), case_insensitive);
         });
         Self::mark_modal_opened(ctx, UiModal::Rename);
     }
@@ -127,9 +133,17 @@ impl App {
             let live_error = if rename_is_noop(&state.buffer, &old_name) {
                 None
             } else {
-                crate::pathname::validate_new_name(&state.buffer, &state.siblings)
-                    .err()
-                    .map(|error| error.to_string())
+                let case_insensitive = ui
+                    .ctx()
+                    .data(|data| data.get_temp::<bool>(egui::Id::new(RENAME_CASE_INSENSITIVE)))
+                    .unwrap_or(false);
+                crate::pathname::validate_new_name_on_volume(
+                    &state.buffer,
+                    &state.siblings,
+                    case_insensitive,
+                )
+                .err()
+                .map(|error| error.to_string())
             };
             let valid = live_error.is_none();
             let commit_error = ui
