@@ -94,6 +94,7 @@ fn apply_case(stem: &str, mode: CaseMode) -> String {
 /// regex mode, or when the pattern failed to compile — see [`regex_error`]).
 fn rename_one(
     name: &str,
+    is_dir: bool,
     index: usize,
     rule: &RenameRule,
     compiled: Option<&regex::Regex>,
@@ -112,8 +113,13 @@ fn rename_one(
     } else {
         name.replace(&rule.find, &rule.replace)
     };
-    // 2) split off the extension; structural edits operate on the stem.
-    let (stem, ext) = split_ext(&replaced);
+    // 2) split off the extension; structural edits operate on the stem. A
+    // folder has no extension: `v1.2` + suffix `_old` is `v1.2_old`.
+    let (stem, ext) = if is_dir {
+        (replaced.as_str(), "")
+    } else {
+        split_ext(&replaced)
+    };
     let mut stem = apply_case(stem, rule.case);
     stem = format!("{}{}{}", rule.prefix, stem, rule.suffix);
     if let Some(n) = rule.numbering {
@@ -145,12 +151,14 @@ fn exceeds_component_limit(name: &str) -> bool {
 /// Plan a batch rename. `names` are the entries to rename (their order drives
 /// the counter); `existing` is every name currently in the directory
 /// (including the ones being renamed) so collisions with untouched siblings
-/// are caught. Comparison is case- and Unicode-normalization-insensitive
+/// are caught. `dirs` names the targets that are folders, whose whole name
+/// is the stem (no extension split). Comparison is case- and Unicode-normalization-insensitive
 /// ([`crate::rename_order::name_key`]), matching the default macOS FS.
 pub fn plan_batch_rename(
     names: &[String],
     existing: &HashSet<String>,
     rule: &RenameRule,
+    dirs: &HashSet<String>,
 ) -> Vec<RenamePlan> {
     use crate::rename_order::name_key;
     let batch_lower: HashSet<String> = names.iter().map(|n| name_key(n)).collect();
@@ -163,7 +171,7 @@ pub fn plan_batch_rename(
     let targets: Vec<String> = names
         .iter()
         .enumerate()
-        .map(|(i, n)| rename_one(n, i, rule, compiled.as_ref()))
+        .map(|(i, n)| rename_one(n, dirs.contains(n), i, rule, compiled.as_ref()))
         .collect();
 
     // How many targets share each lowercased name (intra-batch clashes).
@@ -220,6 +228,29 @@ mod tests {
         list.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Plan a batch whose targets are all regular files.
+    fn plan_files(
+        names: &[String],
+        existing: &HashSet<String>,
+        rule: &RenameRule,
+    ) -> Vec<RenamePlan> {
+        plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn folder_names_have_no_extension_to_preserve() {
+        let rule = RenameRule {
+            suffix: "_old".into(),
+            case: CaseMode::Upper,
+            ..Default::default()
+        };
+        let n = names(&["v1.2", "notes.txt"]);
+        let ex = existing(&["v1.2", "notes.txt"]);
+        let plans = plan_batch_rename(&n, &ex, &rule, &existing(&["v1.2"]));
+        assert_eq!(plans[0].to, "V1.2_old");
+        assert_eq!(plans[1].to, "NOTES_old.txt");
+    }
+
     #[test]
     fn find_replace_touches_whole_name_then_splits_extension() {
         let rule = RenameRule {
@@ -229,7 +260,7 @@ mod tests {
         };
         let n = names(&["IMG_01.jpg", "IMG_02.jpg"]);
         let ex = existing(&["IMG_01.jpg", "IMG_02.jpg"]);
-        let plans = plan_batch_rename(&n, &ex, &rule);
+        let plans = plan_files(&n, &ex, &rule);
         assert_eq!(plans[0].to, "Photo_01.jpg");
         assert_eq!(plans[1].to, "Photo_02.jpg");
         assert_eq!(plans[0].status, PlanStatus::Ok);
@@ -245,7 +276,7 @@ mod tests {
         };
         let n = names(&["IMG_042.jpg", "IMG_007.jpg"]);
         let ex = existing(&["IMG_042.jpg", "IMG_007.jpg"]);
-        let plans = plan_batch_rename(&n, &ex, &rule);
+        let plans = plan_files(&n, &ex, &rule);
         assert_eq!(plans[0].to, "Photo-042.jpg");
         assert_eq!(plans[1].to, "Photo-007.jpg");
     }
@@ -283,7 +314,7 @@ mod tests {
             regex: true,
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
+        let plans = plan_files(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
         assert_eq!(plans[0].to, "a.txt");
         assert_eq!(plans[0].status, PlanStatus::Unchanged);
     }
@@ -297,7 +328,7 @@ mod tests {
             ..Default::default()
         };
         let n = names(&["report.txt"]);
-        let plans = plan_batch_rename(&n, &existing(&["report.txt"]), &rule);
+        let plans = plan_files(&n, &existing(&["report.txt"]), &rule);
         // stem REPORT -> v_REPORT_final, extension untouched.
         assert_eq!(plans[0].to, "v_REPORT_final.txt");
     }
@@ -316,7 +347,7 @@ mod tests {
         // Counter follows input order; it is appended to the stem, ahead of
         // the extension. The third name has no extension.
         let n = names(&["a.png", "b.png", "c"]);
-        let plans = plan_batch_rename(&n, &existing(&[]), &rule);
+        let plans = plan_files(&n, &existing(&[]), &rule);
         assert_eq!(plans[0].to, "shot_a005.png");
         assert_eq!(plans[1].to, "shot_b010.png");
         assert_eq!(plans[2].to, "shot_c015");
@@ -328,7 +359,7 @@ mod tests {
             prefix: "x".into(),
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&[".gitignore"]), &existing(&[".gitignore"]), &rule);
+        let plans = plan_files(&names(&[".gitignore"]), &existing(&[".gitignore"]), &rule);
         assert_eq!(plans[0].to, "x.gitignore");
     }
 
@@ -339,7 +370,7 @@ mod tests {
             replace: "q".into(),
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
+        let plans = plan_files(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
         assert_eq!(plans[0].status, PlanStatus::Unchanged);
         assert_eq!(plans[0].to, "a.txt");
     }
@@ -353,7 +384,7 @@ mod tests {
             ..Default::default()
         };
         let n = names(&["img1.jpg", "img11.jpg"]);
-        let plans = plan_batch_rename(
+        let plans = plan_files(
             &n,
             &existing(&n.iter().map(String::as_str).collect::<Vec<_>>()),
             &rule,
@@ -375,7 +406,7 @@ mod tests {
         // "final.txt" already exists and is NOT in the rename batch.
         let n = names(&["draft.txt"]);
         let ex = existing(&["draft.txt", "final.txt"]);
-        let plans = plan_batch_rename(&n, &ex, &rule);
+        let plans = plan_files(&n, &ex, &rule);
         assert_eq!(plans[0].status, PlanStatus::Collision);
     }
 
@@ -392,12 +423,12 @@ mod tests {
         let ex = existing(&["a.txt", "b.txt"]);
         // b.txt not in batch -> collision with an untouched sibling.
         assert_eq!(
-            plan_batch_rename(&names(&["a.txt"]), &ex, &rule)[0].status,
+            plan_files(&names(&["a.txt"]), &ex, &rule)[0].status,
             PlanStatus::Collision
         );
         // b.txt also in the batch -> a.txt's target is no longer a sibling
         // clash. (b.txt has no 'a', so it stays put and is Unchanged.)
-        let plans = plan_batch_rename(&names(&["a.txt", "b.txt"]), &ex, &rule);
+        let plans = plan_files(&names(&["a.txt", "b.txt"]), &ex, &rule);
         assert_eq!(plans[0].to, "b.txt");
         assert_eq!(plans[1].status, PlanStatus::Unchanged);
         // With b.txt staying, both want "b.txt" -> the duplicate-target rule
@@ -413,7 +444,7 @@ mod tests {
             replace: "/".into(),
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &rule);
+        let plans = plan_files(&names(&["a"]), &existing(&["a"]), &rule);
         assert_eq!(plans[0].status, PlanStatus::Invalid);
         assert!(!plan_is_applicable(&plans));
     }
@@ -425,14 +456,14 @@ mod tests {
             replace: "\0".into(),
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &nul);
+        let plans = plan_files(&names(&["a"]), &existing(&["a"]), &nul);
         assert_eq!(plans[0].status, PlanStatus::Invalid);
 
         let overlong = RenameRule {
             prefix: "x".repeat(255),
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &overlong);
+        let plans = plan_files(&names(&["a"]), &existing(&["a"]), &overlong);
         assert_eq!(plans[0].status, PlanStatus::Invalid);
         assert!(!plan_is_applicable(&plans));
 
@@ -440,7 +471,7 @@ mod tests {
             prefix: "x".repeat(254),
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&["a"]), &existing(&["a"]), &at_limit);
+        let plans = plan_files(&names(&["a"]), &existing(&["a"]), &at_limit);
         assert_eq!(plans[0].status, PlanStatus::Ok);
     }
 
@@ -454,7 +485,7 @@ mod tests {
             replace: "\u{e9}".into(),
             ..Default::default()
         };
-        let plans = plan_batch_rename(
+        let plans = plan_files(
             &names(&["cafQ.txt"]),
             &existing(&["cafQ.txt", decomposed]),
             &rule,
@@ -471,7 +502,7 @@ mod tests {
             case: CaseMode::Lower,
             ..Default::default()
         };
-        let plans = plan_batch_rename(&names(&["Foo.txt"]), &existing(&["Foo.txt"]), &rule);
+        let plans = plan_files(&names(&["Foo.txt"]), &existing(&["Foo.txt"]), &rule);
         assert_eq!(plans[0].to, "foo.txt");
         assert_eq!(plans[0].status, PlanStatus::Ok);
         assert!(plan_is_applicable(&plans));
@@ -480,7 +511,7 @@ mod tests {
     #[test]
     fn applicable_requires_a_change_and_no_problems() {
         // All unchanged -> not applicable (nothing to do).
-        let noop = plan_batch_rename(
+        let noop = plan_files(
             &names(&["a.txt"]),
             &existing(&["a.txt"]),
             &RenameRule::default(),
@@ -491,7 +522,7 @@ mod tests {
             prefix: "p_".into(),
             ..Default::default()
         };
-        let ok = plan_batch_rename(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
+        let ok = plan_files(&names(&["a.txt"]), &existing(&["a.txt"]), &rule);
         assert!(plan_is_applicable(&ok));
         assert_eq!(ok.iter().filter(|p| p.status == PlanStatus::Ok).count(), 1);
     }

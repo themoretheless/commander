@@ -76,12 +76,13 @@ pub fn apply_rename_order_using<E: std::fmt::Display>(
 
 pub fn batch_rename_context(workspace: &Workspace) -> Option<BatchRenameContext> {
     let panel = workspace.active_panel_ref();
-    let targets: Vec<String> = panel
-        .selected_or_cursor()
-        .ok()?
-        .into_iter()
-        .map(|e| e.name)
+    let entries = panel.selected_or_cursor().ok()?;
+    let dirs = entries
+        .iter()
+        .filter(|e| e.is_dir)
+        .map(|e| e.name.clone())
         .collect();
+    let targets: Vec<String> = entries.into_iter().map(|e| e.name).collect();
     if targets.is_empty() {
         return None;
     }
@@ -89,6 +90,7 @@ pub fn batch_rename_context(workspace: &Workspace) -> Option<BatchRenameContext>
         panel: workspace.active,
         dir: panel.current_path.clone(),
         targets,
+        dirs,
         existing: panel.entries().iter().map(|e| e.name.clone()).collect(),
     })
 }
@@ -118,7 +120,7 @@ pub fn apply_batch_rename_in(
             "\"{name}\" is not valid UTF-8 and cannot be batch renamed; rename it on its own first"
         ));
     }
-    let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule);
+    let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule, &context.dirs);
     if plans
         .iter()
         .any(|p| p.status == crate::rename::PlanStatus::Invalid)

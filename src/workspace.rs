@@ -53,6 +53,8 @@ pub struct BatchRenameContext {
     pub panel: ActivePanel,
     pub dir: PathBuf,
     pub targets: Vec<String>,
+    /// The targets that are folders: their whole name is renamed as a stem.
+    pub dirs: std::collections::HashSet<String>,
     pub existing: std::collections::HashSet<String>,
 }
 
