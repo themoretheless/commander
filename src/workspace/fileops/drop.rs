@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use super::super::{ActivePanel, FileEntry, TransferKind, Workspace};
+use crate::ui_request::UiRequest;
 
 /// Handle a completed drag (mouse released). The dragged entries are routed
 /// through the same Move engine as F6 instead of a raw rename, so conflicts
@@ -23,27 +24,51 @@ pub fn drop_dragged_as(
     kind: TransferKind,
     notify: impl Fn() + Send + 'static,
 ) {
-    if workspace.has_unfinished_transfer_work()
-        || workspace.pending_op.is_some()
-        || workspace.mutation_commits_blocked()
-    {
+    if let Some(reason) = drop_refusal(workspace) {
+        // Say why a real drop (released over a target) did nothing; F5/F6
+        // queue instead, so the user needs to know the difference.
+        let dropped_on_target = drag_session(workspace).is_some_and(|s| s.target.is_some());
         cancel_drag(workspace);
+        if dropped_on_target {
+            workspace.emit_ui_request(UiRequest::Notice {
+                message: reason,
+                error: false,
+            });
+        }
         return;
     }
     let Some((paths, target)) = take_drop_plan(workspace) else {
         return;
     };
+    // Bind the dragged rows lexically, like the listing they came from: a
+    // dragged link is the link (not its target), and a broken link still
+    // moves.
     let entries: Vec<FileEntry> = paths
         .iter()
-        .filter_map(|path| {
-            let meta = std::fs::metadata(path).ok()?;
-            FileEntry::from_meta(path.clone(), &meta)
-        })
+        .filter_map(|path| FileEntry::observe_lexical(path.clone()))
         .collect();
     if entries.is_empty() {
+        workspace.emit_ui_request(UiRequest::Notice {
+            message: "Nothing to drop: the dragged items no longer exist".to_string(),
+            error: true,
+        });
         return;
     }
     workspace.stage_transfer(kind, entries, target, true, notify);
+}
+
+/// Why a drop cannot start now, or `None` when it can.
+fn drop_refusal(workspace: &Workspace) -> Option<String> {
+    if workspace.has_unfinished_transfer_work() {
+        Some(
+            "Drop cancelled while transfers are queued or running; use Copy (F5) or Move (F6) to queue it"
+                .to_string(),
+        )
+    } else if workspace.pending_op.is_some() {
+        Some("Drop cancelled: finish the open confirmation first".to_string())
+    } else {
+        workspace.mutation_block_reason("dropping files")
+    }
 }
 
 /// Keyboard equivalent of dropping the active selection onto the folder under

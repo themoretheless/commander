@@ -1470,6 +1470,167 @@ fn create_dir_picks_first_free_name() {
     assert!(l.path().join("New Folder 1").is_dir());
 }
 
+#[cfg(unix)]
+#[test]
+fn create_symlinks_links_the_selection_into_the_inactive_panel() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file("notes", "x");
+    r.file("notes", "occupied");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(source.clone());
+
+    let report = fileops::create_symlinks(&mut ws);
+
+    assert_eq!(report.created, 1);
+    assert!(report.errors.is_empty());
+    let link = r.path().join("notes link 2");
+    assert_eq!(std::fs::read_link(&link).unwrap(), source);
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("notes")).unwrap(),
+        "occupied"
+    );
+}
+
+#[test]
+fn create_hardlinks_numbers_a_collision_before_the_extension() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("photo.jpg", "pixels");
+    r.file("photo.jpg", "other");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(file);
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 1);
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("photo link 2.jpg")).unwrap(),
+        "pixels"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn create_hardlinks_keeps_a_non_utf8_name() {
+    use std::os::unix::ffi::OsStrExt;
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let name = std::ffi::OsStr::from_bytes(b"caf\xe9.txt");
+    let source = l.path().join(name);
+    std::fs::write(&source, "bytes").unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(source);
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 1, "{:?}", report.errors);
+    assert_eq!(
+        std::fs::read_to_string(r.path().join(name)).unwrap(),
+        "bytes"
+    );
+}
+
+#[test]
+fn create_hardlinks_refuses_folders_and_counts_partial_failure() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("data.bin", "payload");
+    let folder = l.dir("folder");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(file);
+    ws.left.select_path(folder);
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 1);
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+        report.errors[0].contains("regular file"),
+        "{:?}",
+        report.errors
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("data.bin")).unwrap(),
+        "payload"
+    );
+    assert!(!r.path().join("folder").exists());
+}
+
+#[test]
+fn create_links_is_refused_while_mutations_are_blocked() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("data.bin", "payload");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(file.clone());
+    ws.safe_state = Some(crate::operation::SafeState {
+        operation_id: crate::operation::OperationId("blocked-link".to_string()),
+        reason: "review required".to_string(),
+        paths: vec![file],
+        failures: Vec::new(),
+    });
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 0);
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+        report.errors[0].contains("Safe-state review"),
+        "{:?}",
+        report.errors
+    );
+    assert!(!r.path().join("data.bin").exists());
+}
+
+#[test]
+fn create_dir_focuses_the_new_folder_and_opens_rename() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "a");
+    let mut ws = workspace(&l, &r);
+
+    ws.create_dir();
+
+    let folder = l.path().join("New Folder");
+    assert!(folder.is_dir());
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(folder.clone())
+    );
+    assert!(ws.drain_ui_requests().contains(&UiRequest::Rename(folder)));
+}
+
+#[test]
+fn create_dir_reports_a_failure() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let gone = l.dir("gone");
+    let mut ws = Workspace::new(gone.clone(), r.path().to_path_buf());
+    std::fs::remove_dir(&gone).unwrap();
+
+    ws.create_dir();
+
+    assert!(!gone.exists());
+    assert!(
+        ws.drain_ui_requests()
+            .iter()
+            .any(|request| matches!(request, UiRequest::Notice { error: true, .. }))
+    );
+}
+
+#[test]
+fn create_dir_says_why_it_is_blocked() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.safe_state = Some(crate::operation::SafeState::integrity(
+        crate::operation::OperationId::new(),
+        "test stop".to_string(),
+        Vec::new(),
+    ));
+
+    ws.create_dir();
+
+    assert!(!l.path().join("New Folder").exists());
+    assert!(ws.drain_ui_requests().iter().any(|request| matches!(
+        request,
+        UiRequest::Notice { message, error: true } if message.contains("creating a folder")
+    )));
+}
+
 #[test]
 fn select_same_named_adds_common_names_keeping_prior_picks() {
     let (l, r) = (TempDir::new(), TempDir::new());
@@ -1514,6 +1675,54 @@ fn apply_batch_rename_renames_only_the_selection() {
         ws.left.selection_is_empty(),
         "selection cleared after rename"
     );
+}
+
+#[test]
+fn apply_batch_rename_refreshes_the_other_panel_showing_the_folder() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "1");
+    let mut ws = workspace(&l, &r);
+    ws.right.navigate_to(l.path().to_path_buf());
+    ws.right.refresh();
+    ws.left.select_path(file);
+
+    let rule = crate::rename::RenameRule {
+        prefix: "x_".into(),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+
+    let names = ws
+        .right
+        .entries()
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"x_a.txt".to_string()), "{names:?}");
+    assert!(!names.contains(&"a.txt".to_string()), "{names:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn apply_batch_rename_refuses_a_non_utf8_name_instead_of_touching_its_lossy_twin() {
+    use std::os::unix::ffi::OsStrExt;
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let raw = l.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9.txt"));
+    std::fs::write(&raw, "raw").unwrap();
+    let twin = l.file("caf\u{fffd}.txt", "twin");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(raw.clone());
+
+    let rule = crate::rename::RenameRule {
+        prefix: "x_".into(),
+        ..Default::default()
+    };
+    let error = apply_batch_rename(&mut ws, &rule).unwrap_err();
+
+    assert!(error.contains("UTF-8"), "{error}");
+    assert_eq!(std::fs::read_to_string(&raw).unwrap(), "raw");
+    assert_eq!(std::fs::read_to_string(&twin).unwrap(), "twin");
+    assert!(!ws.can_undo());
 }
 
 #[test]
@@ -1920,7 +2129,7 @@ fn queue_pause_resume_and_reorder_only_touch_pending_jobs() {
     assert_eq!(ids_after_move, vec![running_id, pending2, pending1]);
 
     // Resume the paused job.
-    ws.queue_resume(pending1, || {});
+    ws.queue_resume(pending1, || {}).unwrap();
     let resumed = ws
         .queue_snapshot()
         .into_iter()
@@ -1932,6 +2141,37 @@ fn queue_pause_resume_and_reorder_only_touch_pending_jobs() {
     assert!(r.path().join("a.txt").is_file());
     assert!(r.path().join("b.txt").is_file());
     assert!(r.path().join("c.txt").is_file());
+}
+
+#[test]
+fn resume_blocked_by_safe_state_keeps_the_job_paused_and_says_why() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file("paused.txt", "content");
+    let meta = std::fs::metadata(&source).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &meta).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.enqueue_copy(
+        vec![entry],
+        r.path().to_path_buf(),
+        OverwritePolicy::KeepBoth,
+    );
+    let id = ws.queue_snapshot()[0].id;
+    ws.queue_pause(id);
+    ws.safe_state = Some(crate::operation::SafeState {
+        operation_id: crate::operation::OperationId("blocked-resume".to_string()),
+        reason: "review required".to_string(),
+        paths: vec![source],
+        failures: Vec::new(),
+    });
+
+    let reason = ws.queue_resume(id, || {}).unwrap_err();
+
+    assert!(reason.contains("Safe-state review"), "{reason}");
+    assert!(ws.active_transfer().is_none());
+    assert_eq!(
+        ws.queue_snapshot()[0].state,
+        crate::opqueue::JobState::Paused
+    );
 }
 
 #[test]
@@ -1957,7 +2197,8 @@ fn resuming_the_only_paused_job_starts_it_when_idle() {
     let notify_count = Arc::clone(&notifications);
     ws.queue_resume(id, move || {
         notify_count.fetch_add(1, Ordering::SeqCst);
-    });
+    })
+    .unwrap();
 
     assert!(ws.active_transfer().is_some(), "resume fills the idle slot");
     assert_eq!(
@@ -3511,7 +3752,7 @@ fn matching_paused_replay_can_resume_while_ordinary_mutations_remain_blocked() {
     let job_id = workspace.queue_snapshot()[0].id;
     workspace.queue_pause(job_id);
 
-    workspace.queue_resume(job_id, || {});
+    workspace.queue_resume(job_id, || {}).unwrap();
 
     assert_eq!(
         workspace
@@ -3811,6 +4052,34 @@ fn commit_rename_noop_on_unchanged_name() {
 }
 
 #[test]
+fn commit_rename_keeps_an_unchanged_name_with_surrounding_spaces() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let f = l.file("  spaced.txt", "A");
+    let mut ws = workspace(&l, &r);
+
+    assert!(ws.commit_rename(&f, "  spaced.txt").is_ok());
+
+    assert!(f.is_file());
+    assert!(!l.path().join("spaced.txt").exists());
+    assert!(!ws.can_undo());
+}
+
+#[test]
+fn commit_rename_names_a_collision() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let f = l.file("a.txt", "A");
+    l.file("b.txt", "B");
+    let mut ws = workspace(&l, &r);
+
+    assert_eq!(
+        ws.commit_rename(&f, " b.txt").unwrap_err(),
+        "Name already in use"
+    );
+    assert!(f.is_file());
+    assert!(!ws.can_undo());
+}
+
+#[test]
 fn commit_rename_allows_a_case_only_change() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let f = l.file("readme.md", "x");
@@ -3827,6 +4096,50 @@ fn commit_rename_allows_a_case_only_change() {
     let names = fileops::dir_names(l.path());
     assert!(names.contains("readme.md"), "after undo: {names:?}");
     assert!(!names.contains("README.md"));
+}
+
+/// Two hard links whose names differ only in case look like a case-only
+/// rename of one file, but the second staging step finds the target name
+/// occupied. The rollback must put the file back and report it unchanged.
+#[cfg(target_os = "linux")]
+#[test]
+fn case_only_rename_rolls_back_when_the_target_name_is_still_occupied() {
+    let tmp = TempDir::new();
+    let from = tmp.file("readme.md", "x");
+    let to = tmp.path().join("README.md");
+    std::fs::hard_link(&from, &to).unwrap();
+
+    let error = fileops::rename_path_no_clobber(&from, &to).unwrap_err();
+
+    assert!(!error.integrity_uncertain, "{}", error.message);
+    assert_eq!(error.message, "Name already in use");
+    assert!(error.paths.is_empty());
+    assert_eq!(std::fs::read_to_string(&from).unwrap(), "x");
+    assert_eq!(std::fs::read_to_string(&to).unwrap(), "x");
+    let mut names = fileops::dir_names(tmp.path())
+        .into_iter()
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["README.md".to_string(), "readme.md".to_string()]
+    );
+}
+
+#[test]
+fn rename_onto_a_hard_link_of_the_same_file_is_a_collision() {
+    let tmp = TempDir::new();
+    let from = tmp.file("first.txt", "x");
+    let to = tmp.path().join("second.txt");
+    std::fs::hard_link(&from, &to).unwrap();
+
+    let error = fileops::rename_path_no_clobber(&from, &to).unwrap_err();
+
+    assert_eq!(error.message, "Name already in use");
+    assert!(!error.integrity_uncertain);
+    assert!(from.is_file());
+    assert!(to.is_file());
+    assert_eq!(fileops::dir_names(tmp.path()).len(), 2);
 }
 
 #[test]
@@ -3849,6 +4162,75 @@ fn drop_prefers_source_panel_target() {
     );
     assert!(!r.path().join("a.txt").exists());
     assert!(ws.left.drag.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn drop_moves_a_dragged_symlink_itself_not_its_target() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let target = l.file("target.txt", "keep");
+    let link = l.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let mut ws = workspace(&l, &r);
+
+    ws.left.drag.set(vec![link.clone()]);
+    ws.left.drag.set_drop_target(r.path().to_path_buf());
+    ws.drop_dragged(|| {});
+    drain_transfers(&mut ws);
+
+    assert_eq!(
+        std::fs::read_link(r.path().join("link.txt")).unwrap(),
+        target
+    );
+    assert!(std::fs::symlink_metadata(&link).is_err());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+}
+
+#[test]
+fn drop_refused_while_the_queue_is_busy_explains_itself() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.launch_test_transfer(
+        test_transfer_spec("busy-drop", r.path()),
+        transfer_queue::HistoryIntent::None,
+    );
+    let _ = ws.drain_ui_requests();
+
+    // A drag released over nothing is a plain cancel: no notice.
+    ws.left.drag.set(vec![file.clone()]);
+    ws.drop_dragged(|| {});
+    assert!(ws.drain_ui_requests().is_empty());
+
+    ws.left.drag.set(vec![file.clone()]);
+    ws.left.drag.set_drop_target(r.path().to_path_buf());
+    ws.drop_dragged(|| {});
+
+    assert!(ws.left.drag.is_empty());
+    assert!(!ws.left.drag.has_drop_target());
+    assert!(ws.pending_op.is_none());
+    assert!(file.exists());
+    assert!(ws.drain_ui_requests().iter().any(|request| matches!(
+        request,
+        UiRequest::Notice { message, error: false } if message.contains("queue")
+    )));
+}
+
+#[test]
+fn drop_of_vanished_items_says_so() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+
+    ws.left.drag.set(vec![l.path().join("gone.txt")]);
+    ws.left.drag.set_drop_target(r.path().to_path_buf());
+    ws.drop_dragged(|| {});
+
+    assert!(ws.pending_op.is_none());
+    assert!(
+        ws.drain_ui_requests()
+            .iter()
+            .any(|request| matches!(request, UiRequest::Notice { error: true, .. }))
+    );
 }
 
 #[test]
@@ -4331,6 +4713,33 @@ fn partially_failed_trash_redo_refreshes_and_latches_safe_state() {
         "listing reflects the partial redo"
     );
     assert!(ws.safe_state.is_some(), "partial replay needs review");
+}
+
+#[test]
+fn indeterminate_first_trash_redo_item_latches_safe_state() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed,
+        // redo: the very first item may or may not have been trashed
+        crate::ports::TrashItemOutcome::Indeterminate(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "scripted".to_string(),
+        }),
+    ]));
+    let (mut ws, first, second) = versioned_workspace_with_two_trashed(&left, &right, trash);
+    ws.perform_undo(|| {}).expect("restore both");
+    assert!(first.is_file() && second.is_file());
+
+    assert!(ws.perform_redo(|| {}).is_err());
+    let safe = ws
+        .safe_state
+        .as_ref()
+        .expect("an indeterminate item needs review, not a plain abort");
+    assert!(safe.reason.contains("Trash redo"));
+    assert_eq!(safe.paths, vec![first]);
 }
 
 #[test]

@@ -156,6 +156,11 @@ struct ProgressSnapshot {
     finished: bool,
     cancelled: bool,
     stopped: bool,
+    has_errors: bool,
+    integrity_failures: Vec<ClassifiedFailure>,
+    /// Whether the full lists below were captured. They are cloned only for
+    /// a snapshot that may retire the transfer, not on every frame's poll.
+    retained: bool,
     errors: Vec<String>,
     failures: Vec<ClassifiedFailure>,
     placements: Vec<(PathBuf, PathBuf)>,
@@ -163,11 +168,15 @@ struct ProgressSnapshot {
 
 impl ProgressSnapshot {
     const fn clean(&self) -> bool {
-        self.finished && self.errors.is_empty() && !self.cancelled && !self.stopped
+        self.finished && !self.has_errors && !self.cancelled && !self.stopped
     }
 
     const fn closes_automatically(&self) -> bool {
-        self.finished && (self.cancelled || self.stopped || self.errors.is_empty())
+        Self::closes(self.finished, self.cancelled, self.stopped, self.has_errors)
+    }
+
+    const fn closes(finished: bool, cancelled: bool, stopped: bool, has_errors: bool) -> bool {
+        finished && (cancelled || stopped || !has_errors)
     }
 }
 
@@ -362,7 +371,10 @@ impl TransferQueueController {
         }
     }
 
-    fn snapshot_active(&mut self) -> Option<ProgressSnapshot> {
+    /// Read the active progress under one lock. The full error, failure and
+    /// placement lists are cloned only when `retiring` (dismiss) or when this
+    /// snapshot closes the transfer automatically.
+    fn snapshot_active(&mut self, retiring: bool) -> Option<ProgressSnapshot> {
         let mut should_cancel = false;
         let snapshot = {
             let active = self.active.as_mut()?;
@@ -387,14 +399,38 @@ impl TransferQueueController {
                 active.identity_failure = Some(failure);
                 should_cancel = true;
             }
+            let has_errors = !progress.errors.is_empty();
+            let retained = retiring
+                || ProgressSnapshot::closes(
+                    progress.finished,
+                    progress.cancelled,
+                    progress.stopped,
+                    has_errors,
+                );
             ProgressSnapshot {
                 operation_id: progress.operation_id.clone(),
                 finished: progress.finished,
                 cancelled: progress.cancelled,
                 stopped: progress.stopped,
-                errors: progress.errors.clone(),
-                failures: progress.failures.clone(),
-                placements: if progress.finished {
+                has_errors,
+                integrity_failures: progress
+                    .failures
+                    .iter()
+                    .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
+                    .cloned()
+                    .collect(),
+                retained,
+                errors: if retained {
+                    progress.errors.clone()
+                } else {
+                    Vec::new()
+                },
+                failures: if retained {
+                    progress.failures.clone()
+                } else {
+                    Vec::new()
+                },
+                placements: if retained && progress.finished {
                     progress.placements.clone()
                 } else {
                     Vec::new()
@@ -528,10 +564,11 @@ impl TransferQueueController {
                 "Running queue row rejected its terminal transition",
             ));
         }
-        let integrity_uncertain = snapshot
-            .failures
-            .iter()
-            .any(|failure| failure.class == FailureClass::IntegrityUncertain);
+        debug_assert!(
+            snapshot.retained,
+            "retirement needs the full progress lists"
+        );
+        let integrity_uncertain = !snapshot.integrity_failures.is_empty();
         let history = Self::history_outcome(
             active.history,
             snapshot.clean(),
@@ -551,7 +588,7 @@ impl TransferQueueController {
     }
 
     pub(super) fn poll(&mut self) -> PollOutcome {
-        let Some(snapshot) = self.snapshot_active() else {
+        let Some(snapshot) = self.snapshot_active(false) else {
             return PollOutcome::default();
         };
         let active = self
@@ -589,12 +626,7 @@ impl TransferQueueController {
         }
 
         debug_assert_eq!(snapshot.operation_id.as_ref(), Some(&operation_id));
-        let integrity_failures = snapshot
-            .failures
-            .iter()
-            .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
-            .cloned()
-            .collect::<Vec<_>>();
+        let integrity_failures = snapshot.integrity_failures.clone();
         if !integrity_failures.is_empty() {
             self.request_cancel();
             self.cancel_waiting();
@@ -621,7 +653,7 @@ impl TransferQueueController {
         } else if snapshot.cancelled {
             self.cancel_waiting();
             TransferTerminalState::Cancelled
-        } else if snapshot.errors.is_empty() {
+        } else if !snapshot.has_errors {
             TransferTerminalState::Done
         } else {
             TransferTerminalState::Failed
@@ -662,7 +694,9 @@ impl TransferQueueController {
         if active_job_id != job_id {
             return Err(DismissRejection::JobMismatch);
         }
-        let snapshot = self.snapshot_active().ok_or(DismissRejection::NoActive)?;
+        let snapshot = self
+            .snapshot_active(true)
+            .ok_or(DismissRejection::NoActive)?;
         if !snapshot.finished {
             return Err(DismissRejection::NotFinished);
         }
@@ -671,12 +705,7 @@ impl TransferQueueController {
             .as_ref()
             .expect("snapshot preserves the active transfer");
         let operation_id = active.operation_id.clone();
-        let review_failures = snapshot
-            .failures
-            .iter()
-            .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
-            .cloned()
-            .collect::<Vec<_>>();
+        let review_failures = snapshot.integrity_failures.clone();
         let has_review_failures = !review_failures.is_empty();
         if has_review_failures && self.reviewed_safe_operation.as_ref() != Some(&operation_id) {
             self.cancel_waiting();
@@ -686,7 +715,7 @@ impl TransferQueueController {
         }
         if active.identity_failure.is_none()
             && !has_review_failures
-            && (snapshot.errors.is_empty() || snapshot.cancelled || snapshot.stopped)
+            && (!snapshot.has_errors || snapshot.cancelled || snapshot.stopped)
         {
             return Err(DismissRejection::NotRetainedError);
         }
@@ -744,17 +773,33 @@ impl TransferQueueController {
         self.queue.resume(job_id)
     }
 
+    /// Move a waiting job to the first waiting slot: right below the running
+    /// row, never above it, where it would look like it runs first.
     pub(super) fn promote(&mut self, job_id: JobId) {
-        self.queue.promote(job_id);
+        let first = self.first_waiting_slot();
+        self.queue.reorder(job_id, first);
     }
 
     pub(super) fn move_job(&mut self, job_id: JobId, offset: i32) {
         let Some(from) = self.queue.jobs().iter().position(|job| job.id == job_id) else {
             return;
         };
-        let last = self.queue.jobs().len() as i32 - 1;
-        let to = (from as i32 + offset).clamp(0, last.max(0)) as usize;
+        let last = self.queue.jobs().len().saturating_sub(1);
+        // A row already above the running one (not normally possible) may
+        // still move within that range rather than jump down.
+        let floor = self.first_waiting_slot().min(from);
+        let to = from
+            .saturating_add_signed(offset as isize)
+            .clamp(floor, last);
         self.queue.reorder(job_id, to);
+    }
+
+    fn first_waiting_slot(&self) -> usize {
+        self.queue
+            .jobs()
+            .iter()
+            .rposition(|job| job.state == JobState::Running)
+            .map_or(0, |index| index + 1)
     }
 
     pub(super) fn cancel(&mut self, job_id: JobId) -> Option<HistorySettlement> {
@@ -972,17 +1017,28 @@ impl Workspace {
         let Some(retirement) = outcome.retirement else {
             return super::TransferPollOutcome::default();
         };
+        let (raised, report) = self.apply_retirement(retirement, notify);
+        super::TransferPollOutcome {
+            undo_recorded: raised,
+            terminal: Some(report),
+        }
+    }
+
+    /// Apply one retired transfer: re-list both panels, settle its history,
+    /// then start the next job. The order matters: history and safe-state
+    /// outcomes are committed before another worker may observe the queue.
+    /// Returns whether an undo entry was raised, and the terminal report.
+    fn apply_retirement(
+        &mut self,
+        retirement: RetirementOutcome,
+        notify: impl Fn() + Send + 'static,
+    ) -> (bool, super::TransferTerminalReport) {
         self.left.refresh();
         self.right.refresh();
         let raised =
             self.apply_history_outcome(retirement.history, retirement.report.operation_id.clone());
-        // History and safe-state outcomes are committed before another worker
-        // may observe the queue.
         self.pump_queue(notify);
-        super::TransferPollOutcome {
-            undo_recorded: raised,
-            terminal: Some(retirement.report),
-        }
+        (raised, retirement.report)
     }
 
     pub fn cancel_pending_transfers(&mut self) {
@@ -1011,11 +1067,8 @@ impl Workspace {
             }
             Err(rejection) => return Err(rejection),
         };
-        self.left.refresh();
-        self.right.refresh();
-        self.apply_history_outcome(retirement.history, retirement.report.operation_id.clone());
-        self.pump_queue(notify);
-        Ok(retirement.report)
+        let (_, report) = self.apply_retirement(retirement, notify);
+        Ok(report)
     }
 
     pub fn queue_snapshot(&self) -> Vec<super::QueueRow> {
@@ -1026,7 +1079,14 @@ impl Workspace {
         self.transfers.pause(id);
     }
 
-    pub fn queue_resume(&mut self, id: JobId, notify: impl Fn() + Send + 'static) {
+    /// Resume a paused job. When a safe-state review, a Trash operation or an
+    /// unrelated history replay holds mutations, the job stays paused and the
+    /// reason is returned for the queue panel to show.
+    pub fn queue_resume(
+        &mut self,
+        id: JobId,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<(), String> {
         let matching_replay = self
             .undo
             .pending_reservation()
@@ -1035,11 +1095,14 @@ impl Workspace {
             || self.deletes.is_active()
             || (self.undo.has_pending_replay() && !matching_replay)
         {
-            return;
+            return Err(self
+                .mutation_block_reason("resuming a transfer")
+                .unwrap_or_else(|| "Transfers cannot be resumed right now".to_string()));
         }
         if self.transfers.resume(id) {
             self.pump_queue(notify);
         }
+        Ok(())
     }
 
     pub fn queue_promote(&mut self, id: JobId) {
@@ -1527,5 +1590,113 @@ mod tests {
             settlement.operation_id,
             OperationId("waiting-recovery".to_string())
         );
+    }
+
+    #[test]
+    fn cancel_pending_cancels_every_waiting_job_and_settles_its_history() {
+        let undo = replay_reservation(crate::undo::ReplayDirection::Undo);
+        let recovery = replay_reservation(crate::undo::ReplayDirection::Undo);
+        let mut controller = TransferQueueController::default();
+        let running_id = controller.enqueue(spec("bulk-running"), HistoryIntent::None);
+        let pending_id = controller.enqueue(spec("bulk-pending"), HistoryIntent::None);
+        let paused_id = controller.enqueue(spec("bulk-paused"), HistoryIntent::None);
+        controller.pause(paused_id);
+        controller.enqueue(spec("bulk-replay"), HistoryIntent::replay(undo));
+        let recovery_id =
+            controller.enqueue(spec("bulk-recovery"), HistoryIntent::recovery(recovery));
+        controller.pause(recovery_id);
+        let (started_id, progress) = launch(&mut controller);
+        assert_eq!(started_id, running_id);
+
+        let settlements = controller.cancel_pending();
+
+        let settled = settlements
+            .iter()
+            .map(|settlement| (settlement.operation_id.0.as_str(), &settlement.history))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            settled,
+            vec![
+                ("bulk-pending", &HistoryOutcome::None),
+                ("bulk-paused", &HistoryOutcome::None),
+                ("bulk-replay", &HistoryOutcome::AbortReplay(undo)),
+                ("bulk-recovery", &HistoryOutcome::InterruptReplay(recovery)),
+            ]
+        );
+        // The running job is untouched; the cancelled rows are cleared.
+        assert!(!crate::lock_util::recover(&progress).cancelled);
+        assert_eq!(controller.active_job_id(), Some(running_id));
+        assert_eq!(
+            controller
+                .queue
+                .jobs()
+                .iter()
+                .map(|job| (job.id, job.state))
+                .collect::<Vec<_>>(),
+            vec![(running_id, JobState::Running)]
+        );
+        assert!(controller.queue.get(pending_id).is_none());
+    }
+
+    #[test]
+    fn reordering_never_lifts_a_waiting_job_above_the_running_row() {
+        let mut controller = TransferQueueController::default();
+        let running_id = controller.enqueue(spec("order-running"), HistoryIntent::None);
+        let first_id = controller.enqueue(spec("order-first"), HistoryIntent::None);
+        let second_id = controller.enqueue(spec("order-second"), HistoryIntent::None);
+        launch(&mut controller);
+        let order = |controller: &TransferQueueController| {
+            controller
+                .queue
+                .jobs()
+                .iter()
+                .map(|job| job.id)
+                .collect::<Vec<_>>()
+        };
+
+        controller.promote(second_id);
+        assert_eq!(order(&controller), vec![running_id, second_id, first_id]);
+
+        controller.move_job(second_id, -1);
+        assert_eq!(order(&controller), vec![running_id, second_id, first_id]);
+
+        controller.move_job(second_id, 1);
+        assert_eq!(order(&controller), vec![running_id, first_id, second_id]);
+        controller.move_job(second_id, 5);
+        assert_eq!(order(&controller), vec![running_id, first_id, second_id]);
+    }
+
+    #[test]
+    fn retained_error_polls_without_copying_its_lists_until_dismissed() {
+        let mut controller = TransferQueueController::default();
+        let job_id = controller.enqueue(spec("retained-lists"), HistoryIntent::None);
+        let (_, progress) = launch(&mut controller);
+        {
+            let mut progress = crate::lock_util::recover(&progress);
+            for index in 0..3 {
+                progress.errors.push(format!("error {index}"));
+                progress.failures.push(ClassifiedFailure::message(
+                    FailureClass::Blocked,
+                    Some(PathBuf::from(format!("/blocked-{index}"))),
+                    "blocked",
+                ));
+            }
+            progress.finished = true;
+        }
+
+        let snapshot = controller.snapshot_active(false).expect("active");
+        assert!(snapshot.has_errors);
+        assert!(!snapshot.retained);
+        assert!(snapshot.errors.is_empty() && snapshot.failures.is_empty());
+        let live = controller.poll();
+        assert!(
+            live.retirement.is_none(),
+            "a retained error waits for dismiss"
+        );
+
+        let retirement = controller.dismiss(job_id).expect("dismiss retires");
+        assert_eq!(retirement.report.errors.len(), 3);
+        assert_eq!(retirement.report.failures.len(), 3);
+        assert_eq!(retirement.report.terminal, TransferTerminalState::Failed);
     }
 }

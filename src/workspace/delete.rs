@@ -147,8 +147,10 @@ impl DeleteController {
         }
     }
 
+    /// Trash one item on the caller's thread (Trash redo). An adapter panic
+    /// is reported as indeterminate instead of unwinding into the UI.
     pub(super) fn trash_one(&self, target: &TrashTarget) -> TrashItemOutcome {
-        self.port.move_to_trash(target)
+        guarded_move_to_trash(self.port.as_ref(), target)
     }
 
     pub(super) const fn is_active(&self) -> bool {
@@ -239,7 +241,6 @@ impl DeleteController {
                     kind: NativeFailureKind::Busy,
                     message: format!("Could not start Trash worker: {error}"),
                 },
-                false,
             ),
         });
         if immediate.is_some() {
@@ -413,18 +414,19 @@ fn process_ready_target(
             None,
         );
     }
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.port.move_to_trash(target)
-    }))
-    .unwrap_or_else(|_| {
-        TrashItemOutcome::Indeterminate(NativeFailure {
-            kind: NativeFailureKind::Unknown,
-            message: format!(
-                "Trash adapter panicked while processing {}",
-                target.path.display()
+    // Preserving a large folder can take long; honor a cancel that arrived
+    // meanwhile before the item is mutated.
+    if runtime.cancel.load(Ordering::Acquire) {
+        return (
+            discard_rejected_version(
+                TrashItemOutcome::Cancelled,
+                record.as_ref(),
+                runtime.versions,
             ),
-        })
-    });
+            None,
+        );
+    }
+    let outcome = guarded_move_to_trash(runtime.port, target);
     if matches!(
         outcome,
         TrashItemOutcome::Missing | TrashItemOutcome::StaleBinding
@@ -453,6 +455,21 @@ fn process_ready_target(
     }
 }
 
+/// Call the Trash port, turning an adapter panic into an indeterminate
+/// result: the item may or may not have reached the Trash.
+fn guarded_move_to_trash(port: &dyn TrashPort, target: &TrashTarget) -> TrashItemOutcome {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| port.move_to_trash(target)))
+        .unwrap_or_else(|_| {
+            TrashItemOutcome::Indeterminate(NativeFailure {
+                kind: NativeFailureKind::Unknown,
+                message: format!(
+                    "Trash adapter panicked while processing {}",
+                    target.path.display()
+                ),
+            })
+        })
+}
+
 fn discard_rejected_version(
     outcome: TrashItemOutcome,
     record: Option<&crate::version_store::VersionRecord>,
@@ -461,10 +478,18 @@ fn discard_rejected_version(
     let Some(record) = record else {
         return outcome;
     };
-    match versions.discard(record) {
-        Ok(()) => outcome,
-        Err(failure) => TrashItemOutcome::Failed(failure),
+    // A version that outlives its rejected delete only costs space; the
+    // item's own outcome (Missing, StaleBinding, Cancelled, ...) is what the
+    // user must see, so a discard failure is logged instead of replacing it.
+    if let Err(failure) = versions.discard(record) {
+        log::warn!(
+            target: "commander::delete",
+            "Could not discard the unused version of {}: {}",
+            record.original.display(),
+            failure.message
+        );
     }
+    outcome
 }
 
 fn append_remaining(
@@ -502,16 +527,8 @@ fn outcome_from_results(
             )
         })
         .map(|item| classify_failure(&item.path, &item.outcome))
-        .collect();
-    let failed = results
-        .iter()
-        .filter(|item| {
-            !matches!(
-                item.outcome,
-                TrashItemOutcome::Trashed | TrashItemOutcome::Cancelled
-            )
-        })
-        .count();
+        .collect::<Vec<_>>();
+    let failed = failures.len();
     let indeterminate = results
         .iter()
         .any(|item| matches!(item.outcome, TrashItemOutcome::Indeterminate(_)));
@@ -559,11 +576,9 @@ fn indeterminate_outcome(
     outcome_from_results(context, results)
 }
 
-fn failed_outcome(
-    context: &DeleteRunContext,
-    failure: NativeFailure,
-    indeterminate: bool,
-) -> DeleteOutcome {
+/// Every item failed before any of them reached the Trash (the worker could
+/// not start), so the whole batch is retryable.
+fn failed_outcome(context: &DeleteRunContext, failure: NativeFailure) -> DeleteOutcome {
     let items = context
         .paths
         .iter()
@@ -574,16 +589,13 @@ fn failed_outcome(
             version: None,
         })
         .collect::<Vec<_>>();
-    let class = if indeterminate {
-        FailureClass::IntegrityUncertain
-    } else {
-        FailureClass::Retryable
-    };
     let failures = context
         .paths
         .iter()
         .cloned()
-        .map(|path| ClassifiedFailure::message(class, Some(path), failure.message.clone()))
+        .map(|path| {
+            ClassifiedFailure::message(FailureClass::Retryable, Some(path), failure.message.clone())
+        })
         .collect();
     DeleteOutcome {
         attempt_id: context.attempt_id,
@@ -594,7 +606,7 @@ fn failed_outcome(
         items,
         trashed: 0,
         failures,
-        indeterminate,
+        indeterminate: false,
         cancelled: false,
     }
 }
@@ -1144,5 +1156,257 @@ mod tests {
 
         assert!(outcome.indeterminate);
         assert!(!controller.is_active());
+    }
+
+    /// Real version store that records discards and can be told to refuse
+    /// them, so rejected-version cleanup is observable.
+    struct RecordingVersionStore {
+        inner: TempVersionStore,
+        discarded: Mutex<Vec<crate::version_store::VersionRecord>>,
+        fail_discard: bool,
+    }
+
+    impl RecordingVersionStore {
+        fn new(root: PathBuf, fail_discard: bool) -> Self {
+            Self {
+                inner: TempVersionStore { root },
+                discarded: Mutex::new(Vec::new()),
+                fail_discard,
+            }
+        }
+    }
+
+    impl DeleteVersionStore for RecordingVersionStore {
+        fn preserve(
+            &self,
+            target: &TrashTarget,
+            operation_id: &OperationId,
+            key: crate::operation::IdempotencyKey,
+            retention: crate::operation::VersionRetentionPolicy,
+        ) -> Result<Option<crate::version_store::VersionRecord>, NativeFailure> {
+            self.inner.preserve(target, operation_id, key, retention)
+        }
+
+        fn discard(
+            &self,
+            record: &crate::version_store::VersionRecord,
+        ) -> Result<(), NativeFailure> {
+            self.discarded.lock().unwrap().push(record.clone());
+            if self.fail_discard {
+                return Err(NativeFailure {
+                    kind: NativeFailureKind::Unknown,
+                    message: "scripted discard failure".to_string(),
+                });
+            }
+            self.inner.discard(record)
+        }
+    }
+
+    fn run_versioned_batch(
+        items: Vec<TrashBatchItem>,
+        port: &dyn TrashPort,
+        versions: &dyn DeleteVersionStore,
+        cancel: &AtomicBool,
+    ) -> DeleteOutcome {
+        let context = DeleteRunContext::capture(&items, DeleteOrigin::Confirmation);
+        let progress = Mutex::new(DeleteProgress::default());
+        run_batch(
+            items,
+            DeleteBatchRuntime {
+                context: &context,
+                port,
+                versions,
+                cancel,
+                progress: &progress,
+                notify: &|| {},
+                durability: crate::operation::DurabilityProfile::Versioned,
+                retention: crate::operation::VersionRetentionPolicy::Recent,
+            },
+        )
+    }
+
+    fn denied(message: &str) -> NativeFailure {
+        NativeFailure {
+            kind: NativeFailureKind::Denied,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn preserved_version_is_discarded_when_the_trash_did_not_happen() {
+        for rejected in [
+            TrashItemOutcome::Failed(denied("denied")),
+            TrashItemOutcome::Unsupported(denied("no Trash on this volume")),
+            TrashItemOutcome::Cancelled,
+        ] {
+            let temp = TempDir::new();
+            let path = temp.file("kept.txt", "value");
+            let versions = RecordingVersionStore::new(temp.path().join("versions"), false);
+            let port = ScriptedTrash::new([rejected.clone()]);
+
+            let outcome = run_versioned_batch(
+                vec![ready(path.clone())],
+                &port,
+                &versions,
+                &AtomicBool::new(false),
+            );
+
+            assert_eq!(outcome.items[0].outcome, rejected);
+            assert_eq!(outcome.items[0].version, None);
+            let discarded = versions.discarded.lock().unwrap();
+            assert_eq!(discarded.len(), 1, "{rejected:?}");
+            assert!(!discarded[0].stored.exists(), "{rejected:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "value");
+        }
+    }
+
+    #[test]
+    fn preserved_version_is_kept_when_the_trash_result_is_indeterminate() {
+        let temp = TempDir::new();
+        let path = temp.file("unknown.txt", "value");
+        let versions = RecordingVersionStore::new(temp.path().join("versions"), false);
+        let port = ScriptedTrash::new([TrashItemOutcome::Indeterminate(denied("lost reply"))]);
+
+        let outcome =
+            run_versioned_batch(vec![ready(path)], &port, &versions, &AtomicBool::new(false));
+
+        assert!(matches!(
+            outcome.items[0].outcome,
+            TrashItemOutcome::Indeterminate(_)
+        ));
+        let record = outcome.items[0].version.as_ref().expect("kept version");
+        assert!(record.stored.exists());
+        assert!(versions.discarded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_version_discard_keeps_the_item_outcome() {
+        for rejected in [
+            TrashItemOutcome::Failed(denied("denied")),
+            TrashItemOutcome::StaleBinding,
+            TrashItemOutcome::Missing,
+            TrashItemOutcome::Cancelled,
+        ] {
+            let temp = TempDir::new();
+            let path = temp.file("kept.txt", "value");
+            let versions = RecordingVersionStore::new(temp.path().join("versions"), true);
+            let port = ScriptedTrash::new([rejected.clone()]);
+
+            let outcome =
+                run_versioned_batch(vec![ready(path)], &port, &versions, &AtomicBool::new(false));
+
+            assert_eq!(outcome.items[0].outcome, rejected);
+            assert_eq!(outcome.items[0].version, None);
+            assert_eq!(versions.discarded.lock().unwrap().len(), 1, "{rejected:?}");
+            let counted_as_failure = rejected != TrashItemOutcome::Cancelled;
+            assert_eq!(outcome.failed, usize::from(counted_as_failure));
+            assert_eq!(outcome.cancelled, !counted_as_failure);
+        }
+    }
+
+    /// Version store whose preserve raises the batch's cancel flag, as a
+    /// user cancelling during a long folder copy would.
+    struct CancellingVersionStore<'a> {
+        inner: RecordingVersionStore,
+        cancel: &'a AtomicBool,
+    }
+
+    impl DeleteVersionStore for CancellingVersionStore<'_> {
+        fn preserve(
+            &self,
+            target: &TrashTarget,
+            operation_id: &OperationId,
+            key: crate::operation::IdempotencyKey,
+            retention: crate::operation::VersionRetentionPolicy,
+        ) -> Result<Option<crate::version_store::VersionRecord>, NativeFailure> {
+            let record = self.inner.preserve(target, operation_id, key, retention);
+            self.cancel.store(true, Ordering::Release);
+            record
+        }
+
+        fn discard(
+            &self,
+            record: &crate::version_store::VersionRecord,
+        ) -> Result<(), NativeFailure> {
+            self.inner.discard(record)
+        }
+    }
+
+    #[test]
+    fn cancel_during_version_preserve_skips_the_trash_and_discards_the_copy() {
+        let temp = TempDir::new();
+        let first = temp.file("first.txt", "one");
+        let second = temp.file("second.txt", "two");
+        let cancel = AtomicBool::new(false);
+        let versions = CancellingVersionStore {
+            inner: RecordingVersionStore::new(temp.path().join("versions"), false),
+            cancel: &cancel,
+        };
+        let port = ScriptedTrash::new([TrashItemOutcome::Trashed]);
+
+        let outcome = run_versioned_batch(
+            vec![ready(first.clone()), ready(second.clone())],
+            &port,
+            &versions,
+            &cancel,
+        );
+
+        assert!(port.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            outcome
+                .items
+                .iter()
+                .map(|item| &item.outcome)
+                .collect::<Vec<_>>(),
+            vec![&TrashItemOutcome::Cancelled, &TrashItemOutcome::Cancelled]
+        );
+        assert_eq!(outcome.items[0].version, None);
+        let discarded = versions.inner.discarded.lock().unwrap();
+        assert_eq!(discarded.len(), 1);
+        assert!(!discarded[0].stored.exists());
+        assert!(outcome.cancelled);
+        assert_eq!(outcome.failed, 0);
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "one");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "two");
+    }
+
+    #[test]
+    fn single_item_trash_reports_an_adapter_panic_as_indeterminate() {
+        let temp = TempDir::new();
+        let path = temp.file("redo.txt", "value");
+        let controller = DeleteController::new(Arc::new(PanickingTrash));
+
+        let outcome = controller.trash_one(&target(path));
+
+        assert!(matches!(outcome, TrashItemOutcome::Indeterminate(_)));
+    }
+
+    #[test]
+    fn worker_start_failure_marks_every_item_retryable() {
+        let items = vec![
+            TrashBatchItem::CaptureFailed {
+                path: PathBuf::from("/a.txt"),
+                failure: denied("unused"),
+            },
+            TrashBatchItem::CaptureFailed {
+                path: PathBuf::from("/b.txt"),
+                failure: denied("unused"),
+            },
+        ];
+        let context = DeleteRunContext::capture(&items, DeleteOrigin::Confirmation);
+
+        let outcome = failed_outcome(&context, denied("no thread"));
+
+        assert_eq!(outcome.failed, 2);
+        assert_eq!(outcome.trashed, 0);
+        assert!(!outcome.indeterminate);
+        assert!(!outcome.cancelled);
+        assert_eq!(outcome.failures.len(), 2);
+        assert!(
+            outcome
+                .failures
+                .iter()
+                .all(|failure| failure.class == FailureClass::Retryable)
+        );
     }
 }
