@@ -57,8 +57,9 @@ fn strip_leading_zeros(run: &[u8]) -> &[u8] {
 }
 
 /// Name order as the user configured it: natural ("file2" before "file10")
-/// or plain A-Z. Every column breaks its ties with this, so equal keys read
-/// alphabetically instead of in byte path order ("Zeta" before "alpha").
+/// or plain A-Z. Every other column breaks its ties with this, always
+/// ascending whatever the sort direction, so equal keys read alphabetically
+/// ("alpha" before "Zeta") instead of in byte path order.
 fn name_cmp(a: &FileEntry, b: &FileEntry, config: ViewConfig) -> Ordering {
     if config.natural_name_sort() {
         natural_cmp(&a.name_lower, &b.name_lower)
@@ -78,20 +79,23 @@ pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
         }
 
         let primary = match config.sort_column() {
-            SortColumn::Name => Ordering::Equal,
+            SortColumn::Name => name_cmp(a, b, config),
             SortColumn::Size => a.size.cmp(&b.size),
             SortColumn::Modified => a.modified.cmp(&b.modified),
             SortColumn::Extension => a.extension.cmp(&b.extension),
             SortColumn::Kind => {
                 crate::selection_summary::kind_of(a).cmp(&crate::selection_summary::kind_of(b))
             }
-        }
-        .then_with(|| name_cmp(a, b, config));
+        };
         let ordered = match config.sort_order() {
             SortOrder::Asc => primary,
             SortOrder::Desc => primary.reverse(),
         };
-        ordered.then_with(|| a.path.cmp(&b.path))
+        // Name is the primary key of its own column; elsewhere it is an
+        // ascending tie-break that does not flip with the direction.
+        ordered
+            .then_with(|| name_cmp(a, b, config))
+            .then_with(|| a.path.cmp(&b.path))
     });
 }
 
@@ -134,6 +138,27 @@ mod tests {
             config,
         );
         assert_eq!(names, ["alpha", "beta", "Zeta"]);
+    }
+
+    #[test]
+    fn descending_sorts_keep_ties_in_ascending_name_order() {
+        let config = ViewConfig::default().with_sort(SortColumn::Size, SortOrder::Desc);
+        let names = sorted(
+            vec![
+                named("Zeta", false, 1),
+                named("alpha", false, 1),
+                named("big", false, 9),
+            ],
+            config,
+        );
+        assert_eq!(names, ["big", "alpha", "Zeta"]);
+
+        let by_name = ViewConfig::default().with_sort(SortColumn::Name, SortOrder::Desc);
+        let names = sorted(
+            vec![named("alpha", false, 1), named("Zeta", false, 1)],
+            by_name,
+        );
+        assert_eq!(names, ["Zeta", "alpha"]);
     }
 
     #[test]
