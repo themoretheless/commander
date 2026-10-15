@@ -660,7 +660,18 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 // Reject destructive self-referential transfers (a directory into
                 // itself or its own subtree, a file onto itself) before touching
                 // anything, so neither source nor destination is harmed.
-                if fs_util::is_within_or_equal(&dest, &entry.path) {
+                // A preserved symlink is copied as the link itself, so only
+                // its own pathname matters, not where it points: a dangling
+                // link has no target, and a link into the destination is fine.
+                let into_itself = if spec.symlink_policy
+                    == crate::filesystem_policy::SymlinkPolicy::Preserve
+                    && source_before.lexical.kind == Some(crate::path_identity::PathKind::Symlink)
+                {
+                    link_onto_itself(&dest, &entry.path)
+                } else {
+                    fs_util::is_within_or_equal(&dest, &entry.path)
+                };
+                if into_itself {
                     complete_without_copy(
                         &progress,
                         &mut base_bytes,
@@ -1515,6 +1526,18 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 (crate::lock_util::recover(&notify))();
             }
         }
+    }
+}
+
+/// Whether `dest` names the symlink `link` itself. Only the parents are
+/// resolved, so the link is never followed; an unresolvable parent fails
+/// closed, as [`fs_util::is_within_or_equal`] does.
+fn link_onto_itself(dest: &Path, link: &Path) -> bool {
+    let resolved_leaf =
+        |path: &Path| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?));
+    match (resolved_leaf(dest), resolved_leaf(link)) {
+        (Some(dest), Some(link)) => dest == link,
+        _ => true,
     }
 }
 
@@ -2433,6 +2456,70 @@ mod tests {
             "{} samples",
             state.speed_samples.len()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_is_copied_as_a_link() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let link = source.path().join("dangling");
+        std::os::unix::fs::symlink("missing-target", &link).unwrap();
+
+        let state = run(spec(
+            TransferKind::Copy,
+            vec![entry_for(&link)],
+            target.path(),
+        ));
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(
+            std::fs::read_link(target.path().join("dangling")).unwrap(),
+            Path::new("missing-target")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_the_destination_can_be_copied_into_it() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let link = source.path().join("to-target");
+        std::os::unix::fs::symlink(target.path(), &link).unwrap();
+
+        let state = run(spec(
+            TransferKind::Copy,
+            vec![entry_for(&link)],
+            target.path(),
+        ));
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(
+            std::fs::read_link(target.path().join("to-target")).unwrap(),
+            target.path()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_copied_onto_itself_is_refused() {
+        let root = TempDir::new();
+        let link = root.path().join("self");
+        std::os::unix::fs::symlink("anywhere", &link).unwrap();
+
+        let state = run(spec(
+            TransferKind::Copy,
+            vec![entry_for(&link)],
+            root.path(),
+        ));
+
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("cannot copy a path into itself")),
+            "{:?}",
+            state.errors
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("anywhere"));
     }
 
     #[test]
