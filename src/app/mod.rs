@@ -323,18 +323,31 @@ pub struct RunCommandOpeningContext {
     pub selection: Vec<crate::panel::FileEntry>,
     pub left_dir: PathBuf,
     pub right_dir: PathBuf,
+    /// The cursor pointed at a row that no longer exists when the dialog
+    /// opened, so `selection` is empty rather than the item the user meant.
+    pub stale_cursor: bool,
 }
 
 impl RunCommandOpeningContext {
     fn capture(workspace: &Workspace) -> Self {
         let active_panel = workspace.active;
         let active = workspace.active_panel_ref();
+        let picked = active.selected_or_cursor();
         Self {
             active_panel,
-            selection: active.selected_or_cursor().unwrap_or_default(),
+            stale_cursor: picked.is_err(),
+            selection: picked.unwrap_or_default(),
             left_dir: workspace.left.current_path.clone(),
             right_dir: workspace.right.current_path.clone(),
         }
+    }
+
+    /// Warning shown in the dialog when the selection was lost.
+    fn stale_cursor_warning(&self) -> Option<&'static str> {
+        self.stale_cursor.then_some(
+            "The cursor item is no longer in the list, so no item is selected. \
+             Close this dialog, pick the item again and reopen it.",
+        )
     }
 
     fn dir(&self) -> &std::path::Path {

@@ -300,6 +300,14 @@ impl App {
                     .size(11.0)
                     .color(t.text_muted),
                 );
+                if let Some(warning) = opening.stale_cursor_warning() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(warning)
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                }
                 ui.add_space(6.0);
 
                 let resp = ui.add(
@@ -790,6 +798,7 @@ mod tests {
             selection: selection.to_vec(),
             left_dir: PathBuf::from("/opening"),
             right_dir: PathBuf::from("/other"),
+            stale_cursor: false,
         }
         .selection_context();
         let segs = preview_segments("cat {paths}", &context);
@@ -856,12 +865,27 @@ mod tests {
     }
 
     #[test]
+    fn stale_cursor_is_warned_about_instead_of_silently_empty() {
+        let mut opening = RunCommandOpeningContext {
+            active_panel: ActivePanel::Left,
+            selection: Vec::new(),
+            left_dir: PathBuf::from("/opening"),
+            right_dir: PathBuf::from("/other"),
+            stale_cursor: false,
+        };
+        assert_eq!(opening.stale_cursor_warning(), None);
+        opening.stale_cursor = true;
+        assert!(opening.stale_cursor_warning().is_some());
+    }
+
+    #[test]
     fn run_command_remains_bound_to_its_opening_context() {
         let opening = RunCommandOpeningContext {
             active_panel: ActivePanel::Left,
             selection: vec![entry("/opening/selected.txt")],
             left_dir: PathBuf::from("/opening"),
             right_dir: PathBuf::from("/other"),
+            stale_cursor: false,
         };
 
         let external_active = ActivePanel::Right;
