@@ -99,6 +99,24 @@ impl ConflictRuleBook {
         format!("{} would apply to {list}", policy.label())
     }
 
+    /// The "Saved rule: ..." line for the rule matching this root pair and
+    /// file kind, if any.
+    pub fn saved_rule_preview(
+        &self,
+        left: &Path,
+        right: &Path,
+        file_kind: &str,
+        names: &[String],
+        limit: usize,
+    ) -> Option<String> {
+        self.find(left, right, file_kind).map(|rule| {
+            format!(
+                "Saved rule: {}",
+                Self::sample_preview(rule.policy, names, limit)
+            )
+        })
+    }
+
     pub fn kind_for_name(name: &str) -> String {
         Path::new(name)
             .extension()
@@ -193,12 +211,7 @@ pub fn preview_for(
     names: &[String],
     limit: usize,
 ) -> Option<String> {
-    load().find(left, right, file_kind).map(|rule| {
-        format!(
-            "Saved rule: {}",
-            ConflictRuleBook::sample_preview(rule.policy, names, limit)
-        )
-    })
+    load().saved_rule_preview(left, right, file_kind, names, limit)
 }
 
 #[cfg(test)]
@@ -218,33 +231,66 @@ mod tests {
         assert!(!preview.contains("KeepNewer"));
         assert_eq!(ConflictRuleBook::kind_for_name("photo.PNG"), "png");
 
+        // Persist through a temp store: the real `save` would write into the
+        // developer's own config directory and seed the process-wide cache.
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.path().join("conflict_rules.json");
+        let persist = crate::persistence::FsPersist::default();
         let mut book = ConflictRuleBook::default();
-        book.upsert(ConflictRule {
+        book.upsert(rule("txt", StoredRelationPolicy::KeepBoth));
+        assert!(save_store_at(&persist, &path, &book));
+        let loaded = load_store_at(&persist, &path);
+        assert_eq!(loaded, book);
+        let found = loaded
+            .find(Path::new("/a"), Path::new("/b"), "txt")
+            .unwrap();
+        assert_eq!(RelationPolicy::from(found.policy), RelationPolicy::KeepBoth);
+        assert!(
+            loaded
+                .saved_rule_preview(
+                    Path::new("/a"),
+                    Path::new("/b"),
+                    "txt",
+                    &["x.txt".into()],
+                    3
+                )
+                .unwrap()
+                .starts_with("Saved rule: Keep Both would apply to x.txt")
+        );
+        // Rules are scoped: other kinds and swapped roots do not match.
+        assert!(
+            loaded
+                .find(Path::new("/a"), Path::new("/b"), "png")
+                .is_none()
+        );
+        assert!(
+            loaded
+                .saved_rule_preview(Path::new("/b"), Path::new("/a"), "txt", &[], 3)
+                .is_none()
+        );
+    }
+
+    fn rule(file_kind: &str, policy: StoredRelationPolicy) -> ConflictRule {
+        ConflictRule {
             left_root: PathBuf::from("/a"),
             right_root: PathBuf::from("/b"),
-            file_kind: "txt".into(),
-            policy: StoredRelationPolicy::KeepBoth,
-        });
-        save(&book);
-        assert!(
-            load()
-                .find(Path::new("/a"), Path::new("/b"), "txt")
-                .is_some()
-        );
-        assert!(
-            preview_for(
-                Path::new("/a"),
-                Path::new("/b"),
-                "txt",
-                &["x.txt".into()],
-                3
-            )
-            .unwrap()
-            .starts_with("Saved rule: Keep Both would apply to x.txt")
-        );
+            file_kind: file_kind.into(),
+            policy,
+        }
+    }
+
+    #[test]
+    fn upsert_replaces_the_policy_of_an_existing_scope() {
+        let mut book = ConflictRuleBook::default();
+        book.upsert(rule("txt", StoredRelationPolicy::KeepBoth));
+        book.upsert(rule("png", StoredRelationPolicy::SkipAll));
+        book.upsert(rule("txt", StoredRelationPolicy::KeepNewer));
         assert_eq!(
-            saved_policy(Path::new("/a"), Path::new("/b"), "txt"),
-            Some(RelationPolicy::KeepBoth)
+            book.rules,
+            vec![
+                rule("txt", StoredRelationPolicy::KeepNewer),
+                rule("png", StoredRelationPolicy::SkipAll),
+            ]
         );
     }
 
