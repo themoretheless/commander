@@ -140,16 +140,19 @@ pub fn commit_rename(workspace: &mut Workspace, old: &Path, new_name: &str) -> R
     if let Some(reason) = workspace.mutation_block_reason("rename") {
         return Err(reason);
     }
-    let new_name = new_name.trim();
     let old_name = old
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    if new_name == old_name {
+    // Compare the untrimmed text too: committing " notes.txt" unchanged must
+    // not strip the spaces the name really has.
+    if new_name == old_name || new_name.trim() == old_name {
         return Ok(()); // nothing to do
     }
-    let siblings = rename_siblings(old);
-    crate::pathname::validate_new_name(new_name, &siblings).map_err(|error| error.to_string())?;
+    let new_name = new_name.trim();
+    // No sibling listing here: rename_path_no_clobber probes the one target
+    // name on disk, which is the authoritative collision check.
+    crate::pathname::validate_new_name(new_name, &[]).map_err(|error| error.to_string())?;
     let dest = old
         .parent()
         .map(|p| p.join(new_name))

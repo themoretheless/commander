@@ -3793,6 +3793,34 @@ fn commit_rename_noop_on_unchanged_name() {
 }
 
 #[test]
+fn commit_rename_keeps_an_unchanged_name_with_surrounding_spaces() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let f = l.file("  spaced.txt", "A");
+    let mut ws = workspace(&l, &r);
+
+    assert!(ws.commit_rename(&f, "  spaced.txt").is_ok());
+
+    assert!(f.is_file());
+    assert!(!l.path().join("spaced.txt").exists());
+    assert!(!ws.can_undo());
+}
+
+#[test]
+fn commit_rename_names_a_collision() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let f = l.file("a.txt", "A");
+    l.file("b.txt", "B");
+    let mut ws = workspace(&l, &r);
+
+    assert_eq!(
+        ws.commit_rename(&f, " b.txt").unwrap_err(),
+        "Name already in use"
+    );
+    assert!(f.is_file());
+    assert!(!ws.can_undo());
+}
+
+#[test]
 fn commit_rename_allows_a_case_only_change() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let f = l.file("readme.md", "x");
