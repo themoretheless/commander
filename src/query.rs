@@ -663,6 +663,53 @@ mod tests {
         assert!(Query::parse("size:<0", MatchMode::Exact).is_err());
     }
 
+    fn parse_error(expression: &str) -> String {
+        Query::parse(expression, MatchMode::Exact)
+            .unwrap_err()
+            .message
+    }
+
+    fn parsed(expression: &str) -> Vec<Predicate> {
+        Query::parse(expression, MatchMode::Exact)
+            .unwrap()
+            .predicates
+    }
+
+    #[test]
+    fn field_names_are_case_insensitive_and_need_a_value() {
+        assert_eq!(parsed("NAME:x"), vec![Predicate::NameContains("x".into())]);
+        assert_eq!(parsed("Type:docs"), vec![Predicate::Kind(Kind::Document)]);
+        assert_eq!(parse_error(":foo"), "unknown query field");
+        assert_eq!(parse_error("name:"), "field value is empty");
+    }
+
+    #[test]
+    fn size_units_accept_fractions_and_binary_aliases() {
+        assert_eq!(parsed("size:1.5k"), vec![Predicate::MinSize(1536)]);
+        assert_eq!(parsed("size:2kib"), vec![Predicate::MinSize(2048)]);
+        assert_eq!(parse_error("size:MB"), "invalid size");
+        assert_eq!(parse_error("size:1.2.3K"), "invalid size");
+    }
+
+    #[test]
+    fn size_ranges_must_be_ordered_and_closed() {
+        assert_eq!(parse_error("size:5MB..1MB"), "size range is reversed");
+        // Open-ended ranges are not supported; the empty side is no number.
+        assert_eq!(parse_error("size:1MB.."), "invalid size");
+        assert_eq!(parse_error("size:..5MB"), "invalid size");
+    }
+
+    #[test]
+    fn date_units_reject_overflow_and_treat_m_as_months() {
+        assert_eq!(
+            parse_error("date:99999999999999999y"),
+            "date age is too large"
+        );
+        assert_eq!(parse_error("date:3h"), "unknown date unit");
+        // `m` means months (30 days), not minutes.
+        assert_eq!(parsed("date:<2m"), vec![Predicate::MaxAgeDays(60)]);
+    }
+
     #[test]
     fn panel_filter_converts_to_smart_folder_query() {
         let facets = crate::panel::FacetSet {

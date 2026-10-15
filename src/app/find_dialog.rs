@@ -167,6 +167,14 @@ fn add_smart_folder(
 }
 
 impl App {
+    /// Start building the content index for `root`, repainting as it
+    /// progresses; false when the index refused to start.
+    fn start_index_build(&mut self, ctx: &egui::Context, root: PathBuf) -> bool {
+        let repaint = ctx.clone();
+        self.content_index
+            .start_build(root, std::sync::Arc::new(move || repaint.request_repaint()))
+    }
+
     fn poll_find_events(
         &mut self,
     ) -> Option<(
@@ -175,22 +183,15 @@ impl App {
         PathBuf,
         crate::search::SearchSummary,
     )> {
-        let mut events = Vec::new();
-        let mut disconnected = false;
-        if let Some(state) = self.ui.modals.find.as_ref()
-            && let Some(run) = state.run.as_ref()
-        {
-            loop {
-                match run.try_recv() {
-                    Ok(event) => events.push(event),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-        }
+        let (events, disconnected) = self
+            .ui
+            .modals
+            .find
+            .as_ref()
+            .and_then(|state| state.run.as_ref())
+            .map_or_else(Default::default, |run| {
+                super::drain_events(|| run.try_recv())
+            });
 
         let mut history_record = None;
         if let Some(state) = self.ui.modals.find.as_mut() {
@@ -223,7 +224,6 @@ impl App {
                             .iter()
                             .map(|hit| hit.identity.clone())
                             .collect();
-                        state.searching = false;
                         state.scanned = summary.scanned;
                         state.matched = summary.matched;
                         state.elapsed = summary.elapsed;
@@ -242,8 +242,7 @@ impl App {
                     _ => {}
                 }
             }
-            if disconnected && state.searching {
-                state.searching = false;
+            if disconnected && state.searching() {
                 state.run = None;
                 state.error = Some("Search worker stopped before completion".to_string());
             }
@@ -305,11 +304,7 @@ impl App {
                 crate::content_index::IndexPhase::Missing | crate::content_index::IndexPhase::Error
             )
         {
-            let repaint = ctx.clone();
-            if self.content_index.start_build(
-                root.clone(),
-                std::sync::Arc::new(move || repaint.request_repaint()),
-            ) {
+            if self.start_index_build(ctx, root.clone()) {
                 if let Some(state) = self.ui.modals.find.as_mut() {
                     state.index_rerun_after_build = true;
                 }
@@ -357,7 +352,6 @@ impl App {
             state.results.clear();
             state.stable_order = previous;
             state.last_query = Some(query_key);
-            state.searching = true;
             state.ran = true;
             state.scanned = 0;
             state.matched = 0;
@@ -374,7 +368,6 @@ impl App {
         self.search_engine.cancel();
         if let Some(state) = self.ui.modals.find.as_mut() {
             state.run = None;
-            state.searching = false;
             state.pending_rerun = true;
             state.last_edit_at = ctx.input(|input| input.time);
             state.error = None;
@@ -572,7 +565,7 @@ impl App {
                                 .add(super::dialog_button(
                                     t,
                                     super::ButtonRole::Primary,
-                                    egui::RichText::new(if state.searching {
+                                    egui::RichText::new(if state.searching() {
                                         "Restart"
                                     } else {
                                         "Search"
@@ -779,7 +772,7 @@ impl App {
 
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        let status = if state.searching {
+                        let status = if state.searching() {
                             format!(
                                 "{}  |  Scanning {} items  |  {} matches",
                                 state.search_source,
@@ -939,7 +932,7 @@ impl App {
                         });
 
                     if state.ran
-                        && !state.searching
+                        && !state.searching()
                         && state.results.is_empty()
                         && state.error.is_none()
                     {
@@ -1004,11 +997,7 @@ impl App {
         if let Some(enabled) = index_enabled_change {
             if self.content_index.set_enabled(index_root.clone(), enabled) {
                 if enabled {
-                    let repaint = ctx.clone();
-                    let started = self.content_index.start_build(
-                        index_root.clone(),
-                        std::sync::Arc::new(move || repaint.request_repaint()),
-                    );
+                    let started = self.start_index_build(ctx, index_root.clone());
                     let refusal = (!started).then(|| {
                         index_build_refusal(true, self.content_index.status(&index_root).last_error)
                     });
@@ -1052,11 +1041,7 @@ impl App {
                     let mut started = false;
                     let mut refusal = None;
                     if self.content_index.is_enabled(&index_root) {
-                        let repaint = ctx.clone();
-                        started = self.content_index.start_build(
-                            index_root.clone(),
-                            std::sync::Arc::new(move || repaint.request_repaint()),
-                        );
+                        started = self.start_index_build(ctx, index_root.clone());
                         if !started {
                             refusal = Some(index_build_refusal(
                                 true,
@@ -1078,11 +1063,7 @@ impl App {
             }
         }
         if index_rebuild {
-            let repaint = ctx.clone();
-            let started = self.content_index.start_build(
-                index_root.clone(),
-                std::sync::Arc::new(move || repaint.request_repaint()),
-            );
+            let started = self.start_index_build(ctx, index_root.clone());
             let refusal = (!started).then(|| {
                 index_build_refusal(
                     self.content_index.is_enabled(&index_root),

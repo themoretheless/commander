@@ -266,4 +266,122 @@ mod tests {
                 && violation.detail.contains("exceed")
         }));
     }
+
+    #[test]
+    fn each_malformed_suite_field_is_reported() {
+        type Mutation = fn(&mut KlmSuite);
+        let cases: [(&str, Mutation, Option<&str>, &str); 12] = [
+            ("schema", |s| s.schema = 2, None, "schema must be 1"),
+            (
+                "zero duration",
+                |s| s.model.homing_ms = 0,
+                None,
+                "must be explicit",
+            ),
+            (
+                "blank chord policy",
+                |s| s.model.shortcut_chord_policy = " ".into(),
+                None,
+                "must be explicit",
+            ),
+            (
+                "missing workflow",
+                |s| {
+                    s.workflows.pop();
+                },
+                None,
+                "exactly once",
+            ),
+            (
+                "duplicate workflow",
+                |s| {
+                    let last = s.workflows.len() - 1;
+                    s.workflows[last] = s.workflows[0].clone();
+                },
+                None,
+                "exactly once",
+            ),
+            (
+                "empty title",
+                |s| s.workflows[0].title = String::new(),
+                Some("switch-pane"),
+                "needs a title",
+            ),
+            (
+                "no steps",
+                |s| s.workflows[0].steps.clear(),
+                Some("switch-pane"),
+                "needs a title",
+            ),
+            (
+                "zero repetitions",
+                |s| s.workflows[0].steps[0].repetitions = 0,
+                Some("switch-pane"),
+                "positive repetition",
+            ),
+            (
+                "blank action",
+                |s| s.workflows[0].steps[0].action = "  ".into(),
+                Some("switch-pane"),
+                "positive repetition",
+            ),
+            (
+                "unmeasured response",
+                |s| {
+                    s.workflows[0].steps.push(OperatorStep {
+                        operator: Operator::R,
+                        repetitions: 1,
+                        response_ms: None,
+                        action: "wait".into(),
+                    })
+                },
+                Some("switch-pane"),
+                "measured duration",
+            ),
+            (
+                "keyboard homing (H)",
+                |s| {
+                    let workflow = &mut s.workflows[0];
+                    workflow.input_mode = InputMode::Keyboard;
+                    workflow.steps[0].operator = Operator::H;
+                },
+                Some("switch-pane"),
+                "pointing or homing",
+            ),
+            (
+                "keyboard pointing (P)",
+                |s| {
+                    let workflow = &mut s.workflows[0];
+                    workflow.input_mode = InputMode::Keyboard;
+                    workflow.steps[0].operator = Operator::P;
+                },
+                Some("switch-pane"),
+                "pointing or homing",
+            ),
+        ];
+        for (label, mutate, workflow, expected) in cases {
+            let mut suite = ci_suite().unwrap();
+            mutate(&mut suite);
+            let violations = evaluate(&suite);
+            assert!(
+                violations.iter().any(|violation| {
+                    violation.workflow.as_deref() == workflow && violation.detail.contains(expected)
+                }),
+                "{label}: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pointing_is_allowed_outside_keyboard_workflows() {
+        let mut suite = ci_suite().unwrap();
+        let workflow = &mut suite.workflows[0];
+        workflow.input_mode = InputMode::Mixed;
+        workflow.steps[0].operator = Operator::P;
+        assert!(
+            !evaluate(&suite)
+                .iter()
+                .any(|violation| violation.detail.contains("pointing or homing"))
+        );
+    }
 }

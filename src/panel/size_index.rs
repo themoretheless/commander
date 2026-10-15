@@ -409,23 +409,12 @@ impl SizeIndex {
             need_size.push((entry.path.clone(), dir_mtime, cache_key));
         }
 
-        let visible_paths: HashSet<PathBuf> =
-            visible_window(input.filtered.len(), input.scroll_anchor, input.page_rows)
-                .filter_map(|index| {
-                    input
-                        .filtered
-                        .get(index)
-                        .and_then(|entry| input.entries.get(*entry))
-                })
-                .filter(|entry| entry.is_dir)
-                .map(|entry| entry.path.clone())
-                .collect();
-        let (visible_counts, background_counts): (Vec<_>, Vec<_>) = need_count
-            .into_iter()
-            .partition(|path| visible_paths.contains(path));
-        let (visible_sizes, background_sizes): (Vec<_>, Vec<_>) = need_size
-            .into_iter()
-            .partition(|(path, _, _)| visible_paths.contains(path));
+        let ScanPlan {
+            visible_counts,
+            background_counts,
+            visible_sizes,
+            background_sizes,
+        } = split_by_visibility(input, need_count, need_size);
         let has_counts = !visible_counts.is_empty() || !background_counts.is_empty();
         let has_sizes = !visible_sizes.is_empty() || !background_sizes.is_empty();
         if !has_counts && !has_sizes {
@@ -507,7 +496,7 @@ impl SizeIndex {
             pool.spawn_fifo(move || {
                 use rayon::prelude::*;
                 fn measure(
-                    (path, modified, cache_key): &(PathBuf, Option<SystemTime>, VolumePathKey),
+                    (path, modified, cache_key): &SizeJob,
                     scan_epoch: &Arc<ScanEpoch>,
                     background: bool,
                 ) -> Option<DirMeasurement> {
@@ -620,6 +609,51 @@ impl SizeIndex {
     pub(super) const fn mark_dirty_immediately_for_test(&mut self) {
         self.dirty = true;
         self.last_recompute = None;
+    }
+}
+
+/// A folder to size: its path, listed mtime and cache key.
+type SizeJob = (PathBuf, Option<SystemTime>, VolumePathKey);
+
+/// Folder counts and sizes to compute, split into the ones on screen
+/// (worked first) and the rest. Each half keeps the listing order.
+#[derive(Debug, PartialEq)]
+struct ScanPlan {
+    visible_counts: Vec<PathBuf>,
+    background_counts: Vec<PathBuf>,
+    visible_sizes: Vec<SizeJob>,
+    background_sizes: Vec<SizeJob>,
+}
+
+/// Split the folders needing work by whether their row is in the visible
+/// window of the filtered view (rows hidden by the filter are background).
+fn split_by_visibility(
+    input: &SizeScanInput<'_>,
+    need_count: Vec<PathBuf>,
+    need_size: Vec<SizeJob>,
+) -> ScanPlan {
+    let visible_paths: HashSet<&Path> =
+        visible_window(input.filtered.len(), input.scroll_anchor, input.page_rows)
+            .filter_map(|index| {
+                input
+                    .filtered
+                    .get(index)
+                    .and_then(|entry| input.entries.get(*entry))
+            })
+            .filter(|entry| entry.is_dir)
+            .map(|entry| entry.path.as_path())
+            .collect();
+    let (visible_counts, background_counts) = need_count
+        .into_iter()
+        .partition(|path| visible_paths.contains(path.as_path()));
+    let (visible_sizes, background_sizes) = need_size
+        .into_iter()
+        .partition(|(path, _, _)| visible_paths.contains(path.as_path()));
+    ScanPlan {
+        visible_counts,
+        background_counts,
+        visible_sizes,
+        background_sizes,
     }
 }
 
@@ -816,6 +850,23 @@ mod tests {
         assert_eq!(index.overview_computations(), 3);
     }
 
+    #[test]
+    fn display_size_uses_measured_sizes_for_folders_only() {
+        let index = SizeIndex::new(PathBuf::from("/root"));
+        let file = entry(Path::new("/root/a.txt"), false, 42);
+        let dir = entry(Path::new("/root/sub"), true, 0);
+        let pending = entry(Path::new("/root/pending"), true, 0);
+        index.insert_for_test(dir.path.clone(), 9000, 1);
+        // A measured size under a file's path never replaces its own size.
+        index.insert_for_test(file.path.clone(), 7, 0);
+
+        let snapshot = index.snapshot();
+        assert_eq!(snapshot.display_size(&file), 42);
+        assert_eq!(snapshot.display_size(&dir), 9000);
+        // An unmeasured folder reads as 0 (draws no bar).
+        assert_eq!(snapshot.display_size(&pending), 0);
+    }
+
     fn profile_for(
         backend: crate::volume_profile::BackendKind,
         workers: usize,
@@ -946,5 +997,105 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn snapshot_is_shared_until_the_size_revision_changes() {
+        let index = SizeIndex::new(PathBuf::from("/root"));
+        let dir = PathBuf::from("/root/dir");
+        let first = index.snapshot();
+        assert!(Arc::ptr_eq(&first, &index.snapshot()));
+
+        index.insert_for_test(dir.clone(), 7, 1);
+        let changed = index.snapshot();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(changed.size_of(&dir), Some(7));
+        assert_eq!(first.size_of(&dir), None, "old snapshots stay immutable");
+        assert!(Arc::ptr_eq(&changed, &index.snapshot()));
+    }
+
+    #[test]
+    fn folder_overview_keeps_the_first_of_equal_largest_entries() {
+        let index = SizeIndex::new(PathBuf::from("/root"));
+        let entries = vec![
+            entry(Path::new("/root/first"), false, 50),
+            entry(Path::new("/root/second"), false, 50),
+            entry(Path::new("/root/small"), false, 5),
+        ];
+        let overview = index.folder_overview(1, &entries);
+        assert_eq!(overview.largest, Some(("first".to_string(), 50)));
+        assert_eq!(overview.total, Some(105));
+    }
+
+    #[test]
+    fn max_display_size_is_cached_per_live_filtered_snapshot() {
+        let index = SizeIndex::new(PathBuf::from("/root"));
+        let dir = PathBuf::from("/root/dir");
+        let small = vec![entry(Path::new("/root/a"), false, 10), entry(&dir, true, 0)];
+        let big = vec![
+            entry(Path::new("/root/a"), false, 100),
+            entry(&dir, true, 0),
+        ];
+        index.insert_for_test(dir.clone(), 50, 1);
+        let filtered: Arc<[usize]> = Arc::from(vec![0, 1]);
+
+        // Folders count with their measured size.
+        assert_eq!(index.max_display_size(1, &small, &filtered), 50);
+        // Same listing revision and the same snapshot: the cached value is
+        // reused (the entries are not looked at again).
+        assert_eq!(index.max_display_size(1, &big, &filtered), 50);
+        // A new filtered snapshot recomputes, even with equal contents.
+        let refiltered: Arc<[usize]> = Arc::from(vec![0, 1]);
+        assert_eq!(index.max_display_size(1, &big, &refiltered), 100);
+        // A dropped snapshot never matches, even if its memory is reused.
+        drop(refiltered);
+        let again: Arc<[usize]> = Arc::from(vec![0, 1]);
+        assert_eq!(index.max_display_size(1, &small, &again), 50);
+        // A new listing revision or size revision recomputes too.
+        assert_eq!(index.max_display_size(2, &big, &again), 100);
+        index.insert_for_test(dir, 500, 1);
+        assert_eq!(index.max_display_size(2, &big, &again), 500);
+    }
+
+    #[test]
+    fn scan_plan_puts_folders_in_the_visible_window_first() {
+        let dir = |index: usize| PathBuf::from(format!("/root/d{index:02}"));
+        let mut entries: Vec<FileEntry> = (0..40).map(|i| entry(&dir(i), true, 0)).collect();
+        entries.push(entry(Path::new("/root/file"), false, 1));
+        // The filter hides d03; the view is scrolled to its end.
+        let filtered: Arc<[usize]> = (0..entries.len()).filter(|i| *i != 3).collect();
+        let input = SizeScanInput {
+            path: Path::new("/root"),
+            entries: &entries,
+            filtered,
+            scroll_anchor: 99,
+            page_rows: 10,
+            notify: None,
+            show_hidden: true,
+        };
+        let job = |index: usize| {
+            (
+                dir(index),
+                None,
+                VolumePathKey {
+                    path: dir(index),
+                    volume_id: 1,
+                    generation: 1,
+                },
+            )
+        };
+
+        let plan = split_by_visibility(
+            &input,
+            vec![dir(39), dir(3), dir(0), dir(9), dir(10)],
+            vec![job(10), job(3), job(39), job(2)],
+        );
+
+        // 40 rows shown (32 at least); the window is the last 32 of them,
+        // which starts at d09 once d03 is filtered out.
+        assert_eq!(plan.visible_counts, vec![dir(39), dir(9), dir(10)]);
+        assert_eq!(plan.background_counts, vec![dir(3), dir(0)]);
+        assert_eq!(plan.visible_sizes, vec![job(10), job(39)]);
+        assert_eq!(plan.background_sizes, vec![job(3), job(2)]);
     }
 }

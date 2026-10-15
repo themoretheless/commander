@@ -227,6 +227,29 @@ mod tests {
     }
 
     #[test]
+    fn csv_doubles_quotes_and_quotes_embedded_newlines() {
+        let v = vec![entry("say \"hi\".txt", 5), entry("a\nb.txt", 6)];
+        let out = format(&refs(&v), ListingFormat::Csv);
+        assert!(
+            out.contains("\n\"say \"\"hi\"\".txt\",file,5,\n"),
+            "{out:?}"
+        );
+        assert!(out.contains("\n\"a\nb.txt\",file,6,\n"), "{out:?}");
+    }
+
+    #[test]
+    fn literal_backslash_n_stays_distinct_from_a_real_newline() {
+        let literal = entry("a\\nb", 1);
+        let newline = entry("a\nb", 1);
+        let text = |e: &FileEntry| format(&[e], ListingFormat::Text);
+        assert!(text(&literal).starts_with("a\\\\nb\t"));
+        assert!(text(&newline).starts_with("a\\nb\t"));
+        assert_ne!(text(&literal), text(&newline));
+        let markdown = format(&[&literal], ListingFormat::Markdown);
+        assert!(markdown.contains("| a\\\\nb |"), "{markdown:?}");
+    }
+
+    #[test]
     fn empty_text_listing_is_empty() {
         assert_eq!(format(&[], ListingFormat::Text), "");
     }

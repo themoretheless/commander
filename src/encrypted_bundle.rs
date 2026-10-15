@@ -220,7 +220,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
+pub fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
     if !hex.len().is_multiple_of(2) {
         return Err("invalid hex length".into());
     }
@@ -299,6 +299,108 @@ mod tests {
             decrypt(&manifest, "test-secret", 1_050).unwrap(),
             b"payload"
         );
+    }
+
+    fn sample_manifest() -> EncryptedBundleManifest {
+        encrypt(EncryptRequest {
+            recipient_id: "alice",
+            recipient_secret: "test-secret",
+            created_at_secs: 1_000,
+            ttl_secs: 60,
+            plaintext_preview: "preview",
+            plaintext: b"payload",
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn hex_decode_rejects_odd_length_and_non_hex_digits() {
+        assert_eq!(hex_decode("").unwrap(), b"");
+        assert_eq!(hex_decode("00aBfF").unwrap(), [0x00, 0xab, 0xff]);
+        assert_eq!(hex_decode("abc").unwrap_err(), "invalid hex length");
+        assert_eq!(hex_decode("0g").unwrap_err(), "invalid hex digit");
+        // A two-byte character has an even byte length but no hex digits.
+        assert_eq!(hex_decode("é").unwrap_err(), "invalid hex digit");
+    }
+
+    #[test]
+    fn malformed_envelope_headers_are_rejected_before_decrypting() {
+        let manifest = sample_manifest();
+        let mut unknown = manifest.clone();
+        unknown.format = "commander-encrypted-bundle-v9".into();
+        assert_eq!(
+            decrypt(&unknown, "test-secret", 1_050).unwrap_err(),
+            "unsupported encrypted bundle format commander-encrypted-bundle-v9"
+        );
+        let mut odd = manifest.clone();
+        odd.salt_hex.pop();
+        assert_eq!(
+            decrypt(&odd, "test-secret", 1_050).unwrap_err(),
+            "invalid hex length"
+        );
+        let mut garbled = manifest.clone();
+        garbled.ciphertext_hex.replace_range(0..2, "zz");
+        assert_eq!(
+            decrypt(&garbled, "test-secret", 1_050).unwrap_err(),
+            "invalid hex digit"
+        );
+        let mut short_salt = manifest.clone();
+        short_salt.salt_hex.truncate(62);
+        let mut long_nonce = manifest.clone();
+        long_nonce.nonce_hex.push_str("00");
+        for malformed in [short_salt, long_nonce] {
+            assert_eq!(
+                decrypt(&malformed, "test-secret", 1_050).unwrap_err(),
+                "encrypted support bundle header is malformed"
+            );
+        }
+        assert_eq!(
+            decrypt(&manifest, "test-secret", 1_050).unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn encrypt_requires_recipient_and_secret_and_caps_the_preview() {
+        let request = EncryptRequest {
+            recipient_id: "ops",
+            recipient_secret: "secret",
+            created_at_secs: 0,
+            ttl_secs: 60,
+            plaintext_preview: "",
+            plaintext: b"x",
+        };
+        for recipient_id in ["", "  \t"] {
+            let error = encrypt(EncryptRequest {
+                recipient_id,
+                ..request.clone()
+            })
+            .unwrap_err();
+            assert!(error.contains("recipient id"), "{error}");
+        }
+        let error = encrypt(EncryptRequest {
+            recipient_secret: "",
+            ..request.clone()
+        })
+        .unwrap_err();
+        assert!(error.contains("recipient secret"), "{error}");
+
+        // Counted in characters, not bytes, so multi-byte text is not split.
+        let long = "é".repeat(300);
+        let capped = encrypt(EncryptRequest {
+            plaintext_preview: &long,
+            ..request.clone()
+        })
+        .unwrap();
+        assert_eq!(capped.plaintext_preview.chars().count(), 241);
+        assert!(capped.plaintext_preview.ends_with("é…"));
+        let exact = "x".repeat(240);
+        let kept = encrypt(EncryptRequest {
+            plaintext_preview: &exact,
+            ..request
+        })
+        .unwrap();
+        assert_eq!(kept.plaintext_preview, exact);
     }
 
     #[test]

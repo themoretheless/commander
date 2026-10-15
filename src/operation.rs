@@ -319,6 +319,50 @@ mod tests {
     }
 
     #[test]
+    fn missing_or_forbidden_paths_and_unlisted_kinds_are_blocked() {
+        use std::io::{Error, ErrorKind};
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::NotFound,
+            ErrorKind::ReadOnlyFilesystem,
+            // Not listed explicitly: the catch-all keeps it Blocked.
+            ErrorKind::Unsupported,
+        ] {
+            let path = PathBuf::from("/data/a.txt");
+            let failure = ClassifiedFailure::io(Some(path.clone()), "open", &Error::from(kind));
+            assert_eq!(failure.class, FailureClass::Blocked, "{kind:?}");
+            assert_eq!(failure.path, Some(path));
+            assert_eq!(failure.message, format!("open: {}", Error::from(kind)));
+        }
+        assert_eq!(
+            ClassifiedFailure::io(None, "copy", &Error::from(ErrorKind::InvalidData)).class,
+            FailureClass::IntegrityUncertain
+        );
+    }
+
+    #[test]
+    fn retention_consequence_text_matches_the_enforced_limits() {
+        const DAY: u64 = 24 * 60 * 60;
+        for policy in VersionRetentionPolicy::ALL {
+            let text = policy.consequence();
+            match (policy.max_per_path(), policy.max_age_secs()) {
+                (Some(count), Some(age)) => {
+                    assert!(text.contains(&format!("Keep {count} versions")), "{text}");
+                    let days = age / DAY;
+                    let span = if days == 365 {
+                        "one year".to_string()
+                    } else {
+                        format!("{days} days")
+                    };
+                    assert!(text.ends_with(&format!("up to {span}")), "{text}");
+                }
+                (None, None) => assert!(text.contains("every version"), "{text}"),
+                limits => panic!("{policy:?} has partial limits {limits:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn colocated_adrs_record_invariants_ownership_and_failure_policy() {
         let invariants = include_str!("operation/ADR-0001-durable-operation-invariants.md");
         let ownership = include_str!("operation/ADR-0002-operation-state-ownership.md");

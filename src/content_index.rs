@@ -1,6 +1,6 @@
 //! Optional, root-scoped content indexes built only while the app is idle.
 
-use crate::panel::{FileEntry, format_size};
+use crate::panel::FileEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, ReadDir};
@@ -50,30 +50,14 @@ pub struct IndexedDocument {
 
 impl IndexedDocument {
     pub fn entry(&self) -> Option<FileEntry> {
-        let name = self.path.file_name()?.to_string_lossy().to_string();
-        let extension = self
-            .path
-            .extension()
-            .map(|value| value.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
         let modified = self.modified_secs.and_then(epoch_secs);
-        let modified_str = modified.map_or_else(|| "-".to_string(), crate::search::format_modified);
-        Some(FileEntry {
-            name_lower: name.to_lowercase(),
-            name,
-            path: self.path.clone(),
-            identity: crate::panel::ListingIdentity::Unavailable,
-            is_dir: self.is_dir,
-            size: if self.is_dir { 0 } else { self.size },
-            extension,
+        crate::search::synthetic_entry(
+            self.path.clone(),
+            self.is_dir,
+            self.size,
             modified,
-            modified_str,
-            size_str: if self.is_dir {
-                "...".to_string()
-            } else {
-                format_size(self.size)
-            },
-        })
+            crate::search::modified_label(modified),
+        )
     }
 
     pub fn accessed(&self) -> Option<SystemTime> {
@@ -565,6 +549,12 @@ impl ContentIndex {
     pub fn status(&mut self, root: &Path) -> IndexStatus {
         let runtime_enabled =
             crate::feature_flags::enabled(crate::feature_flags::RiskyFeature::ContentIndex);
+        self.status_with(root, runtime_enabled)
+    }
+
+    /// `status` with the runtime kill switch passed in, so tests do not
+    /// depend on the process-wide feature flags.
+    fn status_with(&mut self, root: &Path, runtime_enabled: bool) -> IndexStatus {
         let enabled = self.is_enabled(root) && runtime_enabled;
         let excluded_roots = self.exclusions(root);
         let settings_error = self
@@ -675,6 +665,7 @@ fn scan_index(
         cancelled,
         scheduler_cancel,
         ScanBudget {
+            documents: MAX_DOCUMENTS,
             json_bytes: MAX_DOCUMENT_JSON_BYTES,
             content_bytes: MAX_CONTENT_BYTES,
         },
@@ -685,6 +676,8 @@ fn scan_index(
 /// Size caps for one build; tests shrink them to reach the limits cheaply.
 #[derive(Clone, Copy)]
 struct ScanBudget {
+    /// Documents kept in the index (see `MAX_DOCUMENTS`).
+    documents: usize,
     /// Serialized size of all documents (see `MAX_DOCUMENT_JSON_BYTES`).
     json_bytes: usize,
     /// Decoded text kept across all documents (see `MAX_CONTENT_BYTES`).
@@ -745,7 +738,7 @@ fn scan_index_within(
             skipped_unreadable = skipped_unreadable.saturating_add(1);
             continue;
         };
-        if documents.len() >= MAX_DOCUMENTS {
+        if documents.len() >= budget.documents {
             truncated = true;
             break;
         }
@@ -1525,6 +1518,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             None,
             ScanBudget {
+                documents: MAX_DOCUMENTS,
                 json_bytes: budget,
                 content_bytes: MAX_CONTENT_BYTES,
             },
@@ -1550,6 +1544,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             None,
             ScanBudget {
+                documents: MAX_DOCUMENTS,
                 json_bytes: MAX_DOCUMENT_JSON_BYTES,
                 content_bytes: 20,
             },
@@ -1605,7 +1600,7 @@ mod tests {
         };
         let entry = document.entry().unwrap();
         assert_eq!(entry.modified, None);
-        assert_eq!(entry.modified_str, "-");
+        assert_eq!(entry.modified_str, "\u{2013}");
         assert_eq!(document.accessed(), None);
 
         // Past chrono's ~year 262k limit (still a valid SystemTime on Unix).
@@ -1613,7 +1608,7 @@ mod tests {
             modified_secs: Some(1 << 43),
             ..document.clone()
         };
-        assert_eq!(far.entry().unwrap().modified_str, "-");
+        assert_eq!(far.entry().unwrap().modified_str, "\u{2013}");
 
         let normal = IndexedDocument {
             modified_secs: Some(0),
@@ -1971,5 +1966,170 @@ mod tests {
             io.contains("could not write temporary file (disk full)"),
             "{io}"
         );
+    }
+
+    #[test]
+    fn status_phase_follows_build_snapshot_and_error_state() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "text");
+        let root = temp.path().to_path_buf();
+        let runtime = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        let settings = SettingsStore {
+            roots: vec![RootSettings {
+                root: root.clone(),
+                enabled: true,
+                excluded_roots: Vec::new(),
+                last_error: None,
+            }],
+        };
+        let mut index = ContentIndex::from_settings(settings, runtime.handle());
+
+        // The runtime kill switch and an unregistered root both read as off.
+        assert_eq!(index.status_with(&root, false).phase, IndexPhase::Disabled);
+        let other = temp.path().join("elsewhere");
+        assert_eq!(index.status_with(&other, true).phase, IndexPhase::Disabled);
+        assert_eq!(index.status_with(&root, true).phase, IndexPhase::Missing);
+
+        // A load error outranks Missing.
+        index
+            .load_errors
+            .insert(root.clone(), "unreadable".to_string());
+        let status = index.status_with(&root, true);
+        assert_eq!(status.phase, IndexPhase::Error);
+        assert_eq!(status.last_error.as_deref(), Some("unreadable"));
+
+        // A queued build waits for idle, then reads as Building, and wins
+        // over the stale error.
+        index
+            .enqueue_build(root.clone(), Vec::new(), Arc::new(|| {}))
+            .unwrap();
+        assert_eq!(
+            index.status_with(&root, true).phase,
+            IndexPhase::WaitingForIdle
+        );
+        index.set_idle(true);
+        assert_eq!(index.status_with(&root, true).phase, IndexPhase::Building);
+        assert_eq!(index.status_with(&root, false).phase, IndexPhase::Disabled);
+
+        // Once the build is gone, a loaded snapshot is Ready despite the
+        // remembered error, and its counters become the progress.
+        drop(index.active.take());
+        index.cache_snapshot(root.clone(), Arc::new(scan(&root, Vec::new())));
+        let status = index.status_with(&root, true);
+        assert_eq!(status.phase, IndexPhase::Ready);
+        assert_eq!(status.progress.content_indexed, 1);
+        assert!(status.built_at_secs.is_some());
+    }
+
+    #[test]
+    fn load_rejects_an_index_for_another_root_or_schema() {
+        let temp = TempDir::new();
+        let root_a = temp.dir("a");
+        let root_b = temp.dir("b");
+        temp.file("a/file.txt", "text");
+        let index = scan(&root_a, Vec::new());
+        let path = temp.path().join("index.json");
+
+        save_index_to(&path, &index).unwrap();
+        assert!(load_index_from(&path, &root_a).unwrap().is_some());
+        let error = load_index_from(&path, &root_b).unwrap_err();
+        assert!(error.contains("does not match"), "{error}");
+
+        let future = RootIndex {
+            schema: SCHEMA_VERSION + 1,
+            ..index
+        };
+        save_index_to(&path, &future).unwrap();
+        assert!(load_index_from(&path, &root_a).is_err());
+    }
+
+    #[test]
+    fn absolute_exclusions_must_lie_inside_the_root() {
+        let root = PathBuf::from("/workspace");
+        assert_eq!(
+            normalize_exclusions(&root, vec![PathBuf::from("/workspace/a/b")]).unwrap(),
+            vec![PathBuf::from("/workspace/a/b")]
+        );
+        assert!(normalize_exclusions(&root, vec![PathBuf::from("/elsewhere")]).is_err());
+        // A sibling sharing the root's text prefix is not below it.
+        assert!(normalize_exclusions(&root, vec![PathBuf::from("/workspace2/x")]).is_err());
+    }
+
+    #[test]
+    fn oversized_files_keep_metadata_but_no_content() {
+        let temp = TempDir::new();
+        temp.file("small.txt", "small");
+        let large = std::fs::File::create(temp.path().join("large.txt")).unwrap();
+        large.set_len(MAX_FILE_BYTES + 1).unwrap();
+        drop(large);
+
+        let index = scan(temp.path(), Vec::new());
+
+        assert_eq!(index.skipped_large, 1);
+        assert_eq!(index.content_indexed, 1);
+        let large = index
+            .documents
+            .iter()
+            .find(|document| document.path.ends_with("large.txt"))
+            .unwrap();
+        assert_eq!(large.size, MAX_FILE_BYTES + 1);
+        assert!(large.content.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_listed_but_never_read_or_followed() {
+        let temp = TempDir::new();
+        let target = temp.file("target.txt", "linked words");
+        std::os::unix::fs::symlink(&target, temp.path().join("link.txt")).unwrap();
+        // Following this would revisit the root forever.
+        std::os::unix::fs::symlink(temp.path(), temp.path().join("loop")).unwrap();
+
+        let index = scan(temp.path(), Vec::new());
+
+        assert_eq!(index.documents.len(), 3);
+        assert_eq!(index.content_indexed, 1);
+        let link = index
+            .documents
+            .iter()
+            .find(|document| document.path.ends_with("link.txt"))
+            .unwrap();
+        assert!(!link.is_dir);
+        assert!(link.content.is_none());
+        let looped = temp.path().join("loop");
+        assert!(
+            index
+                .documents
+                .iter()
+                .all(|document| !document.path.starts_with(&looped) || document.path == looped)
+        );
+    }
+
+    #[test]
+    fn document_cap_truncates_the_index() {
+        let temp = TempDir::new();
+        for number in 0..5 {
+            temp.file(&format!("file-{number}.txt"), "text");
+        }
+        let index = scan_index_within(
+            temp.path().to_path_buf(),
+            Vec::new(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            ScanBudget {
+                documents: 3,
+                json_bytes: MAX_DOCUMENT_JSON_BYTES,
+                content_bytes: MAX_CONTENT_BYTES,
+            },
+            |_| true,
+        )
+        .unwrap();
+
+        assert!(index.truncated);
+        assert_eq!(index.documents.len(), 3);
+        assert_eq!(index.content_indexed, 3);
     }
 }

@@ -1,11 +1,7 @@
 //! Narrow provider ports used at expensive or failure-prone boundaries.
 
-use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-
-pub const DEFAULT_TEXT_PREVIEW_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFailureKind {
@@ -269,10 +265,7 @@ pub enum ContextMenuAction {
 impl ContextMenuAction {
     #[must_use]
     pub fn path(&self) -> &Path {
-        match self {
-            Self::Duplicate(target) | Self::Compress(target) => &target.path,
-            Self::ToggleTag { target, .. } | Self::Share { target, .. } => &target.path,
-        }
+        &self.target().path
     }
 
     #[must_use]
@@ -349,59 +342,6 @@ pub trait ContextMenuPort {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PreviewKind {
-    Image,
-    Text,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreviewRequest<'a> {
-    pub path: &'a Path,
-    pub kind: PreviewKind,
-    pub max_bytes: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PreviewArtifact {
-    Image,
-    Text(String),
-}
-
-pub trait PreviewProvider: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn preview(&self, request: &PreviewRequest<'_>) -> Result<PreviewArtifact, String>;
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NativePreviewProvider;
-
-impl PreviewProvider for NativePreviewProvider {
-    fn id(&self) -> &'static str {
-        "native-preview"
-    }
-
-    fn preview(&self, request: &PreviewRequest<'_>) -> Result<PreviewArtifact, String> {
-        if request.kind == PreviewKind::Image {
-            return Ok(PreviewArtifact::Image);
-        }
-        let mut file = std::fs::File::open(request.path).map_err(|error| error.to_string())?;
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut file)
-            .take(request.max_bytes.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        if bytes.len() as u64 > request.max_bytes {
-            return Err(format!(
-                "preview exceeds the {} byte limit",
-                request.max_bytes
-            ));
-        }
-        let text = String::from_utf8(bytes).map_err(|_| "preview is not UTF-8 text".to_string())?;
-        Ok(PreviewArtifact::Text(text))
-    }
-}
-
 /// The search engine owns its rich candidate model; providers only enumerate
 /// candidates for one immutable request and never reach into UI state.
 pub(crate) trait SearchProvider: Send {
@@ -415,7 +355,10 @@ pub(crate) trait SearchProvider: Send {
     );
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Path-based effect, kept for the verification harness and port tests only;
+/// production code applies [`RelativeFileSystemEffect`] under a bound directory.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileSystemEffect {
     CreateDirectory {
         path: PathBuf,
@@ -434,7 +377,7 @@ pub enum FileSystemEffect {
     },
 }
 
-/// Descriptor-relative sibling of [`FileSystemEffect`].
+/// Descriptor-relative file-system effect.
 ///
 /// Names are single path components applied under a held
 /// [`crate::fs_at::BoundDirectory`] after `observe` + open.
@@ -459,6 +402,7 @@ pub enum RelativeFileSystemEffect {
 
 pub trait FileSystemProvider: Send + Sync {
     fn observe(&self, path: &Path) -> std::io::Result<crate::path_identity::PathIdentity>;
+    #[cfg(test)]
     fn apply(&self, effect: &FileSystemEffect) -> std::io::Result<()>;
 
     /// Apply a Create/Write/Rename/Remove effect under a proven directory
@@ -478,7 +422,9 @@ impl FileSystemProvider for NativeFileSystemProvider {
         crate::path_identity::PathIdentity::observe_deep(path)
     }
 
+    #[cfg(test)]
     fn apply(&self, effect: &FileSystemEffect) -> std::io::Result<()> {
+        use std::io::Write;
         match effect {
             FileSystemEffect::CreateDirectory { path } => std::fs::create_dir_all(path),
             FileSystemEffect::WriteFile { path, bytes } => {
@@ -571,33 +517,6 @@ mod tests {
         );
         assert_eq!(kind(ErrorKind::FileTooLarge), NativeFailureKind::Overflow);
         assert_eq!(kind(ErrorKind::Other), NativeFailureKind::Unknown);
-    }
-
-    #[test]
-    fn native_preview_reads_through_a_hard_byte_limit() {
-        let temp = TempDir::new();
-        let small = temp.file("small.txt", "hello");
-        let large = temp.file("large.txt", "too long");
-        let provider = NativePreviewProvider;
-        assert_eq!(
-            provider
-                .preview(&PreviewRequest {
-                    path: &small,
-                    kind: PreviewKind::Text,
-                    max_bytes: 5,
-                })
-                .unwrap(),
-            PreviewArtifact::Text("hello".to_string())
-        );
-        assert!(
-            provider
-                .preview(&PreviewRequest {
-                    path: &large,
-                    kind: PreviewKind::Text,
-                    max_bytes: 4,
-                })
-                .is_err()
-        );
     }
 
     #[test]

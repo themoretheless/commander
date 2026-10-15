@@ -415,6 +415,47 @@ mod tests {
     }
 
     #[test]
+    fn suggest_folder_name_needs_a_strict_majority_of_a_labelled_kind() {
+        let half = vec![
+            entry("cat.jpg", false, 1),
+            entry("dog.png", false, 1),
+            entry("memo.pdf", false, 1),
+            entry("plan.pdf", false, 1),
+        ];
+        assert_eq!(suggest_folder_name(&half), "New Folder");
+        let mut majority = half;
+        majority.push(entry("bird.gif", false, 1));
+        assert_eq!(suggest_folder_name(&majority), "Images");
+        // Folders dominate but make no useful label.
+        let folders = vec![
+            entry("alpha", true, 0),
+            entry("beta", true, 0),
+            entry("gamma", true, 0),
+        ];
+        assert_eq!(suggest_folder_name(&folders), "New Folder");
+    }
+
+    #[test]
+    fn suggest_folder_name_handles_multibyte_prefixes() {
+        assert_eq!(
+            suggest_folder_name(&[
+                entry("Отпуск 1.jpg", false, 1),
+                entry("Отпуск 2.jpg", false, 1),
+            ]),
+            "Отпуск"
+        );
+        // Case-insensitive across Cyrillic, keeping the first entry's casing.
+        assert_eq!(
+            suggest_folder_name(&[
+                entry("ОТПУСК море.jpg", false, 1),
+                entry("отпуск горы.jpg", false, 1),
+            ]),
+            "ОТПУСК"
+        );
+        assert_eq!(common_prefix_len("Отпуск 1", "Отпуск 2"), "Отпуск ".len());
+    }
+
+    #[test]
     fn suggest_folder_name_single_and_empty() {
         assert_eq!(suggest_folder_name(&[]), "New Folder");
         // A single file trims trailing digits off its stem.

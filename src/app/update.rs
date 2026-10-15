@@ -423,6 +423,20 @@ fn undo_recorded_toast(action: &crate::undo::Action) -> String {
     }
 }
 
+/// The receipt for `action`, the undo entry an operation just recorded: it
+/// replays that same action, so its Undo stays in sync with Cmd+Z. An action
+/// with no folder to jump back to gets none.
+fn undo_receipt(action: crate::undo::Action, now: f64) -> Option<crate::receipts::Receipt> {
+    let jump_to = action.jump_to()?;
+    Some(crate::receipts::Receipt {
+        verb: action.verb(),
+        item_count: action.item_count(),
+        timestamp: now,
+        jump_to,
+        undo_action: Some(action),
+    })
+}
+
 /// The toast text and kind for a finished Move to Trash.
 fn delete_outcome_toast(
     submitted: usize,
@@ -500,6 +514,43 @@ fn selection_hud_head(
             " \u{00b7} {}",
             count_noun(dir_count, "folder", "folders")
         ));
+    }
+    head
+}
+
+/// The selection HUD's first line: counts, total and average size, and for
+/// two or more items the largest and oldest names, cut to keep their
+/// extension.
+fn selection_headline(
+    s: &crate::selection_summary::SelectionSummary,
+    elsewhere: usize,
+    other_folders: usize,
+) -> String {
+    let mut head = selection_hud_head(s.count, s.dir_count, elsewhere, other_folders);
+    if s.total_bytes > 0 {
+        head.push_str(&format!(
+            " \u{00b7} {}",
+            crate::panel::format_size(s.total_bytes)
+        ));
+    }
+    if let Some(avg) = average_file_size(s) {
+        head.push_str(&format!(" \u{00b7} avg {}", crate::panel::format_size(avg)));
+    }
+    // Largest/oldest are only meaningful once more than one item is picked.
+    if s.count >= 2 {
+        let short = |name| crate::display_name::truncate_preserving_extension(name, 18);
+        if let Some((name, sz)) = &s.largest
+            && *sz > 0
+        {
+            head.push_str(&format!(
+                " \u{00b7} largest {} ({})",
+                short(name),
+                crate::panel::format_size(*sz)
+            ));
+        }
+        if let Some((name, _)) = &s.oldest {
+            head.push_str(&format!(" \u{00b7} oldest {}", short(name)));
+        }
     }
     head
 }
@@ -789,6 +840,17 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Log a receipt for the action on top of the undo stack, which the
+    /// operation that just finished pushed (see [`undo_receipt`]), and
+    /// return that action.
+    pub(crate) fn push_receipt_for_top_undo(&mut self, now: f64) -> Option<crate::undo::Action> {
+        let action = self.ws.top_undo_action().cloned()?;
+        if let Some(receipt) = undo_receipt(action.clone(), now) {
+            self.receipts.push(receipt);
+        }
+        Some(action)
+    }
+
     fn process_pending_context_menu(&mut self, ctx: &egui::Context) {
         if self.has_modal_surface() || !ctx.input(|input| input.focused) {
             self.ui.cancel_context_menu();
@@ -1031,7 +1093,7 @@ impl App {
                 .modals
                 .find
                 .as_ref()
-                .is_none_or(|state| !state.searching);
+                .is_none_or(|state| !state.searching());
         if !index_idle {
             crate::io_budget::note_foreground_activity();
         }
@@ -1108,27 +1170,18 @@ impl App {
             let outcome = self.ws.poll_transfer(move || c.request_repaint());
             let now = ctx.input(|input| input.time);
             if let Some(report) = outcome.terminal {
-                self.capture_terminal_report(report, (now * 1_000.0) as u64);
+                self.capture_terminal_report(report, super::secs_to_millis(now));
             }
             if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
                 // log a receipt (jump-back + the same live undo affordance).
-                if let Some(a) = self.ws.top_undo_action().cloned() {
+                if let Some(a) = self.push_receipt_for_top_undo(now) {
                     self.toast(
                         ctx,
                         crate::toasts::ToastKind::Success,
                         undo_recorded_toast(&a),
                         true,
                     );
-                    if let Some(jump_to) = a.jump_to() {
-                        self.receipts.push(crate::receipts::Receipt {
-                            verb: a.verb(),
-                            item_count: a.item_count(),
-                            timestamp: now,
-                            jump_to,
-                            undo_action: Some(a),
-                        });
-                    }
                 }
             }
         }
@@ -1203,7 +1256,7 @@ impl App {
                     .map(|failure| failure.message.clone())
                     .collect(),
                 failures: outcome.failures,
-                created_at_millis: (now * 1_000.0) as u64,
+                created_at_millis: super::secs_to_millis(now),
             });
         }
     }
@@ -1560,40 +1613,7 @@ impl App {
         let s = crate::selection_summary::summarize(&selected);
         let t = self.colors;
 
-        let mut head = selection_hud_head(s.count, s.dir_count, elsewhere, other_folders);
-        if s.total_bytes > 0 {
-            head.push_str(&format!(
-                " \u{00b7} {}",
-                crate::panel::format_size(s.total_bytes)
-            ));
-        }
-        if let Some(avg) = average_file_size(&s) {
-            head.push_str(&format!(" \u{00b7} avg {}", crate::panel::format_size(avg)));
-        }
-        // Largest/oldest are only meaningful once more than one item is picked.
-        if s.count >= 2 {
-            let short = |name: &str| -> String {
-                const MAX: usize = 18;
-                if name.chars().count() > MAX {
-                    let head: String = name.chars().take(MAX - 1).collect();
-                    format!("{head}\u{2026}")
-                } else {
-                    name.to_string()
-                }
-            };
-            if let Some((name, sz)) = &s.largest
-                && *sz > 0
-            {
-                head.push_str(&format!(
-                    " \u{00b7} largest {} ({})",
-                    short(name),
-                    crate::panel::format_size(*sz)
-                ));
-            }
-            if let Some((name, _)) = &s.oldest {
-                head.push_str(&format!(" \u{00b7} oldest {}", short(name)));
-            }
-        }
+        let head = selection_headline(&s, elsewhere, other_folders);
         let breakdown: String = s
             .kinds
             .iter()
@@ -2197,7 +2217,7 @@ impl App {
             return;
         };
         let now = ctx.input(|i| i.time);
-        if now - last > 1.5 {
+        if now - last > super::keys::TYPE_AHEAD_IDLE {
             if allow_state_updates {
                 self.ui.type_ahead = None;
             }
@@ -2403,8 +2423,6 @@ fn finish_drop(
     });
     if kind == TransferKind::Move && onto_own_folder {
         ws.cancel_drag();
-    } else if kind == TransferKind::Move {
-        ws.drop_dragged(notify);
     } else {
         ws.drop_dragged_as(kind, notify);
     }
@@ -2427,8 +2445,8 @@ mod tests {
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
     use super::{
-        command_shortcut, copied_paths_label, delete_outcome_toast, selection_hud_head,
-        undo_recorded_toast,
+        clipped_label, command_shortcut, copied_paths_label, delete_outcome_toast,
+        selection_headline, selection_hud_head, undo_receipt, undo_recorded_toast,
     };
     use super::{drag_path_rejection, finish_drop, sources_already_in};
     use super::{
@@ -2987,6 +3005,85 @@ mod tests {
     }
 
     #[test]
+    fn selection_headline_sums_and_names_the_extremes() {
+        use crate::selection_summary::SelectionSummary;
+        use std::time::SystemTime;
+        let single = SelectionSummary {
+            count: 1,
+            total_bytes: 2_048,
+            largest: Some(("only.txt".into(), 2_048)),
+            oldest: Some(("only.txt".into(), SystemTime::UNIX_EPOCH)),
+            ..SelectionSummary::default()
+        };
+        // One item: no average and no largest/oldest.
+        let line = selection_headline(&single, 0, 0);
+        assert!(line.starts_with("1 item \u{00b7} "), "{line}");
+        assert!(!line.contains("avg") && !line.contains("largest"), "{line}");
+
+        let many = SelectionSummary {
+            count: 3,
+            dir_count: 1,
+            total_bytes: 3_000,
+            largest: Some(("a-very-long-holiday-video.mov".into(), 2_000)),
+            oldest: Some(("notes.txt".into(), SystemTime::UNIX_EPOCH)),
+            ..SelectionSummary::default()
+        };
+        let line = selection_headline(&many, 2, 1);
+        assert!(line.starts_with("3 items + 2 in 1 other folder"), "{line}");
+        assert!(line.contains("1 folder"), "{line}");
+        // Two files share the bytes; the folder does not count.
+        assert!(line.contains(" \u{00b7} avg 1.5 KB"), "{line}");
+        assert!(
+            line.contains("largest a-very-long-h\u{2026}.mov ("),
+            "{line}"
+        );
+        assert!(line.ends_with(" \u{00b7} oldest notes.txt"), "{line}");
+
+        // A zero-byte largest entry is not named.
+        let empty_files = SelectionSummary {
+            count: 2,
+            largest: Some(("empty".into(), 0)),
+            ..SelectionSummary::default()
+        };
+        assert_eq!(selection_headline(&empty_files, 0, 0), "2 items");
+    }
+
+    #[test]
+    fn clipped_labels_count_chars_and_mark_the_cut() {
+        assert_eq!(clipped_label("Downloads", 9), "Downloads");
+        assert_eq!(clipped_label("Downloads", 8), "Downl...");
+        assert_eq!(
+            clipped_label("\u{65e5}\u{672c}\u{8a9e}\u{30d5}\u{30a9}", 4),
+            "\u{65e5}..."
+        );
+        assert_eq!(clipped_label("", 3), "");
+        // Below the ellipsis' own width only the marker is left.
+        assert_eq!(clipped_label("abcdef", 2), "...");
+        assert_eq!(clipped_label("abcdef", 0), "...");
+    }
+
+    #[test]
+    fn undo_receipts_replay_the_recorded_action_and_need_a_jump_target() {
+        use crate::undo::Action;
+        use std::path::PathBuf;
+        let rename = Action::BatchRename {
+            dir: PathBuf::from("/photos"),
+            pairs: vec![
+                ("a.jpg".into(), "x-a.jpg".into()),
+                ("b.jpg".into(), "x-b.jpg".into()),
+            ],
+        };
+        let receipt = undo_receipt(rename.clone(), 12.5).expect("receipt");
+        assert_eq!(receipt.verb, rename.verb());
+        assert_eq!(receipt.item_count, 2);
+        assert_eq!(receipt.timestamp, 12.5);
+        assert_eq!(receipt.jump_to, PathBuf::from("/photos"));
+        assert_eq!(receipt.undo_action, Some(rename));
+        // A move with no pairs has nowhere to jump back to.
+        assert!(undo_receipt(Action::Move { pairs: Vec::new() }, 1.0).is_none());
+    }
+
+    #[test]
     fn copied_path_labels_agree_with_their_count() {
         use crate::clipboard::PathStyle;
         assert_eq!(copied_paths_label(PathStyle::FullPath, 1), "path");
@@ -3033,6 +3130,29 @@ mod tests {
         assert!(ws.left.drag.is_empty());
         assert!(!ws.right.drag.has_drop_target());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha");
+    }
+
+    #[test]
+    fn move_drop_onto_another_folder_starts_the_transfer() {
+        let (l, r) = (
+            crate::testutil::TempDir::new(),
+            crate::testutil::TempDir::new(),
+        );
+        let file = l.file("a.txt", "alpha");
+        let mut ws =
+            crate::workspace::Workspace::new(l.path().to_path_buf(), r.path().to_path_buf());
+        ws.left.refresh();
+        ws.right.refresh();
+        ws.left.drag.set(vec![file]);
+        ws.right.drag.set_drop_target(r.path().to_path_buf());
+
+        finish_drop(&mut ws, crate::transfer::TransferKind::Move, || {});
+
+        assert!(ws.drag_session().is_none(), "the drag is consumed");
+        assert!(
+            ws.pending_op.is_some() || ws.has_unfinished_transfer_work(),
+            "the move is staged, not cancelled"
+        );
     }
 
     #[test]

@@ -293,8 +293,8 @@ pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
 
 /// Recipient-encrypted export with explicit expiry and plaintext preview (J005).
 ///
-/// Seals via the legacy [`crate::support_encrypt`] helpers, writes through
-/// [`crate::encrypted_bundle::export_to`], and verifies the on-disk envelope.
+/// Encrypts and writes through [`crate::encrypted_bundle::export_to`], then
+/// verifies by decrypting the envelope read back from disk.
 pub fn export_encrypted(
     paths: &[PathBuf],
     recipient_id: &str,
@@ -312,32 +312,6 @@ pub fn export_encrypted(
     let json = serde_json::to_vec_pretty(&bundle)
         .map_err(|error| format!("Could not encode support bundle: {error}"))?;
     let created_at_secs = now_secs();
-    let sealed = if recipient_secret == recipient_id {
-        crate::support_encrypt::seal_support_bytes(
-            recipient_id,
-            &json,
-            &preview,
-            created_at_secs,
-            ttl_secs,
-        )?
-    } else {
-        crate::support_encrypt::seal_support_bytes_with_secret(
-            recipient_id,
-            recipient_secret,
-            &json,
-            &preview,
-            created_at_secs,
-            ttl_secs,
-        )?
-    };
-    let recovered_memory = if recipient_secret == recipient_id {
-        crate::support_encrypt::open_support_bytes(&sealed, recipient_id, created_at_secs)?
-    } else {
-        crate::support_encrypt::decrypt(&sealed.manifest, recipient_secret, created_at_secs)?
-    };
-    if recovered_memory != json {
-        return Err("encrypted support bundle failed in-memory verification".into());
-    }
     let manifest = crate::encrypted_bundle::export_to(
         &path,
         &json,
@@ -559,6 +533,64 @@ mod tests {
         assert_eq!(span.target, bundle.volumes[0].requested);
         assert!(!bundle.operation_spans_truncated);
         assert!(!bundle.preserved_versions_truncated);
+    }
+
+    #[test]
+    fn bundle_keeps_only_the_newest_operations_and_versions() {
+        let operations: Vec<OperationRecord> = (0..=MAX_OPERATION_SPANS as u64)
+            .map(|index| OperationRecord {
+                id: OperationId(format!("operation-{index}")),
+                group_id: None,
+                kind: TransferKind::Copy,
+                target: PathBuf::from("/tmp/target"),
+                policy: OverwritePolicy::OverwriteAll,
+                method: CopyMethod::Native,
+                durability: DurabilityProfile::Verified,
+                version_retention: crate::operation::VersionRetentionPolicy::default(),
+                name_policy: crate::filesystem_policy::NamePolicy::default(),
+                symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+                post_success: None,
+                rollback_cleanup: None,
+                rollback_cleanup_identity: None,
+                rollback_cleanup_quarantine: None,
+                status: OperationStatus::Completed,
+                created_at_secs: 0,
+                // The duration tells records apart after redaction.
+                updated_at_secs: index,
+                steps: Vec::new(),
+            })
+            .collect();
+        let versions: Vec<_> = (0..=MAX_VERSION_SUMMARIES as u64)
+            .map(|index| crate::version_store::VersionRecord {
+                operation_id: OperationId(format!("operation-{index}")),
+                key: IdempotencyKey(format!("version-{index}")),
+                original: PathBuf::from("/tmp/original"),
+                stored: PathBuf::from("/tmp/stored"),
+                created_at_secs: index,
+            })
+            .collect();
+
+        let bundle = build(&[], &operations, &versions, Vec::new());
+
+        assert!(bundle.operation_spans_truncated);
+        assert_eq!(bundle.operation_spans.len(), MAX_OPERATION_SPANS);
+        // The oldest (first) record is the one dropped.
+        assert_eq!(bundle.operation_spans[0].duration_secs, 1);
+        assert_eq!(
+            bundle.operation_spans.last().unwrap().duration_secs,
+            MAX_OPERATION_SPANS as u64
+        );
+        assert!(bundle.preserved_versions_truncated);
+        assert_eq!(bundle.preserved_versions.len(), MAX_VERSION_SUMMARIES);
+        assert_eq!(
+            bundle.preserved_versions[0].age_secs,
+            bundle.generated_at_secs - 1
+        );
+
+        let exact = build(&[], &operations[1..], &versions[1..], Vec::new());
+        assert!(!exact.operation_spans_truncated);
+        assert!(!exact.preserved_versions_truncated);
+        assert_eq!(exact.operation_spans.len(), MAX_OPERATION_SPANS);
     }
 
     #[test]

@@ -552,6 +552,72 @@ mod tests {
     }
 
     #[test]
+    fn normalization_forms_report_changes_and_case_collisions() {
+        let composed = "Caf\u{e9}";
+        let decomposed = "Cafe\u{301}";
+        let names = [composed, decomposed, "Notes", "notes"];
+        // (form, case_sensitive, changed originals, collision groups)
+        type Case<'a> = (NormalizationForm, bool, &'a [&'a str], &'a [&'a [&'a str]]);
+        let cases: [Case<'_>; 6] = [
+            (NormalizationForm::Preserve, true, &[], &[]),
+            (
+                NormalizationForm::Preserve,
+                false,
+                &[],
+                &[&["Notes", "notes"]],
+            ),
+            (
+                NormalizationForm::Nfc,
+                true,
+                &[decomposed],
+                &[&[composed, decomposed]],
+            ),
+            (
+                NormalizationForm::Nfc,
+                false,
+                &[decomposed],
+                &[&[composed, decomposed], &["Notes", "notes"]],
+            ),
+            (
+                NormalizationForm::Nfd,
+                true,
+                &[composed],
+                &[&[composed, decomposed]],
+            ),
+            (
+                NormalizationForm::Nfd,
+                false,
+                &[composed],
+                &[&[composed, decomposed], &["Notes", "notes"]],
+            ),
+        ];
+        for (form, case_sensitive, changed, collisions) in cases {
+            let preview = preview_normalization(names, form, case_sensitive, false);
+            let originals: Vec<_> = preview
+                .changes
+                .iter()
+                .map(|change| change.original.as_str())
+                .collect();
+            assert_eq!(
+                originals, changed,
+                "{form:?} case_sensitive={case_sensitive}"
+            );
+            for change in &preview.changes {
+                assert_eq!(change.normalized, form.apply(&change.original));
+            }
+            let mut groups = preview.collisions.clone();
+            groups.sort();
+            let mut expected: Vec<Vec<String>> = collisions
+                .iter()
+                .map(|group| group.iter().map(|name| name.to_string()).collect())
+                .collect();
+            expected.sort();
+            assert_eq!(groups, expected, "{form:?} case_sensitive={case_sensitive}");
+        }
+        assert_eq!(NormalizationForm::Nfd.apply(composed), decomposed);
+    }
+
+    #[test]
     fn case_insensitive_collisions_fold_final_sigma() {
         let preview = preview_normalization(
             ["\u{3bf}\u{3c2}", "\u{3bf}\u{3c3}"],
@@ -624,9 +690,81 @@ mod tests {
         );
     }
 
+    /// The volume profile a probe would report for `fixture`.
+    fn fixture_profile(index: usize, fixture: FixtureKind) -> crate::volume_profile::VolumeProfile {
+        use crate::volume_profile::{BackendKind, VolumeCapabilities, VolumeProfile};
+        let contract = fixture.contract();
+        let backend = if contract.remote {
+            BackendKind::Remote
+        } else {
+            BackendKind::LocalFast
+        };
+        VolumeProfile {
+            volume_id: index as u64 + 1,
+            generation: 1,
+            backend,
+            filesystem: contract.filesystem.to_string(),
+            mount_point: format!("/fixture/{index}").into(),
+            read_only: contract.read_only,
+            case_sensitive: Some(contract.case_sensitive),
+            capabilities: VolumeCapabilities {
+                atomic_rename: !contract.read_only && !contract.remote,
+                clone: !contract.read_only && !contract.remote,
+                sparse: !contract.read_only,
+                resumable: !contract.read_only,
+                delta: !contract.read_only && contract.remote,
+                max_concurrency: if contract.remote { 2 } else { 4 },
+            },
+            reason: format!("{} fixture", contract.filesystem),
+        }
+    }
+
+    #[test]
+    fn capability_matrix_states_every_row_per_fixture() {
+        use CapabilityState::{Available as A, Fallback as F, Unavailable as U};
+        // Read, Write, Rename, Clone, Trash, ExtendedAttributes.
+        let expected = [
+            (FixtureKind::CaseSensitiveApfs, [A, A, A, A, A, A]),
+            (FixtureKind::CaseInsensitiveApfs, [A, A, A, A, A, A]),
+            // A read-only volume offers no write-type capability at all.
+            (FixtureKind::ReadOnly, [A, U, U, U, U, U]),
+            // Remote shares fall back to copy, direct delete and no xattrs.
+            (FixtureKind::Smb, [A, A, F, F, F, F]),
+            (FixtureKind::Nfs, [A, A, F, F, F, F]),
+        ];
+        let order = [
+            Capability::Read,
+            Capability::Write,
+            Capability::Rename,
+            Capability::Clone,
+            Capability::Trash,
+            Capability::ExtendedAttributes,
+        ];
+        for (index, (fixture, states)) in expected.into_iter().enumerate() {
+            let matrix = matrix_for_profile(&fixture_profile(index, fixture), true);
+            let rows: Vec<_> = matrix.rows.iter().map(|row| row.capability).collect();
+            assert_eq!(rows, order, "{fixture:?}");
+            for (capability, state) in order.into_iter().zip(states) {
+                assert_eq!(
+                    matrix.state(capability),
+                    state,
+                    "{fixture:?} {capability:?}"
+                );
+            }
+        }
+        // A local filesystem without xattrs falls back for metadata only.
+        let mut exfat = fixture_profile(0, FixtureKind::CaseInsensitiveApfs);
+        exfat.filesystem = "exfat".into();
+        let matrix = matrix_for_profile(&exfat, false);
+        assert_eq!(matrix.state(Capability::ExtendedAttributes), F);
+        assert_eq!(matrix.state(Capability::Trash), A);
+        assert_eq!(matrix.state(Capability::Read), U);
+        assert_eq!(matrix.unavailable_labels(), ["Read"]);
+    }
+
     #[test]
     fn operation_preflight_runs_across_the_filesystem_fixture_matrix() {
-        use crate::volume_profile::{BackendKind, VolumeCapabilities, VolumeProfile};
+        use crate::volume_profile::BackendKind;
 
         let fixtures = [
             FixtureKind::CaseSensitiveApfs,
@@ -638,30 +776,7 @@ mod tests {
         ];
         for (index, fixture) in fixtures.into_iter().enumerate() {
             let contract = fixture.contract();
-            let backend = if contract.remote {
-                BackendKind::Remote
-            } else {
-                BackendKind::LocalFast
-            };
-            let profile = VolumeProfile {
-                volume_id: index as u64 + 1,
-                generation: 1,
-                backend,
-                filesystem: contract.filesystem.to_string(),
-                mount_point: format!("/fixture/{index}").into(),
-                read_only: contract.read_only,
-                case_sensitive: Some(contract.case_sensitive),
-                capabilities: VolumeCapabilities {
-                    atomic_rename: !contract.read_only && !contract.remote,
-                    clone: !contract.read_only && !contract.remote,
-                    sparse: !contract.read_only,
-                    resumable: !contract.read_only,
-                    delta: !contract.read_only && contract.remote,
-                    max_concurrency: if contract.remote { 2 } else { 4 },
-                },
-                reason: format!("{} fixture", contract.filesystem),
-            };
-            let matrix = matrix_for_profile(&profile, true);
+            let matrix = matrix_for_profile(&fixture_profile(index, fixture), true);
             assert_eq!(matrix.backend == BackendKind::Remote, contract.remote);
             assert_eq!(
                 matrix.state(Capability::Write) == CapabilityState::Unavailable,

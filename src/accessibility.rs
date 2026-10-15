@@ -387,25 +387,25 @@ pub fn control_audit_failures(catalog: &[ControlSpec]) -> Vec<&'static str> {
         .collect()
 }
 
+/// A state the UI tints with color. Every channel must also be painted with
+/// the non-color cue it names, so list only states a renderer really draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisualChannel {
     ActivePane,
     KeyboardFocus,
     Cursor,
     Selection,
-    Mark,
     Difference,
     Error,
     Disabled,
 }
 
 impl VisualChannel {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::ActivePane,
         Self::KeyboardFocus,
         Self::Cursor,
         Self::Selection,
-        Self::Mark,
         Self::Difference,
         Self::Error,
         Self::Disabled,
@@ -417,7 +417,6 @@ impl VisualChannel {
             Self::KeyboardFocus => "double outline",
             Self::Cursor => "leading chevron and thin outline",
             Self::Selection => "check mark and filled row",
-            Self::Mark => "right-edge stripe and diamond",
             Self::Difference => "edge stripe and relation symbol",
             Self::Error => "error icon and text",
             Self::Disabled => "disabled state and explanatory tooltip",
@@ -696,6 +695,10 @@ mod tests {
         assert_eq!(snapshot.lines().count(), VisualChannel::ALL.len());
         assert!(snapshot.contains("KeyboardFocus:double outline"));
         assert!(snapshot.contains("Error:error icon and text"));
+        // No file "mark" state exists apart from selection, so no snapshot
+        // line may promise a cue (the old stripe and diamond) nothing paints.
+        assert!(!snapshot.contains("Mark:"));
+        assert!(!snapshot.contains("diamond"));
     }
 
     #[test]

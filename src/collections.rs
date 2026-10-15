@@ -166,6 +166,17 @@ fn listed(name: &std::ffi::OsStr, show_hidden: bool) -> bool {
 /// Stream every root's entries on a worker thread. Hidden (dot-name) entries
 /// follow `show_hidden`, like the panels.
 pub fn spawn_view(collection: ProjectCollection, show_hidden: bool, notify: Notify) -> ViewRun {
+    spawn_view_with_cap(collection, show_hidden, VIEW_CAP, notify)
+}
+
+/// [`spawn_view`] stopping after `cap` scanned entries across all roots.
+/// `truncated` is reported only when an entry was actually left unscanned.
+fn spawn_view_with_cap(
+    collection: ProjectCollection,
+    show_hidden: bool,
+    cap: usize,
+    notify: Notify,
+) -> ViewRun {
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = mpsc::channel();
@@ -190,6 +201,10 @@ pub fn spawn_view(collection: ProjectCollection, show_hidden: bool, notify: Noti
                 if worker_cancelled.load(Ordering::Acquire) {
                     break;
                 }
+                if scanned >= cap {
+                    truncated = true;
+                    break;
+                }
                 scanned += 1;
                 let path = dir_entry.path();
                 let Ok(metadata) = dir_entry.metadata() else {
@@ -210,10 +225,6 @@ pub fn spawn_view(collection: ProjectCollection, show_hidden: bool, notify: Noti
                         return;
                     }
                     notify();
-                }
-                if scanned >= VIEW_CAP {
-                    truncated = true;
-                    break;
                 }
             }
             if truncated {
@@ -458,5 +469,52 @@ mod tests {
             view_names(root.path(), true),
             vec![".DS_Store", ".git", "visible.txt"]
         );
+    }
+
+    /// Every row and the final `(scanned, truncated)` of a capped view.
+    fn capped_view(roots: [&Path; 2], cap: usize) -> (Vec<VirtualEntry>, usize, bool) {
+        let run = spawn_view_with_cap(
+            ProjectCollection::new("Capped", roots.map(Path::to_path_buf)),
+            false,
+            cap,
+            Arc::new(|| {}),
+        );
+        let mut rows = Vec::new();
+        while let Ok(event) = run.receiver.recv_timeout(Duration::from_secs(5)) {
+            match event {
+                ViewEvent::Batch(batch) => rows.extend(batch),
+                ViewEvent::Complete {
+                    scanned, truncated, ..
+                } => return (rows, scanned, truncated),
+            }
+        }
+        panic!("collection view did not complete");
+    }
+
+    #[test]
+    fn the_view_cap_spans_roots_and_reports_truncation_only_when_rows_are_left() {
+        let left = TempDir::new();
+        let right = TempDir::new();
+        for name in ["a.txt", "b.txt"] {
+            left.file(name, "l");
+            right.file(name, "r");
+        }
+        let roots = [left.path(), right.path()];
+
+        let (rows, scanned, truncated) = capped_view(roots, 3);
+        assert_eq!((rows.len(), scanned, truncated), (3, 3, true));
+        assert_eq!(
+            rows.iter().filter(|row| row.root == right.path()).count(),
+            1
+        );
+
+        // Exactly the cap: everything was listed, nothing was cut off.
+        let (rows, scanned, truncated) = capped_view(roots, 4);
+        assert_eq!((rows.len(), scanned, truncated), (4, 4, false));
+
+        // The first root alone fills the cap; the second still has rows.
+        let (rows, _, truncated) = capped_view(roots, 2);
+        assert!(truncated);
+        assert!(rows.iter().all(|row| row.root == left.path()));
     }
 }

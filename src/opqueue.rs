@@ -580,6 +580,29 @@ mod tests {
     }
 
     #[test]
+    fn reorder_keeps_get_lookup_in_sync_for_shifted_jobs() {
+        let mut queue = q();
+        let ids: Vec<JobId> = ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(|spec| queue.enqueue(JobKind::Copy, spec))
+            .collect();
+        let assert_index = |queue: &Queue<&'static str>| {
+            for &id in &ids {
+                assert_eq!(queue.get(id).map(|job| job.id), Some(id));
+            }
+        };
+        // Forward: b moves past c and d, which shift back by one.
+        assert!(queue.reorder(ids[1], 3));
+        assert_eq!(specs(&queue), vec!["a", "c", "d", "b", "e"]);
+        assert_index(&queue);
+        // Backward: e moves before c, shifting c, d and b forward by one.
+        assert!(queue.reorder(ids[4], 1));
+        assert_eq!(specs(&queue), vec!["a", "e", "c", "d", "b"]);
+        assert_index(&queue);
+        assert_eq!(queue.get(ids[3]).unwrap().spec, "d");
+    }
+
+    #[test]
     fn reorder_refuses_non_pending_jobs() {
         let mut queue = q();
         let a = queue.enqueue(JobKind::Copy, "a");

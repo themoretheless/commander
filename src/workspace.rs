@@ -35,6 +35,14 @@ impl ActivePanel {
             Self::Right => Self::Left,
         }
     }
+
+    /// `(this side's, the other side's)` value out of a `(left, right)` pair.
+    pub const fn order<T>(self, left: T, right: T) -> (T, T) {
+        match self {
+            Self::Left => (left, right),
+            Self::Right => (right, left),
+        }
+    }
 }
 
 /// Immutable target captured when the batch-rename sheet opens. Keeping the
@@ -720,6 +728,11 @@ impl Workspace {
         }
     }
 
+    /// `(active, inactive)` panes, for code that reads both at once.
+    const fn panes(&self) -> (&PanelState, &PanelState) {
+        self.active.order(&self.left, &self.right)
+    }
+
     pub(crate) fn emit_ui_request(&mut self, request: UiRequest) {
         self.ui_requests.emit(request);
     }
@@ -779,10 +792,7 @@ impl Workspace {
     /// broad command surfaces. The filtered view is visited once without a
     /// temporary allocation.
     pub fn command_context(&self) -> crate::command::CommandContext {
-        let (active, inactive) = match self.active {
-            ActivePanel::Left => (&self.left, &self.right),
-            ActivePanel::Right => (&self.right, &self.left),
-        };
+        let (active, inactive) = self.panes();
         let visible_entries = active.filtered_count();
         let cursor = active.cursor_entry();
         let mut visible_files = 0usize;
@@ -873,18 +883,13 @@ impl Workspace {
         selected_entries: usize,
         has_transfer_source: bool,
     ) -> crate::command::CommandContext {
-        let (active, inactive) = match self.active {
-            ActivePanel::Left => (&self.left, &self.right),
-            ActivePanel::Right => (&self.right, &self.left),
-        };
+        let (active, inactive) = self.panes();
         let cursor = active.cursor_entry();
         let pending_operation = self.pending_op.is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let (left_read_only, right_read_only) = self.pane_read_only();
-        let (active_read_only, inactive_read_only) = match self.active {
-            ActivePanel::Left => (left_read_only, right_read_only),
-            ActivePanel::Right => (right_read_only, left_read_only),
-        };
+        let (active_read_only, inactive_read_only) =
+            self.active.order(left_read_only, right_read_only);
         crate::command::CommandContext {
             picked_entries: match active.selected_elsewhere_count() {
                 0 if active.selection_is_empty() => usize::from(cursor.is_some()),
@@ -1001,10 +1006,7 @@ impl Workspace {
         };
         match cmd {
             Command::SwitchPanel => {
-                self.active = match self.active {
-                    ActivePanel::Left => ActivePanel::Right,
-                    ActivePanel::Right => ActivePanel::Left,
-                };
+                self.active = self.active.other();
             }
             Command::CursorUp => {
                 let panel = self.active_panel();
@@ -1223,10 +1225,7 @@ impl Workspace {
             }
             Command::SwapPanels => {
                 std::mem::swap(&mut self.left, &mut self.right);
-                self.active = match self.active {
-                    ActivePanel::Left => ActivePanel::Right,
-                    ActivePanel::Right => ActivePanel::Left,
-                };
+                self.active = self.active.other();
             }
             Command::BeginBatchRename => self.emit_ui_request(UiRequest::BatchRename),
             Command::BeginSync => self.emit_ui_request(UiRequest::Sync),
@@ -1508,19 +1507,18 @@ impl Workspace {
 
     fn create_symlinks(&mut self) {
         let report = fileops::create_symlinks(self);
-        let message = link_report_message(("symlink", "symlinks"), report.created, &report.errors);
-        self.emit_ui_request(UiRequest::Notice {
-            message,
-            error: !report.errors.is_empty() && report.created == 0,
-        });
+        self.link_notice(("symlink", "symlinks"), &report);
     }
 
     fn create_hardlinks(&mut self) {
         let report = fileops::create_hardlinks(self);
-        let message =
-            link_report_message(("hard link", "hard links"), report.created, &report.errors);
+        self.link_notice(("hard link", "hard links"), &report);
+    }
+
+    /// Toast a link command's report: an error only when nothing was made.
+    fn link_notice(&mut self, noun: (&str, &str), report: &fileops::LinkReport) {
         self.emit_ui_request(UiRequest::Notice {
-            message,
+            message: link_report_message(noun, report.created, &report.errors),
             error: !report.errors.is_empty() && report.created == 0,
         });
     }
@@ -2335,27 +2333,11 @@ impl Workspace {
                 // case-only rename is itself a swap/case-only and needs staging).
                 let existing = fileops::dir_names(&dir);
                 let result = fileops::apply_rename_order(&dir, &pairs, &existing);
-                self.left.refresh();
-                self.right.refresh();
-                if let Err(error) = &result {
-                    fileops::latch_rename_execution_error(self, error);
-                }
-                // A failed rename undo/redo leaves the filesystem out of step
-                // with the stack: surface it rather than swallowing the error.
-                result
-                    .map(|_| ActionExecution::Completed)
-                    .map_err(|error| error.to_string())
+                self.settle_rename_replay(result)
             }
             crate::undo::Action::Rename { from, to } => {
                 let result = fileops::rename_path_no_clobber(&from, &to);
-                self.left.refresh();
-                self.right.refresh();
-                if let Err(error) = &result {
-                    fileops::latch_rename_execution_error(self, error);
-                }
-                result
-                    .map(|_| ActionExecution::Completed)
-                    .map_err(|error| error.to_string())
+                self.settle_rename_replay(result)
             }
             crate::undo::Action::Gather { folder, pairs } => {
                 let sources: Vec<PathBuf> = pairs.into_iter().map(|(from, _)| from).collect();
@@ -2443,6 +2425,23 @@ impl Workspace {
                 Ok(ActionExecution::Completed)
             }
         }
+    }
+
+    /// Finish a rename undo/redo: re-list both panes and latch any failure.
+    /// A failed rename replay leaves the filesystem out of step with the
+    /// stack: surface it rather than swallowing the error.
+    fn settle_rename_replay<T>(
+        &mut self,
+        result: Result<T, fileops::RenameExecutionError>,
+    ) -> Result<ActionExecution, String> {
+        self.left.refresh();
+        self.right.refresh();
+        if let Err(error) = &result {
+            fileops::latch_rename_execution_error(self, error);
+        }
+        result
+            .map(|_| ActionExecution::Completed)
+            .map_err(|error| error.to_string())
     }
 
     /// Move one item back to the Trash for a Trash redo. The error carries
@@ -3192,6 +3191,7 @@ impl Workspace {
     /// conflicts are confirmed, cross-volume moves work, self/descendant drops
     /// are rejected and errors surface. A clean, conflict-free drop runs
     /// immediately; a conflicting one opens the confirmation dialog.
+    #[cfg(test)]
     pub fn drop_dragged(&mut self, notify: impl Fn() + Send + 'static) {
         fileops::drop_dragged(self, notify)
     }

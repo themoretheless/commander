@@ -107,7 +107,7 @@ fn verify_one(path: &Path) -> ChecksumRow {
         Ok(hash) => ChecksumRow {
             path: path.to_path_buf(),
             content_hash: Some(content_hash_of(&hash)),
-            blake3_hex: Some(hex32(&hash)),
+            blake3_hex: Some(blake3::Hash::from(hash).to_hex().to_string()),
             error: None,
             skipped: None,
         },
@@ -127,14 +127,6 @@ fn content_hash_of(blake3: &[u8; 32]) -> u64 {
     let mut prefix = [0_u8; 8];
     prefix.copy_from_slice(&blake3[..8]);
     u64::from_be_bytes(prefix)
-}
-
-fn hex32(bytes: &[u8; 32]) -> String {
-    let mut out = String::with_capacity(64);
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -184,5 +176,117 @@ mod tests {
         assert_eq!(row.error, None);
         assert_eq!(row.content_hash, crate::fs_util::content_hash(&path));
         assert!(row.content_hash.is_some());
+    }
+
+    #[test]
+    fn blake3_hex_is_the_lowercase_digest_of_the_content() {
+        let temp = TempDir::new();
+        let path = temp.file("a.bin", "some payload bytes");
+        let report = verify_paths([path]);
+        let expected = blake3::hash(b"some payload bytes").to_hex().to_string();
+        assert_eq!(
+            report.rows[0].blake3_hex.as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(expected.len(), 64);
+    }
+
+    fn row(name: &str) -> ChecksumRow {
+        ChecksumRow {
+            path: PathBuf::from(name),
+            content_hash: None,
+            blake3_hex: None,
+            error: None,
+            skipped: None,
+        }
+    }
+
+    #[test]
+    fn detailed_text_formats_ok_error_skipped_and_unknown_rows() {
+        let report = ChecksumReport {
+            rows: vec![
+                ChecksumRow {
+                    content_hash: Some(0xab),
+                    blake3_hex: Some("cafe".to_string()),
+                    ..row("/data/ok.bin")
+                },
+                ChecksumRow {
+                    error: Some("permission denied".to_string()),
+                    // An error wins over any partial hash.
+                    content_hash: Some(1),
+                    ..row("/data/bad.bin")
+                },
+                ChecksumRow {
+                    skipped: Some("symlinks are not hashed".to_string()),
+                    ..row("/data/link")
+                },
+                row("/data/unknown.bin"),
+            ],
+        };
+        assert_eq!(
+            report.detailed_text(),
+            "ok.bin: content=00000000000000ab blake3=cafe\n\
+             bad.bin: ERROR permission denied\n\
+             link: skipped (symlinks are not hashed)\n\
+             unknown.bin: content=- blake3=-"
+        );
+        // A path without a file name (the root) falls back to the full path.
+        let root = ChecksumReport {
+            rows: vec![row("/")],
+        };
+        assert_eq!(root.detailed_text(), "/: content=- blake3=-");
+    }
+
+    #[test]
+    fn summary_line_for_empty_and_failed_only_reports() {
+        assert_eq!(
+            ChecksumReport::default().summary_line(),
+            "Verified 0 file(s)"
+        );
+        assert_eq!(ChecksumReport::default().detailed_text(), "");
+        let report = ChecksumReport {
+            rows: vec![
+                row("/a"),
+                ChecksumRow {
+                    error: Some("gone".to_string()),
+                    ..row("/b")
+                },
+            ],
+        };
+        assert_eq!(report.summary_line(), "Verified 1 file(s), 1 failed");
+    }
+
+    #[test]
+    fn missing_paths_report_the_os_error_and_folders_explain_the_skip() {
+        let temp = TempDir::new();
+        let missing = temp.path().join("gone.bin");
+        let folder = temp.dir("Photos");
+        let report = verify_paths([missing.clone(), folder]);
+        let expected = std::fs::symlink_metadata(&missing).unwrap_err().to_string();
+        assert_eq!(report.rows[0].error.as_deref(), Some(expected.as_str()));
+        assert_eq!(report.rows[0].skipped, None);
+        assert_eq!(
+            report.rows[1].skipped.as_deref(),
+            Some("directories have no content checksum")
+        );
+        assert_eq!(report.rows[1].content_hash, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_skipped_without_following_them() {
+        let temp = TempDir::new();
+        let target = temp.file("target.bin", "payload");
+        let link = temp.path().join("link.bin");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let dangling = temp.path().join("dangling.bin");
+        std::os::unix::fs::symlink(temp.path().join("nowhere"), &dangling).unwrap();
+        let report = verify_paths([link, dangling]);
+        for row in &report.rows {
+            assert_eq!(row.error, None);
+            assert_eq!(row.blake3_hex, None);
+            assert_eq!(row.skipped.as_deref(), Some("symlinks are not hashed"));
+        }
+        assert_eq!(report.summary_line(), "Verified 0 file(s), 2 skipped");
     }
 }

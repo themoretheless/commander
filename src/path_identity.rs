@@ -53,21 +53,18 @@ pub struct TransferSourceIdentity {
 
 impl TransferSourceIdentity {
     pub fn same_binding(&self, other: &Self) -> bool {
-        self.lexical.same_binding(&other.lexical)
-            && self.logical_bytes == other.logical_bytes
-            && self.followed.len() == other.followed.len()
-            && self
-                .followed
-                .iter()
-                .zip(&other.followed)
-                .all(|(expected, current)| {
-                    expected.link == current.link && expected.target.same_binding(&current.target)
-                })
+        self.lexical.same_binding(&other.lexical) && self.same_followed(other)
     }
 
     pub fn same_version(&self, other: &Self) -> bool {
-        self.lexical.same_version(&other.lexical)
-            && self.logical_bytes == other.logical_bytes
+        self.lexical.same_version(&other.lexical) && self.same_followed(other)
+    }
+
+    /// Same byte count and the same followed links, each still bound to the
+    /// same target. Only the lexical comparison differs between the two
+    /// checks above; followed targets are always compared by binding.
+    fn same_followed(&self, other: &Self) -> bool {
+        self.logical_bytes == other.logical_bytes
             && self.followed.len() == other.followed.len()
             && self
                 .followed
@@ -348,6 +345,44 @@ mod tests {
         std::fs::write(&path, "two").unwrap();
         let after = PathIdentity::observe(&path).unwrap();
         assert!(!before.same_version(&after));
+    }
+
+    #[test]
+    fn transfer_source_binding_and_version_differ_only_on_the_lexical_path() {
+        let temp = TempDir::new();
+        let file = temp.file("file.txt", "one");
+        let target = temp.file("target.txt", "target");
+        let source = TransferSourceIdentity {
+            lexical: PathIdentity::observe(&file).unwrap(),
+            followed: vec![FollowedPathIdentity {
+                link: temp.path().join("link"),
+                target: PathIdentity::observe(&target).unwrap(),
+            }],
+            logical_bytes: 9,
+        };
+        assert!(source.same_binding(&source.clone()));
+        assert!(source.same_version(&source.clone()));
+
+        // The same object under another name: still the same version.
+        let mut renamed = source.clone();
+        renamed.lexical.path = temp.path().join("renamed.txt");
+        assert!(!source.same_binding(&renamed));
+        assert!(source.same_version(&renamed));
+
+        // Followed targets are always compared by binding, so even
+        // `same_version` rejects a target observed under another path.
+        let mut moved_target = source.clone();
+        moved_target.followed[0].target.path = temp.path().join("elsewhere.txt");
+        let mut relinked = source.clone();
+        relinked.followed[0].link = temp.path().join("other-link");
+        let mut resized = source.clone();
+        resized.logical_bytes += 1;
+        let mut unfollowed = source.clone();
+        unfollowed.followed.clear();
+        for changed in [moved_target, relinked, resized, unfollowed] {
+            assert!(!source.same_binding(&changed), "{changed:?}");
+            assert!(!source.same_version(&changed), "{changed:?}");
+        }
     }
 
     #[test]

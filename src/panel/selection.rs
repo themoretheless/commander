@@ -246,4 +246,74 @@ mod tests {
         assert!(selection.selected().contains(&old_entry));
         assert_eq!(selection.focus(), &Focus::Parent);
     }
+
+    /// Visit `folder`, pick `picks` there, and leave for a scratch folder.
+    fn pick_in(selection: &mut SelectionState, folder: &Path, picks: &[&str]) {
+        selection.publish_complete(folder);
+        for pick in picks {
+            selection.insert_selected(folder.join(pick));
+        }
+        selection.bind(Path::new("/scratch"));
+    }
+
+    #[test]
+    fn remembered_selections_evict_the_least_recently_left_folder() {
+        let mut selection = SelectionState::default();
+        let folder = |index: usize| PathBuf::from(format!("/f/{index:03}"));
+        for index in 0..=REMEMBERED_BINDINGS_LIMIT {
+            pick_in(&mut selection, &folder(index), &["pick"]);
+        }
+
+        assert_eq!(selection.remembered.len(), REMEMBERED_BINDINGS_LIMIT);
+        assert!(!selection.remembered.contains_key(&folder(0)), "oldest");
+        assert!(selection.remembered.contains_key(&folder(1)));
+        assert_eq!(selection.remembered_order.len(), REMEMBERED_BINDINGS_LIMIT);
+        assert_eq!(selection.remembered_order.front(), Some(&folder(1)));
+
+        // Revisiting a folder makes it the most recent: the next overflow
+        // evicts folder 2 instead.
+        selection.publish_complete(&folder(1));
+        assert!(selection.selected().contains(&folder(1).join("pick")));
+        selection.bind(Path::new("/scratch"));
+        assert_eq!(selection.remembered_order.back(), Some(&folder(1)));
+        pick_in(&mut selection, &PathBuf::from("/f/extra"), &["pick"]);
+        assert!(selection.remembered.contains_key(&folder(1)));
+        assert!(!selection.remembered.contains_key(&folder(2)));
+        assert_eq!(selection.remembered.len(), REMEMBERED_BINDINGS_LIMIT);
+    }
+
+    #[test]
+    fn leaving_a_folder_with_nothing_picked_forgets_its_old_picks() {
+        let mut selection = SelectionState::default();
+        let folder = PathBuf::from("/a");
+        pick_in(&mut selection, &folder, &["x"]);
+        assert_eq!(selection.selected_elsewhere().count(), 1);
+
+        selection.publish_complete(&folder);
+        selection.clear_selected();
+        selection.bind(Path::new("/b"));
+
+        assert!(!selection.remembered.contains_key(&folder));
+        assert!(!selection.remembered_order.contains(&folder));
+        assert_eq!(selection.selected_elsewhere().count(), 0);
+    }
+
+    #[test]
+    fn a_folder_still_loading_does_not_count_its_picks_as_elsewhere() {
+        let mut selection = SelectionState::default();
+        let a = PathBuf::from("/a");
+        pick_in(&mut selection, &a, &["x"]);
+        selection.publish_complete(Path::new("/b"));
+        assert_eq!(selection.selected_elsewhere().count(), 1);
+
+        // Back to A before its listing lands: its picks are neither here
+        // (no complete snapshot yet) nor elsewhere.
+        selection.bind(&a);
+        assert!(selection.selected().is_empty());
+        assert_eq!(selection.selected_elsewhere().count(), 0);
+
+        selection.publish_complete(&a);
+        assert!(selection.selected().contains(&a.join("x")));
+        assert_eq!(selection.selected_elsewhere().count(), 0);
+    }
 }

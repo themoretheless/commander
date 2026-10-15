@@ -256,4 +256,58 @@ mod tests {
         assert!(max.age_passes(future, now));
         assert!(!min.age_passes(future, now));
     }
+
+    #[test]
+    fn with_both_age_facets_the_earlier_flip_comes_first() {
+        let modified = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let facets = FacetSet {
+            max_age_days: Some(7),
+            min_age_days: Some(1),
+            ..FacetSet::default()
+        };
+        let one_day = modified + Duration::from_secs(DAY_SECS);
+        let past_week = modified + Duration::from_secs(7 * DAY_SECS) + Duration::from_nanos(1);
+
+        let fresh = modified + Duration::from_secs(60);
+        assert_eq!(facets.age_transition(modified, fresh), Some(one_day));
+        assert!(!facets.age_passes(modified, fresh));
+        assert!(facets.age_passes(modified, one_day));
+        assert_eq!(facets.age_transition(modified, one_day), Some(past_week));
+        assert!(!facets.age_passes(modified, past_week));
+        assert_eq!(facets.age_transition(modified, past_week), None);
+    }
+
+    #[test]
+    fn next_age_transition_is_the_earliest_over_dated_entries() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let dated = |name: &str, ago_secs: Option<u64>| {
+            let mut e = entry(name, false);
+            e.modified = ago_secs.map(|ago| now - Duration::from_secs(ago));
+            e
+        };
+        let entries = [
+            dated("unknown", None),
+            dated("newer", Some(3_600)),
+            dated("older", Some(36_000)),
+        ];
+
+        let size_only = FacetSet {
+            min_size: Some(1),
+            ..FacetSet::default()
+        };
+        assert_eq!(next_age_transition(&entries, size_only, now), None);
+
+        let recent = FacetSet {
+            max_age_days: Some(1),
+            ..FacetSet::default()
+        };
+        let older_leaves = now - Duration::from_secs(36_000)
+            + Duration::from_secs(DAY_SECS)
+            + Duration::from_nanos(1);
+        assert_eq!(
+            next_age_transition(&entries, recent, now),
+            Some(older_leaves)
+        );
+        assert_eq!(next_age_transition(&entries[..1], recent, now), None);
+    }
 }

@@ -327,6 +327,19 @@ const WALK_LOG_RETAIN: usize = 3_584;
 pub(super) const DIR_SIZE_CACHE_LIMIT: usize = 10_000;
 pub(super) const DIR_SIZE_CACHE_RETAIN: usize = 9_000;
 
+/// Walk-log order: oldest walk first, ties broken by key then cost.
+fn compare_walk_log_entries(
+    key_a: &VolumePathKey,
+    (when_a, duration_a): &(std::time::Instant, std::time::Duration),
+    key_b: &VolumePathKey,
+    (when_b, duration_b): &(std::time::Instant, std::time::Duration),
+) -> Ordering {
+    when_a
+        .cmp(when_b)
+        .then_with(|| compare_volume_path_keys(key_a, key_b))
+        .then(duration_a.cmp(duration_b))
+}
+
 fn compare_volume_path_keys(a: &VolumePathKey, b: &VolumePathKey) -> Ordering {
     a.path
         .cmp(&b.path)
@@ -569,16 +582,7 @@ pub(super) fn prune_walk_log_to(
     retain: usize,
 ) {
     if log.len() > limit {
-        retain_top_map_by(
-            log,
-            retain.min(limit),
-            &mut |key_a, (when_a, duration_a), key_b, (when_b, duration_b)| {
-                when_a
-                    .cmp(when_b)
-                    .then_with(|| compare_volume_path_keys(key_a, key_b))
-                    .then(duration_a.cmp(duration_b))
-            },
-        );
+        retain_top_map_by(log, retain.min(limit), &mut compare_walk_log_entries);
     }
     shrink_bounded_map(log, limit);
 }
@@ -960,12 +964,7 @@ pub(super) fn publish_dir_measurements_if_current(
             }),
             WALK_LOG_LIMIT,
             WALK_LOG_RETAIN,
-            |key_a, (when_a, duration_a), key_b, (when_b, duration_b)| {
-                when_a
-                    .cmp(when_b)
-                    .then_with(|| compare_volume_path_keys(key_a, key_b))
-                    .then(duration_a.cmp(duration_b))
-            },
+            compare_walk_log_entries,
         );
     }
 
@@ -986,57 +985,20 @@ pub(super) fn publish_dir_measurements_if_current(
         }
     }
 
-    let cacheable = |result: &&&DirMeasurement| result.complete && result.modified.is_some();
-    let cache_changed = valid.iter().any(|result| cacheable(&result));
+    let cacheable: Vec<&DirMeasurement> = valid
+        .iter()
+        .copied()
+        .filter(|result| result.complete && result.modified.is_some())
+        .collect();
+    let cache_changed = !cacheable.is_empty();
     if cache_changed {
-        let cache_paths: HashSet<&Path> = valid
-            .iter()
-            .filter(cacheable)
-            .map(|result| result.path.as_path())
-            .collect();
-        let cache_keys: HashSet<&VolumePathKey> = valid
-            .iter()
-            .filter(cacheable)
-            .map(|result| &result.cache_key)
-            .collect();
         let mut cache = lock_recover(dir_size_cache());
-        let previous = std::mem::take(&mut *cache);
-        let previous = previous.into_iter().filter_map(|(key, (modified, size))| {
-            (!cache_paths.contains(key.path.as_path()) || cache_keys.contains(&key)).then_some((
-                key,
-                RankedDirSize {
-                    modified,
-                    completed_at: None,
-                    size,
-                },
-            ))
-        });
-        let incoming = valid.iter().filter(cacheable).filter_map(|result| {
-            result.modified.map(|modified| {
-                (
-                    result.cache_key.clone(),
-                    RankedDirSize {
-                        modified,
-                        completed_at: Some(result.completed_at),
-                        size: result.size,
-                    },
-                )
-            })
-        });
-        let mut ranked = HashMap::new();
-        extend_bounded_by(
-            &mut ranked,
-            previous.chain(incoming),
+        *cache = merge_measurements_into_cache(
+            std::mem::take(&mut *cache),
+            &cacheable,
             DIR_SIZE_CACHE_LIMIT,
             DIR_SIZE_CACHE_RETAIN,
-            compare_ranked_dir_sizes,
         );
-        cache.extend(
-            ranked
-                .into_iter()
-                .map(|(key, value)| (key, (value.modified, value.size))),
-        );
-        shrink_bounded_map(&mut cache, DIR_SIZE_CACHE_LIMIT);
     }
 
     lock_recover(sizes).extend(
@@ -1062,6 +1024,61 @@ pub(super) fn publish_dir_measurements_if_current(
         published: valid.len(),
         cache_changed,
     }
+}
+
+/// The exact-size cache after storing `measured`: a measured folder's
+/// entries under any other key (an old mount generation) are dropped, then
+/// the newest `retain` entries are kept once the cache passes `limit`.
+/// Measurements without a known mtime are skipped; they cannot be checked
+/// for staleness on reuse.
+pub(super) fn merge_measurements_into_cache(
+    previous: HashMap<VolumePathKey, (SystemTime, u64)>,
+    measured: &[&DirMeasurement],
+    limit: usize,
+    retain: usize,
+) -> HashMap<VolumePathKey, (SystemTime, u64)> {
+    let measured_paths: HashSet<&Path> = measured
+        .iter()
+        .map(|result| result.path.as_path())
+        .collect();
+    let measured_keys: HashSet<&VolumePathKey> =
+        measured.iter().map(|result| &result.cache_key).collect();
+    let previous = previous.into_iter().filter_map(|(key, (modified, size))| {
+        (!measured_paths.contains(key.path.as_path()) || measured_keys.contains(&key)).then_some((
+            key,
+            RankedDirSize {
+                modified,
+                completed_at: None,
+                size,
+            },
+        ))
+    });
+    let incoming = measured.iter().filter_map(|result| {
+        result.modified.map(|modified| {
+            (
+                result.cache_key.clone(),
+                RankedDirSize {
+                    modified,
+                    completed_at: Some(result.completed_at),
+                    size: result.size,
+                },
+            )
+        })
+    });
+    let mut ranked = HashMap::new();
+    extend_bounded_by(
+        &mut ranked,
+        previous.chain(incoming),
+        limit,
+        retain,
+        compare_ranked_dir_sizes,
+    );
+    let mut cache: HashMap<_, _> = ranked
+        .into_iter()
+        .map(|(key, value)| (key, (value.modified, value.size)))
+        .collect();
+    shrink_bounded_map(&mut cache, limit);
+    cache
 }
 
 #[cfg(test)]
@@ -1127,26 +1144,14 @@ pub fn flush_cache() {
     // after a newer one. The persistence layer supplies a unique private temp
     // file and durable atomic replacement.
     let _flush = lock_recover(cache_flush_lock());
-    let mut entries = {
+    let persisted = {
         let _boundary = lock_recover(scan_commit_boundary());
         let mut cache = lock_recover(dir_size_cache());
         prune_dir_size_cache_to(&mut cache, DIR_SIZE_CACHE_LIMIT, DIR_SIZE_CACHE_RETAIN);
-        cache
-            .iter()
-            .filter_map(|(p, (mtime, size))| {
-                let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-                Some(PersistedCacheEntry {
-                    key: p.clone(),
-                    mtime_secs: dur.as_secs(),
-                    mtime_nanos: dur.subsec_nanos(),
-                    size: *size,
-                })
-            })
-            .collect::<Vec<_>>()
-        // Lock dropped here: serialization and IO happen outside it.
+        persisted_entries(&cache)
+        // Lock dropped here: sorting, serialization and IO happen outside it.
     };
-    entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
-    let persisted = PersistedCache { schema: 1, entries };
+    let persisted = finish_persisted_snapshot(persisted);
     if let Err(error) = crate::persistence::save_json_atomic(&path, &persisted)
         && first_cache_warning(&CACHE_SAVE_WARNED)
     {
@@ -1156,4 +1161,38 @@ pub fn flush_cache() {
             path.display()
         );
     }
+}
+
+/// The on-disk form of `cache`, entries in key order. An mtime before the
+/// Unix epoch cannot be stored and its entry is left out.
+#[cfg(test)]
+pub(super) fn persisted_snapshot(
+    cache: &HashMap<VolumePathKey, (SystemTime, u64)>,
+) -> PersistedCache {
+    finish_persisted_snapshot(persisted_entries(cache))
+}
+
+/// The cheap half of `persisted_snapshot`, run while the cache lock is held:
+/// convert the entries without ordering them.
+fn persisted_entries(
+    cache: &HashMap<VolumePathKey, (SystemTime, u64)>,
+) -> Vec<PersistedCacheEntry> {
+    cache
+        .iter()
+        .filter_map(|(key, (mtime, size))| {
+            let since_epoch = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
+            Some(PersistedCacheEntry {
+                key: key.clone(),
+                mtime_secs: since_epoch.as_secs(),
+                mtime_nanos: since_epoch.subsec_nanos(),
+                size: *size,
+            })
+        })
+        .collect()
+}
+
+/// Sort the entries into key order (outside any lock) and wrap them.
+fn finish_persisted_snapshot(mut entries: Vec<PersistedCacheEntry>) -> PersistedCache {
+    entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
+    PersistedCache { schema: 1, entries }
 }

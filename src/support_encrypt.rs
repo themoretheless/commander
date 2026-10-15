@@ -3,9 +3,12 @@
 //! Keeps the older `seal_support_bytes` / `write_sealed_bundle` names while
 //! routing through XChaCha20-Poly1305 envelopes.
 
-use crate::encrypted_bundle::{DEFAULT_TTL_SECS, EncryptRequest, EncryptedBundleManifest};
+use crate::encrypted_bundle::{DEFAULT_TTL_SECS, EncryptedBundleManifest};
+#[cfg(test)]
+use crate::encrypted_bundle::{EncryptRequest, hex_decode};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 pub use crate::encrypted_bundle::{decrypt, encrypt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +17,7 @@ pub struct SealedBundle {
     pub ciphertext: Vec<u8>,
 }
 
+#[cfg(test)]
 pub fn seal_support_bytes(
     recipient_id: &str,
     plaintext: &[u8],
@@ -32,6 +36,7 @@ pub fn seal_support_bytes(
     )
 }
 
+#[cfg(test)]
 pub fn seal_support_bytes_with_secret(
     recipient_id: &str,
     recipient_secret: &str,
@@ -55,6 +60,7 @@ pub fn seal_support_bytes_with_secret(
     })
 }
 
+#[cfg(test)]
 pub fn open_support_bytes(
     sealed: &SealedBundle,
     recipient_id: &str,
@@ -101,31 +107,6 @@ fn sanitize_component(value: &str) -> String {
             }
         })
         .collect()
-}
-
-fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
-    if !hex.len().is_multiple_of(2) {
-        return Err("invalid hex length".into());
-    }
-    let mut out = Vec::with_capacity(hex.len() / 2);
-    let bytes = hex.as_bytes();
-    let mut index = 0;
-    while index + 1 < bytes.len() {
-        let hi = from_hex(bytes[index])?;
-        let lo = from_hex(bytes[index + 1])?;
-        out.push((hi << 4) | lo);
-        index += 2;
-    }
-    Ok(out)
-}
-
-fn from_hex(byte: u8) -> Result<u8, String> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err("invalid hex digit".into()),
-    }
 }
 
 #[cfg(test)]

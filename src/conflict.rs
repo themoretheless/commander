@@ -339,4 +339,61 @@ mod tests {
         assert!(names.contains(&"b.txt".to_string()));
         assert!(names.contains(&"c.txt".to_string()));
     }
+
+    #[test]
+    fn keep_newer_drops_conflicts_with_an_unknown_mtime() {
+        let sources = vec![
+            entry("src-unknown.txt", 10, None),
+            entry("dst-unknown.txt", 10, Some(500)),
+            entry("both-unknown.txt", 10, None),
+        ];
+        let dest = vec![
+            dst("src-unknown.txt", 1, Some(100)),
+            dst("dst-unknown.txt", 1, None),
+            dst("both-unknown.txt", 1, None),
+        ];
+        let conflicts = detect(&sources, &dest);
+        assert_eq!(conflicts.len(), 3);
+        for conflict in &conflicts {
+            // Neither side can be shown newer without both mtimes.
+            assert!(
+                !conflict.src_newer && !conflict.dst_newer,
+                "{}",
+                conflict.name
+            );
+        }
+        // Fail closed: an unprovable "newer" never overwrites.
+        let resolution = resolve(&sources, &conflicts, RelationPolicy::KeepNewer);
+        assert!(resolution.keep.is_empty());
+        assert_eq!(resolution.decision, Decision::Overwrite);
+    }
+
+    #[test]
+    fn replace_all_keeps_file_and_folder_type_conflicts() {
+        let sources = vec![
+            entry("report", 10, Some(100)),
+            dir(entry("photos", 0, Some(100))),
+        ];
+        let dest = vec![
+            dir(dst("report", 0, Some(100))),
+            dst("photos", 7, Some(100)),
+        ];
+        let conflicts = detect(&sources, &dest);
+        assert_eq!(conflicts.len(), 2);
+        assert!(!conflicts[0].src_is_dir && conflicts[0].dst_is_dir);
+        assert!(conflicts[1].src_is_dir && !conflicts[1].dst_is_dir);
+        // ReplaceAll is the explicit "overwrite everything" choice: resolve()
+        // keeps the type conflicts as overwrites. How the executor handles a
+        // file-vs-folder overwrite is not checked here.
+        let resolution = resolve(&sources, &conflicts, RelationPolicy::ReplaceAll);
+        assert_eq!(
+            resolution.keep,
+            vec![PathBuf::from("/src/report"), PathBuf::from("/src/photos")]
+        );
+        assert_eq!(resolution.decision, Decision::Overwrite);
+        // The conditional policies never replace across types.
+        for policy in [RelationPolicy::KeepNewer, RelationPolicy::KeepLarger] {
+            assert!(resolve(&sources, &conflicts, policy).keep.is_empty());
+        }
+    }
 }

@@ -198,4 +198,49 @@ mod tests {
         names.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(names, ["a", "u10", "ü9", "ü10", "日1"]);
     }
+
+    #[test]
+    fn natural_digit_runs_longer_than_u64_and_all_zero_runs() {
+        assert_eq!(
+            natural_cmp("f99999999999999999999", "f100000000000000000000"),
+            Ordering::Less
+        );
+        assert_eq!(
+            natural_cmp("f100000000000000000001", "f100000000000000000000"),
+            Ordering::Greater
+        );
+        // All-zero runs are the value 0; the shorter run sorts first.
+        assert_eq!(natural_cmp("a0", "a00"), Ordering::Less);
+        assert_eq!(natural_cmp("a00", "a0"), Ordering::Greater);
+        assert_eq!(natural_cmp("a00", "a1"), Ordering::Less);
+    }
+
+    #[test]
+    fn natural_prefixes_and_digits_before_letters() {
+        assert_eq!(natural_cmp("file", "file1"), Ordering::Less);
+        assert_eq!(natural_cmp("a1b", "a"), Ordering::Greater);
+        assert_eq!(natural_cmp("1a", "a"), Ordering::Less);
+        assert_eq!(natural_cmp("a", "1a"), Ordering::Greater);
+    }
+
+    #[test]
+    fn modified_sort_puts_unknown_dates_first_ascending_and_last_descending() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let dated = |name: &str, secs: Option<u64>| {
+            let mut entry = named(name, false, 1);
+            entry.modified = secs.map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
+            entry
+        };
+        let entries = || {
+            vec![
+                dated("new", Some(300)),
+                dated("unknown", None),
+                dated("old", Some(100)),
+            ]
+        };
+        let asc = ViewConfig::default().with_sort(SortColumn::Modified, SortOrder::Asc);
+        assert_eq!(sorted(entries(), asc), ["unknown", "old", "new"]);
+        let desc = ViewConfig::default().with_sort(SortColumn::Modified, SortOrder::Desc);
+        assert_eq!(sorted(entries(), desc), ["new", "old", "unknown"]);
+    }
 }

@@ -110,6 +110,35 @@ mod tests {
     }
 
     #[test]
+    fn reduced_hdr_budget_scales_rgb_and_keeps_alpha() {
+        let half = ColorManagedFrame {
+            tone_map: HdrToneMapBudget {
+                max_nits_bps: 5_000,
+            },
+            ..ColorManagedFrame::display_referred(2, 1, ColorSpaceHint::DisplayP3, true)
+        };
+        let mut rgba = [255, 128, 0, 255, 10, 11, 1, 200];
+        half.apply_rgba8(&mut rgba);
+        // Rounded to nearest; alpha is never tone-mapped.
+        assert_eq!(rgba, [128, 64, 0, 255, 5, 6, 1, 200]);
+
+        // A zero budget clamps to the 10% floor instead of going black.
+        let floor = ColorManagedFrame {
+            tone_map: HdrToneMapBudget { max_nits_bps: 0 },
+            ..half.clone()
+        };
+        let mut rgba = [255, 100, 4, 77];
+        floor.apply_rgba8(&mut rgba);
+        assert_eq!(rgba, [26, 10, 0, 77]);
+
+        // The same budget on an SDR frame leaves pixels alone.
+        let sdr = ColorManagedFrame { hdr: false, ..half };
+        let mut rgba = [255, 128, 0, 255];
+        sdr.apply_rgba8(&mut rgba);
+        assert_eq!(rgba, [255, 128, 0, 255]);
+    }
+
+    #[test]
     fn default_budget_matches_bounded_default() {
         assert_eq!(
             HdrToneMapBudget::default(),

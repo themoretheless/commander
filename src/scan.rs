@@ -28,6 +28,16 @@ pub struct TransferPreflightScan {
         Vec<Result<crate::path_identity::TransferSourceIdentity, crate::ports::NativeFailure>>,
 }
 
+/// Last row of a preview cut off at `MAX_FLAT_ENTRIES`.
+fn truncation_marker() -> FlatFileEntry {
+    FlatFileEntry {
+        name: format!("... (truncated at {MAX_FLAT_ENTRIES} entries)"),
+        size: 0,
+        is_dir: false,
+        depth: 0,
+    }
+}
+
 pub fn pending_flat_list() -> FlatList {
     Arc::new(Mutex::new(None))
 }
@@ -79,12 +89,7 @@ pub fn shallow_preview(entries: &[FileEntry]) -> Vec<FlatFileEntry> {
         })
         .collect::<Vec<_>>();
     if entries.len() > MAX_FLAT_ENTRIES {
-        result.push(FlatFileEntry {
-            name: format!("... (truncated at {} entries)", MAX_FLAT_ENTRIES),
-            size: 0,
-            is_dir: false,
-            depth: 0,
-        });
+        result.push(truncation_marker());
     }
     result
 }
@@ -133,12 +138,7 @@ pub fn transfer_preflight_cancellable(
         source_identities.push(source);
     }
     if truncated {
-        flat.push(FlatFileEntry {
-            name: format!("... (truncated at {} entries)", MAX_FLAT_ENTRIES),
-            size: 0,
-            is_dir: false,
-            depth: 0,
-        });
+        flat.push(truncation_marker());
     }
     TransferPreflightScan {
         flat,
@@ -593,12 +593,7 @@ pub fn flatten_entries(entries: &[FileEntry]) -> Vec<FlatFileEntry> {
         }
     }
     if truncated {
-        result.push(FlatFileEntry {
-            name: format!("... (truncated at {} entries)", MAX_FLAT_ENTRIES),
-            size: 0,
-            is_dir: false,
-            depth: 0,
-        });
+        result.push(truncation_marker());
     }
     result
 }
@@ -956,5 +951,99 @@ mod tests {
         );
 
         assert!(scan.need_bytes.is_err());
+    }
+
+    fn assert_truncated_at_cap(flat: &[FlatFileEntry]) {
+        assert_eq!(flat.len(), MAX_FLAT_ENTRIES + 1);
+        assert!(
+            flat[..MAX_FLAT_ENTRIES]
+                .iter()
+                .all(|row| row.name == "x.txt")
+        );
+        let marker = flat.last().unwrap();
+        assert_eq!(
+            marker.name,
+            format!("... (truncated at {MAX_FLAT_ENTRIES} entries)")
+        );
+        assert_eq!((marker.size, marker.is_dir, marker.depth), (0, false, 0));
+    }
+
+    #[test]
+    fn previews_stop_at_the_entry_cap_with_a_marker_row() {
+        let tmp = TempDir::new();
+        let file = entry_for(&tmp.file("x.txt", "1"));
+        let exactly = vec![file.clone(); MAX_FLAT_ENTRIES];
+        assert_eq!(flatten_entries(&exactly).len(), MAX_FLAT_ENTRIES);
+        assert_eq!(shallow_preview(&exactly).len(), MAX_FLAT_ENTRIES);
+
+        let over = vec![file; MAX_FLAT_ENTRIES + 1];
+        assert_truncated_at_cap(&flatten_entries(&over));
+        assert_truncated_at_cap(&shallow_preview(&over));
+    }
+
+    #[test]
+    fn preflight_rejects_entries_without_a_captured_listing_identity() {
+        let tmp = TempDir::new();
+        let file = entry_for(&tmp.file("x.txt", "1"));
+        let denied = crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "denied".to_string(),
+        };
+        let failed = FileEntry {
+            identity: crate::panel::ListingIdentity::CaptureFailed(denied.clone()),
+            ..file.clone()
+        };
+        let unavailable = FileEntry {
+            identity: crate::panel::ListingIdentity::Unavailable,
+            ..file.clone()
+        };
+
+        let scan = transfer_preflight(
+            &[failed, unavailable, file],
+            crate::filesystem_policy::SymlinkPolicy::Skip,
+        );
+
+        let kinds: Vec<_> = scan
+            .source_identities
+            .iter()
+            .map(|source| source.as_ref().map(|_| ()).map_err(|failure| failure.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Err(crate::ports::NativeFailureKind::Denied),
+                Err(crate::ports::NativeFailureKind::Unsupported),
+                Ok(()),
+            ]
+        );
+        // The first failure poisons the size budget.
+        assert_eq!(scan.need_bytes, Err(denied));
+        // Neither rejected entry was traversed into the preview.
+        assert_eq!(scan.flat.len(), 1);
+    }
+
+    #[test]
+    fn cancelled_preflight_marks_every_entry_and_the_size_cancelled() {
+        let tmp = TempDir::new();
+        let a = entry_for(&tmp.file("a.txt", "1"));
+        let b = entry_for(&tmp.dir("b"));
+
+        let scan = transfer_preflight_cancellable(
+            &[a, b],
+            crate::filesystem_policy::SymlinkPolicy::Skip,
+            &|| true,
+        );
+
+        assert!(scan.flat.is_empty());
+        assert_eq!(scan.source_identities.len(), 2);
+        assert!(scan.source_identities.iter().all(|source| {
+            source
+                .as_ref()
+                .is_err_and(|failure| failure.kind == crate::ports::NativeFailureKind::Cancelled)
+        }));
+        assert_eq!(
+            scan.need_bytes.map_err(|failure| failure.kind),
+            Err(crate::ports::NativeFailureKind::Cancelled)
+        );
     }
 }

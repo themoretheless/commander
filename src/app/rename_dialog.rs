@@ -245,17 +245,7 @@ impl App {
                             "Renamed 1 item",
                             true,
                         );
-                        if let Some(action) = self.ws.top_undo_action().cloned()
-                            && let Some(jump_to) = action.jump_to()
-                        {
-                            self.receipts.push(crate::receipts::Receipt {
-                                verb: action.verb(),
-                                item_count: action.item_count(),
-                                timestamp: now,
-                                jump_to,
-                                undo_action: Some(action),
-                            });
-                        }
+                        self.push_receipt_for_top_undo(now);
                     }
                 }
                 Err(msg) => {

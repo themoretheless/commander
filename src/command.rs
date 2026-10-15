@@ -174,25 +174,19 @@ pub enum Command {
 }
 
 impl Command {
+    /// Whether the command changes the filesystem: exactly the commands gated
+    /// by [`CommandPredicate::MutationsAllowed`], so the safe-state block and
+    /// the availability policy cannot drift apart.
     pub const fn mutates_filesystem(self) -> bool {
-        matches!(
-            self,
-            Self::RequestCopy
-                | Self::RequestMove
-                | Self::CreateDir
-                | Self::RequestDelete
-                | Self::BeginRename
-                | Self::BeginBatchRename
-                | Self::BeginSync
-                | Self::BeginRunBar
-                | Self::GatherIntoFolder
-                | Self::MoveIntoCursorFolder
-                | Self::CopyIntoCursorFolder
-                | Self::CreateSymlink
-                | Self::CreateHardlink
-                | Self::Undo
-                | Self::Redo
-        )
+        let gates = predicates(self);
+        let mut index = 0;
+        while index < gates.len() {
+            if matches!(gates[index], CommandPredicate::MutationsAllowed) {
+                return true;
+            }
+            index += 1;
+        }
+        false
     }
 }
 
@@ -1553,5 +1547,216 @@ mod tests {
             map_key(shift_press(KeyCode::Down)),
             Some(Command::ExtendSelectDown)
         );
+    }
+
+    #[test]
+    fn mutating_commands_are_exactly_the_mutation_gated_ones() {
+        let mutating = [
+            Command::RequestCopy,
+            Command::RequestMove,
+            Command::CreateDir,
+            Command::RequestDelete,
+            Command::BeginRename,
+            Command::BeginBatchRename,
+            Command::BeginSync,
+            Command::BeginRunBar,
+            Command::GatherIntoFolder,
+            Command::MoveIntoCursorFolder,
+            Command::CopyIntoCursorFolder,
+            Command::CreateSymlink,
+            Command::CreateHardlink,
+            Command::Undo,
+            Command::Redo,
+        ];
+        for command in mutating {
+            assert!(command.mutates_filesystem(), "{command:?}");
+        }
+        for entry in CATALOG {
+            assert_eq!(
+                entry.command.mutates_filesystem(),
+                mutating.contains(&entry.command),
+                "{}",
+                entry.label
+            );
+        }
+        for command in [
+            Command::CursorDown,
+            Command::Activate,
+            Command::JumpSlot(1),
+            Command::AssignSlot(1),
+            Command::BeginPalette,
+        ] {
+            assert!(!command.mutates_filesystem(), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn catalog_labels_and_commands_are_unique() {
+        let mut labels = std::collections::HashSet::new();
+        let mut commands = Vec::new();
+        for entry in CATALOG {
+            // Usage stats are keyed by label, so a duplicate would merge counts.
+            assert!(
+                labels.insert(entry.label),
+                "duplicate label {}",
+                entry.label
+            );
+            assert!(
+                !commands.contains(&entry.command),
+                "{:?} is listed twice",
+                entry.command
+            );
+            commands.push(entry.command);
+        }
+    }
+
+    /// Parses a catalog shortcut hint such as `Cmd+Shift+Enter` into the
+    /// key press it describes.
+    fn parse_shortcut(shortcut: &str) -> KeyPress {
+        let mut press = press(KeyCode::Tab);
+        let keys: Vec<&str> = if shortcut == "." {
+            vec!["."]
+        } else {
+            shortcut.split('+').collect()
+        };
+        let (key, modifiers) = keys.split_last().unwrap();
+        for modifier in modifiers {
+            match *modifier {
+                "Cmd" => press.command = true,
+                "Shift" => press.shift = true,
+                other => panic!("unknown modifier {other} in {shortcut}"),
+            }
+        }
+        press.code = match *key {
+            "F2" => KeyCode::F2,
+            "F3" => KeyCode::F3,
+            "F5" => KeyCode::F5,
+            "F6" => KeyCode::F6,
+            "F7" => KeyCode::F7,
+            "F8" => KeyCode::F8,
+            "Enter" => KeyCode::Enter,
+            "[" => KeyCode::BracketLeft,
+            "]" => KeyCode::BracketRight,
+            "." => KeyCode::Period,
+            "A" => KeyCode::A,
+            "C" => KeyCode::C,
+            "D" => KeyCode::D,
+            "E" => KeyCode::E,
+            "F" => KeyCode::F,
+            "G" => KeyCode::G,
+            "H" => KeyCode::H,
+            "I" => KeyCode::I,
+            "J" => KeyCode::J,
+            "K" => KeyCode::K,
+            "L" => KeyCode::L,
+            "M" => KeyCode::M,
+            "N" => KeyCode::N,
+            "P" => KeyCode::P,
+            "R" => KeyCode::R,
+            "S" => KeyCode::S,
+            "U" => KeyCode::U,
+            "Z" => KeyCode::Z,
+            other => panic!("unknown key {other} in {shortcut}"),
+        };
+        press
+    }
+
+    #[test]
+    fn catalog_shortcut_hints_match_the_key_bindings() {
+        for entry in CATALOG.iter().filter(|entry| !entry.shortcut.is_empty()) {
+            assert_eq!(
+                map_key(parse_shortcut(entry.shortcut)),
+                Some(entry.command),
+                "{} advertises {}",
+                entry.label,
+                entry.shortcut
+            );
+        }
+    }
+
+    #[test]
+    fn activate_needs_a_cursor_entry_or_a_parent_folder() {
+        let mut context = CommandContext::default();
+        assert_eq!(
+            availability(Command::Activate, &context).reason,
+            Some("No item to open")
+        );
+        // An empty folder can still be left with Enter on "..".
+        context.can_go_up = true;
+        assert!(availability(Command::Activate, &context).enabled);
+        context.can_go_up = false;
+        context.cursor_entry = true;
+        assert!(availability(Command::Activate, &context).enabled);
+    }
+
+    #[test]
+    fn sync_needs_only_one_writable_pane() {
+        let mut context = CommandContext {
+            active_read_only: true,
+            ..CommandContext::default()
+        };
+        assert!(availability(Command::BeginSync, &context).enabled);
+        context.active_read_only = false;
+        context.inactive_read_only = true;
+        assert!(availability(Command::BeginSync, &context).enabled);
+    }
+
+    #[test]
+    fn transfer_into_folder_explains_each_missing_target() {
+        let mut context = CommandContext {
+            selected_entries: 1,
+            cursor_entry: true,
+            cursor_is_file: true,
+            ..CommandContext::default()
+        };
+        for command in [Command::MoveIntoCursorFolder, Command::CopyIntoCursorFolder] {
+            assert_eq!(
+                availability(command, &context).reason,
+                Some("Highlight a destination folder")
+            );
+        }
+        context.cursor_is_file = false;
+        context.cursor_is_dir = true;
+        for command in [Command::MoveIntoCursorFolder, Command::CopyIntoCursorFolder] {
+            assert_eq!(
+                availability(command, &context).reason,
+                Some("Choose a source outside the destination folder")
+            );
+        }
+        context.can_transfer_into_cursor_folder = true;
+        assert!(availability(Command::MoveIntoCursorFolder, &context).enabled);
+        context.selected_entries = 0;
+        assert_eq!(
+            availability(Command::CopyIntoCursorFolder, &context).reason,
+            Some("Select at least one source item")
+        );
+    }
+
+    #[test]
+    fn combined_score_caps_frequency_and_recency() {
+        let heavy = Usage {
+            count: 50,
+            last: 100,
+        };
+        // Both bonuses top out at 12, however often the command ran.
+        assert_eq!(combined_score(0, Some(&heavy), 100), 24);
+        assert_eq!(
+            combined_score(0, Some(&heavy), 100),
+            combined_score(
+                0,
+                Some(&Usage {
+                    count: 12,
+                    last: 100
+                }),
+                100
+            )
+        );
+        // Recency decays to nothing after 12 ticks and stays there.
+        assert_eq!(combined_score(0, Some(&heavy), 112), 12);
+        assert_eq!(combined_score(0, Some(&heavy), 10_000), 12);
+        assert_eq!(combined_score(0, Some(&heavy), 105), 19);
+        // A never-run tick (0) earns no recency.
+        let never = Usage { count: 3, last: 0 };
+        assert_eq!(combined_score(5, Some(&never), 1), 8);
     }
 }

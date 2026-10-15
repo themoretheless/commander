@@ -337,9 +337,36 @@ mod tests {
 
     #[test]
     fn async_modals_close_when_their_escape_route_is_consumed() {
+        use crate::accessibility::{
+            TextInputState, UiContractState, consume_escape_route, resolve_ui_contract,
+        };
         for surface in [ModalSurface::Find, ModalSurface::Collections] {
+            // Escape reaches the modal even while its query field has focus.
+            let mut escape = resolve_ui_contract(UiContractState {
+                text_input: TextInputState {
+                    text_edit_focused: true,
+                    ime_composing: false,
+                },
+                modal: Some(surface),
+                pane_tool_open: true,
+                ..UiContractState::default()
+            })
+            .escape;
+            assert_eq!(escape, EscapeRoute::Modal(surface));
+            // Another surface cannot take it; the owner takes it once.
+            assert!(!consume_escape_route(
+                &mut escape,
+                EscapeRoute::Modal(ModalSurface::Palette)
+            ));
+            let consumed = consume_escape_route(&mut escape, EscapeRoute::Modal(surface));
+            assert!(consumed, "{surface:?} must receive its routed Escape");
+            assert_eq!(escape, EscapeRoute::None);
+            assert!(!consume_escape_route(
+                &mut escape,
+                EscapeRoute::Modal(surface)
+            ));
             assert!(
-                modal_close_requested(true, true),
+                modal_close_requested(true, consumed),
                 "{surface:?} must close on its routed Escape"
             );
             assert!(!modal_close_requested(true, false));

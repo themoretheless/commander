@@ -221,6 +221,59 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_the_wait_stops_without_probing_again() {
+        let mut checks = 0;
+        let error = guard(ReconnectPolicy {
+            timeout_ms: 60_000,
+            poll_interval_ms: 1,
+        })
+        .wait_with(
+            || {
+                checks += 1;
+                MountAvailability::Disconnected
+            },
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(checks, 1);
+    }
+
+    #[test]
+    fn a_mount_that_stays_away_times_out() {
+        let mut waits = 0;
+        let started = Instant::now();
+        let error = guard(ReconnectPolicy {
+            timeout_ms: 5,
+            poll_interval_ms: 1,
+        })
+        .wait_with(
+            || MountAvailability::Disconnected,
+            || {
+                waits += 1;
+                true
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(waits >= 1, "the wait never paused before timing out");
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        // A zero timeout gives up on the first disconnected probe without
+        // asking the caller to wait.
+        let error = guard(ReconnectPolicy {
+            timeout_ms: 0,
+            poll_interval_ms: 1,
+        })
+        .wait_with(
+            || MountAvailability::Disconnected,
+            || panic!("zero-timeout wait paused"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[test]
     fn a_different_mount_never_resumes_the_old_operation() {
         let error = guard(ReconnectPolicy::default())
             .wait_with(|| MountAvailability::Replaced, || true)

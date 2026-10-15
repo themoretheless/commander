@@ -50,8 +50,8 @@ pub use visit::{
     RecentMatch, RecentOrder, VISITED_CAP, VisitStats, VisitUsage, push_visit, rank_visited,
     record_visit, restore_visit_snapshot, visit_snapshot, visited_paths,
 };
-use watcher::DirectoryWatcherState;
 pub use watcher::WATCHER_RETRY_BACKOFF;
+use watcher::{DirectoryWatcherState, ReconciliationTicket};
 
 const DEFAULT_VISIBLE_ROWS: usize = 32;
 
@@ -102,22 +102,13 @@ const fn watcher_provenance(recovered_gap: bool) -> crate::change_provenance::Ch
     }
 }
 
-/// Classify a directory read for UI messaging. `is_empty` is whether the
-/// listing came back with zero entries.
-#[cfg(test)]
-pub fn classify_dir(path: &Path, is_empty: bool) -> DirStatus {
-    match fs::read_dir(path) {
-        Ok(_) => {
-            if is_empty {
-                DirStatus::Empty
-            } else {
-                DirStatus::Listed
-            }
-        }
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => DirStatus::Gone,
-            _ => DirStatus::Denied,
-        },
+/// Why a directory could not be opened, for UI messaging. A path that names
+/// a file is no folder to show, like a gone one; anything else is treated
+/// as unreadable.
+fn status_for_read_error(error: &std::io::Error) -> DirStatus {
+    match error.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => DirStatus::Gone,
+        _ => DirStatus::Denied,
     }
 }
 
@@ -450,17 +441,6 @@ fn drop_nested_picks(entries: Vec<FileEntry>) -> Vec<FileEntry> {
         .collect()
 }
 
-/// Size used for the occupancy bar: a file's own size, or a directory's
-/// resolved recursive size (0 while it is still being measured).
-#[cfg(test)]
-pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) -> u64 {
-    if entry.is_dir {
-        dir_sizes.get(&entry.path).copied().unwrap_or(0)
-    } else {
-        entry.size
-    }
-}
-
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -786,9 +766,7 @@ impl PanelState {
         self.publish_complete_listing(entries, candidate);
         self.sizes.bind(&path);
         self.watcher.ensure_binding(&path);
-        let listing_binding = self.listing.binding().to_path_buf();
-        self.watcher.acknowledge_snapshot(ticket, &listing_binding);
-        self.refresh_sizes(true);
+        self.commit_snapshot(ticket, true);
         ViewApplyOutcome::Applied
     }
 
@@ -830,9 +808,7 @@ impl PanelState {
         self.watcher.ensure_binding(&path);
         let ticket = self.watcher.snapshot_ticket();
         if self.reload_entries() {
-            let listing_binding = self.listing.binding().to_path_buf();
-            self.watcher.acknowledge_snapshot(ticket, &listing_binding);
-            self.refresh_sizes(true);
+            self.commit_snapshot(ticket, true);
             self.apply_pending_focus(focus);
         } else {
             self.watcher.defer_snapshot(ticket.as_ref());
@@ -886,10 +862,7 @@ impl PanelState {
         }
         let applied = self.apply_directory_read(ready.read);
         if applied {
-            let listing_binding = self.listing.binding().to_path_buf();
-            self.watcher
-                .acknowledge_snapshot(ready.ticket, &listing_binding);
-            self.refresh_sizes(ready.forced_sizes);
+            self.commit_snapshot(ready.ticket, ready.forced_sizes);
             self.apply_pending_focus(ready.focus);
             if let Some(recovered_gap) = ready.watcher_gap {
                 self.change_provenance
@@ -903,6 +876,15 @@ impl PanelState {
             let _ = ready.focus;
         }
         applied
+    }
+
+    /// A complete listing was published: acknowledge the watcher snapshot it
+    /// answers (against the binding the rows now belong to) and re-plan
+    /// folder sizes for it. `forced_sizes` lets expensive folders re-walk.
+    fn commit_snapshot(&mut self, ticket: Option<ReconciliationTicket>, forced_sizes: bool) {
+        let listing_binding = self.listing.binding().to_path_buf();
+        self.watcher.acknowledge_snapshot(ticket, &listing_binding);
+        self.refresh_sizes(forced_sizes);
     }
 
     fn apply_pending_focus(&mut self, focus: PendingFocus) {
@@ -1026,11 +1008,8 @@ impl PanelState {
                 return self.poll_listing_results();
             }
             if self.reload_entries() {
-                let listing_binding = self.listing.binding().to_path_buf();
-                self.watcher
-                    .acknowledge_snapshot(Some(ticket), &listing_binding);
                 // Watcher-driven: expensive folders are not re-walked.
-                self.refresh_sizes(false);
+                self.commit_snapshot(Some(ticket), false);
                 self.change_provenance.record(source);
                 crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 return true;
@@ -1083,18 +1062,7 @@ impl PanelState {
     pub(super) fn read_dir(path: &Path, show_hidden: bool) -> DirectoryRead {
         let entries = match fs::read_dir(path) {
             Ok(entries) => entries,
-            Err(error) => {
-                // A path that names a file is no folder to show, like a gone one.
-                let status = if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) {
-                    DirStatus::Gone
-                } else {
-                    DirStatus::Denied
-                };
-                return DirectoryRead::Incomplete(status);
-            }
+            Err(error) => return DirectoryRead::Incomplete(status_for_read_error(&error)),
         };
         Self::read_dir_entries(entries, show_hidden)
     }
@@ -2970,29 +2938,56 @@ mod tests {
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
     }
 
+    #[test]
+    fn read_errors_map_to_gone_or_denied() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::NotFound)),
+            DirStatus::Gone
+        );
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::NotADirectory)),
+            DirStatus::Gone
+        );
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::PermissionDenied)),
+            DirStatus::Denied
+        );
+        // Anything else (an I/O error on a dying disk) is unreadable too.
+        assert_eq!(
+            status_for_read_error(&Error::other("io")),
+            DirStatus::Denied
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn classify_dir_distinguishes_empty_denied_gone() {
+    fn read_dir_distinguishes_empty_denied_gone() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = TempDir::new();
+        let status = |path: &Path| {
+            let mut panel = PanelState::new(path.to_path_buf());
+            panel.refresh();
+            panel.dir_status()
+        };
 
-        let empty = tmp.dir("empty");
-        assert_eq!(classify_dir(&empty, true), DirStatus::Empty);
+        assert_eq!(status(&tmp.dir("empty")), DirStatus::Empty);
 
         let full = tmp.dir("full");
         tmp.file("full/x.txt", "x");
-        assert_eq!(classify_dir(&full, false), DirStatus::Listed);
+        assert_eq!(status(&full), DirStatus::Listed);
 
-        assert_eq!(
-            classify_dir(&tmp.path().join("nope"), true),
-            DirStatus::Gone
-        );
+        assert_eq!(status(&tmp.path().join("nope")), DirStatus::Gone);
+        assert_eq!(status(&tmp.file("file.txt", "f")), DirStatus::Gone);
 
         let denied = tmp.dir("denied");
         std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let status = classify_dir(&denied, true);
+        let readable = std::fs::read_dir(&denied).is_ok(); // root ignores modes
+        let result = status(&denied);
         let _ = std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755));
-        assert_eq!(status, DirStatus::Denied);
+        if !readable {
+            assert_eq!(result, DirStatus::Denied);
+        }
     }
 
     #[test]
@@ -3355,20 +3350,6 @@ mod tests {
         assert_eq!(p.mask_match_count("pdf"), 1);
         p.select_by_mask("pdf");
         assert_eq!(p.selected_count(), 1);
-    }
-
-    #[test]
-    fn entry_display_size_uses_dir_sizes_for_folders() {
-        let file = entry("a.txt", false, 42);
-        let dir = entry("sub", true, 0);
-        let mut sizes = HashMap::new();
-        sizes.insert(dir.path.clone(), 9000u64);
-
-        assert_eq!(entry_display_size(&file, &sizes), 42);
-        assert_eq!(entry_display_size(&dir, &sizes), 9000);
-        // Unmeasured dir reads as 0 (draws no bar).
-        let other = entry("pending", true, 0);
-        assert_eq!(entry_display_size(&other, &sizes), 0);
     }
 
     #[test]
@@ -4320,5 +4301,689 @@ mod tests {
         assert_eq!(visible_window(100, 40, 10), 40..72);
         assert_eq!(visible_window(8, 99, 20), 0..8);
         assert_eq!(visible_window(20, 0, 0), 0..20);
+    }
+
+    /// `entry` rows whose extension is filled in from the name, as a real
+    /// listing does.
+    fn with_extensions(mut entries: Vec<FileEntry>) -> Vec<FileEntry> {
+        for e in &mut entries {
+            e.extension = Path::new(&e.name)
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+        }
+        entries
+    }
+
+    #[test]
+    fn subtracting_mask_deselects_an_already_selected_entry() {
+        let mut p = panel_with(with_extensions(vec![
+            entry("a.jpg", false, 1),
+            entry("raw.jpg", false, 1),
+        ]));
+        p.select_path(PathBuf::from("/test/raw.jpg"));
+        p.select_path(PathBuf::from("/test/a.jpg"));
+
+        // Nothing was added, but the selected match is removed.
+        assert_eq!(p.select_by_mask("!*raw*"), 0);
+        assert!(!p.is_selected(Path::new("/test/raw.jpg")));
+        assert!(p.is_selected(Path::new("/test/a.jpg")));
+    }
+
+    #[test]
+    fn parse_mask_trims_space_after_the_subtract_marker() {
+        assert_eq!(
+            parse_mask("! *.TMP, -  Raw"),
+            vec![("*.tmp".to_string(), true), ("raw".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn select_largest_takes_every_file_when_n_exceeds_the_count() {
+        let mut p = panel_with(vec![
+            entry("a", false, 10),
+            entry("b", false, 20),
+            entry("c", false, 30),
+            entry("dir", true, 0),
+        ]);
+        assert_eq!(p.select_largest(10), 3);
+        assert_eq!(selected_names(&p), ["a", "b", "c"].map(String::from).into());
+    }
+
+    #[test]
+    fn select_largest_breaks_size_ties_by_path_whatever_the_order() {
+        for names in [
+            ["x", "y", "small"],
+            ["y", "x", "small"],
+            ["small", "y", "x"],
+        ] {
+            let size = |name: &str| if name == "small" { 1 } else { 50 };
+            let mut p = panel_with(names.map(|n| entry(n, false, size(n))).into());
+            assert_eq!(p.select_largest(1), 1);
+            // The bounded heap evicts the smaller (size, path) first.
+            assert_eq!(selected_names(&p), ["y".to_string()].into(), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn select_largest_ignores_files_hidden_by_the_filter() {
+        let mut p = panel_with(vec![
+            entry("huge.iso", false, 9_000),
+            entry("notes-big.txt", false, 500),
+            entry("notes-small.txt", false, 5),
+        ]);
+        p.set_search_query("notes");
+        assert_eq!(p.select_largest(1), 1);
+        assert_eq!(selected_names(&p), ["notes-big.txt".to_string()].into());
+    }
+
+    #[test]
+    fn select_same_extension_does_nothing_off_a_file_with_an_extension() {
+        let mut p = panel_with(with_extensions(vec![
+            entry("box", true, 0),
+            entry("Makefile", false, 1),
+            entry("a.rs", false, 1),
+            entry("b.rs", false, 1),
+        ]));
+        p.sort_entries(); // box, a.rs, b.rs, Makefile
+        for (row, what) in [(0, ".."), (1, "a folder"), (4, "an extension-less file")] {
+            p.set_cursor(row);
+            assert_eq!(p.select_same_extension_as_cursor(), 0, "cursor on {what}");
+            assert!(p.selection_is_empty(), "cursor on {what}");
+        }
+    }
+
+    #[test]
+    fn type_ahead_matches_typed_capitals_case_insensitively() {
+        let mut p = panel_with(vec![
+            entry("apple.txt", false, 1),
+            entry("Banana.txt", false, 1),
+        ]);
+        p.sort_entries();
+        assert!(p.type_ahead("BAN"));
+        assert_eq!(p.cursor_entry().unwrap().name, "Banana.txt");
+    }
+
+    #[test]
+    fn cursor_entry_is_none_when_another_entry_moved_under_the_cursor() {
+        let mut p = panel_with(vec![
+            entry("a", false, 1),
+            entry("b", false, 1),
+            entry("c", false, 1),
+        ]);
+        p.set_cursor(1);
+        assert_eq!(p.cursor_entry().unwrap().name, "a");
+
+        // Row 1 now holds "c", which the cursor never focused.
+        p.mutate_entries_for_test(|entries| entries.reverse());
+        assert!(p.cursor_entry().is_none());
+        assert_eq!(
+            p.selected_or_cursor().unwrap_err(),
+            StaleCursor {
+                cursor: 1,
+                visible_entries: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn ensure_cursor_valid_clamps_a_cursor_past_the_end_and_is_otherwise_a_no_op() {
+        let mut p = panel_with(vec![
+            entry("a", false, 1),
+            entry("b", false, 1),
+            entry("c", false, 1),
+        ]);
+        p.set_cursor(1);
+        p.set_scroll_to_cursor(false);
+        p.ensure_cursor_valid();
+        assert_eq!(p.cursor(), 1);
+        assert!(!p.scroll_to_cursor(), "a valid cursor is left alone");
+
+        p.set_cursor(3);
+        p.set_scroll_to_cursor(false);
+        p.mutate_entries_for_test(|entries| {
+            entries.pop();
+        });
+        p.ensure_cursor_valid();
+        assert_eq!(p.cursor(), 2);
+        assert_eq!(p.cursor_entry().unwrap().name, "b");
+        assert!(p.scroll_to_cursor());
+    }
+
+    #[test]
+    fn parent_row_cursor_stays_put_across_filter_and_sort_changes() {
+        let mut p = panel_with(vec![entry("a", false, 2), entry("b", false, 1)]);
+        p.set_cursor(0);
+        p.set_scroll_to_cursor(false);
+
+        p.set_search_query("a");
+        assert_eq!(p.cursor(), 0);
+        p.set_sort(SortColumn::Size);
+        assert_eq!(p.cursor(), 0);
+        p.clear_filters();
+        assert_eq!(p.cursor(), 0);
+        assert!(p.cursor_entry().is_none());
+        assert!(!p.scroll_to_cursor(), "the .. row is not scrolled to");
+    }
+
+    #[test]
+    fn clear_filters_drops_query_and_facets_and_keeps_focus() {
+        let mut p = panel_with(with_extensions(vec![
+            entry("alpha.jpg", false, 1),
+            entry("beta.jpg", false, 1),
+            entry("notes.txt", false, 1),
+        ]));
+        p.sort_entries();
+        p.set_facets(FacetSet {
+            kind: Some(KindFacet::Images),
+            ..FacetSet::default()
+        });
+        p.set_search_query("beta");
+        assert_eq!(p.filtered_count(), 1);
+        p.set_cursor(1);
+        let focused = p.cursor_entry().unwrap().path.clone();
+
+        p.clear_filters();
+
+        assert_eq!(p.search_query(), "");
+        assert_eq!(p.facets(), FacetSet::default());
+        assert_eq!(p.filtered_count(), 3);
+        assert_eq!(p.cursor_entry().map(|e| e.path.clone()), Some(focused));
+        assert_eq!(p.cursor(), 2);
+    }
+
+    #[test]
+    fn clear_selection_keeps_picks_remembered_in_other_folders() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        let b = tmp.dir("b");
+        let in_a = tmp.file("a/x.txt", "x");
+        let in_b = tmp.file("b/y.txt", "y");
+
+        let mut p = PanelState::new(a);
+        p.refresh();
+        p.toggle_select(in_a);
+        p.navigate_to(b);
+        p.toggle_select(in_b);
+
+        p.clear_selection();
+        assert!(p.selection_is_empty());
+        assert_eq!(p.selected_elsewhere_count(), 1, "only this folder clears");
+
+        p.clear_selection_everywhere();
+        assert_eq!(p.selected_elsewhere_count(), 0);
+    }
+
+    #[test]
+    fn picks_only_in_other_folders_win_over_the_cursor_here() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        let b = tmp.dir("b");
+        let in_a = tmp.file("a/x.txt", "x");
+        tmp.file("b/y.txt", "y");
+
+        let mut p = PanelState::new(a);
+        p.refresh();
+        p.toggle_select(in_a.clone());
+        p.navigate_to(b);
+        p.set_cursor(1);
+        assert_eq!(p.cursor_entry().unwrap().name, "y.txt");
+
+        let picked: Vec<PathBuf> = p
+            .picked_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        assert_eq!(picked, vec![in_a]);
+    }
+
+    #[test]
+    fn remembered_scroll_anchor_is_clamped_when_the_folder_shrank() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        let docs = tmp.dir("docs");
+        let files: Vec<PathBuf> = (0..12)
+            .map(|i| tmp.file(&format!("downloads/f{i:02}.txt"), "x"))
+            .collect();
+
+        let mut p = PanelState::new(downloads.clone());
+        p.refresh();
+        p.set_cursor(11); // f10
+        p.set_scroll_anchor(10);
+        p.navigate_to(docs);
+        for file in &files[1..11] {
+            std::fs::remove_file(file).unwrap();
+        }
+        p.navigate_to(downloads);
+
+        assert_eq!(p.filtered_count(), 2);
+        assert!(
+            p.scroll_anchor() < p.filtered_count(),
+            "{}",
+            p.scroll_anchor()
+        );
+        assert_eq!(p.cursor(), 2);
+        assert_eq!(p.cursor_entry().unwrap().path, files[11]);
+    }
+
+    #[test]
+    fn navigating_away_clears_an_in_progress_drag() {
+        let tmp = TempDir::new();
+        let file = tmp.file("x.txt", "x");
+        let sub = tmp.dir("sub");
+        let other = tmp.dir("other");
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+
+        p.begin_drag(file.clone());
+        p.drag.set_drop_target(tmp.path().to_path_buf());
+        p.navigate_to(sub.clone());
+        assert!(p.drag.is_empty(), "synchronous listing");
+        assert!(!p.drag.has_drop_target());
+
+        // A background listing the test never runs: the drag is dropped as
+        // soon as the breadcrumb changes, not when rows land.
+        let _workload = deterministic_listings(&mut p);
+        p.begin_drag(sub.join("y"));
+        p.drag.set_drop_target(sub);
+        p.navigate_to(other);
+        assert_eq!(p.listing.status(), DirStatus::Loading);
+        assert!(p.drag.is_empty(), "asynchronous listing");
+        assert!(!p.drag.has_drop_target());
+    }
+
+    #[test]
+    fn from_meta_derives_a_lowercase_last_extension() {
+        let tmp = TempDir::new();
+        let extension = |name: &str| {
+            let path = tmp.file(name, "x");
+            let meta = std::fs::metadata(&path).unwrap();
+            FileEntry::from_meta(path, &meta).unwrap().extension
+        };
+        assert_eq!(extension("PHOTO.JPG"), "jpg");
+        assert_eq!(extension(".bashrc"), "");
+        assert_eq!(extension("a.tar.gz"), "gz");
+        assert_eq!(extension("Makefile"), "");
+        let dir = tmp.dir("Folder.D");
+        let meta = std::fs::metadata(&dir).unwrap();
+        let folder = FileEntry::from_meta(dir, &meta).unwrap();
+        assert_eq!(folder.extension, "d");
+        assert!(folder.is_dir);
+        assert_eq!(folder.size, 0);
+    }
+
+    #[test]
+    fn videos_count_as_images_but_not_as_static_images() {
+        let [video, still, text] = with_extensions(vec![
+            entry("clip.MP4", false, 1),
+            entry("pic.png", false, 1),
+            entry("a.txt", false, 1),
+        ])
+        .try_into()
+        .unwrap();
+        assert!(video.is_video() && video.is_image() && !video.is_static_image());
+        assert!(!still.is_video() && still.is_image() && still.is_static_image());
+        assert!(!text.is_video() && !text.is_image());
+    }
+
+    /// Hand-driven background listings for `p`: the worker runs only when
+    /// the test says so.
+    fn deterministic_listings(p: &mut PanelState) -> crate::workload::DeterministicWorkload {
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        p.set_workload(workload.handle());
+        p.set_notify(Arc::new(|| {}));
+        workload
+    }
+
+    #[test]
+    fn async_go_up_lands_on_the_child_once_the_listing_publishes() {
+        let tmp = TempDir::new();
+        tmp.dir("aaa");
+        let mid = tmp.dir("mmm");
+        tmp.dir("zzz");
+        let mut p = PanelState::new(mid);
+        p.refresh();
+        let workload = deterministic_listings(&mut p);
+
+        p.go_up();
+        assert_eq!(p.listing.status(), DirStatus::Loading);
+        assert_eq!(p.cursor(), 0, "nothing to land on yet");
+
+        assert!(workload.run_next());
+        assert!(p.poll_listing());
+        assert_eq!(p.cursor_entry().unwrap().name, "mmm");
+        assert!(p.scroll_to_cursor());
+    }
+
+    #[test]
+    fn listing_read_under_the_old_hidden_setting_is_not_applied() {
+        let tmp = TempDir::new();
+        tmp.file("visible.txt", "v");
+        let hidden = tmp.file(".hidden.txt", "h");
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        let workload = deterministic_listings(&mut p);
+
+        // A background re-read starts with hidden files off, then the user
+        // shows them before it lands.
+        p.refresh();
+        assert_eq!(p.toggle_hidden(), ViewApplyOutcome::Applied);
+        assert!(p.entries().iter().any(|entry| entry.path == hidden));
+        let revision = p.entries_gen();
+
+        assert!(workload.run_next());
+        assert!(!p.poll_listing(), "the stale read is dropped");
+        assert!(p.entries().iter().any(|entry| entry.path == hidden));
+        assert_eq!(p.entries_gen(), revision);
+    }
+
+    #[test]
+    fn preview_identity_goes_stale_when_size_or_date_changes() {
+        let mut file = entry("notes.txt", false, 5);
+        file.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100));
+        let identity = PreviewIdentity::from_entry(&file);
+        assert!(identity.matches_entry(&file));
+
+        let mut grown = file.clone();
+        grown.size = 6;
+        assert!(!identity.matches_entry(&grown));
+
+        let mut touched = file.clone();
+        touched.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(101));
+        assert!(!identity.matches_entry(&touched));
+        touched.modified = None;
+        assert!(!identity.matches_entry(&touched));
+
+        let mut moved = file;
+        moved.path = PathBuf::from("/test/other.txt");
+        assert!(!identity.matches_entry(&moved));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_size_does_not_follow_folder_symlinks_or_loop() {
+        let outside = TempDir::new();
+        outside.file("big.bin", &"x".repeat(4000));
+        let tmp = TempDir::new();
+        tmp.file("small.bin", "12345");
+        tmp.dir("sub");
+        // A link back to the walked folder and one to a folder elsewhere.
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("sub/loop")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("away")).unwrap();
+        let link_len = |name: &str| {
+            std::fs::symlink_metadata(tmp.path().join(name))
+                .unwrap()
+                .len()
+        };
+
+        assert_eq!(
+            dir_size_walk_until(tmp.path(), false, || false),
+            Some(DirWalk {
+                size: 5 + link_len("sub/loop") + link_len("away"),
+                complete: true,
+            })
+        );
+    }
+
+    #[test]
+    fn cache_files_from_another_schema_load_empty() {
+        let entry = r#"{"key":{"path":"/s","volume_id":1,"generation":1},"mtime_secs":5,"mtime_nanos":0,"size":7}"#;
+        for json in [
+            format!(r#"{{"schema":2,"entries":[{entry}]}}"#),
+            format!(r#"{{"entries":[{entry}]}}"#),
+            format!(r#"{{"schema":0,"entries":[{entry}]}}"#),
+        ] {
+            let cache = load_cache_from_reader_with_bounds(json.as_bytes(), 8, 6).unwrap();
+            assert!(cache.is_empty(), "{json}");
+        }
+        let current = format!(r#"{{"schema":1,"entries":[{entry}]}}"#);
+        let cache = load_cache_from_reader_with_bounds(current.as_bytes(), 8, 6).unwrap();
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn persisted_snapshot_round_trips_and_drops_pre_epoch_dates() {
+        let key = |name: &str| VolumePathKey {
+            path: PathBuf::from(format!("/persist/{name}")),
+            volume_id: 3,
+            generation: 4,
+        };
+        let at =
+            |secs: u64, nanos: u32| SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos);
+        let cache = HashMap::from([
+            (key("b"), (at(200, 5), 20)),
+            (key("a"), (at(100, 999_999_999), 10)),
+            (
+                key("ancient"),
+                (
+                    SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1),
+                    30,
+                ),
+            ),
+        ]);
+
+        let persisted = persisted_snapshot(&cache);
+        assert_eq!(persisted.schema, 1);
+        let order: Vec<_> = persisted.entries.iter().map(|e| e.key.clone()).collect();
+        assert_eq!(order, [key("a"), key("b")], "sorted, pre-1970 dropped");
+
+        let json = serde_json::to_vec(&persisted).unwrap();
+        let loaded = load_cache_from_reader_with_bounds(json.as_slice(), 8, 6).unwrap();
+        let mut expected = cache;
+        expected.remove(&key("ancient"));
+        assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn path_epoch_is_shared_while_live_and_replaced_once_cancelled() {
+        let tmp = TempDir::new();
+        let key = VolumePathKey::observe(&tmp.dir("epoch"));
+        let first = capture_path_epoch(&key);
+        let second = capture_path_epoch(&key);
+        assert!(Arc::ptr_eq(&first, &second), "concurrent walkers share it");
+
+        first.cancel();
+        let fresh = capture_path_epoch(&key);
+        assert!(!Arc::ptr_eq(&first, &fresh));
+        assert!(!fresh.is_cancelled());
+        assert!(Arc::ptr_eq(&fresh, &capture_path_epoch(&key)));
+    }
+
+    #[test]
+    fn invalidation_keeps_a_sibling_that_shares_a_name_prefix() {
+        let tmp = TempDir::new();
+        let b = VolumePathKey::observe(&tmp.dir("b"));
+        let bc = VolumePathKey::observe(&tmp.dir("bc"));
+        let now = SystemTime::now();
+        {
+            let _boundary = lock_recover(scan_commit_boundary());
+            let mut cache = lock_recover(dir_size_cache());
+            cache.insert(b.clone(), (now, 1));
+            cache.insert(bc.clone(), (now, 2));
+        }
+
+        invalidate_size_cache(&tmp.path().join("bc/file.txt"));
+
+        let cache = lock_recover(dir_size_cache());
+        assert!(!cache.contains_key(&bc));
+        assert_eq!(cache.get(&b), Some(&(now, 1)), "b is not an ancestor of bc");
+    }
+
+    /// A fresh panel scan over one folder, with its own size map.
+    struct TestScan {
+        current: Mutex<Arc<ScanEpoch>>,
+        epoch: Arc<ScanEpoch>,
+        sizes: Mutex<HashMap<PathBuf, u64>>,
+        revision: AtomicU64,
+    }
+
+    fn scan_for(directory: &Path) -> TestScan {
+        let current = Mutex::new(Arc::new(ScanEpoch::new()));
+        let sizes = Mutex::new(HashMap::new());
+        let revision = AtomicU64::new(0);
+        let epoch = begin_panel_scan(
+            &current,
+            &sizes,
+            &Mutex::new(HashMap::new()),
+            &HashSet::from([directory.to_path_buf()]),
+            &revision,
+        );
+        TestScan {
+            current,
+            epoch,
+            sizes,
+            revision,
+        }
+    }
+
+    #[test]
+    fn cached_size_is_reused_only_for_the_same_folder_mtime() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("cached");
+        let key = VolumePathKey::observe(&directory);
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5_000);
+        {
+            let _boundary = lock_recover(scan_commit_boundary());
+            lock_recover(dir_size_cache()).insert(key.clone(), (mtime, 77));
+        }
+        let scan = scan_for(&directory);
+        let sizes = &scan.sizes;
+        let publish = |expected: Option<SystemTime>| {
+            publish_cached_size_if_current(
+                &scan.current,
+                &scan.epoch,
+                sizes,
+                &directory,
+                &key,
+                expected,
+                &scan.revision,
+            )
+        };
+
+        let later = mtime + std::time::Duration::from_secs(1);
+        assert!(!publish(Some(later)), "the folder changed since");
+        assert_eq!(lock_recover(sizes).get(&directory), None);
+
+        assert!(publish(Some(mtime)));
+        assert_eq!(lock_recover(sizes).get(&directory), Some(&77));
+        // No expected mtime (a walk held back by its cooldown) takes it as is.
+        lock_recover(sizes).clear();
+        assert!(publish(None));
+        assert_eq!(lock_recover(sizes).get(&directory), Some(&77));
+    }
+
+    #[test]
+    fn measurement_without_an_mtime_is_shown_but_not_cached() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("undated");
+        let cache_key = VolumePathKey::observe(&directory);
+        let path_epoch = capture_path_epoch(&cache_key);
+        let scan = scan_for(&directory);
+        let measurement = DirMeasurement {
+            path: directory.clone(),
+            modified: None,
+            complete: true,
+            cache_key: cache_key.clone(),
+            path_epoch,
+            size: 9,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+
+        let outcome = publish_dir_measurements_if_current(
+            &scan.current,
+            &scan.epoch,
+            &scan.sizes,
+            &[measurement],
+            &scan.revision,
+        );
+
+        assert_eq!(outcome.published, 1);
+        assert!(!outcome.cache_changed);
+        assert_eq!(lock_recover(&scan.sizes).get(&directory), Some(&9));
+        let _boundary = lock_recover(scan_commit_boundary());
+        assert!(!lock_recover(dir_size_cache()).contains_key(&cache_key));
+        assert!(!lock_recover(partial_size_cache()).contains_key(&cache_key));
+    }
+
+    #[test]
+    fn merging_a_measurement_replaces_the_folders_old_mount_generation() {
+        let key = |name: &str, generation: u64| VolumePathKey {
+            path: PathBuf::from(format!("/merge/{name}")),
+            volume_id: 1,
+            generation,
+        };
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let measured = DirMeasurement {
+            path: PathBuf::from("/merge/a"),
+            modified: Some(at(50)),
+            complete: true,
+            cache_key: key("a", 2),
+            path_epoch: Arc::new(ScanEpoch::new()),
+            size: 42,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+        let previous = HashMap::from([(key("a", 1), (at(40), 1)), (key("other", 1), (at(30), 3))]);
+
+        let merged = merge_measurements_into_cache(previous, &[&measured], 8, 6);
+
+        assert_eq!(
+            merged,
+            HashMap::from([(key("a", 2), (at(50), 42)), (key("other", 1), (at(30), 3))])
+        );
+    }
+
+    #[test]
+    fn merging_past_the_limit_keeps_the_newest_entries() {
+        let key = |index: u64| VolumePathKey {
+            path: PathBuf::from(format!("/merge-bound/{index}")),
+            volume_id: 1,
+            generation: 1,
+        };
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let previous: HashMap<_, _> = (0..4).map(|i| (key(i), (at(10 + i), i))).collect();
+        let measured = DirMeasurement {
+            path: key(9).path,
+            modified: Some(at(5)),
+            complete: true,
+            cache_key: key(9),
+            path_epoch: Arc::new(ScanEpoch::new()),
+            size: 9,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+
+        let merged = merge_measurements_into_cache(previous, &[&measured], 4, 3);
+
+        // Five entries pass the limit of four; the three newest mtimes stay,
+        // which drops the fresh measurement of an old folder too.
+        let mut kept: Vec<_> = merged.keys().map(|key| key.path.clone()).collect();
+        kept.sort();
+        assert_eq!(kept, [key(1).path, key(2).path, key(3).path]);
+        assert!(merged.capacity() <= hash_map_capacity_upper_bound(4));
+    }
+
+    #[test]
+    fn tree_subdirs_show_dot_folders_on_request_and_nothing_for_a_missing_path() {
+        let temp = TempDir::new();
+        let hidden = temp.dir(".hidden");
+        let visible = temp.dir("visible");
+        temp.file(".dotfile", "");
+
+        assert_eq!(
+            PanelState::subdirs(temp.path(), false),
+            vec![visible.clone()]
+        );
+        assert_eq!(
+            PanelState::subdirs(temp.path(), true),
+            vec![hidden, visible]
+        );
+        assert!(PanelState::subdirs(&temp.path().join("missing"), true).is_empty());
+        let file = temp.file("plain.txt", "x");
+        assert!(PanelState::subdirs(&file, true).is_empty());
     }
 }

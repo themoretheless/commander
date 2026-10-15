@@ -751,4 +751,36 @@ mod tests {
             br#"{"schema":1,"cohort":1,"policies":{}}"#
         );
     }
+
+    #[test]
+    fn blocked_store_update_neither_changes_memory_nor_commits() {
+        let original = FeatureStore::new(7);
+        let mut blocked = LoadedFeatureStore {
+            store: original.clone(),
+            gate: crate::persistence::StoreGate::missing(),
+            blocked: true,
+        };
+        let persist = ScriptedPersist {
+            commits: AtomicUsize::new(0),
+            mode: CommitMode::Weak,
+        };
+        let mut changed = false;
+        let result = apply_update(
+            &mut blocked,
+            &persist,
+            Path::new("features.json"),
+            |policy| {
+                changed = true;
+                policy.killed = true;
+            },
+            RiskyFeature::ContentIndex,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::persistence::JsonSaveError::Blocked(_))
+        ));
+        assert!(!changed, "the change must not run against a blocked store");
+        assert_eq!(blocked.store, original);
+        assert_eq!(persist.commits.load(Ordering::Relaxed), 0);
+    }
 }

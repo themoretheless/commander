@@ -321,4 +321,30 @@ mod tests {
         assert_eq!(trail(&j), vec!["/b"]);
         assert_eq!(cur(&j), Some("/b".to_string()));
     }
+
+    #[test]
+    fn pruning_with_every_candidate_rejected_collapses_to_the_current_entry() {
+        let mut jumps = JumpList::new();
+        for path in ["/a", "/b", "/c"] {
+            jumps.push(path);
+        }
+        assert_eq!(jumps.back_pruning(|_| false), None);
+        assert_eq!(trail(&jumps), vec!["/c"]);
+        assert_eq!(cur(&jumps).as_deref(), Some("/c"));
+        assert!(!jumps.can_back() && !jumps.can_forward());
+
+        let mut jumps = JumpList::new();
+        for path in ["/a", "/b", "/c"] {
+            jumps.push(path);
+        }
+        jumps.back();
+        jumps.back();
+        assert_eq!(jumps.forward_pruning(|_| false), None);
+        assert_eq!(trail(&jumps), vec!["/a"]);
+        assert_eq!(cur(&jumps).as_deref(), Some("/a"));
+        assert!(!jumps.can_back() && !jumps.can_forward());
+        // The collapsed list keeps working.
+        jumps.push("/d");
+        assert_eq!(jumps.back_pruning(|_| true), Some(Path::new("/a")));
+    }
 }

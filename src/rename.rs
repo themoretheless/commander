@@ -464,6 +464,20 @@ mod tests {
     }
 
     #[test]
+    fn case_only_rename_of_the_entry_itself_is_ok() {
+        // `foo.txt` matches `Foo.txt` under the case-insensitive key, but the
+        // clash is the entry being renamed away, not an untouched sibling.
+        let rule = RenameRule {
+            case: CaseMode::Lower,
+            ..Default::default()
+        };
+        let plans = plan_batch_rename(&names(&["Foo.txt"]), &existing(&["Foo.txt"]), &rule);
+        assert_eq!(plans[0].to, "foo.txt");
+        assert_eq!(plans[0].status, PlanStatus::Ok);
+        assert!(plan_is_applicable(&plans));
+    }
+
+    #[test]
     fn applicable_requires_a_change_and_no_problems() {
         // All unchanged -> not applicable (nothing to do).
         let noop = plan_batch_rename(

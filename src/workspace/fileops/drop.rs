@@ -13,6 +13,7 @@ use crate::ui_request::UiRequest;
 /// are confirmed, cross-volume moves work, self/descendant drops are rejected
 /// and errors surface. A clean, conflict-free drop runs immediately; a
 /// conflicting one opens the confirmation dialog.
+#[cfg(test)]
 pub fn drop_dragged(workspace: &mut Workspace, notify: impl Fn() + Send + 'static) {
     drop_dragged_as(workspace, TransferKind::Move, notify);
 }

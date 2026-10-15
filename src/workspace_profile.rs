@@ -187,8 +187,13 @@ mod tests {
         ));
         assert_eq!(book.profiles.len(), 1);
         assert_eq!(book.get("photos").unwrap().left_root, PathBuf::from("/l2"));
-        save(&book);
-        assert!(load().get("photos").is_some());
+        // Round-trip through a temp store: `save()` would overwrite the
+        // developer's real workspace_profiles.json.
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.path().join("workspace_profiles.json");
+        let persist = crate::persistence::FsPersist::default();
+        assert!(save_store_at(&persist, &path, &book));
+        assert_eq!(load_store_at(&persist, &path), book);
     }
 
     #[test]

@@ -393,15 +393,29 @@ fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<
     }
 }
 
-/// A name cut to the footer's fixed budget.
-fn footer_name(name: &str) -> String {
-    const MAX: usize = 16;
-    if name.chars().count() > MAX {
-        let head: String = name.chars().take(MAX - 1).collect();
-        format!("{head}\u{2026}")
+/// The footer's filter note: the facet count, or "Filter text" when only
+/// the search query filters the list.
+fn filter_footer(active_facets: usize) -> String {
+    if active_facets > 0 {
+        format!("  |  Filters {active_facets}")
     } else {
-        name.to_string()
+        "  |  Filter text".to_string()
     }
+}
+
+/// The footer's selection note; names how many selected rows the filter
+/// still shows when it hides some of them.
+fn selection_footer(selected: usize, visible: usize, size: &str) -> String {
+    if visible == selected {
+        format!("  |  {selected} selected ({size})")
+    } else {
+        format!("  |  {selected} selected ({visible} visible, {size})")
+    }
+}
+
+/// A name cut to the footer's fixed budget, keeping its extension.
+fn footer_name(name: &str) -> std::borrow::Cow<'_, str> {
+    crate::display_name::truncate_preserving_extension(name, 16)
 }
 
 /// The footer's folder extremes: the short text, and the full names for
@@ -792,10 +806,8 @@ impl App {
                 // the pre-density default).
                 let row_content = row_content_height(metrics);
                 let row_h = row_content + 1.0;
-                // Dark theme? Derived from the panel background luminance, so the
-                // semantic kind stub can pick the right toned palette.
-                let dark =
-                    (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
+                // The semantic kind stub picks the matching toned palette.
+                let dark = t.is_dark();
                 let total_rows = filtered.len();
                 let viewport = ui.clip_rect();
                 // Measured from where file rows start, i.e. below "..".
@@ -1381,27 +1393,22 @@ impl App {
                                 t.text_muted,
                             ));
                             if filters_active {
-                                let active_count = panel.facets().active_count();
-                                let filter_label = if active_count > 0 {
-                                    format!("  |  Filters {active_count}")
-                                } else {
-                                    "  |  Filter text".to_string()
-                                };
-                                ui.add(footer(filter_label, t.accent));
+                                ui.add(footer(
+                                    filter_footer(panel.facets().active_count()),
+                                    t.accent,
+                                ));
                             }
                             if selected_total > 0 {
                                 let selected_size =
                                     selection_size_label(selected_bytes, selected_pending);
-                                let selection_text = if selected_visible == selected_total {
-                                    format!("{selected_total} selected ({selected_size})")
-                                } else {
-                                    format!(
-                                        "{selected_total} selected ({selected_visible} visible, \
-                                         {selected_size})"
-                                    )
-                                };
-                                let selection = ui
-                                    .add(footer(format!("  |  {selection_text}"), t.accent_purple));
+                                let selection = ui.add(footer(
+                                    selection_footer(
+                                        selected_total,
+                                        selected_visible,
+                                        &selected_size,
+                                    ),
+                                    t.accent_purple,
+                                ));
                                 // Spoken when Space/Insert changes the count.
                                 ui.ctx().accesskit_node_builder(selection.id, |node| {
                                     node.set_role(egui::accesskit::Role::Status);
@@ -1540,40 +1547,67 @@ fn highlight_name_job(
     accent: Color32,
     size: f32,
 ) -> egui::text::LayoutJob {
-    use egui::text::{LayoutJob, TextFormat};
+    use egui::text::TextFormat;
     let font = egui::FontId::proportional(size);
-    let mut job = LayoutJob::default();
-    let mut buf = [0u8; 4];
-    for (idx, ch) in name.chars().enumerate() {
-        let hit = ranges.iter().any(|&(s, e)| idx >= s && idx < e);
-        // Matches are underlined too, so they do not rely on hue alone.
-        let (color, underline) = if hit {
-            (accent, egui::Stroke::new(1.0, accent))
-        } else {
-            (base, egui::Stroke::NONE)
-        };
-        job.append(
-            ch.encode_utf8(&mut buf),
-            0.0,
-            TextFormat {
-                font_id: font.clone(),
-                color,
-                underline,
-                ..Default::default()
-            },
-        );
-    }
+    let mut job = egui::text::LayoutJob::default();
+    // Matches are underlined too, so they do not rely on hue alone.
+    append_highlighted(
+        &mut job,
+        name,
+        ranges,
+        &TextFormat::simple(font.clone(), base),
+        &TextFormat {
+            font_id: font,
+            color: accent,
+            underline: egui::Stroke::new(1.0, accent),
+            ..Default::default()
+        },
+    );
     job
+}
+
+/// Append `text` to `job` in `hit` where a char index falls in one of the
+/// half-open fuzzy-match `ranges` and in `plain` elsewhere. Neighbouring
+/// chars of the same kind share one section, so a long name does not become
+/// one section per char.
+pub(super) fn append_highlighted(
+    job: &mut egui::text::LayoutJob,
+    text: &str,
+    ranges: &[(usize, usize)],
+    plain: &egui::text::TextFormat,
+    hit: &egui::text::TextFormat,
+) {
+    let is_hit = |idx: usize| ranges.iter().any(|&(s, e)| idx >= s && idx < e);
+    let mut run: Option<(usize, bool)> = None;
+    for (idx, (byte, _)) in text.char_indices().enumerate() {
+        let here = is_hit(idx);
+        match run {
+            Some((_, kind)) if kind == here => {}
+            Some((start, kind)) => {
+                job.append(
+                    &text[start..byte],
+                    0.0,
+                    if kind { hit } else { plain }.clone(),
+                );
+                run = Some((byte, here));
+            }
+            None => run = Some((byte, here)),
+        }
+    }
+    if let Some((start, kind)) = run {
+        job.append(&text[start..], 0.0, if kind { hit } else { plain }.clone());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
-        click_range, compare_marker, count_summary, cursor_chevron_fits, cursor_row_to_reveal,
-        drop_target_writable, empty_state, folder_changed, folder_extremes, follow_cursor_focus,
-        grid_row_index, highlight_name_job, map_ranges_to_display, name_char_budget,
-        name_column_width, parent_row_label, row_click_kind, row_content_height, row_spoken_label,
+        append_highlighted, click_range, compare_marker, count_summary, cursor_chevron_fits,
+        cursor_row_to_reveal, drop_target_writable, empty_state, filter_footer, folder_changed,
+        folder_extremes, follow_cursor_focus, grid_row_index, highlight_name_job,
+        map_ranges_to_display, name_char_budget, name_column_width, parent_row_label,
+        row_click_kind, row_content_height, row_spoken_label, selection_footer,
         selection_size_label, selection_summary_with, visible_rows, visible_selection_summary,
     };
 
@@ -1837,6 +1871,50 @@ mod tests {
         assert_eq!(underlines, vec![false, true, false]);
     }
 
+    fn runs(job: &egui::text::LayoutJob) -> Vec<(&str, bool)> {
+        job.sections
+            .iter()
+            .map(|section| {
+                (
+                    &job.text[section.byte_range.start.0..section.byte_range.end.0],
+                    section.format.color == egui::Color32::RED,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn highlight_ranges_index_chars_not_bytes() {
+        let (base, accent) = (egui::Color32::GRAY, egui::Color32::RED);
+        let job = highlight_name_job("é日本x.txt", &[(1, 3)], base, accent, 13.0);
+        assert_eq!(
+            runs(&job),
+            vec![("é", false), ("日本", true), ("x.txt", false)]
+        );
+        let job = highlight_name_job("a😀b", &[(1, 2)], base, accent, 13.0);
+        assert_eq!(runs(&job), vec![("a", false), ("😀", true), ("b", false)]);
+        // A combining accent is its own char: the range covers it alone.
+        let job = highlight_name_job("e\u{301}x", &[(1, 2)], base, accent, 13.0);
+        assert_eq!(
+            runs(&job),
+            vec![("e", false), ("\u{301}", true), ("x", false)]
+        );
+    }
+
+    #[test]
+    fn highlight_merges_runs_and_falls_back_to_plain() {
+        let (base, accent) = (egui::Color32::GRAY, egui::Color32::RED);
+        let job = highlight_name_job("report.pdf", &[], base, accent, 13.0);
+        assert_eq!(runs(&job), vec![("report.pdf", false)]);
+        // Adjacent ranges read as one match; ranges past the end are ignored.
+        let job = highlight_name_job("abcd", &[(0, 1), (1, 2), (9, 12)], base, accent, 13.0);
+        assert_eq!(runs(&job), vec![("ab", true), ("cd", false)]);
+        let mut empty = egui::text::LayoutJob::default();
+        let format = egui::text::TextFormat::default();
+        append_highlighted(&mut empty, "", &[(0, 1)], &format, &format);
+        assert!(empty.sections.is_empty() && empty.text.is_empty());
+    }
+
     #[test]
     fn click_modifiers_pick_the_selection_gesture() {
         let mut modifiers = egui::Modifiers::NONE;
@@ -1908,12 +1986,29 @@ mod tests {
     }
 
     #[test]
+    fn footer_notes_name_filters_and_hidden_selected_rows() {
+        assert_eq!(filter_footer(0), "  |  Filter text");
+        assert_eq!(filter_footer(2), "  |  Filters 2");
+        assert_eq!(selection_footer(3, 3, "1 KB"), "  |  3 selected (1 KB)");
+        assert_eq!(
+            selection_footer(3, 1, "1 KB"),
+            "  |  3 selected (1 visible, 1 KB)"
+        );
+        // Every selected row filtered away still says so.
+        assert_eq!(
+            selection_footer(2, 0, "\u{2026}"),
+            "  |  2 selected (0 visible, \u{2026})"
+        );
+    }
+
+    #[test]
     fn folder_extremes_keep_the_full_names_for_hover() {
         let long = "a-very-long-file-name-indeed.bin";
         let (short, full) =
             folder_extremes(Some((long, 10)), Some("old.log")).expect("something to show");
+        // The cut keeps the extension, which says what kind of file it is.
         assert!(
-            short.contains("largest a-very-long-fil\u{2026} (10 B)"),
+            short.contains("largest a-very-long\u{2026}.bin (10 B)"),
             "{short}"
         );
         assert!(short.ends_with("  |  oldest old.log"), "{short}");
