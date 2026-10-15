@@ -4704,4 +4704,95 @@ mod tests {
         moved.path = PathBuf::from("/test/other.txt");
         assert!(!identity.matches_entry(&moved));
     }
+
+    #[test]
+    fn persisted_snapshot_round_trips_and_drops_pre_epoch_dates() {
+        let key = |name: &str| VolumePathKey {
+            path: PathBuf::from(format!("/persist/{name}")),
+            volume_id: 3,
+            generation: 4,
+        };
+        let at =
+            |secs: u64, nanos: u32| SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos);
+        let cache = HashMap::from([
+            (key("b"), (at(200, 5), 20)),
+            (key("a"), (at(100, 999_999_999), 10)),
+            (
+                key("ancient"),
+                (
+                    SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1),
+                    30,
+                ),
+            ),
+        ]);
+
+        let persisted = persisted_snapshot(&cache);
+        assert_eq!(persisted.schema, 1);
+        let order: Vec<_> = persisted.entries.iter().map(|e| e.key.clone()).collect();
+        assert_eq!(order, [key("a"), key("b")], "sorted, pre-1970 dropped");
+
+        let json = serde_json::to_vec(&persisted).unwrap();
+        let loaded = load_cache_from_reader_with_bounds(json.as_slice(), 8, 6).unwrap();
+        let mut expected = cache;
+        expected.remove(&key("ancient"));
+        assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn merging_a_measurement_replaces_the_folders_old_mount_generation() {
+        let key = |name: &str, generation: u64| VolumePathKey {
+            path: PathBuf::from(format!("/merge/{name}")),
+            volume_id: 1,
+            generation,
+        };
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let measured = DirMeasurement {
+            path: PathBuf::from("/merge/a"),
+            modified: Some(at(50)),
+            complete: true,
+            cache_key: key("a", 2),
+            path_epoch: Arc::new(ScanEpoch::new()),
+            size: 42,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+        let previous = HashMap::from([(key("a", 1), (at(40), 1)), (key("other", 1), (at(30), 3))]);
+
+        let merged = merge_measurements_into_cache(previous, &[&measured], 8, 6);
+
+        assert_eq!(
+            merged,
+            HashMap::from([(key("a", 2), (at(50), 42)), (key("other", 1), (at(30), 3))])
+        );
+    }
+
+    #[test]
+    fn merging_past_the_limit_keeps_the_newest_entries() {
+        let key = |index: u64| VolumePathKey {
+            path: PathBuf::from(format!("/merge-bound/{index}")),
+            volume_id: 1,
+            generation: 1,
+        };
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        let previous: HashMap<_, _> = (0..4).map(|i| (key(i), (at(10 + i), i))).collect();
+        let measured = DirMeasurement {
+            path: key(9).path,
+            modified: Some(at(5)),
+            complete: true,
+            cache_key: key(9),
+            path_epoch: Arc::new(ScanEpoch::new()),
+            size: 9,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+
+        let merged = merge_measurements_into_cache(previous, &[&measured], 4, 3);
+
+        // Five entries pass the limit of four; the three newest mtimes stay,
+        // which drops the fresh measurement of an old folder too.
+        let mut kept: Vec<_> = merged.keys().map(|key| key.path.clone()).collect();
+        kept.sort();
+        assert_eq!(kept, [key(1).path, key(2).path, key(3).path]);
+        assert!(merged.capacity() <= hash_map_capacity_upper_bound(4));
+    }
 }
