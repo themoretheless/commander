@@ -548,6 +548,9 @@ pub struct StoreGate {
     generation: u64,
     expected: ExpectedRevision,
     recovered_source: Option<Vec<u8>>,
+    /// Why a fail-closed load was rejected (read failure or decode error),
+    /// kept so strict stores can say what to fix instead of only "corrupt".
+    detail: Option<String>,
 }
 
 impl StoreGate {
@@ -557,11 +560,16 @@ impl StoreGate {
             generation: 0,
             expected: ExpectedRevision::Missing,
             recovered_source: None,
+            detail: None,
         }
     }
 
     pub const fn status(&self) -> LoadStatus {
         self.status
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 
     pub(crate) fn block(&mut self, status: LoadStatus) {
@@ -642,7 +650,11 @@ struct LoadedRaw {
     source_bytes: Option<Vec<u8>>,
 }
 
-fn loaded_without_value(status: LoadStatus, expected: ExpectedRevision) -> LoadedRaw {
+fn loaded_without_value(
+    status: LoadStatus,
+    expected: ExpectedRevision,
+    detail: impl Into<String>,
+) -> LoadedRaw {
     LoadedRaw {
         value: None,
         gate: if status == LoadStatus::Missing {
@@ -653,6 +665,7 @@ fn loaded_without_value(status: LoadStatus, expected: ExpectedRevision) -> Loade
                 generation: 0,
                 expected,
                 recovered_source: None,
+                detail: Some(detail.into()),
             }
         },
         source_bytes: None,
@@ -662,20 +675,26 @@ fn loaded_without_value(status: LoadStatus, expected: ExpectedRevision) -> Loade
 fn load_raw_envelope(persist: &dyn Persist, path: &Path, spec: StoreSpec) -> LoadedRaw {
     let (bytes, revision) = match persist.read(path, spec.max_bytes) {
         Ok(ReadOutcome::Missing) => {
-            return loaded_without_value(LoadStatus::Missing, ExpectedRevision::Missing);
+            return loaded_without_value(LoadStatus::Missing, ExpectedRevision::Missing, "");
         }
         Ok(ReadOutcome::Present { bytes, revision }) => (bytes, revision),
-        Err(_) => {
-            return loaded_without_value(LoadStatus::Unreadable, ExpectedRevision::Any);
+        Err(failure) => {
+            return loaded_without_value(
+                LoadStatus::Unreadable,
+                ExpectedRevision::Any,
+                failure.to_string(),
+            );
         }
     };
     let expected = ExpectedRevision::Exact(revision);
-    let root = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+    let corrupt =
+        |expected, detail: &str| loaded_without_value(LoadStatus::Corrupt, expected, detail);
+    let mut root = match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(root) => root,
-        Err(_) => return loaded_without_value(LoadStatus::Corrupt, expected),
+        Err(error) => return corrupt(expected, &error.to_string()),
     };
-    let Some(object) = root.as_object() else {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+    let Some(object) = root.as_object_mut() else {
+        return corrupt(expected, "top-level value is not an object");
     };
     let envelope_candidate = object.contains_key("format")
         || object.contains_key("store")
@@ -690,6 +709,7 @@ fn load_raw_envelope(persist: &dyn Persist, path: &Path, spec: StoreSpec) -> Loa
                 generation: 0,
                 expected,
                 recovered_source: None,
+                detail: None,
             },
             source_bytes: Some(bytes),
         };
@@ -703,27 +723,34 @@ fn load_raw_envelope(persist: &dyn Persist, path: &Path, spec: StoreSpec) -> Loa
         .and_then(|schema| u32::try_from(schema).ok());
     let generation = object.get("generation").and_then(serde_json::Value::as_u64);
     if format != Some(spec.format) || store != Some(spec.store) {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+        return corrupt(expected, "envelope names a different format or store");
     }
     let Some(schema) = schema else {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+        return corrupt(expected, "envelope has no valid schema");
     };
     if schema > spec.schema {
-        return loaded_without_value(LoadStatus::FutureVersion, expected);
+        return loaded_without_value(
+            LoadStatus::FutureVersion,
+            expected,
+            format!("envelope schema {schema}, supported {}", spec.schema),
+        );
     }
     if schema != spec.schema {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+        return corrupt(expected, &format!("unsupported envelope schema {schema}"));
     }
-    let (Some(generation), Some(payload)) = (generation, object.get("payload")) else {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+    // Take the payload instead of cloning it: the journal can be tens of MB
+    // and is reloaded on every mutation.
+    let (Some(generation), Some(payload)) = (generation, object.remove("payload")) else {
+        return corrupt(expected, "envelope has no generation or payload");
     };
     LoadedRaw {
-        value: Some(payload.clone()),
+        value: Some(payload),
         gate: StoreGate {
             status: LoadStatus::Current,
             generation,
             expected,
             recovered_source: None,
+            detail: None,
         },
         source_bytes: Some(bytes),
     }
@@ -746,10 +773,11 @@ pub fn load_enveloped<T: DeserializeOwned>(
             value: Some(value),
             gate: raw.gate,
         },
-        Err(_) => LoadedJson {
+        Err(error) => LoadedJson {
             value: None,
             gate: StoreGate {
                 status: LoadStatus::Corrupt,
+                detail: Some(format!("payload did not decode: {error}")),
                 ..raw.gate
             },
         },
@@ -759,7 +787,9 @@ pub fn load_enveloped<T: DeserializeOwned>(
 /// Load a store that must never fall back to defaults (operation journal,
 /// content index). `Ok(None)` only when the store is missing; every
 /// fail-closed status becomes an error naming the store. `noun` is the
-/// store's sentence-case name, e.g. "Operation journal".
+/// store's sentence-case name, e.g. "Operation journal". Errors name the
+/// file (after a `(file ` marker) so the user knows what to inspect or move
+/// aside, followed by the read or decode failure.
 pub fn load_strict<T: DeserializeOwned>(
     persist: &dyn Persist,
     path: &Path,
@@ -767,18 +797,25 @@ pub fn load_strict<T: DeserializeOwned>(
     noun: &str,
 ) -> Result<(Option<T>, StoreGate), String> {
     let loaded = load_enveloped::<T>(persist, path, spec);
+    let file = path.display();
+    let detail = loaded
+        .gate
+        .detail()
+        .unwrap_or("envelope or payload rejected");
     match loaded.gate.status() {
         LoadStatus::Missing => Ok((None, loaded.gate)),
         LoadStatus::Legacy | LoadStatus::Current | LoadStatus::Recovered => match loaded.value {
             Some(value) => Ok((Some(value), loaded.gate)),
-            None => Err(format!("{noun} is corrupt: payload did not decode")),
+            None => Err(format!(
+                "{noun} is corrupt (file {file}): payload did not decode"
+            )),
         },
-        LoadStatus::Corrupt => Err(format!("{noun} is corrupt: envelope or payload rejected")),
+        LoadStatus::Corrupt => Err(format!("{noun} is corrupt (file {file}): {detail}")),
         LoadStatus::FutureVersion => Err(format!(
-            "{noun} uses a newer persist envelope than this build supports"
+            "{noun} uses a newer persist envelope than this build supports (file {file}): {detail}"
         )),
         LoadStatus::Unreadable => Err(format!(
-            "Could not open {}: unreadable",
+            "Could not open {}: unreadable (file {file}): {detail}",
             noun.to_lowercase()
         )),
     }
@@ -1734,24 +1771,31 @@ mod tests {
         assert!(missing.is_none());
         assert_eq!(gate.status(), LoadStatus::Missing);
 
-        let cases: [(Vec<u8>, &str); 4] = [
-            (b"not json".to_vec(), "Test store is corrupt"),
+        let cases: [(Vec<u8>, &str, &str); 4] = [
+            (
+                b"not json".to_vec(),
+                "Test store is corrupt",
+                "expected ident at line 1",
+            ),
             (
                 br#"{"format":"commander.persist","store":"commander.test","schema":1,"generation":1,"payload":{"name":"x","count":"many"}}"#
                     .to_vec(),
                 "Test store is corrupt",
+                "payload did not decode: invalid type: string",
             ),
             (
                 br#"{"format":"commander.persist","store":"commander.test","schema":2,"generation":1,"payload":{}}"#
                     .to_vec(),
                 "Test store uses a newer persist envelope",
+                "envelope schema 2, supported 1",
             ),
             (
                 vec![b' '; TEST_STORE.max_bytes + 1],
                 "Could not open test store",
+                "TooLarge",
             ),
         ];
-        for (bytes, expected) in cases {
+        for (bytes, expected, detail) in cases {
             let error = load_strict::<Item>(
                 &MemoryPersist::new(Some(bytes)),
                 path,
@@ -1760,6 +1804,8 @@ mod tests {
             )
             .unwrap_err();
             assert!(error.starts_with(expected), "{error}");
+            assert!(error.contains("(file strict.json)"), "{error}");
+            assert!(error.contains(detail), "{error}");
         }
     }
 
@@ -1877,6 +1923,7 @@ mod tests {
             generation: u64::MAX,
             expected: ExpectedRevision::Any,
             recovered_source: None,
+            detail: None,
         };
         let result = save_enveloped(
             &persist,

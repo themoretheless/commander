@@ -145,7 +145,12 @@ pub fn collect(paths: &[PathBuf]) -> SupportBundle {
 /// A path-free reason for an operation-journal load failure: the bundle is
 /// redacted, and the raw error text can embed absolute paths.
 fn journal_unavailable_reason(error: &str) -> &'static str {
-    let error = error.to_ascii_lowercase();
+    // load_strict appends "(file <path>): <detail>"; classify only the status
+    // sentence so a path or decode detail cannot pick the wrong reason.
+    let error = error
+        .split_once(" (file ")
+        .map_or(error, |(status, _)| status)
+        .to_ascii_lowercase();
     if error.contains("lock") {
         "its store lock could not be acquired"
     } else if error.contains("directory") {
@@ -403,6 +408,18 @@ mod tests {
                 "Could not open operation journal lock: Permission denied (os error 13)"
             ),
             "its store lock could not be acquired"
+        );
+        assert_eq!(
+            journal_unavailable_reason(
+                "Operation journal is corrupt (file /home/sherlock/directory/journal.json): EOF"
+            ),
+            "the file is corrupt"
+        );
+        assert_eq!(
+            journal_unavailable_reason(
+                "Could not open operation journal: unreadable (file /locked/j.json): Io: denied"
+            ),
+            "the file is unreadable"
         );
         assert_eq!(
             journal_unavailable_reason("Unsupported operation journal schema 9; expected 3"),
