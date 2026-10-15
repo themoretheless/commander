@@ -423,6 +423,20 @@ fn undo_recorded_toast(action: &crate::undo::Action) -> String {
     }
 }
 
+/// The receipt for `action`, the undo entry an operation just recorded: it
+/// replays that same action, so its Undo stays in sync with Cmd+Z. An action
+/// with no folder to jump back to gets none.
+fn undo_receipt(action: crate::undo::Action, now: f64) -> Option<crate::receipts::Receipt> {
+    let jump_to = action.jump_to()?;
+    Some(crate::receipts::Receipt {
+        verb: action.verb(),
+        item_count: action.item_count(),
+        timestamp: now,
+        jump_to,
+        undo_action: Some(action),
+    })
+}
+
 /// The toast text and kind for a finished Move to Trash.
 fn delete_outcome_toast(
     submitted: usize,
@@ -789,6 +803,17 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Log a receipt for the action on top of the undo stack, which the
+    /// operation that just finished pushed (see [`undo_receipt`]), and
+    /// return that action.
+    pub(crate) fn push_receipt_for_top_undo(&mut self, now: f64) -> Option<crate::undo::Action> {
+        let action = self.ws.top_undo_action().cloned()?;
+        if let Some(receipt) = undo_receipt(action.clone(), now) {
+            self.receipts.push(receipt);
+        }
+        Some(action)
+    }
+
     fn process_pending_context_menu(&mut self, ctx: &egui::Context) {
         if self.has_modal_surface() || !ctx.input(|input| input.focused) {
             self.ui.cancel_context_menu();
@@ -1113,22 +1138,13 @@ impl App {
             if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
                 // log a receipt (jump-back + the same live undo affordance).
-                if let Some(a) = self.ws.top_undo_action().cloned() {
+                if let Some(a) = self.push_receipt_for_top_undo(now) {
                     self.toast(
                         ctx,
                         crate::toasts::ToastKind::Success,
                         undo_recorded_toast(&a),
                         true,
                     );
-                    if let Some(jump_to) = a.jump_to() {
-                        self.receipts.push(crate::receipts::Receipt {
-                            verb: a.verb(),
-                            item_count: a.item_count(),
-                            timestamp: now,
-                            jump_to,
-                            undo_action: Some(a),
-                        });
-                    }
                 }
             }
         }
@@ -2428,7 +2444,7 @@ mod tests {
     };
     use super::{
         command_shortcut, copied_paths_label, delete_outcome_toast, selection_hud_head,
-        undo_recorded_toast,
+        undo_receipt, undo_recorded_toast,
     };
     use super::{drag_path_rejection, finish_drop, sources_already_in};
     use super::{
@@ -2984,6 +3000,27 @@ mod tests {
             to: PathBuf::from("/a/y"),
         };
         assert_eq!(undo_recorded_toast(&rename), "Renamed 1 item");
+    }
+
+    #[test]
+    fn undo_receipts_replay_the_recorded_action_and_need_a_jump_target() {
+        use crate::undo::Action;
+        use std::path::PathBuf;
+        let rename = Action::BatchRename {
+            dir: PathBuf::from("/photos"),
+            pairs: vec![
+                ("a.jpg".into(), "x-a.jpg".into()),
+                ("b.jpg".into(), "x-b.jpg".into()),
+            ],
+        };
+        let receipt = undo_receipt(rename.clone(), 12.5).expect("receipt");
+        assert_eq!(receipt.verb, rename.verb());
+        assert_eq!(receipt.item_count, 2);
+        assert_eq!(receipt.timestamp, 12.5);
+        assert_eq!(receipt.jump_to, PathBuf::from("/photos"));
+        assert_eq!(receipt.undo_action, Some(rename));
+        // A move with no pairs has nowhere to jump back to.
+        assert!(undo_receipt(Action::Move { pairs: Vec::new() }, 1.0).is_none());
     }
 
     #[test]
