@@ -2423,8 +2423,6 @@ fn finish_drop(
     });
     if kind == TransferKind::Move && onto_own_folder {
         ws.cancel_drag();
-    } else if kind == TransferKind::Move {
-        ws.drop_dragged(notify);
     } else {
         ws.drop_dragged_as(kind, notify);
     }
@@ -3132,6 +3130,29 @@ mod tests {
         assert!(ws.left.drag.is_empty());
         assert!(!ws.right.drag.has_drop_target());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha");
+    }
+
+    #[test]
+    fn move_drop_onto_another_folder_starts_the_transfer() {
+        let (l, r) = (
+            crate::testutil::TempDir::new(),
+            crate::testutil::TempDir::new(),
+        );
+        let file = l.file("a.txt", "alpha");
+        let mut ws =
+            crate::workspace::Workspace::new(l.path().to_path_buf(), r.path().to_path_buf());
+        ws.left.refresh();
+        ws.right.refresh();
+        ws.left.drag.set(vec![file]);
+        ws.right.drag.set_drop_target(r.path().to_path_buf());
+
+        finish_drop(&mut ws, crate::transfer::TransferKind::Move, || {});
+
+        assert!(ws.drag_session().is_none(), "the drag is consumed");
+        assert!(
+            ws.pending_op.is_some() || ws.has_unfinished_transfer_work(),
+            "the move is staged, not cancelled"
+        );
     }
 
     #[test]
