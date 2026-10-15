@@ -7,6 +7,60 @@ pub struct PanelRenderOutcome {
     pub context_menu_request: Option<ui_state::ContextMenuCandidate>,
 }
 
+fn file_name_of(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn text_preview_scroll_id(panel_side: &str, path: &std::path::Path) -> egui::Id {
+    egui::Id::new(("text_preview", panel_side, path))
+}
+
+/// The close button shared by the image, text and Get Info previews.
+fn close_preview_button(ui: &mut egui::Ui) -> bool {
+    let response = ui.small_button("\u{00d7}");
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Close preview")
+    });
+    response.on_hover_text("Close preview (Esc)").clicked()
+}
+
+/// "Preview unavailable" and its cause, announced to assistive tech as a
+/// status update since it replaces a spinner without any focus change.
+fn preview_failure_text(ui: &mut egui::Ui, message: &str, t: &ThemeColors) {
+    ui.label(
+        egui::RichText::new("Preview unavailable")
+            .size(13.0)
+            .strong()
+            .color(t.text_primary),
+    );
+    ui.add_space(4.0);
+    let response = ui.label(
+        egui::RichText::new(message)
+            .size(11.0)
+            .color(t.text_secondary),
+    );
+    let announcement = format!("Preview unavailable: {message}");
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Status);
+        node.set_live(egui::accesskit::Live::Polite);
+        node.set_label(announcement);
+    });
+}
+
+/// Why image previews are off: the kill switch, the Developer diagnostics
+/// toggle, or a staged rollout that has not reached this install.
+fn image_preview_disabled_reason(state: crate::feature_flags::FeatureSnapshot) -> &'static str {
+    if state.environment_killed {
+        "Turned off by COMMANDER_DISABLE_IMAGE_PREVIEW"
+    } else if state.runtime_killed {
+        "Turned off under Developer diagnostics \u{203a} Runtime controls"
+    } else {
+        "Not yet rolled out to this install"
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_text_preview(
     ui: &mut egui::Ui,
@@ -22,21 +76,24 @@ fn render_text_preview(
         .fill(t.bg_panel)
         .inner_margin(Margin::same(8))
         .show(ui, |ui| {
+            // The close button is placed first so a long name truncates
+            // (full name on hover) instead of pushing it out of the pane.
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(
-                        path.file_name()
-                            .map(|name| name.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                    )
-                    .size(12.0)
-                    .strong()
-                    .color(t.text_primary),
-                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.small_button("✕").clicked() {
+                    if close_preview_button(ui) {
                         *close_preview = true;
                     }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(file_name_of(path))
+                                    .size(12.0)
+                                    .strong()
+                                    .color(t.text_primary),
+                            )
+                            .truncate(),
+                        );
+                    });
                 });
             });
             ui.add(egui::Separator::default().spacing(4.0));
@@ -47,7 +104,9 @@ fn render_text_preview(
             // leave this pane on a spinner forever.
             if let Some(content) = content {
                 egui::ScrollArea::both()
-                    .id_salt(format!("text_preview_{}", panel_side))
+                    // Keyed by file too: the preview follows the cursor, and
+                    // each file should open at its top.
+                    .id_salt(text_preview_scroll_id(panel_side, path))
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.style_mut().interaction.selectable_labels = true;
@@ -96,18 +155,7 @@ fn render_text_preview(
                 crate::image_cache::TextPreviewLoadState::Failed(error) => {
                     ui.centered_and_justified(|ui| {
                         ui.vertical_centered(|ui| {
-                            ui.label(
-                                egui::RichText::new("Preview unavailable")
-                                    .size(13.0)
-                                    .strong()
-                                    .color(t.text_primary),
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(error.message())
-                                    .size(11.0)
-                                    .color(t.text_secondary),
-                            );
+                            preview_failure_text(ui, error.message(), t);
                             ui.add_space(10.0);
                             if ui.button("\u{21bb} Retry").clicked() {
                                 image_cache.retry_text_preview(path);
@@ -875,11 +923,7 @@ impl App {
                                 preview_extent.y,
                                 ui.ctx().pixels_per_point(),
                             );
-                            let close_button = |ui: &mut egui::Ui| {
-                                ui.small_button("\u{00d7}")
-                                    .on_hover_text("Close preview")
-                                    .clicked()
-                            };
+                            let close_button = close_preview_button;
                             if let Some(texture) = image_cache.get(&path) {
                                 let tex_size = texture.size_vec2();
                                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -899,6 +943,7 @@ impl App {
                                             texture.id(),
                                             display_size,
                                         ))
+                                        .alt_text(file_name_of(&path))
                                         .sense(Sense::click()),
                                     );
                                     if resp.clicked() {
@@ -915,6 +960,18 @@ impl App {
                                                         .size(12.0)
                                                         .color(t.text_muted),
                                                 );
+                                                ui.add_space(4.0);
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        image_preview_disabled_reason(
+                                                            crate::feature_flags::snapshot(
+                                                                crate::feature_flags::RiskyFeature::ImagePreview,
+                                                            ),
+                                                        ),
+                                                    )
+                                                    .size(11.0)
+                                                    .color(t.text_muted),
+                                                );
                                                 ui.add_space(10.0);
                                                 close_preview |= close_button(ui);
                                             });
@@ -923,18 +980,7 @@ impl App {
                                     crate::image_cache::PreviewLoadState::Failed(failure) => {
                                         ui.centered_and_justified(|ui| {
                                             ui.vertical_centered(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new("Preview unavailable")
-                                                        .size(13.0)
-                                                        .strong()
-                                                        .color(t.text_primary),
-                                                );
-                                                ui.add_space(4.0);
-                                                ui.label(
-                                                    egui::RichText::new(failure.message())
-                                                        .size(11.0)
-                                                        .color(t.text_secondary),
-                                                );
+                                                preview_failure_text(ui, failure.message(), t);
                                                 ui.add_space(10.0);
                                                 ui.horizontal_centered(|ui| {
                                                     if ui.button("\u{21bb} Retry").clicked() {
@@ -992,7 +1038,7 @@ impl App {
                                         ui.with_layout(
                                             Layout::right_to_left(Align::Center),
                                             |ui| {
-                                                if ui.small_button("✕").clicked() {
+                                                if close_preview_button(ui) {
                                                     close_preview = true;
                                                 }
                                             },
@@ -1258,6 +1304,66 @@ mod tests {
         assert_eq!(
             node_labelled(&nodes, "Right pane").role(),
             egui::accesskit::Role::Group
+        );
+    }
+
+    #[test]
+    fn preview_close_buttons_share_name_and_tooltip() {
+        let nodes = accesskit_nodes(|ui| {
+            close_preview_button(ui);
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Close preview").role(),
+            egui::accesskit::Role::Button
+        );
+    }
+
+    #[test]
+    fn preview_failures_are_announced() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| preview_failure_text(ui, "Binary file", &t));
+        let status = node_labelled(&nodes, "Preview unavailable: Binary file");
+        assert_eq!(status.role(), egui::accesskit::Role::Status);
+        assert_eq!(status.live(), Some(egui::accesskit::Live::Polite));
+    }
+
+    #[test]
+    fn disabled_image_preview_names_the_switch() {
+        let state = |environment_killed, runtime_killed| crate::feature_flags::FeatureSnapshot {
+            feature: crate::feature_flags::RiskyFeature::ImagePreview,
+            runtime_killed,
+            environment_killed,
+            rollout_percent: 100,
+            bucket: 0,
+            enabled: false,
+        };
+        assert!(
+            image_preview_disabled_reason(state(true, true))
+                .contains("COMMANDER_DISABLE_IMAGE_PREVIEW")
+        );
+        assert!(image_preview_disabled_reason(state(false, true)).contains("Runtime controls"));
+        assert!(image_preview_disabled_reason(state(false, false)).contains("rolled out"));
+    }
+
+    #[test]
+    fn image_alt_text_is_the_file_name() {
+        assert_eq!(
+            file_name_of(std::path::Path::new("/photos/cat.png")),
+            "cat.png"
+        );
+    }
+
+    #[test]
+    fn each_previewed_file_gets_its_own_scroll_state() {
+        let a = std::path::Path::new("/a.txt");
+        let b = std::path::Path::new("/b.txt");
+        assert_ne!(
+            text_preview_scroll_id("left", a),
+            text_preview_scroll_id("left", b)
+        );
+        assert_ne!(
+            text_preview_scroll_id("left", a),
+            text_preview_scroll_id("right", a)
         );
     }
 }
