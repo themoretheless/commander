@@ -1013,10 +1013,22 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 ),
                             }
                         } else {
+                            // A failed directory stage is kept (see below); name
+                            // the hidden tree so the partial copy can be found.
+                            let context =
+                                if !renamed && entry.is_dir && fs_util::path_is_taken(&copy_target)
+                                {
+                                    format!(
+                                        "copy failed; partial copy kept at {}",
+                                        copy_target.display()
+                                    )
+                                } else {
+                                    "copy failed".to_string()
+                                };
                             record_failure(
                                 &progress,
                                 &entry.name,
-                                ClassifiedFailure::io(Some(entry.path.clone()), "copy failed", e),
+                                ClassifiedFailure::io(Some(entry.path.clone()), &context, e),
                             );
                         }
                         crate::volume_profile::invalidate(target_profile.volume_id);
@@ -1158,9 +1170,13 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 // A failed native (or other) directory stage may already hold
                 // successfully copied siblings under the staging root. Wiping
                 // that whole tree would discard recoverable work; leave it in
-                // place and report the failure instead.
-                let preserve_partial_dir =
-                    !clean && !renamed && entry.is_dir && fs_util::path_is_taken(&copy_target);
+                // place and report the failure instead. A stage that completed
+                // but was rejected afterwards (destination or source changed)
+                // is a full duplicate of the source and is removed.
+                let preserve_partial_dir = result.is_err()
+                    && !renamed
+                    && entry.is_dir
+                    && fs_util::path_is_taken(&copy_target);
                 let placed = if !clean {
                     // Undo our placement; a pre-existing dest is untouched. For a
                     // rename this restores the source rather than deleting its only
@@ -2154,6 +2170,120 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|name| name.starts_with('.'))
             .collect()
+    }
+
+    type StageFn =
+        dyn Fn(&backend::StageRequest<'_>) -> std::io::Result<backend::StageReceipt> + Send + Sync;
+
+    /// One staging behavior behind every backend port.
+    struct ScriptedBackend(Box<StageFn>);
+
+    impl backend::NativeCloneBackend for ScriptedBackend {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+        ) -> std::io::Result<backend::StageReceipt> {
+            (self.0)(&request)
+        }
+    }
+
+    impl backend::DeltaBackend for ScriptedBackend {
+        fn stage(
+            &self,
+            _mode: crate::delta_copy::DeltaMode,
+            request: backend::StageRequest<'_>,
+            _checkpoints: &mut dyn backend::CheckpointSink,
+        ) -> std::io::Result<backend::StageReceipt> {
+            (self.0)(&request)
+        }
+    }
+
+    impl backend::SparseBackend for ScriptedBackend {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+        ) -> std::io::Result<backend::StageReceipt> {
+            (self.0)(&request)
+        }
+    }
+
+    impl backend::BufferedBackend for ScriptedBackend {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+            _checkpoints: &mut dyn backend::CheckpointSink,
+        ) -> std::io::Result<backend::StageReceipt> {
+            (self.0)(&request)
+        }
+    }
+
+    fn scripted(
+        stage: impl Fn(&backend::StageRequest<'_>) -> std::io::Result<backend::StageReceipt>
+        + Send
+        + Sync
+        + 'static,
+    ) -> backend::BackendPorts {
+        let backend = Arc::new(ScriptedBackend(Box::new(stage)));
+        backend::BackendPorts::new(backend.clone(), backend.clone(), backend.clone(), backend)
+    }
+
+    #[test]
+    fn failed_dir_stage_is_kept_and_its_hidden_path_is_reported() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let dir = source.dir("folder");
+        source.file("folder/good.txt", "kept sibling");
+
+        let state = run_with_backends(
+            spec(TransferKind::Copy, vec![entry_for(&dir)], target.path()),
+            scripted(|request| {
+                std::fs::create_dir(request.staging)?;
+                std::fs::write(request.staging.join("good.txt"), "kept sibling")?;
+                Err(std::io::Error::other("Failed to copy: bad.txt"))
+            }),
+        );
+
+        let staging = target.path().join(".folder.cmdr-tmp.0");
+        assert_eq!(
+            std::fs::read_to_string(staging.join("good.txt")).unwrap(),
+            "kept sibling"
+        );
+        assert!(!target.path().join("folder").exists());
+        let kept = format!("partial copy kept at {}", staging.display());
+        assert!(
+            state.errors.iter().any(|error| error.contains(&kept)),
+            "{:?}",
+            state.errors
+        );
+    }
+
+    #[test]
+    fn complete_dir_stage_rejected_at_commit_is_removed() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let dir = source.dir("folder");
+        source.file("folder/a.txt", "a");
+        let landing = target.path().join("folder");
+        let mut request = spec(TransferKind::Copy, vec![entry_for(&dir)], target.path());
+        let created = landing.clone();
+        request.before_commit = Some(Arc::new(move |_, _| {
+            std::fs::create_dir(&created).unwrap();
+        }));
+
+        let state = run(request);
+
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("destination changed after conflict review")),
+            "{:?}",
+            state.errors
+        );
+        assert!(
+            hidden_entries(target.path()).is_empty(),
+            "a complete staged duplicate must not be left behind"
+        );
+        assert_eq!(std::fs::read_dir(&landing).unwrap().count(), 0);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "a");
     }
 
     #[test]
