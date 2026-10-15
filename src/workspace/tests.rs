@@ -1443,6 +1443,72 @@ fn create_dir_picks_first_free_name() {
     assert!(l.path().join("New Folder 1").is_dir());
 }
 
+#[cfg(unix)]
+#[test]
+fn create_symlinks_links_the_selection_into_the_inactive_panel() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file("notes", "x");
+    r.file("notes", "occupied");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(source.clone());
+
+    let report = fileops::create_symlinks(&mut ws);
+
+    assert_eq!(report.created, 1);
+    assert!(report.errors.is_empty());
+    let link = r.path().join("notes link 2");
+    assert_eq!(std::fs::read_link(&link).unwrap(), source);
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("notes")).unwrap(),
+        "occupied"
+    );
+}
+
+#[test]
+fn create_hardlinks_refuses_folders_and_counts_partial_failure() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("data.bin", "payload");
+    let folder = l.dir("folder");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(file);
+    ws.left.select_path(folder);
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 1);
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+        report.errors[0].contains("regular file"),
+        "{:?}",
+        report.errors
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("data.bin")).unwrap(),
+        "payload"
+    );
+    assert!(!r.path().join("folder").exists());
+}
+
+#[test]
+fn create_links_is_refused_while_mutations_are_blocked() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("data.bin", "payload");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(file.clone());
+    ws.safe_state = Some(crate::operation::SafeState {
+        operation_id: crate::operation::OperationId("blocked-link".to_string()),
+        reason: "review required".to_string(),
+        paths: vec![file],
+        failures: Vec::new(),
+    });
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 0);
+    assert_eq!(report.errors.len(), 1);
+    assert!(!r.path().join("data.bin").exists());
+}
+
 #[test]
 fn select_same_named_adds_common_names_keeping_prior_picks() {
     let (l, r) = (TempDir::new(), TempDir::new());
