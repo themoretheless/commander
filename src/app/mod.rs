@@ -448,7 +448,7 @@ pub struct CollectionsDialogState {
     pub rows: Vec<crate::collections::VirtualEntry>,
     pub run: Option<crate::collections::ViewRun>,
     pub scanned: usize,
-    pub unavailable_roots: Vec<PathBuf>,
+    pub unavailable_roots: Vec<crate::collections::UnavailableRoot>,
     pub truncated: bool,
     pub error: Option<String>,
 }
