@@ -542,6 +542,111 @@ mod tests {
     }
 
     #[test]
+    fn u64_percentiles_are_nearest_rank_and_zero_when_empty() {
+        assert_eq!(percentiles_u64(&VecDeque::new()), (0, 0, 0));
+        assert_eq!(percentiles_u64(&VecDeque::from([7])), (7, 7, 7));
+        let shuffled = (1..=100).rev().collect::<VecDeque<u64>>();
+        assert_eq!(percentiles_u64(&shuffled), (50, 95, 99));
+    }
+
+    fn gate_kinds(
+        budgets: &PerformanceBudgets,
+        report: &BenchmarkReport,
+    ) -> Vec<(Option<MetricName>, GateViolationKind, String)> {
+        evaluate_performance_gate(budgets, report)
+            .into_iter()
+            .map(|violation| (violation.metric, violation.kind, violation.detail))
+            .collect()
+    }
+
+    #[test]
+    fn gate_rejects_schema_mismatch_and_unnamed_fixture() {
+        let mut budgets = ci_budgets().unwrap();
+        let mut report = compliant_report(&budgets);
+        assert!(gate_kinds(&budgets, &report).is_empty());
+        budgets.schema = 2;
+        report.fixture_profile = "  ".to_string();
+        assert_eq!(
+            gate_kinds(&budgets, &report),
+            vec![
+                (
+                    None,
+                    GateViolationKind::InvalidContract,
+                    "performance budget and report schemas must both be 1".to_string()
+                ),
+                (
+                    None,
+                    GateViolationKind::InvalidContract,
+                    "benchmark report must name its fixture profile".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn gate_rejects_duplicate_measurements_and_budgets() {
+        let mut budgets = ci_budgets().unwrap();
+        let mut report = compliant_report(&budgets);
+        let duplicate_measurement = report.metrics[0].clone();
+        report.metrics.push(duplicate_measurement);
+        let duplicate_budget = budgets.metrics[1].clone();
+        budgets.metrics.push(duplicate_budget);
+        assert_eq!(
+            gate_kinds(&budgets, &report),
+            vec![
+                (
+                    Some(report.metrics[0].metric),
+                    GateViolationKind::InvalidContract,
+                    "duplicate benchmark measurement".to_string()
+                ),
+                (
+                    Some(budgets.metrics[1].metric),
+                    GateViolationKind::InvalidContract,
+                    "duplicate metric budget".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn gate_reports_missing_and_malformed_measurements() {
+        let budgets = ci_budgets().unwrap();
+        let mut report = compliant_report(&budgets);
+        let missing = report.metrics.remove(0).metric;
+        report.metrics[0].latency.samples = 0;
+        let unsampled = report.metrics[0].metric;
+        report.metrics[1].latency.p50_ms = report.metrics[1].latency.p95_ms + 1.0;
+        let unordered = report.metrics[1].metric;
+        report.cancellation_latency.p99_ms = f64::NAN;
+        let mut violations = gate_kinds(&budgets, &report);
+        violations.sort_by_key(|(metric, _, _)| metric.map(|metric| metric as u8));
+        let mut expected = vec![
+            (
+                None,
+                GateViolationKind::InvalidPercentiles,
+                "cancellation percentiles must be finite and ordered".to_string(),
+            ),
+            (
+                Some(missing),
+                GateViolationKind::MissingMetric,
+                "benchmark measurement is missing".to_string(),
+            ),
+            (
+                Some(unsampled),
+                GateViolationKind::InvalidPercentiles,
+                "latency percentiles must be finite, ordered, and sampled".to_string(),
+            ),
+            (
+                Some(unordered),
+                GateViolationKind::InvalidPercentiles,
+                "latency percentiles must be finite, ordered, and sampled".to_string(),
+            ),
+        ];
+        expected.sort_by_key(|(metric, _, _)| metric.map(|metric| metric as u8));
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
     fn unexplained_regressions_fail_but_actionable_explanations_can_waive_them() {
         let mut budgets = ci_budgets().unwrap();
         let mut report = compliant_report(&budgets);
