@@ -122,6 +122,68 @@ fn render_text_preview(
         });
 }
 
+/// One quick-filter chip. Its on/off state is shown by fill and published
+/// as a toggle, so assistive tech hears "pressed" rather than a plain button.
+fn facet_chip(ui: &mut egui::Ui, label: &str, active: bool, t: &ThemeColors) -> egui::Response {
+    let fill = if active {
+        t.accent.linear_multiply(0.3)
+    } else {
+        t.bg_card
+    };
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new(label).size(10.0).color(t.text_primary))
+            .fill(fill)
+            .corner_radius(CornerRadius::same(2)),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
+    });
+    response
+}
+
+/// A modification-age chip: "within the last N days" (max age) or "older
+/// than N days" (min age).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgeChip {
+    Within(u64),
+    Older(u64),
+}
+
+/// The age chips with their hover text. "24h" rather than "Today": the
+/// facet counts back from now, not from midnight.
+const AGE_CHIPS: [(&str, &str, AgeChip); 4] = [
+    ("24h", "Modified in the last 24 hours", AgeChip::Within(1)),
+    ("Week", "Modified in the last 7 days", AgeChip::Within(7)),
+    ("Month", "Modified in the last 30 days", AgeChip::Within(30)),
+    (
+        "Older",
+        "Not modified in the last 30 days",
+        AgeChip::Older(30),
+    ),
+];
+
+fn age_chip_active(facets: &FacetSet, chip: AgeChip) -> bool {
+    match chip {
+        AgeChip::Within(days) => facets.max_age_days == Some(days),
+        AgeChip::Older(days) => facets.min_age_days == Some(days),
+    }
+}
+
+/// The age chips are one exclusive group: picking one clears the others,
+/// so "Week" + "Older" can never combine into an always-empty list.
+/// Clicking the active chip clears the group.
+fn toggle_age_chip(facets: &mut FacetSet, chip: AgeChip) {
+    let was_active = age_chip_active(facets, chip);
+    facets.max_age_days = None;
+    facets.min_age_days = None;
+    if !was_active {
+        match chip {
+            AgeChip::Within(days) => facets.max_age_days = Some(days),
+            AgeChip::Older(days) => facets.min_age_days = Some(days),
+        }
+    }
+}
+
 impl App {
     /// A row of toggleable quick-filter chips under the filter box.
     fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) -> bool {
@@ -140,19 +202,7 @@ impl App {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
 
                     let chip = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
-                        let fill = if active {
-                            t.accent.linear_multiply(0.3)
-                        } else {
-                            t.bg_card
-                        };
-                        ui.add(
-                            egui::Button::new(
-                                egui::RichText::new(label).size(10.0).color(t.text_primary),
-                            )
-                            .fill(fill)
-                            .corner_radius(CornerRadius::same(2)),
-                        )
-                        .clicked()
+                        facet_chip(ui, label, active, t).clicked()
                     };
 
                     let f = &mut facets;
@@ -188,34 +238,13 @@ impl App {
                         };
                     }
                     ui.add_space(6.0);
-                    if chip(ui, "Today", f.max_age_days == Some(1)) {
-                        f.max_age_days = if f.max_age_days == Some(1) {
-                            None
-                        } else {
-                            Some(1)
-                        };
-                    }
-                    if chip(ui, "Week", f.max_age_days == Some(7)) {
-                        f.max_age_days = if f.max_age_days == Some(7) {
-                            None
-                        } else {
-                            Some(7)
-                        };
-                    }
-                    if chip(ui, "Month", f.max_age_days == Some(30)) {
-                        f.max_age_days = if f.max_age_days == Some(30) {
-                            None
-                        } else {
-                            Some(30)
-                        };
-                    }
-                    // Older than a month (min-age): the stale-files bucket.
-                    if chip(ui, "Older", f.min_age_days == Some(30)) {
-                        f.min_age_days = if f.min_age_days == Some(30) {
-                            None
-                        } else {
-                            Some(30)
-                        };
+                    for (label, hover, age) in AGE_CHIPS {
+                        if facet_chip(ui, label, age_chip_active(f, age), t)
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            toggle_age_chip(f, age);
+                        }
                     }
                     let active_count = f.active_count();
                     if active_count > 0 {
@@ -820,5 +849,75 @@ impl App {
             tree_toggle,
             context_menu_request,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accesskit_nodes(
+        add: impl FnMut(&mut egui::Ui),
+    ) -> Vec<(egui::accesskit::NodeId, egui::accesskit::Node)> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output = crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), add));
+        output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output")
+            .nodes
+    }
+
+    fn node_labelled<'a>(
+        nodes: &'a [(egui::accesskit::NodeId, egui::accesskit::Node)],
+        label: &str,
+    ) -> &'a egui::accesskit::Node {
+        nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.label() == Some(label))
+            .unwrap_or_else(|| panic!("no node labelled {label:?}"))
+    }
+
+    #[test]
+    fn facet_chips_publish_their_toggle_state() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| {
+            facet_chip(ui, "Images", true, &t);
+            facet_chip(ui, "Docs", false, &t);
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Images").toggled(),
+            Some(egui::accesskit::Toggled::True)
+        );
+        assert_eq!(
+            node_labelled(&nodes, "Docs").toggled(),
+            Some(egui::accesskit::Toggled::False)
+        );
+    }
+
+    #[test]
+    fn age_chips_are_one_exclusive_group() {
+        let mut facets = FacetSet::default();
+        toggle_age_chip(&mut facets, AgeChip::Within(7));
+        toggle_age_chip(&mut facets, AgeChip::Older(30));
+        assert_eq!(facets.max_age_days, None);
+        assert_eq!(facets.min_age_days, Some(30));
+        toggle_age_chip(&mut facets, AgeChip::Within(1));
+        assert_eq!(facets.max_age_days, Some(1));
+        assert_eq!(facets.min_age_days, None);
+        // Clicking the active chip clears the group.
+        toggle_age_chip(&mut facets, AgeChip::Within(1));
+        assert_eq!(facets, FacetSet::default());
+    }
+
+    #[test]
+    fn the_one_day_age_chip_does_not_claim_calendar_today() {
+        let (label, hover, chip) = AGE_CHIPS[0];
+        assert_eq!(chip, AgeChip::Within(1));
+        assert_eq!(label, "24h");
+        assert!(hover.contains("24 hours"));
+        assert!(AGE_CHIPS.iter().all(|(label, ..)| *label != "Today"));
     }
 }
