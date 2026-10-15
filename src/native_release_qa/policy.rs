@@ -91,7 +91,7 @@ pub(super) fn popup_placement_matrix(
     }
     let mut samples = 0_usize;
     for display in displays {
-        if !display.has_valid_geometry() || display.id.trim().is_empty() {
+        if !display.has_valid_geometry() || !display.has_valid_id() {
             return CheckEvidence::failed(
                 "popup_content_rect_matrix",
                 format!("invalid display geometry: {}", display.id),

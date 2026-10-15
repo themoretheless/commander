@@ -179,6 +179,11 @@ pub struct DisplayTopology {
 
 #[cfg(any(test, feature = "visual-qa"))]
 impl DisplayTopology {
+    /// An id the release checks can key on: not empty or only whitespace.
+    pub(super) fn has_valid_id(&self) -> bool {
+        !self.id.trim().is_empty()
+    }
+
     /// Geometry the release checks can reason about: both frames valid, the
     /// visible frame inside the frame, and a positive finite backing scale.
     pub(super) fn has_valid_geometry(&self) -> bool {
@@ -398,6 +403,14 @@ mod tests {
             corrupt(&mut entry);
             assert!(!entry.has_valid_geometry(), "{entry:?}");
         }
+    }
+
+    #[test]
+    fn display_id_must_not_be_blank() {
+        assert!(display("a").has_valid_id());
+        assert!(display(" a ").has_valid_id());
+        assert!(!display("").has_valid_id());
+        assert!(!display(" \t\n").has_valid_id());
     }
 
     #[test]

@@ -43,7 +43,7 @@ pub(super) fn topology_fingerprint(displays: &[DisplayTopology]) -> Result<Strin
     }
     let mut canonical = Vec::with_capacity(displays.len());
     for display in displays {
-        if display.id.trim().is_empty() {
+        if !display.has_valid_id() {
             return Err(format!(
                 "display id is empty or duplicated: {:?}",
                 display.id
