@@ -24,11 +24,17 @@ pub fn drop_dragged_as(
     kind: TransferKind,
     notify: impl Fn() + Send + 'static,
 ) {
-    if workspace.has_unfinished_transfer_work()
-        || workspace.pending_op.is_some()
-        || workspace.mutation_commits_blocked()
-    {
+    if let Some(reason) = drop_refusal(workspace) {
+        // Say why a real drop (released over a target) did nothing; F5/F6
+        // queue instead, so the user needs to know the difference.
+        let dropped_on_target = drag_session(workspace).is_some_and(|s| s.target.is_some());
         cancel_drag(workspace);
+        if dropped_on_target {
+            workspace.emit_ui_request(UiRequest::Notice {
+                message: reason,
+                error: false,
+            });
+        }
         return;
     }
     let Some((paths, target)) = take_drop_plan(workspace) else {
@@ -49,6 +55,20 @@ pub fn drop_dragged_as(
         return;
     }
     workspace.stage_transfer(kind, entries, target, true, notify);
+}
+
+/// Why a drop cannot start now, or `None` when it can.
+fn drop_refusal(workspace: &Workspace) -> Option<String> {
+    if workspace.has_unfinished_transfer_work() {
+        Some(
+            "Drop cancelled while transfers are queued or running; use Copy (F5) or Move (F6) to queue it"
+                .to_string(),
+        )
+    } else if workspace.pending_op.is_some() {
+        Some("Drop cancelled: finish the open confirmation first".to_string())
+    } else {
+        workspace.mutation_block_reason("dropping files")
+    }
 }
 
 /// Keyboard equivalent of dropping the active selection onto the folder under

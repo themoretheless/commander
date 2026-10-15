@@ -3975,6 +3975,36 @@ fn drop_moves_a_dragged_symlink_itself_not_its_target() {
 }
 
 #[test]
+fn drop_refused_while_the_queue_is_busy_explains_itself() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.launch_test_transfer(
+        test_transfer_spec("busy-drop", r.path()),
+        transfer_queue::HistoryIntent::None,
+    );
+    let _ = ws.drain_ui_requests();
+
+    // A drag released over nothing is a plain cancel: no notice.
+    ws.left.drag.set(vec![file.clone()]);
+    ws.drop_dragged(|| {});
+    assert!(ws.drain_ui_requests().is_empty());
+
+    ws.left.drag.set(vec![file.clone()]);
+    ws.left.drag.set_drop_target(r.path().to_path_buf());
+    ws.drop_dragged(|| {});
+
+    assert!(ws.left.drag.is_empty());
+    assert!(!ws.left.drag.has_drop_target());
+    assert!(ws.pending_op.is_none());
+    assert!(file.exists());
+    assert!(ws.drain_ui_requests().iter().any(|request| matches!(
+        request,
+        UiRequest::Notice { message, error: false } if message.contains("queue")
+    )));
+}
+
+#[test]
 fn drop_of_vanished_items_says_so() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&l, &r);
