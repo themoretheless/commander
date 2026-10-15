@@ -4581,13 +4581,9 @@ mod tests {
         assert!(p.drag.is_empty(), "synchronous listing");
         assert!(!p.drag.has_drop_target());
 
-        // A background listing that never gets a worker: the drag is
-        // dropped as soon as the breadcrumb changes, not when rows land.
-        let mut limits = crate::workload::SchedulerLimits::default();
-        limits.per_kind_running[0] = 0;
-        let runtime = crate::workload::WorkloadRuntime::new(limits);
-        p.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
-        p.set_notify(Arc::new(|| {}));
+        // A background listing the test never runs: the drag is dropped as
+        // soon as the breadcrumb changes, not when rows land.
+        let _workload = deterministic_listings(&mut p);
         p.begin_drag(sub.join("y"));
         p.drag.set_drop_target(sub);
         p.navigate_to(other);
