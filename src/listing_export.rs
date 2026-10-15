@@ -23,8 +23,9 @@ impl ListingFormat {
 }
 
 /// Render `entries` (Name / Size / Modified) in the chosen format. Text is
-/// tab-separated with the human size string; CSV is RFC-4180-escaped with raw
-/// byte sizes; Markdown is a pipe table with `|` escaped inside cells. Text and
+/// tab-separated with the human size string; CSV is RFC-4180-escaped with a
+/// Kind column, raw byte sizes (empty for folders) and ISO 8601 UTC modified
+/// times (empty when unknown), so spreadsheets can parse them; Markdown is a pipe table with `|` escaped inside cells. Text and
 /// Markdown also escape embedded control characters (newline, tab, carriage
 /// return) so one entry can never span more than one line or cell.
 pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
@@ -42,13 +43,18 @@ pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         ListingFormat::Csv => {
-            let mut out = String::from("Name,Size (bytes),Modified\n");
+            let mut out = String::from("Name,Kind,Size (bytes),Modified\n");
             for e in entries {
                 out.push_str(&csv_escape(&e.name));
+                out.push_str(if e.is_dir { ",folder," } else { ",file," });
+                // A folder's listed size is not its content size; leave it blank.
+                if !e.is_dir {
+                    out.push_str(&e.size.to_string());
+                }
                 out.push(',');
-                out.push_str(&e.size.to_string());
-                out.push(',');
-                out.push_str(&csv_escape(&e.modified_str));
+                if let Some(modified) = e.modified {
+                    out.push_str(&iso_8601_utc(modified));
+                }
                 out.push('\n');
             }
             out
@@ -66,6 +72,11 @@ pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
             out
         }
     }
+}
+
+/// `time` as an ISO 8601 / RFC 3339 UTC timestamp to the second.
+fn iso_8601_utc(time: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// Quote a CSV field when it contains a comma, quote, or newline, doubling any
@@ -150,8 +161,24 @@ mod tests {
     fn csv_has_header_and_escapes_commas() {
         let v = vec![entry("a,b.txt", 5)];
         let out = format(&refs(&v), ListingFormat::Csv);
-        assert!(out.starts_with("Name,Size (bytes),Modified\n"));
-        assert!(out.contains("\"a,b.txt\",5,2026-06-25"));
+        assert!(out.starts_with("Name,Kind,Size (bytes),Modified\n"));
+        assert!(out.contains("\"a,b.txt\",file,5,\n"));
+    }
+
+    #[test]
+    fn csv_marks_folders_and_writes_machine_readable_dates() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let mut file = entry("a.txt", 5);
+        file.modified = Some(UNIX_EPOCH + Duration::from_secs(1_782_380_400));
+        let mut folder = entry("Photos", 4096);
+        folder.is_dir = true;
+        let out = format(&refs(&[file, folder]), ListingFormat::Csv);
+        assert_eq!(
+            out,
+            "Name,Kind,Size (bytes),Modified\n\
+             a.txt,file,5,2026-06-25T09:40:00Z\n\
+             Photos,folder,,\n"
+        );
     }
 
     #[test]
@@ -168,7 +195,10 @@ mod tests {
         ] {
             let v = vec![entry(name, 5)];
             let out = format(&refs(&v), ListingFormat::Csv);
-            assert!(out.contains(&format!("\n{cell},5,")), "{name:?} -> {out:?}");
+            assert!(
+                out.contains(&format!("\n{cell},file,5,")),
+                "{name:?} -> {out:?}"
+            );
         }
     }
 
