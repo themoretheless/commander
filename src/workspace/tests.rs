@@ -942,6 +942,9 @@ fn every_fixed_ui_command_emits_the_expected_typed_request() {
         (Command::Undo, UiRequest::Undo),
         (Command::Redo, UiRequest::Redo),
         (Command::ToggleQueuePanel, UiRequest::ToggleQueuePanel),
+        (Command::ToggleCompare, UiRequest::ToggleCompare),
+        (Command::ToggleTheme, UiRequest::ToggleTheme),
+        (Command::ToggleSizeBars, UiRequest::ToggleSizeBars),
         (Command::OpenReceipts, UiRequest::OperationHistory),
         (Command::OpenRecoveryCenter, UiRequest::OpenRecoveryCenter),
     ];

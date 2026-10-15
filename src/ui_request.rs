@@ -44,6 +44,10 @@ pub enum UiRequest {
     SavedSearch,
     ProjectCollections,
     ToggleQueuePanel,
+    /// App-wide view toggles the toolbar also offers.
+    ToggleCompare,
+    ToggleTheme,
+    ToggleSizeBars,
     OperationHistory,
     OpenRecoveryCenter,
     ReviewRecovery(crate::operation::OperationId),
@@ -78,6 +82,9 @@ impl UiRequest {
             Self::GatherIntoFolder
             | Self::TransferIntoCursorFolder(_)
             | Self::ToggleQueuePanel
+            | Self::ToggleCompare
+            | Self::ToggleTheme
+            | Self::ToggleSizeBars
             | Self::OperationHistory
             | Self::OpenRecoveryCenter
             | Self::Sync

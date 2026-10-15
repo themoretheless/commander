@@ -1306,6 +1306,9 @@ impl App {
             UiRequest::SavedSearch => self.open_saved_search(),
             UiRequest::ProjectCollections => self.open_collections(ctx),
             UiRequest::ToggleQueuePanel => self.toggle_queue_panel(),
+            UiRequest::ToggleCompare => self.show_compare = !self.show_compare,
+            UiRequest::ToggleTheme => self.switch_theme(ctx),
+            UiRequest::ToggleSizeBars => self.show_size_bars = !self.show_size_bars,
             UiRequest::OperationHistory => self.open_operation_history(),
             UiRequest::OpenRecoveryCenter => self.open_recovery_center(),
             UiRequest::ReviewRecovery(operation_id) => {

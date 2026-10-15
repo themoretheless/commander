@@ -348,7 +348,7 @@ impl App {
         ui.checkbox(&mut self.show_developer_panel, "Diagnostics");
     }
 
-    fn switch_theme(&mut self, ctx: &egui::Context) {
+    pub(super) fn switch_theme(&mut self, ctx: &egui::Context) {
         self.theme_mode = match self.theme_mode {
             ThemeMode::Light => ThemeMode::Dark,
             ThemeMode::Dark => ThemeMode::Light,

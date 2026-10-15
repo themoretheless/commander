@@ -1275,6 +1275,9 @@ impl Workspace {
             Command::SelectIdentical => self.select_by_relation(|r| &r.identical),
             Command::ClearSelection => self.active_panel().clear_selection_everywhere(),
             Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
+            Command::ToggleCompare => self.emit_ui_request(UiRequest::ToggleCompare),
+            Command::ToggleTheme => self.emit_ui_request(UiRequest::ToggleTheme),
+            Command::ToggleSizeBars => self.emit_ui_request(UiRequest::ToggleSizeBars),
             Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {

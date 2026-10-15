@@ -122,6 +122,12 @@ pub enum Command {
     /// Show/hide the transfer-queue panel (pause/resume/reorder/cancel the
     /// jobs waiting behind the active transfer).
     ToggleQueuePanel,
+    /// Turn panel comparison (difference highlighting) on or off.
+    ToggleCompare,
+    /// Switch between the light and dark theme.
+    ToggleTheme,
+    /// Show or hide the size bars behind file sizes.
+    ToggleSizeBars,
     /// Open the searchable history of completed moves/deletes/batch-renames.
     OpenReceipts,
     /// Open interrupted-operation recovery, rollback, and staging cleanup.
@@ -637,6 +643,9 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Sort by extension", "", "sort extension type suffix group ext", Command::SortByExtension),
     entry("Sort by kind", "", "sort kind category group images docs code archives", Command::SortByKind),
     entry("Reverse sort order", "", "sort reverse flip order ascending descending invert", Command::ReverseSort),
+    entry("Compare panels (toggle)", "", "compare panels differences diff highlight mirror", Command::ToggleCompare),
+    entry("Switch light/dark theme", "", "view theme dark light mode appearance colors", Command::ToggleTheme),
+    entry("Size bars (toggle)", "", "view size bars graph usage proportion", Command::ToggleSizeBars),
     entry("Cycle density", "Cmd+Shift+D", "view density rows compact comfortable spacious", Command::CycleDensity),
     entry("Toggle preview", "F3", "view preview quick look viewer inspect", Command::TogglePreview),
     entry("Equalize panels", "Cmd+E", "panels equalize same folder mirror", Command::EqualizePanels),
