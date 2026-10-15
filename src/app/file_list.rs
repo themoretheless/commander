@@ -169,6 +169,54 @@ fn folder_changed(ctx: &egui::Context, panel_side: &str, path: &std::path::Path)
     })
 }
 
+/// Spoken label of the ".." row. Like file rows it says "State: cursor"
+/// while the keyboard cursor sits on it.
+fn parent_row_label(is_cursor: bool) -> &'static str {
+    if is_cursor {
+        "Parent folder; State: cursor"
+    } else {
+        "Parent folder"
+    }
+}
+
+/// The keyboard cursor's non-color cue: a 1px accent outline plus a
+/// leading chevron. `chevron` is off where the row's own leading glyph
+/// would collide with it.
+fn paint_cursor_marker(painter: &egui::Painter, rect: egui::Rect, t: &ThemeColors, chevron: bool) {
+    painter.rect_stroke(
+        rect.shrink(1.0),
+        CornerRadius::ZERO,
+        Stroke::new(1.0, t.accent),
+        egui::StrokeKind::Inside,
+    );
+    if chevron {
+        painter.text(
+            egui::pos2(rect.left() + 7.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            "\u{203a}",
+            egui::FontId::proportional(13.0),
+            t.accent,
+        );
+    }
+}
+
+/// Keyboard focus ring: a 2px outline with an inner halo, so it reads on
+/// both the cursor fill and the plain row background.
+fn paint_focus_ring(painter: &egui::Painter, rect: egui::Rect, t: &ThemeColors) {
+    painter.rect_stroke(
+        rect.shrink(2.0),
+        CornerRadius::ZERO,
+        Stroke::new(2.0, t.text_primary),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.shrink(4.0),
+        CornerRadius::ZERO,
+        Stroke::new(1.0, t.bg_panel),
+        egui::StrokeKind::Inside,
+    );
+}
+
 fn cursor_row_to_reveal(cursor: usize, reveal: bool) -> Option<usize> {
     (reveal && cursor > 0).then(|| cursor - 1)
 }
@@ -311,13 +359,33 @@ impl App {
                         })
                         .response
                         .interact(Sense::click());
+                    // Same semantics as file rows, so AT hears when the
+                    // cursor sits on the parent row.
                     up_row.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
                             ui.is_enabled(),
-                            "Parent folder",
+                            false,
+                            parent_row_label(is_cursor_on_up),
                         )
                     });
+                    ui.ctx().accesskit_node_builder(up_row.id, |node| {
+                        node.set_role(egui::accesskit::Role::Row);
+                    });
+                    if is_cursor_on_up {
+                        if is_active && ui.is_enabled() {
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(
+                                    egui::Id::new("current_focus_indicator"),
+                                    up_row.rect,
+                                );
+                            });
+                        }
+                        paint_cursor_marker(ui.painter(), up_row.rect, t, true);
+                    }
+                    if up_row.has_focus() {
+                        paint_focus_ring(ui.painter(), up_row.rect, t);
+                    }
 
                     if is_cursor_on_up && panel.scroll_to_cursor() {
                         // Keyboard moved onto "..": reveal it and settle the
@@ -328,6 +396,9 @@ impl App {
                     if up_row.double_clicked() {
                         panel.go_up();
                     } else if up_row.clicked() {
+                        // Take focus like file rows do, so the old row's
+                        // focus ring does not linger.
+                        up_row.request_focus();
                         panel.set_cursor(0);
                     }
                     if up_row.hovered() && !is_cursor_on_up {
@@ -605,33 +676,10 @@ impl App {
                         );
                     }
                     if is_cursor {
-                        ui.painter().rect_stroke(
-                            full_rect.shrink(1.0),
-                            CornerRadius::ZERO,
-                            Stroke::new(1.0, t.accent),
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.painter().text(
-                            egui::pos2(full_rect.left() + 7.0, full_rect.center().y),
-                            egui::Align2::CENTER_CENTER,
-                            "\u{203a}",
-                            egui::FontId::proportional(13.0),
-                            t.accent,
-                        );
+                        paint_cursor_marker(ui.painter(), full_rect, t, true);
                     }
                     if row_resp.has_focus() {
-                        ui.painter().rect_stroke(
-                            full_rect.shrink(2.0),
-                            CornerRadius::ZERO,
-                            Stroke::new(2.0, t.text_primary),
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.painter().rect_stroke(
-                            full_rect.shrink(4.0),
-                            CornerRadius::ZERO,
-                            Stroke::new(1.0, t.bg_panel),
-                            egui::StrokeKind::Inside,
-                        );
+                        paint_focus_ring(ui.painter(), full_rect, t);
                     }
 
                     // Occupancy bar: width proportional to this entry's share
@@ -1166,8 +1214,8 @@ fn highlight_name_job(
 mod tests {
     use super::{
         cursor_row_to_reveal, drop_target_writable, folder_changed, map_ranges_to_display,
-        name_char_budget, selection_size_label, selection_summary_with, visible_rows,
-        visible_selection_summary,
+        name_char_budget, parent_row_label, selection_size_label, selection_summary_with,
+        visible_rows, visible_selection_summary,
     };
 
     #[test]
@@ -1315,5 +1363,11 @@ mod tests {
             vec![(0, 1)]
         );
         assert!(map_ranges_to_display(name, "", &[(0, 1)]).is_empty());
+    }
+
+    #[test]
+    fn parent_row_announces_the_cursor() {
+        assert_eq!(parent_row_label(false), "Parent folder");
+        assert_eq!(parent_row_label(true), "Parent folder; State: cursor");
     }
 }
