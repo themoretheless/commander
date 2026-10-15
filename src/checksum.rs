@@ -8,6 +8,10 @@ pub struct ChecksumRow {
     pub content_hash: Option<u64>,
     pub blake3_hex: Option<String>,
     pub error: Option<String>,
+    /// Why the entry was not hashed (a folder or symlink). Skipped rows are
+    /// neither verified nor failed, so they never turn the report into an
+    /// error.
+    pub skipped: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -17,13 +21,17 @@ pub struct ChecksumReport {
 
 impl ChecksumReport {
     pub fn summary_line(&self) -> String {
-        let ok = self.rows.iter().filter(|row| row.error.is_none()).count();
-        let failed = self.rows.len().saturating_sub(ok);
-        if failed == 0 {
-            format!("Verified {ok} file(s)")
-        } else {
-            format!("Verified {ok} file(s), {failed} failed")
+        let skipped = self.rows.iter().filter(|row| row.skipped.is_some()).count();
+        let failed = self.rows.iter().filter(|row| row.error.is_some()).count();
+        let ok = self.rows.len().saturating_sub(skipped + failed);
+        let mut line = format!("Verified {ok} file(s)");
+        if failed > 0 {
+            line.push_str(&format!(", {failed} failed"));
         }
+        if skipped > 0 {
+            line.push_str(&format!(", {skipped} skipped"));
+        }
+        line
     }
 
     pub fn detailed_text(&self) -> String {
@@ -36,6 +44,10 @@ impl ChecksumReport {
                 .unwrap_or_else(|| row.path.display().to_string());
             if let Some(error) = &row.error {
                 lines.push(format!("{name}: ERROR {error}"));
+                continue;
+            }
+            if let Some(reason) = &row.skipped {
+                lines.push(format!("{name}: skipped ({reason})"));
                 continue;
             }
             let content = row
@@ -66,6 +78,7 @@ fn verify_one(path: &Path) -> ChecksumRow {
                 content_hash: None,
                 blake3_hex: None,
                 error: Some(error.to_string()),
+                skipped: None,
             };
         }
     };
@@ -74,7 +87,8 @@ fn verify_one(path: &Path) -> ChecksumRow {
             path: path.to_path_buf(),
             content_hash: None,
             blake3_hex: None,
-            error: Some("directories have no content checksum".to_string()),
+            error: None,
+            skipped: Some("directories have no content checksum".to_string()),
         };
     }
     if meta.file_type().is_symlink() {
@@ -82,7 +96,8 @@ fn verify_one(path: &Path) -> ChecksumRow {
             path: path.to_path_buf(),
             content_hash: None,
             blake3_hex: None,
-            error: Some("symlinks are not hashed".to_string()),
+            error: None,
+            skipped: Some("symlinks are not hashed".to_string()),
         };
     }
     // `content_hash` is the leading 8 bytes of the file's BLAKE3 digest (see
@@ -94,12 +109,14 @@ fn verify_one(path: &Path) -> ChecksumRow {
             content_hash: Some(content_hash_of(&hash)),
             blake3_hex: Some(hex32(&hash)),
             error: None,
+            skipped: None,
         },
         Err(error) => ChecksumRow {
             path: path.to_path_buf(),
             content_hash: None,
             blake3_hex: None,
             error: Some(error.to_string()),
+            skipped: None,
         },
     }
 }
@@ -135,6 +152,27 @@ mod tests {
         assert!(report.rows.iter().all(|row| row.error.is_none()));
         assert_eq!(report.rows[0].content_hash, report.rows[1].content_hash);
         assert_eq!(report.rows[0].blake3_hex, report.rows[1].blake3_hex);
+    }
+
+    #[test]
+    fn folders_are_skipped_not_failed() {
+        let temp = TempDir::new();
+        let file = temp.file("a.bin", "payload");
+        let folder = temp.dir("Photos");
+        let missing = temp.path().join("gone.bin");
+        let report = verify_paths([file, folder, missing]);
+        assert_eq!(report.rows[1].error, None);
+        assert!(report.rows[1].skipped.is_some());
+        assert!(report.rows[2].error.is_some());
+        assert_eq!(
+            report.summary_line(),
+            "Verified 1 file(s), 1 failed, 1 skipped"
+        );
+        assert!(report.detailed_text().contains("Photos: skipped ("));
+        // A file plus a folder is a clean report.
+        let report = verify_paths([temp.path().join("a.bin"), temp.path().join("Photos")]);
+        assert!(report.rows.iter().all(|row| row.error.is_none()));
+        assert_eq!(report.summary_line(), "Verified 1 file(s), 1 skipped");
     }
 
     #[test]
