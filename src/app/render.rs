@@ -13,8 +13,26 @@ fn file_name_of(path: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
-fn text_preview_scroll_id(panel_side: &str, path: &std::path::Path) -> egui::Id {
-    egui::Id::new(("text_preview", panel_side, path))
+fn text_preview_scroll_id(panel_side: &str) -> egui::Id {
+    egui::Id::new(("text_preview", panel_side))
+}
+
+/// Whether the pane's text preview now shows a different file than last
+/// frame, so its scroll offset should go back to the top. Only the last
+/// path per pane is kept, so memory does not grow with every file viewed.
+fn text_preview_path_changed(
+    ctx: &egui::Context,
+    scroll_id: egui::Id,
+    path: &std::path::Path,
+) -> bool {
+    let key = scroll_id.with("last_path");
+    ctx.data_mut(|data| {
+        let changed = data.get_temp::<std::path::PathBuf>(key).as_deref() != Some(path);
+        if changed {
+            data.insert_temp(key, path.to_path_buf());
+        }
+        changed
+    })
 }
 
 /// The close button shared by the image, text and Get Info previews.
@@ -103,23 +121,25 @@ fn render_text_preview(
             // cancelled or retargeted by the other pane, which would otherwise
             // leave this pane on a spinner forever.
             if let Some(content) = content {
-                egui::ScrollArea::both()
-                    // Keyed by file too: the preview follows the cursor, and
-                    // each file should open at its top.
-                    .id_salt(text_preview_scroll_id(panel_side, path))
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        ui.style_mut().interaction.selectable_labels = true;
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(content)
-                                    .size(12.0)
-                                    .font(egui::FontId::monospace(12.0))
-                                    .color(t.text_secondary),
-                            )
-                            .wrap(),
-                        );
-                    });
+                // The preview follows the cursor, and each newly shown file
+                // opens at its top.
+                let scroll_id = text_preview_scroll_id(panel_side);
+                let mut scroll = egui::ScrollArea::both().id_salt(scroll_id);
+                if text_preview_path_changed(ui.ctx(), scroll_id, path) {
+                    scroll = scroll.scroll_offset(Vec2::ZERO);
+                }
+                scroll.auto_shrink([false; 2]).show(ui, |ui| {
+                    ui.style_mut().interaction.selectable_labels = true;
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(content)
+                                .size(12.0)
+                                .font(egui::FontId::monospace(12.0))
+                                .color(t.text_secondary),
+                        )
+                        .wrap(),
+                    );
+                });
                 return;
             }
 
@@ -288,6 +308,7 @@ fn path_bar_button(
     enabled: bool,
     label: &str,
     tooltip: &str,
+    selected: Option<bool>,
     t: &ThemeColors,
 ) -> (egui::Rect, egui::Response) {
     let sense = if enabled {
@@ -314,7 +335,12 @@ fn path_bar_button(
             egui::StrokeKind::Inside,
         );
     }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.widget_info(|| match selected {
+        Some(selected) => {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
+        }
+        None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label),
+    });
     let response = response.on_hover_text(tooltip);
     (rect, response)
 }
@@ -385,7 +411,20 @@ fn clear_filter_button(ui: &mut egui::Ui, t: &ThemeColors) -> egui::Response {
 /// Width a row spends ahead of its name column (selection mark, icon and
 /// padding) that the header row does not, so both make the same
 /// [`file_row_layout`](crate::accessibility::file_row_layout) call.
-const ROW_LEAD_WIDTH: f32 = 32.0;
+///
+/// Mirrors the folder row in `file_list.rs`: the 9px selection gutter, the
+/// 24px icon plus its 4px item spacing and the 3px gap before the name,
+/// less what the header's wider frame margin (10px a side against the
+/// row's 6px) already takes. Update it with that row layout.
+const ROW_LEAD_WIDTH: f32 = {
+    const SELECTION_GUTTER: f32 = 9.0;
+    const ICON_WIDTH: f32 = 24.0;
+    const ICON_SPACING: f32 = 4.0;
+    const NAME_GAP: f32 = 3.0;
+    const HEADER_MARGIN_X: f32 = 10.0;
+    const ROW_MARGIN_X: f32 = 6.0;
+    SELECTION_GUTTER + ICON_WIDTH + ICON_SPACING + NAME_GAP - 2.0 * (HEADER_MARGIN_X - ROW_MARGIN_X)
+};
 
 /// Whether the column header shows Size/Modified: only when the rows below
 /// show those columns too.
@@ -588,7 +627,7 @@ impl App {
                         ui.horizontal(|ui| {
                             let can_back = panel.can_go_back();
                             let (back_rect, back_resp) =
-                                path_bar_button(ui, can_back, "Back", "Back (Cmd+[)", t);
+                                path_bar_button(ui, can_back, "Back", "Back (Cmd+[)", None, t);
                             let back_color = if can_back {
                                 t.text_primary
                             } else {
@@ -603,7 +642,7 @@ impl App {
 
                             let can_fwd = panel.can_go_forward();
                             let (fwd_rect, fwd_resp) =
-                                path_bar_button(ui, can_fwd, "Forward", "Forward (Cmd+])", t);
+                                path_bar_button(ui, can_fwd, "Forward", "Forward (Cmd+])", None, t);
                             let fwd_color = if can_fwd {
                                 t.text_primary
                             } else {
@@ -622,15 +661,14 @@ impl App {
                                 "Show folder tree"
                             };
                             let (tree_rect, tree_resp) =
-                                path_bar_button(ui, true, "Folder tree", tree_tip, t);
-                            tree_resp.widget_info(|| {
-                                egui::WidgetInfo::selected(
-                                    egui::WidgetType::Button,
-                                    ui.is_enabled(),
-                                    tree_open,
+                                path_bar_button(
+                                    ui,
+                                    true,
                                     "Folder tree",
-                                )
-                            });
+                                    tree_tip,
+                                    Some(tree_open),
+                                    t,
+                                );
                             // Mini folder icon
                             {
                                 let p = ui.painter();
@@ -1206,13 +1244,18 @@ mod tests {
     fn path_bar_buttons_are_named_and_disabled_ones_are_marked() {
         let t = ThemeColors::dark();
         let nodes = accesskit_nodes(|ui| {
-            path_bar_button(ui, false, "Back", "Back", &t);
-            path_bar_button(ui, true, "Forward", "Forward", &t);
+            path_bar_button(ui, false, "Back", "Back", None, &t);
+            path_bar_button(ui, true, "Forward", "Forward", None, &t);
+            path_bar_button(ui, true, "Folder tree", "Hide", Some(true), &t);
         });
         assert!(node_labelled(&nodes, "Back").is_disabled());
         let forward = node_labelled(&nodes, "Forward");
         assert!(!forward.is_disabled());
         assert_eq!(forward.role(), egui::accesskit::Role::Button);
+        assert_eq!(
+            node_labelled(&nodes, "Folder tree").toggled(),
+            Some(egui::accesskit::Toggled::True)
+        );
     }
 
     #[test]
@@ -1402,16 +1445,22 @@ mod tests {
     }
 
     #[test]
-    fn each_previewed_file_gets_its_own_scroll_state() {
+    fn a_newly_previewed_file_opens_at_its_top() {
+        let ctx = egui::Context::default();
         let a = std::path::Path::new("/a.txt");
         let b = std::path::Path::new("/b.txt");
-        assert_ne!(
-            text_preview_scroll_id("left", a),
-            text_preview_scroll_id("left", b)
-        );
-        assert_ne!(
-            text_preview_scroll_id("left", a),
-            text_preview_scroll_id("right", a)
-        );
+        let left = text_preview_scroll_id("left");
+        assert_ne!(left, text_preview_scroll_id("right"));
+        assert!(text_preview_path_changed(&ctx, left, a));
+        assert!(!text_preview_path_changed(&ctx, left, a));
+        assert!(text_preview_path_changed(&ctx, left, b));
+        // Coming back to a file starts at the top again.
+        assert!(text_preview_path_changed(&ctx, left, a));
+        // The other pane keeps its own last path.
+        assert!(text_preview_path_changed(
+            &ctx,
+            text_preview_scroll_id("right"),
+            a
+        ));
     }
 }
