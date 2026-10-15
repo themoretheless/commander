@@ -124,6 +124,31 @@ fn workspace_with_trash(
     workspace
 }
 
+/// What a size wait saw, for a failure message: the pane's path, each
+/// listed entry's path and the sizes the snapshot holds for them.
+fn size_wait_diagnostics(panel: &crate::panel::PanelState, folder: &Path) -> String {
+    let snapshot = panel.size_snapshot();
+    let rows = panel
+        .entries()
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} size={:?} count={:?}",
+                entry.path.display(),
+                snapshot.size_of(&entry.path),
+                snapshot.count_of(&entry.path)
+            )
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "pane={} folder={} canonical={:?} rows=[{}]",
+        panel.current_path.display(),
+        folder.display(),
+        std::fs::canonicalize(folder).ok(),
+        rows.join("; ")
+    )
+}
+
 fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
     let mut ws = Workspace::new(left.path().to_path_buf(), right.path().to_path_buf());
     ws.left.refresh();
@@ -2849,7 +2874,8 @@ fn get_info_fills_in_a_folder_size_once_it_is_measured() {
     {
         assert!(
             std::time::Instant::now() < deadline,
-            "folder never measured"
+            "folder never measured: {}",
+            size_wait_diagnostics(&ws.left, &folder)
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -5352,7 +5378,8 @@ fn toggle_info_on_a_folder_uses_its_measured_size() {
     {
         assert!(
             std::time::Instant::now() < deadline,
-            "folder never measured"
+            "folder never measured: {}",
+            size_wait_diagnostics(&ws.left, &folder)
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -5793,7 +5820,8 @@ fn treemap_orders_by_size_using_measured_folder_sizes() {
     while ws.left.size_snapshot().size_of(&folder).is_none() {
         assert!(
             std::time::Instant::now() < deadline,
-            "folder never measured"
+            "folder never measured: {}",
+            size_wait_diagnostics(&ws.left, &folder)
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
