@@ -198,8 +198,29 @@ pub fn spawn_reaped_logging_failure(
 ) -> std::io::Result<()> {
     spawn_reaped_reporting(command, what, |message| {
         log::warn!(target: "commander::native_effect", "{message}");
+        record_helper_failure(message);
     })
     .map(drop)
+}
+
+/// Bumped each time a background helper (Compress, Reveal, Get Info, Open
+/// With) fails after its launch was already reported as accepted; the app
+/// polls it each frame and shows [`last_helper_failure`] as an error toast.
+static HELPER_FAILURE_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static LAST_HELPER_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn record_helper_failure(message: String) {
+    *crate::lock_util::recover(&LAST_HELPER_FAILURE) = Some(message);
+    HELPER_FAILURE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
+pub fn helper_failure_generation() -> u64 {
+    HELPER_FAILURE_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub fn last_helper_failure() -> Option<String> {
+    crate::lock_util::recover(&LAST_HELPER_FAILURE).clone()
 }
 
 fn spawn_reaped_reporting(
@@ -605,6 +626,27 @@ mod tests {
             .expect("reaper thread starts");
         // The reaper finishes only after wait() has collected the child.
         handle.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_logged_helper_raises_the_app_notice() {
+        let before = helper_failure_generation();
+        spawn_reaped_logging_failure(
+            std::process::Command::new("sh").args(["-c", "echo full >&2; exit 1"]),
+            "Compressing /tmp/notice-test".to_string(),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while helper_failure_generation() == before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "failure never reported"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let message = last_helper_failure().expect("message recorded");
+        assert!(message.contains("failed"), "{message}");
     }
 
     #[cfg(unix)]

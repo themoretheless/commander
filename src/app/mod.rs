@@ -141,6 +141,8 @@ pub struct App {
     pub(crate) developer_notice: Option<DeveloperNotice>,
     pub(crate) developer_store_usage: developer_panel::StoreUsageCache,
     pub(crate) persistence_issue_seen: u64,
+    /// Last background-helper failure generation already shown as a toast.
+    pub(crate) helper_failure_seen: u64,
 }
 
 #[cfg(feature = "visual-qa")]
@@ -941,6 +943,7 @@ impl App {
             show_tree: seed.show_tree,
             show_size_bars: true,
             persistence_issue_seen: crate::persistence::issue_generation(),
+            helper_failure_seen: crate::native_effect::helper_failure_generation(),
             ..Self::assemble(AppParts {
                 ws,
                 context_menu,
@@ -1036,6 +1039,7 @@ impl App {
             developer_notice: None,
             developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: 0,
+            helper_failure_seen: crate::native_effect::helper_failure_generation(),
         }
     }
 

@@ -1127,6 +1127,15 @@ impl App {
                 self.toast(ctx, crate::toasts::ToastKind::Error, message, false);
             }
         }
+        // A helper launched earlier (Compress, Reveal, ...) failed after
+        // its launch was reported as accepted.
+        let helper_generation = crate::native_effect::helper_failure_generation();
+        if helper_generation > self.helper_failure_seen {
+            self.helper_failure_seen = helper_generation;
+            if let Some(message) = crate::native_effect::last_helper_failure() {
+                self.toast(ctx, crate::toasts::ToastKind::Error, message, false);
+            }
+        }
         // Static previews do not need a frame loop. Preview workers repaint on
         // completion, while loading state schedules its own bounded cadence.
         let has_animation =
