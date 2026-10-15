@@ -5,9 +5,10 @@
 use crate::selection_summary::Kind;
 
 /// Name and stub colors per kind, as `(dark, light)`. The six hued kinds were
-/// searched in OKLCH so each clears 4.5:1 on every row background (panel,
-/// hover, selected, cursor) and stays apart under deuteranopia, protanopia
-/// and tritanopia; Folder and Other are warm neutrals.
+/// searched in OKLCH so each clears 4.5:1 on plain, zebra and hovered rows,
+/// at least the 3:1 graphics bar on cursor and selected rows in every theme,
+/// and stays apart under deuteranopia, protanopia and tritanopia; Folder and
+/// Other are warm neutrals.
 type Rgb = (u8, u8, u8);
 
 const PALETTE: [(Kind, Rgb, Rgb); 8] = [
@@ -85,6 +86,82 @@ mod tests {
     ];
     const DARK_BG: (u8, u8, u8) = DARK_ROWS[0];
     const LIGHT_BG: (u8, u8, u8) = LIGHT_ROWS[0];
+
+    use crate::theme::ThemeColors;
+    use egui::Color32;
+
+    /// Every theme a row can be painted in, with whether it uses the dark
+    /// half of the palette.
+    fn themes() -> [(ThemeColors, bool); 4] {
+        [
+            (ThemeColors::dark(), true),
+            (ThemeColors::light(), false),
+            (ThemeColors::high_contrast_dark(), true),
+            (ThemeColors::high_contrast_light(), false),
+        ]
+    }
+
+    fn rgb(color: Color32) -> Rgb {
+        (color.r(), color.g(), color.b())
+    }
+
+    /// Opaque row backgrounds as `app::file_list` composites them over the
+    /// panel, each also under the hover tint: `(plain rows, highlighted
+    /// rows)`, where plain is the panel and zebra fill and highlighted is
+    /// the cursor (active and inactive pane) and selected fill. The fill
+    /// factors mirror the row painter.
+    fn row_backgrounds(colors: ThemeColors) -> (Vec<Rgb>, Vec<Rgb>) {
+        let panel = colors.bg_panel;
+        let hover = colors.bg_hover.linear_multiply(0.3);
+        let composite = |fills: &[Color32]| -> Vec<Rgb> {
+            fills
+                .iter()
+                .flat_map(|&fill| {
+                    let row = panel.blend(fill);
+                    [rgb(row), rgb(row.blend(hover))]
+                })
+                .collect()
+        };
+        (
+            composite(&[Color32::TRANSPARENT, colors.bg_card.linear_multiply(0.3)]),
+            composite(&[
+                colors.bg_selected.linear_multiply(0.22),
+                colors.bg_selected.linear_multiply(0.08),
+                colors.accent_purple.linear_multiply(0.15),
+            ]),
+        )
+    }
+
+    #[test]
+    fn hued_kinds_stay_legible_on_the_real_theme_rows() {
+        for (colors, dark) in themes() {
+            let (plain, highlighted) = row_backgrounds(colors);
+            for &k in &HUED {
+                let color = kind_color(k, dark);
+                for &row in &plain {
+                    let ratio = contrast_ratio(color, row);
+                    assert!(ratio >= 4.5, "{k:?} dark={dark} on {row:?}: {ratio}");
+                }
+                // The stub and glyph are graphics: 3:1 is the WCAG bar on the
+                // tinted cursor and selection rows.
+                for &row in &highlighted {
+                    let ratio = contrast_ratio(color, row);
+                    assert!(ratio >= 3.0, "{k:?} dark={dark} on {row:?}: {ratio}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_stub_clears_three_to_one_in_every_theme() {
+        for &k in &ALL {
+            for (colors, dark) in themes() {
+                let stub = kind_color(k, dark);
+                let ratio = contrast_ratio(stub, rgb(colors.bg_panel));
+                assert!(ratio >= 3.0, "{k:?} dark={dark} {stub:?} ratio {ratio}");
+            }
+        }
+    }
 
     /// Machado et al. 2009 dichromacy matrices (severity 1) on linear RGB.
     const CVD: [[[f32; 3]; 3]; 3] = [
