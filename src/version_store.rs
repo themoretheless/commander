@@ -275,8 +275,15 @@ fn preserve_at_inner(
         }
     };
     let Some(created_shallow) = copy_receipt.destination_identity else {
+        // The copy finished but its result could not be observed, so it
+        // cannot be proven ours and is left in place; only directories that
+        // are already empty are pruned.
+        let cleanup = abandon(format!(
+            "; the unbound copy was left at {}",
+            stored.display()
+        ));
         return Err(version_failure(format!(
-            "Could not bind the new version {}",
+            "Could not bind the new version {}{cleanup}",
             stored.display()
         )));
     };
@@ -1261,9 +1268,8 @@ fn make_directories_removable(root: &Path) {
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 continue;
             }
-            let mode = metadata.permissions().mode();
-            if mode & 0o700 != 0o700 {
-                let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(mode | 0o700));
+            if metadata.permissions().mode() & 0o700 != 0o700 {
+                grant_owner_access(&directory);
             }
             let Ok(entries) = fs::read_dir(&directory) else {
                 continue;
@@ -1277,6 +1283,38 @@ fn make_directories_removable(root: &Path) {
     }
     #[cfg(not(unix))]
     let _ = root;
+}
+
+/// Gives the owner rwx on `directory` without following a symlink that
+/// replaced it after it was inspected: the mode is changed through a
+/// descriptor opened with `O_NOFOLLOW | O_DIRECTORY`. A directory the owner
+/// cannot even open for reading falls back to a by-path change after a fresh
+/// no-follow check, since no descriptor can be had for it.
+#[cfg(unix)]
+fn grant_owner_access(directory: &Path) {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(directory)
+    {
+        Ok(handle) => {
+            if let Ok(metadata) = handle.metadata() {
+                let mode = metadata.permissions().mode();
+                let _ = handle.set_permissions(fs::Permissions::from_mode(mode | 0o700));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let Ok(metadata) = fs::symlink_metadata(directory) else {
+                return;
+            };
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                let mode = metadata.permissions().mode();
+                let _ = fs::set_permissions(directory, fs::Permissions::from_mode(mode | 0o700));
+            }
+        }
+        Err(_) => {}
+    }
 }
 
 #[cfg(test)]
@@ -1435,6 +1473,9 @@ mod tests {
     fn discard_removes_a_version_of_a_read_only_folder() {
         use std::os::unix::fs::PermissionsExt;
 
+        // Only a regression guard when run as a regular user: root bypasses
+        // directory permissions, so as root the removal succeeds with or
+        // without `make_directories_removable` and this test still passes.
         let temp = TempDir::new();
         let versions = temp.path().join("versions");
         let folder = temp.dir("folder");
