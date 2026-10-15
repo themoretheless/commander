@@ -165,8 +165,14 @@ impl TransferProgress {
         }
     }
 
+    /// Whether Cancel (or Stop after current file) still has an effect: once
+    /// finalization starts the outcome is committed and requests are ignored.
+    pub const fn can_cancel(&self) -> bool {
+        !self.finished && self.finalization.is_none()
+    }
+
     pub const fn request_cancel(&mut self) -> bool {
-        if self.finished || self.finalization.is_some() {
+        if !self.can_cancel() {
             return false;
         }
         self.cancelled = true;
@@ -174,7 +180,7 @@ impl TransferProgress {
     }
 
     pub const fn request_stop(&mut self) {
-        if !self.finished && self.finalization.is_none() {
+        if self.can_cancel() {
             self.stop_requested = true;
         }
     }
@@ -3138,6 +3144,21 @@ mod tests {
         assert!(message.contains("Destination volume"), "{message}");
         assert!(!message.contains("paused"), "{message}");
         assert!(crate::lock_util::recover(&progress).pause_reason.is_none());
+    }
+
+    #[test]
+    fn cancel_is_offered_only_until_finalization_starts() {
+        let mut progress = TransferProgress::new(1, 1);
+        assert!(progress.can_cancel());
+        progress.finalization = Some(FinalizationOutcome::NotReached);
+        assert!(!progress.can_cancel());
+        assert!(!progress.request_cancel());
+        progress.request_stop();
+        assert!(!progress.cancelled && !progress.stop_requested);
+
+        let mut finished = TransferProgress::new(1, 1);
+        finished.finished = true;
+        assert!(!finished.can_cancel());
     }
 
     #[test]

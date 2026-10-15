@@ -12,6 +12,9 @@ enum ActivityLine {
     Errors(usize),
 }
 
+/// Why Cancel is disabled once a transfer has committed its outcome.
+const FINALIZING_HINT: &str = "Finishing up: the transfer can no longer be cancelled";
+
 /// A frame's snapshot of the running transfer, taken under one lock.
 struct TransferLine {
     label: String,
@@ -22,6 +25,7 @@ struct TransferLine {
     paused: Option<String>,
     finished: bool,
     stop_requested: bool,
+    can_cancel: bool,
     errors: usize,
     queued: usize,
 }
@@ -178,6 +182,7 @@ impl App {
                     .map(|reason| reason.label().to_string()),
                 finished: s.finished,
                 stop_requested: s.stop_requested,
+                can_cancel: s.can_cancel(),
                 errors: s.errors.len(),
                 queued: self.ws.queued_count(),
             }));
@@ -272,12 +277,16 @@ impl App {
             } else {
                 let cancel = crate::operation_view::CancellationAction::CancelCurrent;
                 if ui
-                    .add(super::dialog_button(
-                        t,
-                        super::ButtonRole::Danger,
-                        egui::RichText::new(cancel.label()).size(11.0),
-                    ))
+                    .add_enabled(
+                        line.can_cancel,
+                        super::dialog_button(
+                            t,
+                            super::ButtonRole::Danger,
+                            egui::RichText::new(cancel.label()).size(11.0),
+                        ),
+                    )
                     .on_hover_text(cancel.consequence())
+                    .on_disabled_hover_text(FINALIZING_HINT)
                     .clicked()
                 {
                     self.ws.cancel_transfer();
@@ -285,7 +294,7 @@ impl App {
                 let stop = crate::operation_view::CancellationAction::StopAfterCurrentFile;
                 if ui
                     .add_enabled(
-                        !line.stop_requested,
+                        line.can_cancel && !line.stop_requested,
                         super::dialog_button(
                             t,
                             super::ButtonRole::Secondary,
@@ -350,6 +359,7 @@ impl App {
         let samples: Vec<(f64, f64)> = s.speed_samples.clone();
         let finished = s.finished;
         let stop_requested = s.stop_requested;
+        let can_cancel = s.can_cancel();
         let stopped = s.stopped;
         let requeued_files = s.requeued_files;
         let backend_label = s.backend_label.clone();
@@ -648,7 +658,7 @@ impl App {
                     let stop = crate::operation_view::CancellationAction::StopAfterCurrentFile;
                     if ui
                         .add_enabled(
-                            !stop_requested,
+                            can_cancel && !stop_requested,
                             super::dialog_button(
                                 t,
                                 super::ButtonRole::Warning,
@@ -689,12 +699,16 @@ impl App {
                     }
                     let cancel_current = crate::operation_view::CancellationAction::CancelCurrent;
                     if ui
-                        .add(super::dialog_button(
-                            t,
-                            super::ButtonRole::Danger,
-                            egui::RichText::new(cancel_current.label()).size(13.0),
-                        ))
+                        .add_enabled(
+                            can_cancel,
+                            super::dialog_button(
+                                t,
+                                super::ButtonRole::Danger,
+                                egui::RichText::new(cancel_current.label()).size(13.0),
+                            ),
+                        )
                         .on_hover_text(cancel_current.consequence())
+                        .on_disabled_hover_text(FINALIZING_HINT)
                         .clicked()
                     {
                         self.ws.cancel_transfer();
