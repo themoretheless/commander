@@ -486,6 +486,26 @@ mod tests {
     }
 
     #[test]
+    fn bound_directory_remove_handles_empty_dirs_full_dirs_and_missing_names() {
+        let temp = TempDir::new();
+        let bound = BoundDirectory::open(temp.path()).unwrap();
+
+        temp.dir("empty");
+        bound.remove(OsStr::new("empty")).unwrap();
+        assert!(!temp.path().join("empty").exists());
+
+        temp.file("full/inner.txt", "keep");
+        let error = bound.remove(OsStr::new("full")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::DirectoryNotEmpty);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("full/inner.txt")).unwrap(),
+            "keep"
+        );
+
+        bound.remove(OsStr::new("never-existed")).unwrap();
+    }
+
+    #[test]
     fn rename_sibling_uses_bound_parent() {
         let temp = crate::testutil::TempDir::new();
         let provider = NativeFileSystemProvider;
