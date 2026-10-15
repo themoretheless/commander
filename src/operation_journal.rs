@@ -2364,56 +2364,12 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
             staging.display()
         ));
     }
-    let source = PathIdentity::observe_deep(&step.source)
-        .map_err(|error| format!("Could not verify checkpoint source: {error}"))?;
-    if !checkpoint.source.same_binding(&source) {
-        return Err(format!(
-            "Recovery source changed after checkpoint: {}",
-            step.source.display()
-        ));
-    }
-    let partial = PathIdentity::observe_deep(staging)
-        .map_err(|error| format!("Could not verify checkpoint staging: {error}"))?;
-    let ids_known = checkpoint
-        .partial
-        .volume
-        .zip(checkpoint.partial.file_id)
-        .is_some()
-        && partial.volume.zip(partial.file_id).is_some();
-    // Without file ids (Windows) a prefix staging cannot be followed by
-    // identity, and the tail written after the last checkpoint changes its
-    // size and mtime. The prefix digests below prove the resumed bytes.
-    let same_object =
-        if !ids_known && checkpoint.layout == crate::transfer::CheckpointLayout::Prefix {
-            checkpoint.partial.exists && partial.exists && checkpoint.partial.kind == partial.kind
-        } else {
-            checkpoint.partial.same_object(&partial)
-        };
-    if !same_object
-        || partial.kind != Some(crate::path_identity::PathKind::File)
-        || !checkpoint.size_fits(&partial)
-    {
-        return Err(format!(
-            "Recovery staging changed after checkpoint: {}",
-            staging.display()
-        ));
-    }
-    let expected = checkpoint.content_digest.ok_or_else(|| {
+    checkpoint.verify(&step.source, staging).map_err(|reason| {
         format!(
-            "Recovery checkpoint has no content proof; inspect manually: {}",
+            "Recovery checkpoint cannot be used ({reason}); inspect manually: {}",
             staging.display()
         )
     })?;
-    let partial_digest = crate::transfer::prefix_digest(staging, checkpoint.offset)
-        .map_err(|error| format!("Could not hash recovery staging: {error}"))?;
-    let source_digest = crate::transfer::prefix_digest(&step.source, checkpoint.offset)
-        .map_err(|error| format!("Could not hash recovery source: {error}"))?;
-    if partial_digest != expected || source_digest != expected {
-        return Err(format!(
-            "Recovery checkpoint bytes changed after proof: {}",
-            staging.display()
-        ));
-    }
     Ok(Some(checkpoint.clone()))
 }
 

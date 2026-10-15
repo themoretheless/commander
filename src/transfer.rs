@@ -492,6 +492,52 @@ impl ResumeCheckpoint {
         }
     }
 
+    /// Re-prove this checkpoint against `source` and `staging` as they are
+    /// now: the source keeps its binding, the staging file is still the same
+    /// object and can hold the offset, and both prefixes hash to the recorded
+    /// proof. Shared by runtime resume and journal recovery; the error says
+    /// why the checkpoint cannot be used.
+    pub fn verify(&self, source: &Path, staging: &Path) -> Result<(), String> {
+        let expected = self
+            .content_digest
+            .ok_or_else(|| "checkpoint has no content proof".to_string())?;
+        let source_now = PathIdentity::observe_deep(source)
+            .map_err(|error| format!("could not inspect checkpoint source: {error}"))?;
+        if !self.source.same_binding(&source_now) {
+            return Err("source changed after checkpoint".to_string());
+        }
+        let partial_now = PathIdentity::observe_deep(staging)
+            .map_err(|error| format!("could not inspect checkpoint staging: {error}"))?;
+        if !self.same_partial(&partial_now)
+            || partial_now.kind != Some(crate::path_identity::PathKind::File)
+            || !self.size_fits(&partial_now)
+        {
+            return Err("staging changed after checkpoint".to_string());
+        }
+        let partial_digest = prefix_digest(staging, self.offset)
+            .map_err(|error| format!("could not hash checkpoint staging: {error}"))?;
+        let source_digest = prefix_digest(source, self.offset)
+            .map_err(|error| format!("could not hash checkpoint source: {error}"))?;
+        if partial_digest != expected || source_digest != expected {
+            return Err("checkpoint bytes changed after proof".to_string());
+        }
+        Ok(())
+    }
+
+    /// Whether `partial_now` is still the staging object this checkpoint
+    /// recorded. Without file ids (Windows) a prefix staging cannot be
+    /// followed by identity, and the tail written after the last checkpoint
+    /// changes its size and mtime; the prefix digests prove the resumed bytes.
+    fn same_partial(&self, partial_now: &PathIdentity) -> bool {
+        let ids_known = self.partial.volume.zip(self.partial.file_id).is_some()
+            && partial_now.volume.zip(partial_now.file_id).is_some();
+        if !ids_known && self.layout == CheckpointLayout::Prefix {
+            self.partial.exists && partial_now.exists && self.partial.kind == partial_now.kind
+        } else {
+            self.partial.same_object(partial_now)
+        }
+    }
+
     /// Whether the first `offset` bytes of `source` and `staging` both still
     /// hash to the recorded proof. A checkpoint without a proof never matches.
     pub fn proof_matches(&self, source: &Path, staging: &Path) -> std::io::Result<bool> {
@@ -795,7 +841,7 @@ fn valid_runtime_checkpoint(
             return None;
         }
     };
-    if checkpoint.staging != staging || checkpoint.content_digest.is_none() {
+    if checkpoint.staging != staging {
         return None;
     }
     let checkpoint_source = if symlink_policy == crate::filesystem_policy::SymlinkPolicy::Follow
@@ -807,19 +853,12 @@ fn valid_runtime_checkpoint(
     } else {
         source.to_path_buf()
     };
-    let source_now = PathIdentity::observe_deep(&checkpoint_source).ok()?;
-    if !checkpoint.source.same_binding(&source_now) {
-        return None;
-    }
-    let partial_now = PathIdentity::observe_deep(staging).ok()?;
-    if !checkpoint.partial.same_object(&partial_now)
-        || partial_now.kind != Some(crate::path_identity::PathKind::File)
-    {
-        return None;
-    }
-    if !checkpoint.size_fits(&partial_now)
-        || !checkpoint.proof_matches(&checkpoint_source, staging).ok()?
-    {
+    if let Err(reason) = checkpoint.verify(&checkpoint_source, staging) {
+        log::debug!(
+            target: "commander::transfer",
+            "not resuming {}: {reason}",
+            staging.display()
+        );
         return None;
     }
     Some(checkpoint)
@@ -2061,6 +2100,68 @@ mod tests {
         profile.capabilities.resumable = true;
         profile.backend = crate::volume_profile::BackendKind::LocalFast;
         assert_eq!(plan(&profile, threshold), backend::BackendPlan::NativeClone);
+    }
+
+    fn prefix_checkpoint_fixture(temp: &TempDir) -> (PathBuf, PathBuf, ResumeCheckpoint) {
+        let source = temp.path().join("checkpoint-source.bin");
+        let staging = temp.path().join(".checkpoint-source.bin.cmdr-tmp.0");
+        std::fs::write(&source, b"0123456789abcdef").unwrap();
+        std::fs::write(&staging, b"01234567").unwrap();
+        let checkpoint = ResumeCheckpoint::observe(
+            &source,
+            &staging,
+            8,
+            CheckpointLayout::Prefix,
+            prefix_digest(&staging, 8).unwrap(),
+        )
+        .unwrap();
+        (source, staging, checkpoint)
+    }
+
+    #[test]
+    fn checkpoint_verify_accepts_a_prefix_staging_with_an_unproved_tail() {
+        let temp = TempDir::new();
+        let (source, staging, mut checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&staging, b"01234567crash").unwrap();
+
+        assert_eq!(checkpoint.verify(&source, &staging), Ok(()));
+        // Without file ids (Windows) the grown staging is still accepted: the
+        // prefix digests prove the resumed bytes.
+        checkpoint.partial.volume = None;
+        checkpoint.partial.file_id = None;
+        assert_eq!(checkpoint.verify(&source, &staging), Ok(()));
+    }
+
+    #[test]
+    fn checkpoint_verify_says_why_a_checkpoint_is_unusable() {
+        let temp = TempDir::new();
+        let (source, staging, checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&staging, b"0123XXXX").unwrap();
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("checkpoint bytes changed after proof".to_string())
+        );
+
+        let (source, staging, checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&source, b"0123456789abcdef-grown").unwrap();
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("source changed after checkpoint".to_string())
+        );
+
+        let (source, staging, checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&staging, b"0123").unwrap();
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("staging changed after checkpoint".to_string())
+        );
+
+        let (source, staging, mut checkpoint) = prefix_checkpoint_fixture(&temp);
+        checkpoint.content_digest = None;
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("checkpoint has no content proof".to_string())
+        );
     }
 
     #[test]
