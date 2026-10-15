@@ -432,40 +432,7 @@ impl App {
                 );
                 ui.add_space(6.0);
             }
-            let phases = ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let width = ((ui.available_width() - 8.0) / 5.0).max(58.0);
-                for candidate in crate::operation_view::OperationPhase::ALL {
-                    let active = candidate == phase;
-                    let complete = candidate.ordinal() < phase.ordinal();
-                    let color = if active {
-                        Color32::WHITE
-                    } else if complete {
-                        t.accent
-                    } else {
-                        t.text_muted
-                    };
-                    let fill = if active {
-                        t.accent
-                    } else {
-                        t.bg_card.linear_multiply(0.45)
-                    };
-                    // Painted, not buttons: the phases are status, not
-                    // controls, and the row speaks as one label below.
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
-                    ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        candidate.label(),
-                        egui::FontId::proportional(10.0),
-                        color,
-                    );
-                }
-            });
-            phases.response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, phase_progress_text(phase))
-            });
+            phase_row(ui, &t, phase);
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -870,6 +837,45 @@ impl App {
     }
 }
 
+/// The five-phase row: painted status cells that speak as one label
+/// ("Phase 3 of 5: Transfer").
+fn phase_row(ui: &mut egui::Ui, t: &ThemeColors, phase: crate::operation_view::OperationPhase) {
+    let phases = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let width = ((ui.available_width() - 8.0) / 5.0).max(58.0);
+        for candidate in crate::operation_view::OperationPhase::ALL {
+            let active = candidate == phase;
+            let complete = candidate.ordinal() < phase.ordinal();
+            let color = if active {
+                Color32::WHITE
+            } else if complete {
+                t.accent
+            } else {
+                t.text_muted
+            };
+            let fill = if active {
+                t.accent
+            } else {
+                t.bg_card.linear_multiply(0.45)
+            };
+            // Painted, not buttons: the phases are status, not
+            // controls, and the row speaks as one label below.
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                candidate.label(),
+                egui::FontId::proportional(10.0),
+                color,
+            );
+        }
+    });
+    phases.response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, phase_progress_text(phase))
+    });
+}
+
 /// Mark a status label as a live region so assistive tech speaks its
 /// changes; `urgent` ones (integrity pause, errors) interrupt.
 fn announce(ui: &egui::Ui, id: egui::Id, urgent: bool) {
@@ -1142,10 +1148,10 @@ fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackgroundTransfer, FileLine, TransferLine, background_transfer_text, caption_on_fill,
-        delta_text, file_line, graph_speeds, labeled_error_rows, operations_panel_hint,
-        phase_progress_text, requeued_text, review_text, right_aligned_in_reading_order,
-        speed_text, strip_bar, transfer_status_text,
+        BackgroundTransfer, FileLine, TransferLine, announce, background_transfer_text,
+        caption_on_fill, delta_text, file_line, graph_speeds, labeled_error_rows,
+        operations_panel_hint, phase_progress_text, phase_row, requeued_text, review_text,
+        right_aligned_in_reading_order, speed_text, strip_bar, transfer_status_text,
     };
     use crate::operation::{ClassifiedFailure, FailureClass};
 
@@ -1281,6 +1287,65 @@ mod tests {
         assert_eq!(file_line("", true), None);
         assert_eq!(file_line("a.txt", false), Some(FileLine::File));
         assert_eq!(file_line("a.txt", true), Some(FileLine::File));
+    }
+
+    fn accesskit_nodes(run: impl FnMut(&mut egui::Ui)) -> Vec<egui::accesskit::Node> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output = crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), run));
+        output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output")
+            .nodes
+            .into_iter()
+            .map(|(_, node)| node)
+            .collect()
+    }
+
+    /// A widget node's spoken text: egui puts a label's text in `value`
+    /// (text-run children, which repeat it, are skipped).
+    fn spoken(node: &egui::accesskit::Node) -> Option<&str> {
+        if node.role() == egui::accesskit::Role::TextRun {
+            return None;
+        }
+        node.label().or(node.value())
+    }
+
+    #[test]
+    fn announce_marks_status_polite_and_urgent_assertive() {
+        use egui::accesskit::{Live, Role};
+        let nodes = accesskit_nodes(|ui| {
+            let calm = ui.label("Copying");
+            announce(ui, calm.id, false);
+            let urgent = ui.label("Finished with errors");
+            announce(ui, urgent.id, true);
+        });
+        let calm = nodes
+            .iter()
+            .find(|node| spoken(node) == Some("Copying"))
+            .expect("status node");
+        assert_eq!(calm.role(), Role::Status);
+        assert_eq!(calm.live(), Some(Live::Polite));
+        let urgent = nodes
+            .iter()
+            .find(|node| spoken(node) == Some("Finished with errors"))
+            .expect("alert node");
+        assert_eq!(urgent.role(), Role::Alert);
+        assert_eq!(urgent.live(), Some(Live::Assertive));
+    }
+
+    #[test]
+    fn phase_row_speaks_as_one_label() {
+        let t = crate::theme::ThemeColors::for_preferences(
+            crate::theme::ThemeMode::Light,
+            crate::accessibility::Preferences::default(),
+        );
+        let nodes = accesskit_nodes(|ui| {
+            phase_row(ui, &t, crate::operation_view::OperationPhase::Transfer);
+        });
+        let labels: Vec<_> = nodes.iter().filter_map(|node| spoken(node)).collect();
+        assert_eq!(labels, vec!["Phase 3 of 5: Transfer"], "{labels:?}");
     }
 
     #[test]
