@@ -325,7 +325,7 @@ impl ArchiveProvider {
         let modified = metadata.modified().ok();
         let accessed = metadata.accessed().ok();
         // Every member shows the archive's own mtime; format it once.
-        let modified_str = modified.map_or_else(|| "-".to_string(), format_modified);
+        let modified_str = modified_label(modified);
         let mut keep_going = true;
         let result = crate::archive::visit_members(
             archive_path,
@@ -333,38 +333,22 @@ impl ArchiveProvider {
             budget,
             || request.cancelled(),
             |member| {
-                let Some(name) = member.member.path.file_name() else {
+                // The virtual path ends in the member's own name.
+                if member.member.path.file_name().is_none() {
                     keep_going = emit(None);
                     return keep_going;
-                };
-                let name = name.to_string_lossy().to_string();
+                }
                 let virtual_path =
                     crate::archive::virtual_member_path(archive_path, &member.member.path);
-                let extension = member
-                    .member
-                    .path
-                    .extension()
-                    .map(|extension| extension.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                let entry = FileEntry {
-                    name_lower: name.to_lowercase(),
-                    name,
-                    path: virtual_path.clone(),
-                    identity: crate::panel::ListingIdentity::Unavailable,
-                    is_dir: member.member.is_dir,
-                    size: if member.member.is_dir {
-                        0
-                    } else {
-                        member.member.size
-                    },
-                    extension,
+                let Some(entry) = synthetic_entry(
+                    virtual_path,
+                    member.member.is_dir,
+                    member.member.size,
                     modified,
-                    modified_str: modified_str.clone(),
-                    size_str: if member.member.is_dir {
-                        "...".to_string()
-                    } else {
-                        crate::panel::format_size(member.member.size)
-                    },
+                    modified_str.clone(),
+                ) else {
+                    keep_going = emit(None);
+                    return keep_going;
                 };
                 keep_going = emit(Some(SearchCandidate {
                     entry,
@@ -1203,13 +1187,54 @@ fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
     local_datetime(time).map(|local| local.date_naive())
 }
 
-/// Listing-style "modified" text for `time`, or "-" when chrono cannot
+/// Placeholder for a date the listing cannot show, as in the live panel.
+const UNKNOWN_MODIFIED: &str = "\u{2013}";
+
+/// Listing-style "modified" text for `time`, or a dash when chrono cannot
 /// represent it (an mtime past ~year 262k): `From<SystemTime>` panics there.
 pub fn format_modified(time: SystemTime) -> String {
     local_datetime(time).map_or_else(
-        || "-".to_string(),
+        || UNKNOWN_MODIFIED.to_string(),
         |local| local.format("%d %b %y  %H:%M").to_string(),
     )
+}
+
+/// `format_modified` for an optional time; a missing time shows the dash.
+pub fn modified_label(time: Option<SystemTime>) -> String {
+    time.map_or_else(|| UNKNOWN_MODIFIED.to_string(), format_modified)
+}
+
+/// A listing row for something that is not stat-ed on disk (an index
+/// document or an archive member), with the live panel's placeholders.
+/// `None` when `path` has no file name.
+pub fn synthetic_entry(
+    path: PathBuf,
+    is_dir: bool,
+    size: u64,
+    modified: Option<SystemTime>,
+    modified_str: String,
+) -> Option<FileEntry> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    Some(FileEntry {
+        name_lower: name.to_lowercase(),
+        name,
+        path,
+        identity: crate::panel::ListingIdentity::Unavailable,
+        is_dir,
+        size: if is_dir { 0 } else { size },
+        extension,
+        modified,
+        modified_str,
+        size_str: if is_dir {
+            "\u{2026}".to_string()
+        } else {
+            crate::panel::format_size(size)
+        },
+    })
 }
 
 fn local_datetime(time: SystemTime) -> Option<chrono::DateTime<chrono::Local>> {
@@ -1335,11 +1360,11 @@ mod tests {
     #[test]
     fn modified_text_falls_back_for_times_chrono_cannot_hold() {
         let epoch = format_modified(std::time::UNIX_EPOCH);
-        assert_ne!(epoch, "-");
+        assert_ne!(epoch, "\u{2013}");
         // ~278k years: past chrono's range. Skipped where SystemTime itself
         // cannot hold it (Windows FILETIME).
         if let Some(far) = std::time::UNIX_EPOCH.checked_add(Duration::from_secs(1 << 43)) {
-            assert_eq!(format_modified(far), "-");
+            assert_eq!(format_modified(far), "\u{2013}");
         }
     }
 
@@ -1965,5 +1990,41 @@ mod tests {
             byte_range_to_char_range(name, name.len(), name.len()),
             (24, 24)
         );
+    }
+
+    #[test]
+    fn synthetic_entries_use_the_panel_placeholders() {
+        let dir = synthetic_entry(
+            PathBuf::from("/a.zip!/Docs"),
+            true,
+            4096,
+            None,
+            modified_label(None),
+        )
+        .unwrap();
+        assert_eq!(
+            (dir.name.as_str(), dir.name_lower.as_str()),
+            ("Docs", "docs")
+        );
+        assert_eq!((dir.size, dir.size_str.as_str()), (0, "\u{2026}"));
+        assert_eq!(dir.modified_str, "\u{2013}");
+        assert!(matches!(
+            dir.identity,
+            crate::panel::ListingIdentity::Unavailable
+        ));
+
+        let file = synthetic_entry(
+            PathBuf::from("/data/Report.PDF"),
+            false,
+            2048,
+            None,
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(file.extension, "pdf");
+        assert_eq!(file.size, 2048);
+        assert_eq!(file.size_str, crate::panel::format_size(2048));
+
+        assert!(synthetic_entry(PathBuf::from("/"), true, 0, None, String::new()).is_none());
     }
 }

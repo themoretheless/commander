@@ -1,6 +1,6 @@
 //! Optional, root-scoped content indexes built only while the app is idle.
 
-use crate::panel::{FileEntry, format_size};
+use crate::panel::FileEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, ReadDir};
@@ -50,30 +50,14 @@ pub struct IndexedDocument {
 
 impl IndexedDocument {
     pub fn entry(&self) -> Option<FileEntry> {
-        let name = self.path.file_name()?.to_string_lossy().to_string();
-        let extension = self
-            .path
-            .extension()
-            .map(|value| value.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
         let modified = self.modified_secs.and_then(epoch_secs);
-        let modified_str = modified.map_or_else(|| "-".to_string(), crate::search::format_modified);
-        Some(FileEntry {
-            name_lower: name.to_lowercase(),
-            name,
-            path: self.path.clone(),
-            identity: crate::panel::ListingIdentity::Unavailable,
-            is_dir: self.is_dir,
-            size: if self.is_dir { 0 } else { self.size },
-            extension,
+        crate::search::synthetic_entry(
+            self.path.clone(),
+            self.is_dir,
+            self.size,
             modified,
-            modified_str,
-            size_str: if self.is_dir {
-                "...".to_string()
-            } else {
-                format_size(self.size)
-            },
-        })
+            crate::search::modified_label(modified),
+        )
     }
 
     pub fn accessed(&self) -> Option<SystemTime> {
@@ -1616,7 +1600,7 @@ mod tests {
         };
         let entry = document.entry().unwrap();
         assert_eq!(entry.modified, None);
-        assert_eq!(entry.modified_str, "-");
+        assert_eq!(entry.modified_str, "\u{2013}");
         assert_eq!(document.accessed(), None);
 
         // Past chrono's ~year 262k limit (still a valid SystemTime on Unix).
@@ -1624,7 +1608,7 @@ mod tests {
             modified_secs: Some(1 << 43),
             ..document.clone()
         };
-        assert_eq!(far.entry().unwrap().modified_str, "-");
+        assert_eq!(far.entry().unwrap().modified_str, "\u{2013}");
 
         let normal = IndexedDocument {
             modified_secs: Some(0),
