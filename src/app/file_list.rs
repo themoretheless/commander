@@ -209,11 +209,11 @@ fn empty_state(
     filter_active: bool,
 ) -> (
     &'static str,
-    &'static str,
+    std::borrow::Cow<'static, str>,
     Option<(&'static str, EmptyAction)>,
 ) {
     use crate::panel::DirStatus;
-    match status {
+    let (glyph, message, action) = match status {
         DirStatus::Denied => (
             "\u{1f512}",
             "No permission to read this folder",
@@ -238,7 +238,21 @@ fn empty_state(
             Some(("Clear filters", EmptyAction::ClearFilters)),
         ),
         DirStatus::Partial => ("\u{21bb}", "Folder changed while reading; retrying", None),
+        DirStatus::HiddenOnly(count) => {
+            return ("\u{1f4c2}", hidden_only_message(count).into(), None);
+        }
         DirStatus::Listed | DirStatus::Empty => ("\u{1f4c2}", "Empty", None),
+    };
+    (glyph, message.into(), action)
+}
+
+/// Empty-state text for a folder whose only entries are hidden, so it does
+/// not read as empty and says how to reveal them.
+fn hidden_only_message(count: usize) -> String {
+    let noun = if count == 1 { "item" } else { "items" };
+    match super::toolbar::command_shortcut(crate::command::Command::ToggleHidden) {
+        Some(shortcut) => format!("{count} hidden {noun}; press {shortcut} to show"),
+        None => format!("{count} hidden {noun}"),
     }
 }
 
@@ -1914,6 +1928,18 @@ mod tests {
         if !cfg!(target_os = "macos") {
             assert!(!label.contains("Finder"), "{label}");
         }
+    }
+
+    #[test]
+    fn folder_of_only_hidden_items_does_not_read_as_empty() {
+        use crate::panel::DirStatus;
+        let (_, message, _) = empty_state(DirStatus::HiddenOnly(3), false);
+        assert!(message.starts_with("3 hidden items"), "{message}");
+        assert_ne!(message, "Empty");
+        let (_, one, _) = empty_state(DirStatus::HiddenOnly(1), false);
+        assert!(one.starts_with("1 hidden item;"), "{one}");
+        // A filter still explains its own empty result.
+        assert_eq!(empty_state(DirStatus::HiddenOnly(3), true).1, "No matches");
     }
 
     #[test]

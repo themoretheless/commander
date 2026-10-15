@@ -76,9 +76,9 @@ const fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'st
         crate::panel::DirStatus::Gone => "the folder is no longer available",
         crate::panel::DirStatus::Partial => "the folder could not be read completely",
         crate::panel::DirStatus::Loading => "the folder is still loading",
-        crate::panel::DirStatus::Listed | crate::panel::DirStatus::Empty => {
-            "the folder could not be refreshed"
-        }
+        crate::panel::DirStatus::Listed
+        | crate::panel::DirStatus::Empty
+        | crate::panel::DirStatus::HiddenOnly(_) => "the folder could not be refreshed",
     }
 }
 

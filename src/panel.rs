@@ -70,6 +70,9 @@ pub enum DirStatus {
     Listed,
     /// Read succeeded but the directory is empty.
     Empty,
+    /// Read succeeded with hidden files off, and every entry was hidden:
+    /// the folder holds this many hidden items and nothing else.
+    HiddenOnly(usize),
     /// Permission denied.
     Denied,
     /// The directory could not be read for another reason (an I/O error,
@@ -94,6 +97,9 @@ pub enum ViewApplyOutcome {
 
 pub enum DirectoryRead {
     Complete(Vec<FileEntry>),
+    /// A complete read with hidden files off that found only hidden
+    /// entries (this many); no rows are shown.
+    OnlyHidden(usize),
     Incomplete(DirStatus),
 }
 
@@ -788,8 +794,9 @@ impl PanelState {
             .with_show_hidden(!self.view.show_hidden());
         let path = self.current_path.clone();
         let ticket = self.watcher.snapshot_ticket_for(&path);
-        let entries = match Self::read_dir(&path, candidate.show_hidden()) {
-            DirectoryRead::Complete(entries) => entries,
+        let (entries, hidden) = match Self::read_dir(&path, candidate.show_hidden()) {
+            DirectoryRead::Complete(entries) => (entries, 0),
+            DirectoryRead::OnlyHidden(hidden) => (Vec::new(), hidden),
             DirectoryRead::Incomplete(status) => {
                 self.watcher.defer_snapshot(ticket.as_ref());
                 return ViewApplyOutcome::ReadRejected(status);
@@ -797,7 +804,7 @@ impl PanelState {
         };
 
         self.view.commit_config(candidate);
-        self.publish_complete_listing(entries, candidate);
+        self.publish_complete_listing(entries, hidden, candidate);
         self.sizes.bind(&path);
         self.watcher.ensure_binding(&path);
         self.commit_snapshot(ticket, true);
@@ -973,7 +980,11 @@ impl PanelState {
         }
         match read {
             DirectoryRead::Complete(entries) => {
-                self.publish_complete_listing(entries, self.view.config());
+                self.publish_complete_listing(entries, 0, self.view.config());
+                true
+            }
+            DirectoryRead::OnlyHidden(hidden) => {
+                self.publish_complete_listing(Vec::new(), hidden, self.view.config());
                 true
             }
             DirectoryRead::Incomplete(status) => {
@@ -989,7 +1000,14 @@ impl PanelState {
         }
     }
 
-    fn publish_complete_listing(&mut self, mut entries: Vec<FileEntry>, config: ViewConfig) {
+    /// Publish a complete read. `hidden` counts entries skipped as hidden;
+    /// it only matters when no row is left to show.
+    fn publish_complete_listing(
+        &mut self,
+        mut entries: Vec<FileEntry>,
+        hidden: usize,
+        config: ViewConfig,
+    ) {
         let binding = self.current_path.clone();
         let binding_changed = self.listing.binding() != binding;
         let cursor_path = (!binding_changed).then(|| self.focused_path()).flatten();
@@ -1001,10 +1019,10 @@ impl PanelState {
             self.drag.clear();
         }
 
-        let status = if entries.is_empty() {
-            DirStatus::Empty
-        } else {
-            DirStatus::Listed
+        let status = match (entries.is_empty(), hidden) {
+            (false, _) => DirStatus::Listed,
+            (true, 0) => DirStatus::Empty,
+            (true, hidden) => DirStatus::HiddenOnly(hidden),
         };
         sort_entries(&mut entries, config);
         self.selection.publish_complete(&binding);
@@ -1110,6 +1128,7 @@ impl PanelState {
     ) -> DirectoryRead {
         let vanished = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
         let mut result = Vec::new();
+        let mut hidden = 0_usize;
         let mut complete = true;
         for entry in entries {
             let entry = match entry {
@@ -1121,6 +1140,7 @@ impl PanelState {
             };
             let path = entry.path();
             if !show_hidden && path.file_name().is_some_and(is_hidden_name) {
+                hidden += 1;
                 continue;
             }
             let file_type = match entry.file_type() {
@@ -1164,10 +1184,12 @@ impl PanelState {
                 None => complete = false,
             }
         }
-        if complete {
-            DirectoryRead::Complete(result)
-        } else {
+        if !complete {
             DirectoryRead::Incomplete(DirStatus::Partial)
+        } else if result.is_empty() && hidden > 0 {
+            DirectoryRead::OnlyHidden(hidden)
+        } else {
+            DirectoryRead::Complete(result)
         }
     }
 
@@ -3018,6 +3040,27 @@ mod tests {
             status_for_read_error(&Error::from(ErrorKind::TimedOut)),
             DirStatus::Unavailable
         );
+    }
+
+    #[test]
+    fn folder_of_only_dotfiles_reports_its_hidden_count() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("dots");
+        tmp.file("dots/.a", "a");
+        tmp.file("dots/.b", "b");
+        let mut panel = PanelState::new(dir);
+        panel.refresh();
+        assert!(!panel.show_hidden());
+        assert_eq!(panel.dir_status(), DirStatus::HiddenOnly(2));
+        assert_eq!(panel.toggle_hidden(), ViewApplyOutcome::Applied);
+        assert_eq!(panel.dir_status(), DirStatus::Listed);
+        assert_eq!(panel.toggle_hidden(), ViewApplyOutcome::Applied);
+        assert_eq!(panel.dir_status(), DirStatus::HiddenOnly(2));
+
+        // A truly empty folder stays "Empty".
+        let mut empty = PanelState::new(tmp.dir("empty"));
+        empty.refresh();
+        assert_eq!(empty.dir_status(), DirStatus::Empty);
     }
 
     #[cfg(unix)]
