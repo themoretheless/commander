@@ -2083,7 +2083,7 @@ fn queue_pause_resume_and_reorder_only_touch_pending_jobs() {
     assert_eq!(ids_after_move, vec![running_id, pending2, pending1]);
 
     // Resume the paused job.
-    ws.queue_resume(pending1, || {});
+    ws.queue_resume(pending1, || {}).unwrap();
     let resumed = ws
         .queue_snapshot()
         .into_iter()
@@ -2095,6 +2095,37 @@ fn queue_pause_resume_and_reorder_only_touch_pending_jobs() {
     assert!(r.path().join("a.txt").is_file());
     assert!(r.path().join("b.txt").is_file());
     assert!(r.path().join("c.txt").is_file());
+}
+
+#[test]
+fn resume_blocked_by_safe_state_keeps_the_job_paused_and_says_why() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file("paused.txt", "content");
+    let meta = std::fs::metadata(&source).unwrap();
+    let entry = FileEntry::from_meta(source.clone(), &meta).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.enqueue_copy(
+        vec![entry],
+        r.path().to_path_buf(),
+        OverwritePolicy::KeepBoth,
+    );
+    let id = ws.queue_snapshot()[0].id;
+    ws.queue_pause(id);
+    ws.safe_state = Some(crate::operation::SafeState {
+        operation_id: crate::operation::OperationId("blocked-resume".to_string()),
+        reason: "review required".to_string(),
+        paths: vec![source],
+        failures: Vec::new(),
+    });
+
+    let reason = ws.queue_resume(id, || {}).unwrap_err();
+
+    assert!(reason.contains("Safe-state review"), "{reason}");
+    assert!(ws.active_transfer().is_none());
+    assert_eq!(
+        ws.queue_snapshot()[0].state,
+        crate::opqueue::JobState::Paused
+    );
 }
 
 #[test]
@@ -2120,7 +2151,8 @@ fn resuming_the_only_paused_job_starts_it_when_idle() {
     let notify_count = Arc::clone(&notifications);
     ws.queue_resume(id, move || {
         notify_count.fetch_add(1, Ordering::SeqCst);
-    });
+    })
+    .unwrap();
 
     assert!(ws.active_transfer().is_some(), "resume fills the idle slot");
     assert_eq!(
@@ -3541,7 +3573,7 @@ fn matching_paused_replay_can_resume_while_ordinary_mutations_remain_blocked() {
     let job_id = workspace.queue_snapshot()[0].id;
     workspace.queue_pause(job_id);
 
-    workspace.queue_resume(job_id, || {});
+    workspace.queue_resume(job_id, || {}).unwrap();
 
     assert_eq!(
         workspace

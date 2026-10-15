@@ -1050,7 +1050,14 @@ impl Workspace {
         self.transfers.pause(id);
     }
 
-    pub fn queue_resume(&mut self, id: JobId, notify: impl Fn() + Send + 'static) {
+    /// Resume a paused job. When a safe-state review, a Trash operation or an
+    /// unrelated history replay holds mutations, the job stays paused and the
+    /// reason is returned for the queue panel to show.
+    pub fn queue_resume(
+        &mut self,
+        id: JobId,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<(), String> {
         let matching_replay = self
             .undo
             .pending_reservation()
@@ -1059,11 +1066,14 @@ impl Workspace {
             || self.deletes.is_active()
             || (self.undo.has_pending_replay() && !matching_replay)
         {
-            return;
+            return Err(self
+                .mutation_block_reason("resuming a transfer")
+                .unwrap_or_else(|| "Transfers cannot be resumed right now".to_string()));
         }
         if self.transfers.resume(id) {
             self.pump_queue(notify);
         }
+        Ok(())
     }
 
     pub fn queue_promote(&mut self, id: JobId) {
