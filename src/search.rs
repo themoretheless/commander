@@ -947,91 +947,34 @@ fn run_worker(
             return false;
         }
         scanned += 1;
-        let Some(candidate) = record else {
-            channel_open = maybe_send_progress(
-                generation,
-                scanned,
-                matched,
-                &mut last_progress,
-                &sender,
-                &notify,
-            );
-            return channel_open;
-        };
-
-        let SearchCandidate {
-            entry,
-            identity,
-            accessed,
-            content,
-            location,
-        } = candidate;
-        let Some(mut explanation) = query.evaluate_metadata(&entry, &root, now) else {
-            channel_open = maybe_send_progress(
-                generation,
-                scanned,
-                matched,
-                &mut last_progress,
-                &sender,
-                &notify,
-            );
-            return channel_open;
-        };
-        match query.evaluate_content(&entry, &content, &mut explanation) {
-            ContentVerdict::NotMatched => {
-                channel_open = maybe_send_progress(
-                    generation,
-                    scanned,
-                    matched,
-                    &mut last_progress,
-                    &sender,
-                    &notify,
-                );
-                return channel_open;
-            }
-            ContentVerdict::Skipped => {
-                content_skipped += 1;
-                channel_open = maybe_send_progress(
-                    generation,
-                    scanned,
-                    matched,
-                    &mut last_progress,
-                    &sender,
-                    &notify,
-                );
-                return channel_open;
-            }
-            ContentVerdict::Matched => {}
-        }
-        // Only a match beyond the cap proves the results are truncated; a
-        // walk that ends with exactly `cap` matches is complete.
-        if matched >= cap {
-            truncated = true;
-            return false;
-        }
-        batch.push(SearchHit {
-            entry,
-            identity,
-            accessed,
-            explanation,
-            location,
+        let hit = record.and_then(|candidate| {
+            evaluate_candidate(&query, candidate, &root, now, &mut content_skipped)
         });
-        matched += 1;
-        if batch.len() >= BATCH_SIZE {
-            sort_new_hits(&mut batch);
-            let hits = std::mem::take(&mut batch);
-            if sender
-                .send(SearchEvent::Batch {
-                    generation,
-                    hits,
-                    scanned,
-                })
-                .is_err()
-            {
-                channel_open = false;
+        if let Some(hit) = hit {
+            // Only a match beyond the cap proves the results are truncated; a
+            // walk that ends with exactly `cap` matches is complete.
+            if matched >= cap {
+                truncated = true;
                 return false;
             }
-            notify();
+            batch.push(hit);
+            matched += 1;
+            if batch.len() >= BATCH_SIZE {
+                sort_new_hits(&mut batch);
+                let hits = std::mem::take(&mut batch);
+                if sender
+                    .send(SearchEvent::Batch {
+                        generation,
+                        hits,
+                        scanned,
+                    })
+                    .is_err()
+                {
+                    channel_open = false;
+                    return false;
+                }
+                notify();
+            }
         }
         channel_open = maybe_send_progress(
             generation,
@@ -1081,6 +1024,40 @@ fn run_worker(
         summary,
     });
     notify();
+}
+
+/// The hit for one provider record, or `None` when its metadata or content
+/// does not match. A candidate whose content could not be searched counts
+/// in `content_skipped`.
+fn evaluate_candidate(
+    query: &CompiledQuery,
+    candidate: SearchCandidate,
+    root: &Path,
+    now: SystemTime,
+    content_skipped: &mut usize,
+) -> Option<SearchHit> {
+    let SearchCandidate {
+        entry,
+        identity,
+        accessed,
+        content,
+        location,
+    } = candidate;
+    let mut explanation = query.evaluate_metadata(&entry, root, now)?;
+    match query.evaluate_content(&entry, &content, &mut explanation) {
+        ContentVerdict::NotMatched => None,
+        ContentVerdict::Skipped => {
+            *content_skipped += 1;
+            None
+        }
+        ContentVerdict::Matched => Some(SearchHit {
+            entry,
+            identity,
+            accessed,
+            explanation,
+            location,
+        }),
+    }
 }
 
 fn maybe_send_progress(
@@ -1741,6 +1718,17 @@ mod tests {
             time_bucket(&hit, TimePivot::Accessed, now),
             TimeBucket::ThisMonth
         );
+        // Clock skew: a time ahead of now is still today, not "older".
+        hit.entry.modified = Some(now + Duration::from_secs(3_600));
+        assert_eq!(
+            time_bucket(&hit, TimePivot::Modified, now),
+            TimeBucket::Today
+        );
+        hit.accessed = None;
+        assert_eq!(
+            time_bucket(&hit, TimePivot::Accessed, now),
+            TimeBucket::Unknown
+        );
     }
 
     #[test]
@@ -1932,5 +1920,50 @@ mod tests {
                 TimeBucket::Older
             );
         }
+    }
+
+    #[test]
+    fn content_search_skips_binary_files_and_counts_them() {
+        let tmp = TempDir::new();
+        tmp.file("text.txt", "needle here");
+        std::fs::write(tmp.path().join("blob.bin"), b"needle\0here").unwrap();
+
+        let engine = SearchEngine::default();
+        let run = engine
+            .start(
+                tmp.path().to_path_buf(),
+                Query::parse("content:needle", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+        let (hits, summary) = collect_run(&run);
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.name, "text.txt");
+        assert_eq!(summary.content_skipped, 1);
+    }
+
+    #[test]
+    fn highlight_ranges_count_characters_not_bytes() {
+        // Two-byte, three-byte (CJK) and four-byte (emoji) characters, plus
+        // a decomposed e + combining acute that is two chars.
+        let name = "r\u{e9}sum\u{e9} \u{65e5}\u{672c} \u{1f600} e\u{301}Report.txt";
+        let report_at = name.chars().position(|c| c == 'R').unwrap();
+        let expected = vec![(report_at, report_at + 6)];
+
+        let exact = TextMatcher::new(MatchMode::Exact, "report".to_string()).unwrap();
+        assert_eq!(exact.evaluate(name).unwrap().matched_ranges, expected);
+        let regex = TextMatcher::new(MatchMode::Regex, "rep.rt".to_string()).unwrap();
+        assert_eq!(regex.evaluate(name).unwrap().matched_ranges, expected);
+
+        // A match that itself spans multibyte characters.
+        let cjk = TextMatcher::new(MatchMode::Exact, "\u{65e5}\u{672c}".to_string()).unwrap();
+        assert_eq!(cjk.evaluate(name).unwrap().matched_ranges, vec![(7, 9)]);
+        assert_eq!(byte_range_to_char_range(name, 0, 0), (0, 0));
+        assert_eq!(
+            byte_range_to_char_range(name, name.len(), name.len()),
+            (24, 24)
+        );
     }
 }
