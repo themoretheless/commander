@@ -171,6 +171,14 @@ fn backspace_edits_type_ahead(presses: &[KeyPress], live_search: bool) -> bool {
             .any(|p| p.code == KeyCode::Backspace && !p.command && !p.shift)
 }
 
+/// Drops a plain `.` from this frame's presses while a type-ahead search is
+/// live, so typing "a.txt" extends the search instead of running Repeat Last.
+fn yield_period_to_type_ahead(presses: &mut Vec<KeyPress>, live_search: bool) {
+    if live_search {
+        presses.retain(|p| p.code != KeyCode::Period || p.command);
+    }
+}
+
 /// The search left after Backspace removes its last character, or `None`
 /// once nothing is left to search for.
 fn type_ahead_after_backspace(buffer: &str) -> Option<String> {
@@ -223,6 +231,7 @@ impl App {
             presses.retain(|p| p.code != KeyCode::Backspace || p.command || p.shift);
             self.type_ahead_backspace(ctx, now);
         }
+        yield_period_to_type_ahead(&mut presses, live_search);
         // Space/Period also arrive as text; once they ran a command they must
         // not extend type-ahead too.
         let mut consumed: Vec<char> = presses
@@ -698,6 +707,19 @@ mod tests {
             command,
             shift: false,
         }
+    }
+
+    #[test]
+    fn period_extends_a_live_search_instead_of_repeating() {
+        let mut presses = vec![press(KeyCode::Period, false)];
+        yield_period_to_type_ahead(&mut presses, false);
+        // No search running: `.` still repeats the last command.
+        assert_eq!(presses.len(), 1);
+        yield_period_to_type_ahead(&mut presses, true);
+        assert!(presses.is_empty());
+        let mut other = vec![press(KeyCode::Down, false)];
+        yield_period_to_type_ahead(&mut other, true);
+        assert_eq!(other.len(), 1);
     }
 
     #[test]
