@@ -2,7 +2,7 @@
 //! content hash, group the byte-identical ones and pick a keeper by policy.
 //! Hashing and IO live in the caller; everything here is pure and tested.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -33,13 +33,30 @@ pub enum KeepPolicy {
     KeepShortestPath,
 }
 
-/// Group byte-identical files (same size AND same hash). Singletons are
-/// dropped; only groups with >= 2 members are returned. Group order and
-/// in-group order follow first appearance in `files` (stable).
+/// The on-disk object behind `file` (volume, file id) when the listing
+/// captured it. Hard links to one file share it.
+fn object_key(file: &FileKey) -> Option<(u64, u64)> {
+    match &file.identity {
+        crate::panel::ListingIdentity::Captured(identity) => {
+            Some((identity.volume?, identity.file_id?))
+        }
+        _ => None,
+    }
+}
+
+/// Group byte-identical files (same size AND same hash). Hard links to one
+/// file collapse to their first listed path, since trashing another link
+/// reclaims no space. Singletons are dropped; only groups with >= 2 members
+/// are returned. Group order and in-group order follow first appearance in
+/// `files` (stable).
 pub fn group_duplicates(files: &[FileKey]) -> Vec<DupGroup> {
     let mut order: Vec<(u64, u64)> = Vec::new();
     let mut buckets: HashMap<(u64, u64), Vec<FileKey>> = HashMap::new();
+    let mut seen_objects: HashSet<(u64, u64)> = HashSet::new();
     for f in files {
+        if object_key(f).is_some_and(|object| !seen_objects.insert(object)) {
+            continue;
+        }
         let key = (f.size, f.hash);
         let bucket = buckets.entry(key).or_default();
         if bucket.is_empty() {
@@ -132,6 +149,29 @@ mod tests {
             .map(|f| f.path.to_str().unwrap())
             .collect();
         assert_eq!(names, vec!["/a.txt", "/b.txt"]); // stable order
+    }
+
+    #[test]
+    fn hard_links_to_one_file_are_not_duplicates() {
+        let linked = |path: &str, file_id| {
+            let mut file = key(path, 10, 1, None);
+            let mut identity = crate::path_identity::PathIdentity::missing(&file.path);
+            identity.volume = Some(7);
+            identity.file_id = Some(file_id);
+            file.identity = crate::panel::ListingIdentity::Captured(identity);
+            file
+        };
+        // Two names for inode 42 alone are no duplicate group.
+        assert!(group_duplicates(&[linked("/a", 42), linked("/b", 42)]).is_empty());
+        // With a real copy, the group keeps one link plus the copy.
+        let groups = group_duplicates(&[linked("/a", 42), linked("/b", 42), linked("/c", 43)]);
+        assert_eq!(groups.len(), 1);
+        let names: Vec<&str> = groups[0]
+            .files
+            .iter()
+            .map(|f| f.path.to_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["/a", "/c"]);
     }
 
     #[test]
