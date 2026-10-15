@@ -34,26 +34,15 @@ impl App {
     }
 
     fn poll_collection_view(&mut self) {
-        let mut events = Vec::new();
-        let mut disconnected = false;
-        if let Some(run) = self
+        let (events, disconnected) = self
             .ui
             .modals
             .collections_dialog
             .as_ref()
             .and_then(|state| state.run.as_ref())
-        {
-            loop {
-                match run.try_recv() {
-                    Ok(event) => events.push(event),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-        }
+            .map_or_else(Default::default, |run| {
+                super::drain_events(|| run.try_recv())
+            });
         if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
             for event in events {
                 match event {

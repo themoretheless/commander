@@ -161,6 +161,21 @@ pub fn secs_to_millis(secs: f64) -> u64 {
     (secs * 1_000.0) as u64
 }
 
+/// Everything a worker channel holds right now, and whether its sender is
+/// gone. Events sent before the disconnect are still returned.
+pub fn drain_events<T>(
+    mut try_recv: impl FnMut() -> Result<T, std::sync::mpsc::TryRecvError>,
+) -> (Vec<T>, bool) {
+    let mut events = Vec::new();
+    loop {
+        match try_recv() {
+            Ok(event) => events.push(event),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return (events, false),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return (events, true),
+        }
+    }
+}
+
 /// The frame every dialog and sheet draws: panel fill, `margin` points of
 /// padding and a one-point border.
 pub fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
@@ -1124,9 +1139,22 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_start_paths, secs_to_millis};
+    use super::{drain_events, resolve_start_paths, secs_to_millis};
     use crate::launch::LaunchPaths;
     use std::path::PathBuf;
+
+    #[test]
+    fn draining_keeps_events_sent_before_a_disconnect() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert_eq!(drain_events(|| rx.try_recv()), (Vec::<u8>::new(), false));
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        assert_eq!(drain_events(|| rx.try_recv()), (vec![1, 2], false));
+        tx.send(3).unwrap();
+        drop(tx);
+        assert_eq!(drain_events(|| rx.try_recv()), (vec![3], true));
+        assert_eq!(drain_events(|| rx.try_recv()), (Vec::new(), true));
+    }
 
     #[test]
     fn launch_paths_override_the_restored_start_folders() {
