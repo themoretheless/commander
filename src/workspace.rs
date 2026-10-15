@@ -1754,11 +1754,7 @@ impl Workspace {
     ) {
         let conflicts = scan::find_conflicts(&entries, &target);
         let flat = scan::pending_flat_list();
-        let policy = match self.name_policy.collision {
-            crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
-            crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
-            crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
-        };
+        let policy = OverwritePolicy::from(self.name_policy.collision);
         let asks = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
         let generation = self.start_space_probe(
             entries.clone(),
