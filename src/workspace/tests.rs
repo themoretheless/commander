@@ -3933,6 +3933,7 @@ fn case_only_rename_rolls_back_when_the_target_name_is_still_occupied() {
     let error = fileops::rename_path_no_clobber(&from, &to).unwrap_err();
 
     assert!(!error.integrity_uncertain, "{}", error.message);
+    assert_eq!(error.message, "Name already in use");
     assert!(error.paths.is_empty());
     assert_eq!(std::fs::read_to_string(&from).unwrap(), "x");
     assert_eq!(std::fs::read_to_string(&to).unwrap(), "x");

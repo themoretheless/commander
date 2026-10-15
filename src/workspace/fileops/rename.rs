@@ -91,6 +91,12 @@ pub fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecut
     match crate::fs_at::rename_noreplace(&tmp, to) {
         Ok(()) => Ok(()),
         Err(rename_error) => match crate::fs_at::rename_noreplace(&tmp, from) {
+            // The target name is still taken by another entry (on a
+            // case-sensitive volume, a hard link differing only in case):
+            // report it like any other occupied name.
+            Ok(()) if rename_error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(RenameExecutionError::unchanged("Name already in use"))
+            }
             Ok(()) => Err(RenameExecutionError::unchanged(rename_error.to_string())),
             Err(rollback_error) => Err(RenameExecutionError::uncertain(
                 format!(
