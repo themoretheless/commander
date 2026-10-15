@@ -4301,4 +4301,332 @@ mod tests {
         assert_eq!(visible_window(8, 99, 20), 0..8);
         assert_eq!(visible_window(20, 0, 0), 0..20);
     }
+
+    /// `entry` rows whose extension is filled in from the name, as a real
+    /// listing does.
+    fn with_extensions(mut entries: Vec<FileEntry>) -> Vec<FileEntry> {
+        for e in &mut entries {
+            e.extension = Path::new(&e.name)
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+        }
+        entries
+    }
+
+    #[test]
+    fn subtracting_mask_deselects_an_already_selected_entry() {
+        let mut p = panel_with(with_extensions(vec![
+            entry("a.jpg", false, 1),
+            entry("raw.jpg", false, 1),
+        ]));
+        p.select_path(PathBuf::from("/test/raw.jpg"));
+        p.select_path(PathBuf::from("/test/a.jpg"));
+
+        // Nothing was added, but the selected match is removed.
+        assert_eq!(p.select_by_mask("!*raw*"), 0);
+        assert!(!p.is_selected(Path::new("/test/raw.jpg")));
+        assert!(p.is_selected(Path::new("/test/a.jpg")));
+    }
+
+    #[test]
+    fn parse_mask_trims_space_after_the_subtract_marker() {
+        assert_eq!(
+            parse_mask("! *.TMP, -  Raw"),
+            vec![("*.tmp".to_string(), true), ("raw".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn select_largest_takes_every_file_when_n_exceeds_the_count() {
+        let mut p = panel_with(vec![
+            entry("a", false, 10),
+            entry("b", false, 20),
+            entry("c", false, 30),
+            entry("dir", true, 0),
+        ]);
+        assert_eq!(p.select_largest(10), 3);
+        assert_eq!(selected_names(&p), ["a", "b", "c"].map(String::from).into());
+    }
+
+    #[test]
+    fn select_largest_breaks_size_ties_by_path_whatever_the_order() {
+        for names in [
+            ["x", "y", "small"],
+            ["y", "x", "small"],
+            ["small", "y", "x"],
+        ] {
+            let size = |name: &str| if name == "small" { 1 } else { 50 };
+            let mut p = panel_with(names.map(|n| entry(n, false, size(n))).into());
+            assert_eq!(p.select_largest(1), 1);
+            // The bounded heap evicts the smaller (size, path) first.
+            assert_eq!(selected_names(&p), ["y".to_string()].into(), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn select_largest_ignores_files_hidden_by_the_filter() {
+        let mut p = panel_with(vec![
+            entry("huge.iso", false, 9_000),
+            entry("notes-big.txt", false, 500),
+            entry("notes-small.txt", false, 5),
+        ]);
+        p.set_search_query("notes");
+        assert_eq!(p.select_largest(1), 1);
+        assert_eq!(selected_names(&p), ["notes-big.txt".to_string()].into());
+    }
+
+    #[test]
+    fn select_same_extension_does_nothing_off_a_file_with_an_extension() {
+        let mut p = panel_with(with_extensions(vec![
+            entry("box", true, 0),
+            entry("Makefile", false, 1),
+            entry("a.rs", false, 1),
+            entry("b.rs", false, 1),
+        ]));
+        p.sort_entries(); // box, a.rs, b.rs, Makefile
+        for (row, what) in [(0, ".."), (1, "a folder"), (4, "an extension-less file")] {
+            p.set_cursor(row);
+            assert_eq!(p.select_same_extension_as_cursor(), 0, "cursor on {what}");
+            assert!(p.selection_is_empty(), "cursor on {what}");
+        }
+    }
+
+    #[test]
+    fn type_ahead_matches_typed_capitals_case_insensitively() {
+        let mut p = panel_with(vec![
+            entry("apple.txt", false, 1),
+            entry("Banana.txt", false, 1),
+        ]);
+        p.sort_entries();
+        assert!(p.type_ahead("BAN"));
+        assert_eq!(p.cursor_entry().unwrap().name, "Banana.txt");
+    }
+
+    #[test]
+    fn cursor_entry_is_none_when_another_entry_moved_under_the_cursor() {
+        let mut p = panel_with(vec![
+            entry("a", false, 1),
+            entry("b", false, 1),
+            entry("c", false, 1),
+        ]);
+        p.set_cursor(1);
+        assert_eq!(p.cursor_entry().unwrap().name, "a");
+
+        // Row 1 now holds "c", which the cursor never focused.
+        p.mutate_entries_for_test(|entries| entries.reverse());
+        assert!(p.cursor_entry().is_none());
+        assert_eq!(
+            p.selected_or_cursor().unwrap_err(),
+            StaleCursor {
+                cursor: 1,
+                visible_entries: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn ensure_cursor_valid_clamps_a_cursor_past_the_end_and_is_otherwise_a_no_op() {
+        let mut p = panel_with(vec![
+            entry("a", false, 1),
+            entry("b", false, 1),
+            entry("c", false, 1),
+        ]);
+        p.set_cursor(1);
+        p.set_scroll_to_cursor(false);
+        p.ensure_cursor_valid();
+        assert_eq!(p.cursor(), 1);
+        assert!(!p.scroll_to_cursor(), "a valid cursor is left alone");
+
+        p.set_cursor(3);
+        p.set_scroll_to_cursor(false);
+        p.mutate_entries_for_test(|entries| {
+            entries.pop();
+        });
+        p.ensure_cursor_valid();
+        assert_eq!(p.cursor(), 2);
+        assert_eq!(p.cursor_entry().unwrap().name, "b");
+        assert!(p.scroll_to_cursor());
+    }
+
+    #[test]
+    fn parent_row_cursor_stays_put_across_filter_and_sort_changes() {
+        let mut p = panel_with(vec![entry("a", false, 2), entry("b", false, 1)]);
+        p.set_cursor(0);
+        p.set_scroll_to_cursor(false);
+
+        p.set_search_query("a");
+        assert_eq!(p.cursor(), 0);
+        p.set_sort(SortColumn::Size);
+        assert_eq!(p.cursor(), 0);
+        p.clear_filters();
+        assert_eq!(p.cursor(), 0);
+        assert!(p.cursor_entry().is_none());
+        assert!(!p.scroll_to_cursor(), "the .. row is not scrolled to");
+    }
+
+    #[test]
+    fn clear_filters_drops_query_and_facets_and_keeps_focus() {
+        let mut p = panel_with(with_extensions(vec![
+            entry("alpha.jpg", false, 1),
+            entry("beta.jpg", false, 1),
+            entry("notes.txt", false, 1),
+        ]));
+        p.sort_entries();
+        p.set_facets(FacetSet {
+            kind: Some(KindFacet::Images),
+            ..FacetSet::default()
+        });
+        p.set_search_query("beta");
+        assert_eq!(p.filtered_count(), 1);
+        p.set_cursor(1);
+        let focused = p.cursor_entry().unwrap().path.clone();
+
+        p.clear_filters();
+
+        assert_eq!(p.search_query(), "");
+        assert_eq!(p.facets(), FacetSet::default());
+        assert_eq!(p.filtered_count(), 3);
+        assert_eq!(p.cursor_entry().map(|e| e.path.clone()), Some(focused));
+        assert_eq!(p.cursor(), 2);
+    }
+
+    #[test]
+    fn clear_selection_keeps_picks_remembered_in_other_folders() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        let b = tmp.dir("b");
+        let in_a = tmp.file("a/x.txt", "x");
+        let in_b = tmp.file("b/y.txt", "y");
+
+        let mut p = PanelState::new(a);
+        p.refresh();
+        p.toggle_select(in_a);
+        p.navigate_to(b);
+        p.toggle_select(in_b);
+
+        p.clear_selection();
+        assert!(p.selection_is_empty());
+        assert_eq!(p.selected_elsewhere_count(), 1, "only this folder clears");
+
+        p.clear_selection_everywhere();
+        assert_eq!(p.selected_elsewhere_count(), 0);
+    }
+
+    #[test]
+    fn picks_only_in_other_folders_win_over_the_cursor_here() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        let b = tmp.dir("b");
+        let in_a = tmp.file("a/x.txt", "x");
+        tmp.file("b/y.txt", "y");
+
+        let mut p = PanelState::new(a);
+        p.refresh();
+        p.toggle_select(in_a.clone());
+        p.navigate_to(b);
+        p.set_cursor(1);
+        assert_eq!(p.cursor_entry().unwrap().name, "y.txt");
+
+        let picked: Vec<PathBuf> = p
+            .picked_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        assert_eq!(picked, vec![in_a]);
+    }
+
+    #[test]
+    fn remembered_scroll_anchor_is_clamped_when_the_folder_shrank() {
+        let tmp = TempDir::new();
+        let downloads = tmp.dir("downloads");
+        let docs = tmp.dir("docs");
+        let files: Vec<PathBuf> = (0..12)
+            .map(|i| tmp.file(&format!("downloads/f{i:02}.txt"), "x"))
+            .collect();
+
+        let mut p = PanelState::new(downloads.clone());
+        p.refresh();
+        p.set_cursor(11); // f10
+        p.set_scroll_anchor(10);
+        p.navigate_to(docs);
+        for file in &files[1..11] {
+            std::fs::remove_file(file).unwrap();
+        }
+        p.navigate_to(downloads);
+
+        assert_eq!(p.filtered_count(), 2);
+        assert!(
+            p.scroll_anchor() < p.filtered_count(),
+            "{}",
+            p.scroll_anchor()
+        );
+        assert_eq!(p.cursor(), 2);
+        assert_eq!(p.cursor_entry().unwrap().path, files[11]);
+    }
+
+    #[test]
+    fn navigating_away_clears_an_in_progress_drag() {
+        let tmp = TempDir::new();
+        let file = tmp.file("x.txt", "x");
+        let sub = tmp.dir("sub");
+        let other = tmp.dir("other");
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+
+        p.begin_drag(file.clone());
+        p.drag.set_drop_target(tmp.path().to_path_buf());
+        p.navigate_to(sub.clone());
+        assert!(p.drag.is_empty(), "synchronous listing");
+        assert!(!p.drag.has_drop_target());
+
+        // A background listing that never gets a worker: the drag is
+        // dropped as soon as the breadcrumb changes, not when rows land.
+        let mut limits = crate::workload::SchedulerLimits::default();
+        limits.per_kind_running[0] = 0;
+        let runtime = crate::workload::WorkloadRuntime::new(limits);
+        p.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
+        p.set_notify(Arc::new(|| {}));
+        p.begin_drag(sub.join("y"));
+        p.drag.set_drop_target(sub);
+        p.navigate_to(other);
+        assert_eq!(p.listing.status(), DirStatus::Loading);
+        assert!(p.drag.is_empty(), "asynchronous listing");
+        assert!(!p.drag.has_drop_target());
+    }
+
+    #[test]
+    fn from_meta_derives_a_lowercase_last_extension() {
+        let tmp = TempDir::new();
+        let extension = |name: &str| {
+            let path = tmp.file(name, "x");
+            let meta = std::fs::metadata(&path).unwrap();
+            FileEntry::from_meta(path, &meta).unwrap().extension
+        };
+        assert_eq!(extension("PHOTO.JPG"), "jpg");
+        assert_eq!(extension(".bashrc"), "");
+        assert_eq!(extension("a.tar.gz"), "gz");
+        assert_eq!(extension("Makefile"), "");
+        let dir = tmp.dir("Folder.D");
+        let meta = std::fs::metadata(&dir).unwrap();
+        let folder = FileEntry::from_meta(dir, &meta).unwrap();
+        assert_eq!(folder.extension, "d");
+        assert!(folder.is_dir);
+        assert_eq!(folder.size, 0);
+    }
+
+    #[test]
+    fn videos_count_as_images_but_not_as_static_images() {
+        let [video, still, text] = with_extensions(vec![
+            entry("clip.MP4", false, 1),
+            entry("pic.png", false, 1),
+            entry("a.txt", false, 1),
+        ])
+        .try_into()
+        .unwrap();
+        assert!(video.is_video() && video.is_image() && !video.is_static_image());
+        assert!(!still.is_video() && still.is_image() && still.is_static_image());
+        assert!(!text.is_video() && !text.is_image());
+    }
 }
