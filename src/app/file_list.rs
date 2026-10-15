@@ -302,6 +302,18 @@ fn row_click_kind(modifiers: egui::Modifiers) -> RowClick {
     }
 }
 
+/// Whether a row was clicked by the user: a primary pointer click or an
+/// AccessKit Click action. egui also reports Space/Enter on a focused
+/// widget as a click, but the list already handles those keys (toggle and
+/// advance, activate); taking them as row clicks too would move the cursor
+/// back onto the focused row and undo them.
+fn row_clicked(ctx: &egui::Context, response: &egui::Response) -> bool {
+    response.clicked_by(egui::PointerButton::Primary)
+        || ctx.input(|input| {
+            input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click)
+        })
+}
+
 /// Filtered indices a Shift-click selects: from the cursor row to the
 /// clicked row, both inclusive. Cursors count the ".." row as 0, so a
 /// cursor on ".." starts the range at the first file row.
@@ -599,7 +611,7 @@ impl App {
                     } else {
                         t.bg_card.linear_multiply(0.3)
                     };
-                    let up_row = Frame::NONE
+                    let up_frame = Frame::NONE
                         .fill(up_bg)
                         .stroke(Stroke::NONE)
                         .corner_radius(CornerRadius::ZERO)
@@ -618,8 +630,16 @@ impl App {
                                 );
                             });
                         })
-                        .response
-                        .interact(Sense::click());
+                        .response;
+                    // A widget of its own: re-sensing the frame's response
+                    // reuses the frame's id, and the frame (hover only)
+                    // surrenders keyboard focus every frame, so ".." could
+                    // never keep focus.
+                    let up_row = ui.interact(
+                        up_frame.rect,
+                        egui::Id::new(("file_list_parent_row", panel_side)),
+                        Sense::click(),
+                    );
                     // Same semantics as file rows, so AT hears when the
                     // cursor sits on the parent row.
                     up_row.widget_info(|| {
@@ -661,7 +681,7 @@ impl App {
                     }
                     if up_row.double_clicked() {
                         panel.go_up();
-                    } else if up_row.clicked() {
+                    } else if row_clicked(ui.ctx(), &up_row) {
                         // Take focus like file rows do, so the old row's
                         // focus ring does not linger.
                         up_row.request_focus();
@@ -1223,7 +1243,7 @@ impl App {
                         } else {
                             open_path = Some(entry.path.clone());
                         }
-                    } else if row_resp.clicked() {
+                    } else if row_clicked(ui.ctx(), &row_resp) {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
                         // Modifiers only count for real pointer clicks; a
@@ -1897,5 +1917,73 @@ mod tests {
         assert_eq!(full, format!("Largest: {long} (10 B)\nOldest: old.log"));
         // A zero-byte "largest" is not worth showing.
         assert_eq!(folder_extremes(Some(("x", 0)), None), None);
+    }
+
+    /// One frame of the list in a headless context, with `events` as input.
+    fn render_list_frame(
+        ctx: &egui::Context,
+        panel: &mut crate::panel::PanelState,
+        events: Vec<egui::Event>,
+    ) {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input, |ui| {
+            crate::app::App::render_file_list(
+                ui,
+                panel,
+                true,
+                &crate::theme::ThemeColors::dark(),
+                "left",
+                false,
+                None,
+                &|_| {},
+                false,
+                crate::density::metrics(crate::density::Density::default()),
+                true,
+            );
+        });
+        crate::testutil::discard_egui_output(output);
+    }
+
+    fn key_press(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn space_on_a_focused_row_does_not_pull_the_cursor_back() {
+        let temp = crate::testutil::TempDir::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(temp.path().join(name), name).expect("write file");
+        }
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        let ctx = egui::Context::default();
+
+        for start in [0, 1] {
+            // A keyboard move onto `start`: focus follows the cursor there.
+            panel.set_cursor(start);
+            panel.set_scroll_to_cursor(true);
+            render_list_frame(&ctx, &mut panel, Vec::new());
+            render_list_frame(&ctx, &mut panel, Vec::new());
+            assert!(ctx.memory(|memory| memory.focused().is_some()));
+
+            // Space/Enter, as the key handler sees them: it already moved the
+            // cursor on before the list renders the same frame's input.
+            for key in [egui::Key::Space, egui::Key::Enter] {
+                panel.set_cursor(start + 1);
+                render_list_frame(&ctx, &mut panel, vec![key_press(key)]);
+                assert_eq!(panel.cursor(), start + 1, "{key:?} from row {start}");
+                panel.set_cursor(start);
+                render_list_frame(&ctx, &mut panel, Vec::new());
+            }
+        }
     }
 }
