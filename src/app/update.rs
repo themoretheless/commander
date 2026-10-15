@@ -508,6 +508,9 @@ struct FallbackMenuFocus {
     restore: egui::Id,
     /// Whether the first item already took focus.
     armed: bool,
+    /// Whether focus in the menu is keyboard-driven (opened from the
+    /// keyboard, or navigated by key since), so the focus ring shows.
+    keyboard: bool,
 }
 
 const FALLBACK_MENU_FOCUS: &str = "fallback_context_menu_focus";
@@ -530,6 +533,18 @@ const fn fallback_menu_focus_step(armed: bool, focus_in_menu: bool) -> MenuFocus
     } else {
         MenuFocusStep::Close
     }
+}
+
+/// Whether closing the fallback menu hands focus back to the row: after
+/// Escape or a chosen item, and when a key (an arrow, Tab) moved focus out
+/// of the menu. A pointer press elsewhere leaves focus where it landed.
+const fn fallback_menu_restores_focus(
+    escaped: bool,
+    chose: bool,
+    focus_lost: bool,
+    pointer_active: bool,
+) -> bool {
+    escaped || chose || (focus_lost && !pointer_active)
 }
 
 /// Height a toast row takes before it has been measured once.
@@ -784,6 +799,10 @@ impl App {
                     FallbackMenuFocus {
                         restore: request.focus_id,
                         armed: false,
+                        keyboard: matches!(
+                            request.invocation.trigger,
+                            crate::ports::ContextMenuTrigger::Keyboard
+                        ),
                     },
                 );
             });
@@ -816,6 +835,25 @@ impl App {
         let t = self.colors;
         let mut effect: Option<Effect> = None;
         let mut items: Vec<egui::Id> = Vec::new();
+        let mut focus = ctx.data(|data| data.get_temp::<FallbackMenuFocus>(focus_key));
+        // A right-click focuses the first item too, but shows the keyboard
+        // focus ring only once the user starts navigating by key.
+        let key_nav = ctx.input(|input| {
+            [
+                egui::Key::ArrowUp,
+                egui::Key::ArrowDown,
+                egui::Key::ArrowLeft,
+                egui::Key::ArrowRight,
+                egui::Key::Tab,
+            ]
+            .into_iter()
+            .any(|key| input.key_pressed(key))
+        });
+        if key_nav && let Some(focus) = focus.as_mut() {
+            focus.keyboard = true;
+            ctx.data_mut(|data| data.insert_temp(focus_key, *focus));
+        }
+        let show_ring = focus.is_some_and(|focus| focus.keyboard);
         let area = egui::Area::new(egui::Id::new("fallback_context_menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
@@ -834,7 +872,9 @@ impl App {
                                     .stroke(Stroke::NONE)
                                     .min_size(Vec2::new(ui.available_width(), 24.0)),
                             );
-                            paint_focus_ring(ui, &response, &t);
+                            if show_ring {
+                                paint_focus_ring(ui, &response, &t);
+                            }
                             items.push(response.id);
                             // The first item is focused on open, so Space
                             // (select, Quick Look) must not run it; Enter does.
@@ -859,7 +899,6 @@ impl App {
                         item(ui, "Refresh", Effect::RefreshPanels);
                     });
             });
-        let mut focus = ctx.data(|data| data.get_temp::<FallbackMenuFocus>(focus_key));
         let focus_in_menu = ctx
             .memory(|memory| memory.focused())
             .is_some_and(|id| items.contains(&id));
@@ -884,8 +923,14 @@ impl App {
             self.fallback_menu = None;
             ctx.data_mut(|data| data.remove::<FallbackMenuFocus>(focus_key));
             // Like the native menu, hand focus back to the row, unless the
-            // user moved it elsewhere (Tab, a click) or a modal now owns it.
-            if (escaped || effect.is_some())
+            // user clicked elsewhere. Arrow keys and Tab move egui focus
+            // spatially out of the menu; that closes it but returns to the row.
+            let pointer_active = ctx.input(|input| {
+                input.pointer.any_pressed()
+                    || input.pointer.any_down()
+                    || input.pointer.any_released()
+            });
+            if fallback_menu_restores_focus(escaped, effect.is_some(), focus_lost, pointer_active)
                 && let Some(focus) = focus
             {
                 ctx.memory_mut(|memory| memory.request_focus(focus.restore));
@@ -2317,7 +2362,9 @@ mod tests {
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
-    use super::{MenuFocusStep, fallback_menu_focus_step, fallback_menu_pos};
+    use super::{
+        MenuFocusStep, fallback_menu_focus_step, fallback_menu_pos, fallback_menu_restores_focus,
+    };
     use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
@@ -2975,6 +3022,18 @@ mod tests {
         );
         assert_eq!(fallback_menu_focus_step(true, true), MenuFocusStep::Keep);
         assert_eq!(fallback_menu_focus_step(true, false), MenuFocusStep::Close);
+    }
+
+    #[test]
+    fn fallback_menu_returns_focus_to_the_row_unless_the_pointer_moved_it() {
+        // Escape and a chosen item restore the row.
+        assert!(fallback_menu_restores_focus(true, false, false, false));
+        assert!(fallback_menu_restores_focus(false, true, false, true));
+        // An arrow key or Tab that moved focus out of the menu restores it.
+        assert!(fallback_menu_restores_focus(false, false, true, false));
+        // A click on another widget keeps focus where the user clicked.
+        assert!(!fallback_menu_restores_focus(false, false, true, true));
+        assert!(!fallback_menu_restores_focus(false, false, false, true));
     }
 
     #[test]
