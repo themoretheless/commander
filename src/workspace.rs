@@ -993,6 +993,26 @@ impl Workspace {
 
     // ── Command dispatch ────────────────────────────────────────────────
 
+    /// Shift+Home/End/PageUp/PageDown: select every entry between the
+    /// cursor and `target`'s row (both included, never the ".." row), then
+    /// move the cursor there.
+    fn extend_select_to(&mut self, target: impl FnOnce(&PanelState) -> usize) {
+        let panel = self.active_panel();
+        let count = panel.filtered_count();
+        if count == 0 {
+            return;
+        }
+        let from = panel.cursor().clamp(1, count);
+        let to = target(panel).clamp(1, count);
+        let rows = from.min(to)..=from.max(to);
+        let picks: Vec<PathBuf> = rows
+            .filter_map(|row| panel.filtered_get(row - 1).map(|entry| entry.path.clone()))
+            .collect();
+        panel.extend_selection(picks);
+        panel.set_cursor(to);
+        panel.set_scroll_to_cursor(true);
+    }
+
     pub fn execute(&mut self, cmd: Command) {
         if self.mutation_commits_blocked() && cmd.mutates_filesystem() {
             return;
@@ -1024,6 +1044,10 @@ impl Workspace {
                     | Command::CursorMove(_)
                     | Command::ExtendSelectUp
                     | Command::ExtendSelectDown
+                    | Command::ExtendSelectHome
+                    | Command::ExtendSelectEnd
+                    | Command::ExtendSelectPageUp
+                    | Command::ExtendSelectPageDown
                     | Command::ToggleSelect
                     | Command::SwitchPanel
             ) {
@@ -1101,6 +1125,17 @@ impl Workspace {
                 panel.select_cursor();
                 panel.set_scroll_to_cursor(true);
             }
+            Command::ExtendSelectHome => self.extend_select_to(|_| 1),
+            Command::ExtendSelectEnd => self.extend_select_to(|panel| panel.filtered_count()),
+            Command::ExtendSelectPageUp => self.extend_select_to(|panel| {
+                panel
+                    .cursor()
+                    .saturating_sub(panel.page_rows().max(1))
+                    .max(1)
+            }),
+            Command::ExtendSelectPageDown => self.extend_select_to(|panel| {
+                (panel.cursor() + panel.page_rows().max(1)).min(panel.filtered_count())
+            }),
             Command::Activate => {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
                 if self.active_panel_ref().cursor() == 0 {

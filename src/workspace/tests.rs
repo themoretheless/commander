@@ -1222,6 +1222,53 @@ fn shift_arrows_build_a_contiguous_selection() {
 }
 
 #[test]
+fn shift_home_and_end_select_through_the_listing_edges() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let c = l.file("c.txt", "x");
+    let d = l.file("d.txt", "x");
+    let mut ws = workspace(&l, &r);
+
+    ws.left.set_cursor(2); // b.txt
+    ws.execute(Command::ExtendSelectEnd);
+    assert_eq!(ws.left.cursor(), 4);
+    assert_eq!(
+        ws.left.selected_paths().clone(),
+        [b.clone(), c.clone(), d.clone()].into_iter().collect()
+    );
+
+    ws.left.clear_selection();
+    ws.left.set_cursor(3); // c.txt
+    ws.execute(Command::ExtendSelectHome);
+    assert_eq!(ws.left.cursor(), 1, "Home stops on the first entry, not ..");
+    assert_eq!(
+        ws.left.selected_paths().clone(),
+        [a, b, c].into_iter().collect()
+    );
+}
+
+#[test]
+fn shift_page_keys_select_a_page_of_rows() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    for i in 0..20 {
+        l.file(&format!("f{i:02}.txt"), "x");
+    }
+    let mut ws = workspace(&l, &r);
+    ws.left.set_page_rows(5);
+
+    ws.left.set_cursor(1);
+    ws.execute(Command::ExtendSelectPageDown);
+    assert_eq!(ws.left.cursor(), 6);
+    assert_eq!(ws.left.selected_count(), 6, "rows 1 through 6");
+
+    ws.execute(Command::ExtendSelectPageUp);
+    ws.execute(Command::ExtendSelectPageUp);
+    assert_eq!(ws.left.cursor(), 1, "PageUp clamps at the first entry");
+    assert_eq!(ws.left.selected_count(), 6);
+}
+
+#[test]
 fn activate_dir_navigates_into_it() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let sub = l.dir("sub");

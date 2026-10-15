@@ -246,6 +246,7 @@ recovery with mandatory reconciliation after gaps or reconnects.
 | `Tab` | Switch active panel |
 | `↑` / `↓` | Move cursor |
 | `Shift+↑` / `Shift+↓` | Extend selection |
+| `Shift+Home` / `Shift+End` / `Shift+PageUp` / `Shift+PageDown` | Extend selection to the top, bottom or by a page |
 | `Home` / `End` | Jump to first / last row |
 | `PageUp` / `PageDown` | Move by one page |
 | `Enter` | Open file / enter folder (`..` row goes up) |

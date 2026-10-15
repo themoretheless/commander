@@ -25,6 +25,14 @@ pub enum Command {
     ExtendSelectUp,
     /// Shift+Down: select the current row and move down (range selection).
     ExtendSelectDown,
+    /// Shift+Home: select every row from the cursor up to the first entry.
+    ExtendSelectHome,
+    /// Shift+End: select every row from the cursor down to the last entry.
+    ExtendSelectEnd,
+    /// Shift+PageUp: select the rows from the cursor one page up.
+    ExtendSelectPageUp,
+    /// Shift+PageDown: select the rows from the cursor one page down.
+    ExtendSelectPageDown,
     /// Enter: open file / enter dir / go up on the ".." row.
     Activate,
     GoUp,
@@ -441,7 +449,8 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         SelectJunk | SelectLargest | SelectEmptyFiles => VISIBLE_FILES,
         SelectLikeCursor => EXTENSION,
         CopyListingText | CopyListingCsv | CopyListingMarkdown => LISTING,
-        ToggleSelect | ExtendSelectUp | ExtendSelectDown => CURSOR,
+        ToggleSelect | ExtendSelectUp | ExtendSelectDown | ExtendSelectHome | ExtendSelectEnd
+        | ExtendSelectPageUp | ExtendSelectPageDown => CURSOR,
         JumpBack => BACK,
         JumpForward => FORWARD,
         GoUp => UP,
@@ -897,6 +906,10 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         Tab => Some(Command::SwitchPanel),
         Up if press.shift => Some(Command::ExtendSelectUp),
         Down if press.shift => Some(Command::ExtendSelectDown),
+        Home if press.shift => Some(Command::ExtendSelectHome),
+        End if press.shift => Some(Command::ExtendSelectEnd),
+        PageUp if press.shift => Some(Command::ExtendSelectPageUp),
+        PageDown if press.shift => Some(Command::ExtendSelectPageDown),
         Up => Some(Command::CursorUp),
         Down => Some(Command::CursorDown),
         Home => Some(Command::CursorHome),
@@ -1583,6 +1596,27 @@ mod tests {
             map_key(shift_press(KeyCode::Down)),
             Some(Command::ExtendSelectDown)
         );
+        for (code, extend, plain) in [
+            (
+                KeyCode::Home,
+                Command::ExtendSelectHome,
+                Command::CursorHome,
+            ),
+            (KeyCode::End, Command::ExtendSelectEnd, Command::CursorEnd),
+            (
+                KeyCode::PageUp,
+                Command::ExtendSelectPageUp,
+                Command::CursorPageUp,
+            ),
+            (
+                KeyCode::PageDown,
+                Command::ExtendSelectPageDown,
+                Command::CursorPageDown,
+            ),
+        ] {
+            assert_eq!(map_key(shift_press(code)), Some(extend));
+            assert_eq!(map_key(press(code)), Some(plain));
+        }
     }
 
     #[test]
