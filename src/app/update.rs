@@ -531,6 +531,37 @@ fn selection_hud_head(
 /// The selection HUD's first line: counts, total and average size, and for
 /// two or more items the largest and oldest names, cut to keep their
 /// extension.
+/// The selection HUD's text, keyed by what it was built from.
+pub struct SelectionHudCache {
+    side: ActivePanel,
+    key: crate::panel::SelectionViewKey,
+    /// `(headline, kind breakdown)`, or `None` when nothing is selected.
+    text: Option<(String, String)>,
+}
+
+/// The selection HUD's headline and kind breakdown for `panel`, or `None`
+/// when nothing is selected here or in other folders.
+fn selection_hud_text(panel: &crate::panel::PanelState) -> Option<(String, String)> {
+    let selected = panel.selected_entries();
+    let elsewhere = panel.selected_elsewhere_count();
+    let other_folders = panel
+        .selection_folder_count()
+        .saturating_sub(usize::from(!selected.is_empty()));
+    if selected.is_empty() && elsewhere == 0 {
+        return None;
+    }
+    let s = crate::selection_summary::summarize(&selected);
+    let head = selection_headline(&s, elsewhere, other_folders);
+    let breakdown: String = s
+        .kinds
+        .iter()
+        .take(4)
+        .map(|(k, n)| format!("{n} {}", k.label()))
+        .collect::<Vec<_>>()
+        .join("  \u{00b7}  ");
+    Some((head, breakdown))
+}
+
 fn selection_headline(
     s: &crate::selection_summary::SelectionSummary,
     elsewhere: usize,
@@ -1621,26 +1652,26 @@ impl App {
     /// when something is selected; complements the per-panel status bar.
     fn show_selection_hud(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let active = self.ws.active_panel_ref();
-        let selected = active.selected_entries();
-        let elsewhere = active.selected_elsewhere_count();
-        let other_folders = active
-            .selection_folder_count()
-            .saturating_sub(usize::from(!selected.is_empty()));
-        if selected.is_empty() && elsewhere == 0 {
-            return;
+        let side = self.ws.active;
+        let key = self.ws.active_panel_ref().selection_view_key();
+        // Summarizing clones every selected entry, so it is redone only when
+        // the selection, the filter or the listing changed.
+        let cached = self
+            .selection_hud_cache
+            .as_ref()
+            .is_some_and(|cache| cache.side == side && cache.key == key);
+        if !cached {
+            let text = selection_hud_text(self.ws.active_panel_ref());
+            self.selection_hud_cache = Some(SelectionHudCache { side, key, text });
         }
-        let s = crate::selection_summary::summarize(&selected);
+        let Some((head, breakdown)) = self
+            .selection_hud_cache
+            .as_ref()
+            .and_then(|cache| cache.text.clone())
+        else {
+            return;
+        };
         let t = self.colors;
-
-        let head = selection_headline(&s, elsewhere, other_folders);
-        let breakdown: String = s
-            .kinds
-            .iter()
-            .take(4)
-            .map(|(k, n)| format!("{n} {}", k.label()))
-            .collect::<Vec<_>>()
-            .join("  \u{00b7}  ");
 
         let area = ui.available_rect_before_wrap();
         let screen = ctx.input(|i| i.viewport_rect());

@@ -21,6 +21,9 @@ pub(super) struct SelectionState {
     scroll_to_cursor: bool,
     scroll_anchor: usize,
     page_rows: usize,
+    /// Bumped on every change to the selected sets (here or remembered), so
+    /// views derived from the selection can tell when to rebuild.
+    revision: u64,
 }
 
 impl Default for SelectionState {
@@ -42,7 +45,16 @@ impl SelectionState {
             scroll_to_cursor: false,
             scroll_anchor: 0,
             page_rows: 0,
+            revision: 0,
         }
+    }
+
+    pub(super) const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    const fn bump(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Switch the active directory without exposing remembered selections.
@@ -53,6 +65,7 @@ impl SelectionState {
         if self.binding == binding {
             return false;
         }
+        self.bump();
 
         self.stash_active();
         self.binding = binding.to_path_buf();
@@ -63,6 +76,7 @@ impl SelectionState {
     }
 
     pub(super) fn publish_complete(&mut self, binding: &Path) {
+        self.bump();
         self.bind(binding);
         if self.has_complete_snapshot {
             return;
@@ -107,15 +121,18 @@ impl SelectionState {
     }
 
     pub(super) fn replace_selected(&mut self, selected: HashSet<PathBuf>) {
+        self.bump();
         self.selected = selected;
     }
 
     pub(super) fn retain_present<'a>(&mut self, present: impl IntoIterator<Item = &'a PathBuf>) {
+        self.bump();
         let present: HashSet<&PathBuf> = present.into_iter().collect();
         self.selected.retain(|path| present.contains(path));
     }
 
     pub(super) fn clear_selected(&mut self) {
+        self.bump();
         self.selected.clear();
     }
 
@@ -128,24 +145,29 @@ impl SelectionState {
 
     /// Clear the selection here and in every remembered folder.
     pub(super) fn clear_selected_everywhere(&mut self) {
+        self.bump();
         self.selected.clear();
         self.remembered.clear();
         self.remembered_order.clear();
     }
 
     pub(super) fn insert_selected(&mut self, path: PathBuf) -> bool {
+        self.bump();
         self.selected.insert(path)
     }
 
     pub(super) fn remove_selected(&mut self, path: &Path) -> bool {
+        self.bump();
         self.selected.remove(path)
     }
 
     pub(super) fn extend_selected(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.bump();
         self.selected.extend(paths);
     }
 
     pub(super) fn toggle_selected(&mut self, path: PathBuf) {
+        self.bump();
         if !self.selected.remove(&path) {
             self.selected.insert(path);
         }

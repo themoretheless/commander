@@ -445,6 +445,22 @@ fn drop_nested_picks(entries: Vec<FileEntry>) -> Vec<FileEntry> {
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
+/// See [`PanelState::selection_view_key`].
+#[derive(Clone, Debug)]
+pub struct SelectionViewKey {
+    listing: u64,
+    selection: u64,
+    filtered: Arc<[usize]>,
+}
+
+impl PartialEq for SelectionViewKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.listing == other.listing
+            && self.selection == other.selection
+            && Arc::ptr_eq(&self.filtered, &other.filtered)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SortColumn {
     Name,
@@ -588,6 +604,18 @@ impl PanelState {
     #[cfg(test)]
     pub const fn selected_paths(&self) -> &HashSet<PathBuf> {
         self.selection.selected()
+    }
+
+    /// What the selection HUD summarizes: equal keys mean the visible
+    /// selection, the counts elsewhere and the entries they describe are
+    /// unchanged. Holding the filtered view's `Arc` keeps its address from
+    /// being reused, so pointer equality is a sound identity check.
+    pub fn selection_view_key(&self) -> SelectionViewKey {
+        SelectionViewKey {
+            listing: self.entries_gen(),
+            selection: self.selection.revision(),
+            filtered: self.filtered_snapshot(),
+        }
     }
 
     pub fn selection_is_empty(&self) -> bool {
@@ -2168,6 +2196,27 @@ mod tests {
         // A non-subsequence excludes every row.
         p.set_search_query("zzz");
         assert_eq!(p.filtered_count(), 0);
+    }
+
+    #[test]
+    fn selection_view_key_changes_only_with_what_the_hud_shows() {
+        let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
+        let path = p.entries()[0].path.clone();
+        let key = p.selection_view_key();
+        assert_eq!(p.selection_view_key(), key, "idle frames reuse the key");
+
+        p.toggle_select(path.clone());
+        let selected = p.selection_view_key();
+        assert_ne!(selected, key);
+        p.set_search_query("b");
+        let filtered = p.selection_view_key();
+        assert_ne!(filtered, selected);
+        p.set_search_query("");
+        p.clear_selection();
+        assert_ne!(p.selection_view_key(), filtered);
+        let cleared = p.selection_view_key();
+        p.replace_entries_for_test(vec![entry("c", false, 1)]);
+        assert_ne!(p.selection_view_key(), cleared);
     }
 
     #[test]

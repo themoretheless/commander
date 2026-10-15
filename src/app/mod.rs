@@ -77,6 +77,8 @@ pub struct App {
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: tree::ChildCache,
+    /// The selection HUD's text for the selection it last summarized.
+    pub(crate) selection_hud_cache: Option<update::SelectionHudCache>,
     pub(crate) drag_announcement: update::DragAnnouncementMemo,
     pub(crate) tree_width: f32,
     /// Paint relative size occupancy bars behind file rows.
@@ -999,6 +1001,7 @@ impl App {
             show_tree: false,
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            selection_hud_cache: None,
             drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
             show_size_bars: false,
