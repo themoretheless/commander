@@ -4288,17 +4288,211 @@ fn gather_into_folder_reports_when_the_folder_cannot_be_created() {
 
 #[test]
 fn link_report_message_shows_the_first_failure() {
-    assert_eq!(
-        link_report_message("symlink(s)", 2, &[]),
-        "Created 2 symlink(s)"
-    );
+    let symlinks = ("symlink", "symlinks");
+    assert_eq!(link_report_message(symlinks, 2, &[]), "Created 2 symlinks");
+    assert_eq!(link_report_message(symlinks, 1, &[]), "Created 1 symlink");
     let one = vec!["Could not symlink /d/a -> /s/a: File exists (os error 17)".to_string()];
     assert_eq!(
-        link_report_message("symlink(s)", 0, &one),
-        "Created 0 symlink(s); Could not symlink /d/a -> /s/a: File exists (os error 17)"
+        link_report_message(symlinks, 0, &one),
+        "Created 0 symlinks; Could not symlink /d/a -> /s/a: File exists (os error 17)"
     );
     let three = vec![one[0].clone(), "b".to_string(), "c".to_string()];
-    assert!(link_report_message("hard link(s)", 1, &three).ends_with("(os error 17) (+2 more)"));
+    let message = link_report_message(("hard link", "hard links"), 1, &three);
+    assert!(message.starts_with("Created 1 hard link;"), "{message}");
+    assert!(message.ends_with("(os error 17) (+2 more)"));
+}
+
+#[test]
+fn feedback_text_uses_singular_and_plural_nouns() {
+    assert_eq!(count_noun(1, "row", "rows"), "1 row");
+    assert_eq!(count_noun(0, "row", "rows"), "0 rows");
+    assert_eq!(
+        smart_select_message(1, ("empty file", "empty files"), "none"),
+        "Selected 1 empty file"
+    );
+    assert_eq!(
+        smart_select_message(4, ("clutter file", "clutter files"), "none"),
+        "Selected 4 clutter files"
+    );
+    assert_eq!(
+        smart_select_message(0, ("a", "b"), "No empty files"),
+        "No empty files"
+    );
+    assert_eq!(
+        sort_notice("kind", crate::panel::SortOrder::Desc),
+        "Sorted by kind, descending"
+    );
+    assert_eq!(toggle_notice("Folders first", false), "Folders first: off");
+    assert_eq!(
+        assign_slot_message(3, "src", None),
+        "Quick jump 3 \u{2192} src"
+    );
+    assert_eq!(
+        assign_slot_message(3, "src", Some("docs")),
+        "Quick jump 3 \u{2192} src (was docs)"
+    );
+    let root = Path::new("/x/y");
+    assert_eq!(
+        trust_notice(root, crate::trust::TrustLabel::Restricted),
+        "Marked /x/y as Restricted: external providers and automatic archive inspection are blocked"
+    );
+    assert_eq!(
+        trust_notice(root, crate::trust::TrustLabel::Untrusted),
+        "Marked /x/y as Untrusted: Run command, external providers and automatic archive inspection are blocked"
+    );
+    assert_eq!(
+        trust_notice(root, crate::trust::TrustLabel::Trusted),
+        "Marked /x/y as Trusted: everything is allowed"
+    );
+}
+
+#[test]
+fn listing_copy_label_counts_a_single_row() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("only.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CopyListingCsv);
+
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [UiRequest::CopyText { label, .. }] if label == "listing (1 row as CSV)"
+        ),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn smart_select_reports_what_it_selected() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    l.file("empty.txt", "");
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::SelectEmptyFiles);
+    ws.execute(Command::SelectJunk);
+    ws.left.set_cursor(0);
+    ws.execute(Command::SelectLikeCursor);
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice {
+                message,
+                error: false,
+            } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "Selected 1 empty file",
+            "No clutter files to select here",
+            "Highlight a file with an extension first",
+        ]
+    );
+}
+
+#[test]
+fn sort_and_view_toggles_say_what_changed() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::SortByExtension);
+    ws.execute(Command::SortByExtension);
+    ws.execute(Command::ToggleNaturalSort);
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "Sorted by extension, ascending",
+            "Sorted by extension, descending",
+            "Natural name sort: off",
+        ]
+    );
+}
+
+#[test]
+fn bookmark_and_quick_jump_commands_confirm_what_they_did() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let docs = l.dir("docs");
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(docs.clone());
+    ws.drain_ui_requests();
+
+    ws.execute(Command::JumpSlot(4));
+    ws.execute(Command::BookmarkCurrentDir);
+    ws.execute(Command::BookmarkCurrentDir);
+    ws.execute(Command::AssignSlot(4));
+    ws.left.navigate_to(l.path().to_path_buf());
+    ws.execute(Command::AssignSlot(4));
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice {
+                message,
+                error: false,
+            } => Some(message),
+            _ => None,
+        })
+        .collect();
+    let root_name = l.path().file_name().unwrap().to_string_lossy().to_string();
+    assert_eq!(
+        messages,
+        [
+            "Quick jump 4 is empty: Cmd+Shift+4 assigns the current folder".to_string(),
+            "Added to Favorites".to_string(),
+            "Removed from Favorites".to_string(),
+            "Quick jump 4 \u{2192} docs".to_string(),
+            format!("Quick jump 4 \u{2192} {root_name} (was docs)"),
+        ]
+    );
+}
+
+#[test]
+fn nav_lock_says_when_the_other_pane_cannot_follow() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("only-left");
+    let mut ws = workspace(&l, &r);
+    ws.execute(Command::ToggleNavLock);
+    ws.left.refresh();
+    ws.drain_ui_requests();
+    let row = ws
+        .left
+        .filtered_entries()
+        .iter()
+        .position(|entry| entry.name == "only-left")
+        .unwrap();
+    ws.left.set_cursor(row + 1);
+
+    ws.execute(Command::Activate);
+
+    assert_eq!(ws.right.current_path, r.path());
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Navigation lock: no folder \u{201c}only-left\u{201d} in the other pane"
+                .to_string(),
+            error: false,
+        }]
+    );
 }
 
 #[test]

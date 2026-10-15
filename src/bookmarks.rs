@@ -129,7 +129,6 @@ impl Bookmarks {
     }
 
     /// The bookmark for `path`, if any.
-    #[allow(dead_code)]
     pub fn by_path(&self, path: &Path) -> Option<&Bookmark> {
         self.items.iter().find(|b| b.path == path)
     }

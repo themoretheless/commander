@@ -362,14 +362,75 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
         .collect()
 }
 
+/// "1 symlink" / "3 symlinks": a count with its noun in the right number,
+/// shared by the toasts here so none falls back to "symlink(s)".
+fn count_noun(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
+
 /// Toast for a link command: the count, plus the first failure's own text
 /// (path and OS error) so the user can see why, not just how many failed.
-fn link_report_message(noun: &str, created: usize, errors: &[String]) -> String {
+fn link_report_message(noun: (&str, &str), created: usize, errors: &[String]) -> String {
+    let created = count_noun(created, noun.0, noun.1);
     match errors {
-        [] => format!("Created {created} {noun}"),
-        [only] => format!("Created {created} {noun}; {only}"),
-        [first, rest @ ..] => format!("Created {created} {noun}; {first} (+{} more)", rest.len()),
+        [] => format!("Created {created}"),
+        [only] => format!("Created {created}; {only}"),
+        [first, rest @ ..] => format!("Created {created}; {first} (+{} more)", rest.len()),
     }
+}
+
+/// Toast for a smart-select command: how many rows it added, or `none`
+/// when nothing changed, so a command that matched nothing is not silent.
+fn smart_select_message(added: usize, noun: (&str, &str), none: &str) -> String {
+    if added == 0 {
+        none.to_string()
+    } else {
+        format!("Selected {}", count_noun(added, noun.0, noun.1))
+    }
+}
+
+/// Toast for a sort with no header column (extension, kind): which column
+/// and direction is now active, since nothing on screen shows it.
+fn sort_notice(column: &str, order: crate::panel::SortOrder) -> String {
+    let direction = match order {
+        crate::panel::SortOrder::Asc => "ascending",
+        crate::panel::SortOrder::Desc => "descending",
+    };
+    format!("Sorted by {column}, {direction}")
+}
+
+/// Toast for a view toggle that changes no visible control.
+fn toggle_notice(setting: &str, on: bool) -> String {
+    format!("{setting}: {}", if on { "on" } else { "off" })
+}
+
+/// Toast for assigning a quick-jump slot, naming the folder that held the
+/// slot before when it is taken over.
+fn assign_slot_message(slot: u8, name: &str, previous: Option<&str>) -> String {
+    match previous {
+        Some(previous) => format!("Quick jump {slot} \u{2192} {name} (was {previous})"),
+        None => format!("Quick jump {slot} \u{2192} {name}"),
+    }
+}
+
+/// Toast for marking a folder with a trust label, saying what it changes.
+fn trust_notice(root: &Path, label: crate::trust::TrustLabel) -> String {
+    let mut blocked = Vec::new();
+    if !label.allows_run_command() {
+        blocked.push("Run command");
+    }
+    if !label.allows_external_providers() {
+        blocked.push("external providers");
+    }
+    if !label.allows_auto_archive_inspect() {
+        blocked.push("automatic archive inspection");
+    }
+    let effect = match blocked.as_slice() {
+        [] => "everything is allowed".to_string(),
+        [only] => format!("{only} is blocked"),
+        [rest @ .., last] => format!("{} and {last} are blocked", rest.join(", ")),
+    };
+    format!("Marked {} as {}: {effect}", root.display(), label.label())
 }
 
 /// Toast for applying a workspace profile, naming saved folders that no
@@ -1004,24 +1065,51 @@ impl Workspace {
                             error: true,
                         });
                     }
+                } else {
+                    self.emit_ui_request(UiRequest::Notice {
+                        message: format!(
+                            "Quick jump {n} is empty: Cmd+Shift+{n} assigns the current folder"
+                        ),
+                        error: false,
+                    });
                 }
             }
             Command::AssignSlot(n) => {
                 let dir = self.active_panel_ref().current_path.clone();
+                let previous = self
+                    .bookmarks
+                    .by_slot(n)
+                    .filter(|held| held.path != dir)
+                    .map(|held| held.name.clone());
                 self.bookmark_dir(dir.clone());
                 self.bookmarks.assign_slot(&dir, n);
                 self.save_bookmarks();
+                let name = self
+                    .bookmarks
+                    .by_path(&dir)
+                    .map_or_else(|| dir.display().to_string(), |b| b.name.clone());
+                self.emit_ui_request(UiRequest::Notice {
+                    message: assign_slot_message(n, &name, previous.as_deref()),
+                    error: false,
+                });
             }
             Command::BookmarkCurrentDir => {
                 // Toggle: bookmark the active directory, or un-bookmark it if it
-                // is already a favorite.
+                // is already a favorite. The Favorites rail may be hidden, so
+                // say which way it went.
                 let dir = self.active_panel_ref().current_path.clone();
-                if self.bookmarks.contains(&dir) {
+                let message = if self.bookmarks.contains(&dir) {
                     self.bookmarks.remove(&dir);
+                    "Removed from Favorites"
                 } else {
                     self.bookmark_dir(dir);
-                }
+                    "Added to Favorites"
+                };
                 self.save_bookmarks();
+                self.emit_ui_request(UiRequest::Notice {
+                    message: message.to_string(),
+                    error: false,
+                });
             }
             Command::ToggleSelect => {
                 let panel = self.active_panel();
@@ -1142,24 +1230,74 @@ impl Workspace {
                 let outcome = self.active_panel().toggle_hidden();
                 self.emit_ui_request(UiRequest::HiddenFilesOutcome(outcome));
             }
-            Command::ToggleFoldersFirst => self.active_panel().toggle_folders_first(),
-            Command::ToggleNaturalSort => self.active_panel().toggle_natural_sort(),
-            Command::SortByExtension => self
-                .active_panel()
-                .set_sort(crate::panel::SortColumn::Extension),
-            Command::SortByKind => self.active_panel().set_sort(crate::panel::SortColumn::Kind),
+            Command::ToggleFoldersFirst => {
+                let panel = self.active_panel();
+                panel.toggle_folders_first();
+                let on = panel.view_config().folders_first();
+                self.notice(toggle_notice("Folders first", on));
+            }
+            Command::ToggleNaturalSort => {
+                let panel = self.active_panel();
+                panel.toggle_natural_sort();
+                let on = panel.view_config().natural_name_sort();
+                self.notice(toggle_notice("Natural name sort", on));
+            }
+            Command::SortByExtension => {
+                let panel = self.active_panel();
+                panel.set_sort(crate::panel::SortColumn::Extension);
+                let order = panel.view_config().sort_order();
+                self.notice(sort_notice("extension", order));
+            }
+            Command::SortByKind => {
+                let panel = self.active_panel();
+                panel.set_sort(crate::panel::SortColumn::Kind);
+                let order = panel.view_config().sort_order();
+                self.notice(sort_notice("kind", order));
+            }
             Command::SelectJunk => {
-                self.active_panel().select_junk();
+                let added = self.active_panel().select_junk();
+                self.notice(smart_select_message(
+                    added,
+                    ("clutter file", "clutter files"),
+                    "No clutter files to select here",
+                ));
             }
             Command::ReverseSort => self.active_panel().reverse_sort(),
             Command::SelectLargest => {
-                self.active_panel().select_largest(10);
+                let added = self.active_panel().select_largest(10);
+                self.notice(smart_select_message(
+                    added,
+                    ("large file", "of the largest files"),
+                    "No more large files to select here",
+                ));
             }
             Command::SelectLikeCursor => {
-                self.active_panel().select_same_extension_as_cursor();
+                let ext = self
+                    .active_panel_ref()
+                    .cursor_entry()
+                    .filter(|entry| !entry.is_dir && !entry.extension.is_empty())
+                    .map(|entry| entry.extension.clone());
+                let message = match ext {
+                    Some(ext) => {
+                        let added = self.active_panel().select_same_extension_as_cursor();
+                        let (one, many) = (format!(".{ext} file"), format!(".{ext} files"));
+                        smart_select_message(
+                            added,
+                            (&one, &many),
+                            &format!("No more .{ext} files to select here"),
+                        )
+                    }
+                    None => "Highlight a file with an extension first".to_string(),
+                };
+                self.notice(message);
             }
             Command::SelectEmptyFiles => {
-                self.active_panel().select_empty_files();
+                let added = self.active_panel().select_empty_files();
+                self.notice(smart_select_message(
+                    added,
+                    ("empty file", "empty files"),
+                    "No empty files to select here",
+                ));
             }
             Command::CopyListingText => {
                 self.request_listing_copy(crate::listing_export::ListingFormat::Text)
@@ -1175,13 +1313,12 @@ impl Workspace {
             Command::CreateHardlink => self.create_hardlinks(),
             Command::ToggleNavLock => {
                 self.nav_lock = !self.nav_lock;
-                self.emit_ui_request(UiRequest::Notice {
-                    message: if self.nav_lock {
-                        "Navigation lock on".to_string()
-                    } else {
-                        "Navigation lock off".to_string()
-                    },
-                    error: false,
+                // Back, Forward and quick jumps keep each pane's own history,
+                // so say exactly which moves the other pane follows.
+                self.notice(if self.nav_lock {
+                    "Navigation lock on: the other pane follows Enter and Go Up".to_string()
+                } else {
+                    "Navigation lock off".to_string()
                 });
             }
             Command::RepeatLast => {}
@@ -1213,8 +1350,13 @@ impl Workspace {
     fn set_active_trust(&mut self, label: crate::trust::TrustLabel) {
         let root = self.active_panel_ref().current_path.clone();
         crate::trust::set_label(&root, label);
+        self.notice(trust_notice(&root, label));
+    }
+
+    /// Emit a non-error toast.
+    fn notice(&mut self, message: String) {
         self.emit_ui_request(UiRequest::Notice {
-            message: format!("{} → trust {}", root.display(), label.label()),
+            message,
             error: false,
         });
     }
@@ -1285,6 +1427,12 @@ impl Workspace {
         let candidate = self.inactive_panel().current_path.join(child_name);
         if candidate.is_dir() {
             self.inactive_panel_mut().navigate_to(candidate);
+        } else {
+            // The panes now show different folders: say so rather than
+            // silently letting the lock stop tracking.
+            self.notice(format!(
+                "Navigation lock: no folder \u{201c}{child_name}\u{201d} in the other pane"
+            ));
         }
     }
 
@@ -1309,7 +1457,7 @@ impl Workspace {
 
     fn create_symlinks(&mut self) {
         let report = fileops::create_symlinks(self);
-        let message = link_report_message("symlink(s)", report.created, &report.errors);
+        let message = link_report_message(("symlink", "symlinks"), report.created, &report.errors);
         self.emit_ui_request(UiRequest::Notice {
             message,
             error: !report.errors.is_empty() && report.created == 0,
@@ -1318,7 +1466,8 @@ impl Workspace {
 
     fn create_hardlinks(&mut self) {
         let report = fileops::create_hardlinks(self);
-        let message = link_report_message("hard link(s)", report.created, &report.errors);
+        let message =
+            link_report_message(("hard link", "hard links"), report.created, &report.errors);
         self.emit_ui_request(UiRequest::Notice {
             message,
             error: !report.errors.is_empty() && report.created == 0,
@@ -1332,7 +1481,11 @@ impl Workspace {
             let entries = self.active_panel_ref().listing_entries();
             (crate::listing_export::format(&entries, fmt), entries.len())
         };
-        let label = format!("listing ({count} rows as {})", fmt.label());
+        let label = format!(
+            "listing ({} as {})",
+            count_noun(count, "row", "rows"),
+            fmt.label()
+        );
         self.emit_ui_request(UiRequest::CopyText { text, label });
     }
 
@@ -1391,7 +1544,7 @@ impl Workspace {
 
     pub fn mutation_block_reason(&self, action: &str) -> Option<String> {
         if self.safe_state.is_some() {
-            Some(format!("Safe-state review is required before {action}"))
+            Some(format!("Finish the integrity review before {action}"))
         } else if self.deletes.is_active() {
             Some(format!(
                 "Wait for the current Trash operation before {action}"
@@ -1416,7 +1569,7 @@ impl Workspace {
             // carries a fresh id no operation matches: name the stop itself,
             // not an operation number the user has never seen.
             return Err(format!(
-                "Another safe-state stop is under review ({}). Acknowledge it in the safe-state dialog first, then retry.",
+                "Another operation is paused for integrity review ({}). Acknowledge it first, then retry.",
                 state.reason
             ));
         }
@@ -1941,14 +2094,13 @@ impl Workspace {
     pub fn redo_unavailable_reason(&self) -> Option<String> {
         self.undo.redo_invalidation().map(|invalidation| {
             format!(
-                "Redo was invalidated by {} after {} undone action{}",
+                "Nothing to redo: the newer action \u{201c}{}\u{201d} replaced {}",
                 invalidation.caused_by,
-                invalidation.abandoned_actions,
-                if invalidation.abandoned_actions == 1 {
-                    ""
-                } else {
-                    "s"
-                }
+                count_noun(
+                    invalidation.abandoned_actions,
+                    "undone action",
+                    "undone actions"
+                )
             )
         })
     }
