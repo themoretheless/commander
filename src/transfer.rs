@@ -165,8 +165,14 @@ impl TransferProgress {
         }
     }
 
+    /// Whether Cancel (or Stop after current file) still has an effect: once
+    /// finalization starts the outcome is committed and requests are ignored.
+    pub const fn can_cancel(&self) -> bool {
+        !self.finished && self.finalization.is_none()
+    }
+
     pub const fn request_cancel(&mut self) -> bool {
-        if self.finished || self.finalization.is_some() {
+        if !self.can_cancel() {
             return false;
         }
         self.cancelled = true;
@@ -174,7 +180,7 @@ impl TransferProgress {
     }
 
     pub const fn request_stop(&mut self) {
-        if !self.finished && self.finalization.is_none() {
+        if self.can_cancel() {
             self.stop_requested = true;
         }
     }
@@ -250,17 +256,32 @@ impl TransferProgress {
         })
     }
 
-    /// Estimate the remainder of the current phase. Transfer uses its rolling
-    /// byte-rate; verification/finalization use completed-file throughput.
+    /// Estimate the remainder of the current phase. Only Transfer publishes
+    /// an ETA (from its rolling byte-rate); the other phases have no measured
+    /// throughput and return `None`.
     pub fn phase_eta_secs(&self) -> Option<f64> {
         use crate::operation_view::OperationPhase;
         match self.phase {
-            OperationPhase::Transfer => (self.eta_secs() > 0.0).then(|| self.eta_secs()),
+            OperationPhase::Transfer => {
+                let eta = self.eta_secs();
+                (eta > 0.0).then_some(eta)
+            }
             OperationPhase::Scan
             | OperationPhase::Plan
             | OperationPhase::Verify
             | OperationPhase::Finalize => None,
         }
+    }
+
+    /// Move `copied_bytes` to `copied` for work that moved no data (a skip,
+    /// a failure or a settled entry). Every speed sample shifts by the same
+    /// amount so the credited bytes never show up as throughput.
+    fn credit_without_throughput(&mut self, copied: u64) {
+        let credited = copied as f64 - self.copied_bytes as f64;
+        for (_, bytes) in &mut self.speed_samples {
+            *bytes += credited;
+        }
+        self.copied_bytes = copied;
     }
 
     /// Record a sample if at least 500ms passed since the last one.
@@ -321,21 +342,7 @@ impl backend::CheckpointSink for JournalCheckpointSink<'_> {
     }
 }
 
-#[cfg(test)]
-const fn requires_resumable_buffer(
-    profile: &crate::volume_profile::VolumeProfile,
-    source_size: u64,
-) -> bool {
-    profile.capabilities.resumable
-        && profile.backend.is_slow_link()
-        && source_size >= crate::delta_copy::DELTA_MIN_BYTES
-}
-
-/// A copy/move request, fully described and detached from any UI state.
-///
-/// Note there is no conflict list here: the engine checks the destination
-/// live at copy time (the confirmation dialog may sit open while the
-/// filesystem changes), driven only by [`OverwritePolicy`].
+/// Cleanup that runs only after every entry of a transfer succeeded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PostTransferAction {
     /// Remove a directory only if it is empty after a successful transfer.
@@ -344,6 +351,11 @@ pub enum PostTransferAction {
     RemoveEmptyDir(PathBuf),
 }
 
+/// A copy/move request, fully described and detached from any UI state.
+///
+/// Note there is no conflict list here: the engine checks the destination
+/// live at copy time (the confirmation dialog may sit open while the
+/// filesystem changes), driven only by [`OverwritePolicy`].
 #[derive(Clone)]
 pub struct TransferSpec {
     pub operation_id: OperationId,
@@ -707,8 +719,21 @@ fn wait_for_mount_probed(
                 state.pause_reason = None;
             }
             notify();
+            result
+        } else {
+            // The generic error says "while the operation was paused"; a
+            // volume found swapped before any wait is reported as just that.
+            result.map_err(|error| {
+                if error.kind() == std::io::ErrorKind::StaleNetworkFileHandle {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!("{label} changed: a different volume is mounted there"),
+                    )
+                } else {
+                    error
+                }
+            })
         }
-        result
     };
 
     match result {
@@ -757,9 +782,19 @@ fn valid_runtime_checkpoint(
     if !journal_enabled {
         return None;
     }
-    let checkpoint = crate::operation_journal::step_checkpoint(operation_id, key)
-        .ok()
-        .flatten()?;
+    let checkpoint = match crate::operation_journal::step_checkpoint(operation_id, key) {
+        Ok(checkpoint) => checkpoint?,
+        Err(error) => {
+            // Resume is an optimisation: an unreadable journal only costs a
+            // full recopy, but say why the checkpoint was not used.
+            log::warn!(
+                target: "commander::transfer",
+                "ignoring resume checkpoint for {}: {error}",
+                staging.display()
+            );
+            return None;
+        }
+    };
     if checkpoint.staging != staging || checkpoint.content_digest.is_none() {
         return None;
     }
@@ -823,21 +858,17 @@ fn record_step_failure(
     failure: ClassifiedFailure,
     journal_enabled: bool,
 ) {
-    if journal_enabled
-        && let Err(error) =
-            crate::operation_journal::mark_failed(operation_id, key, failure.clone())
-    {
-        record_failure(
-            progress,
-            entry_name,
-            ClassifiedFailure::message(
-                FailureClass::IntegrityUncertain,
-                failure.path.clone(),
-                format!("operation journal update failed: {error}"),
-            ),
-        );
-    }
+    let journal_error = if journal_enabled {
+        crate::operation_journal::mark_failed(operation_id, key, failure.clone()).err()
+    } else {
+        None
+    };
+    // The real cause first; a journal failure is secondary to it.
+    let path = failure.path.clone();
     record_failure(progress, entry_name, failure);
+    if let Some(error) = journal_error {
+        record_journal_error(progress, entry_name, path, error);
+    }
 }
 
 fn record_journal_error(
@@ -866,9 +897,9 @@ fn complete_without_copy(
     journal: Option<(&OperationId, &IdempotencyKey, bool)>,
     notify: &impl Fn(),
 ) {
-    *completed_bytes += size;
+    *completed_bytes = completed_bytes.saturating_add(size);
     let mut state = crate::lock_util::recover(progress);
-    state.copied_bytes = *completed_bytes;
+    state.credit_without_throughput(*completed_bytes);
     state.files_done += 1;
     drop(state);
     if let Some(failure) = failure {
@@ -984,12 +1015,15 @@ fn transfer_paths_equal(
                     let Some(destination_names) = transfer_child_names(&destination, None) else {
                         return false;
                     };
-                    if source_names != destination_names {
+                    let Some(pairs) = pair_child_names(source_names, destination_names) else {
                         return false;
-                    }
+                    };
                     tasks.push(Task::ExitDirectory(canonical));
-                    for name in source_names.into_iter().rev() {
-                        tasks.push(Task::Compare(source.join(&name), destination.join(name)));
+                    for (source_name, destination_name) in pairs.into_iter().rev() {
+                        tasks.push(Task::Compare(
+                            source.join(source_name),
+                            destination.join(destination_name),
+                        ));
                     }
                     continue;
                 }
@@ -1023,6 +1057,67 @@ fn transfer_child_names(
     Some(names)
 }
 
+/// Pair every source child with the destination child that holds its copy,
+/// or `None` when the two directories do not list the same entries.
+///
+/// Names normally match exactly. A destination that stores names in another
+/// Unicode normalization (HFS+ and some SMB servers store NFD) still pairs
+/// one-to-one by NFC form; on macOS the `._name` `AppleDouble` files the kernel
+/// writes for extended attributes on exFAT/FAT/SMB are not extra entries.
+fn pair_child_names(
+    source: Vec<std::ffi::OsString>,
+    destination: Vec<std::ffi::OsString>,
+) -> Option<Vec<(std::ffi::OsString, std::ffi::OsString)>> {
+    use unicode_normalization::UnicodeNormalization;
+
+    #[cfg(target_os = "macos")]
+    let destination = drop_apple_double_companions(&source, destination);
+    if source == destination {
+        return Some(
+            source
+                .into_iter()
+                .map(|name| (name.clone(), name))
+                .collect(),
+        );
+    }
+    if source.len() != destination.len() {
+        return None;
+    }
+    let nfc = |name: &std::ffi::OsStr| name.to_str().map(|name| name.nfc().collect::<String>());
+    let mut by_form = std::collections::HashMap::with_capacity(destination.len());
+    for name in destination {
+        if by_form.insert(nfc(&name)?, name).is_some() {
+            return None;
+        }
+    }
+    source
+        .into_iter()
+        .map(|name| {
+            let destination = by_form.remove(&nfc(&name)?)?;
+            Some((name, destination))
+        })
+        .collect()
+}
+
+/// Remove destination `._X` names that are `AppleDouble` companions of a
+/// copied `X` rather than entries of the source itself.
+#[cfg(any(test, target_os = "macos"))]
+fn drop_apple_double_companions(
+    source: &[std::ffi::OsString],
+    mut destination: Vec<std::ffi::OsString>,
+) -> Vec<std::ffi::OsString> {
+    destination.retain(|name| {
+        let companion_of = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("._"))
+            .map(std::ffi::OsStr::new);
+        !companion_of.is_some_and(|base| {
+            source.iter().any(|source| source == base) && !source.contains(name)
+        })
+    });
+    destination
+}
+
 /// Total bytes for all entries (recursively for dirs).
 #[cfg(test)]
 pub fn total_bytes(entries: &[FileEntry]) -> u64 {
@@ -1041,10 +1136,7 @@ fn planned_total_bytes(spec: &TransferSpec) -> u64 {
     })
 }
 
-/// Run the transfer on a background thread.
-///
-/// `notify` is invoked whenever visible progress changed; the UI passes a
-/// repaint request here, keeping this module free of egui types.
+/// How the optional post-success action ended for a finished transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PostSuccessOutcome {
     NotRequired,
@@ -1068,6 +1160,10 @@ impl FinalizationOutcome {
     }
 }
 
+/// Run the transfer on a background thread.
+///
+/// `notify` is invoked whenever visible progress changed; the UI passes a
+/// repaint request here, keeping this module free of egui types.
 pub fn spawn_transfer(
     spec: TransferSpec,
     progress: TransferState,
@@ -1216,39 +1312,14 @@ mod tests {
         spec.preflight_bytes = Some(bytes);
     }
 
-    /// Run a transfer to completion and return the final progress state.
-    fn run(spec: TransferSpec) -> TransferProgress {
+    /// Fresh progress state sized for `spec`'s entries.
+    fn progress_for(spec: &TransferSpec) -> TransferState {
         let total = total_bytes(&spec.entries);
-        let progress: TransferState =
-            Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
-        spawn_transfer(spec, progress.clone(), || {});
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            {
-                let s = progress.lock().unwrap();
-                if s.finished {
-                    return s.clone();
-                }
-            }
-            assert!(std::time::Instant::now() < deadline, "transfer timed out");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())))
     }
 
-    fn run_with_backends(spec: TransferSpec, backends: backend::BackendPorts) -> TransferProgress {
-        let total = total_bytes(&spec.entries);
-        let progress: TransferState =
-            Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
-        TransferExecutor::with_backends(
-            crate::workload::global_handle(),
-            spec,
-            Arc::clone(&progress),
-            || {},
-            backends,
-        )
-        .submit();
-
+    /// Poll `progress` until the worker finishes and return the final state.
+    fn wait_finished(progress: &TransferState) -> TransferProgress {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             {
@@ -1260,6 +1331,26 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "transfer timed out");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// Run a transfer to completion and return the final progress state.
+    fn run(spec: TransferSpec) -> TransferProgress {
+        let progress = progress_for(&spec);
+        spawn_transfer(spec, progress.clone(), || {});
+        wait_finished(&progress)
+    }
+
+    fn run_with_backends(spec: TransferSpec, backends: backend::BackendPorts) -> TransferProgress {
+        let progress = progress_for(&spec);
+        TransferExecutor::with_backends(
+            crate::workload::global_handle(),
+            spec,
+            Arc::clone(&progress),
+            || {},
+            backends,
+        )
+        .submit();
+        wait_finished(&progress)
     }
 
     struct FakeStageBackend {
@@ -1910,20 +2001,37 @@ mod tests {
         let mut profile = crate::volume_profile::profile(temp.path());
         profile.backend = crate::volume_profile::BackendKind::Remote;
         profile.capabilities.resumable = true;
+        let plan = |profile: &crate::volume_profile::VolumeProfile, size: u64| {
+            backend::BackendPlanner::select(backend::PlanInput {
+                method: CopyMethod::Native,
+                is_dir: false,
+                is_symlink: false,
+                source_size: Some(size),
+                basis_size: None,
+                source_is_sparse: false,
+                resume_layout: None,
+                symlink_policy: crate::filesystem_policy::SymlinkPolicy::Preserve,
+                delta_capable: false,
+                sparse_capable: false,
+                resumable_capable: profile.capabilities.resumable,
+                slow_link: profile.backend.is_slow_link(),
+                bandwidth_limited: false,
+                tuning: crate::transfer_tuning::TuningSnapshot::default(),
+            })
+            .unwrap()
+        };
 
-        assert!(requires_resumable_buffer(
-            &profile,
-            crate::delta_copy::DELTA_MIN_BYTES
-        ));
-        assert!(!requires_resumable_buffer(
-            &profile,
-            crate::delta_copy::DELTA_MIN_BYTES - 1
-        ));
+        let threshold = crate::delta_copy::DELTA_MIN_BYTES;
+        assert_eq!(plan(&profile, threshold), backend::BackendPlan::Buffered);
+        assert_eq!(
+            plan(&profile, threshold - 1),
+            backend::BackendPlan::NativeClone
+        );
         profile.capabilities.resumable = false;
-        assert!(!requires_resumable_buffer(
-            &profile,
-            crate::delta_copy::DELTA_MIN_BYTES
-        ));
+        assert_eq!(plan(&profile, threshold), backend::BackendPlan::NativeClone);
+        profile.capabilities.resumable = true;
+        profile.backend = crate::volume_profile::BackendKind::LocalFast;
+        assert_eq!(plan(&profile, threshold), backend::BackendPlan::NativeClone);
     }
 
     #[test]
@@ -2780,6 +2888,335 @@ mod tests {
         assert_eq!(progress.progress_fraction(), Some(1.0));
     }
 
+    /// A journaled Running step with a verified 5-byte prefix checkpoint.
+    struct CheckpointFixture {
+        _journal: crate::operation_journal::TestJournalPathGuard,
+        temp: TempDir,
+        operation_id: OperationId,
+        key: IdempotencyKey,
+        source: PathBuf,
+        staging: PathBuf,
+    }
+
+    impl CheckpointFixture {
+        fn new() -> Self {
+            let temp = TempDir::new();
+            let journal =
+                crate::operation_journal::use_test_journal(temp.path().join("journal.json"));
+            let target = temp.dir("target");
+            // Canonical, so a Follow resume resolves to the recorded path even
+            // when the temp root sits behind a symlink (macOS /tmp).
+            let source = std::fs::canonicalize(temp.file("source.bin", "0123456789")).unwrap();
+            let staging = temp.file("target/.source.bin.cmdr-tmp.0", "01234");
+            let spec = TransferSpec::new(TransferKind::Copy, vec![entry_for(&source)], target);
+            crate::operation_journal::begin(&spec).unwrap();
+            let operation_id = spec.operation_id.clone();
+            let key = crate::operation_journal::operation(&operation_id)
+                .unwrap()
+                .steps[0]
+                .key
+                .clone();
+            let landing = spec.target.join("source.bin");
+            crate::operation_journal::mark_running(
+                &operation_id,
+                &key,
+                &staging,
+                &landing,
+                PathIdentity::missing(&landing),
+            )
+            .unwrap();
+            let checkpoint = ResumeCheckpoint::observe(
+                &source,
+                &staging,
+                5,
+                CheckpointLayout::Prefix,
+                prefix_digest(&staging, 5).unwrap(),
+            )
+            .unwrap();
+            crate::operation_journal::mark_checkpoint(&operation_id, &key, checkpoint).unwrap();
+            Self {
+                _journal: journal,
+                temp,
+                operation_id,
+                key,
+                source,
+                staging,
+            }
+        }
+
+        fn check(
+            &self,
+            source: &Path,
+            staging: &Path,
+            policy: crate::filesystem_policy::SymlinkPolicy,
+        ) -> Option<ResumeCheckpoint> {
+            valid_runtime_checkpoint(&self.operation_id, &self.key, source, staging, policy, true)
+        }
+
+        fn check_default(&self) -> Option<ResumeCheckpoint> {
+            self.check(
+                &self.source,
+                &self.staging,
+                crate::filesystem_policy::SymlinkPolicy::Preserve,
+            )
+        }
+    }
+
+    #[test]
+    fn runtime_checkpoint_accepts_an_untouched_verified_prefix() {
+        let fixture = CheckpointFixture::new();
+        let checkpoint = fixture.check_default().expect("valid checkpoint rejected");
+        assert_eq!(checkpoint.offset, 5);
+        assert_eq!(checkpoint.staging, fixture.staging);
+        assert!(
+            valid_runtime_checkpoint(
+                &fixture.operation_id,
+                &fixture.key,
+                &fixture.source,
+                &fixture.staging,
+                crate::filesystem_policy::SymlinkPolicy::Preserve,
+                false,
+            )
+            .is_none(),
+            "a transfer without a journal must never resume"
+        );
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_unknown_steps_and_other_staging_paths() {
+        let fixture = CheckpointFixture::new();
+        let other = fixture.temp.file("target/.other.cmdr-tmp.0", "01234");
+        assert!(
+            fixture
+                .check(
+                    &fixture.source,
+                    &other,
+                    crate::filesystem_policy::SymlinkPolicy::Preserve
+                )
+                .is_none()
+        );
+        assert!(
+            valid_runtime_checkpoint(
+                &OperationId::new(),
+                &fixture.key,
+                &fixture.source,
+                &fixture.staging,
+                crate::filesystem_policy::SymlinkPolicy::Preserve,
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_a_changed_source() {
+        let fixture = CheckpointFixture::new();
+        std::fs::write(&fixture.source, "0123456789abcdef").unwrap();
+        assert!(fixture.check_default().is_none());
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_a_replaced_or_non_file_partial() {
+        {
+            let fixture = CheckpointFixture::new();
+            // Same bytes, new object: created before the swap so the inode
+            // cannot be recycled.
+            let replacement = fixture.temp.file("target/replacement", "01234");
+            std::fs::rename(&replacement, &fixture.staging).unwrap();
+            assert!(fixture.check_default().is_none());
+        }
+
+        // Each fixture holds the test-journal lock, so the first must drop.
+        let fixture = CheckpointFixture::new();
+        std::fs::remove_file(&fixture.staging).unwrap();
+        std::fs::create_dir(&fixture.staging).unwrap();
+        assert!(fixture.check_default().is_none());
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_partial_bytes_that_no_longer_match() {
+        let fixture = CheckpointFixture::new();
+        let mut partial = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fixture.staging)
+            .unwrap();
+        partial.write_all(b"x").unwrap();
+        drop(partial);
+        assert!(fixture.check_default().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_checkpoint_follows_a_symlinked_source_only_under_follow() {
+        let fixture = CheckpointFixture::new();
+        let link = fixture.temp.path().join("link.bin");
+        std::os::unix::fs::symlink(&fixture.source, &link).unwrap();
+        assert!(
+            fixture
+                .check(
+                    &link,
+                    &fixture.staging,
+                    crate::filesystem_policy::SymlinkPolicy::Follow
+                )
+                .is_some()
+        );
+        assert!(
+            fixture
+                .check(
+                    &link,
+                    &fixture.staging,
+                    crate::filesystem_policy::SymlinkPolicy::Preserve
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn entries_completed_without_copying_add_no_throughput() {
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(20_000, 2)));
+        {
+            let mut state = progress.lock().unwrap();
+            state.speed_samples = vec![(0.0, 0.0), (4.0, 400.0)];
+            state.copied_bytes = 600;
+        }
+        let mut completed = 600;
+        complete_without_copy(
+            &progress,
+            &mut completed,
+            10_000,
+            "skipped",
+            None,
+            None,
+            &|| {},
+        );
+
+        let state = progress.lock().unwrap();
+        assert_eq!(completed, 10_600);
+        assert_eq!(state.copied_bytes, 10_600);
+        assert_eq!(state.files_done, 1);
+        // Still the 100 B/s actually copied, not a 5 KB/s spike.
+        assert!((state.speed_bps_at(6.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn step_failure_reports_its_cause_before_a_journal_failure() {
+        let temp = TempDir::new();
+        let _journal = crate::operation_journal::use_test_journal(temp.path().join("journal.json"));
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(0, 1)));
+        record_step_failure(
+            &progress,
+            &OperationId::new(),
+            &IdempotencyKey("unknown-step".to_string()),
+            "a.txt",
+            ClassifiedFailure::message(FailureClass::Blocked, None, "disk full".to_string()),
+            true,
+        );
+
+        let state = progress.lock().unwrap();
+        assert_eq!(state.errors.len(), 2, "{:?}", state.errors);
+        assert_eq!(state.errors[0], "a.txt: disk full");
+        assert!(
+            state.errors[1].contains("operation journal update failed"),
+            "{:?}",
+            state.errors
+        );
+        assert_eq!(state.failures[0].class, FailureClass::Blocked);
+    }
+
+    #[test]
+    fn a_volume_replaced_before_any_wait_is_not_reported_as_paused() {
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        // A generous poll interval keeps a slow thread spawn on a loaded machine
+        // from timing out the first probe and reporting Disconnected (which
+        // would set the paused flag before Replaced arrives).
+        let guard = crate::mount_guard::MountGuard {
+            policy: crate::mount_guard::ReconnectPolicy {
+                timeout_ms: 10_000,
+                poll_interval_ms: 1_000,
+            },
+            ..hung_mount_guard()
+        };
+        let result = wait_for_mount_probed(
+            &guard,
+            || crate::mount_guard::MountAvailability::Replaced,
+            "Destination volume",
+            &progress,
+            &crate::workload::CancellationToken::new(),
+            None,
+            &|| {},
+        );
+
+        let Err(MountWaitError::Unavailable(error)) = result else {
+            panic!("a replaced volume must fail the wait");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::StaleNetworkFileHandle);
+        let message = error.to_string();
+        assert!(message.contains("Destination volume"), "{message}");
+        assert!(!message.contains("paused"), "{message}");
+        assert!(crate::lock_util::recover(&progress).pause_reason.is_none());
+    }
+
+    #[test]
+    fn cancel_is_offered_only_until_finalization_starts() {
+        let mut progress = TransferProgress::new(1, 1);
+        assert!(progress.can_cancel());
+        progress.finalization = Some(FinalizationOutcome::NotReached);
+        assert!(!progress.can_cancel());
+        assert!(!progress.request_cancel());
+        progress.request_stop();
+        assert!(!progress.cancelled && !progress.stop_requested);
+
+        let mut finished = TransferProgress::new(1, 1);
+        finished.finished = true;
+        assert!(!finished.can_cancel());
+    }
+
+    #[test]
+    fn known_byte_total_drives_progress_and_clamps_overshoot() {
+        let mut progress = TransferProgress::new(1_000, 4);
+        progress.files_done = 4;
+        assert_eq!(progress.progress_fraction(), Some(0.0));
+        progress.copied_bytes = 500;
+        assert_eq!(progress.progress_fraction(), Some(0.5));
+        progress.copied_bytes = 1_500;
+        assert_eq!(progress.progress_fraction(), Some(1.0));
+    }
+
+    #[test]
+    fn disconnect_classification_covers_only_transport_failures() {
+        use std::io::ErrorKind;
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::TimedOut,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::NetworkDown,
+            ErrorKind::NotConnected,
+            ErrorKind::HostUnreachable,
+            ErrorKind::StaleNetworkFileHandle,
+        ] {
+            assert!(
+                is_disconnect_error(&std::io::Error::from(kind)),
+                "{kind:?} must wait for the mount"
+            );
+        }
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::StorageFull,
+            ErrorKind::Interrupted,
+            ErrorKind::AlreadyExists,
+            ErrorKind::InvalidData,
+            ErrorKind::Other,
+        ] {
+            assert!(
+                !is_disconnect_error(&std::io::Error::from(kind)),
+                "{kind:?} must not be retried as a disconnect"
+            );
+        }
+    }
+
     #[test]
     fn phase_eta_is_only_published_for_measured_transfer_work() {
         let mut progress = TransferProgress::new(1_000, 1);
@@ -3131,6 +3568,123 @@ mod tests {
                 .any(|error| error.contains("source changed after transfer preflight"))
         );
         assert!(!dst.path().join("alias.txt").exists());
+    }
+
+    #[test]
+    fn verification_accepts_identical_trees() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.dir("tree/sub");
+        src.file("tree/sub/a.txt", "same");
+        dst.dir("tree/sub");
+        dst.file("tree/sub/a.txt", "same");
+        assert!(transfer_paths_equal(
+            &src.path().join("tree"),
+            &dst.path().join("tree"),
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        ));
+    }
+
+    #[test]
+    fn verification_rejects_a_file_where_a_directory_was_copied() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.dir("item");
+        dst.file("item", "");
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        assert!(!transfer_paths_equal(
+            &src.path().join("item"),
+            &dst.path().join("item"),
+            policy,
+        ));
+        assert!(!transfer_paths_equal(
+            &dst.path().join("item"),
+            &src.path().join("item"),
+            policy,
+        ));
+    }
+
+    #[test]
+    fn verification_rejects_an_extra_destination_child() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.dir("tree");
+        src.file("tree/a.txt", "a");
+        dst.dir("tree");
+        dst.file("tree/a.txt", "a");
+        dst.file("tree/stray.txt", "");
+        assert!(!transfer_paths_equal(
+            &src.path().join("tree"),
+            &dst.path().join("tree"),
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        ));
+    }
+
+    #[test]
+    fn verification_rejects_differing_file_contents() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let source = src.file("a.txt", "abcd");
+        let destination = dst.file("a.txt", "abce");
+        assert!(!transfer_paths_equal(
+            &source,
+            &destination,
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        ));
+    }
+
+    fn names(names: &[&str]) -> Vec<std::ffi::OsString> {
+        names.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    #[test]
+    fn child_pairing_tolerates_another_unicode_normalization_only() {
+        let nfc = "caf\u{e9}.txt";
+        let nfd = "cafe\u{301}.txt";
+        let pairs = pair_child_names(names(&["a", nfc]), names(&["a", nfd])).unwrap();
+        assert!(pairs.contains(&(nfc.into(), nfd.into())));
+        assert!(pairs.contains(&("a".into(), "a".into())));
+
+        assert!(pair_child_names(names(&["a", nfc]), names(&["a", "cafe.txt"])).is_none());
+        assert!(pair_child_names(names(&["a"]), names(&["a", "b"])).is_none());
+        // Two destination names folding to one source name stay ambiguous.
+        assert!(pair_child_names(names(&[nfc, "z"]), names(&[nfc, nfd])).is_none());
+    }
+
+    #[test]
+    fn apple_double_companions_are_dropped_only_for_copied_names() {
+        let source = names(&["a.txt", "._b.txt"]);
+        let destination = names(&["._a.txt", "._b.txt", "._c.txt", "a.txt"]);
+        let destination = drop_apple_double_companions(&source, destination);
+        assert_eq!(destination, names(&["._b.txt", "._c.txt", "a.txt"]));
+    }
+
+    #[test]
+    fn verification_pairs_children_stored_in_another_normalization() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.file("tree/caf\u{e9}.txt", "same");
+        dst.file("tree/cafe\u{301}.txt", "same");
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        let (source, destination) = (src.path().join("tree"), dst.path().join("tree"));
+        assert!(transfer_paths_equal(&source, &destination, policy));
+        std::fs::write(dst.path().join("tree/cafe\u{301}.txt"), "diff").unwrap();
+        assert!(!transfer_paths_equal(&source, &destination, policy));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verification_rejects_a_preserved_link_with_another_target() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        std::os::unix::fs::symlink("one", src.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("two", dst.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("one", dst.path().join("same")).unwrap();
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        assert!(!transfer_paths_equal(
+            &src.path().join("link"),
+            &dst.path().join("link"),
+            policy,
+        ));
+        assert!(transfer_paths_equal(
+            &src.path().join("link"),
+            &dst.path().join("same"),
+            policy,
+        ));
     }
 
     #[cfg(unix)]
