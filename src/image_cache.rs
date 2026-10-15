@@ -1684,6 +1684,15 @@ fn color_image_from_rgba_managed(
 
 static ACTIVE_DECODERS: AtomicUsize = AtomicUsize::new(0);
 
+/// Serializes tests that drive `run_decode_with_timeout`. The decoder permits
+/// in `ACTIVE_DECODERS` are process-global, so a test that deliberately holds
+/// all of them would make a concurrent decode in another test see "busy" (or
+/// see its own decode refused). Any test reaching the decode path, directly or
+/// through `preload_images`, must hold this lock (widen its visibility when a
+/// test outside this module needs it).
+#[cfg(test)]
+static DECODER_PERMITS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 struct DecoderPermit;
 
 impl DecoderPermit {
@@ -3796,6 +3805,11 @@ mod tests {
 
     #[test]
     fn decode_timeout_keeps_the_permit_until_the_decoder_returns() {
+        // Holds every global decoder permit for a moment; keep other decode-path
+        // tests out while it runs.
+        let _permits = super::DECODER_PERMITS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         fn decoded() -> Result<super::DecodedPreview, String> {
             Ok(super::DecodedPreview {
                 image: egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
