@@ -44,6 +44,10 @@ pub struct ArchiveMember {
     /// prefix). GNU tar matches extract names literally, so extraction must
     /// pass this rather than the cleaned-up `path`. `None` for zip members.
     pub tar_name: Option<String>,
+    /// The member's own modification time when the archive records one
+    /// (ZIP); `None` for tar members and ZIP entries with no usable time,
+    /// where callers fall back to the archive file's mtime.
+    pub modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Clone, Debug)]
@@ -218,6 +222,7 @@ pub fn visit_members(
                 size: raw.size(),
                 compressed_size: raw.compressed_size(),
                 tar_name: None,
+                modified: zip_member_modified(&raw),
             }
         };
 
@@ -351,6 +356,7 @@ fn visit_tar_gz_list(
             size: if is_dir { 0 } else { size },
             compressed_size: 0,
             tar_name: Some(name.to_string()),
+            modified: None,
         };
         if !emit(member) {
             break;
@@ -931,6 +937,41 @@ pub fn start_listing(path: PathBuf, notify: Notify) -> ListingRun {
     }
 }
 
+/// A ZIP member's modification time: the extended-timestamp field (UTC
+/// seconds) when present, else the DOS date and time, which ZIP stores in
+/// the writer's local time and so is read as local time here.
+fn zip_member_modified<R: Read>(raw: &zip::read::ZipFile<'_, R>) -> Option<std::time::SystemTime> {
+    let extended = raw.extra_data_fields().find_map(|field| match field {
+        zip::ExtraField::ExtendedTimestamp(stamp) => stamp.mod_time(),
+        zip::ExtraField::Ntfs(_) => None,
+    });
+    if let Some(seconds) = extended {
+        return Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(seconds)));
+    }
+    raw.last_modified().and_then(dos_local_time)
+}
+
+/// The DOS date and time as local time. `None` for the 1980-01-01 00:00:00
+/// default that writers store when they record no time, and for a
+/// date that does not exist locally.
+fn dos_local_time(time: zip::DateTime) -> Option<std::time::SystemTime> {
+    use chrono::TimeZone;
+    if time == zip::DateTime::default() {
+        return None;
+    }
+    let local = chrono::Local
+        .with_ymd_and_hms(
+            i32::from(time.year()),
+            u32::from(time.month()),
+            u32::from(time.day()),
+            u32::from(time.hour()),
+            u32::from(time.minute()),
+            u32::from(time.second()),
+        )
+        .earliest()?;
+    Some(local.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,6 +988,45 @@ mod tests {
             writer.write_all(content).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    #[test]
+    fn zip_members_carry_their_own_modified_time() {
+        let temp = TempDir::new();
+        let path = temp.path().join("dated.zip");
+        let stamp = zip::DateTime::from_date_and_time(2001, 2, 3, 4, 5, 6).unwrap();
+        let file = fs::File::create(&path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let dated = zip::write::SimpleFileOptions::default().last_modified_time(stamp);
+        writer.start_file("dated.txt", dated).unwrap();
+        writer.write_all(b"d").unwrap();
+        // No time recorded: the DOS default, which must not read as 1980.
+        let undated =
+            zip::write::SimpleFileOptions::default().last_modified_time(zip::DateTime::default());
+        writer.start_file("undated.txt", undated).unwrap();
+        writer.write_all(b"u").unwrap();
+        writer.finish().unwrap();
+
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(path, &cancelled).unwrap();
+        let modified = |name: &str| {
+            listing
+                .members
+                .iter()
+                .find(|member| member.path == Path::new(name))
+                .unwrap()
+                .modified
+        };
+        let expected: std::time::SystemTime = {
+            use chrono::TimeZone;
+            chrono::Local
+                .with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
+                .earliest()
+                .unwrap()
+                .into()
+        };
+        assert_eq!(modified("dated.txt"), Some(expected));
+        assert_eq!(modified("undated.txt"), None);
     }
 
     #[test]

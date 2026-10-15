@@ -322,10 +322,10 @@ impl ArchiveProvider {
             Ok(metadata) => metadata,
             Err(_) => return emit(None),
         };
-        let modified = metadata.modified().ok();
+        let archive_modified = metadata.modified().ok();
         let accessed = metadata.accessed().ok();
-        // Every member shows the archive's own mtime; format it once.
-        let modified_str = modified_label(modified);
+        // A member without its own time shows the archive's; format it once.
+        let archive_modified_str = modified_label(archive_modified);
         let mut keep_going = true;
         let result = crate::archive::visit_members(
             archive_path,
@@ -340,12 +340,16 @@ impl ArchiveProvider {
                 }
                 let virtual_path =
                     crate::archive::virtual_member_path(archive_path, &member.member.path);
+                let (modified, modified_str) = match member.member.modified {
+                    Some(own) => (Some(own), modified_label(Some(own))),
+                    None => (archive_modified, archive_modified_str.clone()),
+                };
                 let Some(entry) = synthetic_entry(
                     virtual_path,
                     member.member.is_dir,
                     member.member.size,
                     modified,
-                    modified_str.clone(),
+                    modified_str,
                 ) else {
                     keep_going = emit(None);
                     return keep_going;
@@ -1598,6 +1602,35 @@ mod tests {
             SearchLocation::ArchiveMember { member, .. }
                 if member == Path::new("docs/inside.txt")
         ));
+    }
+
+    #[test]
+    fn archive_members_report_their_own_modified_time() {
+        let tmp = TempDir::new();
+        let archive = tmp.path().join("dated.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let stamp = zip::DateTime::from_date_and_time(2001, 2, 3, 4, 5, 6).unwrap();
+        let options = zip::write::SimpleFileOptions::default().last_modified_time(stamp);
+        writer.start_file("old.txt", options).unwrap();
+        writer.write_all(b"old").unwrap();
+        writer.finish().unwrap();
+        let engine = SearchEngine::default();
+        // The archive itself was written just now; only the member is old.
+        let run = engine
+            .start(
+                tmp.path().to_path_buf(),
+                Query::parse("path:old.txt date:>365d", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+        let (hits, _) = collect_run(&run);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let year = chrono::DateTime::<chrono::Local>::from(hits[0].entry.modified.unwrap())
+            .format("%Y")
+            .to_string();
+        assert_eq!(year, "2001");
     }
 
     #[test]

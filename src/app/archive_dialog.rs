@@ -782,6 +782,7 @@ mod tests {
                     size: 1,
                     compressed_size: 1,
                     tar_name: None,
+                    modified: None,
                 })
                 .collect(),
             declared_members: paths.len(),
