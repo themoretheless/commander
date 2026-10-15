@@ -1986,6 +1986,16 @@ fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), St
             PlacementPhase::Prepared if !destination.exists && !staging_gone => {
                 // Staging still holds the sealed object; resume can retry rename.
             }
+            PlacementPhase::Prepared if !staging_gone => {
+                return Err(format!(
+                    "Interrupted placement for {} cannot finish: the destination is now occupied by another object; the staged copy is kept at {}",
+                    landing.display(),
+                    step.staging
+                        .as_deref()
+                        .unwrap_or_else(|| Path::new("?"))
+                        .display()
+                ));
+            }
             PlacementPhase::Prepared | PlacementPhase::Placed => {
                 return Err(format!(
                     "Interrupted placement for {} lost its proven staged object and requires review",
@@ -2413,11 +2423,20 @@ fn remove_path(path: &Path) -> Result<(), String> {
     result.map_err(|error| format!("Could not remove {}: {error}", path.display()))
 }
 
+/// Longest stem kept in `.{stem}.cmdr-quarantine.{index}`, so the name fits
+/// the common 255-byte file-name limit with room for any index.
+const QUARANTINE_STEM_MAX: usize = 255 - ".".len() - ".cmdr-quarantine.".len() - 20;
+
 fn quarantine_path(path: &Path) -> PathBuf {
-    let name = path
+    let mut name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "item".to_string());
+    let mut end = name.len().min(QUARANTINE_STEM_MAX);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     crate::fs_util::first_available(|index| parent.join(format!(".{name}.cmdr-quarantine.{index}")))
 }
@@ -3179,8 +3198,7 @@ fn discover_orphan_staging_with(
             let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let temporary = name.contains(".cmdr-tmp.") || name.contains(".cmdr-quarantine.");
-            if temporary
+            if is_commander_temporary_name(&name)
                 && !referenced.contains(&path)
                 && let Ok(identity) = PathIdentity::observe_deep(&path)
             {
@@ -3190,6 +3208,19 @@ fn discover_orphan_staging_with(
     }
     orphans.sort_by(|left, right| left.path.cmp(&right.path));
     orphans
+}
+
+/// Match only names Commander generates: `.{name}.cmdr-tmp.{n}` and
+/// `.{name}.cmdr-quarantine.{n}`. A user file that merely contains a marker
+/// is never offered for deletion.
+fn is_commander_temporary_name(name: &str) -> bool {
+    name.starts_with('.')
+        && [".cmdr-tmp.", ".cmdr-quarantine."].iter().any(|marker| {
+            name.rfind(marker).is_some_and(|at| {
+                let index = &name[at + marker.len()..];
+                at > 0 && !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
 }
 
 pub fn clean_orphan(orphan: &OrphanStaging) -> Result<(), String> {

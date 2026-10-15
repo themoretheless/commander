@@ -2338,3 +2338,74 @@ fn container_rollback_keeps_an_uninspectable_quarantine_record() {
         Some(quarantine)
     );
 }
+
+#[test]
+fn orphan_discovery_ignores_user_files_that_only_contain_a_marker() {
+    let temp = TempDir::new();
+    let staging = temp.file(".copy.txt.cmdr-tmp.12", "staged");
+    temp.file("notes.cmdr-tmp.txt", "user file");
+    temp.file(
+        "report.cmdr-quarantine.1",
+        "user file without a leading dot",
+    );
+    temp.file(".config.cmdr-tmp.backup", "user file with a word suffix");
+    temp.file(".cmdr-tmp.3", "no stem");
+
+    let found = discover_orphan_staging_with(
+        &[temp.path().to_path_buf()],
+        &std::collections::HashSet::new(),
+    )
+    .into_iter()
+    .map(|orphan| orphan.path)
+    .collect::<Vec<_>>();
+
+    assert_eq!(found, vec![staging]);
+}
+
+#[test]
+fn quarantine_names_of_long_files_stay_within_the_name_limit() {
+    let parent = Path::new("/folder");
+    for name in ["a".repeat(250), "é".repeat(125)] {
+        let quarantine = quarantine_path(&parent.join(&name));
+        let file_name = quarantine.file_name().unwrap().to_str().unwrap();
+        assert!(file_name.len() <= 255, "{} bytes", file_name.len());
+        assert!(is_commander_temporary_name(file_name), "{file_name}");
+        assert_eq!(quarantine.parent(), Some(parent));
+    }
+    assert_eq!(
+        quarantine_path(&parent.join("short.txt")),
+        parent.join(".short.txt.cmdr-quarantine.0")
+    );
+}
+
+#[test]
+fn restart_reports_a_destination_taken_while_placement_was_prepared() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("occupied-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "new bytes");
+    let destination = target.join("source.txt");
+    let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("occupied-placement", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+    finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+    std::fs::write(&destination, "foreign").unwrap();
+
+    let error = build_resume_spec(&spec.operation_id).err().unwrap();
+
+    assert!(error.contains("occupied by another object"), "{error}");
+    assert!(error.contains(&staging.display().to_string()), "{error}");
+    assert_eq!(std::fs::read_to_string(&staging).unwrap(), "new bytes");
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "foreign");
+}
