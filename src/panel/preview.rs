@@ -47,16 +47,30 @@ pub struct InfoCard {
     pub children: Option<usize>,
     pub modified: String,
     pub permissions: String,
+    /// The folder whose size or item count was still being measured when
+    /// the card was built, so the card can fill it in once it lands.
+    pub pending: Option<PathBuf>,
 }
 
-/// Format the low 9 bits of a unix mode as "rwxr-xr-x".
+/// The size shown while a folder is still being measured.
+pub const MEASURING: &str = "\u{2026}";
+
+/// Format the permission bits of a unix mode as "rwxr-xr-x". Like `ls -l`,
+/// setuid/setgid show as `s` (`S` without execute) in the owner/group
+/// execute slot and the sticky bit as `t` (`T`) in the other slot.
 pub fn format_mode(mode: u32) -> String {
     let mut s = String::with_capacity(9);
-    for shift in [6, 3, 0] {
+    for (shift, special, mark) in [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')] {
         let triplet = (mode >> shift) & 0o7;
         s.push(if triplet & 0o4 != 0 { 'r' } else { '-' });
         s.push(if triplet & 0o2 != 0 { 'w' } else { '-' });
-        s.push(if triplet & 0o1 != 0 { 'x' } else { '-' });
+        let execute = triplet & 0o1 != 0;
+        s.push(match (mode & special != 0, execute) {
+            (true, true) => mark,
+            (true, false) => mark.to_ascii_uppercase(),
+            (false, true) => 'x',
+            (false, false) => '-',
+        });
     }
     s
 }
@@ -95,27 +109,57 @@ pub fn image_preview_unavailable_message(entry: &FileEntry) -> String {
 /// Build a Get-Info card for `entry`. `dir_size`/`children` come from the
 /// panel's already-computed maps (None while still measuring).
 pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usize>) -> InfoCard {
-    let kind = if entry.is_dir {
+    let target_kind = if entry.is_dir {
         "Folder".to_string()
     } else if entry.extension.is_empty() {
         "Document".to_string()
     } else {
         format!("{} file", entry.extension.to_uppercase())
     };
+    // A link shows its target's kind and permissions (they are what opening
+    // it uses), but must not pass for the target itself.
+    let link_target = entry
+        .is_symlink()
+        .then(|| fs::read_link(&entry.path).ok())
+        .flatten();
+    let kind = info_kind(
+        target_kind,
+        entry.is_symlink(),
+        entry.is_symlink() && fs::metadata(&entry.path).is_err(),
+    );
     let size = if entry.is_dir {
-        dir_size.map_or_else(|| "\u{2026}".to_string(), format_size)
+        dir_size.map_or_else(|| MEASURING.to_string(), format_size)
     } else {
         format_size(entry.size)
     };
     let permissions = permissions_text(fs::metadata(&entry.path));
+    let path = match link_target {
+        Some(target) => format!("{} \u{2192} {}", entry.path.display(), target.display()),
+        None => entry.path.display().to_string(),
+    };
+    // Folder links are never measured (see `SizeIndex::schedule`).
+    let pending =
+        (entry.is_dir && !entry.is_symlink() && (dir_size.is_none() || children.is_none()))
+            .then(|| entry.path.clone());
     InfoCard {
+        pending,
         name: entry.name.clone(),
-        path: entry.path.display().to_string(),
+        path,
         kind,
         size,
         children: if entry.is_dir { children } else { None },
         modified: entry.modified_str.clone(),
         permissions,
+    }
+}
+
+/// The Get-Info "Kind" row: a symlink names itself (and a dangling one
+/// says so) before the kind of what it points at.
+fn info_kind(target_kind: String, is_symlink: bool, dangling: bool) -> String {
+    match (is_symlink, dangling) {
+        (true, true) => "Broken symlink".to_string(),
+        (true, false) => format!("Symlink to {target_kind}"),
+        (false, _) => target_kind,
     }
 }
 

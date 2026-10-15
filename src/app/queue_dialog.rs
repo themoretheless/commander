@@ -32,10 +32,13 @@ fn unseen_failure_notice<T>(
 /// clones every path pair and stats each one).
 fn undo_label_for(top: &crate::undo::Action) -> String {
     use crate::undo::Action;
-    // `invert` keeps the item count; only Trash/RestoreTrash swap verbs.
+    // `invert` keeps the item count; Trash/RestoreTrash and Gather/Ungather
+    // swap verbs.
     let verb = match top {
         Action::Trash { .. } => "Restored",
         Action::RestoreTrash { .. } => "Deleted",
+        Action::Gather { .. } => "Ungathered",
+        Action::Ungather { .. } => "Gathered",
         other => other.verb(),
     };
     undo_last_label(verb, top.item_count())

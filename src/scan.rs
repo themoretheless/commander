@@ -346,7 +346,7 @@ fn capture_source(
                                     flat,
                                     truncated,
                                     FlatFileEntry {
-                                        name: display_name,
+                                        name: link_preview_name(display_name, symlink_policy),
                                         size: 0,
                                         is_dir: false,
                                         depth,
@@ -499,6 +499,25 @@ fn capture_source(
     })
 }
 
+/// A link's row in the transfer preview: marked when the policy skips it,
+/// so it does not read as an item that will be copied.
+fn link_preview_name(name: String, policy: crate::filesystem_policy::SymlinkPolicy) -> String {
+    if policy == crate::filesystem_policy::SymlinkPolicy::Skip {
+        format!("{name} (skipped link)")
+    } else {
+        name
+    }
+}
+
+/// Preview order for folder children: case-insensitive like the panel, so
+/// "alpha" comes before "Zeta"; the raw name breaks ties deterministically.
+fn preview_name_order(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> std::cmp::Ordering {
+    left.to_string_lossy()
+        .to_lowercase()
+        .cmp(&right.to_string_lossy().to_lowercase())
+        .then_with(|| left.cmp(right))
+}
+
 fn cancelled_failure() -> crate::ports::NativeFailure {
     crate::ports::NativeFailure {
         kind: crate::ports::NativeFailureKind::Cancelled,
@@ -618,7 +637,9 @@ fn flatten_entry(
             }),
             Ok(rd) => {
                 let mut children: Vec<_> = rd.filter_map(|e| e.ok()).collect();
-                children.sort_by_key(|a| a.file_name());
+                // Preview-only order. capture_source keeps byte order: it
+                // feeds the tree fingerprint, whose record order must not change.
+                children.sort_by(|a, b| preview_name_order(&a.file_name(), &b.file_name()));
                 for child in children {
                     if *truncated {
                         return;
@@ -736,6 +757,42 @@ mod tests {
                 ("c.txt".to_string(), 2, false, 3),
             ]
         );
+    }
+
+    #[test]
+    fn flatten_orders_children_case_insensitively_like_the_panel() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("folder");
+        tmp.file("folder/Zeta.txt", "z");
+        tmp.file("folder/alpha.txt", "a");
+        tmp.file("folder/Beta.txt", "b");
+
+        let flat = flatten_entries(&[entry_for(&dir)]);
+        let names: Vec<&str> = flat.iter().map(|f| f.name.as_str()).collect();
+
+        assert_eq!(names, ["folder", "alpha.txt", "Beta.txt", "Zeta.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skipped_links_are_marked_in_the_transfer_preview() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("folder");
+        tmp.file("folder/data.txt", "12345");
+        std::os::unix::fs::symlink("data.txt", dir.join("link")).unwrap();
+        let entry = entry_for(&dir);
+
+        let skipped = transfer_preflight(
+            std::slice::from_ref(&entry),
+            crate::filesystem_policy::SymlinkPolicy::Skip,
+        );
+        let preserved = transfer_preflight(
+            std::slice::from_ref(&entry),
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        );
+
+        assert!(skipped.flat.iter().any(|f| f.name == "link (skipped link)"));
+        assert!(preserved.flat.iter().any(|f| f.name == "link"));
     }
 
     #[cfg(unix)]

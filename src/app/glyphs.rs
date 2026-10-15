@@ -120,6 +120,17 @@ pub fn sort_header(ui: &mut Ui, label: &str, order: Option<SortOrder>, color: Co
         .interact(Sense::click());
     let accessible = sort_accessible_label(label, order);
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), &accessible));
+    // Clickable like a breadcrumb chip, so it shows the same hand cursor.
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Tab reaches the header; show where keyboard focus is, as file rows do.
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.expand(2.0),
+            CornerRadius::ZERO,
+            Stroke::new(2.0, ui.visuals().strong_text_color()),
+            egui::StrokeKind::Inside,
+        );
+    }
     response
 }
 
@@ -217,7 +228,9 @@ pub fn file_document(
     response
 }
 
-pub fn toolbar_compare_button(ui: &mut Ui, fill: Color32, color: Color32) -> Response {
+/// The toolbar Compare toggle; `on` is published as its toggled state, since
+/// the fill alone does not reach assistive tech.
+pub fn toolbar_compare_button(ui: &mut Ui, fill: Color32, color: Color32, on: bool) -> Response {
     let response = ui.add_sized(
         Vec2::new(34.0, 24.0),
         egui::Button::new("")
@@ -271,8 +284,9 @@ pub fn toolbar_compare_button(ui: &mut Ui, fill: Color32, color: Color32) -> Res
         stroke,
     );
     record(ui, PaintedGlyph::ToolbarCompare, icon);
-    response
-        .widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Compare panels"));
+    response.widget_info(|| {
+        WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), on, "Compare panels")
+    });
     response
 }
 
@@ -337,5 +351,33 @@ mod tests {
             button.label(),
             Some("Name, sorted ascending; activate to sort descending")
         );
+    }
+
+    #[test]
+    fn compare_button_publishes_its_on_off_state() {
+        for on in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let output =
+                crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                    toolbar_compare_button(ui, Color32::TRANSPARENT, Color32::WHITE, on);
+                }));
+            let update = output
+                .platform_output
+                .accesskit_update
+                .expect("headless AccessKit output");
+            let button = update
+                .nodes
+                .iter()
+                .map(|(_, node)| node)
+                .find(|node| node.label() == Some("Compare panels"))
+                .expect("compare button node");
+            let expected = if on {
+                egui::accesskit::Toggled::True
+            } else {
+                egui::accesskit::Toggled::False
+            };
+            assert_eq!(button.toggled(), Some(expected));
+        }
     }
 }

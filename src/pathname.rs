@@ -123,6 +123,43 @@ pub fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), NewNameE
     Ok(())
 }
 
+/// [`validate_new_name`] for a volume whose case sensitivity is known. On a
+/// case-insensitive volume (APFS and NTFS by default) `readme.md` collides
+/// with a sibling `README.md` (compared case-folded and NFC-normalized).
+/// `siblings` still excludes the entry being renamed, so a case-only rename
+/// of that entry stays valid.
+///
+/// Known gap: NFC folding matches APFS/HFS+, which are also
+/// normalization-insensitive. NTFS and exFAT fold case but not
+/// normalization, so there an NFD name beside its NFC twin is reported as a
+/// collision although the volume would accept it. The volume profile does
+/// not expose normalization behaviour, and such NFD/NFC twin pairs are rare.
+pub fn validate_new_name_on_volume(
+    name: &str,
+    siblings: &[String],
+    case_insensitive: bool,
+) -> Result<(), NewNameError> {
+    validate_new_name(name, siblings)?;
+    if case_insensitive {
+        let fold = |value: &str| {
+            use unicode_normalization::UnicodeNormalization;
+            value.nfc().collect::<String>().to_lowercase()
+        };
+        let folded = fold(name.trim());
+        if siblings.iter().any(|sibling| fold(sibling) == folded) {
+            return Err(NewNameError::Collision);
+        }
+    }
+    Ok(())
+}
+
+/// Whether the volume holding `path` is known to compare names
+/// case-insensitively. Unknown counts as case-sensitive, so validation never
+/// refuses a name the volume would accept.
+pub fn volume_is_case_insensitive(path: &Path) -> bool {
+    crate::volume_profile::profile(path).case_sensitive == Some(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +278,33 @@ mod tests {
         );
         assert_eq!(validate_new_name(" fresh.txt ", &siblings), Ok(()));
         assert_eq!(validate_new_name("line\nbreak", &siblings), Ok(()));
+    }
+
+    #[test]
+    fn case_insensitive_volumes_fold_names_before_comparing() {
+        let siblings = vec!["README.md".to_string(), "e\u{301}.txt".to_string()];
+        assert_eq!(
+            validate_new_name_on_volume("readme.md", &siblings, true),
+            Err(NewNameError::Collision)
+        );
+        assert_eq!(
+            validate_new_name_on_volume("\u{c9}.TXT", &siblings, true),
+            Err(NewNameError::Collision)
+        );
+        assert_eq!(
+            validate_new_name_on_volume("readme.md", &siblings, false),
+            Ok(())
+        );
+        // A case-only rename of the entry itself: it is not among siblings.
+        assert_eq!(
+            validate_new_name_on_volume("Notes.md", &["README.md".to_string()], true),
+            Ok(())
+        );
+        // The ordinary checks still apply.
+        assert_eq!(
+            validate_new_name_on_volume("", &siblings, true),
+            Err(NewNameError::Empty)
+        );
     }
 
     #[test]

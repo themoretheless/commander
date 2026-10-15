@@ -270,6 +270,7 @@ pub enum CommandPredicate {
     HasSelectedEntry,
     HasCursorEntry,
     CursorIsDirectory,
+    CursorIsFile,
     HasTransferSource,
     CanUndo,
     CanRedo,
@@ -309,6 +310,7 @@ impl CommandPredicate {
             ),
             Self::HasCursorEntry => (context.cursor_entry, CURSOR_REASON),
             Self::CursorIsDirectory => (context.cursor_is_dir, "Highlight a destination folder"),
+            Self::CursorIsFile => (context.cursor_is_file, "Highlight a ZIP or tar.gz file"),
             Self::HasTransferSource => (
                 context.can_transfer_into_cursor_folder,
                 "Choose a source outside the destination folder",
@@ -398,6 +400,8 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
     const EXTENSION: &[P] = &[P::CursorHasExtension];
     const LISTING: &[P] = &[P::HasListingEntry];
     const CURSOR: &[P] = &[P::HasCursorEntry];
+    // Browse archive opens the highlighted entry, not the selection.
+    const CURSOR_FILE: &[P] = &[P::HasCursorEntry, P::CursorIsFile];
     const BACK: &[P] = &[P::CanGoBack];
     const FORWARD: &[P] = &[P::CanGoForward];
     const UP: &[P] = &[P::CanGoUp];
@@ -414,7 +418,8 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         BeginBatchRename | GatherIntoFolder => MUTATE_SELECTION,
         CreateSymlink | CreateHardlink => COPY,
         BeginRunBar => RUN_SELECTION,
-        VerifyChecksum | BrowseArchive => PICKED,
+        VerifyChecksum => PICKED,
+        BrowseArchive => CURSOR_FILE,
         Undo => UNDO,
         Redo => REDO,
         DiffFiles => DIFF,
@@ -598,8 +603,8 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Select files identical to other panel", "", "selection identical same equal other panel compare diff dedupe", Command::SelectIdentical),
     entry("Clear selection in all folders", "", "selection clear deselect none reset all folders", Command::ClearSelection),
     entry("Operations panel", "Cmd+J", "activity operations queue progress history errors recovery", Command::ToggleQueuePanel),
-    entry("Operation history", "", "command", Command::OpenReceipts),
-    entry("Recovery center", "", "command", Command::OpenRecoveryCenter),
+    entry("Operation history", "", "history receipts journal log operations undo", Command::OpenReceipts),
+    entry("Recovery center", "", "recovery restore journal interrupted resume rollback staging", Command::OpenRecoveryCenter),
     entry("Select clutter files", "", "selection junk clutter ds_store thumbs desktop.ini cleanup cruft", Command::SelectJunk),
     entry("Select 10 largest files", "", "selection largest biggest top size files heavy", Command::SelectLargest),
     entry("Select files like cursor (same extension)", "", "selection same extension like cursor type matching", Command::SelectLikeCursor),
@@ -720,7 +725,10 @@ pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
         if let Some(score) = metadata_score(query, item)
             && best.as_ref().is_none_or(|(current, _)| score > *current)
         {
-            best = Some((score, Vec::new()));
+            // A keyword or shortcut hit only lifts the score: any label
+            // ranges the fuzzy pass found stay highlighted.
+            let matched = best.map(|(_, ranges)| ranges).unwrap_or_default();
+            best = Some((score, matched));
         }
         if let Some((score, matched)) = best {
             let total = combined_score(score, usage.uses.get(item.label), now);
@@ -744,7 +752,7 @@ fn metadata_score(query: &str, item: &CommandEntry) -> Option<i32> {
         if compact_shortcut == compact_q {
             return Some(90);
         }
-        if compact_shortcut.contains(&compact_q) {
+        if shortcut_prefix_matches(shortcut, &compact_q) {
             return Some(65);
         }
     }
@@ -753,8 +761,44 @@ fn metadata_score(query: &str, item: &CommandEntry) -> Option<i32> {
     if tokens.is_empty() {
         return None;
     }
-    let all_tokens_match = tokens.iter().all(|token| item.keywords.contains(token));
+    // Each query word must start some keyword word, so `re` finds "recent"
+    // but not the "re" inside "directory".
+    let all_tokens_match = tokens.iter().all(|token| {
+        item.keywords
+            .split_whitespace()
+            .any(|word| word.starts_with(token))
+    });
     all_tokens_match.then_some(42 + tokens.len() as i32)
+}
+
+/// Whether compact query `compact_q` is a partial shortcut: a prefix of the
+/// compact shortcut that ends on a key boundary (`cmd`, `cmdshift`) or runs
+/// into the final key. A stray letter such as `s` or `sh` inside
+/// `Cmd+Shift+R` is not a shortcut search, so one-character queries never
+/// match here.
+fn shortcut_prefix_matches(shortcut: &str, compact_q: &str) -> bool {
+    if compact_q.chars().count() < 2 {
+        return false;
+    }
+    let keys: Vec<String> = shortcut
+        .split(|c: char| c == '+' || c.is_whitespace())
+        .filter(|key| !key.is_empty())
+        .map(shortcut_search_text)
+        .collect();
+    let Some((last, modifiers)) = keys.split_last() else {
+        return false;
+    };
+    let mut boundary = String::new();
+    for key in modifiers {
+        boundary.push_str(key);
+        if boundary == compact_q {
+            return true;
+        }
+    }
+    // Every modifier typed in full, then the start of the final key.
+    compact_q
+        .strip_prefix(boundary.as_str())
+        .is_some_and(|rest| !rest.is_empty() && last.starts_with(rest))
 }
 
 /// Shortcut text with separators removed (`Cmd+Shift+R` and `cmd shift r`
@@ -1279,6 +1323,79 @@ mod tests {
             filter_commands("cmd shift d")[0].command,
             Command::CycleDensity
         );
+    }
+
+    fn catalog_entry(command: Command) -> &'static CommandEntry {
+        CATALOG
+            .iter()
+            .find(|entry| entry.command == command)
+            .unwrap()
+    }
+
+    #[test]
+    fn stray_letters_do_not_match_inside_shortcuts() {
+        let batch = catalog_entry(Command::BeginBatchRename); // Cmd+Shift+R
+        assert_eq!(metadata_score("sh", batch), None);
+        assert_eq!(
+            metadata_score("md", catalog_entry(Command::DiffFiles)),
+            None
+        );
+        // Whole modifiers, or modifiers plus the start of the key, still do.
+        assert_eq!(metadata_score("cmd shift", batch), Some(65));
+        assert_eq!(metadata_score("cmdshiftr", batch), Some(90));
+        assert_eq!(
+            metadata_score("f5", catalog_entry(Command::RequestCopy)),
+            Some(90)
+        );
+    }
+
+    #[test]
+    fn keywords_match_by_word_prefix() {
+        let new_folder = catalog_entry(Command::CreateDir);
+        // "re" sits inside "directory" and "create" but starts no keyword.
+        assert_eq!(metadata_score("re", new_folder), None);
+        assert_eq!(metadata_score("mk", new_folder), Some(43));
+        assert_eq!(
+            metadata_score("receipts", catalog_entry(Command::OpenReceipts)),
+            Some(43)
+        );
+        assert_eq!(
+            filter_commands("journal interrupted")[0].command,
+            Command::OpenRecoveryCenter
+        );
+    }
+
+    #[test]
+    fn keyword_wins_keep_the_label_highlight() {
+        // "hid" scores higher as a keyword than as a fuzzy label match, but
+        // the label's matched letters stay highlighted.
+        let row = filter_commands("hid")
+            .into_iter()
+            .find(|m| m.command == Command::ToggleHidden)
+            .unwrap();
+        assert!(!row.matched.is_empty());
+    }
+
+    #[test]
+    fn browse_archive_needs_a_highlighted_file() {
+        let mut context = CommandContext {
+            picked_entries: 1,
+            selected_entries: 1,
+            ..CommandContext::default()
+        };
+        assert_eq!(
+            availability(Command::BrowseArchive, &context).reason,
+            Some(CURSOR_REASON)
+        );
+        context.cursor_entry = true;
+        context.cursor_is_dir = true;
+        assert_eq!(
+            availability(Command::BrowseArchive, &context).reason,
+            Some("Highlight a ZIP or tar.gz file")
+        );
+        context.cursor_is_dir = false;
+        context.cursor_is_file = true;
+        assert!(availability(Command::BrowseArchive, &context).enabled);
     }
 
     #[test]

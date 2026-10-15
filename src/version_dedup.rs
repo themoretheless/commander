@@ -93,16 +93,10 @@ impl VersionStoreUsage {
     }
 }
 
+/// Store sizes in the same units as the rest of the app (B, KB, MB, GB), so
+/// a small store reads "512.0 KB" rather than "524288 B".
 pub fn format_store_bytes(bytes: u64) -> String {
-    const MIB: u64 = 1024 * 1024;
-    const GIB: u64 = 1024 * MIB;
-    if bytes >= GIB {
-        format!("{:.1} GiB", bytes as f64 / GIB as f64)
-    } else if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else {
-        format!("{bytes} B")
-    }
+    crate::panel::format_size(bytes)
 }
 
 /// Sum of every blob's on-disk bytes. Sizes come from the persisted manifest,
@@ -362,6 +356,17 @@ pub fn quota_overflow_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_usage_uses_app_size_units_below_one_mib() {
+        let usage = VersionStoreUsage {
+            bytes_used: 512 * 1024,
+            bytes_quota: 2 * 1024 * 1024 * 1024,
+            unique_blobs: 3,
+            records: 4,
+        };
+        assert_eq!(usage.label(), "512.0 KB / 2.00 GB (3 unique)");
+    }
     use crate::testutil::TempDir;
 
     #[test]

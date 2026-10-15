@@ -169,6 +169,307 @@ fn folder_changed(ctx: &egui::Context, panel_side: &str, path: &std::path::Path)
     })
 }
 
+/// The button an empty list offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmptyAction {
+    Reveal,
+    GoUp,
+    ClearFilters,
+}
+
+/// Label of the reveal action, named after the platform's file manager.
+const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else {
+    "Show in file manager"
+};
+
+/// Glyph, message and optional action of an empty list. A folder that
+/// cannot be listed right now (unreadable, deleted, still loading) says so
+/// even under an active filter: "No matches" would blame the filter.
+fn empty_state(
+    status: crate::panel::DirStatus,
+    filter_active: bool,
+) -> (
+    &'static str,
+    &'static str,
+    Option<(&'static str, EmptyAction)>,
+) {
+    use crate::panel::DirStatus;
+    match status {
+        DirStatus::Denied => (
+            "\u{1f512}",
+            "No permission to read this folder",
+            Some((REVEAL_LABEL, EmptyAction::Reveal)),
+        ),
+        // U+26A0 alone: no bundled font maps the U+FE0F variation selector,
+        // which rendered as a replacement box.
+        DirStatus::Gone => (
+            "\u{26a0}",
+            "This folder no longer exists",
+            Some(("Go up", EmptyAction::GoUp)),
+        ),
+        DirStatus::Loading => ("\u{2026}", "Loading folder\u{2026}", None),
+        _ if filter_active => (
+            "\u{1f50d}",
+            "No matches",
+            Some(("Clear filters", EmptyAction::ClearFilters)),
+        ),
+        DirStatus::Partial => ("\u{21bb}", "Folder changed while reading; retrying", None),
+        DirStatus::Listed | DirStatus::Empty => ("\u{1f4c2}", "Empty", None),
+    }
+}
+
+/// Spoken stand-in for the "…" a folder shows while its size is measured;
+/// screen readers would read the glyph as "horizontal ellipsis".
+const PENDING_SIZE_SPOKEN: &str = "calculating";
+
+/// Compare-mode marker for a row: the symbol shown beside it and what it
+/// means, for hover text and assistive tech.
+fn compare_marker(status: crate::compare::CompareStatus) -> (&'static str, &'static str) {
+    use crate::compare::CompareStatus;
+    match status {
+        CompareStatus::Unique => ("+", "Only in this pane"),
+        CompareStatus::Differs => ("\u{2260}", "Differs"),
+        CompareStatus::Identical => ("=", "Identical"),
+        CompareStatus::DirectoryPair => ("?", "Folder pair; contents not compared"),
+        CompareStatus::TypeConflict => ("!", "File/folder type conflict"),
+    }
+}
+
+/// A row's accessible label: the shared file-row semantics plus what the
+/// row only paints, a folder's item count and its compare status.
+fn row_spoken_label(base: &str, item_count: Option<usize>, compare: Option<&str>) -> String {
+    let mut label = base.to_string();
+    if let Some(count) = item_count {
+        label.push_str(&format!("; Items: {count}"));
+    }
+    if let Some(compare) = compare {
+        label.push_str(&format!("; Compare: {compare}"));
+    }
+    label
+}
+
+/// Row index of a file row in the list's grid node: the ".." row, when
+/// shown, is row 0.
+fn grid_row_index(filtered_index: usize, has_parent_row: bool) -> usize {
+    filtered_index + usize::from(has_parent_row)
+}
+
+/// Allocated height of a file row: the density's text and padding, never
+/// below the minimum control size (Compact would otherwise be 23 pt).
+fn row_content_height(metrics: crate::density::DensityMetrics) -> f32 {
+    (metrics.name_pt + metrics.row_pad_y * 2.0 + 7.0).max(crate::accessibility::MIN_CONTROL_POINTS)
+}
+
+/// Whether the cursor chevron fits at the row's leading edge. A selected
+/// row's check mark sits there, so the cursor shows by its outline alone.
+const fn cursor_chevron_fits(is_selected: bool) -> bool {
+    !is_selected
+}
+
+/// Room kept after the name for the compare symbol in narrow rows.
+const INLINE_COMPARE_WIDTH: f32 = 14.0;
+
+/// Name column width. Narrow rows have no metadata column, so the compare
+/// symbol (a non-color cue next to the stripe) follows the name instead.
+fn name_column_width(layout: crate::accessibility::FileRowLayout, inline_compare: bool) -> f32 {
+    if inline_compare && !layout.show_metadata {
+        (layout.name_width - INLINE_COMPARE_WIDTH).max(1.0)
+    } else {
+        layout.name_width
+    }
+}
+
+/// What a primary pointer click on a file row does to the selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowClick {
+    /// Move the cursor only.
+    Plain,
+    /// Cmd-click (Ctrl elsewhere): flip the row in or out of the selection.
+    Toggle,
+    /// Shift-click: add every row from the cursor to the clicked row.
+    Range,
+}
+
+fn row_click_kind(modifiers: egui::Modifiers) -> RowClick {
+    if modifiers.shift {
+        RowClick::Range
+    } else if modifiers.command {
+        RowClick::Toggle
+    } else {
+        RowClick::Plain
+    }
+}
+
+/// Whether a row was clicked by the user: a primary pointer click or an
+/// AccessKit Click action. egui also reports Space/Enter on a focused
+/// widget as a click, but the list already handles those keys (toggle and
+/// advance, activate); taking them as row clicks too would move the cursor
+/// back onto the focused row and undo them.
+fn row_clicked(ctx: &egui::Context, response: &egui::Response) -> bool {
+    response.clicked_by(egui::PointerButton::Primary)
+        || ctx.input(|input| {
+            input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click)
+        })
+}
+
+/// Filtered indices a Shift-click selects: from the cursor row to the
+/// clicked row, both inclusive. Cursors count the ".." row as 0, so a
+/// cursor on ".." starts the range at the first file row.
+fn click_range(cursor: usize, clicked: usize) -> std::ops::RangeInclusive<usize> {
+    let anchor = cursor.max(1);
+    let clicked = clicked.max(1);
+    anchor.min(clicked) - 1..=anchor.max(clicked) - 1
+}
+
+/// Whether a dragged set may be dropped into the folder `target`. A folder
+/// cannot take itself or one of its ancestors, so it must not light up as
+/// a target while the overlay says the move is impossible.
+fn accepts_row_drop(target: &std::path::Path, dragged: &[PathBuf]) -> bool {
+    !dragged
+        .iter()
+        .any(|source| crate::fs_util::is_within_or_equal(target, source))
+}
+
+/// Whether keyboard focus should move to the cursor row, so assistive tech
+/// follows keyboard cursor moves. Only after the cursor moved
+/// (`cursor_moved`, the pending scroll) in the active, enabled pane, while
+/// no text is being edited, and only when focus is not held elsewhere:
+/// nothing has it, or a row of this list does (`focus_in_list`).
+const fn follow_cursor_focus(
+    cursor_moved: bool,
+    is_active: bool,
+    enabled: bool,
+    text_editing: bool,
+    focus_in_list: bool,
+) -> bool {
+    cursor_moved && is_active && enabled && !text_editing && focus_in_list
+}
+
+/// Per-pane id of the list row that last held keyboard focus.
+fn list_focus_key(panel_side: &str) -> egui::Id {
+    egui::Id::new(("file_list_focus", panel_side))
+}
+
+/// Book-keeping for a row that holds or takes keyboard focus: remember it
+/// as this list's, and keep egui's arrow-key focus navigation off it, since
+/// the arrows move the list cursor (and focus follows the cursor).
+fn claim_row_focus(ui: &egui::Ui, panel_side: &str, response: &egui::Response) {
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(list_focus_key(panel_side), response.id));
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            response.id,
+            egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..Default::default()
+            },
+        );
+    });
+}
+
+/// Move keyboard focus to the cursor row and cancel egui's own arrow-key
+/// focus move this frame, which would step one row past it.
+fn focus_cursor_row(ui: &egui::Ui, panel_side: &str, response: &egui::Response) {
+    response.request_focus();
+    ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+    claim_row_focus(ui, panel_side, response);
+}
+
+/// Footer item count with the folder size. Under a filter the size is
+/// still the whole folder's, so it is labelled as such rather than read as
+/// the size of the matching rows.
+fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<u64>) -> String {
+    let size = size.map_or_else(|| "\u{2026}".to_string(), format_size);
+    if filters_active {
+        format!(
+            "{shown} of {} (folder {size})",
+            super::confirm_dialog::items_label(total)
+        )
+    } else {
+        format!("{} ({size})", super::confirm_dialog::items_label(shown))
+    }
+}
+
+/// A name cut to the footer's fixed budget.
+fn footer_name(name: &str) -> String {
+    const MAX: usize = 16;
+    if name.chars().count() > MAX {
+        let head: String = name.chars().take(MAX - 1).collect();
+        format!("{head}\u{2026}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The footer's folder extremes: the short text, and the full names for
+/// its hover text. `None` when there is nothing to show.
+fn folder_extremes(largest: Option<(&str, u64)>, oldest: Option<&str>) -> Option<(String, String)> {
+    let largest = largest.filter(|&(_, size)| size > 0);
+    let mut short = String::new();
+    let mut full = Vec::new();
+    if let Some((name, size)) = largest {
+        let size = format_size(size);
+        short.push_str(&format!("  |  largest {} ({size})", footer_name(name)));
+        full.push(format!("Largest: {name} ({size})"));
+    }
+    if let Some(name) = oldest {
+        short.push_str(&format!("  |  oldest {}", footer_name(name)));
+        full.push(format!("Oldest: {name}"));
+    }
+    (!short.is_empty()).then(|| (short, full.join("\n")))
+}
+
+/// Spoken label of the ".." row. Like file rows it says "State: cursor"
+/// while the keyboard cursor sits on it.
+fn parent_row_label(is_cursor: bool) -> &'static str {
+    if is_cursor {
+        "Parent folder; State: cursor"
+    } else {
+        "Parent folder"
+    }
+}
+
+/// The keyboard cursor's non-color cue: a 1px accent outline plus a
+/// leading chevron. `chevron` is off where the row's own leading glyph
+/// would collide with it.
+fn paint_cursor_marker(painter: &egui::Painter, rect: egui::Rect, t: &ThemeColors, chevron: bool) {
+    painter.rect_stroke(
+        rect.shrink(1.0),
+        CornerRadius::ZERO,
+        Stroke::new(1.0, t.accent),
+        egui::StrokeKind::Inside,
+    );
+    if chevron {
+        painter.text(
+            egui::pos2(rect.left() + 7.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            "\u{203a}",
+            egui::FontId::proportional(13.0),
+            t.accent,
+        );
+    }
+}
+
+/// Keyboard focus ring: a 2px outline with an inner halo, so it reads on
+/// both the cursor fill and the plain row background.
+fn paint_focus_ring(painter: &egui::Painter, rect: egui::Rect, t: &ThemeColors) {
+    painter.rect_stroke(
+        rect.shrink(2.0),
+        CornerRadius::ZERO,
+        Stroke::new(2.0, t.text_primary),
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.shrink(4.0),
+        CornerRadius::ZERO,
+        Stroke::new(1.0, t.bg_panel),
+        egui::StrokeKind::Inside,
+    );
+}
+
 fn cursor_row_to_reveal(cursor: usize, reveal: bool) -> Option<usize> {
     (reveal && cursor > 0).then(|| cursor - 1)
 }
@@ -200,6 +501,7 @@ fn map_ranges_to_display(
     }
     let head = name
         .chars()
+        .map(crate::display_name::visible_char)
         .zip(display.chars())
         .take_while(|(a, b)| a == b)
         .count()
@@ -241,6 +543,7 @@ impl App {
         compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
+        dragged: &[PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
     ) -> Option<ui_state::ContextMenuCandidate> {
@@ -256,6 +559,26 @@ impl App {
                 .ctx()
                 .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
         let mut context_menu_request = None;
+        // Keyboard focus follows the cursor only while it is unclaimed or
+        // already on one of this list's rows.
+        let focus_in_list = {
+            let focused = ui.memory(|memory| memory.focused());
+            let ours = ui
+                .ctx()
+                .data(|data| data.get_temp::<egui::Id>(list_focus_key(panel_side)));
+            focused.is_none() || focused == ours
+        };
+        let follow_focus = |ui: &egui::Ui, cursor_moved: bool| {
+            follow_cursor_focus(
+                cursor_moved,
+                is_active,
+                ui.is_enabled(),
+                crate::accessibility::text_input_state(ui.ctx())
+                    .mode()
+                    .is_some(),
+                focus_in_list,
+            )
+        };
         // Reserve the footer first so the scroll area fills only what is left;
         // drawn after it, the footer fell below the panel and was clipped.
         egui::Panel::bottom(egui::Id::new(("file_list_status", panel_side)))
@@ -290,7 +613,7 @@ impl App {
                     } else {
                         t.bg_card.linear_multiply(0.3)
                     };
-                    let up_row = Frame::NONE
+                    let up_frame = Frame::NONE
                         .fill(up_bg)
                         .stroke(Stroke::NONE)
                         .corner_radius(CornerRadius::ZERO)
@@ -309,25 +632,61 @@ impl App {
                                 );
                             });
                         })
-                        .response
-                        .interact(Sense::click());
+                        .response;
+                    // A widget of its own: re-sensing the frame's response
+                    // reuses the frame's id, and the frame (hover only)
+                    // surrenders keyboard focus every frame, so ".." could
+                    // never keep focus.
+                    let up_row = ui.interact(
+                        up_frame.rect,
+                        egui::Id::new(("file_list_parent_row", panel_side)),
+                        Sense::click(),
+                    );
+                    // Same semantics as file rows, so AT hears when the
+                    // cursor sits on the parent row.
                     up_row.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
                             ui.is_enabled(),
-                            "Parent folder",
+                            false,
+                            parent_row_label(is_cursor_on_up),
                         )
                     });
+                    ui.ctx().accesskit_node_builder(up_row.id, |node| {
+                        node.set_role(egui::accesskit::Role::Row);
+                        node.set_row_index(0);
+                    });
+                    if is_cursor_on_up {
+                        if is_active && ui.is_enabled() {
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(
+                                    egui::Id::new("current_focus_indicator"),
+                                    up_row.rect,
+                                );
+                            });
+                        }
+                        paint_cursor_marker(ui.painter(), up_row.rect, t, true);
+                    }
+                    if up_row.has_focus() {
+                        claim_row_focus(ui, panel_side, &up_row);
+                        paint_focus_ring(ui.painter(), up_row.rect, t);
+                    }
 
                     if is_cursor_on_up && panel.scroll_to_cursor() {
                         // Keyboard moved onto "..": reveal it and settle the
                         // request here, since no file row holds the cursor.
                         ui.scroll_to_rect(up_row.rect, None);
                         panel.set_scroll_to_cursor(false);
+                        if follow_focus(ui, true) {
+                            focus_cursor_row(ui, panel_side, &up_row);
+                        }
                     }
                     if up_row.double_clicked() {
                         panel.go_up();
-                    } else if up_row.clicked() {
+                    } else if row_clicked(ui.ctx(), &up_row) {
+                        // Take focus like file rows do, so the old row's
+                        // focus ring does not linger.
+                        up_row.request_focus();
                         panel.set_cursor(0);
                     }
                     if up_row.hovered() && !is_cursor_on_up {
@@ -336,6 +695,22 @@ impl App {
                             CornerRadius::same(3),
                             t.bg_hover.linear_multiply(0.3),
                         );
+                    }
+                    // Dropping onto ".." moves into the parent folder. During
+                    // a drag only the dragged row counts as hovered, so test
+                    // the pointer position instead.
+                    if dragging
+                        && up_row.contains_pointer()
+                        && let Some(parent) = panel.current_path.parent().map(PathBuf::from)
+                        && accepts_row_drop(&parent, dragged)
+                    {
+                        ui.painter().rect_stroke(
+                            up_row.rect,
+                            CornerRadius::ZERO,
+                            Stroke::new(2.0_f32, t.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                        panel.drag.set_drop_target(parent);
                     }
                 }
 
@@ -349,52 +724,35 @@ impl App {
                 let query = panel.search_query().trim().to_string();
 
                 if filtered.is_empty() {
-                    use crate::panel::DirStatus;
                     // Distinguish a filtered-to-nothing list, a truly empty
                     // folder, and an unreadable/vanished one.
-                    let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
-                        if crate::panel::filter_is_active(panel.search_query(), &panel.facets()) {
-                            (
-                                "\u{1f50d}",
-                                "No matches",
-                                Some(("Clear filters", "clear_filters")),
-                            )
-                        } else {
-                            match panel.dir_status() {
-                                DirStatus::Denied => (
-                                    "\u{1f512}",
-                                    "No permission to read this folder",
-                                    Some(("Open in Finder", "finder")),
-                                ),
-                                DirStatus::Gone => (
-                                    "\u{26a0}\u{fe0f}",
-                                    "This folder no longer exists",
-                                    Some(("Go up", "up")),
-                                ),
-                                DirStatus::Partial => {
-                                    ("\u{21bb}", "Folder changed while reading; retrying", None)
-                                }
-                                DirStatus::Loading => ("\u{2026}", "Loading folder\u{2026}", None),
-                                _ => ("\u{1f4c2}", "Empty", None),
-                            }
-                        };
+                    let (glyph, message, action) = empty_state(
+                        panel.dir_status(),
+                        crate::panel::filter_is_active(panel.search_query(), &panel.facets()),
+                    );
                     ui.add_space(40.0);
                     ui.with_layout(Layout::top_down(Align::Center), |ui| {
                         ui.label(egui::RichText::new(glyph).size(28.0));
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new(message).size(13.0).color(t.text_muted));
+                        let status =
+                            ui.label(egui::RichText::new(message).size(13.0).color(t.text_muted));
+                        // Announced when it appears or changes, like other
+                        // status lines.
+                        ui.ctx().accesskit_node_builder(status.id, |node| {
+                            node.set_role(egui::accesskit::Role::Status);
+                            node.set_live(egui::accesskit::Live::Polite);
+                        });
                         if let Some((label, kind)) = action {
                             ui.add_space(8.0);
                             if ui.button(label).clicked() {
                                 match kind {
-                                    "finder" => opener(crate::ports::OpenRequest::Reveal(
-                                        panel.current_path.clone(),
-                                    )),
-                                    "up" => panel.go_up(),
-                                    "clear_filters" => {
-                                        panel.clear_filters();
+                                    EmptyAction::Reveal => {
+                                        opener(crate::ports::OpenRequest::Reveal(
+                                            panel.current_path.clone(),
+                                        ))
                                     }
-                                    _ => {}
+                                    EmptyAction::GoUp => panel.go_up(),
+                                    EmptyAction::ClearFilters => panel.clear_filters(),
                                 }
                             }
                         }
@@ -402,12 +760,24 @@ impl App {
                     return;
                 }
 
+                // The rows are virtualized, so AT learns the full row count
+                // and each row's position from a grid node, not from the
+                // handful of rows laid out this frame.
+                let grid_rows = filtered.len() + usize::from(can_go_up);
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Grid);
+                    node.set_row_count(grid_rows);
+                    node.set_column_count(1);
+                });
+
                 // Deferred row interactions (applied after the loop).
                 let mut pending_cursor: Option<usize> = None;
                 let mut navigate_to: Option<std::path::PathBuf> = None;
                 let mut open_path: Option<std::path::PathBuf> = None;
                 let mut drag_anchor: Option<std::path::PathBuf> = None;
                 let mut pending_drop_target: Option<std::path::PathBuf> = None;
+                let mut pending_toggle: Option<std::path::PathBuf> = None;
+                let mut pending_range: Option<std::ops::RangeInclusive<usize>> = None;
                 let mut scrolled = false;
 
                 // One immutable metrics snapshot for the frame. Warm frames
@@ -420,7 +790,7 @@ impl App {
                 // allocated row height; `row_h` adds the 1px item spacing so the
                 // virtualization stride matches (Comfortable == 28 + 1 == 29,
                 // the pre-density default).
-                let row_content = metrics.name_pt + metrics.row_pad_y * 2.0 + 7.0;
+                let row_content = row_content_height(metrics);
                 let row_h = row_content + 1.0;
                 // Dark theme? Derived from the panel background luminance, so the
                 // semantic kind stub can pick the right toned palette.
@@ -534,18 +904,25 @@ impl App {
                         Some(modified) => crate::reldate::relative_date(modified, now),
                         None => entry.modified_display().to_string(),
                     };
-                    let size_text = if entry.is_dir {
+                    let measured = if entry.is_dir {
                         size_snapshot
                             .size_of(&entry.path)
                             .map(crate::panel::format_size)
-                            .unwrap_or_else(|| "\u{2026}".to_string())
                     } else {
-                        entry.size_display().to_string()
+                        Some(entry.size_display().to_string())
+                    };
+                    let size_text = measured.as_deref().unwrap_or("\u{2026}");
+                    let compare_status =
+                        compare.map(|map| crate::compare::classify_entry(entry, map));
+                    let item_count = if entry.is_dir {
+                        size_snapshot.count_of(&entry.path)
+                    } else {
+                        None
                     };
                     let semantics = crate::accessibility::file_row_semantics(
                         &entry.name,
                         crate::selection_summary::kind_of(entry).label(),
-                        &size_text,
+                        measured.as_deref().unwrap_or(PENDING_SIZE_SPOKEN),
                         &modified_label,
                         is_selected,
                         is_cursor,
@@ -556,11 +933,16 @@ impl App {
                             egui::WidgetType::SelectableLabel,
                             ui.is_enabled(),
                             semantics.selected,
-                            &semantics.label,
+                            row_spoken_label(
+                                &semantics.label,
+                                item_count,
+                                compare_status.map(|status| compare_marker(status).1),
+                            ),
                         )
                     });
                     ui.ctx().accesskit_node_builder(row_resp.id, |node| {
                         node.set_role(egui::accesskit::Role::Row);
+                        node.set_row_index(grid_row_index(idx, can_go_up));
                         node.set_selected(semantics.selected);
                         if ui.is_enabled() {
                             node.add_action(egui::accesskit::Action::ShowContextMenu);
@@ -585,6 +967,9 @@ impl App {
                         ui.scroll_to_rect(row_rect, Some(Align::Center));
                         scrolled = true;
                     }
+                    if is_cursor && follow_focus(ui, scroll_pending) {
+                        focus_cursor_row(ui, panel_side, &row_resp);
+                    }
 
                     // Paint background
                     let full_rect =
@@ -604,36 +989,6 @@ impl App {
                             t.bg_hover.linear_multiply(0.3),
                         );
                     }
-                    if is_cursor {
-                        ui.painter().rect_stroke(
-                            full_rect.shrink(1.0),
-                            CornerRadius::ZERO,
-                            Stroke::new(1.0, t.accent),
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.painter().text(
-                            egui::pos2(full_rect.left() + 7.0, full_rect.center().y),
-                            egui::Align2::CENTER_CENTER,
-                            "\u{203a}",
-                            egui::FontId::proportional(13.0),
-                            t.accent,
-                        );
-                    }
-                    if row_resp.has_focus() {
-                        ui.painter().rect_stroke(
-                            full_rect.shrink(2.0),
-                            CornerRadius::ZERO,
-                            Stroke::new(2.0, t.text_primary),
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.painter().rect_stroke(
-                            full_rect.shrink(4.0),
-                            CornerRadius::ZERO,
-                            Stroke::new(1.0, t.bg_panel),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-
                     // Occupancy bar: width proportional to this entry's share
                     // of the largest entry, ramping to a warning tint when it
                     // dominates the directory.
@@ -660,9 +1015,9 @@ impl App {
 
                     // Compare mode: a left-edge stripe showing how this entry
                     // relates to the other panel.
-                    if let Some(map) = compare {
+                    if let Some(status) = compare_status {
                         use crate::compare::CompareStatus;
-                        let stripe = match crate::compare::classify_entry(entry, map) {
+                        let stripe = match status {
                             CompareStatus::Unique => Some(t.accent),
                             CompareStatus::Differs => Some(t.accent_warning),
                             CompareStatus::TypeConflict => Some(t.accent_red),
@@ -699,11 +1054,33 @@ impl App {
                         );
                     }
 
+                    // Cursor and focus go over the bar and the stub/stripe,
+                    // which would otherwise cover their edges.
+                    if is_cursor {
+                        paint_cursor_marker(
+                            ui.painter(),
+                            full_rect,
+                            t,
+                            cursor_chevron_fits(is_selected),
+                        );
+                    }
+                    if row_resp.has_focus() {
+                        claim_row_focus(ui, panel_side, &row_resp);
+                        paint_focus_ring(ui.painter(), full_rect, t);
+                    }
+
                     // Content
                     let mut child_ui = ui.new_child(
                         egui::UiBuilder::new().max_rect(row_rect.shrink2(egui::vec2(6.0, 3.0))),
                     );
                     child_ui.style_mut().interaction.selectable_labels = false;
+                    // The row node already carries the composed label; the
+                    // painted glyphs and texts would be read a second time.
+                    child_ui
+                        .ctx()
+                        .accesskit_node_builder(child_ui.unique_id(), |node| {
+                            node.set_hidden();
+                        });
                     child_ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
 
@@ -719,8 +1096,7 @@ impl App {
                         }
 
                         if entry.is_dir {
-                            let count = size_snapshot.count_of(&entry.path);
-                            Self::paint_folder_icon(ui, count);
+                            Self::paint_folder_icon(ui, item_count);
                         } else {
                             ui.add_space(3.0);
                             let (red, green, blue) = crate::file_color::kind_color(
@@ -745,8 +1121,9 @@ impl App {
                         };
                         let responsive =
                             crate::accessibility::file_row_layout(ui.available_width());
-                        let max_name_chars =
-                            name_char_budget(responsive.name_width, avg_glyph_width);
+                        let inline_compare = compare_status.filter(|_| !responsive.show_metadata);
+                        let name_width = name_column_width(responsive, inline_compare.is_some());
+                        let max_name_chars = name_char_budget(name_width, avg_glyph_width);
                         let display_name = crate::display_name::truncate_preserving_extension(
                             &entry.name,
                             max_name_chars,
@@ -781,16 +1158,26 @@ impl App {
                         // read from the left edge of the column.
                         let name_response = ui
                             .allocate_ui_with_layout(
-                                egui::vec2(responsive.name_width, row_content),
+                                egui::vec2(name_width, row_content),
                                 Layout::left_to_right(Align::Center),
                                 |ui| {
-                                    ui.set_min_width(responsive.name_width);
+                                    ui.set_min_width(name_width);
                                     ui.add(name_label.truncate())
                                 },
                             )
                             .inner;
                         if shortened {
                             name_response.on_hover_text(&entry.name);
+                        }
+                        if let Some(status) = inline_compare {
+                            let (symbol, hint) = compare_marker(status);
+                            ui.label(
+                                egui::RichText::new(symbol)
+                                    .size(metrics.meta_pt)
+                                    .strong()
+                                    .color(t.text_secondary),
+                            )
+                            .on_hover_text(hint);
                         }
 
                         if responsive.show_metadata {
@@ -813,20 +1200,8 @@ impl App {
                                             .size(metrics.meta_pt)
                                             .color(t.text_muted),
                                     );
-                                    if let Some(map) = compare {
-                                        use crate::compare::CompareStatus;
-                                        let (symbol, hint) =
-                                            match crate::compare::classify_entry(entry, map) {
-                                                CompareStatus::Unique => ("+", "Only in this pane"),
-                                                CompareStatus::Differs => ("\u{2260}", "Differs"),
-                                                CompareStatus::Identical => ("=", "Identical"),
-                                                CompareStatus::DirectoryPair => {
-                                                    ("?", "Folder pair; contents not compared")
-                                                }
-                                                CompareStatus::TypeConflict => {
-                                                    ("!", "File/folder type conflict")
-                                                }
-                                            };
+                                    if let Some(status) = compare_status {
+                                        let (symbol, hint) = compare_marker(status);
                                         ui.label(
                                             egui::RichText::new(symbol)
                                                 .size(metrics.meta_pt)
@@ -871,9 +1246,20 @@ impl App {
                         } else {
                             open_path = Some(entry.path.clone());
                         }
-                    } else if row_resp.clicked() {
+                    } else if row_clicked(ui.ctx(), &row_resp) {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
+                        // Modifiers only count for real pointer clicks; a
+                        // Space/Enter on the focused row is not a Shift-click.
+                        if row_resp.clicked_by(egui::PointerButton::Primary) {
+                            match row_click_kind(ui.input(|input| input.modifiers)) {
+                                RowClick::Plain => {}
+                                RowClick::Toggle => pending_toggle = Some(entry.path.clone()),
+                                RowClick::Range => {
+                                    pending_range = Some(click_range(cursor, row_cursor));
+                                }
+                            }
+                        }
                     }
 
                     // Drag start — selection resolved after the loop
@@ -882,8 +1268,15 @@ impl App {
                         drag_anchor = Some(entry.path.clone());
                     }
 
-                    // Drop target highlight — show when dragging over a directory
-                    if row_resp.hovered() && dragging && entry.is_dir {
+                    // Drop target highlight — show when dragging over a
+                    // directory that can take the dragged set. During a drag
+                    // only the dragged row counts as hovered, so test the
+                    // pointer position instead.
+                    if row_resp.contains_pointer()
+                        && dragging
+                        && entry.is_dir
+                        && accepts_row_drop(&entry.path, dragged)
+                    {
                         pending_drop_target = Some(entry.path.clone());
                         ui.painter().rect_stroke(
                             full_rect,
@@ -901,6 +1294,20 @@ impl App {
                 }
 
                 // Apply the interactions recorded during the loop.
+                if let Some(range) = pending_range {
+                    let entries = panel.entries();
+                    let paths: Vec<PathBuf> = filtered
+                        .get(range)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|&index| entries.get(index))
+                        .map(|entry| entry.path.clone())
+                        .collect();
+                    panel.extend_selection(paths);
+                }
+                if let Some(path) = pending_toggle {
+                    panel.toggle_select(path);
+                }
                 if let Some(c) = pending_cursor {
                     panel.set_cursor(c);
                 }
@@ -963,16 +1370,16 @@ impl App {
                                 panel.search_query(),
                                 &panel.facets(),
                             );
-                            let count_prefix = if filters_active {
-                                format!("{shown} of {total} items")
-                            } else {
-                                format!("{shown} items")
+                            // Footer texts truncate (full text on hover) rather
+                            // than run past a narrow pane's edge.
+                            let footer = |text: String, color: Color32| {
+                                egui::Label::new(egui::RichText::new(text).size(11.0).color(color))
+                                    .truncate()
                             };
-                            let size_str = match overview.total {
-                                Some(s) => format!("{count_prefix} ({})", format_size(s)),
-                                None => format!("{count_prefix} (\u{2026})"),
-                            };
-                            ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
+                            ui.add(footer(
+                                count_summary(shown, total, filters_active, overview.total),
+                                t.text_muted,
+                            ));
                             if filters_active {
                                 let active_count = panel.facets().active_count();
                                 let filter_label = if active_count > 0 {
@@ -980,9 +1387,7 @@ impl App {
                                 } else {
                                     "  |  Filter text".to_string()
                                 };
-                                ui.label(
-                                    egui::RichText::new(filter_label).size(11.0).color(t.accent),
-                                );
+                                ui.add(footer(filter_label, t.accent));
                             }
                             if selected_total > 0 {
                                 let selected_size =
@@ -995,49 +1400,37 @@ impl App {
                                          {selected_size})"
                                     )
                                 };
-                                ui.label(
-                                    egui::RichText::new(format!("  |  {selection_text}"))
-                                        .size(11.0)
-                                        .color(t.accent_purple),
-                                );
+                                let selection = ui
+                                    .add(footer(format!("  |  {selection_text}"), t.accent_purple));
+                                // Spoken when Space/Insert changes the count.
+                                ui.ctx().accesskit_node_builder(selection.id, |node| {
+                                    node.set_role(egui::accesskit::Role::Status);
+                                    node.set_live(egui::accesskit::Live::Polite);
+                                });
                             }
 
                             // Folder largest/oldest: the always-on complement to the
                             // selection HUD (which shows the same for the selection).
                             // Hidden once a selection is active, so the two don't clash.
-                            if selected_total == 0 && total >= 2 {
-                                let short = |name: &str| -> String {
-                                    const MAX: usize = 16;
-                                    if name.chars().count() > MAX {
-                                        let head: String = name.chars().take(MAX - 1).collect();
-                                        format!("{head}\u{2026}")
-                                    } else {
-                                        name.to_string()
-                                    }
-                                };
-                                let mut extra = String::new();
-                                if let Some((name, sz)) = &overview.largest
-                                    && *sz > 0
-                                {
-                                    extra.push_str(&format!(
-                                        "  |  largest {} ({})",
-                                        short(name),
-                                        format_size(*sz)
-                                    ));
-                                }
-                                if let Some((name, _)) = &overview.oldest {
-                                    extra.push_str(&format!("  |  oldest {}", short(name)));
-                                }
-                                if !extra.is_empty() {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(extra)
-                                                .size(11.0)
-                                                .color(t.text_muted),
-                                        )
-                                        .truncate(),
-                                    );
-                                }
+                            if selected_total == 0
+                                && total >= 2
+                                && let Some((extra, full)) = folder_extremes(
+                                    overview
+                                        .largest
+                                        .as_ref()
+                                        .map(|(name, size)| (name.as_str(), *size)),
+                                    overview.oldest.as_ref().map(|(name, _)| name.as_str()),
+                                )
+                            {
+                                // The names are cut short; hover shows them whole.
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(extra).size(11.0).color(t.text_muted),
+                                    )
+                                    .truncate()
+                                    .show_tooltip_when_elided(false),
+                                )
+                                .on_hover_text(full);
                             }
 
                             // Compare mode: chips to turn the diff into a selection.
@@ -1053,16 +1446,21 @@ impl App {
                                     ("Differing", CompareCriterion::Differing),
                                     ("Unique", CompareCriterion::Unique),
                                 ] {
-                                    let clicked = ui
-                                        .add(
-                                            egui::Label::new(
-                                                egui::RichText::new(label)
-                                                    .size(11.0)
-                                                    .color(t.accent),
-                                            )
-                                            .sense(Sense::click()),
+                                    let chip = ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(label).size(11.0).color(t.accent),
                                         )
-                                        .clicked();
+                                        .sense(Sense::click()),
+                                    );
+                                    // A clickable label: tell AT it is a button.
+                                    chip.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            ui.is_enabled(),
+                                            format!("Select {label}"),
+                                        )
+                                    });
+                                    let clicked = chip.clicked();
                                     if clicked {
                                         panel.replace_selection(crate::compare::select_by_compare(
                                             panel
@@ -1133,8 +1531,8 @@ impl App {
 }
 
 /// Build a file name as a [`LayoutJob`], tinting the characters the fuzzy
-/// filter matched (`ranges`, char indices into `name`) in `accent` so the
-/// user sees why the row survived the filter.
+/// filter matched (`ranges`, char indices into `name`) in `accent`, and
+/// underlining them, so the user sees why the row survived the filter.
 fn highlight_name_job(
     name: &str,
     ranges: &[(usize, usize)],
@@ -1148,13 +1546,19 @@ fn highlight_name_job(
     let mut buf = [0u8; 4];
     for (idx, ch) in name.chars().enumerate() {
         let hit = ranges.iter().any(|&(s, e)| idx >= s && idx < e);
-        let color = if hit { accent } else { base };
+        // Matches are underlined too, so they do not rely on hue alone.
+        let (color, underline) = if hit {
+            (accent, egui::Stroke::new(1.0, accent))
+        } else {
+            (base, egui::Stroke::NONE)
+        };
         job.append(
             ch.encode_utf8(&mut buf),
             0.0,
             TextFormat {
                 font_id: font.clone(),
                 color,
+                underline,
                 ..Default::default()
             },
         );
@@ -1165,9 +1569,12 @@ fn highlight_name_job(
 #[cfg(test)]
 mod tests {
     use super::{
-        cursor_row_to_reveal, drop_target_writable, folder_changed, map_ranges_to_display,
-        name_char_budget, selection_size_label, selection_summary_with, visible_rows,
-        visible_selection_summary,
+        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
+        click_range, compare_marker, count_summary, cursor_chevron_fits, cursor_row_to_reveal,
+        drop_target_writable, empty_state, folder_changed, folder_extremes, follow_cursor_focus,
+        grid_row_index, highlight_name_job, map_ranges_to_display, name_char_budget,
+        name_column_width, parent_row_label, row_click_kind, row_content_height, row_spoken_label,
+        selection_size_label, selection_summary_with, visible_rows, visible_selection_summary,
     };
 
     #[test]
@@ -1315,5 +1722,284 @@ mod tests {
             vec![(0, 1)]
         );
         assert!(map_ranges_to_display(name, "", &[(0, 1)]).is_empty());
+    }
+
+    #[test]
+    fn parent_row_announces_the_cursor() {
+        assert_eq!(parent_row_label(false), "Parent folder");
+        assert_eq!(parent_row_label(true), "Parent folder; State: cursor");
+    }
+
+    #[test]
+    fn unlistable_folder_wins_over_the_filter_empty_state() {
+        use crate::panel::DirStatus;
+        // A remembered filter must not turn these into "No matches".
+        for status in [DirStatus::Denied, DirStatus::Gone, DirStatus::Loading] {
+            assert_ne!(empty_state(status, true).1, "No matches", "{status:?}");
+            assert_eq!(empty_state(status, true), empty_state(status, false));
+        }
+        assert_eq!(empty_state(DirStatus::Listed, true).1, "No matches");
+        assert_eq!(
+            empty_state(DirStatus::Empty, true).2,
+            Some(("Clear filters", EmptyAction::ClearFilters))
+        );
+        assert_eq!(empty_state(DirStatus::Empty, false).1, "Empty");
+    }
+
+    #[test]
+    fn empty_state_text_is_renderable_and_platform_neutral() {
+        use crate::panel::DirStatus;
+        // No bundled font maps U+FE0F; it rendered as a replacement box.
+        assert!(!empty_state(DirStatus::Gone, false).0.contains('\u{fe0f}'));
+        let (_, _, action) = empty_state(DirStatus::Denied, false);
+        let (label, kind) = action.expect("denied offers a reveal");
+        assert_eq!(kind, EmptyAction::Reveal);
+        if !cfg!(target_os = "macos") {
+            assert!(!label.contains("Finder"), "{label}");
+        }
+    }
+
+    #[test]
+    fn row_label_speaks_what_the_row_only_paints() {
+        use crate::compare::CompareStatus;
+        let base = crate::accessibility::file_row_semantics(
+            "docs",
+            "Folder",
+            PENDING_SIZE_SPOKEN,
+            "today",
+            false,
+            false,
+            true,
+        )
+        .label;
+        assert!(base.contains("Size: calculating"), "{base}");
+        assert!(!PENDING_SIZE_SPOKEN.contains('\u{2026}'));
+        let label = row_spoken_label(
+            &base,
+            Some(12),
+            Some(compare_marker(CompareStatus::Differs).1),
+        );
+        assert!(label.ends_with("; Items: 12; Compare: Differs"), "{label}");
+        assert_eq!(row_spoken_label(&base, None, None), base);
+        assert_eq!(
+            compare_marker(CompareStatus::Unique),
+            ("+", "Only in this pane")
+        );
+    }
+
+    #[test]
+    fn grid_rows_count_the_parent_row_first() {
+        assert_eq!(grid_row_index(0, true), 1);
+        assert_eq!(grid_row_index(0, false), 0);
+        assert_eq!(grid_row_index(41, true), 42);
+    }
+
+    #[test]
+    fn compact_rows_keep_the_minimum_control_height() {
+        use crate::density::{Density, metrics};
+        assert_eq!(
+            row_content_height(metrics(Density::Compact)),
+            crate::accessibility::MIN_CONTROL_POINTS
+        );
+        // Roomier tiers keep their own height (Comfortable is the old 28).
+        assert_eq!(row_content_height(metrics(Density::Comfortable)), 28.0);
+    }
+
+    #[test]
+    fn selected_cursor_row_drops_the_chevron_for_the_check_mark() {
+        assert!(cursor_chevron_fits(false));
+        assert!(!cursor_chevron_fits(true));
+    }
+
+    #[test]
+    fn narrow_rows_keep_room_for_the_compare_symbol() {
+        let narrow = crate::accessibility::file_row_layout(120.0);
+        assert!(!narrow.show_metadata);
+        assert_eq!(
+            name_column_width(narrow, true),
+            narrow.name_width - INLINE_COMPARE_WIDTH
+        );
+        assert_eq!(name_column_width(narrow, false), narrow.name_width);
+        let wide = crate::accessibility::file_row_layout(400.0);
+        assert_eq!(name_column_width(wide, true), wide.name_width);
+    }
+
+    #[test]
+    fn filter_matches_are_underlined_not_only_tinted() {
+        let base = egui::Color32::GRAY;
+        let accent = egui::Color32::RED;
+        let job = highlight_name_job("abc", &[(1, 2)], base, accent, 13.0);
+        let underlines: Vec<bool> = job
+            .sections
+            .iter()
+            .map(|section| section.format.underline != egui::Stroke::NONE)
+            .collect();
+        assert_eq!(underlines, vec![false, true, false]);
+    }
+
+    #[test]
+    fn click_modifiers_pick_the_selection_gesture() {
+        let mut modifiers = egui::Modifiers::NONE;
+        assert_eq!(row_click_kind(modifiers), RowClick::Plain);
+        modifiers.command = true;
+        assert_eq!(row_click_kind(modifiers), RowClick::Toggle);
+        modifiers.shift = true;
+        assert_eq!(row_click_kind(modifiers), RowClick::Range);
+    }
+
+    #[test]
+    fn shift_click_range_spans_cursor_to_clicked_row() {
+        // Cursor rows are 1-based (0 is ".."); ranges are filtered indices.
+        assert_eq!(click_range(2, 5), 1..=4);
+        assert_eq!(click_range(5, 2), 1..=4);
+        assert_eq!(click_range(3, 3), 2..=2);
+        // From "..", the range starts at the first file row.
+        assert_eq!(click_range(0, 3), 0..=2);
+    }
+
+    #[test]
+    fn dragged_folder_is_not_its_own_drop_target() {
+        let temp = crate::testutil::TempDir::new();
+        let folder = temp.path().join("folder");
+        let inner = folder.join("inner");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&inner).expect("mkdir inner");
+        std::fs::create_dir(&other).expect("mkdir other");
+        let dragged = vec![folder.clone()];
+        assert!(!accepts_row_drop(&folder, &dragged));
+        assert!(!accepts_row_drop(&inner, &dragged));
+        assert!(accepts_row_drop(&other, &dragged));
+        assert!(accepts_row_drop(&folder, &[]));
+    }
+
+    #[test]
+    fn focus_follows_keyboard_cursor_moves_only() {
+        // Cursor moved in the active pane, focus free or on this list.
+        assert!(follow_cursor_focus(true, true, true, false, true));
+        // No cursor move: focus stays where it is.
+        assert!(!follow_cursor_focus(false, true, true, false, true));
+        // Inactive or disabled pane, a text field being edited, or focus
+        // held by another widget (a dialog button): never steal it.
+        assert!(!follow_cursor_focus(true, false, true, false, true));
+        assert!(!follow_cursor_focus(true, true, false, false, true));
+        assert!(!follow_cursor_focus(true, true, true, true, true));
+        assert!(!follow_cursor_focus(true, true, true, false, false));
+    }
+
+    #[test]
+    fn footer_count_is_singular_for_one_item() {
+        assert_eq!(count_summary(1, 1, false, Some(3)), "1 item (3 B)");
+        assert_eq!(count_summary(2, 2, false, None), "2 items (\u{2026})");
+        assert_eq!(
+            count_summary(0, 1, true, Some(3)),
+            "0 of 1 item (folder 3 B)"
+        );
+    }
+
+    #[test]
+    fn filtered_footer_marks_the_size_as_the_folder_total() {
+        assert_eq!(
+            count_summary(12, 400, true, Some(2048)),
+            format!(
+                "12 of 400 items (folder {})",
+                crate::panel::format_size(2048)
+            )
+        );
+    }
+
+    #[test]
+    fn folder_extremes_keep_the_full_names_for_hover() {
+        let long = "a-very-long-file-name-indeed.bin";
+        let (short, full) =
+            folder_extremes(Some((long, 10)), Some("old.log")).expect("something to show");
+        assert!(
+            short.contains("largest a-very-long-fil\u{2026} (10 B)"),
+            "{short}"
+        );
+        assert!(short.ends_with("  |  oldest old.log"), "{short}");
+        assert_eq!(full, format!("Largest: {long} (10 B)\nOldest: old.log"));
+        // A zero-byte "largest" is not worth showing.
+        assert_eq!(folder_extremes(Some(("x", 0)), None), None);
+    }
+
+    /// One frame of the list in a headless context, with `events` as input.
+    fn render_list_frame(
+        ctx: &egui::Context,
+        panel: &mut crate::panel::PanelState,
+        events: Vec<egui::Event>,
+    ) {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input, |ui| {
+            crate::app::App::render_file_list(
+                ui,
+                panel,
+                true,
+                &crate::theme::ThemeColors::dark(),
+                "left",
+                false,
+                None,
+                &|_| {},
+                false,
+                &[],
+                crate::density::metrics(crate::density::Density::default()),
+                true,
+            );
+        });
+        crate::testutil::discard_egui_output(output);
+    }
+
+    fn key_press(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn space_on_a_focused_row_does_not_pull_the_cursor_back() {
+        let temp = crate::testutil::TempDir::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(temp.path().join(name), name).expect("write file");
+        }
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        let ctx = egui::Context::default();
+
+        for start in [0, 1] {
+            // A keyboard move onto `start`: focus follows the cursor there.
+            panel.set_cursor(start);
+            panel.set_scroll_to_cursor(true);
+            render_list_frame(&ctx, &mut panel, Vec::new());
+            render_list_frame(&ctx, &mut panel, Vec::new());
+            assert!(ctx.memory(|memory| memory.focused().is_some()));
+
+            // Space/Enter, as the key handler sees them: it already moved the
+            // cursor on before the list renders the same frame's input.
+            for key in [egui::Key::Space, egui::Key::Enter] {
+                panel.set_cursor(start + 1);
+                render_list_frame(&ctx, &mut panel, vec![key_press(key)]);
+                assert_eq!(panel.cursor(), start + 1, "{key:?} from row {start}");
+                panel.set_cursor(start);
+                render_list_frame(&ctx, &mut panel, Vec::new());
+            }
+        }
+    }
+
+    #[test]
+    fn matches_stay_aligned_when_controls_are_shown_as_symbols() {
+        let name = "a\tbcdefghij.txt";
+        let display = crate::display_name::truncate_preserving_extension(name, 8);
+        assert_eq!(display, "a\u{2409}b\u{2026}.txt");
+        // "b" (after the tab) keeps its own column instead of the ellipsis.
+        assert_eq!(
+            map_ranges_to_display(name, &display, &[(2, 3)]),
+            vec![(2, 3)]
+        );
     }
 }

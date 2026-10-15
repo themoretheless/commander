@@ -1,10 +1,82 @@
 use super::*;
-use crate::panel::{FacetSet, KindFacet};
+use crate::panel::{FacetSet, KindFacet, SortOrder};
 
 #[derive(Default)]
 pub struct PanelRenderOutcome {
     pub tree_toggle: bool,
     pub context_menu_request: Option<ui_state::ContextMenuCandidate>,
+}
+
+fn file_name_of(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn text_preview_scroll_id(panel_side: &str) -> egui::Id {
+    egui::Id::new(("text_preview", panel_side))
+}
+
+/// Whether the pane's text preview now shows a different file than last
+/// frame, so its scroll offset should go back to the top. Only the last
+/// path per pane is kept, so memory does not grow with every file viewed.
+fn text_preview_path_changed(
+    ctx: &egui::Context,
+    scroll_id: egui::Id,
+    path: &std::path::Path,
+) -> bool {
+    let key = scroll_id.with("last_path");
+    ctx.data_mut(|data| {
+        let changed = data.get_temp::<std::path::PathBuf>(key).as_deref() != Some(path);
+        if changed {
+            data.insert_temp(key, path.to_path_buf());
+        }
+        changed
+    })
+}
+
+/// The close button shared by the image, text and Get Info previews.
+fn close_preview_button(ui: &mut egui::Ui) -> bool {
+    let response = ui.small_button("\u{00d7}");
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Close preview")
+    });
+    response.on_hover_text("Close preview (Esc)").clicked()
+}
+
+/// "Preview unavailable" and its cause, announced to assistive tech as a
+/// status update since it replaces a spinner without any focus change.
+fn preview_failure_text(ui: &mut egui::Ui, message: &str, t: &ThemeColors) {
+    ui.label(
+        egui::RichText::new("Preview unavailable")
+            .size(13.0)
+            .strong()
+            .color(t.text_primary),
+    );
+    ui.add_space(4.0);
+    let response = ui.label(
+        egui::RichText::new(message)
+            .size(11.0)
+            .color(t.text_secondary),
+    );
+    let announcement = format!("Preview unavailable: {message}");
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Status);
+        node.set_live(egui::accesskit::Live::Polite);
+        node.set_label(announcement);
+    });
+}
+
+/// Why image previews are off: the kill switch, the Developer diagnostics
+/// toggle, or a staged rollout that has not reached this install.
+fn image_preview_disabled_reason(state: crate::feature_flags::FeatureSnapshot) -> &'static str {
+    if state.environment_killed {
+        "Turned off by COMMANDER_DISABLE_IMAGE_PREVIEW"
+    } else if state.runtime_killed {
+        "Turned off under Developer diagnostics \u{203a} Runtime controls"
+    } else {
+        "Not yet rolled out to this install"
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -22,21 +94,24 @@ fn render_text_preview(
         .fill(t.bg_panel)
         .inner_margin(Margin::same(8))
         .show(ui, |ui| {
+            // The close button is placed first so a long name truncates
+            // (full name on hover) instead of pushing it out of the pane.
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(
-                        path.file_name()
-                            .map(|name| name.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                    )
-                    .size(12.0)
-                    .strong()
-                    .color(t.text_primary),
-                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.small_button("✕").clicked() {
+                    if close_preview_button(ui) {
                         *close_preview = true;
                     }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(file_name_of(path))
+                                    .size(12.0)
+                                    .strong()
+                                    .color(t.text_primary),
+                            )
+                            .truncate(),
+                        );
+                    });
                 });
             });
             ui.add(egui::Separator::default().spacing(4.0));
@@ -46,21 +121,25 @@ fn render_text_preview(
             // cancelled or retargeted by the other pane, which would otherwise
             // leave this pane on a spinner forever.
             if let Some(content) = content {
-                egui::ScrollArea::both()
-                    .id_salt(format!("text_preview_{}", panel_side))
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        ui.style_mut().interaction.selectable_labels = true;
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(content)
-                                    .size(12.0)
-                                    .font(egui::FontId::monospace(12.0))
-                                    .color(t.text_secondary),
-                            )
-                            .wrap(),
-                        );
-                    });
+                // The preview follows the cursor, and each newly shown file
+                // opens at its top.
+                let scroll_id = text_preview_scroll_id(panel_side);
+                let mut scroll = egui::ScrollArea::both().id_salt(scroll_id);
+                if text_preview_path_changed(ui.ctx(), scroll_id, path) {
+                    scroll = scroll.scroll_offset(Vec2::ZERO);
+                }
+                scroll.auto_shrink([false; 2]).show(ui, |ui| {
+                    ui.style_mut().interaction.selectable_labels = true;
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(content)
+                                .size(12.0)
+                                .font(egui::FontId::monospace(12.0))
+                                .color(t.text_secondary),
+                        )
+                        .wrap(),
+                    );
+                });
                 return;
             }
 
@@ -96,18 +175,7 @@ fn render_text_preview(
                 crate::image_cache::TextPreviewLoadState::Failed(error) => {
                     ui.centered_and_justified(|ui| {
                         ui.vertical_centered(|ui| {
-                            ui.label(
-                                egui::RichText::new("Preview unavailable")
-                                    .size(13.0)
-                                    .strong()
-                                    .color(t.text_primary),
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(error.message())
-                                    .size(11.0)
-                                    .color(t.text_secondary),
-                            );
+                            preview_failure_text(ui, error.message(), t);
                             ui.add_space(10.0);
                             if ui.button("\u{21bb} Retry").clicked() {
                                 image_cache.retry_text_preview(path);
@@ -120,6 +188,300 @@ fn render_text_preview(
                 crate::image_cache::TextPreviewLoadState::Ready => {}
             }
         });
+}
+
+/// One quick-filter chip. Its on/off state is shown by fill and published
+/// as a toggle, so assistive tech hears "pressed" rather than a plain button.
+fn facet_chip(ui: &mut egui::Ui, label: &str, active: bool, t: &ThemeColors) -> egui::Response {
+    let fill = if active {
+        t.accent.linear_multiply(0.3)
+    } else {
+        t.bg_card
+    };
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new(label).size(10.0).color(t.text_primary))
+            .fill(fill)
+            .corner_radius(CornerRadius::same(2)),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
+    });
+    response
+}
+
+/// A modification-age chip: "within the last N days" (max age) or "older
+/// than N days" (min age).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgeChip {
+    Within(u64),
+    Older(u64),
+}
+
+/// The age chips with their hover text. "24h" rather than "Today": the
+/// facet counts back from now, not from midnight.
+const AGE_CHIPS: [(&str, &str, AgeChip); 4] = [
+    ("24h", "Modified in the last 24 hours", AgeChip::Within(1)),
+    ("Week", "Modified in the last 7 days", AgeChip::Within(7)),
+    ("Month", "Modified in the last 30 days", AgeChip::Within(30)),
+    (
+        "Older",
+        "Not modified in the last 30 days",
+        AgeChip::Older(30),
+    ),
+];
+
+fn age_chip_active(facets: &FacetSet, chip: AgeChip) -> bool {
+    match chip {
+        AgeChip::Within(days) => facets.max_age_days == Some(days),
+        AgeChip::Older(days) => facets.min_age_days == Some(days),
+    }
+}
+
+/// The age chips are one exclusive group: picking one clears the others,
+/// so "Week" + "Older" can never combine into an always-empty list.
+/// Clicking the active chip clears the group.
+fn toggle_age_chip(facets: &mut FacetSet, chip: AgeChip) {
+    let was_active = age_chip_active(facets, chip);
+    facets.max_age_days = None;
+    facets.min_age_days = None;
+    if !was_active {
+        match chip {
+            AgeChip::Within(days) => facets.max_age_days = Some(days),
+            AgeChip::Older(days) => facets.min_age_days = Some(days),
+        }
+    }
+}
+
+/// Frame margin plus stroke around a breadcrumb label.
+const CRUMB_CHROME_WIDTH: f32 = 2.0 * 8.0 + 2.0;
+/// Width of the chevron drawn between crumbs.
+const CRUMB_SEPARATOR_WIDTH: f32 = 12.0;
+const HIDDEN_CRUMBS_LABEL: &str = "Show hidden parent folders";
+
+/// What a breadcrumb chip announces: a link to its folder, or the current
+/// folder itself.
+fn crumb_accessible_label(path: &std::path::Path, is_current: bool) -> String {
+    if is_current {
+        format!("Current folder {}", path.display())
+    } else {
+        format!("Go to {}", path.display())
+    }
+}
+
+/// A step through a pane's navigation history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryStep {
+    Back,
+    Forward,
+}
+
+/// The mouse's side buttons: Extra1 is "back" and Extra2 "forward" on
+/// every platform egui supports. Both at once cancel out.
+const fn mouse_history_step(back: bool, forward: bool) -> Option<HistoryStep> {
+    match (back, forward) {
+        (true, false) => Some(HistoryStep::Back),
+        (false, true) => Some(HistoryStep::Forward),
+        _ => None,
+    }
+}
+
+/// The history step a mouse side button asks of the pane under the pointer.
+/// None while the pane is disabled (a modal dialog traps input), so a side
+/// button cannot navigate a pane behind an open dialog.
+fn pane_history_step(ui: &egui::Ui, pane_rect: egui::Rect) -> Option<HistoryStep> {
+    if !ui.is_enabled() || !ui.rect_contains_pointer(pane_rect) {
+        return None;
+    }
+    ui.input(|input| {
+        mouse_history_step(
+            input.pointer.button_pressed(egui::PointerButton::Extra1),
+            input.pointer.button_pressed(egui::PointerButton::Extra2),
+        )
+    })
+}
+
+/// A painted 28px path-bar button with an accessible name, a tooltip, hover
+/// feedback and a focus ring. A disabled button only senses hover: it keeps
+/// its tooltip but neither takes focus nor reacts to clicks.
+fn path_bar_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    tooltip: &str,
+    selected: Option<bool>,
+    t: &ThemeColors,
+) -> (egui::Rect, egui::Response) {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), sense);
+    if enabled && response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::ZERO, t.bg_hover.linear_multiply(0.3));
+    }
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0_f32, t.border),
+        egui::StrokeKind::Outside,
+    );
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            CornerRadius::ZERO,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.widget_info(|| match selected {
+        Some(selected) => {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
+        }
+        None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label),
+    });
+    let response = response.on_hover_text(tooltip);
+    (rect, response)
+}
+
+/// Name a pane's region for assistive tech, so moving focus into a pane
+/// announces which one it is and whether it is active.
+fn mark_pane_region(ui: &egui::Ui, panel_side: &str, is_active: bool) {
+    let label = pane_accessible_label(panel_side, is_active);
+    ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+        node.set_role(egui::accesskit::Role::Group);
+        node.set_label(label);
+    });
+}
+
+fn pane_accessible_label(panel_side: &str, is_active: bool) -> String {
+    let mut chars = panel_side.chars();
+    let side = chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect::<String>()
+    });
+    if is_active {
+        format!("{side} pane, active")
+    } else {
+        format!("{side} pane")
+    }
+}
+
+/// The pane's filter box. Both panes share the hint text, so the field is
+/// named after its pane for screen readers.
+fn pane_filter_field(
+    ui: &mut egui::Ui,
+    query: &mut String,
+    width: f32,
+    panel_side: &str,
+) -> egui::Response {
+    let response = ui.add_sized(
+        Vec2::new(width, 26.0),
+        egui::TextEdit::singleline(query)
+            .hint_text("\u{1f50d} Filter\u{2026}")
+            .desired_width(f32::INFINITY)
+            .margin(egui::vec2(8.0, 4.0)),
+    );
+    let label = format!("Filter {panel_side} pane");
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_label(label);
+    });
+    response
+}
+
+/// The "×" button that clears the filter text; named "Clear filter" for
+/// assistive tech, which would otherwise read the glyph.
+fn clear_filter_button(ui: &mut egui::Ui, t: &ThemeColors) -> egui::Response {
+    let response = ui.add_sized(
+        Vec2::new(26.0, 24.0),
+        egui::Button::new(
+            egui::RichText::new("\u{00d7}")
+                .size(12.0)
+                .color(t.text_secondary),
+        )
+        .fill(t.bg_card)
+        .corner_radius(crate::theme::ROUNDING_SM),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Clear filter")
+    });
+    response.on_hover_text("Clear filter")
+}
+
+/// Width a row spends ahead of its name column (selection mark, icon and
+/// padding) that the header row does not, so both make the same
+/// [`file_row_layout`](crate::accessibility::file_row_layout) call.
+///
+/// Mirrors the folder row in `file_list.rs`: the 9px selection gutter, the
+/// 24px icon plus its 4px item spacing and the 3px gap before the name,
+/// less what the header's wider frame margin (10px a side against the
+/// row's 6px) already takes. Update it with that row layout.
+const ROW_LEAD_WIDTH: f32 = {
+    const SELECTION_GUTTER: f32 = 9.0;
+    const ICON_WIDTH: f32 = 24.0;
+    const ICON_SPACING: f32 = 4.0;
+    const NAME_GAP: f32 = 3.0;
+    const HEADER_MARGIN_X: f32 = 10.0;
+    const ROW_MARGIN_X: f32 = 6.0;
+    SELECTION_GUTTER + ICON_WIDTH + ICON_SPACING + NAME_GAP - 2.0 * (HEADER_MARGIN_X - ROW_MARGIN_X)
+};
+
+/// Whether the column header shows Size/Modified: only when the rows below
+/// show those columns too.
+fn header_shows_metadata(header_width: f32) -> bool {
+    crate::accessibility::file_row_layout(header_width - ROW_LEAD_WIDTH).show_metadata
+}
+
+/// The sortable column headers; returns the clicked column. Size and
+/// Modified sit right-aligned but are laid out left to right, so Tab
+/// visits Name, Size, Modified in the order they appear.
+fn column_headers(
+    ui: &mut egui::Ui,
+    order_for: impl Fn(SortColumn) -> Option<SortOrder>,
+    color: Color32,
+    show_metadata: bool,
+) -> Option<SortColumn> {
+    let mut clicked = None;
+    if crate::app::glyphs::sort_header(ui, "Name", order_for(SortColumn::Name), color).clicked() {
+        clicked = Some(SortColumn::Name);
+    }
+    if !show_metadata {
+        return clicked;
+    }
+    const GAP: f32 = 24.0;
+    // `sort_header` draws an 11pt label, plus a 3pt gap and a 9pt triangle
+    // when that column is sorted.
+    let header_width = |ui: &egui::Ui, label: &str, order: Option<SortOrder>| {
+        let text = ui
+            .painter()
+            .layout_no_wrap(label.to_owned(), egui::FontId::proportional(11.0), color)
+            .size()
+            .x;
+        text + if order.is_some() { 12.0 } else { 0.0 }
+    };
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.add_space(8.0);
+        let size_order = order_for(SortColumn::Size);
+        let modified_order = order_for(SortColumn::Modified);
+        let width = header_width(ui, "Size", size_order)
+            + GAP
+            + header_width(ui, "Modified", modified_order);
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, ui.available_height()),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                if crate::app::glyphs::sort_header(ui, "Size", size_order, color).clicked() {
+                    clicked = Some(SortColumn::Size);
+                }
+                ui.add_space(GAP);
+                if crate::app::glyphs::sort_header(ui, "Modified", modified_order, color).clicked()
+                {
+                    clicked = Some(SortColumn::Modified);
+                }
+            },
+        );
+    });
+    clicked
 }
 
 impl App {
@@ -140,19 +502,7 @@ impl App {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
 
                     let chip = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
-                        let fill = if active {
-                            t.accent.linear_multiply(0.3)
-                        } else {
-                            t.bg_card
-                        };
-                        ui.add(
-                            egui::Button::new(
-                                egui::RichText::new(label).size(10.0).color(t.text_primary),
-                            )
-                            .fill(fill)
-                            .corner_radius(CornerRadius::same(2)),
-                        )
-                        .clicked()
+                        facet_chip(ui, label, active, t).clicked()
                     };
 
                     let f = &mut facets;
@@ -188,34 +538,13 @@ impl App {
                         };
                     }
                     ui.add_space(6.0);
-                    if chip(ui, "Today", f.max_age_days == Some(1)) {
-                        f.max_age_days = if f.max_age_days == Some(1) {
-                            None
-                        } else {
-                            Some(1)
-                        };
-                    }
-                    if chip(ui, "Week", f.max_age_days == Some(7)) {
-                        f.max_age_days = if f.max_age_days == Some(7) {
-                            None
-                        } else {
-                            Some(7)
-                        };
-                    }
-                    if chip(ui, "Month", f.max_age_days == Some(30)) {
-                        f.max_age_days = if f.max_age_days == Some(30) {
-                            None
-                        } else {
-                            Some(30)
-                        };
-                    }
-                    // Older than a month (min-age): the stale-files bucket.
-                    if chip(ui, "Older", f.min_age_days == Some(30)) {
-                        f.min_age_days = if f.min_age_days == Some(30) {
-                            None
-                        } else {
-                            Some(30)
-                        };
+                    for (label, hover, age) in AGE_CHIPS {
+                        if facet_chip(ui, label, age_chip_active(f, age), t)
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            toggle_age_chip(f, age);
+                        }
                     }
                     let active_count = f.active_count();
                     if active_count > 0 {
@@ -258,6 +587,7 @@ impl App {
         compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
+        dragged: &[std::path::PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
     ) -> PanelRenderOutcome {
@@ -265,12 +595,22 @@ impl App {
         let mut tree_toggle = false;
         let mut context_menu_request = None;
 
+        // The mouse's side buttons step through this pane's history while
+        // the pointer is over it, like the Back/Forward buttons.
+        let pane_rect = ui.available_rect_before_wrap();
+        match pane_history_step(ui, pane_rect) {
+            Some(HistoryStep::Back) if panel.can_go_back() => panel.go_back(),
+            Some(HistoryStep::Forward) if panel.can_go_forward() => panel.go_forward(),
+            _ => {}
+        }
+
         Frame::NONE
             .fill(panel_bg)
             .inner_margin(Margin::same(0))
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::ZERO)
             .show(ui, |ui| {
+                mark_pane_region(ui, panel_side, is_active);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 10.0);
 
                 // Path bar: back/forward + breadcrumb arrows
@@ -286,22 +626,14 @@ impl App {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
-                            // Back button
-                            let btn_size = Vec2::new(28.0, 28.0);
                             let can_back = panel.can_go_back();
                             let (back_rect, back_resp) =
-                                ui.allocate_exact_size(btn_size, Sense::click());
+                                path_bar_button(ui, can_back, "Back", "Back (Cmd+[)", None, t);
                             let back_color = if can_back {
                                 t.text_primary
                             } else {
                                 t.text_muted
                             };
-                            ui.painter().rect_stroke(
-                                back_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0_f32, t.border),
-                                egui::StrokeKind::Outside,
-                            );
                             crate::app::glyphs::navigation_triangle(
                                 ui, back_rect, false, back_color,
                             );
@@ -309,21 +641,14 @@ impl App {
                                 panel.go_back();
                             }
 
-                            // Forward button
                             let can_fwd = panel.can_go_forward();
                             let (fwd_rect, fwd_resp) =
-                                ui.allocate_exact_size(btn_size, Sense::click());
+                                path_bar_button(ui, can_fwd, "Forward", "Forward (Cmd+])", None, t);
                             let fwd_color = if can_fwd {
                                 t.text_primary
                             } else {
                                 t.text_muted
                             };
-                            ui.painter().rect_stroke(
-                                fwd_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0_f32, t.border),
-                                egui::StrokeKind::Outside,
-                            );
                             crate::app::glyphs::navigation_triangle(ui, fwd_rect, true, fwd_color);
                             if fwd_resp.clicked() && can_fwd {
                                 panel.go_forward();
@@ -331,14 +656,20 @@ impl App {
 
                             // Tree toggle button
                             let tree_color = if tree_open { t.accent } else { t.text_muted };
+                            let tree_tip = if tree_open {
+                                "Hide folder tree"
+                            } else {
+                                "Show folder tree"
+                            };
                             let (tree_rect, tree_resp) =
-                                ui.allocate_exact_size(btn_size, Sense::click());
-                            ui.painter().rect_stroke(
-                                tree_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0_f32, t.border),
-                                egui::StrokeKind::Outside,
-                            );
+                                path_bar_button(
+                                    ui,
+                                    true,
+                                    "Folder tree",
+                                    tree_tip,
+                                    Some(tree_open),
+                                    t,
+                                );
                             // Mini folder icon
                             {
                                 let p = ui.painter();
@@ -388,22 +719,82 @@ impl App {
                             // so the root and the current folder stay visible.
                             let mut nav_to_crumb: Option<std::path::PathBuf> = None;
                             let all = crate::crumbs::crumbs(&panel.current_path);
-                            // Roughly one chip per ~130px; always keep two.
-                            let max_visible = ((ui.available_width() / 130.0) as usize).max(2);
+                            // Keep the deepest crumbs that fit the measured
+                            // width of their labels; always keep two.
+                            let crumb_width = |label: &str| {
+                                ui.painter()
+                                    .layout_no_wrap(
+                                        label.to_owned(),
+                                        egui::FontId::proportional(12.0),
+                                        t.text_primary,
+                                    )
+                                    .size()
+                                    .x
+                                    + CRUMB_CHROME_WIDTH
+                                    + CRUMB_SEPARATOR_WIDTH
+                            };
+                            let widths: Vec<f32> =
+                                all.iter().map(|c| crumb_width(&c.label)).collect();
+                            let ellipsis_width = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    "\u{2026}".to_owned(),
+                                    egui::TextStyle::Button.resolve(ui.style()),
+                                    t.text_primary,
+                                )
+                                .size()
+                                .x
+                                + 2.0 * ui.spacing().button_padding.x
+                                + CRUMB_SEPARATOR_WIDTH;
+                            let max_visible = crate::crumbs::visible_crumb_count(
+                                &widths,
+                                ellipsis_width,
+                                ui.available_width(),
+                            );
                             let layout = crate::crumbs::elide_crumbs(&all, max_visible);
 
-                            // Draw one clickable crumb chip; returns its response.
-                            let chip = |ui: &mut egui::Ui, label: &str, fg: Color32| {
-                                Frame::NONE
+                            // Draw one crumb chip; returns its response. The
+                            // current folder's chip is not a link, so it only
+                            // senses hover and never takes keyboard focus.
+                            let chip = |ui: &mut egui::Ui,
+                                        crumb: &crate::crumbs::Crumb,
+                                        fg: Color32,
+                                        is_current: bool| {
+                                let response = Frame::NONE
                                     .fill(Color32::TRANSPARENT)
                                     .corner_radius(CornerRadius::ZERO)
                                     .stroke(Stroke::new(1.0_f32, t.border))
                                     .inner_margin(Margin::symmetric(8, 3))
                                     .show(ui, |ui| {
-                                        ui.label(egui::RichText::new(label).size(12.0).color(fg));
+                                        ui.label(
+                                            egui::RichText::new(&crumb.label).size(12.0).color(fg),
+                                        );
                                     })
                                     .response
-                                    .interact(Sense::click())
+                                    .interact(if is_current {
+                                        Sense::hover()
+                                    } else {
+                                        Sense::click()
+                                    });
+                                let accessible =
+                                    crumb_accessible_label(&crumb.full_path, is_current);
+                                let kind = if is_current {
+                                    egui::WidgetType::Label
+                                } else {
+                                    egui::WidgetType::Button
+                                };
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(kind, ui.is_enabled(), &accessible)
+                                });
+                                if response.has_focus() {
+                                    ui.painter().rect_stroke(
+                                        response.rect.shrink(1.0),
+                                        CornerRadius::ZERO,
+                                        ui.visuals().selection.stroke,
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                response
                             };
                             let sep = |ui: &mut egui::Ui| {
                                 crate::app::glyphs::breadcrumb_chevron(ui, t.text_muted);
@@ -420,7 +811,7 @@ impl App {
                                 } else {
                                     t.text_secondary
                                 };
-                                let resp = chip(ui, &layout.head.label, fg);
+                                let resp = chip(ui, &layout.head, fg, head_is_current);
                                 if resp.clicked() && !head_is_current {
                                     nav_to_crumb = Some(layout.head.full_path.clone());
                                 }
@@ -433,7 +824,7 @@ impl App {
 
                                 // Collapsed ancestors behind a "..." menu.
                                 if layout.is_elided() {
-                                    ui.menu_button("\u{2026}", |ui| {
+                                    let menu = ui.menu_button("\u{2026}", |ui| {
                                         for c in &layout.collapsed {
                                             if ui.button(&c.label).clicked() {
                                                 nav_to_crumb = Some(c.full_path.clone());
@@ -441,6 +832,14 @@ impl App {
                                             }
                                         }
                                     });
+                                    menu.response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            ui.is_enabled(),
+                                            HIDDEN_CRUMBS_LABEL,
+                                        )
+                                    });
+                                    menu.response.on_hover_text(HIDDEN_CRUMBS_LABEL);
                                     sep(ui);
                                 }
 
@@ -453,7 +852,7 @@ impl App {
                                     } else {
                                         t.text_secondary
                                     };
-                                    let resp = chip(ui, &c.label, fg);
+                                    let resp = chip(ui, c, fg, is_last);
                                     if resp.clicked() && !is_last {
                                         nav_to_crumb = Some(c.full_path.clone());
                                     }
@@ -482,30 +881,10 @@ impl App {
                             let text_filter_active = !query.trim().is_empty();
                             let clear_width = if text_filter_active { 30.0 } else { 0.0 };
                             let input_width = (ui.available_width() - clear_width).max(80.0);
-                            filter_changed |= ui
-                                .add_sized(
-                                    Vec2::new(input_width, 26.0),
-                                    egui::TextEdit::singleline(&mut query)
-                                        .hint_text("\u{1f50d} Filter\u{2026}")
-                                        .desired_width(f32::INFINITY)
-                                        .margin(egui::vec2(8.0, 4.0)),
-                                )
-                                .changed();
-                            if text_filter_active
-                                && ui
-                                    .add_sized(
-                                        Vec2::new(26.0, 24.0),
-                                        egui::Button::new(
-                                            egui::RichText::new("\u{00d7}")
-                                                .size(12.0)
-                                                .color(t.text_secondary),
-                                        )
-                                        .fill(t.bg_card)
-                                        .corner_radius(crate::theme::ROUNDING_SM),
-                                    )
-                                    .on_hover_text("Clear filter")
-                                    .clicked()
-                            {
+                            filter_changed |=
+                                pane_filter_field(ui, &mut query, input_width, panel_side)
+                                    .changed();
+                            if text_filter_active && clear_filter_button(ui, t).clicked() {
                                 query.clear();
                                 filter_changed = true;
                             }
@@ -541,6 +920,8 @@ impl App {
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            // Measured before the "ACTIVE" tag, like the rows.
+                            let show_metadata = header_shows_metadata(ui.available_width());
                             if is_active {
                                 ui.label(
                                     egui::RichText::new("ACTIVE")
@@ -550,44 +931,14 @@ impl App {
                                 );
                                 ui.add_space(4.0);
                             }
-                            if crate::app::glyphs::sort_header(
+                            if let Some(column) = column_headers(
                                 ui,
-                                "Name",
-                                panel.sort_order_for(SortColumn::Name),
+                                |column| panel.sort_order_for(column),
                                 header_text,
-                            )
-                            .clicked()
-                            {
-                                panel.set_sort(SortColumn::Name);
+                                show_metadata,
+                            ) {
+                                panel.set_sort(column);
                             }
-
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add_space(8.0);
-
-                                if crate::app::glyphs::sort_header(
-                                    ui,
-                                    "Modified",
-                                    panel.sort_order_for(SortColumn::Modified),
-                                    header_text,
-                                )
-                                .clicked()
-                                {
-                                    panel.set_sort(SortColumn::Modified);
-                                }
-
-                                ui.add_space(24.0);
-
-                                if crate::app::glyphs::sort_header(
-                                    ui,
-                                    "Size",
-                                    panel.sort_order_for(SortColumn::Size),
-                                    header_text,
-                                )
-                                .clicked()
-                                {
-                                    panel.set_sort(SortColumn::Size);
-                                }
-                            });
                         });
                     });
                 if is_active {
@@ -618,11 +969,7 @@ impl App {
                                 preview_extent.y,
                                 ui.ctx().pixels_per_point(),
                             );
-                            let close_button = |ui: &mut egui::Ui| {
-                                ui.small_button("\u{00d7}")
-                                    .on_hover_text("Close preview")
-                                    .clicked()
-                            };
+                            let close_button = close_preview_button;
                             if let Some(texture) = image_cache.get(&path) {
                                 let tex_size = texture.size_vec2();
                                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -642,6 +989,7 @@ impl App {
                                             texture.id(),
                                             display_size,
                                         ))
+                                        .alt_text(file_name_of(&path))
                                         .sense(Sense::click()),
                                     );
                                     if resp.clicked() {
@@ -658,6 +1006,18 @@ impl App {
                                                         .size(12.0)
                                                         .color(t.text_muted),
                                                 );
+                                                ui.add_space(4.0);
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        image_preview_disabled_reason(
+                                                            crate::feature_flags::snapshot(
+                                                                crate::feature_flags::RiskyFeature::ImagePreview,
+                                                            ),
+                                                        ),
+                                                    )
+                                                    .size(11.0)
+                                                    .color(t.text_muted),
+                                                );
                                                 ui.add_space(10.0);
                                                 close_preview |= close_button(ui);
                                             });
@@ -666,18 +1026,7 @@ impl App {
                                     crate::image_cache::PreviewLoadState::Failed(failure) => {
                                         ui.centered_and_justified(|ui| {
                                             ui.vertical_centered(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new("Preview unavailable")
-                                                        .size(13.0)
-                                                        .strong()
-                                                        .color(t.text_primary),
-                                                );
-                                                ui.add_space(4.0);
-                                                ui.label(
-                                                    egui::RichText::new(failure.message())
-                                                        .size(11.0)
-                                                        .color(t.text_secondary),
-                                                );
+                                                preview_failure_text(ui, failure.message(), t);
                                                 ui.add_space(10.0);
                                                 ui.horizontal_centered(|ui| {
                                                     if ui.button("\u{21bb} Retry").clicked() {
@@ -735,7 +1084,7 @@ impl App {
                                         ui.with_layout(
                                             Layout::right_to_left(Align::Center),
                                             |ui| {
-                                                if ui.small_button("✕").clicked() {
+                                                if close_preview_button(ui) {
                                                     close_preview = true;
                                                 }
                                             },
@@ -810,6 +1159,7 @@ impl App {
                         compare,
                         opener,
                         dragging,
+                        dragged,
                         metrics,
                         reduced_motion,
                     );
@@ -820,5 +1170,299 @@ impl App {
             tree_toggle,
             context_menu_request,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accesskit_nodes(
+        add: impl FnMut(&mut egui::Ui),
+    ) -> Vec<(egui::accesskit::NodeId, egui::accesskit::Node)> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output = crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), add));
+        output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output")
+            .nodes
+    }
+
+    fn node_labelled<'a>(
+        nodes: &'a [(egui::accesskit::NodeId, egui::accesskit::Node)],
+        label: &str,
+    ) -> &'a egui::accesskit::Node {
+        nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.label() == Some(label))
+            .unwrap_or_else(|| panic!("no node labelled {label:?}"))
+    }
+
+    #[test]
+    fn facet_chips_publish_their_toggle_state() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| {
+            facet_chip(ui, "Images", true, &t);
+            facet_chip(ui, "Docs", false, &t);
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Images").toggled(),
+            Some(egui::accesskit::Toggled::True)
+        );
+        assert_eq!(
+            node_labelled(&nodes, "Docs").toggled(),
+            Some(egui::accesskit::Toggled::False)
+        );
+    }
+
+    #[test]
+    fn age_chips_are_one_exclusive_group() {
+        let mut facets = FacetSet::default();
+        toggle_age_chip(&mut facets, AgeChip::Within(7));
+        toggle_age_chip(&mut facets, AgeChip::Older(30));
+        assert_eq!(facets.max_age_days, None);
+        assert_eq!(facets.min_age_days, Some(30));
+        toggle_age_chip(&mut facets, AgeChip::Within(1));
+        assert_eq!(facets.max_age_days, Some(1));
+        assert_eq!(facets.min_age_days, None);
+        // Clicking the active chip clears the group.
+        toggle_age_chip(&mut facets, AgeChip::Within(1));
+        assert_eq!(facets, FacetSet::default());
+    }
+
+    #[test]
+    fn the_one_day_age_chip_does_not_claim_calendar_today() {
+        let (label, hover, chip) = AGE_CHIPS[0];
+        assert_eq!(chip, AgeChip::Within(1));
+        assert_eq!(label, "24h");
+        assert!(hover.contains("24 hours"));
+        assert!(AGE_CHIPS.iter().all(|(label, ..)| *label != "Today"));
+    }
+
+    #[test]
+    fn path_bar_buttons_are_named_and_disabled_ones_are_marked() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| {
+            path_bar_button(ui, false, "Back", "Back", None, &t);
+            path_bar_button(ui, true, "Forward", "Forward", None, &t);
+            path_bar_button(ui, true, "Folder tree", "Hide", Some(true), &t);
+        });
+        assert!(node_labelled(&nodes, "Back").is_disabled());
+        let forward = node_labelled(&nodes, "Forward");
+        assert!(!forward.is_disabled());
+        assert_eq!(forward.role(), egui::accesskit::Role::Button);
+        assert_eq!(
+            node_labelled(&nodes, "Folder tree").toggled(),
+            Some(egui::accesskit::Toggled::True)
+        );
+    }
+
+    #[test]
+    fn crumbs_announce_their_target_folder() {
+        let path = std::path::Path::new("/a/b");
+        assert_eq!(crumb_accessible_label(path, false), "Go to /a/b");
+        assert_eq!(crumb_accessible_label(path, true), "Current folder /a/b");
+    }
+
+    #[test]
+    fn mouse_side_buttons_step_through_history() {
+        assert_eq!(mouse_history_step(true, false), Some(HistoryStep::Back));
+        assert_eq!(mouse_history_step(false, true), Some(HistoryStep::Forward));
+        assert_eq!(mouse_history_step(false, false), None);
+        assert_eq!(mouse_history_step(true, true), None);
+    }
+
+    /// Press the Extra1 (back) side button over the middle of the screen on
+    /// the second frame and report what `pane_history_step` saw there.
+    fn side_button_step(enabled: bool) -> Option<HistoryStep> {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let pos = screen.center();
+        let mut step = None;
+        for frame in 0..2 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            input.events.push(egui::Event::PointerMoved(pos));
+            if frame == 1 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Extra1,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let output = ctx.run_ui(input, |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    let rect = ui.available_rect_before_wrap();
+                    ui.allocate_rect(rect, Sense::hover());
+                    if frame == 1 {
+                        step = pane_history_step(ui, rect);
+                    }
+                });
+            });
+            crate::testutil::take_egui_output(output);
+        }
+        step
+    }
+
+    #[test]
+    fn side_buttons_do_not_navigate_a_disabled_pane() {
+        assert_eq!(side_button_step(true), Some(HistoryStep::Back));
+        assert_eq!(side_button_step(false), None);
+    }
+
+    /// Labels of the nodes in AccessKit tree order (depth first), which is
+    /// the order widgets were created in and so the Tab order.
+    fn labels_in_tree_order(ctx_run: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), ctx_run));
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output");
+        let nodes: std::collections::HashMap<_, _> = update.nodes.into_iter().collect();
+        let mut stack = vec![update.tree.expect("full tree").root];
+        let mut labels = Vec::new();
+        while let Some(id) = stack.pop() {
+            let Some(node) = nodes.get(&id) else { continue };
+            if let Some(label) = node.label() {
+                labels.push(label.to_string());
+            }
+            stack.extend(node.children().iter().rev());
+        }
+        labels
+    }
+
+    #[test]
+    fn column_headers_tab_in_visual_order() {
+        let labels = labels_in_tree_order(|ui| {
+            ui.horizontal(|ui| {
+                column_headers(ui, |_| None, Color32::WHITE, true);
+            });
+        });
+        let position = |name: &str| {
+            labels
+                .iter()
+                .position(|label| label.starts_with(name))
+                .unwrap_or_else(|| panic!("no {name} header in {labels:?}"))
+        };
+        assert!(position("Name") < position("Size"));
+        assert!(position("Size") < position("Modified"));
+    }
+
+    #[test]
+    fn narrow_headers_drop_the_columns_the_rows_drop() {
+        assert!(!header_shows_metadata(150.0));
+        assert!(header_shows_metadata(400.0));
+        // The rows lose their metadata below 160 px of name space.
+        assert!(!header_shows_metadata(160.0 + ROW_LEAD_WIDTH - 1.0));
+        let labels = labels_in_tree_order(|ui| {
+            column_headers(ui, |_| None, Color32::WHITE, false);
+        });
+        assert!(labels.iter().all(|label| !label.starts_with("Size")));
+    }
+
+    #[test]
+    fn filter_controls_are_named_for_their_pane() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| {
+            let mut query = String::from("abc");
+            pane_filter_field(ui, &mut query, 120.0, "left");
+            clear_filter_button(ui, &t);
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Filter left pane").role(),
+            egui::accesskit::Role::TextInput
+        );
+        assert_eq!(
+            node_labelled(&nodes, "Clear filter").role(),
+            egui::accesskit::Role::Button
+        );
+    }
+
+    #[test]
+    fn panes_are_named_regions() {
+        assert_eq!(pane_accessible_label("left", true), "Left pane, active");
+        assert_eq!(pane_accessible_label("right", false), "Right pane");
+        let nodes = accesskit_nodes(|ui| {
+            ui.scope(|ui| mark_pane_region(ui, "right", false));
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Right pane").role(),
+            egui::accesskit::Role::Group
+        );
+    }
+
+    #[test]
+    fn preview_close_buttons_share_name_and_tooltip() {
+        let nodes = accesskit_nodes(|ui| {
+            close_preview_button(ui);
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Close preview").role(),
+            egui::accesskit::Role::Button
+        );
+    }
+
+    #[test]
+    fn preview_failures_are_announced() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| preview_failure_text(ui, "Binary file", &t));
+        let status = node_labelled(&nodes, "Preview unavailable: Binary file");
+        assert_eq!(status.role(), egui::accesskit::Role::Status);
+        assert_eq!(status.live(), Some(egui::accesskit::Live::Polite));
+    }
+
+    #[test]
+    fn disabled_image_preview_names_the_switch() {
+        let state = |environment_killed, runtime_killed| crate::feature_flags::FeatureSnapshot {
+            feature: crate::feature_flags::RiskyFeature::ImagePreview,
+            runtime_killed,
+            environment_killed,
+            rollout_percent: 100,
+            bucket: 0,
+            enabled: false,
+        };
+        assert!(
+            image_preview_disabled_reason(state(true, true))
+                .contains("COMMANDER_DISABLE_IMAGE_PREVIEW")
+        );
+        assert!(image_preview_disabled_reason(state(false, true)).contains("Runtime controls"));
+        assert!(image_preview_disabled_reason(state(false, false)).contains("rolled out"));
+    }
+
+    #[test]
+    fn image_alt_text_is_the_file_name() {
+        assert_eq!(
+            file_name_of(std::path::Path::new("/photos/cat.png")),
+            "cat.png"
+        );
+    }
+
+    #[test]
+    fn a_newly_previewed_file_opens_at_its_top() {
+        let ctx = egui::Context::default();
+        let a = std::path::Path::new("/a.txt");
+        let b = std::path::Path::new("/b.txt");
+        let left = text_preview_scroll_id("left");
+        assert_ne!(left, text_preview_scroll_id("right"));
+        assert!(text_preview_path_changed(&ctx, left, a));
+        assert!(!text_preview_path_changed(&ctx, left, a));
+        assert!(text_preview_path_changed(&ctx, left, b));
+        // Coming back to a file starts at the top again.
+        assert!(text_preview_path_changed(&ctx, left, a));
+        // The other pane keeps its own last path.
+        assert!(text_preview_path_changed(
+            &ctx,
+            text_preview_scroll_id("right"),
+            a
+        ));
     }
 }

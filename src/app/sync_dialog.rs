@@ -498,17 +498,23 @@ impl App {
                                     }
                                 }
                                 ui.add_space(6.0);
-                                ui.label(
+                                let status = ui.label(
                                     egui::RichText::new(status_label(a.status))
                                         .size(10.0)
                                         .color(status_color(a.status, t)),
                                 );
                                 ui.add_space(6.0);
-                                ui.label(
+                                let name = ui.label(
                                     egui::RichText::new(&a.name)
                                         .size(12.0)
                                         .color(t.text_secondary),
                                 );
+                                // Paired files show both sides' size and date,
+                                // so a "differs" row can be decided.
+                                if let Some(sides) = a.comparison_text() {
+                                    status.on_hover_text(&sides);
+                                    name.on_hover_text(sides);
+                                }
                             });
                         }
                     });

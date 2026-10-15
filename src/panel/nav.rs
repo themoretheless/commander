@@ -43,10 +43,20 @@ impl PanelState {
     pub fn focus_child(&mut self, name: String) {
         if self.can_async_list() && self.listing_job.is_awaiting() {
             self.listing_job.set_focus(PendingFocus::NamedChild(name));
-        } else if let Some(idx) = self.filtered_position(|e| e.name == name) {
+        } else if let Some(idx) = self.named_child_position(&name) {
             self.set_cursor(idx + 1);
             self.set_scroll_to_cursor(true);
         }
+    }
+
+    /// Filtered position of the child called `name`. An exact match wins;
+    /// otherwise a case-insensitive one, so a path typed as `…/downloads` on
+    /// a case-insensitive volume still lands on `Downloads` after Go Up.
+    pub(super) fn named_child_position(&self, name: &str) -> Option<usize> {
+        self.filtered_position(|e| e.name == name).or_else(|| {
+            let lower = name.to_lowercase();
+            self.filtered_position(|e| e.name_lower == lower)
+        })
     }
 
     pub const fn can_go_back(&self) -> bool {

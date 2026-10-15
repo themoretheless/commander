@@ -43,6 +43,13 @@ impl GuardPolicy {
         {
             return Err("Health marker must be a relative path below each sync root".to_string());
         }
+        // `.` or `./` would make every sync look for the root itself.
+        if !marker
+            .components()
+            .any(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err("Health marker must name a file".to_string());
+        }
         self.health_marker = Some(marker);
         Ok(())
     }
@@ -492,6 +499,13 @@ mod tests {
         let mut guard = GuardPolicy::default();
         assert!(guard.set_marker("../mounted").is_err());
         assert!(guard.set_marker(".commander-health").is_ok());
+        for current_dir in [".", "./", "./."] {
+            assert_eq!(
+                guard.set_marker(current_dir),
+                Err("Health marker must name a file".to_string())
+            );
+        }
+        assert!(guard.set_marker("./.commander-health").is_ok());
     }
 
     #[test]

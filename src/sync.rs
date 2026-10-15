@@ -65,9 +65,38 @@ pub struct SyncAction {
     pub direction: SyncDirection,
     left_path: Option<PathBuf>,
     right_path: Option<PathBuf>,
+    /// Size and modified text of each side, for a pair of files, so a row
+    /// can show what differs before the user picks a direction.
+    sides: Option<[SideFacts; 2]>,
+}
+
+/// One side of a paired file row, as the panels display it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct SideFacts {
+    size: String,
+    modified: String,
+}
+
+impl SideFacts {
+    fn of(entry: &FileEntry) -> Self {
+        Self {
+            size: entry.size_str.clone(),
+            modified: entry.modified_str.clone(),
+        }
+    }
 }
 
 impl SyncAction {
+    /// "Left: 12 KB, <date> · Right: 15 KB, <date>" for a pair of files;
+    /// `None` for one-sided rows and folders.
+    pub fn comparison_text(&self) -> Option<String> {
+        let [left, right] = self.sides.as_ref()?;
+        Some(format!(
+            "Left: {}, {} \u{b7} Right: {}, {}",
+            left.size, left.modified, right.size, right.modified
+        ))
+    }
+
     /// Whether this row has a stable source for `direction`.
     pub fn allows(&self, direction: SyncDirection) -> bool {
         if matches!(
@@ -101,6 +130,7 @@ pub fn test_action(name: &str, status: SyncStatus, direction: SyncDirection) -> 
         direction,
         left_path: Some(PathBuf::from(format!("/left/{name}"))),
         right_path: Some(PathBuf::from(format!("/right/{name}"))),
+        sides: None,
     }
 }
 
@@ -199,13 +229,15 @@ pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) ->
                 .copied()
                 .unwrap_or(0)
                 > 1;
-        let (status, right_path) = match matched {
+        let (status, right_path, sides) = match matched {
             Some(i) => {
                 used_right[i] = true;
-                (compare(l, &right[i]), Some(right[i].path.clone()))
+                let r = &right[i];
+                let sides = (!l.is_dir && !r.is_dir).then(|| [SideFacts::of(l), SideFacts::of(r)]);
+                (compare(l, r), Some(r.path.clone()), sides)
             }
-            None if ambiguous => (SyncStatus::CaseConflict, None),
-            None => (SyncStatus::LeftOnly, None),
+            None if ambiguous => (SyncStatus::CaseConflict, None, None),
+            None => (SyncStatus::LeftOnly, None, None),
         };
         actions.push(SyncAction {
             name: l.name.clone(),
@@ -213,6 +245,7 @@ pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) ->
             direction: default_direction(status, policy),
             left_path: Some(l.path.clone()),
             right_path,
+            sides,
         });
     }
 
@@ -237,6 +270,7 @@ pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) ->
             direction: default_direction(status, policy),
             left_path: None,
             right_path: Some(r.path.clone()),
+            sides: None,
         });
     }
 
@@ -322,6 +356,27 @@ mod tests {
             .iter()
             .find(|a| a.name == name)
             .expect("row present")
+    }
+
+    #[test]
+    fn paired_files_carry_both_sides_for_the_row_hover() {
+        let mut left = entry("report.txt", 12_288, Some(100));
+        left.modified_str = "1 Jan 70  00:01".to_string();
+        let mut right = entry("report.txt", 15_360, Some(100));
+        right.modified_str = "1 Jan 70  00:01".to_string();
+        let actions = sync_diff(
+            &[left, entry("only.txt", 1, None), directory("dir", None)],
+            &[right, directory("dir", None)],
+            SyncPolicy::TwoWay,
+        );
+        let differs = status_of(&actions, "report.txt");
+        assert_eq!(differs.status, SyncStatus::Differing);
+        assert_eq!(
+            differs.comparison_text().as_deref(),
+            Some("Left: 12.0 KB, 1 Jan 70  00:01 \u{b7} Right: 15.0 KB, 1 Jan 70  00:01")
+        );
+        assert_eq!(status_of(&actions, "only.txt").comparison_text(), None);
+        assert_eq!(status_of(&actions, "dir").comparison_text(), None);
     }
 
     #[test]

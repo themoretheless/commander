@@ -162,6 +162,29 @@ const fn escape_route_under_menu(route: EscapeRoute, menu_open: bool) -> EscapeR
     }
 }
 
+/// Whether this frame's presses hold a plain Backspace that edits a live
+/// type-ahead search instead of going up a folder.
+fn backspace_edits_type_ahead(presses: &[KeyPress], live_search: bool) -> bool {
+    live_search
+        && presses
+            .iter()
+            .any(|p| p.code == KeyCode::Backspace && !p.command && !p.shift)
+}
+
+/// The search left after Backspace removes its last character, or `None`
+/// once nothing is left to search for.
+fn type_ahead_after_backspace(buffer: &str) -> Option<String> {
+    let mut rest = buffer.to_string();
+    rest.pop();
+    (!rest.is_empty()).then_some(rest)
+}
+
+/// Escape that no surface owns ends a live type-ahead search, so the next
+/// key starts a fresh one instead of extending the stale buffer.
+fn escape_ends_type_ahead(route: EscapeRoute) -> bool {
+    route == EscapeRoute::None
+}
+
 fn prioritized_modal(
     open: impl Fn(ModalSurface) -> bool,
     first_pending: Option<ModalSurface>,
@@ -180,7 +203,26 @@ impl App {
             self.ui.chord = None;
             return;
         }
-        let presses = ctx.input(Self::collect_presses);
+        let (mut presses, escape, now) = ctx.input(|i| {
+            (
+                Self::collect_presses(i),
+                i.key_pressed(egui::Key::Escape),
+                i.time,
+            )
+        });
+        if escape && escape_ends_type_ahead(contract.escape) {
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+        }
+        let live_search = self
+            .ui
+            .type_ahead
+            .as_ref()
+            .is_some_and(|(_, last)| now - last <= TYPE_AHEAD_IDLE);
+        if backspace_edits_type_ahead(&presses, live_search) {
+            presses.retain(|p| p.code != KeyCode::Backspace || p.command || p.shift);
+            self.type_ahead_backspace(ctx, now);
+        }
         // Space/Period also arrive as text; once they ran a command they must
         // not extend type-ahead too.
         let mut consumed: Vec<char> = presses
@@ -384,6 +426,25 @@ impl App {
             self.ws.active_panel().type_ahead(&buffer);
         } else {
             // Wake up to jump once the count window passes without a motion.
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(COUNT_WINDOW));
+        }
+    }
+
+    /// Backspace inside a live search deletes its last character and jumps
+    /// again, rather than leaving the folder the user is searching in.
+    fn type_ahead_backspace(&mut self, ctx: &egui::Context, now: f64) {
+        let Some((buffer, _)) = &self.ui.type_ahead else {
+            return;
+        };
+        let Some(rest) = type_ahead_after_backspace(buffer) else {
+            self.ui.type_ahead = None;
+            return;
+        };
+        self.ui.type_ahead = Some((rest.clone(), now));
+        self.ui.type_ahead_jumped = false;
+        if type_ahead_jumps(&rest) {
+            self.ws.active_panel().type_ahead(&rest);
+        } else {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(COUNT_WINDOW));
         }
     }
@@ -627,6 +688,41 @@ mod tests {
         let command = presses_for(egui::Key::A, egui::Modifiers::COMMAND);
         assert_eq!(command.len(), 1);
         assert!(command[0].command);
+    }
+
+    fn press(code: KeyCode, command: bool) -> KeyPress {
+        KeyPress {
+            code,
+            command,
+            shift: false,
+        }
+    }
+
+    #[test]
+    fn backspace_edits_a_live_search_instead_of_going_up() {
+        let backspace = [press(KeyCode::Backspace, false)];
+        assert!(backspace_edits_type_ahead(&backspace, true));
+        // No search running: Backspace still goes up a folder.
+        assert!(!backspace_edits_type_ahead(&backspace, false));
+        // Cmd+Backspace is a different binding.
+        assert!(!backspace_edits_type_ahead(
+            &[press(KeyCode::Backspace, true)],
+            true
+        ));
+        assert!(!backspace_edits_type_ahead(
+            &[press(KeyCode::Down, false)],
+            true
+        ));
+        assert_eq!(type_ahead_after_backspace("src"), Some("sr".to_string()));
+        assert_eq!(type_ahead_after_backspace("é"), None);
+        assert_eq!(type_ahead_after_backspace(""), None);
+    }
+
+    #[test]
+    fn unowned_escape_ends_the_search() {
+        assert!(escape_ends_type_ahead(EscapeRoute::None));
+        assert!(!escape_ends_type_ahead(EscapeRoute::PaneTool));
+        assert!(!escape_ends_type_ahead(EscapeRoute::FocusMode));
     }
 
     #[test]

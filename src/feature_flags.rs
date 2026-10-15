@@ -276,10 +276,18 @@ fn runtime_controls() -> &'static RuntimeControls {
 }
 
 fn environment_killed(feature: RiskyFeature) -> bool {
-    std::env::var_os(feature.kill_environment()).is_some_and(|value| {
-        let value = value.to_string_lossy();
-        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-    })
+    std::env::var_os(feature.kill_environment())
+        .is_some_and(|value| kill_value_set(&value.to_string_lossy()))
+}
+
+/// Whether a kill-switch variable's value asks to disable the feature. Any
+/// value counts except the usual "off" spellings, so `=off` or `=no` leave
+/// the feature on as they read.
+fn kill_value_set(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "off" | "no" | "n"
+    )
 }
 
 fn rollout_bucket(cohort: u64, feature: RiskyFeature) -> u8 {
@@ -392,6 +400,16 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn kill_switch_values_read_as_written() {
+        for off in ["", "0", "false", "FALSE", "off", "Off", "no", "n", " no "] {
+            assert!(!kill_value_set(off), "{off:?}");
+        }
+        for on in ["1", "true", "yes", "on", "kill"] {
+            assert!(kill_value_set(on), "{on:?}");
+        }
+    }
 
     #[derive(Clone, Copy)]
     enum CommitMode {
