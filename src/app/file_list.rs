@@ -542,6 +542,7 @@ impl App {
         compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
+        dragged: &[PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
     ) -> Option<ui_state::ContextMenuCandidate> {
@@ -700,6 +701,7 @@ impl App {
                     if dragging
                         && up_row.contains_pointer()
                         && let Some(parent) = panel.current_path.parent().map(PathBuf::from)
+                        && accepts_row_drop(&parent, dragged)
                     {
                         ui.painter().rect_stroke(
                             up_row.rect,
@@ -1272,7 +1274,7 @@ impl App {
                     if row_resp.contains_pointer()
                         && dragging
                         && entry.is_dir
-                        && accepts_row_drop(&entry.path, panel.drag.entries())
+                        && accepts_row_drop(&entry.path, dragged)
                     {
                         pending_drop_target = Some(entry.path.clone());
                         ui.painter().rect_stroke(
@@ -1940,6 +1942,7 @@ mod tests {
                 None,
                 &|_| {},
                 false,
+                &[],
                 crate::density::metrics(crate::density::Density::default()),
                 true,
             );

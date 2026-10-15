@@ -1348,6 +1348,16 @@ impl App {
         let right_metrics = crate::density::metrics(self.ws.right.density());
         let drag_source = self.ws.drag_session().map(|session| session.source);
         let dragging = input_policy.allows_raw_input(containing_ui_enabled, drag_source.is_some());
+        // The dragged paths live in the source pane's drag state; both panes
+        // need them to keep a dragged folder from lighting up as a target.
+        let dragged: Vec<std::path::PathBuf> = if dragging {
+            self.ws
+                .drag_session()
+                .map(|session| session.entries.to_vec())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         // Side surfaces have already carved their space from this Ui. Base
         // pane geometry on the remaining width so panels never overlap them.
         let window_width = ui.available_width();
@@ -1448,6 +1458,7 @@ impl App {
                     left_compare.as_ref(),
                     &opener,
                     dragging,
+                    &dragged,
                     left_metrics,
                 )
             });
@@ -1505,6 +1516,7 @@ impl App {
                         right_compare.as_ref(),
                         &opener,
                         dragging,
+                        &dragged,
                         right_metrics,
                     )
                 })
@@ -1559,6 +1571,7 @@ impl App {
         compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
+        dragged: &[std::path::PathBuf],
         metrics: crate::density::DensityMetrics,
     ) -> super::render::PanelRenderOutcome {
         // A pane showing a tool never becomes active: keys would otherwise
@@ -1592,6 +1605,7 @@ impl App {
             compare,
             opener,
             dragging,
+            dragged,
             metrics,
             self.accessibility_preferences.reduced_motion,
         )
